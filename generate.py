@@ -1,0 +1,43 @@
+from pyscf import gto, scf
+import numpy as np 
+import h5py
+
+def build_mol(r, basis, atom1, atom2, unit):
+
+    mol = gto.M(atom = f'{atom1} 0 0 {-0.5 * r}; {atom2} 0 0 {0.5 * r}', basis = basis, unit = unit, spin = 0)
+
+    return mol 
+
+def calculate_integrals(mol):
+   
+    eris = mol.intor('int2e', aosym = 's1')
+    S = scf.hf.get_ovlp(mol)
+    h = scf.hf.get_hcore(mol)
+    Enuc = mol.energy_nuc()
+    nao = mol.nao 
+    nelec = mol.nelec
+
+    return eris, S, h, Enuc, nao, nelec
+
+def dump_hdf5(eri, S, h, Enuc, nao, nelec, path):
+    
+    with h5py.File(path, 'w') as f:
+        f.create_dataset('eri', data = eris)
+        f.create_dataset('S', data = S)
+        f.create_dataset('h', data = h)
+        f.create_dataset('Enuc', data = Enuc)
+        f.create_dataset('nao', data = nao)
+        f.create_dataset('nelec', data = np.array(nelec, dtype = np.int64))
+
+if __name__ == '__main__':
+    
+    r = 0.741
+    basis = 'STO-3G'
+    atom1 = 'H'
+    atom2 = 'H'
+    unit = 'Ang'
+
+    mol = build_mol(r, basis, atom1, atom2, unit)
+    eris, S, h, Enuc, nao, nelec = calculate_integrals(mol)
+    dump_hdf5(eris, S, h, Enuc, nao, nelec, 'data.h5')
+
