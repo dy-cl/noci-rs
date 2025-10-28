@@ -16,10 +16,12 @@ def calculate_integrals(mol):
     Enuc = mol.energy_nuc()
     nao = mol.nao 
     nelec = mol.nelec
+    rhf = scf.RHF(mol)
+    dm = rhf.get_init_guess()
 
-    return eris, S, h, Enuc, nao, nelec
+    return eris, S, h, Enuc, nao, nelec, dm
 
-def dump_hdf5(eri, S, h, Enuc, nao, nelec, path):
+def dump_hdf5(eri, S, h, Enuc, nao, nelec, dm, path):
     
     with h5py.File(path, 'w') as f:
         f.create_dataset('eri', data = eris)
@@ -28,6 +30,7 @@ def dump_hdf5(eri, S, h, Enuc, nao, nelec, path):
         f.create_dataset('Enuc', data = Enuc)
         f.create_dataset('nao', data = nao)
         f.create_dataset('nelec', data = np.array(nelec, dtype = np.int64))
+        f.create_dataset('dm', data = dm)
 
 if __name__ == '__main__':
     
@@ -38,6 +41,6 @@ if __name__ == '__main__':
     unit = 'Ang'
 
     mol = build_mol(r, basis, atom1, atom2, unit)
-    eris, S, h, Enuc, nao, nelec = calculate_integrals(mol)
-    dump_hdf5(eris, S, h, Enuc, nao, nelec, 'data.h5')
+    eris, S, h, Enuc, nao, nelec, dm = calculate_integrals(mol)
+    dump_hdf5(eris, S, h, Enuc, nao, nelec, dm, 'data.h5')
 

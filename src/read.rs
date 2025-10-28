@@ -1,19 +1,20 @@
 use hdf5::File; 
-use ndarray::{Array1, Array2};
-use crate::{AoData, Array4};
+use ndarray::{Array1, Array2, Array4};
+use crate::{AoData};
 
 // Read in AO integrals from HDF5
 pub fn read_integrals(path: &str) -> AoData {
     let f = File::open(path).unwrap();
     
-    let eri: Array4 = f.dataset("eri").unwrap().read().unwrap();
+    let eri: Array4<f64> = f.dataset("eri").unwrap().read().unwrap();
     let s: Array2<f64> = f.dataset("S").unwrap().read().unwrap();
     let h: Array2<f64> = f.dataset("h").unwrap().read().unwrap();
     let enuc: f64 = f.dataset("Enuc").unwrap().read_scalar().unwrap();
     let nao: i64 = f.dataset("nao").unwrap().read_scalar().unwrap();
     let nelec: Array1<i64> = f.dataset("nelec").unwrap().read().unwrap();
+    let dm: Array2<f64> = f.dataset("dm").unwrap().read().unwrap();
 
     AoData {
-        s, h, eri, enuc, nao, nelec 
+        s, h, eri, enuc, nao, nelec, dm
     }
 }
