@@ -13,6 +13,7 @@ pub struct AoData {
     pub enuc: f64, // Nuclear repulsion energy 
     pub nao: i64, // Number of AOs 
     pub nelec: Array1<i64>, // Number of spin alpha and spin beta electrons
+    pub aolabels: Array2<i64> // Global AO index labels for each atom
 }
 
 pub struct SCFState {

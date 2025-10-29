@@ -13,8 +13,9 @@ pub fn read_integrals(path: &str) -> AoData {
     let nao: i64 = f.dataset("nao").unwrap().read_scalar().unwrap();
     let nelec: Array1<i64> = f.dataset("nelec").unwrap().read().unwrap();
     let dm: Array2<f64> = f.dataset("dm").unwrap().read().unwrap();
+    let aolabels: Array2<i64> = f.dataset("aolabels").unwrap().read().unwrap();
 
     AoData {
-        s, h, eri, enuc, nao, nelec, dm
+        s, h, eri, enuc, nao, nelec, dm, aolabels
     }
 }
