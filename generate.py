@@ -1,6 +1,7 @@
 from pyscf import gto, scf
 import numpy as np 
 import h5py
+import argparse
 
 def build_mol(r, basis, atom1, atom2, unit):
 
@@ -44,15 +45,18 @@ def dump_hdf5(eri, S, h, dm, Enuc, nao, nelec, aolabels, path):
         f.create_dataset('aolabels', data = aolabels)
 
 if __name__ == '__main__':
-    
-    r = 5.5
-    basis = 'STO-3G'
-    atom1 = 'H'
-    atom2 = 'H'
-    unit = 'Ang'
 
-    mol = build_mol(r, basis, atom1, atom2, unit)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--r', type = float, required = True)
+    parser.add_argument('--atom1', type = str, default = 'H')
+    parser.add_argument('--atom2', type = str, default = 'H')
+    parser.add_argument('--basis', type = str, default = 'STO-3G')
+    parser.add_argument('--unit', type = str, default = 'Ang')
+    parser.add_argument('--out', type = str, default = 'data.h5')
+    args = parser.parse_args()
+
+    mol = build_mol(args.r, args.basis, args.atom1, args.atom2, args.unit)
     eris, S, h, dm = calculate_integrals(mol)
     Enuc, nao, nelec, aolabels = get_misc(mol)
-    dump_hdf5(eris, S, h, dm, Enuc, nao, nelec, aolabels, 'data.h5')
+    dump_hdf5(eris, S, h, dm, Enuc, nao, nelec, aolabels, args.out)
 

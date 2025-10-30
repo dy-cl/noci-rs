@@ -1,10 +1,14 @@
-pub mod read;
-pub mod scf; 
+// lib.rs
 pub mod basis;
+pub mod diis;
+pub mod noci;
+pub mod read;
+pub mod scf;
+pub mod utils;
 
 use ndarray::{Array1, Array2, Array4};
 
-// Struct for storing AO integrals
+/// AO integrals and other related data storage.
 pub struct AoData {
     pub s: Array2<f64>, // AO overlap matrix
     pub h: Array2<f64>, // One electron Hamiltonian matrix
@@ -16,6 +20,7 @@ pub struct AoData {
     pub aolabels: Array2<i64> // Global AO index labels for each atom
 }
 
+/// Storage for SCF state attributes, contains energy and spin MO coefficients.
 pub struct SCFState {
     pub e: f64, // Energy of SCF state
     pub ca: Array2<f64>, // MO coefficients for spin alpha electrons 

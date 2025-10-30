@@ -1,6 +1,9 @@
+// scf.rs
 use ndarray::{Array1, Array2, Array4, s};
-use crate::{AoData};
 use ndarray_linalg::{Eigh, UPLO};
+
+use crate::{AoData};
+use crate::diis::Diis;
 
 /// Build the spin-resolved Fock matrices for UHF.
 /// Uses the Coulomb term from the total density and the exchange term from each spin density.
@@ -87,7 +90,7 @@ fn loewdin_x(s: &Array2<f64>) -> Array2<f64> {
 ///     `s`: Array2, AO basis overlap matrix. Use only lower triangle.
 fn general_evp(f: &Array2<f64>, s: &Array2<f64>) -> (Array1<f64>, Array2<f64>) {
     // X = S^{-1/2}
-    let x = loewdin_x(&s); 
+    let x = loewdin_x(s); 
     // \tilde{F} = X^{\dagger} F X
     let ft = x.t().dot(f).dot(&x);
     // \tilde{F} U = \epsilon U 
@@ -106,8 +109,9 @@ fn general_evp(f: &Array2<f64>, s: &Array2<f64>) -> (Array1<f64>, Array2<f64>) {
 ///     `db0`: Array2, initial spin b density matrix.
 ///     `ao`: AoData struct, contains AO integrals and metadata.
 ///     `max_cycle`: Integer, maximum number of SCF cycles.
-///     `tol`: Float, convergence threshold.
-pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i32, tol: f64) -> (f64, Array2<f64>, Array2<f64>){
+///     `e_tol`: Float, convergence threshold for energy.
+///     `err_tol`: Float, convergence threshold for DIIS error.
+pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i32, e_tol: f64, err_tol: f64) -> (f64, Array2<f64>, Array2<f64>){
     
     let h = &ao.h; 
     let eri = &ao.eri;
@@ -119,35 +123,73 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
     let mut e = f64::INFINITY;
     let mut da = da0.clone();
     let mut db = db0.clone();
-    
+    let use_diis = true;
+
+    // DIIS setup: subspace up to 8
+    let mut diis_a = Diis::new(8);
+    let mut diis_b = Diis::new(8);
+
+    println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
+   
     let mut iter = 0;
     while iter < max_cycle {
         
-        println!("=======================================================");
-        println!("SCF Cycle: {}", iter);
-        // Solve FC = SCe
-        let (fa, fb) = form_fock_matrices(h, eri, &da, &db);
+        // Build current Fock matrices from current densities
+        let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
+        
+        // Update DIIS with current F and D and attempt extrapolation if using
+        let fa = if use_diis {
+            diis_a.push(&fa_curr, &da, s);
+            match diis_a.extrapolate_fock() {
+                Some(fa_diis) => fa_diis, // Succesful extrapolation 
+                None => fa_curr,
+            }
+        } else {
+            fa_curr.clone()
+        };
+        let fb = if use_diis {
+            diis_b.push(&fb_curr, &db, s);
+            match diis_b.extrapolate_fock() {
+                Some(fb_diis) => fb_diis, // Succesful extrapolation 
+                None => fb_curr,
+            }
+        } else {
+            fb_curr.clone()
+        };
+
+        // Solve GEVP FC = SCe
         let (_ea, ca) = general_evp(&fa, s);
         let (_eb, cb) = general_evp(&fb, s);
 
         // Select occupied columns based on Aufbau ordering
-        // MOM of some sort should be implemented here in future
+        // MOM of some sort should be implemented here in future for excited states
         let ca_occ = ca.slice(s![.., 0..na]);
         let cb_occ = cb.slice(s![.., 0..nb]);
-
+        
+        // Form new spin specific densities, Fock matrices, and energy
         let da_new = ca_occ.dot(&ca_occ.t());
         let db_new = cb_occ.dot(&cb_occ.t());
-
         let (fa_new, fb_new) = form_fock_matrices(h, eri, &da_new, &db_new);
         let e_new = scf_energy(&da_new, &db_new, &fa_new, &fb_new, h, enuc);
-        
-        println!("Energy: {}", e_new);
-        println!("=======================================================");
 
-        if (e_new - e).abs() < tol {
+        // Calculate DIIS error term and dE for convergence testing 
+        // If no error can be calculated  (i.e., DIIS subspace is 1) or DIIS is off, set to large number
+        // To handle two seperate UHF DIIS spaces we take whichever has the largest error.
+        let err = if use_diis {
+            let err_a = diis_a.last_error_norm2().unwrap_or(f64::INFINITY).sqrt();
+            let err_b = diis_b.last_error_norm2().unwrap_or(f64::INFINITY).sqrt();
+            err_a.max(err_b)
+        } else {
+            f64::INFINITY
+        };
+        let d_e = (e_new - e).abs();
+
+        println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);
+        
+        if d_e < e_tol && (!use_diis || err < err_tol) {
             return (e_new, ca, cb);
         }
-        
+         
         da = da_new; 
         db = db_new;
         e = e_new;
