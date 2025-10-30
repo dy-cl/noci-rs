@@ -5,6 +5,7 @@ pub mod noci;
 pub mod read;
 pub mod scf;
 pub mod utils;
+pub mod input;
 
 use ndarray::{Array1, Array2, Array4};
 

@@ -1,6 +1,7 @@
 // basis.rs
 use ndarray::{Array2};
 use crate::{AoData, SCFState};
+use crate::input::Input;
 
 /// Multiply a square sub-block of matrix by scalar. 
 /// # Arguments
@@ -53,9 +54,13 @@ fn bias_density(da: &mut Array2<f64>, db: &mut Array2<f64>, ia: &[usize], ib: &[
 ///     `max_cycle`: Integer, sets the maximum number of SCF cycles.
 ///     `e_tol`: Float, sets convergence tolerance for SCF energy.
 ///     `err_tol`: Float, sets convergence tolerance for DIIS error.
-pub fn generate_scf_state(ao: &AoData, max_cycle: i32, e_tol: f64, err_tol: f64) -> Vec<SCFState> {
-
-    let pol = std::f64::consts::PI / 4.0;
+pub fn generate_scf_state(ao: &AoData, input: &Input) -> Vec<SCFState> {
+    
+    let max_cycle = input.max_cycle;
+    let e_tol = input.e_tol;
+    let err_tol = input.err_tol;
+    let pol = input.pol;
+    let verbose = input.verbose;
     
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
@@ -65,36 +70,46 @@ pub fn generate_scf_state(ao: &AoData, max_cycle: i32, e_tol: f64, err_tol: f64)
 
     let mut out = Vec::with_capacity(3);
     
-    println!("=======================================================");
-    println!("State(1)");
+    if verbose{
+        println!("=======================Begin SCF==========================");
+        println!("State(1)");
+    }
 
     // RHF ground state is seeded with unbiased spin density matrix. When passing in identical spin
     // matrices to the scf_cycle, construction of Fock Matrix, Calculation of UHF energy etc
     // becomes the RHF case.
-    let (e_rhf, ca_rhf, cb_rhf) = crate::scf::scf_cycle(&da0, &db0, ao, max_cycle, e_tol, err_tol);
+    let (e_rhf, ca_rhf, cb_rhf) = crate::scf::scf_cycle(&da0, &db0, ao, max_cycle, 
+                                                         e_tol, err_tol, verbose);
     out.push(SCFState{e: e_rhf, ca: ca_rhf, cb: cb_rhf});
     
-    println!("=======================================================");
-    println!("State(2)");
+    if verbose{
+        println!("=======================Begin SCF==========================");
+        println!("State(2)");
+    }
 
     // First UHF spin-broken ground state we seed with a biased spin density matrix.
     let mut da_ab = da0.clone();
     let mut db_ab = db0.clone();
     bias_density(&mut da_ab, &mut db_ab, &ia, &ib, pol, true);
-    let (e_uhf_ab, ca_uhf_ab, cb_uhf_ab) = crate::scf::scf_cycle(&da_ab, &db_ab, ao, max_cycle, e_tol, err_tol);
+    let (e_uhf_ab, ca_uhf_ab, cb_uhf_ab) = crate::scf::scf_cycle(&da_ab, &db_ab, ao, max_cycle,                                                                               e_tol, err_tol, verbose);
     out.push(SCFState{e: e_uhf_ab, ca: ca_uhf_ab, cb: cb_uhf_ab});
-
-    println!("=======================================================");
-    println!("State(3)");
+    
+    if verbose {
+        println!("=======================Begin SCF==========================");
+        println!("State(3)");
+    }
     
     // Second UHF spin-broken ground state we seed with a biased spin density matrix.
     let mut da_ba = da0.clone();
     let mut db_ba = db0.clone();
     bias_density(&mut da_ba, &mut db_ba, &ia, &ib, pol, false);
-    let (e_uhf_ba, ca_uhf_ba, cb_uhf_ba) = crate::scf::scf_cycle(&da_ba, &db_ba, ao, max_cycle, e_tol, err_tol);
+    let (e_uhf_ba, ca_uhf_ba, cb_uhf_ba) = crate::scf::scf_cycle(&da_ba, &db_ba, ao, max_cycle, 
+                                                                  e_tol, err_tol, verbose);
     out.push(SCFState{e: e_uhf_ba, ca: ca_uhf_ba, cb: cb_uhf_ba});
-
-    println!("=======================================================");
+    
+    if verbose{
+        println!("=======================================================");
+    }
 
     out
 }

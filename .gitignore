@@ -1,4 +1,6 @@
 target/
+inputs/
 outputs/
-data.h5 
+data.h5
+Cargo.lock
 

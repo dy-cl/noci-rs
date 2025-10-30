@@ -111,7 +111,9 @@ fn general_evp(f: &Array2<f64>, s: &Array2<f64>) -> (Array1<f64>, Array2<f64>) {
 ///     `max_cycle`: Integer, maximum number of SCF cycles.
 ///     `e_tol`: Float, convergence threshold for energy.
 ///     `err_tol`: Float, convergence threshold for DIIS error.
-pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i32, e_tol: f64, err_tol: f64) -> (f64, Array2<f64>, Array2<f64>){
+pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i32, 
+                 e_tol: f64, err_tol: f64, verbose: bool) 
+                 -> (f64, Array2<f64>, Array2<f64>){
     
     let h = &ao.h; 
     let eri = &ao.eri;
@@ -128,8 +130,10 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
     // DIIS setup: subspace up to 8
     let mut diis_a = Diis::new(8);
     let mut diis_b = Diis::new(8);
-
-    println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
+    
+    if verbose {
+        println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
+    }
    
     let mut iter = 0;
     while iter < max_cycle {
@@ -183,8 +187,10 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
             f64::INFINITY
         };
         let d_e = (e_new - e).abs();
-
-        println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);
+        
+        if verbose{
+            println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);
+        }
         
         if d_e < e_tol && (!use_diis || err < err_tol) {
             return (e_new, ca, cb);
