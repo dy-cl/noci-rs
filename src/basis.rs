@@ -1,5 +1,6 @@
 // basis.rs
-use ndarray::{Array2};
+use ndarray::{Array1, Array2, Axis, s};
+
 use crate::{AoData, SCFState};
 use crate::input::Input;
 
@@ -28,21 +29,48 @@ fn bias_density(da: &mut Array2<f64>, db: &mut Array2<f64>, ia: &[usize], ib: &[
     let up = 1.0 + pol; 
     let dn = 1.0 - pol; 
     
-    // (D_a')_{ij} = (1 + p)(D_a)_{ij} if i, j on atom A 
-    // (D_b')_{ij} = (1 - p)(D_b)_{ij} if i, j on atom A  
+    // (D_a')_{ij} = (1 + p)(D_a)_{ij} if i, j on atom A. 
+    // (D_b')_{ij} = (1 - p)(D_b)_{ij} if i, j on atom A.
     if a {
         scale_block(da, ia, up);
         scale_block(db, ia, dn);
         scale_block(da, ib, dn);
         scale_block(db, ib, up);
-    // (D_a')_{ij} = (1 - p)(D_a)_{ij} if i, j on atom B
-    // (D_b')_{ij} = (1 + p)(D_b)_{ij} if i, j on atom B
+    // (D_a')_{ij} = (1 - p)(D_a)_{ij} if i, j on atom B.
+    // (D_b')_{ij} = (1 + p)(D_b)_{ij} if i, j on atom B.
     } else {
         scale_block(da, ia, dn); 
         scale_block(db, ia, up);
         scale_block(da, ib, up);
         scale_block(db, ib, dn);
     }
+}
+
+/// Assembles the spin diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]) and the 
+/// occupied only variant.
+/// # Arguments
+///     `ca`: Array2, spin a MO coefficients.
+///     `cb`: Array2, spin b MO coefficients.
+///     `oa`: Occupancy vector for spin a MOs.
+///     `ob`: Occupancy vector for spin b MOs.
+///     `nao`: Number of AOs.
+pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>, 
+                            ob: &Array1<f64>, nao: usize) -> (Array2<f64>, Array2<f64>) {
+
+        let mut cs = Array2::<f64>::zeros((2 * nao, 2 * nao));
+        cs.slice_mut(s![0..nao, 0..nao]).assign(ca);
+        cs.slice_mut(s![nao..2 * nao, nao..2 * nao]).assign(cb);
+        
+        // Number of AOs is equal to number of MOs here.
+        let mut cols: Vec<usize> = oa.iter().enumerate()
+                                   .filter_map(|(i, &occ)| if occ > 0.5 { Some(i) } else { None })
+                                   .collect();
+        cols.extend(ob.iter().enumerate()
+                    .filter_map(|(i, &occ)| if occ > 0.5 { Some(nao + i) } else { None }));
+
+        let cs_occ = cs.select(Axis(1), &cols);
+
+        (cs, cs_occ)
 }
 
 /// Use given AO data to construct 3 SCF states which form the NOCI(3) basis for H2. 
@@ -67,48 +95,30 @@ pub fn generate_scf_state(ao: &AoData, input: &Input) -> Vec<SCFState> {
     
     let ia: Vec<usize> = ao.aolabels.row(0).iter().map(|&i| i as usize).collect();
     let ib: Vec<usize> = ao.aolabels.row(1).iter().map(|&i| i as usize).collect();
+    
+    let states_to_get = [("RHF", None), ("UHF_AB", Some(true)), ("UHF_BA", Some(false))];
+    let mut out = Vec::with_capacity(states_to_get.len());
 
-    let mut out = Vec::with_capacity(3);
-    
-    if verbose{
-        println!("=======================Begin SCF==========================");
-        println!("State(1)");
-    }
+    for (i, (_label, bias_flag)) in states_to_get.iter().enumerate() {
+        if verbose {
+            println!("=======================Begin SCF==========================");
+            println!("State({})", i + 1);
+        };
 
-    // RHF ground state is seeded with unbiased spin density matrix. When passing in identical spin
-    // matrices to the scf_cycle, construction of Fock Matrix, Calculation of UHF energy etc
-    // becomes the RHF case.
-    let (e_rhf, ca_rhf, cb_rhf) = crate::scf::scf_cycle(&da0, &db0, ao, max_cycle, 
-                                                         e_tol, err_tol, verbose);
-    out.push(SCFState{e: e_rhf, ca: ca_rhf, cb: cb_rhf});
-    
-    if verbose{
-        println!("=======================Begin SCF==========================");
-        println!("State(2)");
-    }
+        let mut da = da0.clone();
+        let mut db = db0.clone();
 
-    // First UHF spin-broken ground state we seed with a biased spin density matrix.
-    let mut da_ab = da0.clone();
-    let mut db_ab = db0.clone();
-    bias_density(&mut da_ab, &mut db_ab, &ia, &ib, pol, true);
-    let (e_uhf_ab, ca_uhf_ab, cb_uhf_ab) = crate::scf::scf_cycle(&da_ab, &db_ab, ao, max_cycle,                                                                               e_tol, err_tol, verbose);
-    out.push(SCFState{e: e_uhf_ab, ca: ca_uhf_ab, cb: cb_uhf_ab});
-    
-    if verbose {
-        println!("=======================Begin SCF==========================");
-        println!("State(3)");
-    }
-    
-    // Second UHF spin-broken ground state we seed with a biased spin density matrix.
-    let mut da_ba = da0.clone();
-    let mut db_ba = db0.clone();
-    bias_density(&mut da_ba, &mut db_ba, &ia, &ib, pol, false);
-    let (e_uhf_ba, ca_uhf_ba, cb_uhf_ba) = crate::scf::scf_cycle(&da_ba, &db_ba, ao, max_cycle, 
-                                                                  e_tol, err_tol, verbose);
-    out.push(SCFState{e: e_uhf_ba, ca: ca_uhf_ba, cb: cb_uhf_ba});
-    
-    if verbose{
-        println!("=======================================================");
+        // Apply the respective spin biases to the UHF solutions 
+        // otherwise we have equal spin density matrices in RHF.
+        if let Some(is_ab) = bias_flag {bias_density(&mut da, &mut db, &ia, &ib, pol, *is_ab)}
+        let (e, ca, cb, oa, ob) = crate::scf::scf_cycle(&da, &db, ao, max_cycle, 
+                                                        e_tol, err_tol, verbose);
+
+        // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
+        // this is later required for NOCI calculations.
+        let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
+        out.push(SCFState {e, oa, ob, ca, cb, cs, cs_occ});
+ 
     }
 
     out

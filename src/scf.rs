@@ -1,9 +1,10 @@
 // scf.rs
 use ndarray::{Array1, Array2, Array4, s};
-use ndarray_linalg::{Eigh, UPLO};
 
-use crate::{AoData};
+use crate::AoData;
 use crate::diis::Diis;
+
+use crate::maths::general_evp_real;
 
 /// Build the spin-resolved Fock matrices for UHF.
 /// Uses the Coulomb term from the total density and the exchange term from each spin density.
@@ -13,7 +14,8 @@ use crate::diis::Diis;
 ///     `eri`: Array4, two electron integrals (pq|rs) in chemist's notation.
 ///     `da`: Array2, a spin density matrix.
 ///     `db`: Array2, b spin density matrix
-fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: &Array2<f64>) 
+                      -> (Array2<f64>, Array2<f64>) {
 
     let n = h.nrows();
     let mut j = Array2::<f64>::zeros((n, n));
@@ -21,7 +23,7 @@ fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: 
     let mut kb = Array2::<f64>::zeros((n, n));
     let d = da + db;
 
-    // J_{pq} = \sum_{rs} (pq|rs) {D_rs}
+    // J_{pq} = \sum_{rs} (pq|rs) {D_rs}.
     for p in 0..n {
         for q in 0..n {
             let block = eri.slice(s![p, q, .., ..]);         
@@ -29,7 +31,7 @@ fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: 
         }
     }
 
-    // K_{pq}^{\alpha} = sum_{rs} (pr|qs) D_{rs}^{\alpha}
+    // K_{pq}^{\alpha} = sum_{rs} (pr|qs) D_{rs}^{\alpha}.
     for p in 0..n {
         for q in 0..n {
             let block = eri.slice(s![p, .., q, ..]);        
@@ -37,7 +39,7 @@ fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: 
         }
     }
 
-    // K_{pq}^{\beta} = sum_{rs} (pr|qs) D_{rs}^{\beta}
+    // K_{pq}^{\beta} = sum_{rs} (pr|qs) D_{rs}^{\beta}.
     for p in 0..n {
         for q in 0..n {
             let block = eri.slice(s![p, .., q, ..]);         
@@ -59,46 +61,29 @@ fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: 
 ///     `fb`: Array2, b spin Fock matrix.
 ///     `h`: Array2, one electron Hamiltonian. 
 ///     `Enuc`: f64, nuclear-nuclear repulsion energy.
-fn scf_energy(da: &Array2<f64>, db: &Array2<f64>, fa: &Array2<f64>, fb: &Array2<f64>, h: &Array2<f64>, enuc: f64) -> f64 {
+fn scf_energy(da: &Array2<f64>, db: &Array2<f64>, fa: &Array2<f64>,     
+              fb: &Array2<f64>, h: &Array2<f64>, enuc: f64) -> f64 {
     let p = da + db;
-    // E_1 = sum_{pq} h_{pq} P_{pq}
+    // E_1 = sum_{pq} h_{pq} P_{pq}.
     let e1 = (h * &p).sum();
-    // E_{\alpha} = 0.5 * sum_{pq} (F_{pq}^{\alpha} - h_{pq}) * D^{alpha}_{pq}
+    // E_{\alpha} = 0.5 * sum_{pq} (F_{pq}^{\alpha} - h_{pq}) * D^{alpha}_{pq}.
     let ea = 0.5 * ((fa - h) * da).sum();
-    // E_{\beta} = 0.5 * sum_{pq} (F_{pq}^{\beta} - h_{pq}) * D^{beta}_{pq}
+    // E_{\beta} = 0.5 * sum_{pq} (F_{pq}^{\beta} - h_{pq}) * D^{beta}_{pq}.
     let eb = 0.5 * ((fb - h) * db).sum();
 
     e1 + ea + eb + enuc
 }
 
-// Loewdin symmetric orthogonaliser which calculates X = S^{-1/2}
-// # Arguments 
-//  `s`: Array2, AO basis overlap matrix. Use only lower triangle.
-fn loewdin_x(s: &Array2<f64>) -> Array2<f64> {
-    // S = U \Lambda U^{\dagger}
-    let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
-    // Get \Lambda^{-1/2}
-    let invsqrt: Array1<f64> = lambdas.mapv(|i| 1.0 / i.sqrt());
-    let d = Array2::from_diag(&invsqrt);
-    // X = U \Lambda^{-1/2} U^{\dagger}
-    evecs.dot(&d).dot(&evecs.t())
-}
-
-/// Solve the generalized eigenproblem F C = S C e using Loewdin orthogonalization.
+/// Calculate MO occupancies as diagonal of a density matrix in the MO basis.
+/// T = C^{\dagger} S D S C.
 /// # Arguments
-///     `f`: Array2, Fock or any Hermitian matrix F.
-///     `s`: Array2, AO basis overlap matrix. Use only lower triangle.
-fn general_evp(f: &Array2<f64>, s: &Array2<f64>) -> (Array1<f64>, Array2<f64>) {
-    // X = S^{-1/2}
-    let x = loewdin_x(s); 
-    // \tilde{F} = X^{\dagger} F X
-    let ft = x.t().dot(f).dot(&x);
-    // \tilde{F} U = \epsilon U 
-    let (epsilon, u) = ft.eigh(UPLO::Lower).unwrap();
-    // C = X U 
-    let c = x.dot(&u);
-
-    (epsilon, c)
+///     `c`: Array2, spin MO coefficient matrix.
+///     `d`: Array2, spin density matrix.
+///     `s`: Array2, AO overlap matrix.
+fn mo_occupancies(c: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array1<f64> {
+    let t = c.t().dot(s).dot(d).dot(s).dot(c);
+    let diag = t.diag().to_owned();
+    diag.mapv(|x| if x > 0.5 { 1.0 } else { 0.0 })
 }
 
 /// Unrestricted SCF cycle with Loewdin orthogonalization.
@@ -113,11 +98,11 @@ fn general_evp(f: &Array2<f64>, s: &Array2<f64>) -> (Array1<f64>, Array2<f64>) {
 ///     `err_tol`: Float, convergence threshold for DIIS error.
 pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i32, 
                  e_tol: f64, err_tol: f64, verbose: bool) 
-                 -> (f64, Array2<f64>, Array2<f64>){
+                 -> (f64, Array2<f64>, Array2<f64>, Array1<f64>, Array1<f64>){
     
     let h = &ao.h; 
     let eri = &ao.eri;
-    let s = &ao.s;
+    let s = &ao.s_ao;
     let enuc = ao.enuc;
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
@@ -127,7 +112,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
     let mut db = db0.clone();
     let use_diis = true;
 
-    // DIIS setup: subspace up to 8
+    // DIIS setup: subspace up to 8.
     let mut diis_a = Diis::new(8);
     let mut diis_b = Diis::new(8);
     
@@ -138,14 +123,14 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
     let mut iter = 0;
     while iter < max_cycle {
         
-        // Build current Fock matrices from current densities
+        // Build current Fock matrices from current densities.
         let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
         
-        // Update DIIS with current F and D and attempt extrapolation if using
+        // Update DIIS with current F and D and attempt extrapolation if using.
         let fa = if use_diis {
             diis_a.push(&fa_curr, &da, s);
             match diis_a.extrapolate_fock() {
-                Some(fa_diis) => fa_diis, // Succesful extrapolation 
+                Some(fa_diis) => fa_diis, // Succesful extrapolation. 
                 None => fa_curr,
             }
         } else {
@@ -154,30 +139,36 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
         let fb = if use_diis {
             diis_b.push(&fb_curr, &db, s);
             match diis_b.extrapolate_fock() {
-                Some(fb_diis) => fb_diis, // Succesful extrapolation 
+                Some(fb_diis) => fb_diis, // Succesful extrapolation. 
                 None => fb_curr,
             }
         } else {
             fb_curr.clone()
         };
 
-        // Solve GEVP FC = SCe
-        let (_ea, ca) = general_evp(&fa, s);
-        let (_eb, cb) = general_evp(&fb, s);
+        // Solve GEVP FC = SCe.
+        let (_ea, ca) = general_evp_real(&fa, s, false, 1e-8);
+        let (_eb, cb) = general_evp_real(&fb, s, false, 1e-8);
 
-        // Select occupied columns based on Aufbau ordering
-        // MOM of some sort should be implemented here in future for excited states
+        // Select occupied columns based on Aufbau ordering.
+        // MOM of some sort should be implemented here in future for excited states.
         let ca_occ = ca.slice(s![.., 0..na]);
         let cb_occ = cb.slice(s![.., 0..nb]);
         
-        // Form new spin specific densities, Fock matrices, and energy
+        // Form new spin specific densities, Fock matrices, and energy.
         let da_new = ca_occ.dot(&ca_occ.t());
         let db_new = cb_occ.dot(&cb_occ.t());
         let (fa_new, fb_new) = form_fock_matrices(h, eri, &da_new, &db_new);
         let e_new = scf_energy(&da_new, &db_new, &fa_new, &fb_new, h, enuc);
 
-        // Calculate DIIS error term and dE for convergence testing 
-        // If no error can be calculated  (i.e., DIIS subspace is 1) or DIIS is off, set to large number
+        // Calculate current occupancies from density matrices and MO coefficients.
+        // Obviously since we are currently just doing Aufbau we could hard code the occupations,
+        // but this will be useful to have in future when using MOM to get excited states.
+        let oa = mo_occupancies(&ca, &da, s);
+        let ob = mo_occupancies(&cb, &db, s);
+
+        // Calculate DIIS error term and dE for convergence testing. 
+        // If no error can be calculated  (i.e., DIIS subspace is 1) or DIIS is off, set to large number.
         // To handle two seperate UHF DIIS spaces we take whichever has the largest error.
         let err = if use_diis {
             let err_a = diis_a.last_error_norm2().unwrap_or(f64::INFINITY).sqrt();
@@ -193,7 +184,11 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
         }
         
         if d_e < e_tol && (!use_diis || err < err_tol) {
-            return (e_new, ca, cb);
+            if verbose{
+                    println!("occa: [{:.3}]", oa);
+                    println!("occb: [{:.3}]", ob);
+            }
+            return (e_new, ca, cb, oa, ob);
         }
          
         da = da_new; 
@@ -204,5 +199,6 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
     }
      
     println!("SCF not converged.");
-    (f64::NAN, Array2::<f64>::zeros((0, 0)), Array2::<f64>::zeros((0, 0)))
+    (f64::NAN, Array2::<f64>::zeros((0, 0)), Array2::<f64>::zeros((0, 0)), 
+     Array1::<f64>::zeros(0), Array1::<f64>::zeros(0))
 }

@@ -77,8 +77,8 @@ impl Diis {
         }
 
         // Construct augmented matrix.
-        //  B_{ij}^a = \sum_{pq}(E^\alpha_i)_{pq}(E^\alpha_j)_{pq}
-        //  B_{ij}^b = \sum_{pq}(E^\beta_i)_{pq}(E^\beta_j)_{pq}
+        //  B_{ij}^a = \sum_{pq}(E^\alpha_i)_{pq}(E^\alpha_j)_{pq}.
+        //  B_{ij}^b = \sum_{pq}(E^\beta_i)_{pq}(E^\beta_j)_{pq}.
         //  Elements are B_{ij}^a + B_{ij}^b with additional row/column of 1s. 
         //  aug[(m + 1, m + 1)] = 0.
         let mut aug = Array2::<f64>::zeros((m + 1, m + 1));
@@ -101,7 +101,7 @@ impl Diis {
         let c = sol.slice(s![0..m]).to_owned();
         
         // Extrapolate to get DIIS Fock matrix.
-        // F_{DIIS}^s = \sum_i^m c_i F_i^s 
+        // F_{DIIS}^s = \sum_i^m c_i F_i^s.
         let mut f_diis = self.f_hist[0].clone() * c[0];
         for i in 1..m {
             f_diis = f_diis + self.f_hist[i].clone() * c[i];

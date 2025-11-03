@@ -3,20 +3,20 @@ use std::fs;
 
 /// Storage for Input file parameters.
 pub struct Input {
-    // SCF table
+    // SCF table.
     pub max_cycle: i32,
     pub e_tol: f64,
     pub err_tol: f64,
     pub pol: f64,
     
-    // Mol table
+    // Mol table.
     pub basis: String,
     pub atom1: String,
     pub atom2: String,
     pub unit: String,
     pub r_list: Vec<f64>,
 
-    // Write table 
+    // Write table. 
     pub verbose: bool,
 }
 
@@ -32,18 +32,18 @@ pub fn load_input(path: &str) -> Input {
     ctx.load(&src).exec().unwrap();
     let globals = ctx.globals();
 
-    // Table headers
+    // Table headers.
     let scf: rlua::Table = globals.get("scf").unwrap();
     let mol: rlua::Table = globals.get("mol").unwrap();
     let write: rlua::Table = globals.get("write").unwrap();
     
-    // SCF table
+    // SCF table.
     let max_cycle: i32 = scf.get("max_cycle").unwrap();
     let e_tol: f64 = scf.get("e_tol").unwrap();
     let err_tol: f64 = scf.get("err_tol").unwrap();
     let pol: f64 = scf.get("pol").unwrap();
     
-    // Mol table
+    // Mol table.
     let basis: String = mol.get("basis").unwrap();
     let atom1: String = mol.get("atom1").unwrap();
     let atom2: String = mol.get("atom2").unwrap();
@@ -62,7 +62,7 @@ pub fn load_input(path: &str) -> Input {
 
     }
 
-    // Write table 
+    // Write table. 
     let verbose: bool = write.get("verbose").unwrap();
 
     Input {max_cycle, e_tol, err_tol, pol,

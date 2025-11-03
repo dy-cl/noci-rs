@@ -1,8 +1,10 @@
 // main.rs
 use std::process::Command;
+
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
 use noci_rs::basis::generate_scf_state;
+use noci_rs::noci::calculate_noci_energy;
 
 fn main() {
     let input_path = match std::env::args().nth(1) {
@@ -28,13 +30,18 @@ fn main() {
             eprintln!("Failed to generate mol with status {status}");
             std::process::exit(1);
         }
-
+        
+        // Read integrals from the generated data and calculate SCF states.
         let ao = read_integrals("data.h5");
         let states = generate_scf_state(&ao, &input);
-        
+        println!("==========================================================");
         for (i, state) in states.iter().enumerate() {
             println!("State({i}): E = {}", state.e);
         }
+
+        // Pass SCF states to NOCI subroutines to and NOCI energy from the given basis.
+        let e_noci = calculate_noci_energy(&ao, &states);
+        println!("State(NOCI): E = {}", e_noci);
 
     }
 }

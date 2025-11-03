@@ -8,6 +8,7 @@ rlua = "0.20.1"
 ndarray = { version = "0.15", features = ["rayon"] }
 ndarray-linalg = { version = "0.16", features = ["openblas"] }
 openblas-src = { version = "0.10", features = ["cblas"] }
+num-complex = "0.4"
 rayon = "1.10"
 hdf5 = "0.8"
 

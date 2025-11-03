@@ -5,7 +5,8 @@ import argparse
 
 def build_mol(r, basis, atom1, atom2, unit):
 
-    mol = gto.M(atom = f'{atom1} 0 0 {-0.5 * r}; {atom2} 0 0 {0.5 * r}', basis = basis, unit = unit, spin = 0)
+    mol = gto.M(atom = f'{atom1} 0 0 {-0.5 * r}; {atom2} 0 0 {0.5 * r}', 
+                basis = basis, unit = unit, spin = 0)
 
     return mol 
 
