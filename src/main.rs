@@ -18,12 +18,13 @@ fn main() {
     let input = load_input(&input_path);
    
     println!("Running SCF for {} geometries...", input.r_list.len());
-    for r in &input.r_list{
+    for (i, r) in input.r_list.iter().copied().enumerate(){
         println!("\n");
         println!("R: {}", r);
+        let atoms = &input.geoms[i];
+        let atomsj = serde_json::to_string(atoms).unwrap();
         // Run interface to PySCF which generates AO integrals, overlap matrix, density matrices etc.
-        let status = Command::new("python3").arg("generate.py").arg("--r").arg(r.to_string())
-                             .arg("--atom1").arg(&input.atom1).arg("--atom2").arg(&input.atom2)
+        let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj)
                              .arg("--basis").arg(&input.basis).arg("--unit").arg(&input.unit)
                              .arg("--out").arg("data.h5").status().unwrap();
         if !status.success() {

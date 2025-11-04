@@ -1,14 +1,11 @@
 from pyscf import gto, scf
 import numpy as np 
 import h5py
-import argparse
+import argparse, json
 
-def build_mol(r, basis, atom1, atom2, unit):
+def build_mol(basis, atoms, unit):
 
-    mol = gto.M(atom = f'{atom1} 0 0 {-0.5 * r}; {atom2} 0 0 {0.5 * r}', 
-                basis = basis, unit = unit, spin = 0)
-
-    return mol 
+    return gto.M(atom = '; '.join(atoms), basis = basis, unit = unit, spin = 0)
 
 def calculate_integrals(mol):
    
@@ -48,15 +45,14 @@ def dump_hdf5(eri, S, h, dm, Enuc, nao, nelec, aolabels, path):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--r', type = float, required = True)
-    parser.add_argument('--atom1', type = str, default = 'H')
-    parser.add_argument('--atom2', type = str, default = 'H')
-    parser.add_argument('--basis', type = str, default = 'STO-3G')
+    parser.add_argument('--atoms', type = str, required = True,)
+    parser.add_argument('--basis', type = str, required = True,)
     parser.add_argument('--unit', type = str, default = 'Ang')
     parser.add_argument('--out', type = str, default = 'data.h5')
     args = parser.parse_args()
+    atoms = json.loads(args.atoms)
 
-    mol = build_mol(args.r, args.basis, args.atom1, args.atom2, args.unit)
+    mol = build_mol(args.basis, atoms, args.unit)
     eris, S, h, dm = calculate_integrals(mol)
     Enuc, nao, nelec, aolabels = get_misc(mol)
     dump_hdf5(eris, S, h, dm, Enuc, nao, nelec, aolabels, args.out)

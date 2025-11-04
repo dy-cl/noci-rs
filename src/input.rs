@@ -1,4 +1,4 @@
-use rlua::{Lua, Value};
+use rlua::{Lua, Value, Table};
 use std::fs;
 
 /// Storage for Input file parameters.
@@ -11,10 +11,9 @@ pub struct Input {
     
     // Mol table.
     pub basis: String,
-    pub atom1: String,
-    pub atom2: String,
     pub unit: String,
     pub r_list: Vec<f64>,
+    pub geoms: Vec<Vec<String>>,
 
     // Write table. 
     pub verbose: bool,
@@ -45,27 +44,48 @@ pub fn load_input(path: &str) -> Input {
     
     // Mol table.
     let basis: String = mol.get("basis").unwrap();
-    let atom1: String = mol.get("atom1").unwrap();
-    let atom2: String = mol.get("atom2").unwrap();
     let unit: String = mol.get("unit").unwrap();
+    // Allow mol.r to be a number or table. 
     let r_val: Value = mol.get("r").unwrap();
     let mut r_list: Vec<f64> = Vec::new();
     match r_val {
+        // For a number simply add to r_list.
         Value::Number(x) => {r_list.push(x)},
+        // For a table of r iterate over all values and add to r_list.
         Value::Table(t) => {
             for item in t.sequence_values::<f64>() {
                 let r = item.unwrap();
                 r_list.push(r);
             }
         },
-        _ => {eprintln!("Input: r, must be number or list."); std::process::exit(1);},
-
+        _ => {eprintln!("Number or table required by mol.r"); std::process::exit(1);},
     }
+    // Allow mol.atoms to be either a lua table or function.
+    let atoms_val: Value = mol.get("atoms").unwrap();
+    let geoms: Vec<Vec<String>> = match atoms_val {
+        // If atoms is a lua table we have a static geometry and can duplicate 
+        // this geometry across all r (which for static geometry should be 1 value).
+        Value::Table(t) => {
+            let static_atoms = t.sequence_values::<String>().map(|x| x.unwrap()).collect::<Vec<_>>();
+            vec![static_atoms; r_list.len()]
+        }
+        // If atoms is a lua function which returns a table we have a dynamic geometry.
+        Value::Function(f) => {
+            let mut out = Vec::with_capacity(r_list.len());
+            for &r in &r_list {
+                let tbl: Table = f.call(r).unwrap();
+                let atoms = tbl.sequence_values::<String>().map(|x| x.unwrap()).collect::<Vec<_>>();
+                out.push(atoms);
+            }
+            out
+        }
+        _ => { eprintln!("Table or function required by mol.atoms"); std::process::exit(1); }
+    };
 
     // Write table. 
     let verbose: bool = write.get("verbose").unwrap();
 
     Input {max_cycle, e_tol, err_tol, pol,
-           basis, atom1, atom2, r_list, unit, verbose}
+           basis, r_list, geoms, unit, verbose}
 }
 
