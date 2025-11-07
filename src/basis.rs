@@ -84,35 +84,40 @@ pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>
 ///     `err_tol`: Float, sets convergence tolerance for DIIS error.
 pub fn generate_scf_state(ao: &AoData, input: &Input) -> Vec<SCFState> {
     
-    let max_cycle = input.max_cycle;
-    let e_tol = input.e_tol;
-    let err_tol = input.err_tol;
-    let pol = input.pol;
-    let verbose = input.verbose;
-    
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
-    
-    let ia: Vec<usize> = ao.aolabels.row(0).iter().map(|&i| i as usize).collect();
-    let ib: Vec<usize> = ao.aolabels.row(1).iter().map(|&i| i as usize).collect();
-    
-    let states_to_get = [("RHF", None), ("UHF_AB", Some(true)), ("UHF_BA", Some(false))];
-    let mut out = Vec::with_capacity(states_to_get.len());
 
-    for (i, (_label, bias_flag)) in states_to_get.iter().enumerate() {
-        if verbose {
+    let ia: Vec<usize> = ao.aolabels.iter().enumerate()
+        .filter(|(_, s)| s.split_whitespace().next().unwrap() == "0")
+        .map(|(i, _)| i)
+        .collect();
+
+    let ib: Vec<usize> = ao.aolabels.iter().enumerate()
+        .filter(|(_, s)| s.split_whitespace().next().unwrap() == "1")
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut out = Vec::with_capacity(input.states.len());
+
+    for (i, recipe) in input.states.iter().enumerate() {
+        if input.verbose {
             println!("=======================Begin SCF==========================");
-            println!("State({})", i + 1);
+            println!("State({}): {}", i + 1, recipe.label);
         };
+        
+        let excitation = recipe.excitation.as_ref();
 
         let mut da = da0.clone();
         let mut db = db0.clone();
 
         // Apply the respective spin biases to the UHF solutions 
         // otherwise we have equal spin density matrices in RHF.
-        if let Some(is_ab) = bias_flag {bias_density(&mut da, &mut db, &ia, &ib, pol, *is_ab)}
-        let (e, ca, cb, oa, ob) = crate::scf::scf_cycle(&da, &db, ao, max_cycle, 
-                                                        e_tol, err_tol, verbose);
+        if let Some(sb) = &recipe.spin_bias {
+            let is_ab = sb.pattern == "AB"; // is_ab true if AB, false otherwise (BA).
+            bias_density(&mut da, &mut db, &ia, &ib, sb.pol, is_ab);
+        }
+
+        let (e, ca, cb, oa, ob) = crate::scf::scf_cycle(&da, &db, ao, input, excitation);
 
         // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
         // this is later required for NOCI calculations.

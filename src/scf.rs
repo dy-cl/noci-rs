@@ -1,7 +1,10 @@
+use std::usize;
+
 // scf.rs
-use ndarray::{Array1, Array2, Array4, s};
+use ndarray::{Axis, Array1, Array2, Array4, s};
 
 use crate::AoData;
+use crate::input::{Input, Spin, Excitation};
 use crate::diis::Diis;
 
 use crate::maths::general_evp_real;
@@ -86,18 +89,39 @@ fn mo_occupancies(c: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array1<f
     diag.mapv(|x| if x > 0.5 { 1.0 } else { 0.0 })
 }
 
+/// Select occupied MO column indices by the Maximum Overlap Method (MOM). Forms the overlap 
+/// score O = C_old^T S C between iteration k-1 occupied orbitals and iteration k orbitals. Each 
+/// MO is scored according to its overlap with the previous iteration. Provided a decent initial 
+/// guess of the excited state this should converge to a desired state.
+/// # Arguments 
+///     `c_occ_old`: Array2, previous iterations occupied MO coefficients.
+///     `c`: Array2, current iterations MO coefficients.
+///     `s`: Array2, AO overlap matrix.
+///     `nocc`: Number of occupied spin orbitals to select.
+fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: usize)
+              -> Vec<usize> {
+    // O = C_old^T S C.
+    let o = c_occ_old.t().dot(s).dot(c);
+    // p_j = \sum_i |O_{ij}|.
+    let p = o.mapv(|x| x.abs()).sum_axis(Axis(0));
+    // [0, 1, 2, .., nmo - 1].
+    let mut idx: Vec<usize> = (0..p.len()).collect();
+    // Sort indices by descending value of p.
+    idx.sort_by(|&i, &j| p[j].partial_cmp(&p[i]).unwrap());
+    // Return the highest nocc overlaps as the occupied indices.
+    idx.truncate(nocc);
+    idx
+}
+
 /// Unrestricted SCF cycle with Loewdin orthogonalization.
 /// Uses AO integrals from AoData struct.
-/// Current convergence criteria is just on energy, should be updated to use DIIS.
 /// # Arguments
 ///     `da0`: Array2, initial spin a density matrix.
 ///     `db0`: Array2, initial spin b density matrix.
 ///     `ao`: AoData struct, contains AO integrals and metadata.
-///     `max_cycle`: Integer, maximum number of SCF cycles.
-///     `e_tol`: Float, convergence threshold for energy.
-///     `err_tol`: Float, convergence threshold for DIIS error.
-pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i32, 
-                 e_tol: f64, err_tol: f64, verbose: bool) 
+///     `input`: Input struct, contains user specified input data. 
+pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, 
+                 excitation: Option<&Excitation>) 
                  -> (f64, Array2<f64>, Array2<f64>, Array1<f64>, Array1<f64>){
     
     let h = &ao.h; 
@@ -115,13 +139,29 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
     // DIIS setup: subspace up to 8.
     let mut diis_a = Diis::new(8);
     let mut diis_b = Diis::new(8);
+
+    let mut ca_occ_old: Option<Array2<f64>> = None;
+    let mut cb_occ_old: Option<Array2<f64>> = None;
     
-    if verbose {
+    if input.verbose {
+        match excitation {
+            Some(ex) => {
+                let sp = match ex.spin {
+                    Spin::Alpha => "alpha",
+                    Spin::Beta  => "beta",
+                };
+                println!("Requested excitation: [spin: {}, from occupied: {}, to virtual: {}]", 
+                          sp, ex.occ, ex.vir);
+            }
+            None => {
+                println!("No excitation requested.");
+            }
+        }
         println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
     }
    
     let mut iter = 0;
-    while iter < max_cycle {
+    while iter < input.max_cycle {
         
         // Build current Fock matrices from current densities.
         let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
@@ -149,12 +189,73 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
         // Solve GEVP FC = SCe.
         let (_ea, ca) = general_evp_real(&fa, s, false, 1e-8);
         let (_eb, cb) = general_evp_real(&fb, s, false, 1e-8);
-
-        // Select occupied columns based on Aufbau ordering.
-        // MOM of some sort should be implemented here in future for excited states.
-        let ca_occ = ca.slice(s![.., 0..na]);
-        let cb_occ = cb.slice(s![.., 0..nb]);
         
+        // For alpha spin occupied MOs decide whether or not to excite.
+        let idx_a: Vec<usize> = match &ca_occ_old {
+            // If we have MOs from previous iteration use those in MOM.
+            Some(c_old) => mom_select(c_old, &ca, s, na),
+            // If not, seed by occupying columns specified in input. 
+            None => {
+                // Note this only occurs when an excitation is specified.
+                if let Some(ex) = excitation {
+                    if let Spin::Alpha = ex.spin {
+                        let mut idx: Vec<usize> = (0..na).collect(); 
+                        // Transform user input, allows user to specify occ = -1
+                        // to choose HOMO.
+                        let occ_abs = (nb as i32 + ex.occ) as usize;
+                        let vir_abs = nb + ex.vir as usize;
+                        // Remove occupied index.
+                        idx.retain(|&k| k != occ_abs);
+                        // Add excited index.
+                        idx.push(vir_abs);
+                        idx
+                    // If an excitation is not specified for alpha spin electron 
+                    // we just use Aufbau. 
+                    } else {
+                        (0..na).collect()
+                    }
+                // If an excitation is not specified at all we use Aufbau.
+                } else {
+                    (0..na).collect()
+                }
+            }
+        };
+        let ca_occ = ca.select(Axis(1), &idx_a);
+        ca_occ_old = Some(ca_occ.clone());
+        
+        // For beta spin occupied MOs decide whether or not to excite.
+        let idx_b: Vec<usize> = match &cb_occ_old {
+            // If we have MOs from previous iteration use those in MOM.
+            Some(c_old) => mom_select(c_old, &cb, s, nb),
+            // If not, seed by occupying columns specified in input.
+            None => {
+                // Note this only occurs when an excitation is specified.
+                if let Some(ex) = excitation {
+                    if let Spin::Beta = ex.spin {
+                        let mut idx: Vec<usize> = (0..nb).collect();
+                        // Transform user input, allows user to specify occ = -1
+                        // to choose HOMO.
+                        let occ_abs = (nb as i32 + ex.occ) as usize;
+                        let vir_abs = nb + ex.vir as usize;
+                        // Remove occupied index.
+                        idx.retain(|&k| k != occ_abs);
+                        // Add excited index.
+                        idx.push(vir_abs);
+                        idx
+                    // If an excitation is not specified for beta spin electron 
+                    // we just use Aufbau.
+                    } else {
+                        (0..nb).collect()
+                    }
+                // If an excitation is not specified at all we use Aufbau.
+                } else {
+                    (0..nb).collect()
+                }
+            }
+        };
+        let cb_occ = cb.select(Axis(1), &idx_b);
+        cb_occ_old = Some(cb_occ.clone());
+
         // Form new spin specific densities, Fock matrices, and energy.
         let da_new = ca_occ.dot(&ca_occ.t());
         let db_new = cb_occ.dot(&cb_occ.t());
@@ -164,8 +265,8 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
         // Calculate current occupancies from density matrices and MO coefficients.
         // Obviously since we are currently just doing Aufbau we could hard code the occupations,
         // but this will be useful to have in future when using MOM to get excited states.
-        let oa = mo_occupancies(&ca, &da, s);
-        let ob = mo_occupancies(&cb, &db, s);
+        let oa = mo_occupancies(&ca, &da_new, s);
+        let ob = mo_occupancies(&cb, &db_new, s);
 
         // Calculate DIIS error term and dE for convergence testing. 
         // If no error can be calculated  (i.e., DIIS subspace is 1) or DIIS is off, set to large number.
@@ -179,23 +280,21 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, max_cycle: i
         };
         let d_e = (e_new - e).abs();
         
-        if verbose{
+        if input.verbose{
             println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);
         }
         
-        if d_e < e_tol && (!use_diis || err < err_tol) {
-            if verbose{
+        if d_e < input.e_tol && (!use_diis || err < input.err_tol) {
+            if input.verbose{
                     println!("occa: [{:.3}]", oa);
                     println!("occb: [{:.3}]", ob);
             }
             return (e_new, ca, cb, oa, ob);
         }
-         
         da = da_new; 
         db = db_new;
         e = e_new;
         iter += 1;
-        
     }
      
     println!("SCF not converged.");

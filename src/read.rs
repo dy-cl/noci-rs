@@ -1,5 +1,6 @@
 // read.rs
-use hdf5::File; 
+use hdf5::File;
+use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2, Array4, s};
 
 use crate::{AoData};
@@ -65,7 +66,9 @@ pub fn read_integrals(path: &str) -> AoData {
     let enuc: f64 = f.dataset("Enuc").unwrap().read_scalar().unwrap();
     let nelec: Array1<i64> = f.dataset("nelec").unwrap().read().unwrap();
     let dm: Array2<f64> = f.dataset("dm").unwrap().read().unwrap();
-    let aolabels: Array2<i64> = f.dataset("aolabels").unwrap().read().unwrap();
+    let ds = f.dataset("aolabels").unwrap();
+    let arr = ds.read_1d::<VarLenUnicode>().unwrap();       
+    let aolabels: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
 
     AoData {
         s_ao, s_spin, h, h_spin, eri, eri_spin, enuc, nao, nelec, dm, aolabels

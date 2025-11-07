@@ -37,11 +37,19 @@ fn main() {
         let states = generate_scf_state(&ao, &input);
         println!("==========================================================");
         for (i, state) in states.iter().enumerate() {
-            println!("State({i}): E = {}", state.e);
-        }
+            println!("State({}): {},  E = {}", i, input.states[i].label, state.e);
+        }   
 
+        // Determine which states are to be used in the NOCI basis.
+        let mut noci_basis = Vec::new();
+        for (state, recipe) in states.iter().zip(&input.states) {
+            if recipe.noci {
+                noci_basis.push(state.clone());
+            }
+        }
+        
         // Pass SCF states to NOCI subroutines to and NOCI energy from the given basis.
-        let e_noci = calculate_noci_energy(&ao, &states);
+        let e_noci = calculate_noci_energy(&ao, &noci_basis);
         println!("State(NOCI): E = {}", e_noci);
 
     }

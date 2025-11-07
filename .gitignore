@@ -1,6 +1,7 @@
 target/
 inputs/
 outputs/
+plot.py
 data.h5
 Cargo.lock
 

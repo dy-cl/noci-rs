@@ -33,11 +33,12 @@ pub struct AoData {
     pub nao: usize, 
     // Number of spin alpha and spin beta electrons, (2,).
     pub nelec: Array1<i64>, 
-    // Global AO index labels for each atom, (2, nao). 
-    pub aolabels: Array2<i64> 
+    // AO label strings from PySCF e.g. "0 H 1s"
+    pub aolabels: Vec<String>,
 }
 
 /// Storage for SCF state attributes, contains energy and spin MO coefficients.
+#[derive(Clone)]
 pub struct SCFState {
     // Energy of SCF state in Ha, scalar.
     pub e: f64,  

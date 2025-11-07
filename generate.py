@@ -22,11 +22,7 @@ def get_misc(mol):
     Enuc = mol.energy_nuc()
     nao = mol.nao 
     nelec = mol.nelec
-    labels = mol.ao_labels()
-    a, b = 0, 1
-    ia = [i for i,s in enumerate(labels) if s.split()[0] == str(a)]
-    ib = [i for i,s in enumerate(labels) if s.split()[0] == str(b)]
-    aolabels = [ia, ib]
+    aolabels = mol.ao_labels()
 
     return Enuc, nao, nelec, aolabels
 
