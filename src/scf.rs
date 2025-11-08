@@ -1,5 +1,3 @@
-use std::usize;
-
 // scf.rs
 use ndarray::{Axis, Array1, Array2, Array4, s};
 
@@ -136,7 +134,6 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     let mut db = db0.clone();
     let use_diis = true;
 
-    // DIIS setup: subspace up to 8.
     let mut diis_a = Diis::new(8);
     let mut diis_b = Diis::new(8);
 
@@ -163,32 +160,25 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     let mut iter = 0;
     while iter < input.max_cycle {
         
-        // Build current Fock matrices from current densities.
+        // Form Fock matrices from current densities and add to DIIS history.
         let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
-        
-        // Update DIIS with current F and D and attempt extrapolation if using.
-        let fa = if use_diis {
-            diis_a.push(&fa_curr, &da, s);
-            match diis_a.extrapolate_fock() {
-                Some(fa_diis) => fa_diis, // Succesful extrapolation. 
-                None => fa_curr,
-            }
+        if use_diis {diis_a.push(&fa_curr, &da, s); diis_b.push(&fb_curr, &db, s);}
+
+        // Extrapolate Fock matrix to be diagonalised this iteration.
+        let fa_use = if use_diis {
+            diis_a.extrapolate_fock().unwrap_or_else(|| fa_curr.clone())
         } else {
             fa_curr.clone()
         };
-        let fb = if use_diis {
-            diis_b.push(&fb_curr, &db, s);
-            match diis_b.extrapolate_fock() {
-                Some(fb_diis) => fb_diis, // Succesful extrapolation. 
-                None => fb_curr,
-            }
+        let fb_use = if use_diis {
+            diis_b.extrapolate_fock().unwrap_or_else(|| fb_curr.clone())
         } else {
             fb_curr.clone()
         };
 
         // Solve GEVP FC = SCe.
-        let (_ea, ca) = general_evp_real(&fa, s, false, 1e-8);
-        let (_eb, cb) = general_evp_real(&fb, s, false, 1e-8);
+        let (_ea, ca) = general_evp_real(&fa_use, s, false, 1e-8);
+        let (_eb, cb) = general_evp_real(&fb_use, s, false, 1e-8);
         
         // For alpha spin occupied MOs decide whether or not to excite.
         let idx_a: Vec<usize> = match &ca_occ_old {
@@ -202,8 +192,8 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
                         let mut idx: Vec<usize> = (0..na).collect(); 
                         // Transform user input, allows user to specify occ = -1
                         // to choose HOMO.
-                        let occ_abs = (nb as i32 + ex.occ) as usize;
-                        let vir_abs = nb + ex.vir as usize;
+                        let occ_abs = (na as i32 + ex.occ) as usize;
+                        let vir_abs = na + ex.vir as usize;
                         // Remove occupied index.
                         idx.retain(|&k| k != occ_abs);
                         // Add excited index.
@@ -263,8 +253,6 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         let e_new = scf_energy(&da_new, &db_new, &fa_new, &fb_new, h, enuc);
 
         // Calculate current occupancies from density matrices and MO coefficients.
-        // Obviously since we are currently just doing Aufbau we could hard code the occupations,
-        // but this will be useful to have in future when using MOM to get excited states.
         let oa = mo_occupancies(&ca, &da_new, s);
         let ob = mo_occupancies(&cb, &db_new, s);
 

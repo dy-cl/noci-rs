@@ -1,5 +1,5 @@
 // diis.rs
-use ndarray::{Array1, Array2, s};
+use ndarray::{Array1, Array2};
 use ndarray_linalg::{Solve};
 
 /// DIIS storage for SCF states. Stores Fock and error matrices for each spin.
@@ -75,31 +75,32 @@ impl Diis {
         if m < 2 {
             return None;
         }
-
-        // Construct augmented matrix.
+        
+        // Construct matrix of DIIS residuals
         //  B_{ij}^a = \sum_{pq}(E^\alpha_i)_{pq}(E^\alpha_j)_{pq}.
         //  B_{ij}^b = \sum_{pq}(E^\beta_i)_{pq}(E^\beta_j)_{pq}.
-        //  Elements are B_{ij}^a + B_{ij}^b with additional row/column of 1s. 
-        //  aug[(m + 1, m + 1)] = 0.
-        let mut aug = Array2::<f64>::zeros((m + 1, m + 1));
+        //  Elements are B_{ij}^a + B_{ij}^b.
+        //  Note we are not constructing the augmented matrix common in DIIS and solving 
+        //  the augmented prblem as this has issued with bad conditioning. Instead construct 
+        //  just B and solve Bc' = I as in arXiv:2112.08890v1 (Eqn. 14).
+        let mut b = Array2::<f64>::zeros((m, m));
         for i in 0..m {
             for j in 0..m {
-                let bij = (&self.e_hist[i] * &self.e_hist[j]).sum();
-                aug[(i, j)] = bij;
+                b[(i, j)] = (&self.e_hist[i] * &self.e_hist[j]).sum();
             }
-            aug[(i, m)] = 1.0;
-            aug[(m, i)] = 1.0;
         }
         
-        // Form RHS vector [\mathbf{0} 1]^T and solve for [\mathbf{c} \lambda]^T.
-        let mut rhs = Array1::<f64>::zeros(m + 1);
-        rhs[m] = 1.0;
-        let sol = match aug.solve_into(rhs) {
+        // Form RHS vector [1,1,..,1]^T and solve for [\mathbf{c}]^T.
+        let rhs = Array1::<f64>::from_elem(m, 1.0);
+        let c_prime = match b.clone().solve_into(rhs) {
             Ok(x) => x,
-            Err(_) => return None, // May fail if singular or ill conditioned.
+            Err(_) => return None, // Should probably do something if this fails. 
         };
-        let c = sol.slice(s![0..m]).to_owned();
-        
+
+        // Normalise coefficient vector. 
+        let factor = c_prime.sum();
+        let c = &c_prime / factor;
+       
         // Extrapolate to get DIIS Fock matrix.
         // F_{DIIS}^s = \sum_i^m c_i F_i^s.
         let mut f_diis = self.f_hist[0].clone() * c[0];
@@ -108,7 +109,5 @@ impl Diis {
         }
 
         Some(f_diis)
-
     }
-
 }

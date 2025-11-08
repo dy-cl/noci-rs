@@ -1,5 +1,6 @@
 // main.rs
 use std::process::Command;
+use std::time::{Instant};
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
@@ -7,6 +8,7 @@ use noci_rs::basis::generate_scf_state;
 use noci_rs::noci::calculate_noci_energy;
 
 fn main() {
+    let t_total = Instant::now();
     let input_path = match std::env::args().nth(1) {
         Some(p) => p, 
         None => {
@@ -23,6 +25,7 @@ fn main() {
         println!("R: {}", r);
         let atoms = &input.geoms[i];
         let atomsj = serde_json::to_string(atoms).unwrap();
+        let t_gen = Instant::now();
         // Run interface to PySCF which generates AO integrals, overlap matrix, density matrices etc.
         let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj)
                              .arg("--basis").arg(&input.basis).arg("--unit").arg(&input.unit)
@@ -31,26 +34,39 @@ fn main() {
             eprintln!("Failed to generate mol with status {status}");
             std::process::exit(1);
         }
+        let gen_s = t_gen.elapsed().as_secs_f64();
         
         // Read integrals from the generated data and calculate SCF states.
         let ao = read_integrals("data.h5");
+        let t_scf = Instant::now();
         let states = generate_scf_state(&ao, &input);
+        let scf_s = t_scf.elapsed().as_secs_f64();
         println!("==========================================================");
+        
         for (i, state) in states.iter().enumerate() {
             println!("State({}): {},  E = {}", i, input.states[i].label, state.e);
         }   
 
         // Determine which states are to be used in the NOCI basis.
+        let t_noci = Instant::now();
         let mut noci_basis = Vec::new();
         for (state, recipe) in states.iter().zip(&input.states) {
             if recipe.noci {
                 noci_basis.push(state.clone());
             }
         }
-        
+                
         // Pass SCF states to NOCI subroutines to and NOCI energy from the given basis.
         let e_noci = calculate_noci_energy(&ao, &noci_basis);
+        let noci_s = t_noci.elapsed().as_secs_f64();
         println!("State(NOCI): E = {}", e_noci);
+        println!{"\n"};
+
+        eprintln!("For this geometry PySCF generation took: {:.3}", gen_s);
+        eprintln!("For this geometry SCF cycles took: {:.3}", scf_s);
+        eprintln!("For this geometry NOCI took: {:.3}", noci_s);
 
     }
+
+    eprintln!("\n Total wall time: {:.3}", t_total.elapsed().as_secs_f64());
 }

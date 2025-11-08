@@ -1,5 +1,5 @@
 // noci.rs
-use ndarray::{s, Array2, Array3, Array4, Array5};
+use ndarray::{s, Array2, Array3, Array4, ArrayView1, ArrayView2};
 use ndarray_linalg::{SVD};
 use num_complex::Complex64;
 
@@ -147,60 +147,48 @@ fn calculate_s_red(s_vals: &Array3<f64>, tol: f64) -> Array2<f64> {
     s_red
 }
 
-/// Form {}^{\mu\nu}P_i the co-density matrix as an outer product between occupied 
-/// coulms i of \tilde{C}_{\mu}^{occ} and \tilde{C}_{\mu}^{occ}, and the reduced 
-/// co-density matrix W as {}^{\mu\nu}W = \sum_{i} 1 / s_i * {}^{\mu\nu}P_i, where 
-/// s_i are the singular values of the SVD decomposed s_tilde. The full P tensor 
-/// returned from this function is unreasonably large, this should be re-thought.
+/// Calculate {}^{\mu\nu}P_i = {}^{\mu}c_i^a {}^{\nu}c_i^b* co-density matrix where {}^{\mu}c_i^a, 
+/// {}^{\nu}c_i^b are the rotated MO coefficients of state mu and nu respectively.
 /// # Arguments 
-///     `c_mu_tilde`: Array4, U rotated MO coefficients for each SCF state pair. 
-///     `c_nu_tilde`: Array4, V rotated MO coefficients for each SCF state pair. 
-///     `s_vals`: Array3, singular values of s_tilde for all pairs of SCF states.
-///     `tol`: f64, tolerance up to which a number is considered zero. 
-fn calculate_codensity(c_mu_tilde: &Array4<Complex64>, c_nu_tilde: &Array4<Complex64>,
-                       s_vals: &Array3<f64>, tol: f64) 
-                       -> (Array5<Complex64>, Array4<Complex64>) {
-
-    let (nstates, _, nso, nocc) = c_mu_tilde.dim();
-    let mut p = Array5::<Complex64>::zeros((nstates, nstates, nocc, nso, nso));
-    let mut w = Array4::<Complex64>::zeros((nstates, nstates, nso, nso));
-
-    for mu in 0..nstates {
-        for nu in 0..nstates {
-            // Accumulate W over occupied orbitals i.
-            let mut munu_w = Array2::<Complex64>::zeros((nso, nso));
-
-            for i in 0..nocc {
-                let a = c_mu_tilde.slice(s![mu, nu, .., i]);
-                let b = c_nu_tilde.slice(s![mu, nu, .., i]).map(|z| z.conj());
-
-                // Calculate outer product. 
-                let mut p_i = Array2::<Complex64>::zeros((nso, nso));
-                for x in 0..nso {
-                    for y in 0..nso {
-                        p_i[(x, y)] = a[x] * b[y];
-                    }
-                }
-
-                p.slice_mut(s![mu, nu, i, .., ..]).assign(&p_i);
-
-                // Accumulate into W if s_val > tol.
-                let s_val = s_vals[(mu, nu, i)];
-                if s_val > tol {
-                    let weight = Complex64::new(1.0 / s_val, 0.0);
-                    for x in 0..nso {
-                        for y in 0..nso {
-                            munu_w[(x, y)] += weight * p_i[(x, y)];
-                        }
-                    }
-                }
-            }
-            w.slice_mut(s![mu, nu, .., ..]).assign(&munu_w);
+///     `c_mu_tilde`: Array2, U rotated MO coefficients for a given pair of states. 
+///     `c_nu_tilde`: Array2, V rotated MO coefficients for a given pair of states. 
+///     `i`: usize, MO index.
+fn calculate_codensity_p_pair(c_mu_tilde: &ArrayView2<Complex64>,c_nu_tilde: &ArrayView2<Complex64>,
+                              i: usize,) -> Array2<Complex64> {
+    let nso = c_mu_tilde.nrows();
+    let mut munu_p_i = Array2::<Complex64>::zeros((nso, nso));
+    for x in 0..nso {
+        for y in 0..nso {
+            munu_p_i[(x, y)] = c_mu_tilde[(x, i)] * c_nu_tilde[(y, i)].conj();
         }
     }
-    
+    munu_p_i
+}
 
-    (p, w)
+/// Calculate {}^{\mu\nu}W = \sum_{i} 1 / s_i * {}^{\mu}c_i^a {}^{\nu}c_i^b* weighted co-density 
+/// matrix where s_i are the singular values of the SVD decomposed s_tilde, and {}^{\mu}c_i^a, 
+/// {}^{\nu}c_i^b are the rotated MO coefficients of state mu and nu respectively.
+/// # Arguments 
+///     `c_mu_tilde`: Array2, U rotated MO coefficients for a given pair of states. 
+///     `c_nu_tilde`: Array2, V rotated MO coefficients for a given pair of states. 
+///     `s_vals`: Array1, singular values of s_tilde for a given pair of states.
+///     `tol`: f64, tolerance up to which a number is considered zero. 
+fn calculate_codensity_w_pair(c_mu_tilde: &ArrayView2<Complex64>,c_nu_tilde: &ArrayView2<Complex64>,
+                              s_vals: &ArrayView1<f64>, tol: f64,) -> Array2<Complex64> {
+    let (nso, nocc) = c_mu_tilde.dim();
+    let mut munu_w = Array2::<Complex64>::zeros((nso, nso));
+
+    for i in 0..nocc {
+        if s_vals[i] > tol {
+            let weight = Complex64::new(1.0 / s_vals[i], 0.0);
+            for x in 0..nso {
+                for y in 0..nso {
+                    munu_w[(x, y)] += weight * c_mu_tilde[(x, i)] * c_nu_tilde[(y, i)].conj();
+                }
+            }
+        }
+    }
+    munu_w
 }
 
 /// Calculate one electron and nuclear Hamiltonian matrix elements using the generalised 
@@ -214,8 +202,8 @@ fn calculate_codensity(c_mu_tilde: &Array4<Complex64>, c_nu_tilde: &Array4<Compl
 ///     `p`: Array5, un-weighted co-density tensor.
 ///     `tol`: Float, value below which a number is considered as zero.
 fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: &Array2<f64>,
-                  w: &Array4<Complex64>, p: &Array5<Complex64>, tol: f64) 
-                  -> (Array2<Complex64>, Array2<Complex64>) {
+                  c_mu_tilde: &Array4<Complex64>, c_nu_tilde: &Array4<Complex64>, 
+                  tol: f64) -> (Array2<Complex64>, Array2<Complex64>) {
                       
     let (nstates, _, nocc) = s_vals.dim();
 
@@ -224,6 +212,11 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
 
     for mu in 0..nstates {
         for nu in 0..nstates {
+
+            let c_mu = c_mu_tilde.slice(s![mu, nu, .., ..]);
+            let c_nu = c_nu_tilde.slice(s![mu, nu, .., ..]);
+            let s_row = s_vals.slice(s![mu, nu, ..]);
+
             // Find indices i for which singular values are zero.
             let mut zeros: Vec<usize> = Vec::new();
             for i in 0..nocc {
@@ -236,7 +229,7 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
             match zeros.len() {
                 // With no zeros (s_i != 0 for all i) we use munu_w.
                 0 => {
-                    let munu_w = w.slice(s![mu, nu, .., ..]).to_owned();
+                    let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
                     let val = einsum_ba_ab(&munu_w, h_spin);
                     h1[(mu, nu)] = sred * val;
                     h_nuc[(mu, nu)] = sred * Complex64::new(enuc, 0.0);
@@ -244,8 +237,8 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
                 // With 1 zero (s_i = 0 for 1 i) we use P_i.
                 1 => {
                     let i = zeros[0];
-                    let p_i = p.slice(s![mu, nu, i, .., ..]).to_owned();
-                    let val = einsum_ba_ab(&p_i, h_spin);
+                    let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
+                    let val = einsum_ba_ab(&munu_p_i, h_spin);
                     h1[(mu, nu)] = sred * val;
                     h_nuc[(mu, nu)] = Complex64::new(0.0, 0.0);
                 // Otherwise the matrix element is zero.
@@ -271,8 +264,8 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
 ///     `p`: Array5, un-weighted co-density tensor.
 ///     `eri_spin`: Array4, antisymmetrised ERIs in spin diagonal block.
 ///     `tol`: Float, value below which a number is considered as zero.
-fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, w: &Array4<Complex64>,
-                  p: &Array5<Complex64>, eri_spin: &Array4<f64>, tol: f64) 
+fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4<Complex64>,
+                  c_nu_tilde: &Array4<Complex64>, eri_spin: &Array4<f64>, tol: f64) 
                   -> Array2<Complex64> {
 
     let (nstates, _, nocc) = s_vals.dim();
@@ -281,6 +274,11 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, w: &Array4<Complex6
 
     for mu in 0..nstates {
         for nu in 0..nstates {
+
+            let c_mu = c_mu_tilde.slice(s![mu, nu, .., ..]);
+            let c_nu = c_nu_tilde.slice(s![mu, nu, .., ..]);
+            let s_row = s_vals.slice(s![mu, nu, ..]);
+
             // Find indices i for which singular values are zero.
             let mut zeros: Vec<usize> = Vec::new();
             for i in 0..nocc {
@@ -293,7 +291,7 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, w: &Array4<Complex6
             match zeros.len() {
                 // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
                 0 => {
-                    let munu_w = w.slice(s![mu, nu, .., ..]).to_owned();
+                    let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
                     let val = Complex64::new(0.5, 0.0) 
                             * einsum_ba_acbd_dc(&munu_w, eri_spin, &munu_w);
                     h2[(mu, nu)] = val * sred; 
@@ -301,9 +299,9 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, w: &Array4<Complex6
                 // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
                 1 => {
                     let i = zeros[0];
-                    let p_i = p.slice(s![mu, nu, i, .., ..]).to_owned();
-                    let munu_w = w.slice(s![mu, nu, .., ..]).to_owned();
-                    let val = einsum_ba_acbd_dc(&p_i, eri_spin, &munu_w);
+                    let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
+                    let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
+                    let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_w);
                     h2[(mu, nu)] = sred * val;
                 // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
                 // one side and P_j on the other.
@@ -311,9 +309,9 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, w: &Array4<Complex6
                 2 => {
                     let i = zeros[0];
                     let j = zeros[1];
-                    let p_i = p.slice(s![mu, nu, i, .., ..]).to_owned();
-                    let p_j = p.slice(s![mu, nu, j, .., ..]).to_owned();
-                    let val = einsum_ba_acbd_dc(&p_i, eri_spin, &p_j);
+                    let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
+                    let munu_p_j = calculate_codensity_p_pair(&c_mu, &c_nu, j);
+                    let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_p_j);
                     h2[(mu, nu)] = sred * val;
                 }
                 // Otherwise the matrix element is zero.
@@ -345,12 +343,11 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> f64 {
     // Calculate the reduced NOCI overlap matrix S_{red}.
     let s_red = calculate_s_red(&s_vals, tol);
     
-    // Form the standard and reduced co-density matrices.
-    let (p, w) = calculate_codensity(&c_mu_tilde, &c_nu_tilde, &s_vals, tol);
-
     // Calculate one and two electron NOCI Hamiltonian matrix elements.
-    let (h1, h_nuc) = one_electron_h(&ao.h_spin, ao.enuc, &s_vals, &s_red, &w, &p, tol);
-    let h2 = two_electron_h(&s_vals, &s_red, &w, &p, &ao.eri_spin, tol);
+    let (h1, h_nuc) = one_electron_h(&ao.h_spin, ao.enuc, &s_vals, &s_red,
+                                     &c_mu_tilde, &c_nu_tilde, tol);
+    let h2 = two_electron_h(&s_vals, &s_red, &c_mu_tilde, &c_nu_tilde, 
+                            &ao.eri_spin, tol);
     
     // Enforce hermiticity of the Hamiltonian and S_{NOCI} matrices.
     let mut s = s_noci.clone();
