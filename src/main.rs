@@ -16,13 +16,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    
+
     let input = load_input(&input_path);
    
     println!("Running SCF for {} geometries...", input.r_list.len());
     for (i, r) in input.r_list.iter().copied().enumerate(){
         println!("\n");
-        println!("R: {}", r);
         let atoms = &input.geoms[i];
         let atomsj = serde_json::to_string(atoms).unwrap();
         let t_gen = Instant::now();
@@ -34,19 +33,19 @@ fn main() {
             eprintln!("Failed to generate mol with status {status}");
             std::process::exit(1);
         }
-        let gen_s = t_gen.elapsed().as_secs_f64();
+        let d_gen = t_gen.elapsed();
         
         // Read integrals from the generated data and calculate SCF states.
         let ao = read_integrals("data.h5");
         let t_scf = Instant::now();
         let states = generate_scf_state(&ao, &input);
-        let scf_s = t_scf.elapsed().as_secs_f64();
+        let d_scf = t_scf.elapsed();
         println!("==========================================================");
         
         for (i, state) in states.iter().enumerate() {
             println!("State({}): {},  E = {}", i, input.states[i].label, state.e);
-        }   
-
+        }           
+    
         // Determine which states are to be used in the NOCI basis.
         let t_noci = Instant::now();
         let mut noci_basis = Vec::new();
@@ -57,16 +56,20 @@ fn main() {
         }
                 
         // Pass SCF states to NOCI subroutines to and NOCI energy from the given basis.
-        let e_noci = calculate_noci_energy(&ao, &noci_basis);
-        let noci_s = t_noci.elapsed().as_secs_f64();
+        let (e_noci, timings) = calculate_noci_energy(&ao, &noci_basis);
+        let d_noci = t_noci.elapsed();
         println!("State(NOCI): E = {}", e_noci);
-        println!{"\n"};
 
-        eprintln!("For this geometry PySCF generation took: {:.3}", gen_s);
-        eprintln!("For this geometry SCF cycles took: {:.3}", scf_s);
-        eprintln!("For this geometry NOCI took: {:.3}", noci_s);
+        println!("\n R: {}", r);
+        println!("Total PySCF time: {:?}", d_gen);
+        println!("Total SCF time: {:?}", d_scf);
+        println!("Total NOCI time: {:?}", d_noci);
+        println!(r"  {{}}^{{\mu\nu}}S:  {:?}", timings.munu_s);
+        println!(r"  S_{{\text{{NOCI}}}}:  {:?}", timings.s_noci);
+        println!(r"  S_{{\text{{red}}}}:   {:?}", timings.s_red);
+        println!(r"  H_1 & H_2: {:?}s", timings.h);
 
     }
 
-    eprintln!("\n Total wall time: {:.3}", t_total.elapsed().as_secs_f64());
+    println!("\n Total wall time: {:?}", t_total.elapsed());
 }

@@ -2,8 +2,18 @@
 use ndarray::{s, Array2, Array3, Array4, ArrayView1, ArrayView2};
 use ndarray_linalg::{SVD};
 use num_complex::Complex64;
+use std::time::{Duration, Instant};
+use rayon::prelude::*;
 
 use crate::{AoData, SCFState};
+
+// Storage for NOCI benchmarking times.
+pub struct NociTimings {
+    pub munu_s: Duration,
+    pub s_noci: Duration,
+    pub s_red: Duration,
+    pub h: Duration,
+}
 
 use crate::maths::{einsum_ba_ab, einsum_ba_acbd_dc, general_evp_complex};
 
@@ -44,16 +54,30 @@ pub struct NOCIData {
 ///     `s_spin`: Array2, spin block diagonal AO overlap matrix.
 ///     `nocc`: usize, number of occupied orbitals.
 fn calculate_munu_s(states: &[SCFState], s_spin: &Array2<f64>, nocc: usize) -> Array4<f64> {
-    let mut munu_s = Array4::<f64>::zeros((states.len(), states.len(), nocc, nocc));
-    for (mu, state_mu) in states.iter().enumerate() {
-        let c_mu_occ = &state_mu.cs_occ;
 
-        for (nu, state_nu) in states.iter().enumerate() {
-            let c_nu_occ = &state_nu.cs_occ;
-            
-            // {}^{\mu\nu}S = (C_\mu^{occ})^{\dagger} S_{spin} C_\nu^{occ}
-            let munu = c_mu_occ.t().dot(s_spin).dot(c_nu_occ);
-            munu_s.slice_mut(s![mu, nu, .., ..]).assign(&munu)
+    let nstates = states.len();
+    let mut munu_s = Array4::<f64>::zeros((nstates, nstates, nocc, nocc));
+    
+    // Precompute S C_{occ} once per state 
+    let sc_occ: Vec<Array2<f64>> = states.iter().map(|st| s_spin.dot(&st.cs_occ)).collect();
+
+    // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
+    // diagonal included). This can be done as {}^{\mu\nu}S[\mu, \nu] = ({}^{\mu\nu}S[\nu, \mu])^T.
+    let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
+
+    // Calculate {}^{\mu\nu}S[\mu, \nu] = C_{mu}^{occ, T} S C_{nu}^{occ} in parallel.
+    let tmp: Vec<(usize, usize, Array2<f64>)> = pairs.par_iter().map(|&(mu, nu)| {
+                                                    let o = states[mu].cs_occ.t().dot(&sc_occ[nu]);
+                                                    (mu, nu, o)
+                                                    }).collect();
+
+    // Populate 4D {}^{\mu\nu}S tensor.
+    for (mu, nu, o) in tmp {
+        // Populate 2D matrix element \mu, \nu.
+        munu_s.slice_mut(s![mu, nu, .., ..]).assign(&o);
+        // Also populate its symmetric pair via transpose if not a diagonal.
+        if nu != mu {
+            munu_s.slice_mut(s![nu, mu, .., ..]).assign(&o.t().to_owned());
         }
     }
     munu_s
@@ -329,25 +353,35 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4
 /// # Arguments:
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> f64 {
+pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) 
+                            -> (f64, NociTimings) {
     // Tolerance for a number being non-zero.
     let tol = 1e-8; 
     let nocc = (ao.nelec[0] + ao.nelec[1]) as usize;
+
+    let t_munu_s = Instant::now();
     // Calculate {}^{\mu\nu}S and assign to NOCI data struct.
     let munu_s = calculate_munu_s(scfstates, &ao.s_spin, nocc);
-
+    let d_munu_s = t_munu_s.elapsed();
+    
+    let t_s_noci = Instant::now();
     // Calculate the NOCI overlap matrix S_{NOCI} and form rotated MOs.
     // There is a distinct set of rotated MOs for every pair of SCF basis states.
     let (s_noci, s_vals, c_mu_tilde, c_nu_tilde) = calculate_s_noci(scfstates, &munu_s);
-
+    let d_s_noci = t_s_noci.elapsed();
+    
+    let t_s_red = Instant::now();
     // Calculate the reduced NOCI overlap matrix S_{red}.
     let s_red = calculate_s_red(&s_vals, tol);
+    let d_s_red = t_s_red.elapsed();
     
+    let t_h = Instant::now();
     // Calculate one and two electron NOCI Hamiltonian matrix elements.
     let (h1, h_nuc) = one_electron_h(&ao.h_spin, ao.enuc, &s_vals, &s_red,
                                      &c_mu_tilde, &c_nu_tilde, tol);
     let h2 = two_electron_h(&s_vals, &s_red, &c_mu_tilde, &c_nu_tilde, 
                             &ao.eri_spin, tol);
+    let d_h = t_h.elapsed();
     
     // Enforce hermiticity of the Hamiltonian and S_{NOCI} matrices.
     let mut s = s_noci.clone();
@@ -360,6 +394,8 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> f64 {
     // Use Loewdin orthgonalisation with projection to non-zero subspace of  
     // S to solve GEVP, thus obtaining ground-state energy.
     let (evals, _c) = general_evp_complex(&h, &s, true, tol);
+
+    let timings = NociTimings {munu_s: d_munu_s, s_noci: d_s_noci, s_red: d_s_red,h: d_h,};
     
-    evals[0]
+    (evals[0], timings)
 }
