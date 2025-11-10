@@ -87,6 +87,17 @@ fn mo_occupancies(c: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array1<f
     diag.mapv(|x| if x > 0.5 { 1.0 } else { 0.0 })
 }
 
+/// Select Aufbau indices given eigenvalues and number of occupancies. 
+/// # Arguments 
+///     `e`: MO energies. 
+///     `nocc`: Number of occupied MOs.
+fn aufbau_indices(e: &Array1<f64>, nocc: usize) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..e.len()).collect();
+    idx.sort_by(|&i, &j| e[i].partial_cmp(&e[j]).unwrap());
+    idx.truncate(nocc);
+    idx
+}
+
 /// Select occupied MO column indices by the Maximum Overlap Method (MOM). Forms the overlap 
 /// score O = C_old^T S C between iteration k-1 occupied orbitals and iteration k orbitals. Each 
 /// MO is scored according to its overlap with the previous iteration. Provided a decent initial 
@@ -132,10 +143,9 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     let mut e = f64::INFINITY;
     let mut da = da0.clone();
     let mut db = db0.clone();
-    let use_diis = true;
 
-    let mut diis_a = Diis::new(8);
-    let mut diis_b = Diis::new(8);
+    let use_diis = true;
+    let mut diis = Diis::new(15);
 
     let mut ca_occ_old: Option<Array2<f64>> = None;
     let mut cb_occ_old: Option<Array2<f64>> = None;
@@ -162,90 +172,77 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         
         // Form Fock matrices from current densities and add to DIIS history.
         let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
-        if use_diis {diis_a.push(&fa_curr, &da, s); diis_b.push(&fb_curr, &db, s);}
-
-        // Extrapolate Fock matrix to be diagonalised this iteration.
-        let fa_use = if use_diis {
-            diis_a.extrapolate_fock().unwrap_or_else(|| fa_curr.clone())
-        } else {
-            fa_curr.clone()
-        };
-        let fb_use = if use_diis {
-            diis_b.extrapolate_fock().unwrap_or_else(|| fb_curr.clone())
-        } else {
-            fb_curr.clone()
-        };
-
-        // Solve GEVP FC = SCe.
-        let (_ea, ca) = general_evp_real(&fa_use, s, false, 1e-8);
-        let (_eb, cb) = general_evp_real(&fb_use, s, false, 1e-8);
+        if use_diis {diis.push(&fa_curr, &fb_curr, &da, &db, s);}
         
-        // For alpha spin occupied MOs decide whether or not to excite.
-        let idx_a: Vec<usize> = match &ca_occ_old {
-            // If we have MOs from previous iteration use those in MOM.
-            Some(c_old) => mom_select(c_old, &ca, s, na),
-            // If not, seed by occupying columns specified in input. 
-            None => {
-                // Note this only occurs when an excitation is specified.
-                if let Some(ex) = excitation {
-                    if let Spin::Alpha = ex.spin {
-                        let mut idx: Vec<usize> = (0..na).collect(); 
-                        // Transform user input, allows user to specify occ = -1
-                        // to choose HOMO.
-                        let occ_abs = (na as i32 + ex.occ) as usize;
-                        let vir_abs = na + ex.vir as usize;
-                        // Remove occupied index.
-                        idx.retain(|&k| k != occ_abs);
-                        // Add excited index.
-                        idx.push(vir_abs);
-                        idx
-                    // If an excitation is not specified for alpha spin electron 
-                    // we just use Aufbau. 
-                    } else {
-                        (0..na).collect()
-                    }
-                // If an excitation is not specified at all we use Aufbau.
-                } else {
-                    (0..na).collect()
+        // Extrapolate Fock matrix to be diagonalised this iteration.
+         let (fa_use, fb_use) = if use_diis {
+            diis.extrapolate_fock().unwrap_or((fa_curr.clone(), fb_curr.clone()))
+        } else {
+            (fa_curr.clone(), fb_curr.clone())
+        };
+        
+        // Solve GEVP FC = SCe.
+        let (ea, ca) = general_evp_real(&fa_use, s, false, 1e-8);
+        let (eb, cb) = general_evp_real(&fb_use, s, false, 1e-8);
+
+        // Flags true only if excitation is requested on alpha / beta.
+        let mom_a = if let Some(ex) = excitation {matches!(ex.spin, Spin::Alpha)} else {false};
+        let mom_b  = if let Some(ex) = excitation {matches!(ex.spin, Spin::Beta)} else {false};
+        
+        // Select MO indices to occupy for alpha spin electrons.
+        let idx_a = if mom_a {
+            // If using MOM attempt to utilise previous iteration's coefficients.
+            match &ca_occ_old {
+                Some(ca_occ_old) => mom_select(ca_occ_old, &ca, s, na),
+                // If coefficients not avaliable, seed by occupying columns specified in input.
+                None => {
+                    let ex = excitation.unwrap();
+                    let mut idx: Vec<usize> = (0..na).collect();
+                    // Transform user input, allows user to specify occ = -1
+                    // to choose HOMO.
+                    let occ_abs = (na as i32 + ex.occ) as usize;
+                    let vir_abs = na + ex.vir as usize;
+                    // Remove occupied index.
+                    idx.retain(|&k| k != occ_abs);
+                    // Add excited index.
+                    idx.push(vir_abs);
+                    idx
                 }
             }
+        // If not using MOM occupy columns according to Aufbau ordering.
+        } else {
+            aufbau_indices(&ea, na)
         };
         let ca_occ = ca.select(Axis(1), &idx_a);
         ca_occ_old = Some(ca_occ.clone());
-        
-        // For beta spin occupied MOs decide whether or not to excite.
-        let idx_b: Vec<usize> = match &cb_occ_old {
-            // If we have MOs from previous iteration use those in MOM.
-            Some(c_old) => mom_select(c_old, &cb, s, nb),
-            // If not, seed by occupying columns specified in input.
-            None => {
-                // Note this only occurs when an excitation is specified.
-                if let Some(ex) = excitation {
-                    if let Spin::Beta = ex.spin {
-                        let mut idx: Vec<usize> = (0..nb).collect();
-                        // Transform user input, allows user to specify occ = -1
-                        // to choose HOMO.
-                        let occ_abs = (nb as i32 + ex.occ) as usize;
-                        let vir_abs = nb + ex.vir as usize;
-                        // Remove occupied index.
-                        idx.retain(|&k| k != occ_abs);
-                        // Add excited index.
-                        idx.push(vir_abs);
-                        idx
-                    // If an excitation is not specified for beta spin electron 
-                    // we just use Aufbau.
-                    } else {
-                        (0..nb).collect()
-                    }
-                // If an excitation is not specified at all we use Aufbau.
-                } else {
-                    (0..nb).collect()
+
+        // Select MO indices to occupy for beta spin electrons.
+        let idx_b = if mom_b {
+            // If using MOM attempt to utilise previous iteration's coefficients.
+            match &cb_occ_old {
+                Some(cb_occ_old) => mom_select(cb_occ_old, &cb, s, nb),
+                // If coefficients not avaliable, seed by occupying columns specified in input.
+                None => {
+                    let ex = excitation.unwrap();
+                    let mut idx: Vec<usize> = (0..nb).collect();
+                    // Transform user input, allows user to specify occ = -1
+                    // to choose HOMO.
+                    let occ_abs = (nb as i32 + ex.occ) as usize;
+                    let vir_abs = nb + ex.vir as usize;
+                    // Remove occupied index.
+                    idx.retain(|&k| k != occ_abs);
+                    // Add excited index.
+                    idx.push(vir_abs);
+                    idx
                 }
             }
+        // If not using MOM occupy columns according to Aufbau ordering.
+        } else {
+            aufbau_indices(&eb, nb)
         };
         let cb_occ = cb.select(Axis(1), &idx_b);
         cb_occ_old = Some(cb_occ.clone());
-
+        
         // Form new spin specific densities, Fock matrices, and energy.
         let da_new = ca_occ.dot(&ca_occ.t());
         let db_new = cb_occ.dot(&cb_occ.t());
@@ -255,24 +252,22 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         // Calculate current occupancies from density matrices and MO coefficients.
         let oa = mo_occupancies(&ca, &da_new, s);
         let ob = mo_occupancies(&cb, &db_new, s);
-
+        
         // Calculate DIIS error term and dE for convergence testing. 
         // If no error can be calculated  (i.e., DIIS subspace is 1) or DIIS is off, set to large number.
         // To handle two seperate UHF DIIS spaces we take whichever has the largest error.
         let err = if use_diis {
-            let err_a = diis_a.last_error_norm2().unwrap_or(f64::INFINITY).sqrt();
-            let err_b = diis_b.last_error_norm2().unwrap_or(f64::INFINITY).sqrt();
-            err_a.max(err_b)
+            diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt()
         } else {
             f64::INFINITY
         };
         let d_e = (e_new - e).abs();
-        
+
         if input.verbose{
             println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);
         }
         
-        if d_e < input.e_tol && (!use_diis || err < input.err_tol) {
+        if d_e < input.e_tol {
             if input.verbose{
                     println!("occa: [{:.3}]", oa);
                     println!("occb: [{:.3}]", ob);

@@ -30,7 +30,6 @@ pub struct Input {
     // SCF table.
     pub max_cycle: i32,
     pub e_tol: f64,
-    pub err_tol: f64,
     pub pol: f64,
     
     // Mol table.
@@ -66,7 +65,6 @@ pub fn load_input(path: &str) -> Input {
     // SCF table.
     let max_cycle: i32 = scf.get("max_cycle").unwrap();
     let e_tol: f64 = scf.get("e_tol").unwrap();
-    let err_tol: f64 = scf.get("err_tol").unwrap();
     let pol: f64 = scf.get("pol").unwrap();
     
     // Mol table.
@@ -134,6 +132,6 @@ pub fn load_input(path: &str) -> Input {
         states.push(StateRecipe {label, spin_bias, excitation, noci});
     }
 
-    Input {max_cycle, e_tol, err_tol, pol, basis, r_list, geoms, unit, verbose, states}
+    Input {max_cycle, e_tol, pol, basis, r_list, geoms, unit, verbose, states}
 }
 
