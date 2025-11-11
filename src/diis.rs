@@ -1,6 +1,6 @@
 // diis.rs
 use ndarray::{s, Array1, Array2};
-use ndarray_linalg::{Solve};
+use ndarray_linalg::{EighInto, UPLO};
 
 use crate::maths::loewdin_x_real;
 
@@ -92,46 +92,55 @@ impl Diis {
             return None;
         }
         
-        // Construct matrix of DIIS residuals
+        // Construct augmented matrix of DIIS residuals.
         //  B_{ij}^a = \sum_{pq}(E^\alpha_i)_{pq}(E^\alpha_j)_{pq}.
         //  B_{ij}^b = \sum_{pq}(E^\beta_i)_{pq}(E^\beta_j)_{pq}.
-        //  Elements are B_{ij}^a + B_{ij}^b.
-        //  Note we may construct the augmented matrix common in DIIS and solve 
-        //  the augmented problem, but this may have issues with bad conditioning. Alternative is 
-        //  to Instead only B and solve Bc' = I as in arXiv:2112.08890v1 (Eqn. 14). This should be 
-        //  turned into an input option at some point.
-        let mut aug = Array2::<f64>::zeros((m + 1, m + 1));
-        //let mut b = Array2::<f64>::zeros((m, m));
+        //  Main matrix elements are B_{ij}^a + B_{ij}^b, augmentation 
+        //  applies H[0, 0] = 0, H[0, i] = 1 for all i..m, and 
+        //  H[i, 0] = 1 for all i..m.
+        let mut h = Array2::<f64>::zeros((m + 1, m + 1));
+        h.slice_mut(s![0, 1..]).fill(1.0);
+        h.slice_mut(s![1.., 0]).fill(1.0);
         for i in 0..m {
-            for j in 0..m {
+            for j in 0..=i {
                 let ae = (&self.e_hist_a[i] * &self.e_hist_a[j]).sum();
                 let be = (&self.e_hist_b[i] * &self.e_hist_b[j]).sum(); 
-                //b[(i, j)] = ae + be;
-                aug[(i, j)] = ae + be;
+                let bij = ae + be;
+                h[(i + 1, j + 1)] = bij;
+                h[(j + 1, i + 1)] = bij;
             }
-            aug[(i, m)] = 1.0;    
-            aug[(m, i)] = 1.0;    
         }
+        
+        // Form RHS of the Pulay system g = [1, \mathbf{0}]^T. We are solving 
+        // for [\lambda, c_1, .., c_m] with constraint 1^T c = 1.
+        let mut g = Array1::<f64>::zeros(m + 1);
+        g[0] = 1.0;
 
-        // Form RHS vector [1,1,..,1]^T and solve for [\mathbf{c}]^T.
-        //let rhs = Array1::<f64>::from_elem(m, 1.0);
-        //let c_prime = match b.clone().solve_into(rhs) {
-        //    Ok(x) => x,
-        //    Err(_) => return None, // Should probably do something if this fails. 
-        //};
+        // Diagonalise augmeneted matrix.
+        let (w, v) = h.clone().eigh_into(UPLO::Lower).unwrap();
         
-        // Normalise coefficient vector. 
-        //let factor = c_prime.sum();
-        //let c = &c_prime / factor;
+        // Drop egienvectors with small eigenvalues to keep well conditioned.
+        let tol = 1e-13; 
+        let keep: Vec<usize> = (0..w.len()).filter(|&k| w[k].abs() > tol).collect();
+        if keep.is_empty() {return None;}
         
-        let mut rhs = Array1::<f64>::zeros(m + 1);
-        rhs[m] = 1.0;
-        let sol = match aug.solve_into(rhs) {
-            Ok(x) => x,
-            Err(_) => return None, // May fail if singular or ill conditioned.
-        };
-        let c = sol.slice(s![0..m]).to_owned();
-       
+        // Calculate coefficients V \Lambda^{-1} V^T g which are eigenvectors of 
+        // the pseudo-inverse H^{-1} (i.e., not truly inverse due to the dropping 
+        // of tiny eigenvalues). Doing so reduces linear dependence in B.
+        let mut c_aug = Array1::<f64>::zeros(m + 1);
+        for &k in &keep {
+            let vk = v.slice(s![.., k]);            
+            let alpha = vk.dot(&g) / w[k];           
+            for i in 0..c_aug.len() {c_aug[i] += vk[i] * alpha;}
+        }
+        
+        // Ignore Lagrange multiplier \lambda.
+        let mut c = c_aug.slice(s![1..]).to_owned();
+
+        // Normalise coefficients such that \sum_i c_i = 1.
+        let n: f64 = c.sum();
+        if n.abs() > 0.0 {c.mapv_inplace(|x| x / n);}
+
         // Extrapolate to get DIIS Fock matrix.
         // F_{DIIS}^s = \sum_i^m c_i F_i^s.
         let mut fa_diis = self.f_hist_a[0].clone() * c[0];

@@ -145,7 +145,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     let mut db = db0.clone();
 
     let use_diis = true;
-    let mut diis = Diis::new(15);
+    let mut diis = Diis::new(input.diis.space);
 
     let mut ca_occ_old: Option<Array2<f64>> = None;
     let mut cb_occ_old: Option<Array2<f64>> = None;

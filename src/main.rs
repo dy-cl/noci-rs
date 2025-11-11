@@ -67,7 +67,7 @@ fn main() {
         println!(r"  {{}}^{{\mu\nu}}S:  {:?}", timings.munu_s);
         println!(r"  S_{{\text{{NOCI}}}}:  {:?}", timings.s_noci);
         println!(r"  S_{{\text{{red}}}}:   {:?}", timings.s_red);
-        println!(r"  H_1 & H_2: {:?}s", timings.h);
+        println!(r"  H_1 & H_2: {:?}", timings.h);
 
     }
 

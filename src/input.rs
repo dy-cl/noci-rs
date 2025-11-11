@@ -25,12 +25,17 @@ pub struct StateRecipe {
     pub noci: bool,
 }
 
+// Storage for DIIS options 
+pub struct DiisOptions {
+    pub space: usize,
+}
+
 /// Storage for Input file parameters.
 pub struct Input {
     // SCF table.
     pub max_cycle: i32,
     pub e_tol: f64,
-    pub pol: f64,
+    pub diis: DiisOptions,
     
     // Mol table.
     pub basis: String,
@@ -65,7 +70,9 @@ pub fn load_input(path: &str) -> Input {
     // SCF table.
     let max_cycle: i32 = scf.get("max_cycle").unwrap();
     let e_tol: f64 = scf.get("e_tol").unwrap();
-    let pol: f64 = scf.get("pol").unwrap();
+    let diis: rlua::Table = scf.get("diis").unwrap();
+    let space: usize = diis.get("space").unwrap();
+    let diis = DiisOptions {space};
     
     // Mol table.
     let basis: String = mol.get("basis").unwrap();
@@ -132,6 +139,6 @@ pub fn load_input(path: &str) -> Input {
         states.push(StateRecipe {label, spin_bias, excitation, noci});
     }
 
-    Input {max_cycle, e_tol, pol, basis, r_list, geoms, unit, verbose, states}
+    Input {max_cycle, e_tol, diis, basis, r_list, geoms, unit, verbose, states}
 }
 
