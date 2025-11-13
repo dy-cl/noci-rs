@@ -6,6 +6,7 @@ use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
 use noci_rs::basis::generate_scf_state;
 use noci_rs::noci::calculate_noci_energy;
+use noci_rs::SCFState;
 
 fn main() {
     let t_total = Instant::now();
@@ -18,6 +19,7 @@ fn main() {
     };
 
     let input = load_input(&input_path);
+    let mut prev_states: Vec<SCFState> = Vec::new();
    
     println!("Running SCF for {} geometries...", input.r_list.len());
     for (i, r) in input.r_list.iter().copied().enumerate(){
@@ -38,12 +40,17 @@ fn main() {
         // Read integrals from the generated data and calculate SCF states.
         let ao = read_integrals("data.h5");
         let t_scf = Instant::now();
-        let states = generate_scf_state(&ao, &input);
+        // If we have solutions at a previous geometry, use them.
+        let states = if prev_states.is_empty() {
+            generate_scf_state(&ao, &input, None)
+        } else {
+            generate_scf_state(&ao, &input, Some(&prev_states))
+        };
         let d_scf = t_scf.elapsed();
         println!("==========================================================");
         
         for (i, state) in states.iter().enumerate() {
-            println!("State({}): {},  E = {}", i, input.states[i].label, state.e);
+            println!("State({}): {},  E = {}", i + 1, input.states[i].label, state.e);
         }           
     
         // Determine which states are to be used in the NOCI basis.
@@ -69,6 +76,7 @@ fn main() {
         println!(r"  S_{{\text{{red}}}}:   {:?}", timings.s_red);
         println!(r"  H_1 & H_2: {:?}", timings.h);
 
+        prev_states = states.clone();
     }
 
     println!("\n Total wall time: {:?}", t_total.elapsed());

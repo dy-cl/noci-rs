@@ -54,4 +54,10 @@ pub struct SCFState {
     pub cs: Array2<f64>, 
     // Occupied only MO coefficients of the spin digonal matrix, (2 * nao, nocca + noccb).
     pub cs_occ: Array2<f64>,
+    // SCF converged density matrix spin a. 
+    pub da: Array2<f64>, 
+    // SCF converged density matrix spin b. 
+    pub db: Array2<f64>,
+    // Label defined in user input.
+    pub label: String, 
   }

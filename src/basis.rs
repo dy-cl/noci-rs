@@ -73,16 +73,30 @@ pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>
         (cs, cs_occ)
 }
 
-/// Use given AO data to construct 3 SCF states which form the NOCI(3) basis for H2. 
-/// These states are RHF ground state, 2 degenerate spin-broken UHF ground states. 
-/// This should be generalised to all systems in future.
-/// Will require using input files to specify the NOCI basis we want generated.
-/// # Arguments
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `max_cycle`: Integer, sets the maximum number of SCF cycles.
-///     `e_tol`: Float, sets convergence tolerance for SCF energy.
-///     `err_tol`: Float, sets convergence tolerance for DIIS error.
-pub fn generate_scf_state(ao: &AoData, input: &Input) -> Vec<SCFState> {
+/// Calculate the distance between SCF states from Phys. Rev. Lett. 101, 193001 as 
+/// d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).
+/// # Arguments 
+///     `w`: SCFState, reference state from which distance is computed. 
+///     `x`: SCFState, state to which distance is computed.
+///     `s`: Array2, AO overlap matrix
+fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
+    // Calculate electron number N as Tr(D_r S).
+    let na = (w.da.dot(s)).diag().sum();
+    let nb = (w.db.dot(s)).diag().sum();
+    let n= na + nb;
+    // Calculate Tr(D_w S D_x S).
+    let tr_a = w.da.dot(s).dot(&x.da).dot(s).diag().sum();
+    let tr_b = w.db.dot(s).dot(&x.db).dot(s).diag().sum();
+    // Electron distance is the difference.
+    n - (tr_a + tr_b)
+}
+
+/// Pass given AO data and previous SCF solutions to SCF cycle to form the requested NOCI basis.
+/// # Arguments 
+/// ao: AoData struct, contains AO integrals and other system data. 
+/// input: Input struct, contains user inputted options. 
+/// prev: Option<[SCFState]>, may or may not contain states from a previous geometry.
+pub fn generate_scf_state(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
     
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
@@ -105,25 +119,56 @@ pub fn generate_scf_state(ao: &AoData, input: &Input) -> Vec<SCFState> {
             println!("State({}): {}", i + 1, recipe.label);
         };
         
-        let excitation = recipe.excitation.as_ref();
-
+        // Use RHF density matrices from PySCF as an initial guess.
         let mut da = da0.clone();
         let mut db = db0.clone();
 
-        // Apply the respective spin biases to the UHF solutions 
-        // otherwise we have equal spin density matrices in RHF.
-        if let Some(sb) = &recipe.spin_bias {
-            let is_ab = sb.pattern == "AB"; // is_ab true if AB, false otherwise (BA).
-            bias_density(&mut da, &mut db, &ia, &ib, sb.pol, is_ab);
+        // If there are previous states, use them (only for ground states). Excited 
+        // states are seeded from the RHF solution at the previous geometry, and  
+        // MOM is used.
+        let excitation = recipe.excitation.as_ref();
+        let seed = match (prev, excitation.is_none()) {
+            (Some(ps), true)  => ps.get(i),
+            (Some(ps), false) => input.states.iter()
+                                 .position(|r| r.label == "RHF")
+                                 .and_then(|idx| ps.get(idx)),
+            _ => None,
+        };
+        
+        if let Some(st) = seed {
+            da = st.da.clone();
+            db = st.db.clone();
         }
 
-        let (e, ca, cb, oa, ob) = crate::scf::scf_cycle(&da, &db, ao, input, excitation);
+        // Reapply the spin bias (if requested) to seperate UHF solutions requiring 
+        // spin breakage from RHF solutions.
+        if let Some(sb) = &recipe.spin_bias { 
+                let is_ab = sb.pattern == "AB"; 
+                bias_density(&mut da, &mut db, &ia, &ib, sb.pol, is_ab); 
+        }
+
+        let (e, ca, cb, oa, ob, da, db) = crate::scf::scf_cycle(&da, &db, ao, input, excitation);
 
         // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
         // this is later required for NOCI calculations.
         let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
-        out.push(SCFState {e, oa, ob, ca, cb, cs, cs_occ});
+        out.push(SCFState {e, oa, ob, ca, cb, cs, cs_occ, da, db, 
+                           label: recipe.label.clone()});
  
+    }
+    
+    // Calculate the distance between all SCF states and the state labelled "RHF", 
+    // hopefully this is the RHF solution.
+    if input.verbose {
+        println!("=========================================================");
+        if let Some(rhf_idx) = input.states.iter().position(|r| r.label == "RHF") {
+            let rhf_state = &out[rhf_idx];
+            println!("Electron distances to RHF state:");
+            for (i, st) in out.iter().enumerate() {
+                let d2 = electron_distance(rhf_state, st, &ao.s_ao);
+                println!("State({}): {}, d^2(RHF, {}): {}", i + 1, st.label, st.label, d2);
+            }
+        }
     }
 
     out

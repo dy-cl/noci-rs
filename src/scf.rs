@@ -131,7 +131,8 @@ fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: u
 ///     `input`: Input struct, contains user specified input data. 
 pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, 
                  excitation: Option<&Excitation>) 
-                 -> (f64, Array2<f64>, Array2<f64>, Array1<f64>, Array1<f64>){
+                 -> (f64, Array2<f64>, Array2<f64>, Array1<f64>, Array1<f64>, 
+                     Array2<f64>, Array2<f64>,){
     
     let h = &ao.h; 
     let eri = &ao.eri;
@@ -268,11 +269,11 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         }
         
         if d_e < input.e_tol {
-            if input.verbose{
-                    println!("occa: [{:.3}]", oa);
-                    println!("occb: [{:.3}]", ob);
-            }
-            return (e_new, ca, cb, oa, ob);
+            //if input.verbose{
+            //        println!("occa: [{:.3}]", oa);
+            //        println!("occb: [{:.3}]", ob);
+            //}
+            return (e_new, ca, cb, oa, ob, da_new, db_new);
         }
         da = da_new; 
         db = db_new;
@@ -282,5 +283,6 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
      
     println!("SCF not converged.");
     (f64::NAN, Array2::<f64>::zeros((0, 0)), Array2::<f64>::zeros((0, 0)), 
-     Array1::<f64>::zeros(0), Array1::<f64>::zeros(0))
+     Array1::<f64>::zeros(0), Array1::<f64>::zeros(0), Array2::<f64>::zeros((0, 0)), 
+     Array2::<f64>::zeros((0, 0)),)
 }
