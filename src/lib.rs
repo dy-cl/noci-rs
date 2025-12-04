@@ -7,6 +7,7 @@ pub mod scf;
 pub mod utils;
 pub mod input;
 pub mod maths;
+pub mod deterministic;
 
 use ndarray::{Array1, Array2, Array4};
 
@@ -35,6 +36,8 @@ pub struct AoData {
     pub nelec: Array1<i64>, 
     // AO label strings from PySCF e.g. "0 H 1s"
     pub aolabels: Vec<String>,
+    // Optional FCI calculation energy from PySCF.
+    pub e_fci: Option<f64>,
 }
 
 /// Storage for SCF state attributes, contains energy and spin MO coefficients.
@@ -59,5 +62,7 @@ pub struct SCFState {
     // SCF converged density matrix spin b. 
     pub db: Array2<f64>,
     // Label defined in user input.
-    pub label: String, 
+    pub label: String,
+    // Is this state used in the NOCI basis?
+    pub noci_basis: bool,
   }

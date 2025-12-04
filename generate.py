@@ -1,4 +1,4 @@
-from pyscf import gto, scf
+from pyscf import gto, scf, fci
 import numpy as np 
 import h5py
 import argparse, json
@@ -37,6 +37,8 @@ def dump_hdf5(eri, S, h, dm, Enuc, nao, nelec, aolabels, path):
         f.create_dataset('nao', data = nao)
         f.create_dataset('nelec', data = np.array(nelec, dtype = np.int64))
         f.create_dataset('aolabels', data = aolabels)
+        if fci_energy is not None:
+            f.create_dataset('E_fci', data = fci_energy)
 
 if __name__ == '__main__':
 
@@ -45,11 +47,17 @@ if __name__ == '__main__':
     parser.add_argument('--basis', type = str, required = True,)
     parser.add_argument('--unit', type = str, default = 'Ang')
     parser.add_argument('--out', type = str, default = 'data.h5')
+    parser.add_argument('--fci', type = lambda s: s.lower() == "true")
     args = parser.parse_args()
     atoms = json.loads(args.atoms)
 
     mol = build_mol(args.basis, atoms, args.unit)
     eris, S, h, dm = calculate_integrals(mol)
     Enuc, nao, nelec, aolabels = get_misc(mol)
+    fci_energy = None
+    if args.fci:
+        mf = scf.RHF(mol).run()
+        cisolver = fci.FCI(mol, mf.mo_coeff)
+        fci_energy, fcivec = cisolver.kernel()
     dump_hdf5(eris, S, h, dm, Enuc, nao, nelec, aolabels, args.out)
 

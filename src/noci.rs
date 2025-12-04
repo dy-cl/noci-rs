@@ -1,11 +1,12 @@
 // noci.rs
-use ndarray::{s, Array2, Array3, Array4, ArrayView1, ArrayView2};
-use ndarray_linalg::{SVD};
+use ndarray::{s, Array1, Array2, Array3, Array4, ArrayView1, ArrayView2};
+use ndarray_linalg::{SVD, Determinant};
 use num_complex::Complex64;
 use std::time::{Duration, Instant};
 use rayon::prelude::*;
 
 use crate::{AoData, SCFState};
+use crate::utils::print_array2;
 
 // Storage for NOCI benchmarking times.
 pub struct NociTimings {
@@ -91,8 +92,8 @@ fn calculate_munu_s(states: &[SCFState], s_spin: &Array2<f64>, nocc: usize) -> A
 ///      `states`: Vec<SCFState>, vector of all the calculated SCF states.
 ///      `munu_s`: Array4,  occupied orbital overlap tensor between all possible SCF pairs.
 fn calculate_s_noci(states: &[SCFState], munu_s: &Array4<f64>) -> 
-    (Array2<Complex64>, Array3<f64>, Array4<Complex64>, Array4<Complex64>) {
-
+    (Array2<Complex64>, Array3<f64>, Array4<Complex64>, Array4<Complex64>, Array2<f64>) {
+    
     let nstates = states.len();
     let nso = states[0].cs_occ.nrows();
 
@@ -103,6 +104,7 @@ fn calculate_s_noci(states: &[SCFState], munu_s: &Array4<f64>) ->
     let mut s_vals = Array3::<f64>::zeros((nstates, nstates, nocc));
     let mut c_mu_tilde = Array4::<Complex64>::zeros((nstates, nstates, nso, nocc));
     let mut c_nu_tilde = Array4::<Complex64>::zeros((nstates, nstates, nso, nocc));
+    let mut phase_mat = Array2::<f64>::zeros((nstates, nstates)); 
 
     for mu in 0..nstates {
         let c_mu_occ = &states[mu].cs_occ;
@@ -126,10 +128,15 @@ fn calculate_s_noci(states: &[SCFState], munu_s: &Array4<f64>) ->
             // Rotate occupied MOs.
             let c_mu_t = c_mu_occ.dot(&u);
             let c_nu_t = c_nu_occ.dot(&v);
+
+            let det_u = u.det().unwrap();                 
+            let det_v = v.det().unwrap();                 
+            let phase = det_u * det_v;   
+            phase_mat[(mu, nu)] = phase;
             
             // Compute S_{NOCI} matrix elements.
             let prod: f64 = s_tilde.iter().copied().product();
-            s_noci[(mu, nu)] = Complex64::new(prod, 0.0);
+            s_noci[(mu, nu)] = phase * Complex64::new(prod, 0.0);
             
             // Write the rotated MOs.
             c_mu_tilde.slice_mut(s![mu, nu, .., ..])
@@ -139,7 +146,7 @@ fn calculate_s_noci(states: &[SCFState], munu_s: &Array4<f64>) ->
 
         }
     }
-    (s_noci, s_vals, c_mu_tilde, c_nu_tilde)
+    (s_noci, s_vals, c_mu_tilde, c_nu_tilde, phase_mat)
 }
 
 /// Calculate the reduced NOCI overlap matrix s_red as the product of all 
@@ -227,7 +234,7 @@ fn calculate_codensity_w_pair(c_mu_tilde: &ArrayView2<Complex64>,c_nu_tilde: &Ar
 ///     `tol`: Float, value below which a number is considered as zero.
 fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: &Array2<f64>,
                   c_mu_tilde: &Array4<Complex64>, c_nu_tilde: &Array4<Complex64>, 
-                  tol: f64) -> (Array2<Complex64>, Array2<Complex64>) {
+                  tol: f64, phase_mat: &Array2<f64>) -> (Array2<Complex64>, Array2<Complex64>) {
                       
     let (nstates, _, nocc) = s_vals.dim();
 
@@ -255,15 +262,15 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
                 0 => {
                     let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
                     let val = einsum_ba_ab(&munu_w, h_spin);
-                    h1[(mu, nu)] = sred * val;
-                    h_nuc[(mu, nu)] = sred * Complex64::new(enuc, 0.0);
+                    h1[(mu, nu)] = phase_mat[(mu, nu)] * sred * val;
+                    h_nuc[(mu, nu)] = phase_mat[(mu, nu)] * sred * Complex64::new(enuc, 0.0);
                 }
                 // With 1 zero (s_i = 0 for 1 i) we use P_i.
                 1 => {
                     let i = zeros[0];
                     let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
                     let val = einsum_ba_ab(&munu_p_i, h_spin);
-                    h1[(mu, nu)] = sred * val;
+                    h1[(mu, nu)] = phase_mat[(mu, nu)] * val;
                     h_nuc[(mu, nu)] = Complex64::new(0.0, 0.0);
                 // Otherwise the matrix element is zero.
                 }
@@ -289,7 +296,7 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
 ///     `eri_spin`: Array4, antisymmetrised ERIs in spin diagonal block.
 ///     `tol`: Float, value below which a number is considered as zero.
 fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4<Complex64>,
-                  c_nu_tilde: &Array4<Complex64>, eri_spin: &Array4<f64>, tol: f64) 
+                  c_nu_tilde: &Array4<Complex64>, eri_spin: &Array4<f64>, tol: f64, phase_mat: &Array2<f64>) 
                   -> Array2<Complex64> {
 
     let (nstates, _, nocc) = s_vals.dim();
@@ -318,7 +325,7 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4
                     let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
                     let val = Complex64::new(0.5, 0.0) 
                             * einsum_ba_acbd_dc(&munu_w, eri_spin, &munu_w);
-                    h2[(mu, nu)] = val * sred; 
+                    h2[(mu, nu)] = phase_mat[(mu, nu)] * val * sred; 
                 }
                 // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
                 1 => {
@@ -326,7 +333,7 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4
                     let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
                     let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
                     let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_w);
-                    h2[(mu, nu)] = sred * val;
+                    h2[(mu, nu)] = phase_mat[(mu, nu)] * val;
                 // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
                 // one side and P_j on the other.
                 }
@@ -336,7 +343,7 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4
                     let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
                     let munu_p_j = calculate_codensity_p_pair(&c_mu, &c_nu, j);
                     let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_p_j);
-                    h2[(mu, nu)] = sred * val;
+                    h2[(mu, nu)] = phase_mat[(mu, nu)] * val;
                 }
                 // Otherwise the matrix element is zero.
                 _ => {h2[(mu, nu)] = Complex64::new(0.0, 0.0)}
@@ -347,16 +354,15 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4
     h2
 }
 
-/// Using MO coefficients obtained from the SCF cycle of each basis state perform 
-/// Non-orthogonal Configuration Interaction (NOCI) to obtain an improved energy 
-/// estimate.
+/// Using occupied MO coefficients of each Non-orthogonal Configuration Interaction (NOCI) basis 
+/// state form the Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
 /// # Arguments:
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) 
-                            -> (f64, NociTimings) {
+pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState]) 
+                            -> (Array2<Complex64>, Array2<Complex64>, NociTimings) {
     // Tolerance for a number being non-zero.
-    let tol = 1e-8; 
+    let tol = 1e-6; 
     let nocc = (ao.nelec[0] + ao.nelec[1]) as usize;
 
     let t_munu_s = Instant::now();
@@ -367,7 +373,7 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState])
     let t_s_noci = Instant::now();
     // Calculate the NOCI overlap matrix S_{NOCI} and form rotated MOs.
     // There is a distinct set of rotated MOs for every pair of SCF basis states.
-    let (s_noci, s_vals, c_mu_tilde, c_nu_tilde) = calculate_s_noci(scfstates, &munu_s);
+    let (s_noci, s_vals, c_mu_tilde, c_nu_tilde, phase_mat) = calculate_s_noci(scfstates, &munu_s);
     let d_s_noci = t_s_noci.elapsed();
     
     let t_s_red = Instant::now();
@@ -378,9 +384,9 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState])
     let t_h = Instant::now();
     // Calculate one and two electron NOCI Hamiltonian matrix elements.
     let (h1, h_nuc) = one_electron_h(&ao.h_spin, ao.enuc, &s_vals, &s_red,
-                                     &c_mu_tilde, &c_nu_tilde, tol);
+                                     &c_mu_tilde, &c_nu_tilde, tol, &phase_mat);
     let h2 = two_electron_h(&s_vals, &s_red, &c_mu_tilde, &c_nu_tilde, 
-                            &ao.eri_spin, tol);
+                            &ao.eri_spin, tol, &phase_mat);
     let d_h = t_h.elapsed();
     
     // Enforce hermiticity of the Hamiltonian and S_{NOCI} matrices.
@@ -390,12 +396,32 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState])
     let mut h = &h_nuc + &h1 + &h2;
     let h_dag = h.t().map(|z| z.conj());
     h = (&h + &h_dag) * Complex64::new(0.5, 0.0);
+    let timings = NociTimings {munu_s: d_munu_s, s_noci: d_s_noci, s_red: d_s_red, h: d_h};
 
-    // Use Loewdin orthgonalisation with projection to non-zero subspace of  
-    // S to solve GEVP, thus obtaining ground-state energy.
-    let (evals, _c) = general_evp_complex(&h, &s, true, tol);
-
-    let timings = NociTimings {munu_s: d_munu_s, s_noci: d_s_noci, s_red: d_s_red,h: d_h,};
-    
-    (evals[0], timings)
+    (h, s, timings)
 }
+
+/// Calculate NOCI energy by solving GEVP with NOCI Hamiltonian and overlap.
+/// # Arguments:
+///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array1<Complex64>, NociTimings) {
+    let tol = 1e-8;
+    let (h, s, timings) = build_noci_matrices(ao, scfstates);
+        
+    println!("NOCI-reference Hamiltonian:");
+    print_array2(&h.map(|z: &Complex64| z.re));
+    println!("NOCI-reference Overlap:");
+    print_array2(&s.map(|z: &Complex64| z.re));
+    println!("Shifted NOCI-reference Hamiltonian");
+    let h_shift = &h.map(|z: &Complex64| z.re) - scfstates[0].e * &s.map(|z: &Complex64| z.re);
+    print_array2(&h_shift);
+    println!("{}", "=".repeat(100));
+
+    let (evals, c) = general_evp_complex(&h, &s, true, tol);
+    // Assumes columns of c are energy ordered eigenvectors
+    let c0 = c.column(0).to_owned(); 
+    (evals[0], c0, timings)
+}
+
+

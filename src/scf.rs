@@ -6,6 +6,7 @@ use crate::input::{Input, Spin, Excitation};
 use crate::diis::Diis;
 
 use crate::maths::general_evp_real;
+use crate::utils::print_array2;
 
 /// Build the spin-resolved Fock matrices for UHF.
 /// Uses the Coulomb term from the total density and the exchange term from each spin density.
@@ -269,10 +270,10 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         }
         
         if d_e < input.e_tol {
-            //if input.verbose{
-            //        println!("occa: [{:.3}]", oa);
-            //        println!("occb: [{:.3}]", ob);
-            //}
+            println!("Coefficients ca:");
+            print_array2(&ca);
+            println!("Coefficients cb:");
+            print_array2(&cb);
             return (e_new, ca, cb, oa, ob, da_new, db_new);
         }
         da = da_new; 

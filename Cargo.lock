@@ -633,6 +633,7 @@ dependencies = [
  "ndarray-linalg",
  "num-complex",
  "openblas-src",
+ "rand",
  "rayon",
  "rlua",
  "serde_json",

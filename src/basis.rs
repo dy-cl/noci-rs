@@ -1,8 +1,16 @@
 // basis.rs
 use ndarray::{Array1, Array2, Axis, s};
+use std::collections::HashMap;
 
 use crate::{AoData, SCFState};
 use crate::input::Input;
+
+pub struct SpinOccupation {
+    occ_alpha: Vec<usize>,
+    virt_alpha: Vec<usize>,
+    occ_beta: Vec<usize>,
+    virt_beta: Vec<usize>,
+}
 
 /// Multiply a square sub-block of matrix by scalar. 
 /// # Arguments
@@ -91,15 +99,68 @@ fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
     n - (tr_a + tr_b)
 }
 
-/// Pass given AO data and previous SCF solutions to SCF cycle to form the requested NOCI basis.
+/// Using the occupation vectors oa, ob, get positions p of oa, ob which are equal to 0 and 1. That is, 
+/// the virtual and occupied column indices for each spin.
+/// # Arguments
+///     `st`: SCFState, state which we are finding virtual and occupied indices.
+fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
+    //  For each entry in oa/ob find all indices p where o[p] > 0.5.
+    let occ_alpha: Vec<usize> = st.oa.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
+    let occ_beta: Vec<usize> = st.ob.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
+
+    //  For each entry in oa/ob find all indices p where o[p] < 0.5.
+    let virt_alpha: Vec<usize> = st.oa.iter().enumerate().filter_map(|(p, &occ)| if occ <= 0.5 {Some(p)} else {None}).collect();
+    let virt_beta: Vec<usize> = st.ob.iter().enumerate().filter_map(|(p, &occ)| if occ <= 0.5 {Some(p)} else {None}).collect();
+
+    SpinOccupation{occ_alpha, virt_alpha, occ_beta, virt_beta}
+}
+
+/// Copy a reference SCF state (i.e., those that form the deterministic NOCI basis) and replace the
+/// oa, ob with modified occupancies, and rebuild cs_occ accordingly.
 /// # Arguments 
-/// ao: AoData struct, contains AO integrals and other system data. 
-/// input: Input struct, contains user inputted options. 
-/// prev: Option<[SCFState]>, may or may not contain states from a previous geometry.
-pub fn generate_scf_state(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
+///    ao: AoData struct, contains AO integrals and other system data.
+///    reference: SCFState, SCF state from which to build an excited state.
+///    oa_ex: Array1, Excited occupied indices spin alpha.
+///    ob_ex: Array1, Excited occupied indices spin beta. 
+///    label_suffix: String, what to append to reference state label to indicate excitation.
+fn make_excited_state(ao: &AoData, reference: &SCFState, oa_ex: Array1<f64>, ob_ex: Array1<f64>, label_suffix: &str,) -> SCFState{
+    let (cs, cs_occ) = spin_block_mo_coeffs(&reference.ca, &reference.cb, &oa_ex, &ob_ex, ao.nao);
+
+    // Occupied MOs indices.
+    let occ_alpha: Vec<usize> = oa_ex.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
+    let occ_beta: Vec<usize> = ob_ex.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
+
+    // Get occupied coefficient matrices and form unrelaxed excited state densitites.
+    let ca_occ = reference.ca.select(Axis(1), &occ_alpha);
+    let cb_occ = reference.cb.select(Axis(1), &occ_beta);
+    let da_ex = ca_occ.dot(&ca_occ.t());
+    let db_ex = cb_occ.dot(&cb_occ.t());
+    
+    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, ca: reference.ca.clone(), cb: reference.cb.clone(), 
+              cs, cs_occ, da: da_ex, db: db_ex, label: format!("{} {}", 
+              reference.label, label_suffix), noci_basis: false}
+}
+
+/// Pass given AO data and previous SCF solutions to SCF cycle to form the requested reference NOCI basis.
+/// # Arguments 
+///     ao: AoData struct, contains AO integrals and other system data. 
+///     input: Input struct, contains user inputted options. 
+///     prev: Option<[SCFState]>, may or may not contain states from a previous geometry.
+pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
     
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
+    let d_tol = 1e-4;
+    
+    // Construct lookuptable from state label to previous SCF states. Allows for seeding of SCF
+    // states at a subsequent geometry to be done by label rather than via index which breaks
+    // easily.
+    let mut prev_map: HashMap<&str, &SCFState> = HashMap::new();
+    if let Some(ps) = prev {
+        for st in ps {
+            prev_map.insert(&st.label, st);
+        }
+    }
 
     let ia: Vec<usize> = ao.aolabels.iter().enumerate()
         .filter(|(_, s)| s.split_whitespace().next().unwrap() == "0")
@@ -111,11 +172,13 @@ pub fn generate_scf_state(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,
         .map(|(i, _)| i)
         .collect();
 
-    let mut out = Vec::with_capacity(input.states.len());
+    let mut out: Vec<SCFState> = Vec::with_capacity(input.states.len());
 
     for (i, recipe) in input.states.iter().enumerate() {
         if input.verbose {
-            println!("=======================Begin SCF==========================");
+            let left = "=".repeat(45);
+            let right = "=".repeat(46);
+            println!("{}Begin SCF{}", left, right);
             println!("State({}): {}", i + 1, recipe.label);
         };
         
@@ -123,16 +186,19 @@ pub fn generate_scf_state(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,
         let mut da = da0.clone();
         let mut db = db0.clone();
 
-        // If there are previous states, use them (only for ground states). Excited 
-        // states are seeded from the RHF solution at the previous geometry, and  
-        // MOM is used.
+        // If there are previous states, use them. Ground states are seeded from their previous
+        // geometry equivalent, whilst excited states are seeded from RHF at the previous geometry.
+        // Any excited states that may or may not be generated here are distinct from those formed
+        // in the NOCI-QMC basis. Those formed here form the reference NOCI basis and are relaxed.
         let excitation = recipe.excitation.as_ref();
-        let seed = match (prev, excitation.is_none()) {
-            (Some(ps), true)  => ps.get(i),
-            (Some(ps), false) => input.states.iter()
-                                 .position(|r| r.label == "RHF")
-                                 .and_then(|idx| ps.get(idx)),
-            _ => None,
+        let seed = if prev.is_some() {
+            if excitation.is_none() {
+                prev_map.get(recipe.label.as_str()).copied()
+            } else {
+                prev_map.get("RHF").copied()
+            }
+        } else {
+            None
         };
         
         if let Some(st) = seed {
@@ -152,24 +218,157 @@ pub fn generate_scf_state(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,
         // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
         // this is later required for NOCI calculations.
         let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
-        out.push(SCFState {e, oa, ob, ca, cb, cs, cs_occ, da, db, 
-                           label: recipe.label.clone()});
- 
-    }
-    
-    // Calculate the distance between all SCF states and the state labelled "RHF", 
-    // hopefully this is the RHF solution.
-    if input.verbose {
-        println!("=========================================================");
-        if let Some(rhf_idx) = input.states.iter().position(|r| r.label == "RHF") {
-            let rhf_state = &out[rhf_idx];
-            println!("Electron distances to RHF state:");
-            for (i, st) in out.iter().enumerate() {
-                let d2 = electron_distance(rhf_state, st, &ao.s_ao);
-                println!("State({}): {}, d^2(RHF, {}): {}", i + 1, st.label, st.label, d2);
+        let new_state = SCFState{e, oa, ob, ca, cb, cs, cs_occ, da, db, 
+                           label: recipe.label.clone(), noci_basis: recipe.noci};
+        
+        // Remove duplicate states from the basis to avoid singularity issues.
+        let mut is_duplicate = false;
+        for existing in &out {
+            // If this state is not requested to be used in the NOCI basis we can ignore it.
+            if !existing.noci_basis {
+                continue;
+            }
+            let d2 = electron_distance(existing, &new_state, &ao.s_ao);
+            if d2 < d_tol {
+                println!("Removed state '{}' from basis as d^2({}, {}) = {:.6}", new_state.label, existing.label, new_state.label, d2);
+                is_duplicate = true;
+                break;
             }
         }
+        // By this point we are sure there are no duplicate states
+        if !is_duplicate {
+            out.push(new_state);
+        }
     }
+    out
+}
 
+pub fn generate_qmc_noci_basis(ao: &AoData, refs: &[SCFState], input: &Input) -> Vec<SCFState> {
+    let mut out: Vec<SCFState> = Vec::new();
+    for r in refs {
+        // Include reference states in NOCI-QMC basis.
+        out.push(r.clone());
+         // If no excitations requested for this ref, continue
+        if !(input.qmc_singles || input.qmc_doubles) {
+            continue;
+        }
+
+        let spin_occ = get_spin_occupation(r);
+
+        // Single excitations 
+        if input.qmc_singles {
+            // Single excitations spin alpha 
+            for &i in &spin_occ.occ_alpha {
+                for &a in &spin_occ.virt_alpha {
+                    let mut oa_ex = r.oa.clone();
+                    let ob_ex = r.ob.clone();
+                    oa_ex[i] = 0.0;
+                    oa_ex[a] = 1.0;
+                    let label = format!("(alpha {} -> {})", i, a);
+                    let ex = make_excited_state(ao, r, oa_ex, ob_ex, &label);
+                    out.push(ex);
+                }
+            }
+
+            // Single excitations spin beta
+            for &i in &spin_occ.occ_beta {
+                for &a in &spin_occ.virt_beta {
+                    let oa_ex = r.oa.clone();
+                    let mut ob_ex = r.ob.clone();
+                    ob_ex[i] = 0.0;
+                    ob_ex[a] = 1.0;
+                    let label = format!("(beta {} -> {})", i, a);
+                    let ex = make_excited_state(ao, r, oa_ex, ob_ex, &label);
+                    out.push(ex);
+                }
+            }
+        }
+        
+        // Double excitations
+        if input.qmc_doubles {
+            // Double excitations spin alpha spin alpha 
+            let occ_a = &spin_occ.occ_alpha;
+            let virt_a = &spin_occ.virt_alpha;
+
+            for oi in 0..occ_a.len() {
+                for oj in (oi + 1)..occ_a.len() {
+                    let i = occ_a[oi];
+                    let j = occ_a[oj];
+
+                    for va in 0..virt_a.len() {
+                        for vb in (va + 1)..virt_a.len() {
+                            let a = virt_a[va];
+                            let b = virt_a[vb];
+
+                            let mut oa_ex = r.oa.clone();
+                            let ob_ex = r.ob.clone();
+
+                            oa_ex[i] = 0.0;
+                            oa_ex[j] = 0.0;
+                            oa_ex[a] = 1.0;
+                            oa_ex[b] = 1.0;
+
+                            let label = format!("(alpha, alpha {} {} -> {} {})", i, j, a, b);
+                            let ex = make_excited_state(ao, r, oa_ex, ob_ex, &label);
+                            out.push(ex);
+                        }
+                    }
+                }
+            }
+
+            // Double excitations spin beta spin beta
+            let occ_b = &spin_occ.occ_beta;
+            let virt_b = &spin_occ.virt_beta;
+
+            for oi in 0..occ_b.len() {
+                for oj in (oi + 1)..occ_b.len() {
+                    let i = occ_b[oi];
+                    let j = occ_b[oj];
+
+                    for va in 0..virt_b.len() {
+                        for vb in (va + 1)..virt_b.len() {
+                            let a = virt_b[va];
+                            let b = virt_b[vb];
+
+                            let oa_ex = r.oa.clone();
+                            let mut ob_ex = r.ob.clone();
+
+                            ob_ex[i] = 0.0;
+                            ob_ex[j] = 0.0;
+                            ob_ex[a] = 1.0;
+                            ob_ex[b] = 1.0;
+
+                            let label = format!("(beta, beta {} {} -> {} {})", i, j, a, b);
+                            let ex = make_excited_state(ao, r, oa_ex, ob_ex, &label);
+                            out.push(ex);
+                        }
+                    }
+                }
+            }
+
+            // Double excitations spin alpha spin beta 
+            for &i_a in &spin_occ.occ_alpha {
+                for &a_a in &spin_occ.virt_alpha {
+                    for &i_b in &spin_occ.occ_beta {
+                        for &a_b in &spin_occ.virt_beta {
+                            let mut oa_ex = r.oa.clone();
+                            let mut ob_ex = r.ob.clone();
+
+                            oa_ex[i_a] = 0.0;
+                            oa_ex[a_a] = 1.0;
+                            ob_ex[i_b] = 0.0;
+                            ob_ex[a_b] = 1.0;
+
+                            let label = format!("(alpha, beta {} -> {}, {} -> {})", i_a, a_a, i_b, a_b);
+                            let ex = make_excited_state(ao, r, oa_ex, ob_ex, &label);
+                            out.push(ex);
+                        }
+                    }
+                }
+            }
+
+        }
+
+    }
     out
 }

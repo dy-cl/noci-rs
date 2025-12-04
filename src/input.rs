@@ -36,6 +36,7 @@ pub struct Input {
     pub max_cycle: i32,
     pub e_tol: f64,
     pub diis: DiisOptions,
+    pub do_fci: bool,
     
     // Mol table.
     pub basis: String,
@@ -48,6 +49,10 @@ pub struct Input {
 
     // States table.
     pub states: Vec<StateRecipe>,
+
+    // QMC table 
+    pub qmc_singles: bool,
+    pub qmc_doubles: bool,
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -73,6 +78,7 @@ pub fn load_input(path: &str) -> Input {
     let diis: rlua::Table = scf.get("diis").unwrap();
     let space: usize = diis.get("space").unwrap();
     let diis = DiisOptions {space};
+    let do_fci: bool = scf.get("do_fci").unwrap();
     
     // Mol table.
     let basis: String = mol.get("basis").unwrap();
@@ -138,7 +144,12 @@ pub fn load_input(path: &str) -> Input {
         Excitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
         states.push(StateRecipe {label, spin_bias, excitation, noci});
     }
+    
+    // QMC table 
+    let qmc_tbl: Table = globals.get("qmc").unwrap();
+    let qmc_singles: bool = qmc_tbl.get("singles").unwrap();
+    let qmc_doubles: bool = qmc_tbl.get("doubles").unwrap();
 
-    Input {max_cycle, e_tol, diis, basis, r_list, geoms, unit, verbose, states}
+    Input {max_cycle, e_tol, diis, do_fci, basis, r_list, geoms, unit, verbose, states, qmc_singles, qmc_doubles}
 }
 
