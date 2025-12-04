@@ -8,18 +8,9 @@ use num_complex::Complex64;
 ///     `c`: Array1, NOCI-QMC coefficient vector.
 ///     `dt`: Propagation time step.
 pub fn propagate_step_unshifted(h: &Array2<Complex64>, c: &Array1<Complex64>, dt: f64) -> Array1<Complex64> {
-    let n = c.len();
-    let mut c_new = c.clone();
-
-    for lam in 0..n {
-        let mut sum = Complex64::new(0.0, 0.0);
-        for gam in 0..n {
-            let h_lg = h[(lam, gam)];
-            sum += h_lg * c[gam];
-        }
-        c_new[lam] = c[lam] - Complex64::new(dt, 0.0) * sum;
-    }
-    c_new
+    let hc = h.dot(c);
+    let dtc = hc.mapv(|z| Complex64::new(dt, 0.0) * z);
+    c - &dtc
 }
 
 /// Perform one deterministic update step of NOCI-QMC shifted propagator:
@@ -32,25 +23,10 @@ pub fn propagate_step_unshifted(h: &Array2<Complex64>, c: &Array1<Complex64>, dt
 ///     `esc`: Scalar, Energy shift, we just use the reference NOCI energy for this here.
 ///     `dt`: Propagation time step.
 pub fn propagate_step_shifted(h: &Array2<Complex64>, c: &Array1<Complex64>, esc: Complex64, dt: f64) -> Array1<Complex64> {
-    let n = c.len();
-    let mut c_new = c.clone();
-    
-    for lam in 0..n{
-        let mut off = Complex64::new(0.0, 0.0);
-        
-        // Diagonal contribution.
-        let h_ll = h[(lam, lam)];
-        let diag = (h_ll - esc) * c[lam];
-
-        // Off-diagonal contribution.
-        for gam in 0..n {
-            if gam == lam {continue;}
-            let h_lg = h[(lam, gam)];
-            off += h_lg * c[gam];
-        }
-        c_new[lam] = c[lam] - Complex64::new(dt, 0.0) * (diag + off);
-    }
-    c_new
+    let hc = h.dot(c);
+    let esc_c = c.mapv(|z| esc * z);
+    let dtc = (hc - esc_c).mapv(|z| Complex64::new(dt, 0.0) * z);
+    c - &dtc
 }
 
 /// Propagate nsteps number of time-step updates.

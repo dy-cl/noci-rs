@@ -30,6 +30,15 @@ pub struct DiisOptions {
     pub space: usize,
 }
 
+// Storage for QMC options 
+pub struct QMCOptions {
+    pub qmc_singles: bool, 
+    pub qmc_doubles: bool,
+    pub dt: f64, 
+    pub qmc_e_tol: f64,
+    pub max_steps: usize,
+}
+
 /// Storage for Input file parameters.
 pub struct Input {
     // SCF table.
@@ -50,9 +59,8 @@ pub struct Input {
     // States table.
     pub states: Vec<StateRecipe>,
 
-    // QMC table 
-    pub qmc_singles: bool,
-    pub qmc_doubles: bool,
+    // QMC table
+    pub qmc: QMCOptions,
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -145,11 +153,15 @@ pub fn load_input(path: &str) -> Input {
         states.push(StateRecipe {label, spin_bias, excitation, noci});
     }
     
-    // QMC table 
+    // QMC table
     let qmc_tbl: Table = globals.get("qmc").unwrap();
     let qmc_singles: bool = qmc_tbl.get("singles").unwrap();
     let qmc_doubles: bool = qmc_tbl.get("doubles").unwrap();
+    let dt: f64 = qmc_tbl.get("dt").unwrap();
+    let qmc_e_tol: f64 = qmc_tbl.get("e_tol").unwrap();
+    let max_steps: usize = qmc_tbl.get("max_steps").unwrap();
+    let qmc = QMCOptions {qmc_singles, qmc_doubles, dt, qmc_e_tol, max_steps};
 
-    Input {max_cycle, e_tol, diis, do_fci, basis, r_list, geoms, unit, verbose, states, qmc_singles, qmc_doubles}
+    Input {max_cycle, e_tol, diis, do_fci, basis, r_list, geoms, unit, verbose, states, qmc,}
 }
 

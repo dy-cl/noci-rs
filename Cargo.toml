@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 rlua = "0.20.1"
 rand = "0.8"
-ndarray = {version = "0.15", features = ["rayon"]}
+ndarray = {version = "0.15", features = ["blas"]}
 ndarray-linalg = {version = "0.16", features = ["openblas"]}
 openblas-src = {version = "0.10", features = ["cblas"]}
 num-complex = "0.4"

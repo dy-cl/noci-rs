@@ -75,15 +75,9 @@ fn main() {
         let d_noci_qmc_deterministic_basis_construction = t_noci_qmc_deterministic_basis_construction.elapsed();
         let (h_qmc, s_qmc, timings_qmc_deterministic) = build_noci_matrices(&ao, &noci_qmc_basis);
        
-        // Choose shift, timestep, maximum number of steps, and energy tolerance. 
+        // Choose shift energy. 
         let es = states[0].e; // RHF energy.
-        let dt = 1e-6;
-        let max_steps = 10000;
-        let e_tol = 1e-8;
-        
         let h_qmc_shift = &h_qmc - Complex64::new(es, 0.0) * &s_qmc;
-        println!("Reference energy shift (es): {}", es);
-        println!("Time-step (dt): {}", dt);
         println!("{}", "=".repeat(100));
 
         println!("Running deterministic NOCI-QMC propagation....");
@@ -102,7 +96,7 @@ fn main() {
         println!("Initial wavefunction ansatz (C0-QMC): {}", c0_qmc);
 
         // Propagate coefficient vector deterministically in full NOCI-QMC basis. 
-        let e_tot: f64 = match propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, dt, max_steps, e_tol) {
+        let e_tot: f64 = match propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, input.qmc.dt, input.qmc.max_steps, input.qmc.qmc_e_tol) {
             Some(c) => projected_energy(&h_qmc_shift, &s_qmc, &c, es),
             // Propagation may converge to a ridiculous eigenvalue if H or S are singular. Fix.
             None => {eprintln!("Propagation failed, setting energy to NaN."); f64::NAN}

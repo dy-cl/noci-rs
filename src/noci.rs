@@ -241,48 +241,67 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array3<f64>, s_red: 
     let mut h1 = Array2::<Complex64>::zeros((nstates, nstates));
     let mut h_nuc = Array2::<Complex64>::zeros((nstates, nstates));
 
-    for mu in 0..nstates {
-        for nu in 0..nstates {
+    // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
+    // diagonal included). This can be done as {}^{\mu\nu}H[\mu, \nu] = ({}^{\mu\nu}H[\nu, \mu])^T.
+    let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
 
-            let c_mu = c_mu_tilde.slice(s![mu, nu, .., ..]);
-            let c_nu = c_nu_tilde.slice(s![mu, nu, .., ..]);
-            let s_row = s_vals.slice(s![mu, nu, ..]);
+    // Calculate {}^{\mu\nu}H_1[\mu, \nu] in parallel.
+    let tmp: Vec<(usize, usize, Complex64, Complex64)> = pairs.par_iter().map(|&(mu, nu)| {
 
-            // Find indices i for which singular values are zero.
-            let mut zeros: Vec<usize> = Vec::new();
-            for i in 0..nocc {
-                if s_vals[(mu, nu, i)] <= tol {
-                    zeros.push(i);
-                }
+        let c_mu = c_mu_tilde.slice(s![mu, nu, .., ..]);
+        let c_nu = c_nu_tilde.slice(s![mu, nu, .., ..]);
+        let s_row = s_vals.slice(s![mu, nu, ..]);
+
+        // Find indices i for which singular values are zero.
+        let mut zeros: Vec<usize> = Vec::new();
+        for i in 0..nocc {
+            if s_vals[(mu, nu, i)] <= tol {
+                zeros.push(i);
             }
+        }
 
-            let sred = Complex64::new(s_red[(mu, nu)], 0.0);
-            match zeros.len() {
-                // With no zeros (s_i != 0 for all i) we use munu_w.
-                0 => {
-                    let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
-                    let val = einsum_ba_ab(&munu_w, h_spin);
-                    h1[(mu, nu)] = phase_mat[(mu, nu)] * sred * val;
-                    h_nuc[(mu, nu)] = phase_mat[(mu, nu)] * sred * Complex64::new(enuc, 0.0);
-                }
-                // With 1 zero (s_i = 0 for 1 i) we use P_i.
-                1 => {
-                    let i = zeros[0];
-                    let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
-                    let val = einsum_ba_ab(&munu_p_i, h_spin);
-                    h1[(mu, nu)] = phase_mat[(mu, nu)] * val;
-                    h_nuc[(mu, nu)] = Complex64::new(0.0, 0.0);
-                // Otherwise the matrix element is zero.
-                }
-                _ => {
-                    h1[(mu, nu)] = Complex64::new(0.0, 0.0);
-                    h_nuc[(mu, nu)] = Complex64::new(0.0, 0.0);
-                }
+        let phase = phase_mat[(mu, nu)];
+        let sred = Complex64::new(s_red[(mu, nu)], 0.0);
+
+        let (h1_munu, h_nuc_munu) = match zeros.len() {
+            // With no zeros (s_i != 0 for all i) we use munu_w.
+            0 => {
+                let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
+                let val = einsum_ba_ab(&munu_w, h_spin);
+                let h1_val = phase * sred * val;
+                let h_nuc_val = phase * sred * Complex64::new(enuc, 0.0);
+                (h1_val, h_nuc_val)
             }
+            // With 1 zero (s_i = 0 for 1 i) we use P_i.
+            1 => {
+                let i = zeros[0];
+                let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
+                let val = einsum_ba_ab(&munu_p_i, h_spin);
+                let h1_val = phase * val;
+                let h_nuc_val = Complex64::new(0.0, 0.0);
+                (h1_val, h_nuc_val)
+            // Otherwise the matrix element is zero.
+            }
+            _ => {
+                let h1_val = Complex64::new(0.0, 0.0);
+                let h_nuc_val = Complex64::new(0.0, 0.0);
+                (h1_val, h_nuc_val)
+            }
+        };
+        (mu, nu, h1_munu, h_nuc_munu)
+    }).collect();
 
+    // Insert values to form full Hamiltonian matrices 
+    for (mu, nu, h1_munu, h_nuc_munu) in tmp {
+        h1[(mu, nu)] = h1_munu;
+        h_nuc[(mu, nu)] = h_nuc_munu;
+
+        if nu != mu {
+            // Hermitian.
+            h1[(nu, mu)] = h1_munu.conj();
+            h_nuc[(nu, mu)] = h_nuc_munu.conj();
         }
     }
-
     (h1, h_nuc)
 }
 
@@ -303,54 +322,67 @@ fn two_electron_h(s_vals: &Array3<f64>, s_red: &Array2<f64>, c_mu_tilde: &Array4
 
     let mut h2 = Array2::<Complex64>::zeros((nstates, nstates));
 
-    for mu in 0..nstates {
-        for nu in 0..nstates {
+    // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
+    // diagonal included). This can be done as {}^{\mu\nu}H[\mu, \nu] = ({}^{\mu\nu}H[\nu, \mu])^T.
+    let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
 
-            let c_mu = c_mu_tilde.slice(s![mu, nu, .., ..]);
-            let c_nu = c_nu_tilde.slice(s![mu, nu, .., ..]);
-            let s_row = s_vals.slice(s![mu, nu, ..]);
+    // Calculate {}^{\mu\nu}H_2[\mu, \nu] in parallel.
+    let tmp: Vec<(usize, usize, Complex64)> = pairs.par_iter().map(|&(mu, nu)| {
+        let c_mu = c_mu_tilde.slice(s![mu, nu, .., ..]);
+        let c_nu = c_nu_tilde.slice(s![mu, nu, .., ..]);
+        let s_row = s_vals.slice(s![mu, nu, ..]);
 
-            // Find indices i for which singular values are zero.
-            let mut zeros: Vec<usize> = Vec::new();
-            for i in 0..nocc {
-                if s_vals[(mu, nu, i)] <= tol {
-                    zeros.push(i);
-                }
-            }
-
-            let sred = Complex64::new(s_red[(mu, nu)], 0.0);
-            match zeros.len() {
-                // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
-                0 => {
-                    let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
-                    let val = Complex64::new(0.5, 0.0) 
-                            * einsum_ba_acbd_dc(&munu_w, eri_spin, &munu_w);
-                    h2[(mu, nu)] = phase_mat[(mu, nu)] * val * sred; 
-                }
-                // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
-                1 => {
-                    let i = zeros[0];
-                    let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
-                    let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
-                    let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_w);
-                    h2[(mu, nu)] = phase_mat[(mu, nu)] * val;
-                // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
-                // one side and P_j on the other.
-                }
-                2 => {
-                    let i = zeros[0];
-                    let j = zeros[1];
-                    let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
-                    let munu_p_j = calculate_codensity_p_pair(&c_mu, &c_nu, j);
-                    let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_p_j);
-                    h2[(mu, nu)] = phase_mat[(mu, nu)] * val;
-                }
-                // Otherwise the matrix element is zero.
-                _ => {h2[(mu, nu)] = Complex64::new(0.0, 0.0)}
+         // Find indices i for which singular values are zero.
+        let mut zeros: Vec<usize> = Vec::new();
+        for i in 0..nocc {
+            if s_vals[(mu, nu, i)] <= tol {
+                zeros.push(i);
             }
         }
-    }
 
+        let phase = phase_mat[(mu, nu)];
+        let sred = Complex64::new(s_red[(mu, nu)], 0.0);
+
+        let h2_munu = match zeros.len() {
+             // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
+            0 => {
+                let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
+                let val = Complex64::new(0.5, 0.0) * einsum_ba_acbd_dc(&munu_w, eri_spin, &munu_w);
+                phase * val * sred
+            }
+            // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
+            1 => {
+                let i = zeros[0];
+                let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
+                let munu_w = calculate_codensity_w_pair(&c_mu, &c_nu, &s_row, tol);
+                let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_w);
+                phase * val
+            // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
+            // one side and P_j on the other.
+            }
+            2 => {
+                let i = zeros[0];
+                let j = zeros[1];
+                let munu_p_i = calculate_codensity_p_pair(&c_mu, &c_nu, i);
+                let munu_p_j = calculate_codensity_p_pair(&c_mu, &c_nu, j);
+                let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_p_j);
+                phase * val
+            }
+            // Otherwise the matrix element is zero.
+            _ => {Complex64::new(0.0, 0.0)}
+        };
+        (mu, nu, h2_munu)
+    }).collect();
+
+    // Insert values to form full Hamiltonian matrices 
+    for (mu, nu, h2_munu) in tmp {
+        h2[(mu, nu)] = h2_munu;
+
+        if nu != mu {
+            // Hermitian.
+            h2[(nu, mu)] = h2_munu.conj();
+        }
+    }
     h2
 }
 
