@@ -605,6 +605,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rawpointer",
+ "rayon",
 ]
 
 [[package]]
@@ -631,7 +632,6 @@ dependencies = [
  "ndarray",
  "ndarray-linalg",
  "num-complex",
- "openblas-src",
  "rand",
  "rayon",
  "rlua",

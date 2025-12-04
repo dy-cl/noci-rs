@@ -1,5 +1,8 @@
+// deterministic.rs 
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
+
+use crate::maths::parallel_matvec;
 
 /// Perform one deterministic update step of NOCI-QMC unshifted propagator:
 /// # Arguments
@@ -8,7 +11,7 @@ use num_complex::Complex64;
 ///     `c`: Array1, NOCI-QMC coefficient vector.
 ///     `dt`: Propagation time step.
 pub fn propagate_step_unshifted(h: &Array2<Complex64>, c: &Array1<Complex64>, dt: f64) -> Array1<Complex64> {
-    let hc = h.dot(c);
+    let hc = parallel_matvec(h, c);
     let dtc = hc.mapv(|z| Complex64::new(dt, 0.0) * z);
     c - &dtc
 }
@@ -23,7 +26,7 @@ pub fn propagate_step_unshifted(h: &Array2<Complex64>, c: &Array1<Complex64>, dt
 ///     `esc`: Scalar, Energy shift, we just use the reference NOCI energy for this here.
 ///     `dt`: Propagation time step.
 pub fn propagate_step_shifted(h: &Array2<Complex64>, c: &Array1<Complex64>, esc: Complex64, dt: f64) -> Array1<Complex64> {
-    let hc = h.dot(c);
+    let hc = parallel_matvec(h, c);
     let esc_c = c.mapv(|z| esc * z);
     let dtc = (hc - esc_c).mapv(|z| Complex64::new(dt, 0.0) * z);
     c - &dtc
@@ -43,9 +46,8 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
     let mut c = c0.clone();
     let mut e_prev = projected_energy(h, s, &c, es);
     let esc = Complex64::new(es, 0.0);
+    let de_max = 0.5;
 
-    let relative_de_max = 1.0;
-    
     // Print table header.
     println!("{}", "=".repeat(100));
     println!("{:<6} {:>10} {:>10}, {:>10} {:>10}", "iter", "E", "|dE|", "||C||", "C^† S C");
@@ -64,7 +66,6 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
 
         let e = projected_energy(h, s, &c_new, es);
         let de = (e - e_prev).abs();
-        let relative_de = de / e_prev.abs();
         
         // Print table rows.
         let c1norm = c_new.iter().map(|z| z.norm()).sum::<f64>();
@@ -72,9 +73,17 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
         println!("{:<6} {:>10.6} {:>10.3e} {:>10.6} {:>10.6}", it + 1, e, de, c1norm, den);
 
         // If our energy change between iterations is large we likely have problems with
-        // singularity and very low eigenvalues. Just skip this geometry for now.
-        if relative_de > relative_de_max {
-            println!("Relative energy change too large at iter {}: relative |dE| = {}. Eigenvalues invalid, S and/or H possibly singular. Fix needed.", it + 1, relative_de);
+        // singularity and very low eigenvalues or a time-step that is too large. 
+        if de > de_max {
+            println!("Energy change too large at iter {}: |dE| = {}. Likely converging to un-physical eigenvalues with singular S or H.", it + 1, de);
+            return None
+        }
+        
+        // If the calculation is converging to an eigenvalue that is particularly low we again
+        // likely have probleems with singularities. Set a lower bound as 150% the RHF energy.
+        // Adjust if needed.
+        if e < 1.5 * es {
+            println!("Energy too low at iter {}: E = {}. Likely converging to un-physical eigenvalues with singular S or H.", it + 1, e);
             return None
         }
 

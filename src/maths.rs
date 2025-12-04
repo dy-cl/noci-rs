@@ -2,6 +2,7 @@
 use ndarray::{Array1, Array2, Array4};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
+use rayon::prelude::*;
 
 /// Loewdin symmetric orthogonalizer, computes X = S^{-1/2} for real/complex matrices.
 /// # Arguments 
@@ -80,8 +81,8 @@ pub fn general_evp_complex(f: &Array2<Complex64>, s: &Array2<Complex64>, project
 /// Calculate Einstein summation of matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{ab}. 
 /// Assumes `g` and `h` are of identical shape.
 /// # Arguments 
-///     `g`: Matrix 1. 
-///     `h`: Matrix 2.
+///     `g`: Array2, matrix 1. 
+///     `h`: Array2, matrix 2.
 pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
     let n = g.nrows();
     let mut acc = Complex64::new(0.0, 0.0);
@@ -90,7 +91,6 @@ pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
             acc += g[(b, a)] * Complex64::new(h[(a, b)], 0.0);
         }
     }
-
     acc
 }
 
@@ -98,9 +98,9 @@ pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
 /// \sum_{a,c}\sum_{b,d} g_{b,a} t_{a,c,b,d} h_{d,c}. Assumes `g`, `h` and `t` all 
 /// have axes of equal length.
 /// # Arguments
-///     `g`: Matrix 1. 
-///     `t`: 4D tensor.
-///     `h`: Matrix 2.
+///     `g`: Array2, matrix 1. 
+///     `t`: Array4, 4D tensor.
+///     `h`: Array2, matrix 2.
 pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Complex64>)
                          -> Complex64 {
     let n = g.nrows();
@@ -115,8 +115,23 @@ pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Comp
             }
         }
     }
-    
     acc
+}
+
+/// Calculate a matrix vector product HC = U in parallel.
+/// # Arguments  
+/// `h`: Array2, matrix. 
+/// `c`: Array1, vector.
+pub fn parallel_matvec(h: &Array2<Complex64>, c: &Array1<Complex64>) -> Array1<Complex64> {
+    let (_m, n) = h.dim();
+    // Store matrix and vector as 1D contiguous arrays. 
+    let h_slice: &[Complex64] = h.as_slice().unwrap();
+    let c_slice: &[Complex64] = c.as_slice().unwrap();
+    // Split slice of h into sections of length n (of which there are m), and  process each row in
+    // parallel. We iterate over each row of length n, compute the dot product with the vector c,
+    // sum and collect into a vector of length m. The order is preserved.
+    let result: Vec<Complex64> = h_slice.par_chunks_exact(n).map(|row| {row.iter().zip(c_slice.iter()).map(|(&hij, &cj)| hij * cj).sum::<Complex64>()}).collect();
+    Array1::from_vec(result)
 }
 
 

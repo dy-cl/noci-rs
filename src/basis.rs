@@ -150,7 +150,7 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
     
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
-    let d_tol = 1e-4;
+    let d_tol = 1e-2;
     
     // Construct lookuptable from state label to previous SCF states. Allows for seeding of SCF
     // states at a subsequent geometry to be done by label rather than via index which breaks
