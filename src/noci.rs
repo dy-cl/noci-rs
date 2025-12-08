@@ -104,46 +104,73 @@ fn calculate_s_noci(states: &[SCFState], munu_s: &Array4<f64>) ->
     let mut s_vals = Array3::<f64>::zeros((nstates, nstates, nocc));
     let mut c_mu_tilde = Array4::<Complex64>::zeros((nstates, nstates, nso, nocc));
     let mut c_nu_tilde = Array4::<Complex64>::zeros((nstates, nstates, nso, nocc));
-    let mut phase_mat = Array2::<f64>::zeros((nstates, nstates)); 
+    let mut phase_mat = Array2::<f64>::zeros((nstates, nstates));
 
-    for mu in 0..nstates {
+    // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
+    // diagonal included). This can be done as S[\mu, \nu] = S[\nu, \mu])^T.
+    let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
+    
+    // Calculate S in parallel
+    let tmp: Vec<(usize, usize, f64, Array1<f64>, Array2<Complex64>, Array2<Complex64>, f64)> = pairs.par_iter().map(|&(mu, nu)| {
         let c_mu_occ = &states[mu].cs_occ;
-        for nu in 0..nstates {
-            let c_nu_occ = &states[nu].cs_occ;
+        let c_nu_occ = &states[nu].cs_occ;
 
-            // Get relevant matrix from the 4D {}^{\munu}S tensor.
-            let m = munu_s.slice(s![mu, nu, .., ..]).to_owned();
+        // Get relevant matrix from the 4D {}^{\munu}S tensor.
+        let m = munu_s.slice(s![mu, nu, .., ..]).to_owned();
 
-            // Perform SVD: m = U \tilde{S} V^{\dagger}.
-            // true, true flags compute both U and V^{\dagger}.
-            let (u, s_tilde, v_dag) = m.svd(true, true).unwrap();
-            let u = u.unwrap();
-            let v = v_dag.unwrap().t().to_owned();
+        // Perform SVD: m = U \tilde{S} V^{\dagger}.
+        // true, true flags compute both U and V^{\dagger}.
+        let (u, s_tilde, v_dag) = m.svd(true, true).unwrap();
+        let u = u.unwrap();
+        let v = v_dag.unwrap().t().to_owned();
 
-            // Build diagonal of singular values.
-            for p in 0..nocc {
-                s_vals[(mu, nu, p)] = s_tilde[p];
-            }
+        // Rotate occupied MOs.
+        let c_mu_t = c_mu_occ.dot(&u);
+        let c_nu_t = c_nu_occ.dot(&v);
 
-            // Rotate occupied MOs.
-            let c_mu_t = c_mu_occ.dot(&u);
-            let c_nu_t = c_nu_occ.dot(&v);
+        let det_u = u.det().unwrap();                 
+        let det_v = v.det().unwrap();                 
+        let phase = det_u * det_v;   
+        
+        // Compute S_{NOCI} matrix elements.
+        let prod: f64 = s_tilde.iter().copied().product();
+        
+        // Write the rotated MOs.
+        let c_mu_tc = c_mu_t.map(|&x| Complex64::new(x, 0.0));
+        let c_nu_tc = c_nu_t.map(|&x| Complex64::new(x, 0.0));
 
-            let det_u = u.det().unwrap();                 
-            let det_v = v.det().unwrap();                 
-            let phase = det_u * det_v;   
+        (mu, nu, phase, s_tilde, c_mu_tc, c_nu_tc, prod)
+    }).collect();
+
+    // Construct full overlap matrix, associated phase matrix, rotated MOs, and singular values of
+    // \tilde{S}.
+    for (mu, nu, phase, s_tilde, c_mu_tc, c_nu_tc, prod) in tmp {
+
+        // Phase matrix.
+        phase_mat[(mu, nu)] = phase;
+        // S.
+        s_noci[(mu, nu)] = phase * Complex64::new(prod, 0.0);
+        // Singular values.
+        for p in 0..nocc {
+            s_vals[(mu, nu, p)] = s_tilde[p];
+        }
+        // Rotated MOs.
+        c_mu_tilde.slice_mut(s![mu, nu, .., ..]).assign(&c_mu_tc);
+        c_nu_tilde.slice_mut(s![mu, nu, .., ..]).assign(&c_nu_tc);
+
+        if nu != mu {
+            // Hermitian matrix elements.
+            // Phase matrix. Phase is currently real but this may need updating.
             phase_mat[(mu, nu)] = phase;
-            
-            // Compute S_{NOCI} matrix elements.
-            let prod: f64 = s_tilde.iter().copied().product();
-            s_noci[(mu, nu)] = phase * Complex64::new(prod, 0.0);
-            
-            // Write the rotated MOs.
-            c_mu_tilde.slice_mut(s![mu, nu, .., ..])
-                .assign(&c_mu_t.map(|&x| Complex64::new(x, 0.0)));
-            c_nu_tilde.slice_mut(s![mu, nu, .., ..])
-                .assign(&c_nu_t.map(|&x| Complex64::new(x, 0.0)));
-
+            // S.
+            s_noci[(nu, mu)] = s_noci[(mu, nu)].conj();
+            // Singular values.
+            for p in 0..nocc {
+                s_vals[(nu, mu, p)] = s_tilde[p];
+            }
+            // Rotated MOs.
+            c_mu_tilde.slice_mut(s![nu, mu, .., ..]).assign(&c_nu_tc);
+            c_nu_tilde.slice_mut(s![nu, mu, .., ..]).assign(&c_mu_tc);
         }
     }
     (s_noci, s_vals, c_mu_tilde, c_nu_tilde, phase_mat)
@@ -158,21 +185,31 @@ fn calculate_s_red(s_vals: &Array3<f64>, tol: f64) -> Array2<f64> {
     let (nstates, _, _) = s_vals.dim();
     let mut s_red = Array2::<f64>::zeros((nstates, nstates));
 
-    for mu in 0..nstates {
-        for nu in 0..nstates {
-            let sv = s_vals.slice(s![mu, nu, ..]);
-            let mut prod = 1.0f64;
-            let mut count = 0usize;
+    // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
+    // diagonal included). This can be done as S_{red}[\mu, \nu] = S_{red}[\nu, \mu])^T.
+    let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
+    
+    // Calculate S_{red} in parallel.
+    let tmp: Vec<(usize, usize, f64)> = pairs.par_iter().map(|&(mu, nu)| {
+        let sv = s_vals.slice(s![mu, nu, ..]);
 
-            for &v in sv.iter() {
-                if v > tol {
-                    prod *= v;
-                    count += 1;
-                }
+        let mut prod = 1.0f64;
+        let mut count = 0usize;
+
+        for &v in sv.iter() {
+            if v > tol {
+                prod *= v;
+                count += 1;
             }
-            
-            let val = if count > 0 {prod} else {0.0};
-            s_red[(mu, nu)] = val;
+        } 
+        let val = if count > 0 {prod} else {0.0};
+        (mu, nu, val)
+    }).collect();
+
+    for (mu, nu, val) in tmp {
+        s_red[(mu, nu)] = val;
+        if nu != mu {
+            s_red[(nu, mu)] = val;
         }
     }
     s_red
@@ -421,13 +458,8 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
                             &ao.eri_spin, tol, &phase_mat);
     let d_h = t_h.elapsed();
     
-    // Enforce hermiticity of the Hamiltonian and S_{NOCI} matrices.
-    let mut s = s_noci.clone();
-    let s_dag = s.t().map(|z| z.conj());
-    s = (&s + &s_dag) * Complex64::new(0.5, 0.0);
-    let mut h = &h_nuc + &h1 + &h2;
-    let h_dag = h.t().map(|z| z.conj());
-    h = (&h + &h_dag) * Complex64::new(0.5, 0.0);
+    let s = s_noci.clone();
+    let h = &h_nuc + &h1 + &h2;
     let timings = NociTimings {munu_s: d_munu_s, s_noci: d_s_noci, s_red: d_s_red, h: d_h};
 
     (h, s, timings)
