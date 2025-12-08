@@ -68,7 +68,7 @@ fn main() {
             }
 
             // Pass SCF states to NOCI subroutines to and NOCI energy from the given basis.
-            let (e_noci, c0, timings_reference) = calculate_noci_energy(&ao, &noci_reference_basis);
+            let (e_noci, c0, d_h1_h2_reference) = calculate_noci_energy(&ao, &noci_reference_basis);
             let d_noci_reference = t_noci_reference.elapsed();
 
             // Construct the requested excitation space NOCI-QMC basis ontop of the reference basis and
@@ -77,9 +77,12 @@ fn main() {
             let t_noci_qmc_deterministic_basis_construction = Instant::now();
             println!("Building NOCI-QMC basis....");
             let noci_qmc_basis = generate_qmc_noci_basis(&ao, &noci_reference_basis, &input);
-            println!("Calculating NOCI-QMC matrix elements....");
+            println!("Built NOCI-QMC basis of {} determinants.", noci_qmc_basis.len());
+            let n = noci_qmc_basis.len();
+            println!("Calculating NOCI-QMC matrix elements for {} determinants ({} elements)...", n, n * n);
             let d_noci_qmc_deterministic_basis_construction = t_noci_qmc_deterministic_basis_construction.elapsed();
-            let (h_qmc, s_qmc, timings_qmc_deterministic) = build_noci_matrices(&ao, &noci_qmc_basis);
+            let (h_qmc, s_qmc, d_h1_h2_qmc) = build_noci_matrices(&ao, &noci_qmc_basis);
+            println!("Finished calculating NOCI-QMC matrix elements.");
            
             // Choose shift energy. 
             let es = states[0].e; // RHF energy.
@@ -119,18 +122,12 @@ fn main() {
                     print!("");
 
                     println!("Total Reference NOCI time: {:?}", d_noci_reference);
-                    println!(r"  {{}}^{{\mu\nu}}S:  {:?}", timings_reference.munu_s);
-                    println!(r"  S_{{\text{{NOCI}}}}:  {:?}", timings_reference.s_noci);
-                    println!(r"  S_{{\text{{red}}}}:   {:?}", timings_reference.s_red);
-                    println!(r"  H_1 & H_2: {:?}", timings_reference.h);
+                    println!(r"  H_1 & H_2: {:?}", d_h1_h2_reference);
                     print!("");
 
                     println!("Total NOCI-QMC deterministic time: {:?}", d_noci_qmc_deterministic);
                     println!(r"  Basis generation:  {:?}", d_noci_qmc_deterministic_basis_construction);
-                    println!(r"  {{}}^{{\mu\nu}}S:  {:?}", timings_qmc_deterministic.munu_s);
-                    println!(r"  S_{{\text{{NOCI}}}}:  {:?}", timings_qmc_deterministic.s_noci);
-                    println!(r"  S_{{\text{{red}}}}:   {:?}", timings_qmc_deterministic.s_red);
-                    println!(r"  H_1 & H_2: {:?}", timings_qmc_deterministic.h);
+                    println!(r"  H_1 & H_2: {:?}", d_h1_h2_qmc);
                     println!(r"  Deterministic propagation:  {:?}", d_noci_qmc_deterministic_propagation);
                     
                     println!("{}", "=".repeat(100));
