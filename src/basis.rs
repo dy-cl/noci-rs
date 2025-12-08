@@ -1,6 +1,7 @@
 // basis.rs
 use ndarray::{Array1, Array2, Axis, s};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::{AoData, SCFState};
 use crate::input::Input;
@@ -93,8 +94,8 @@ fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
     let nb = (w.db.dot(s)).diag().sum();
     let n= na + nb;
     // Calculate Tr(D_w S D_x S).
-    let tr_a = w.da.dot(s).dot(&x.da).dot(s).diag().sum();
-    let tr_b = w.db.dot(s).dot(&x.db).dot(s).diag().sum();
+    let tr_a = (*w.da).dot(s).dot(&*x.da).dot(s).diag().sum();
+    let tr_b = (*w.db).dot(s).dot(&*x.db).dot(s).diag().sum();
     // Electron distance is the difference.
     n - (tr_a + tr_b)
 }
@@ -124,21 +125,12 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
 ///    ob_ex: Array1, Excited occupied indices spin beta. 
 ///    label_suffix: String, what to append to reference state label to indicate excitation.
 fn make_excited_state(ao: &AoData, reference: &SCFState, oa_ex: Array1<f64>, ob_ex: Array1<f64>, label_suffix: &str,) -> SCFState{
-    let (cs, cs_occ) = spin_block_mo_coeffs(&reference.ca, &reference.cb, &oa_ex, &ob_ex, ao.nao);
+    // Get occupied coefficient matrices.
+    let (_cs, cs_occ) = spin_block_mo_coeffs(&reference.ca, &reference.cb, &oa_ex, &ob_ex, ao.nao);
 
-    // Occupied MOs indices.
-    let occ_alpha: Vec<usize> = oa_ex.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
-    let occ_beta: Vec<usize> = ob_ex.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
-
-    // Get occupied coefficient matrices and form unrelaxed excited state densitites.
-    let ca_occ = reference.ca.select(Axis(1), &occ_alpha);
-    let cb_occ = reference.cb.select(Axis(1), &occ_beta);
-    let da_ex = ca_occ.dot(&ca_occ.t());
-    let db_ex = cb_occ.dot(&cb_occ.t());
-    
-    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, ca: reference.ca.clone(), cb: reference.cb.clone(), 
-              cs, cs_occ, da: da_ex, db: db_ex, label: format!("{} {}", 
-              reference.label, label_suffix), noci_basis: false}
+    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), cs: Arc::clone(&reference.cs),
+              da: Arc::clone(&reference.da), db: Arc::clone(&reference.db), cs_occ, label: format!("{} {}", reference.label, label_suffix),
+              noci_basis: false,}
 }
 
 /// Pass given AO data and previous SCF solutions to SCF cycle to form the requested reference NOCI basis.
@@ -202,8 +194,8 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
         };
         
         if let Some(st) = seed {
-            da = st.da.clone();
-            db = st.db.clone();
+            da = (*st.da).clone();
+            db = (*st.db).clone();
         }
 
         // Reapply the spin bias (if requested) to seperate UHF solutions requiring 
@@ -218,9 +210,17 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
         // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
         // this is later required for NOCI calculations.
         let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
+
+        // Allow for excited determinants to point at this data without copying it in memory.
+        let ca = Arc::new(ca);
+        let cb = Arc::new(cb);
+        let da = Arc::new(da);
+        let db = Arc::new(db);
+        let cs = Arc::new(cs);
+
         let new_state = SCFState{e, oa, ob, ca, cb, cs, cs_occ, da, db, 
                            label: recipe.label.clone(), noci_basis: recipe.noci};
-        
+
         // Remove duplicate states from the basis to avoid singularity issues.
         let mut is_duplicate = false;
         for existing in &out {
@@ -243,6 +243,12 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
     out
 }
 
+/// Generate a requested amount of all possible excitations on top of the given reference NOCI
+/// basis. Currently not a very generalised implementation to higher levels of excitation. 
+/// # Arguments
+///     ao: AoData struct, contains AO integrals and other system data.
+///     refs: [SCFState], array of reference states for which excitations are generated.
+///     input: Input struct, contains user inputted options. 
 pub fn generate_qmc_noci_basis(ao: &AoData, refs: &[SCFState], input: &Input) -> Vec<SCFState> {
     let mut out: Vec<SCFState> = Vec::new();
     for r in refs {

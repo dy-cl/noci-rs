@@ -10,6 +10,7 @@ pub mod maths;
 pub mod deterministic;
 
 use ndarray::{Array1, Array2, Array4};
+use std::sync::Arc;
 
 /// AO integrals and other related data storage.
 pub struct AoData {
@@ -50,17 +51,17 @@ pub struct SCFState {
     // MO occupancies for spin b orbitals (nao,).
     pub ob: Array1<f64>, 
     // MO coefficients for spin a electrons, (nao, nao).
-    pub ca: Array2<f64>,  
+    pub ca: Arc<Array2<f64>>,  
     // MO coefficients for spin b electrons, (nao, nao).
-    pub cb: Array2<f64>,  
+    pub cb: Arc<Array2<f64>>,  
     // MO coefficients in spin diagonal block [[ca, 0], [0, cb]], (2 * nao, 2 * nao).
-    pub cs: Array2<f64>, 
+    pub cs: Arc<Array2<f64>>, 
     // Occupied only MO coefficients of the spin digonal matrix, (2 * nao, nocca + noccb).
     pub cs_occ: Array2<f64>,
     // SCF converged density matrix spin a. 
-    pub da: Array2<f64>, 
+    pub da: Arc<Array2<f64>>, 
     // SCF converged density matrix spin b. 
-    pub db: Array2<f64>,
+    pub db: Arc<Array2<f64>>,
     // Label defined in user input.
     pub label: String,
     // Is this state used in the NOCI basis?
