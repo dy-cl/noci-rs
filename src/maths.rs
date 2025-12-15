@@ -1,5 +1,5 @@
 // maths.rs
-use ndarray::{Array1, Array2, Array4};
+use ndarray::{Array1, Array2, Array4, Axis};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
@@ -123,14 +123,9 @@ pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Comp
 /// `h`: Array2, matrix. 
 /// `c`: Array1, vector.
 pub fn parallel_matvec(h: &Array2<Complex64>, c: &Array1<Complex64>) -> Array1<Complex64> {
-    let (_m, n) = h.dim();
-    // Store matrix and vector as 1D contiguous arrays. 
-    let h_slice: &[Complex64] = h.as_slice().unwrap();
-    let c_slice: &[Complex64] = c.as_slice().unwrap();
-    // Split slice of h into sections of length n (of which there are m), and  process each row in
-    // parallel. We iterate over each row of length n, compute the dot product with the vector c,
-    // sum and collect into a vector of length m. The order is preserved.
-    let result: Vec<Complex64> = h_slice.par_chunks_exact(n).map(|row| {row.iter().zip(c_slice.iter()).map(|(&hij, &cj)| hij * cj).sum::<Complex64>()}).collect();
+    // Iterate over rows of the matrix h in parallel, for each computing its dot product with
+    // vector c, and finally collect the results into a vector.
+    let result: Vec<Complex64> = h.axis_iter(Axis(0)).into_par_iter().map(|row| {row.iter().zip(c.iter()).map(|(&hij, &cj)| hij * cj).sum::<Complex64>()}).collect();
     Array1::from_vec(result)
 }
 

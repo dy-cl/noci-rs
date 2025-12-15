@@ -167,7 +167,7 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
     let mut out: Vec<SCFState> = Vec::with_capacity(input.states.len());
 
     for (i, recipe) in input.states.iter().enumerate() {
-        if input.verbose {
+        if input.write.verbose {
             let left = "=".repeat(45);
             let right = "=".repeat(46);
             println!("{}Begin SCF{}", left, right);

@@ -1,8 +1,30 @@
 use rlua::{Lua, Value, Table};
 use std::fs;
 
+// Choice of propagator.
+pub enum Propagator {
+    Unshifted,
+    Shifted,
+}
+
 // Electron spin.
 pub enum Spin {Alpha, Beta}
+
+// Storage for mol info.
+pub struct MolOptions {
+    pub basis: String,
+    pub unit: String,
+    pub r_list: Vec<f64>,
+    pub geoms: Vec<Vec<String>>,
+}
+
+// Storage for SCF info.
+pub struct SCFInfo {
+    pub max_cycle: i32,
+    pub e_tol: f64,
+    pub diis: DiisOptions,
+    pub do_fci: bool,
+}
 
 // Storage for excitation data.
 pub struct Excitation {
@@ -37,29 +59,23 @@ pub struct QMCOptions {
     pub dt: f64, 
     pub qmc_e_tol: f64,
     pub max_steps: usize,
+    pub propagator: Propagator,
+}
+
+// Storage for output options
+pub struct WriteOptions {
+    pub verbose: bool,
+    pub write_coeffs: bool,
+    pub coeffs_dir: String,
+    pub coeffs_filename: String,
 }
 
 /// Storage for Input file parameters.
 pub struct Input {
-    // SCF table.
-    pub max_cycle: i32,
-    pub e_tol: f64,
-    pub diis: DiisOptions,
-    pub do_fci: bool,
-    
-    // Mol table.
-    pub basis: String,
-    pub unit: String,
-    pub r_list: Vec<f64>,
-    pub geoms: Vec<Vec<String>>,
-
-    // Write table. 
-    pub verbose: bool,
-
-    // States table.
+    pub mol: MolOptions,
+    pub scf: SCFInfo,
+    pub write: WriteOptions,
     pub states: Vec<StateRecipe>,
-
-    // QMC table
     pub qmc: QMCOptions,
 }
 
@@ -76,23 +92,17 @@ pub fn load_input(path: &str) -> Input {
     let globals = ctx.globals();
 
     // Table headers.
-    let scf: rlua::Table = globals.get("scf").unwrap();
-    let mol: rlua::Table = globals.get("mol").unwrap();
-    let write: rlua::Table = globals.get("write").unwrap();
-    
-    // SCF table.
-    let max_cycle: i32 = scf.get("max_cycle").unwrap();
-    let e_tol: f64 = scf.get("e_tol").unwrap();
-    let diis: rlua::Table = scf.get("diis").unwrap();
-    let space: usize = diis.get("space").unwrap();
-    let diis = DiisOptions {space};
-    let do_fci: bool = scf.get("do_fci").unwrap();
+    let mol_tbl: rlua::Table = globals.get("mol").unwrap();
+    let scf_tbl: rlua::Table = globals.get("scf").unwrap();
+    let write_tbl: rlua::Table = globals.get("write").unwrap();
+    let state_tbl: rlua::Table = globals.get("states").unwrap();
+    let qmc_tbl: Table = globals.get("qmc").unwrap();
     
     // Mol table.
-    let basis: String = mol.get("basis").unwrap();
-    let unit: String = mol.get("unit").unwrap();
+    let basis: String = mol_tbl.get("basis").unwrap();
+    let unit: String = mol_tbl.get("unit").unwrap();
     // Allow mol.r to be a number or table. 
-    let r_val: Value = mol.get("r").unwrap();
+    let r_val: Value = mol_tbl.get("r").unwrap();
     let mut r_list: Vec<f64> = Vec::new();
     match r_val {
         // For a number simply add to r_list.
@@ -107,7 +117,7 @@ pub fn load_input(path: &str) -> Input {
         _ => {eprintln!("Number or table required by mol.r"); std::process::exit(1);},
     }
     // Allow mol.atoms to be either a lua table or function.
-    let atoms_val: Value = mol.get("atoms").unwrap();
+    let atoms_val: Value = mol_tbl.get("atoms").unwrap();
     let geoms: Vec<Vec<String>> = match atoms_val {
         // If atoms is a lua table we have a static geometry and can duplicate 
         // this geometry across all r (which for static geometry should be 1 value).
@@ -125,14 +135,27 @@ pub fn load_input(path: &str) -> Input {
             }
             out
         }
-        _ => { eprintln!("Table or function required by mol.atoms"); std::process::exit(1); }
+        _ => {eprintln!("Table or function required by mol.atoms"); std::process::exit(1);}
     };
+    let mol = MolOptions {basis, unit, r_list, geoms};
 
-    // Write table. 
-    let verbose: bool = write.get("verbose").unwrap();
+    // SCF table.
+    let max_cycle: i32 = scf_tbl.get("max_cycle").unwrap();
+    let e_tol: f64 = scf_tbl.get("e_tol").unwrap();
+    let diis: rlua::Table = scf_tbl.get("diis").unwrap();
+    let space: usize = diis.get("space").unwrap();
+    let diis = DiisOptions {space};
+    let do_fci: bool = scf_tbl.get("do_fci").unwrap();
+    let scf = SCFInfo {max_cycle, e_tol, diis, do_fci};
+
+    // Write table.
+    let verbose: bool = write_tbl.get("verbose").unwrap();
+    let write_coeffs: bool = write_tbl.get("write_coeffs").unwrap();
+    let coeffs_dir: String = write_tbl.get("coeffs_dir").unwrap();
+    let coeffs_filename: String = write_tbl.get("coeffs_filename").unwrap();
+    let write = WriteOptions {verbose, write_coeffs, coeffs_dir, coeffs_filename};
 
     // States table.
-    let state_tbl: rlua::Table = globals.get("states").unwrap();
     let mut states: Vec<StateRecipe> = Vec::new();
     for st in state_tbl.sequence_values::<rlua::Table>() {
 
@@ -154,14 +177,20 @@ pub fn load_input(path: &str) -> Input {
     }
     
     // QMC table
-    let qmc_tbl: Table = globals.get("qmc").unwrap();
     let qmc_singles: bool = qmc_tbl.get("singles").unwrap();
     let qmc_doubles: bool = qmc_tbl.get("doubles").unwrap();
     let dt: f64 = qmc_tbl.get("dt").unwrap();
     let qmc_e_tol: f64 = qmc_tbl.get("e_tol").unwrap();
     let max_steps: usize = qmc_tbl.get("max_steps").unwrap();
-    let qmc = QMCOptions {qmc_singles, qmc_doubles, dt, qmc_e_tol, max_steps};
+    let propagator_str: String = qmc_tbl.get("propagator").unwrap();
+    let propagator = match propagator_str.as_str() {
+        "unshifted" => Propagator::Unshifted,
+        "shifted" => Propagator::Shifted,
+        _ => {eprintln!("Propagator must be 'unshifted' or 'shifted'."); std::process::exit(1);} 
+    };
 
-    Input {max_cycle, e_tol, diis, do_fci, basis, r_list, geoms, unit, verbose, states, qmc,}
+    let qmc = QMCOptions {qmc_singles, qmc_doubles, dt, qmc_e_tol, max_steps, propagator};
+
+    Input {mol, scf, write, states, qmc}
 }
 

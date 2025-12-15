@@ -147,12 +147,12 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     let mut db = db0.clone();
 
     let use_diis = true;
-    let mut diis = Diis::new(input.diis.space);
+    let mut diis = Diis::new(input.scf.diis.space);
 
     let mut ca_occ_old: Option<Array2<f64>> = None;
     let mut cb_occ_old: Option<Array2<f64>> = None;
     
-    if input.verbose {
+    if input.write.verbose {
         match excitation {
             Some(ex) => {
                 let sp = match ex.spin {
@@ -170,7 +170,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     }
    
     let mut iter = 0;
-    while iter < input.max_cycle {
+    while iter < input.scf.max_cycle {
         
         // Form Fock matrices from current densities and add to DIIS history.
         let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
@@ -265,11 +265,11 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         };
         let d_e = (e_new - e).abs();
 
-        if input.verbose{
+        if input.write.verbose{
             println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);
         }
         
-        if d_e < input.e_tol {
+        if d_e < input.scf.e_tol {
             println!("Coefficients ca:");
             print_array2(&ca);
             println!("Coefficients cb:");

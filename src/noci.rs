@@ -291,9 +291,10 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array
     println!("Shifted NOCI-reference Hamiltonian");
     let h_shift = &h.map(|z: &Complex64| z.re) - scfstates[0].e * &s.map(|z: &Complex64| z.re);
     print_array2(&h_shift);
+    let (evals, c) = general_evp_complex(&h, &s, true, tol);
+    println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
     println!("{}", "=".repeat(100));
 
-    let (evals, c) = general_evp_complex(&h, &s, true, tol);
     // Assumes columns of c are energy ordered eigenvectors
     let c0 = c.column(0).to_owned(); 
     (evals[0], c0, d_h)

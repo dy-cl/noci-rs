@@ -3,6 +3,8 @@ use std::process::Command;
 use std::time::{Instant};
 use ndarray::Array1;
 use num_complex::Complex64;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
@@ -24,16 +26,16 @@ fn main() {
     let input = load_input(&input_path);
     let mut prev_states: Vec<SCFState> = Vec::new();
    
-    println!("Running SCF for {} geometries...", input.r_list.len());
-    for (i, r) in input.r_list.iter().copied().enumerate(){
+    println!("Running SCF for {} geometries...", input.mol.r_list.len());
+    for (i, r) in input.mol.r_list.iter().copied().enumerate(){
         println!("\n");
-        let atoms = &input.geoms[i];
+        let atoms = &input.mol.geoms[i];
         let atomsj = serde_json::to_string(atoms).unwrap();
         let t_gen = Instant::now();
         // Run interface to PySCF which generates AO integrals, overlap matrix, density matrices etc.
-        let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.basis)
-                                            .arg("--unit").arg(&input.unit).arg("--out").arg("data.h5").arg("--fci")
-                                            .arg(if input.do_fci { "true" } else { "false" }).status().unwrap();
+        let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.mol.basis)
+                                            .arg("--unit").arg(&input.mol.unit).arg("--out").arg("data.h5").arg("--fci")
+                                            .arg(if input.scf.do_fci { "true" } else { "false" }).status().unwrap();
         if !status.success() {
             eprintln!("Failed to generate mol with status {status}");
             std::process::exit(1);
@@ -83,11 +85,11 @@ fn main() {
             let d_noci_qmc_deterministic_basis_construction = t_noci_qmc_deterministic_basis_construction.elapsed();
             let (h_qmc, s_qmc, d_h1_h2_qmc) = build_noci_matrices(&ao, &noci_qmc_basis);
             println!("Finished calculating NOCI-QMC matrix elements.");
-           
-            // Choose shift energy. 
-            let es = states[0].e; // RHF energy.
+            
+            // Choose shift energy.
+            //let es = states[0].e; // RHF energy.
+            let es = e_noci; // NOCI-reference energy.
             let h_qmc_shift = &h_qmc - Complex64::new(es, 0.0) * &s_qmc;
-            println!("{}", "=".repeat(100));
 
             println!("Running deterministic NOCI-QMC propagation....");
             let t_noci_qmc_deterministic_propagation = Instant::now();
@@ -95,17 +97,29 @@ fn main() {
             // Embed reference NOCI coefficient vector in full NOCI-QMC space.
             let n_qmc = noci_qmc_basis.len();
             let mut c0_qmc = Array1::<Complex64>::zeros(n_qmc);  
-            // Iterate over states in the full NOCI-QMC basis and place reference coefficients on the
-            // states with reference state labels. This could break if the reference states are not in
-            // the expected order so should be made more robust.
-            for (i, ref_st) in noci_reference_basis.iter().enumerate() {
-                let idx = noci_qmc_basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
-                c0_qmc[idx] = c0[i];
-            }
+            
+            // If we are not interested in plotting evolution of individual coefficients we use the
+            // reference NOCI coefficients as our initial guess as this is the best guess, however,
+            // the coefficients often don't change much which makes for a boring plot.
+            if !input.write.write_coeffs {
+                // Iterate over states in the full NOCI-QMC basis and place reference coefficients on the
+                // states with reference state labels. This could break if the reference states are not in
+                // the expected order so should be made more robust.
+                for (i, ref_st) in noci_reference_basis.iter().enumerate() {
+                    let idx = noci_qmc_basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
+                    c0_qmc[idx] = c0[i];
+                }
+            // If we are interested in plotting the evolution of individual coefficients we use an
+            // equal weighting of all SCF states as our initial guess.
+            } else {
+                c0_qmc = Array1::from_elem(n_qmc, Complex64::new(1.0 / (n_qmc as f64).sqrt(), 0.0));
+            };   
             println!("Initial wavefunction ansatz (C0-QMC): {}", c0_qmc);
 
             // Propagate coefficient vector deterministically in full NOCI-QMC basis.
-            let propagation_result = propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, input.qmc.dt, input.qmc.max_steps, input.qmc.qmc_e_tol);
+            let mut coefficients = Vec::new();
+            let propagation_result = propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, input.qmc.dt, input.qmc.max_steps, 
+                                               input.qmc.qmc_e_tol, &mut coefficients, &input);
             let d_noci_qmc_deterministic_propagation = t_noci_qmc_deterministic_propagation.elapsed();
             let d_noci_qmc_deterministic = t_noci_qmc_deterministic.elapsed();
 
@@ -139,6 +153,32 @@ fn main() {
                     println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_tot, e_tot - states[0].e);
                     if let Some(e_fci) = ao.e_fci {
                         println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - states[0].e);
+                    }
+                    
+                    if input.write.write_coeffs {
+                        // Write all coefficients to a file. Currently if we are doing multiple
+                        // geometries this file will just overwrite itself and so we end up with only
+                        // the coefficients of the final geometry. Also this writing is slow. 
+                        println!("Writing coefficients to file...");
+                        let filepath = format!("{}/{}", input.write.coeffs_dir, input.write.coeffs_filename);
+                        let file = File::create(filepath).unwrap();
+                        let mut writer = BufWriter::new(file);
+                        for iter in &coefficients {
+                            writeln!(writer, "iter {}", iter.iter).unwrap();
+                            writeln!(writer, "Full coefficients:").unwrap();
+                            for (i, z) in iter.c_full.iter().enumerate() {
+                                writeln!(writer, "{:4} {:.8e}  {:.8e}", i, z.re, z.im).unwrap();
+                            }
+                            writeln!(writer, "Relevant space coefficients:").unwrap();
+                            for (i, z) in iter.c_relevant.iter().enumerate() {
+                                writeln!(writer, "{:4} {:.8e} {:.8e}", i, z.re, z.im).unwrap();
+                            }
+                            writeln!(writer, "Null space coefficients:").unwrap();
+                            for (i, z) in iter.c_null.iter().enumerate() {
+                                writeln!(writer, "{:4} {:.8e} {:.8e}", i, z.re, z.im).unwrap();
+                            }
+                            writeln!(writer).unwrap(); 
+                        }
                     }
                     
                     prev_states = states.clone();
