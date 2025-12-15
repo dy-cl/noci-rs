@@ -54,10 +54,10 @@ pub struct DiisOptions {
 
 // Storage for QMC options 
 pub struct QMCOptions {
-    pub qmc_singles: bool, 
-    pub qmc_doubles: bool,
+    pub singles: bool, 
+    pub doubles: bool,
     pub dt: f64, 
-    pub qmc_e_tol: f64,
+    pub e_tol: f64,
     pub max_steps: usize,
     pub propagator: Propagator,
 }
@@ -177,8 +177,8 @@ pub fn load_input(path: &str) -> Input {
     }
     
     // QMC table
-    let qmc_singles: bool = qmc_tbl.get("singles").unwrap();
-    let qmc_doubles: bool = qmc_tbl.get("doubles").unwrap();
+    let singles: bool = qmc_tbl.get("singles").unwrap();
+    let doubles: bool = qmc_tbl.get("doubles").unwrap();
     let dt: f64 = qmc_tbl.get("dt").unwrap();
     let qmc_e_tol: f64 = qmc_tbl.get("e_tol").unwrap();
     let max_steps: usize = qmc_tbl.get("max_steps").unwrap();
@@ -189,7 +189,7 @@ pub fn load_input(path: &str) -> Input {
         _ => {eprintln!("Propagator must be 'unshifted' or 'shifted'."); std::process::exit(1);} 
     };
 
-    let qmc = QMCOptions {qmc_singles, qmc_doubles, dt, qmc_e_tol, max_steps, propagator};
+    let qmc = QMCOptions {singles, doubles, dt, e_tol: qmc_e_tol, max_steps, propagator};
 
     Input {mol, scf, write, states, qmc}
 }

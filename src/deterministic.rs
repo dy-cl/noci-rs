@@ -118,12 +118,10 @@ pub fn propagate_step_shifted(h: &Array2<Complex64>, c: &Array1<Complex64>, esc:
 ///     `es`: Scalar, Energy shift, we just use the reference HF energy for this here.
 ///     `max_steps`: Maximum number of time-step updates to perform.
 ///     `e_tol`: Energy tolerance which determines convergence.
-pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Complex64>,
-    es: f64, dt: f64, max_steps: usize, e_tol: f64, history: &mut Vec<Coefficients>, 
-    input: &Input) -> Option<Array1<Complex64>> {
-    
-    let mut c_norm = c0.clone();
+pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Complex64>, es: f64, history: &mut Vec<Coefficients>, 
+                 input: &Input) -> Option<Array1<Complex64>> {
 
+    let mut c_norm = c0.clone();
     let mut e_prev = projected_energy(h, s, c0, es);
     let esc = Complex64::new(es, 0.0);
     let de_max = 10.0;
@@ -150,13 +148,13 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
     let den_sqrt = den.sqrt();
     println!("{:<6} {:>10.6} {:>10.3e}, {:>10.6} {:>10.6}", 0, e_prev, 0, c0_1norm, den_sqrt);
 
-    for it in 0..max_steps {
+    for it in 0..input.qmc.max_steps {
         // Select propagator.
         let mut c_new_norm = match input.qmc.propagator {
             // U_{\Pi\Lambda}(\Delta\tau) = (1 + \Delta\tau E_s)\delta_{\Lambda}^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_s S_{\Pi\Lambda})
-            Propagator::Shifted => propagate_step_shifted(h, &c_norm, esc, dt),
+            Propagator::Shifted => propagate_step_shifted(h, &c_norm, esc, input.qmc.dt),
             // U_{\Pi\Lambda}(\Delta\tau) = \delta_\Lambda^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_sS_{\Pi\Lambda})
-            Propagator::Unshifted => propagate_step_unshifted(h, &c_norm, dt),
+            Propagator::Unshifted => propagate_step_unshifted(h, &c_norm, input.qmc.dt),
         };
 
         // Normalise (enforce C S C^\dagger = 1) and calculate energy.
@@ -196,7 +194,7 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
             return None
         }
 
-        if de < e_tol {
+        if de < input.qmc.e_tol {
             return Some(c_new_norm)
         }
         c_norm = c_new_norm;

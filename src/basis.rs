@@ -1,9 +1,10 @@
 // basis.rs
-use ndarray::{Array1, Array2, Axis, s};
+use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{AoData, SCFState};
+use crate::scf::{spin_block_mo_coeffs, scf_cycle};
 use crate::input::Input;
 
 pub struct SpinOccupation {
@@ -53,33 +54,6 @@ fn bias_density(da: &mut Array2<f64>, db: &mut Array2<f64>, ia: &[usize], ib: &[
         scale_block(da, ib, up);
         scale_block(db, ib, dn);
     }
-}
-
-/// Assembles the spin diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]) and the 
-/// occupied only variant.
-/// # Arguments
-///     `ca`: Array2, spin a MO coefficients.
-///     `cb`: Array2, spin b MO coefficients.
-///     `oa`: Occupancy vector for spin a MOs.
-///     `ob`: Occupancy vector for spin b MOs.
-///     `nao`: Number of AOs.
-pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>, 
-                            ob: &Array1<f64>, nao: usize) -> (Array2<f64>, Array2<f64>) {
-
-        let mut cs = Array2::<f64>::zeros((2 * nao, 2 * nao));
-        cs.slice_mut(s![0..nao, 0..nao]).assign(ca);
-        cs.slice_mut(s![nao..2 * nao, nao..2 * nao]).assign(cb);
-        
-        // Number of AOs is equal to number of MOs here.
-        let mut cols: Vec<usize> = oa.iter().enumerate()
-                                   .filter_map(|(i, &occ)| if occ > 0.5 { Some(i) } else { None })
-                                   .collect();
-        cols.extend(ob.iter().enumerate()
-                    .filter_map(|(i, &occ)| if occ > 0.5 { Some(nao + i) } else { None }));
-
-        let cs_occ = cs.select(Axis(1), &cols);
-
-        (cs, cs_occ)
 }
 
 /// Calculate the distance between SCF states from Phys. Rev. Lett. 101, 193001 as 
@@ -205,21 +179,7 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
                 bias_density(&mut da, &mut db, &ia, &ib, sb.pol, is_ab); 
         }
 
-        let (e, ca, cb, oa, ob, da, db) = crate::scf::scf_cycle(&da, &db, ao, input, excitation);
-
-        // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
-        // this is later required for NOCI calculations.
-        let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
-
-        // Allow for excited determinants to point at this data without copying it in memory.
-        let ca = Arc::new(ca);
-        let cb = Arc::new(cb);
-        let da = Arc::new(da);
-        let db = Arc::new(db);
-        let cs = Arc::new(cs);
-
-        let new_state = SCFState{e, oa, ob, ca, cb, cs, cs_occ, da, db, 
-                           label: recipe.label.clone(), noci_basis: recipe.noci};
+        let state: SCFState = scf_cycle(&da, &db, ao, input, excitation, i).expect("SCF did not converge");
 
         // Remove duplicate states from the basis to avoid singularity issues.
         let mut is_duplicate = false;
@@ -228,16 +188,16 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
             if !existing.noci_basis {
                 continue;
             }
-            let d2 = electron_distance(existing, &new_state, &ao.s_ao);
+            let d2 = electron_distance(existing, &state, &ao.s_ao);
             if d2 < d_tol {
-                println!("Removed state '{}' from basis as d^2({}, {}) = {:.6}", new_state.label, existing.label, new_state.label, d2);
+                println!("Removed state '{}' from basis as d^2({}, {}) = {:.6}", state.label, existing.label, state.label, d2);
                 is_duplicate = true;
                 break;
             }
         }
         // By this point we are sure there are no duplicate states
         if !is_duplicate {
-            out.push(new_state);
+            out.push(state);
         }
     }
     out
@@ -255,14 +215,14 @@ pub fn generate_qmc_noci_basis(ao: &AoData, refs: &[SCFState], input: &Input) ->
         // Include reference states in NOCI-QMC basis.
         out.push(r.clone());
          // If no excitations requested for this ref, continue
-        if !(input.qmc.qmc_singles || input.qmc.qmc_doubles) {
+        if !(input.qmc.singles || input.qmc.doubles) {
             continue;
         }
 
         let spin_occ = get_spin_occupation(r);
 
         // Single excitations 
-        if input.qmc.qmc_singles {
+        if input.qmc.singles {
             // Single excitations spin alpha 
             for &i in &spin_occ.occ_alpha {
                 for &a in &spin_occ.virt_alpha {
@@ -291,7 +251,7 @@ pub fn generate_qmc_noci_basis(ao: &AoData, refs: &[SCFState], input: &Input) ->
         }
         
         // Double excitations
-        if input.qmc.qmc_doubles {
+        if input.qmc.doubles {
             // Double excitations spin alpha spin alpha 
             let occ_a = &spin_occ.occ_alpha;
             let virt_a = &spin_occ.virt_alpha;

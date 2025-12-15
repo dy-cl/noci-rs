@@ -1,7 +1,8 @@
 // scf.rs
 use ndarray::{Axis, Array1, Array2, Array4, s};
+use std::sync::Arc;
 
-use crate::AoData;
+use crate::{AoData, SCFState};
 use crate::input::{Input, Spin, Excitation};
 use crate::diis::Diis;
 
@@ -123,18 +124,43 @@ fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: u
     idx
 }
 
+/// Assembles the spin diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]) and the 
+/// occupied only variant.
+/// # Arguments
+///     `ca`: Array2, spin a MO coefficients.
+///     `cb`: Array2, spin b MO coefficients.
+///     `oa`: Occupancy vector for spin a MOs.
+///     `ob`: Occupancy vector for spin b MOs.
+///     `nao`: Number of AOs.
+pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>, 
+                            ob: &Array1<f64>, nao: usize) -> (Array2<f64>, Array2<f64>) {
+
+        let mut cs = Array2::<f64>::zeros((2 * nao, 2 * nao));
+        cs.slice_mut(s![0..nao, 0..nao]).assign(ca);
+        cs.slice_mut(s![nao..2 * nao, nao..2 * nao]).assign(cb);
+        
+        // Number of AOs is equal to number of MOs here.
+        let mut cols: Vec<usize> = oa.iter().enumerate()
+                                   .filter_map(|(i, &occ)| if occ > 0.5 { Some(i) } else { None })
+                                   .collect();
+        cols.extend(ob.iter().enumerate()
+                    .filter_map(|(i, &occ)| if occ > 0.5 { Some(nao + i) } else { None }));
+
+        let cs_occ = cs.select(Axis(1), &cols);
+
+        (cs, cs_occ)
+}
+
 /// Unrestricted SCF cycle with Loewdin orthogonalization.
 /// Uses AO integrals from AoData struct.
 /// # Arguments
 ///     `da0`: Array2, initial spin a density matrix.
 ///     `db0`: Array2, initial spin b density matrix.
 ///     `ao`: AoData struct, contains AO integrals and metadata.
-///     `input`: Input struct, contains user specified input data. 
+///     `input`: Input struct, contains user specified input data.
+///     `i`: Index of the SCF state.
 pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, 
-                 excitation: Option<&Excitation>) 
-                 -> (f64, Array2<f64>, Array2<f64>, Array1<f64>, Array1<f64>, 
-                     Array2<f64>, Array2<f64>,){
-    
+                 excitation: Option<&Excitation>, i: usize) -> Option<SCFState> { 
     let h = &ao.h; 
     let eri = &ao.eri;
     let s = &ao.s_ao;
@@ -274,16 +300,26 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
             print_array2(&ca);
             println!("Coefficients cb:");
             print_array2(&cb);
-            return (e_new, ca, cb, oa, ob, da_new, db_new);
+
+            // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
+            // this is later required for NOCI calculations.
+            let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
+
+            // Allow for excited determinants to point at this data without copying it in memory.
+            let ca = Arc::new(ca);
+            let cb = Arc::new(cb);
+            let da = Arc::new(da_new);
+            let db = Arc::new(db_new);
+            let cs = Arc::new(cs);
+
+            return Some(SCFState {e: e_new, oa, ob, ca, cb, cs, cs_occ, da, db, 
+                        label: input.states[i].label.clone(), noci_basis: input.states[i].noci});
         }
         da = da_new; 
         db = db_new;
         e = e_new;
         iter += 1;
     }
-     
     println!("SCF not converged.");
-    (f64::NAN, Array2::<f64>::zeros((0, 0)), Array2::<f64>::zeros((0, 0)), 
-     Array1::<f64>::zeros(0), Array1::<f64>::zeros(0), Array2::<f64>::zeros((0, 0)), 
-     Array2::<f64>::zeros((0, 0)),)
+    None
 }

@@ -11,6 +11,17 @@ use crate::utils::print_array2;
 
 use crate::maths::{einsum_ba_ab, einsum_ba_acbd_dc, general_evp_complex};
 
+// Storage for per SCF basis set pair.
+pub struct Pair {
+    pub munu_s_noci: Complex64,
+    pub s_tilde: Array1<f64>,
+    pub s_red: Complex64,
+    pub zeros: Vec<usize>,
+    pub c_mu_tc: Array2<Complex64>,
+    pub c_nu_tc: Array2<Complex64>,
+    pub phase: f64,
+}
+
 /// Calculate the occupied MO overlap {}^{\mu\nu}S for SCF states \mu and \nu as:
 /// {}^{\mu\nu}S = C_{\mu}^{occ, \dagger} S C_{\nu}^{occ}.
 /// # Arguments
@@ -130,36 +141,35 @@ fn calculate_codensity_w_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2
 
 /// Calculate one electron and nuclear Hamiltonian matrix elements using the generalised 
 /// Slater-Condon rules for a pair of Slater determinants \mu and \nu. 
-/// # Arguments 
-///     `h_spin`: Array2, spin block diagonal core Hamiltonian matrix.
-///     `enuc`: Scalar, nuclear repulsion energy. 
-///     `s_vals`: Array3, Singular values of the SVD decomposed s_tilde for each SCF state pair.
-///     `s_red`: Array2, Product of the non-zero values of s_vals for each SCF state pair.
-///     `c_mu_tc`: Array2, Rotated MO coefficient matrix of determinant \mu.
-///     `c_nu_tc`: Array2, Rotated MO coefficient matrix of determinant \nu.
+/// # Arguments
+///     `pair`: Pair struct, contains the following data concerning a pair of SCF states:
+///         `enuc`: Scalar, nuclear repulsion energy. 
+///         `s_vals`: Array3, Singular values of the SVD decomposed s_tilde for each SCF state pair.
+///         `s_red`: Array2, Product of the non-zero values of s_vals for each SCF state pair.
+///         `c_mu_tc`: Array2, Rotated MO coefficient matrix of determinant \mu.
+///         `c_nu_tc`: Array2, Rotated MO coefficient matrix of determinant \nu.
+///         `phase`: f64, Phase associated with determinant pair \mu \nu.
+///         `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
+///          given pair \mu \nu.
 ///     `tol`: Float, value below which a number is considered as zero.
-///     `phase`: f64, Phase associated with determinant pair \mu \nu.
-///     `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
-///     given pair \mu \nu.
-fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array1<f64>, s_red: Complex64,
-                  c_mu_tc: &Array2<Complex64>, c_nu_tc: &Array2<Complex64>, zeros: &[usize], 
-                  tol: f64, phase: f64) -> (Complex64, Complex64) {
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+fn one_electron_h(ao: &AoData, pair: &Pair, tol: f64) -> (Complex64, Complex64) {
                       
-    let (munu_h1, munu_h_nuc) = match zeros.len() {
+    let (munu_h1, munu_h_nuc) = match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w.
         0 => {
-            let munu_w = calculate_codensity_w_pair(c_mu_tc, c_nu_tc, s_vals, tol);
-            let val = einsum_ba_ab(&munu_w, h_spin);
-            let h1_val = phase * s_red * val;
-            let h_nuc_val = phase * s_red * Complex64::new(enuc, 0.0);
+            let munu_w = calculate_codensity_w_pair(&pair.c_mu_tc, &pair.c_nu_tc, &pair.s_tilde, tol);
+            let val = einsum_ba_ab(&munu_w, &ao.h_spin);
+            let h1_val = pair.phase * pair.s_red * val;
+            let h_nuc_val = pair.phase * pair.s_red * Complex64::new(ao.enuc, 0.0);
             (h1_val, h_nuc_val)
         }
         // With 1 zero (s_i = 0 for 1 i) we use P_i.
         1 => {
-            let i = zeros[0];
-            let munu_p_i = calculate_codensity_p_pair(c_mu_tc, c_nu_tc, i);
-            let val = einsum_ba_ab(&munu_p_i, h_spin);
-            let h1_val = phase * val;
+            let i = pair.zeros[0];
+            let munu_p_i = calculate_codensity_p_pair(&pair.c_mu_tc, &pair.c_nu_tc, i);
+            let val = einsum_ba_ab(&munu_p_i, &ao.h_spin);
+            let h1_val = pair.phase * val;
             let h_nuc_val = Complex64::new(0.0, 0.0);
             (h1_val, h_nuc_val)
         // Otherwise the matrix element is zero.
@@ -174,45 +184,45 @@ fn one_electron_h(h_spin: &Array2<f64>, enuc: f64, s_vals: &Array1<f64>, s_red: 
 }
 
 /// Calculate two electron Hamiltonian matrix elements using the generalised 
-/// Slater-Condon rules for a pair of Slater determinants \mu and \nu. 
-/// # Arguments 
-///     `s_vals`: Array1, Singular values of the SVD decomposed s_tilde for determinants \mu, \nu.
-///     `s_red`: Complex64, Product of the non-zero values of s_vals for determinants \mu, \nu.
-///     `c_mu_tc`: Array2, Rotated MO coefficient matrix of determinant \mu.
-///     `c_nu_tc`: Array2, Rotated MO coefficient matrix of determinant \nu.
-///     `eri_spin`: Array4, antisymmetrised ERIs in spin diagonal block.
-///     `phase`: f64, Phase associated with determinant pair \mu \nu.
-///     `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
-///     given pair \mu \nu.
+/// Slater-Condon rules for a pair of Slater determinants \mu and \nu.
+/// # Arguments
+///     `pair`: Pair struct, contains the following data concerning a pair of SCF states:
+///         `enuc`: Scalar, nuclear repulsion energy. 
+///         `s_vals`: Array3, Singular values of the SVD decomposed s_tilde for each SCF state pair.
+///         `s_red`: Array2, Product of the non-zero values of s_vals for each SCF state pair.
+///         `c_mu_tc`: Array2, Rotated MO coefficient matrix of determinant \mu.
+///         `c_nu_tc`: Array2, Rotated MO coefficient matrix of determinant \nu.
+///         `phase`: f64, Phase associated with determinant pair \mu \nu.
+///         `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
+///          given pair \mu \nu.
 ///     `tol`: Float, value below which a number is considered as zero.
-fn two_electron_h(s_vals: &Array1<f64>, s_red: Complex64, c_mu_tc: &Array2<Complex64>, c_nu_tc: &Array2<Complex64>, 
-                  eri_spin: &Array4<f64>, zeros: &[usize], tol: f64, phase: f64) 
-                  -> Complex64 {
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+fn two_electron_h(ao: &AoData, pair: &Pair, tol: f64) -> Complex64 {
 
-    match zeros.len() {
+    match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
         0 => {
-            let munu_w = calculate_codensity_w_pair(c_mu_tc, c_nu_tc, s_vals, tol);
-            let val = Complex64::new(0.5, 0.0) * einsum_ba_acbd_dc(&munu_w, eri_spin, &munu_w);
-            phase * val * s_red
+            let munu_w = calculate_codensity_w_pair(&pair.c_mu_tc, &pair.c_nu_tc, &pair.s_tilde, tol);
+            let val = Complex64::new(0.5, 0.0) * einsum_ba_acbd_dc(&munu_w, &ao.eri_spin, &munu_w);
+            pair.phase * val * pair.s_red
         }
         // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
         1 => {
-            let i = zeros[0];
-            let munu_p_i = calculate_codensity_p_pair(c_mu_tc, c_nu_tc, i);
-            let munu_w = calculate_codensity_w_pair(c_mu_tc, c_nu_tc, s_vals, tol);
-            let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_w);
-            phase * val
+            let i = pair.zeros[0];
+            let munu_p_i = calculate_codensity_p_pair(&pair.c_mu_tc, &pair.c_nu_tc, i);
+            let munu_w = calculate_codensity_w_pair(&pair.c_mu_tc, &pair.c_nu_tc, &pair.s_tilde, tol);
+            let val = einsum_ba_acbd_dc(&munu_p_i, &ao.eri_spin, &munu_w);
+            pair.phase * val
         // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
         // one side and P_j on the other.
         }
         2 => {
-            let i = zeros[0];
-            let j = zeros[1];
-            let munu_p_i = calculate_codensity_p_pair(c_mu_tc, c_nu_tc, i);
-            let munu_p_j = calculate_codensity_p_pair(c_mu_tc, c_nu_tc, j);
-            let val = einsum_ba_acbd_dc(&munu_p_i, eri_spin, &munu_p_j);
-            phase * val
+            let i = pair.zeros[0];
+            let j = pair.zeros[1];
+            let munu_p_i = calculate_codensity_p_pair(&pair.c_mu_tc, &pair.c_nu_tc, i);
+            let munu_p_j = calculate_codensity_p_pair(&pair.c_mu_tc, &pair.c_nu_tc, j);
+            let val = einsum_ba_acbd_dc(&munu_p_i, &ao.eri_spin, &munu_p_j);
+            pair.phase * val
         }
         // Otherwise the matrix element is zero.
         _ => {Complex64::new(0.0, 0.0)}
@@ -256,8 +266,9 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
         let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
         let (munu_s_noci, s_tilde, c_mu_tc, c_nu_tc, phase) = calculate_munu_s_noci(scfstates, &munu_s, mu, nu);
         let (s_red, zeros) = calculate_s_red(&s_tilde, tol);
-        let (munu_h1, munu_h_nuc) = one_electron_h(&ao.h_spin, ao.enuc, &s_tilde, s_red, &c_mu_tc, &c_nu_tc, &zeros, tol, phase,);
-        let munu_h2 = two_electron_h(&s_tilde, s_red, &c_mu_tc, &c_nu_tc, &ao.eri_spin, &zeros, tol, phase,);
+        let pair = Pair {munu_s_noci, s_tilde, s_red, zeros, c_mu_tc, c_nu_tc, phase};
+        let (munu_h1, munu_h_nuc) = one_electron_h(ao, &pair, tol);
+        let munu_h2 = two_electron_h(ao, &pair, tol);
         let munu_h = munu_h1 + munu_h2 + munu_h_nuc;
         (mu, nu, munu_h, munu_s_noci)
     }).collect();

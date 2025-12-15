@@ -118,8 +118,7 @@ fn main() {
 
             // Propagate coefficient vector deterministically in full NOCI-QMC basis.
             let mut coefficients = Vec::new();
-            let propagation_result = propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, input.qmc.dt, input.qmc.max_steps, 
-                                               input.qmc.qmc_e_tol, &mut coefficients, &input);
+            let propagation_result = propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, &mut coefficients, &input);
             let d_noci_qmc_deterministic_propagation = t_noci_qmc_deterministic_propagation.elapsed();
             let d_noci_qmc_deterministic = t_noci_qmc_deterministic.elapsed();
 
