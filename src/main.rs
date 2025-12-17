@@ -86,11 +86,8 @@ fn main() {
             let (h_qmc, s_qmc, d_h1_h2_qmc) = build_noci_matrices(&ao, &noci_qmc_basis);
             println!("Finished calculating NOCI-QMC matrix elements.");
             
-            // Choose shift energy.
-            //let es = states[0].e; // RHF energy.
-            let es = e_noci; // NOCI-reference energy.
-            let h_qmc_shift = &h_qmc - Complex64::new(es, 0.0) * &s_qmc;
-
+            // Choose intial shift energy.
+            let es = states[0].e; // RHF energy.
             println!("Running deterministic NOCI-QMC propagation....");
             let t_noci_qmc_deterministic_propagation = Instant::now();
 
@@ -118,13 +115,13 @@ fn main() {
 
             // Propagate coefficient vector deterministically in full NOCI-QMC basis.
             let mut coefficients = Vec::new();
-            let propagation_result = propagate(&h_qmc_shift, &s_qmc, &c0_qmc, es, &mut coefficients, &input);
+            let propagation_result = propagate(&h_qmc, &s_qmc, &c0_qmc, es, &mut coefficients, &input);
             let d_noci_qmc_deterministic_propagation = t_noci_qmc_deterministic_propagation.elapsed();
             let d_noci_qmc_deterministic = t_noci_qmc_deterministic.elapsed();
 
             match propagation_result {
                 Some(c) => {
-                    let e_tot = projected_energy(&h_qmc_shift, &s_qmc, &c, es);
+                    let e_tot = projected_energy(&h_qmc, &s_qmc, &c);
                     println!("{}", "=".repeat(100));
                     println!("NOCI reference basis size: {}", noci_reference_basis.len());
                     println!("NOCI-QMC basis size: {}", noci_qmc_basis.len());

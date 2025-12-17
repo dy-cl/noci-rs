@@ -60,6 +60,8 @@ pub struct QMCOptions {
     pub e_tol: f64,
     pub max_steps: usize,
     pub propagator: Propagator,
+    pub dynamic_shift: bool,
+    pub dynamic_shift_alpha: f64,
 }
 
 // Storage for output options
@@ -186,10 +188,12 @@ pub fn load_input(path: &str) -> Input {
     let propagator = match propagator_str.as_str() {
         "unshifted" => Propagator::Unshifted,
         "shifted" => Propagator::Shifted,
-        _ => {eprintln!("Propagator must be 'unshifted' or 'shifted'."); std::process::exit(1);} 
+        _ => {eprintln!("Propagator must be 'unshifted', 'shifted'."); std::process::exit(1);} 
     };
+    let dynamic_shift = qmc_tbl.get("dynamic_shift").unwrap();
+    let dynamic_shift_alpha = qmc_tbl.get("dynamic_shift_alpha").unwrap();
 
-    let qmc = QMCOptions {singles, doubles, dt, e_tol: qmc_e_tol, max_steps, propagator};
+    let qmc = QMCOptions {singles, doubles, dt, e_tol: qmc_e_tol, max_steps, propagator, dynamic_shift, dynamic_shift_alpha};
 
     Input {mol, scf, write, states, qmc}
 }
