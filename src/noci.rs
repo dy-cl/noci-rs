@@ -1,11 +1,12 @@
 // noci.rs
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{SVD, Determinant};
 use num_complex::Complex64;
 use core::f64;
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
+use rayon::current_thread_index;
 
 use crate::{AoData, SCFState};
 use crate::utils::print_array2;
@@ -120,20 +121,16 @@ fn calculate_codensity_p_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2
 ///     `tol`: f64, tolerance up to which a number is considered zero. 
 fn calculate_codensity_w_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2<Complex64>,
                               s_vals: &Array1<f64>, tol: f64,) -> Array2<Complex64> {
-    let (nso, nocc) = c_mu_tilde.dim();
-    let mut munu_w = Array2::<Complex64>::zeros((nso, nso));
-
-    for i in 0..nocc {
-        if s_vals[i].abs() > tol {
-            let weight = Complex64::new(1.0 / s_vals[i], 0.0);
-            for x in 0..nso {
-                for y in 0..nso {
-                    munu_w[(x, y)] += weight * c_mu_tilde[(x, i)] * c_nu_tilde[(y, i)].conj();
-                }
-            }
-        }
+    let mut c_mu_scaled = c_mu_tilde.to_owned();
+    
+    // Scale columns of {}^{\mu}c_i^a by 1 / s_i 
+    for (i, mut col) in c_mu_scaled.axis_iter_mut(Axis(1)).enumerate() {
+        let w = if s_vals[i].abs() > tol {Complex64::new(1.0 / s_vals[i], 0.0)} else {Complex64::new(0.0, 0.0)};
+        col.mapv_inplace(|z| z * w);
     }
-    munu_w
+
+    // Calculate \sum_{i} 1 / s_i * {}^{\mu}c_i^a {}^{\nu}c_i^b*
+    c_mu_scaled.dot(&c_nu_tilde.t().map(|z| z.conj()))
 }
 
 /// Calculate one electron and nuclear Hamiltonian matrix elements using the generalised 
@@ -244,20 +241,20 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
     // diagonal included). This can be done as {}^{\mu\nu}X[\mu, \nu] = ({}^{\mu\nu}X[\nu, \mu])^T
     // where X is either S or H.
     let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
-    
+
     // Progress monitoring setup.
     let total_pairs = pairs.len();
     let counter = AtomicUsize::new(0);
     let report = total_pairs / 100;
-    
+
     // Calculate Hamiltonian matrix elements in parallel.
     let t_h = Instant::now();
     let tmp: Vec<(usize, usize, Complex64, Complex64)> = pairs.par_iter().map(|&(mu, nu)| {
         // Progress counter.
         let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        if done.is_multiple_of(report) || done == total_pairs {
-            let frac = 100.0 * (done as f64) / (total_pairs as f64);
-            println!("H and S matrix elements: {} / {}, ({:.1}%)", done, total_pairs, frac);
+        if current_thread_index() == Some(0) && (done.is_multiple_of(report) || done == total_pairs) {
+            let pct = (100 * done) / total_pairs;
+            println!("H and S matrix elements: {done} / {total_pairs}, ({pct}%)");
         }
         // Calculate matrix elements for this pair.
         let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);

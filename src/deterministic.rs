@@ -185,9 +185,13 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
         let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.qmc.dt, &input.qmc.propagator);
         println!("With initial shift: {}, ||Unn|| = {}, ||Urr|| = {}, ||Urn|| = {}, ||Unr|| = {}.",
                  es, &proj_propagator.unn.norm(), &proj_propagator.urr.norm(), &proj_propagator.urn.norm(), &proj_propagator.unr.norm());
-        let (evals_unn, _) = proj_propagator.unn.eigh(UPLO::Lower).unwrap();
-        println!("Null-space propagator Unn eigenvalues: {}", evals_unn);
-        
+        let nnull = proj_propagator.unn.nrows();
+        if nnull > 0 {
+            let (evals_unn, _) = proj_propagator.unn.eigh(UPLO::Lower).unwrap();
+            println!("Null-space propagator Unn eigenvalues: {}", evals_unn);
+        } else {
+            println!("Null-space dimension is 0 (no eigenvalues of propagator Unn).");
+        }
         // Add initial coefficients to the history. 
         history.push(Coefficients {iter: 0, c_full: c0.clone(), c_relevant: c0_relevant, c_null: c0_null});
         projectors = Some(p);

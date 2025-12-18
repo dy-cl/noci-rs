@@ -85,10 +85,23 @@ pub fn general_evp_complex(f: &Array2<Complex64>, s: &Array2<Complex64>, project
 ///     `h`: Array2, matrix 2.
 pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
     let n = g.nrows();
+    
+    // Convert ndarrays into memory ordered slice.
+    let gs = g.as_slice_memory_order().unwrap();
+    let hs = h.as_slice_memory_order().unwrap();
+
     let mut acc = Complex64::new(0.0, 0.0);
+    
+    // Index of 2D tensor element in 1D is given by (a * n) + b.
     for a in 0..n {
         for b in 0..n {
-            acc += g[(b, a)] * Complex64::new(h[(a, b)], 0.0);
+            // g[b,a]. Use of get_unchecked means no out of bounds checking is performed. 
+            // If index i is invalid this produces undefined behaviour rather than a panic, check this when debugging. 
+            // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
+            let g_ba = unsafe {*gs.get_unchecked(b * n + a)};
+            // h[a,b].
+            let h_ab = unsafe {*hs.get_unchecked(a * n + b)};
+            acc += g_ba * h_ab; 
         }
     }
     acc
@@ -104,15 +117,46 @@ pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
 pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Complex64>)
                          -> Complex64 {
     let n = g.nrows();
+
+    // Convert ndarrays into memory ordered slice.
+    let gs = g.as_slice_memory_order().unwrap();
+    let hs = h.as_slice_memory_order().unwrap();
+    let ts = t.as_slice_memory_order().unwrap();
+
     let mut acc = Complex64::new(0.0, 0.0);
 
-    for a in 0..n {
+    // Transpose h[d, c] = ht[c, d] into layout which is contiguous by d as this will be fastest index.
+    let mut ht = vec![Complex64::new(0.0, 0.0); n * n];
+    for d in 0..n {
+        let d_idx = d * n;
         for c in 0..n {
-            for b in 0..n {
+            // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
+            // this produces undefined behaviour rather than a panic, check this when debugging. 
+            // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
+            ht[c * n + d] = unsafe{*hs.get_unchecked(d_idx + c)};
+        }
+    }
+
+    // Index of 4D tensor element in 1D is given by (((a * n + c) * n + b) * n + d).
+    for a in 0..n {
+        for b in 0..n {
+            let g_ba = unsafe {*gs.get_unchecked(b * n + a)};
+            // Accumulate real and imaginary parts separately so only real operations used.
+            let mut re = 0.0f64;
+            let mut im = 0.0f64;
+            for c in 0..n {
+                // ht[c, d] (h[d, c]).
+                let ht_cd = &ht[c * n..(c + 1) * n]; 
+                // Index of block start [a, c, b, 0].
+                let abc_idx = ((a * n + c) * n + b) * n;
                 for d in 0..n {
-                    acc += g[(b, a)] * Complex64::new(t[(a, c, b, d)], 0.0) * h[(d, c)];
+                    let t_acbd = unsafe {*ts.get_unchecked(abc_idx + d)};
+                    let h_dc = unsafe {*ht_cd.get_unchecked(d)};
+                    re += t_acbd * h_dc.re;
+                    im += t_acbd * h_dc.im;
                 }
             }
+            acc += g_ba * Complex64::new(re, im);
         }
     }
     acc
