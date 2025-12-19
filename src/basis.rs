@@ -27,32 +27,56 @@ fn scale_block(d: &mut Array2<f64>, idx: &[usize], scale: f64) {
     }
 }
 
-/// Bias spin a and b density matrices towards a spin-broken UHF guess.
+/// Bias density matrices towards a spatial symmetry broken RHF guess. We will have da = db.
+/// # Arguments
 /// # Arguments 
 ///     `da`: Array2, Spin density matrix a.
 ///     `db`: Array2, Spin density matrix b.
-///     `ia`: [usize], Global AO indices of AOs belonging to atom 0 (A). 
-///     `ib`: [usize], Global AO indices of AOs belonging to atom 1 (B). 
-///     `pol`: Float, Scalar factor by which given sub-blocks of the spin density matrices are biased.
-///     `a`: Bool, Which of the two degenerate spin-broken UHF states are we targeting.
-fn bias_density(da: &mut Array2<f64>, db: &mut Array2<f64>, ia: &[usize], ib: &[usize], pol: f64, a: bool) {
-    let up = 1.0 + pol; 
-    let dn = 1.0 - pol; 
-    
-    // (D_a')_{ij} = (1 + p)(D_a)_{ij} if i, j on atom A. 
-    // (D_b')_{ij} = (1 - p)(D_b)_{ij} if i, j on atom A.
-    if a {
-        scale_block(da, ia, up);
-        scale_block(db, ia, dn);
-        scale_block(da, ib, dn);
-        scale_block(db, ib, up);
-    // (D_a')_{ij} = (1 - p)(D_a)_{ij} if i, j on atom B.
-    // (D_b')_{ij} = (1 + p)(D_b)_{ij} if i, j on atom B.
-    } else {
-        scale_block(da, ia, dn); 
-        scale_block(db, ia, up);
-        scale_block(da, ib, up);
-        scale_block(db, ib, dn);
+///     `atomao`: [Vec<usize>], Global AO indices of AOs belonging to atom i. 
+///     `pol`: Float, Bias strength.
+///     `pattern`: Integer, spin biasing pattern.
+fn bias_spatial(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], pol: f64, pattern: &[i8]) { 
+    let up = 1.0 + pol;
+    let dn = 1.0 - pol;
+
+    for (a, &sgn) in pattern.iter().enumerate() {
+        if sgn == 0 { 
+            continue; 
+        }
+        let idx = &atomao[a];
+        if sgn > 0 {
+            scale_block(da, idx, up);
+            scale_block(db, idx, up);
+        } else {
+            scale_block(da, idx, dn);
+            scale_block(db, idx, dn);
+        }
+    }
+}
+
+/// Bias density matrices towards a spin symmetry-broken UHF guess. We will have da != db.
+/// # Arguments 
+///     `da`: Array2, Spin density matrix a.
+///     `db`: Array2, Spin density matrix b.
+///     `atomao`: [Vec<usize>], Global AO indices of AOs belonging to atom i. 
+///     `pol`: Float, Bias strength.
+///     `pattern`: Integer, spin biasing pattern.
+fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], pol: f64, pattern: &[i8]) {
+    let up = 1.0 + pol;
+    let dn = 1.0 - pol;
+
+    for (a, &sgn) in pattern.iter().enumerate() {
+        if sgn == 0 {
+            continue;
+        }
+        let i = &atomao[a];
+        if sgn > 0 {
+            scale_block(da, i, up);
+            scale_block(db, i, dn);
+        } else {
+            scale_block(da, i, dn);
+            scale_block(db, i, up);
+        }
     }
 }
 
@@ -93,11 +117,11 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
 /// Copy a reference SCF state (i.e., those that form the deterministic NOCI basis) and replace the
 /// oa, ob with modified occupancies, and rebuild cs_occ accordingly.
 /// # Arguments 
-///    ao: AoData struct, contains AO integrals and other system data.
-///    reference: SCFState, SCF state from which to build an excited state.
-///    oa_ex: Array1, Excited occupied indices spin alpha.
-///    ob_ex: Array1, Excited occupied indices spin beta. 
-///    label_suffix: String, what to append to reference state label to indicate excitation.
+///    `ao`: AoData struct, contains AO integrals and other system data.
+///    `reference`: SCFState, SCF state from which to build an excited state.
+///    `oa_ex`: Array1, Excited occupied indices spin alpha.
+///    `ob_ex`: Array1, Excited occupied indices spin beta. 
+///    `label_suffix`: String, what to append to reference state label to indicate excitation.
 fn make_excited_state(ao: &AoData, reference: &SCFState, oa_ex: Array1<f64>, ob_ex: Array1<f64>, label_suffix: &str,) -> SCFState{
     // Get occupied coefficient matrices.
     let (_cs, cs_occ) = spin_block_mo_coeffs(&reference.ca, &reference.cb, &oa_ex, &ob_ex, ao.nao);
@@ -107,11 +131,30 @@ fn make_excited_state(ao: &AoData, reference: &SCFState, oa_ex: Array1<f64>, ob_
               noci_basis: false,}
 }
 
+/// Given aolabels (which contains) information about which atom an AO belongs to, find the AO
+/// indices of a set of given atoms. For example if we had aolabels = ["0 1s", "0 1s", "1 1s", "1
+/// 1s"] (i.e., H2 in minimal basis) and atoms = [0] the function returns [0, 1].
+/// # Arguments
+///     `aolabels`: Labels which map AOs to atoms.
+///     `atoms`: Atom indices for which we wish to know the corresponding AO indices.
+fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
+    // Iterate over all AO labels which contain for example "2 1s".
+    aolabels.iter().enumerate()
+        // Take the first part of the label (e.g. "2") and keep it if the AOs atom index is in
+        // atoms list.
+        .filter(|(_, s)| {
+            let a = s.split_whitespace().next().unwrap().parse::<usize>().unwrap();
+            atoms.contains(&a)
+        // Return the AO indices i.
+        }).map(|(i, _)| i).collect()
+}
+
+
 /// Pass given AO data and previous SCF solutions to SCF cycle to form the requested reference NOCI basis.
 /// # Arguments 
-///     ao: AoData struct, contains AO integrals and other system data. 
-///     input: Input struct, contains user inputted options. 
-///     prev: Option<[SCFState]>, may or may not contain states from a previous geometry.
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `input`: Input struct, contains user inputted options. 
+///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
 pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
     
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
@@ -127,16 +170,6 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
             prev_map.insert(&st.label, st);
         }
     }
-
-    let ia: Vec<usize> = ao.aolabels.iter().enumerate()
-        .filter(|(_, s)| s.split_whitespace().next().unwrap() == "0")
-        .map(|(i, _)| i)
-        .collect();
-
-    let ib: Vec<usize> = ao.aolabels.iter().enumerate()
-        .filter(|(_, s)| s.split_whitespace().next().unwrap() == "1")
-        .map(|(i, _)| i)
-        .collect();
 
     let mut out: Vec<SCFState> = Vec::with_capacity(input.states.len());
 
@@ -174,9 +207,20 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
 
         // Reapply the spin bias (if requested) to seperate UHF solutions requiring 
         // spin breakage from RHF solutions.
-        if let Some(sb) = &recipe.spin_bias { 
-                let is_ab = sb.pattern == "AB"; 
-                bias_density(&mut da, &mut db, &ia, &ib, sb.pol, is_ab); 
+        if let Some(sb) = &recipe.spin_bias {
+            // Count atoms.
+            let natoms: usize = ao.aolabels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
+            // Find which AOs belong to which atom.
+            let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.aolabels, &[a])).collect();
+            bias_spin(&mut da, &mut db, &atomao, sb.pol, &sb.pattern);
+        }
+        // Reapply spatial bias (if requested).
+        if let Some(spb) = &recipe.spatial_bias {
+            // Count atoms.
+            let natoms: usize = ao.aolabels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
+            // Find which AOs belong to which atom.
+            let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.aolabels, &[a])).collect();
+            bias_spatial(&mut da, &mut db, &atomao, spb.pol, &spb.pattern);
         }
 
         let state: SCFState = scf_cycle(&da, &db, ao, input, excitation, i).expect("SCF did not converge");

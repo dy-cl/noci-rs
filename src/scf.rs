@@ -183,7 +183,8 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
             Some(ex) => {
                 let sp = match ex.spin {
                     Spin::Alpha => "alpha",
-                    Spin::Beta  => "beta",
+                    Spin::Beta => "beta",
+                    Spin::Both => "both"
                 };
                 println!("Requested excitation: [spin: {}, from occupied: {}, to virtual: {}]", 
                           sp, ex.occ, ex.vir);
@@ -194,7 +195,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         }
         println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
     }
-   
+
     let mut iter = 0;
     while iter < input.scf.max_cycle {
         
@@ -213,9 +214,16 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         let (ea, ca) = general_evp_real(&fa_use, s, false, 1e-8);
         let (eb, cb) = general_evp_real(&fb_use, s, false, 1e-8);
 
-        // Flags true only if excitation is requested on alpha / beta.
-        let mom_a = if let Some(ex) = excitation {matches!(ex.spin, Spin::Alpha)} else {false};
-        let mom_b  = if let Some(ex) = excitation {matches!(ex.spin, Spin::Beta)} else {false};
+        // Flags true only if excitation is requested on alpha, beta or both.
+        let (mom_a, mom_b) = if let Some(ex) = excitation {
+            match ex.spin {
+                Spin::Alpha => (true, false),
+                Spin::Beta  => (false, true),
+                Spin::Both  => (true, true),
+            }
+        } else {
+            (false, false)
+        };
         
         // Select MO indices to occupy for alpha spin electrons.
         let idx_a = if mom_a {
@@ -296,11 +304,6 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         }
         
         if d_e < input.scf.e_tol {
-            println!("Coefficients ca:");
-            print_array2(&ca);
-            println!("Coefficients cb:");
-            print_array2(&cb);
-
             // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
             // this is later required for NOCI calculations.
             let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
@@ -311,6 +314,11 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
             let da = Arc::new(da_new);
             let db = Arc::new(db_new);
             let cs = Arc::new(cs);
+
+            println!("Coefficients ca:");
+            print_array2(&ca);
+            println!("Coefficients cb:");
+            print_array2(&cb);
 
             return Some(SCFState {e: e_new, oa, ob, ca, cb, cs, cs_occ, da, db, 
                         label: input.states[i].label.clone(), noci_basis: input.states[i].noci});

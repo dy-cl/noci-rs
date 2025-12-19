@@ -7,8 +7,12 @@ pub enum Propagator {
     Shifted,
 }
 
-// Electron spin.
-pub enum Spin {Alpha, Beta}
+// Electron spin for excitation input.
+pub enum Spin {
+    Alpha, 
+    Beta,
+    Both,
+}
 
 // Storage for mol info.
 pub struct MolOptions {
@@ -35,14 +39,21 @@ pub struct Excitation {
 
 // Storage for spin biasing specifications.
 pub struct SpinBias {
-    pub pattern: String, 
+    pub pattern: Vec<i8>,
     pub pol: f64
+}
+
+// Storage for spatial biasing specifications.
+pub struct SpatialBias {
+    pub pattern: Vec<i8>,
+    pub pol: f64,
 }
 
 // Storage for basis state recipes.
 pub struct StateRecipe {
     pub label: String, 
     pub spin_bias: Option<SpinBias>,
+    pub spatial_bias: Option<SpatialBias>,
     pub excitation: Option<Excitation>,
     pub noci: bool,
 }
@@ -164,18 +175,36 @@ pub fn load_input(path: &str) -> Input {
         let t = st.unwrap();
         let label: String = t.get("label").unwrap();
         let noci: bool = t.get("noci").unwrap_or(true);
-
+        
         let spin_bias = t.get::<_, Option<rlua::Table>>("spin_bias").unwrap_or(None)
-                        .map(|sb| SpinBias 
-                        {pattern: sb.get("pattern").unwrap(),pol: sb.get("pol").unwrap()});
-
+                        .map(|sb| {
+                            let pol: f64 = sb.get("pol").unwrap();
+                            let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
+                            let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
+                                _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
+                                      std::process::exit(1);}
+                            }).collect();
+        SpinBias {pattern, pol}});
+        let spatial_bias = t.get::<_, Option<rlua::Table>>("spatial_bias").unwrap_or(None)
+                        .map(|sb| {
+                            let pol: f64 = sb.get("pol").unwrap();
+                            let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
+                            let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
+                                _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
+                                      std::process::exit(1);}
+                            }).collect();
+        SpatialBias {pattern, pol}}); 
         let excitation = t.get::<_, Option<rlua::Table>>("excit").unwrap_or(None)
                          .map(|ex| {
                             let s: String = ex.get("spin").unwrap();
-                            let spin = if s.to_ascii_lowercase()
-                                          .starts_with('a') {Spin::Alpha} else {Spin::Beta};
+                            let spin = match s.as_str() {
+                                "alpha" => Spin::Alpha,
+                                "beta" => Spin::Beta,
+                                "both" => Spin::Both,
+                                _ => { eprintln!("Excitation spin must be 'alpha', 'beta', or 'both'"); std::process::exit(1);}
+                            };
         Excitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
-        states.push(StateRecipe {label, spin_bias, excitation, noci});
+        states.push(StateRecipe {label, spin_bias, spatial_bias, excitation, noci});
     }
     
     // QMC table
