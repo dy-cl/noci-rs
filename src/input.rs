@@ -65,6 +65,7 @@ pub struct DiisOptions {
 
 // Storage for QMC options 
 pub struct QMCOptions {
+    pub deterministic: bool,
     pub singles: bool, 
     pub doubles: bool,
     pub dt: f64, 
@@ -208,6 +209,7 @@ pub fn load_input(path: &str) -> Input {
     }
     
     // QMC table
+    let deterministic: bool = qmc_tbl.get("deterministic").unwrap();
     let singles: bool = qmc_tbl.get("singles").unwrap();
     let doubles: bool = qmc_tbl.get("doubles").unwrap();
     let dt: f64 = qmc_tbl.get("dt").unwrap();
@@ -222,7 +224,7 @@ pub fn load_input(path: &str) -> Input {
     let dynamic_shift = qmc_tbl.get("dynamic_shift").unwrap();
     let dynamic_shift_alpha = qmc_tbl.get("dynamic_shift_alpha").unwrap();
 
-    let qmc = QMCOptions {singles, doubles, dt, e_tol: qmc_e_tol, max_steps, propagator, dynamic_shift, dynamic_shift_alpha};
+    let qmc = QMCOptions {deterministic, singles, doubles, dt, e_tol: qmc_e_tol, max_steps, propagator, dynamic_shift, dynamic_shift_alpha};
 
     Input {mol, scf, write, states, qmc}
 }

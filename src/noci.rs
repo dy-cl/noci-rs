@@ -4,7 +4,7 @@ use ndarray_linalg::{SVD, Determinant};
 use num_complex::Complex64;
 use core::f64;
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use rayon::prelude::*;
 use rayon::current_thread_index;
 
@@ -245,16 +245,22 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
     // Progress monitoring setup.
     let total_pairs = pairs.len();
     let counter = AtomicUsize::new(0);
-    let report = total_pairs / 100;
 
     // Calculate Hamiltonian matrix elements in parallel.
     let t_h = Instant::now();
+    let report = Duration::from_secs(10);
+    let last_report = AtomicU64::new(0); 
     let tmp: Vec<(usize, usize, Complex64, Complex64)> = pairs.par_iter().map(|&(mu, nu)| {
         // Progress counter.
         let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        if current_thread_index() == Some(0) && (done.is_multiple_of(report) || done == total_pairs) {
-            let pct = (100 * done) / total_pairs;
-            println!("H and S matrix elements: {done} / {total_pairs}, ({pct}%)");
+        if current_thread_index() == Some(0) {
+            let elapsed = t_h.elapsed().as_millis() as u64;
+            let interval = report.as_millis() as u64;
+            if elapsed >= last_report.load(Ordering::Relaxed) + interval {
+                last_report.store(elapsed, Ordering::Relaxed);
+                let pct = (100 * done) / total_pairs;
+                println!("H and S matrix elements: {done} / {total_pairs}, ({pct}%), elapsed: {:.1?}", t_h.elapsed());
+                }
         }
         // Calculate matrix elements for this pair.
         let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
@@ -298,7 +304,6 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array
     print_array2(&h_shift);
     let (evals, c) = general_evp_complex(&h, &s, true, tol);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
-    println!("{}", "=".repeat(100));
 
     // Assumes columns of c are energy ordered eigenvectors
     let c0 = c.column(0).to_owned(); 

@@ -174,7 +174,7 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
     // NOCI-QMC basis.
     let mut projectors: Option<Projectors> = None;
     if input.write.write_coeffs {
-        let p = Projectors::calculate_projectors(s, 1e-12);
+        let p = Projectors::calculate_projectors(s, 1e-14);
         let (c0_relevant, c0_null) = p.project(&c_norm);
 
         // Calculate diagnostics.
