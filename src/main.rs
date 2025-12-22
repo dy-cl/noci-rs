@@ -94,6 +94,7 @@ fn main() {
                 let n = noci_qmc_basis.len();
                 n_qmc_deterministic_opt = Some(noci_qmc_basis.len());
                 println!("Calculating NOCI-QMC matrix elements for {} determinants ({} elements)...", n, n * n);
+                println!("Progress will be printed every 5 minutes...");
                 d_noci_qmc_deterministic_basis_construction = t_noci_qmc_deterministic_basis_construction.elapsed();
                 let (h_qmc, s_qmc, d_h1_h2_qmc_local) = build_noci_matrices(&ao, &noci_qmc_basis);
                 d_h1_h2_qmc = d_h1_h2_qmc_local;
