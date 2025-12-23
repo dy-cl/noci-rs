@@ -1,33 +1,32 @@
 // deterministic.rs 
 use ndarray::{s, Array1, Array2};
-use num_complex::Complex64;
 use ndarray_linalg::{Eigh, UPLO, Norm};
 
-use crate::maths::parallel_matvec;
+use crate::maths::parallel_matvec_real;
 use crate::input::{Input, Propagator};
 
 // Storage for the chosen propagator expressed in the basis of projectors.
 pub struct ProjPropagator {
-    pub urr: Array2<Complex64>,
-    pub unn: Array2<Complex64>,
-    pub unr: Array2<Complex64>,
-    pub urn: Array2<Complex64>,
+    pub urr: Array2<f64>,
+    pub unn: Array2<f64>,
+    pub unr: Array2<f64>,
+    pub urn: Array2<f64>,
 }
 
 // Storage for projectors that project the coefficients to relevant and null subspaces.
 pub struct Projectors {
-    ur: Array2<Complex64>,
-    ur_dag: Array2<Complex64>,
-    un: Array2<Complex64>,
-    un_dag: Array2<Complex64>,
+    ur: Array2<f64>,
+    ur_dag: Array2<f64>,
+    un: Array2<f64>,
+    un_dag: Array2<f64>,
 }
 
 // Storage for coefficients at each time-step.
 pub struct Coefficients {
     pub iter: usize, 
-    pub c_full: Array1<Complex64>,
-    pub c_relevant: Array1<Complex64>,
-    pub c_null: Array1<Complex64>,
+    pub c_full: Array1<f64>,
+    pub c_relevant: Array1<f64>,
+    pub c_null: Array1<f64>,
 }
 
 impl Projectors {
@@ -40,7 +39,7 @@ impl Projectors {
     /// # Arguments 
     ///     `s`: Array2, overlap matrix in full NOCI-QMC basis.
     ///     `eps`: f64, tolerance for an eigenvalue being null or relevant.
-    pub fn calculate_projectors(s: &Array2<Complex64>, eps: f64) -> Self {
+    pub fn calculate_projectors(s: &Array2<f64>, eps: f64) -> Self {
         // S = U \Lambda U^\dagger
         let (lambda, u) = s.eigh(UPLO::Lower).unwrap();
 
@@ -57,18 +56,18 @@ impl Projectors {
 
         // Construct U_{relevant} and U_{null}, i.e., the eigenvector matrices of S corresponding to
         // the relevant and null subspaces.
-        let mut ur = Array2::<Complex64>::zeros((lambda.len(), relevant.len()));
+        let mut ur = Array2::<f64>::zeros((lambda.len(), relevant.len()));
         for (j, &icol) in relevant.iter().enumerate() {
             let col = u.slice(s![.., icol]);
             ur.slice_mut(s![.., j]).assign(&col);
         }
-        let ur_dag = ur.map(|z| z.conj()).t().to_owned();
-        let mut un = Array2::<Complex64>::zeros((lambda.len(), null.len()));
+        let ur_dag = ur.t().to_owned();
+        let mut un = Array2::<f64>::zeros((lambda.len(), null.len()));
         for (j, &icol) in null.iter().enumerate() {
             let col = u.slice(s![.., icol]);
             un.slice_mut(s![.., j]).assign(&col);
         }
-        let un_dag = un.map(|z| z.conj()).t().to_owned();
+        let un_dag = un.t().to_owned();
         
         println!("Projectors: eps = {:.3e}, dim(S) = {}, relevant = {}, null = {}", eps, lambda.len(), relevant.len(), null.len());
         Projectors {ur, ur_dag, un, un_dag}
@@ -79,38 +78,38 @@ impl Projectors {
     ///     c_r = P_r c = U_r U_r^\dagger, c_n = P_n c = U_n U_n^\dagger c.
     /// # Arguments
     ///     `c`: Array1, coefficient vector in the full NOCI-QMC basis.
-    pub fn project(&self, c: &Array1<Complex64>) -> (Array1<Complex64>, Array1<Complex64>) {
+    pub fn project(&self, c: &Array1<f64>) -> (Array1<f64>, Array1<f64>) {
         // C_r = U_r U_r^\dagger C  
-        let yr = parallel_matvec(&self.ur_dag, c);
-        let c_relevant = parallel_matvec(&self.ur, &yr);
+        let yr = parallel_matvec_real(&self.ur_dag, c);
+        let c_relevant = parallel_matvec_real(&self.ur, &yr);
         // C_n = U_n U_n^\dagger C
-        let yn = parallel_matvec(&self.un_dag, c);
-        let c_null = parallel_matvec(&self.un, &yn);
+        let yn = parallel_matvec_real(&self.un_dag, c);
+        let c_null = parallel_matvec_real(&self.un, &yn);
 
         (c_relevant, c_null)
     }
 }
 
 impl ProjPropagator {
-    pub fn calculate_projected_propagator(h: &Array2<Complex64>, s: &Array2<Complex64>, p: &Projectors, es: f64, dt: f64, prop: &Propagator) -> Self {
-        let esc = Complex64::new(es, 0.0);
-        let dtc = Complex64::new(dt, 0.0); 
-        
+    /// Express a propjector in the null and relevant subspace basis by forming the matrix (U_{rr},
+    /// U_{nr} \\ U_{rn} U_{nn}). All elements of the propragator can be projected by doing for
+    /// example: H_{rn} = U_r^\dagger H U_n. 
+    pub fn calculate_projected_propagator(h: &Array2<f64>, s: &Array2<f64>, p: &Projectors, es: f64, dt: f64, prop: &Propagator) -> Self {
         // H_{ur} = H U_r, H_{un} = H U_n, S_{ur} = S U_r, S_{un} = S U_n.
         let hur = h.dot(&p.ur); let hun = h.dot(&p.un); let sur = s.dot(&p.ur); let sun = s.dot(&p.un);
 
         let hrr = p.ur_dag.dot(&hur); let hnn = p.un_dag.dot(&hun); let hnr = p.un_dag.dot(&hur); let hrn = p.ur_dag.dot(&hun);
         let srr = p.ur_dag.dot(&sur); let snn = p.un_dag.dot(&sun); let snr = p.un_dag.dot(&sur); let srn = p.ur_dag.dot(&sun);
         
-        let identityr = Array2::<Complex64>::eye(hrr.nrows());
-        let identityn = Array2::<Complex64>::eye(hnn.nrows());
+        let identityr = Array2::<f64>::eye(hrr.nrows());
+        let identityn = Array2::<f64>::eye(hnn.nrows());
 
-        let identityfac = match prop {Propagator::Unshifted => Complex64::new(1.0, 0.0), Propagator::Shifted   => Complex64::new(1.0 + dt * es, 0.0)};
+        let identityfac = match prop {Propagator::Unshifted => 1.0, Propagator::Shifted   => 1.0 + dt * es};
 
-        let urr = &(identityfac * &identityr) - &(dtc * (&hrr - &srr.mapv(|z| esc * z)));
-        let unn = &(identityfac * &identityn) - &(dtc * (&hnn - &snn.mapv(|z| esc * z)));
-        let unr = -(dtc * (&hnr - &snr.mapv(|z| esc * z)));
-        let urn = -(dtc * (&hrn - &srn.mapv(|z| esc * z)));
+        let urr = &(identityfac * &identityr) - &(dt * (&hrr - &srr.mapv(|z| es * z)));
+        let unn = &(identityfac * &identityn) - &(dt * (&hnn - &snn.mapv(|z| es * z)));
+        let unr = -(dt * (&hnr - &snr.mapv(|z| es * z)));
+        let urn = -(dt * (&hrn - &srn.mapv(|z| es * z)));
 
         ProjPropagator {urr, unn, unr, urn}
     }
@@ -123,12 +122,12 @@ impl ProjPropagator {
 ///     `c`: Array1, NOCI-QMC coefficient vector.
 ///     `esc`: Scalar, Energy shift.
 ///     `dt`: Propagation time step.
-pub fn propagate_step_unshifted(h: &Array2<Complex64>, s: &Array2<Complex64>, c: &Array1<Complex64>, esc: Complex64, dt: f64) 
-                                -> Array1<Complex64> {
-    let hc = parallel_matvec(h, c);
-    let sc = parallel_matvec(s, c);
+pub fn propagate_step_unshifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>, esc: f64, dt: f64) 
+                                -> Array1<f64> {
+    let hc = parallel_matvec_real(h, c);
+    let sc = parallel_matvec_real(s, c);
     let htildec = hc - sc.mapv(|z| esc * z);
-    let dtc = htildec.mapv(|z| Complex64::new(dt, 0.0) * z);
+    let dtc = htildec.mapv(|z| dt * z);
     c - &dtc 
 }
 
@@ -140,13 +139,13 @@ pub fn propagate_step_unshifted(h: &Array2<Complex64>, s: &Array2<Complex64>, c:
 ///     `c`: Array1, NOCI-QMC coefficient vector.
 ///     `esc`: Scalar, Energy shift, we just use the reference NOCI energy for this here.
 ///     `dt`: Propagation time step.
-pub fn propagate_step_shifted(h: &Array2<Complex64>, s: &Array2<Complex64>, c: &Array1<Complex64>, esc: Complex64, dt: f64) 
-                              -> Array1<Complex64> {
-    let hc = parallel_matvec(h, c);
-    let sc = parallel_matvec(s, c);
+pub fn propagate_step_shifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>, esc: f64, dt: f64) 
+                              -> Array1<f64> {
+    let hc = parallel_matvec_real(h, c);
+    let sc = parallel_matvec_real(s, c);
     let htildec = hc - sc.mapv(|z| esc * z);
     let rhs = htildec - c.mapv(|z| esc * z);
-    let dtc = rhs.mapv(|z| Complex64::new(dt, 0.0) * z);
+    let dtc = rhs.mapv(|z| dt * z);
     c - &dtc
 }
 
@@ -158,8 +157,8 @@ pub fn propagate_step_shifted(h: &Array2<Complex64>, s: &Array2<Complex64>, c: &
 ///     `es`: Scalar, Energy shift, we just use the reference HF energy for this here.
 ///     `max_steps`: Maximum number of time-step updates to perform.
 ///     `e_tol`: Energy tolerance which determines convergence.
-pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Complex64>, mut es: f64, history: &mut Vec<Coefficients>, 
-                 input: &Input) -> Option<Array1<Complex64>> {
+pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64, history: &mut Vec<Coefficients>, 
+                 input: &Input) -> Option<Array1<f64>> {
 
     let mut c_norm = c0.clone(); 
     let mut e_prev = projected_energy(h, s, c0);
@@ -202,34 +201,32 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
     println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16}", 
             "iter", "E", "|dE|", "Shift", "||C||", "C^†SC");
     // Print initial.
-    let c0_1norm = c0.iter().map(|z| z.norm()).sum::<f64>();
-    let den = c0.mapv(|z| z.conj()).dot(&s.dot(c0));
+    let c0_1norm = c0.iter().map(|z| z.abs()).sum::<f64>();
+    let den = c0.dot(&s.dot(c0));
     println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-            0, e_prev, 0, es, c0_1norm, den.re);
+            0, e_prev, 0, es, c0_1norm, den);
 
     for it in 0..input.qmc.max_steps {
-        let esc = Complex64::new(es, 0.0);
 
         // Select propagator.
         let mut c_new_norm = match input.qmc.propagator {
             // U_{\Pi\Lambda}(\Delta\tau) = (1 + \Delta\tau E_s)\delta_{\Lambda}^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_s S_{\Pi\Lambda})
-            Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, esc, input.qmc.dt),
+            Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.qmc.dt),
             // U_{\Pi\Lambda}(\Delta\tau) = \delta_\Lambda^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_sS_{\Pi\Lambda})
-            Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, esc, input.qmc.dt),
+            Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.qmc.dt),
         };
 
         // Normalise.
         let sc = s.dot(&c_new_norm);
-        let norm: Complex64 = c_new_norm.iter().zip(sc.iter()).map(|(ci, sci)| ci.conj() * sci).sum::<Complex64>().sqrt();
+        let norm: f64 = c_new_norm.iter().zip(sc.iter()).map(|(ci, sci)| ci * sci).sum::<f64>().sqrt();
         c_new_norm.mapv_inplace(|z| z / norm);
         // Calculate C S C^\dagger post normalisation.
-        let den = c_new_norm.mapv(|z| z.conj()).dot(&s.dot(&c_new_norm));
+        let den = c_new_norm.dot(&s.dot(&c_new_norm));
         // Calculate energy.
         let e = projected_energy(h, s, &c_new_norm);
         let de = (e - e_prev).abs();
         
-        let alpha = norm.norm();
-        logamp += alpha.ln();
+        logamp += norm.ln();
         
         // Update shift dynamically if requested.
         if input.qmc.dynamic_shift {
@@ -248,10 +245,10 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
         }
 
         // Print table rows.
-        let c1norm = c_new_norm.iter().map(|z| z.norm()).sum::<f64>();
+        let c1norm = c_new_norm.iter().map(|z| z.abs()).sum::<f64>();
         
         println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-                it + 1, e, de, esc.re, c1norm, den.re);
+                it + 1, e, de, es, c1norm, den);
         // If our energy change between iterations is large we likely have problems with
         // singularity and very low eigenvalues or a time-step that is too large. 
         if de > de_max {
@@ -275,12 +272,11 @@ pub fn propagate(h: &Array2<Complex64>, s: &Array2<Complex64>, c0: &Array1<Compl
 ///     `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis. Shifted by E_s * S.
 ///     `s`: Array2, Overlap matrix in full NOCI-QMC basis.
 ///     `c`: Array1, NOCI-QMC coefficient vector.
-pub fn projected_energy(h: &Array2<Complex64>, s: &Array2<Complex64>, c: &Array1<Complex64>) -> f64 {
+pub fn projected_energy(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>) -> f64 {
     let hc = h.dot(c);
-    let num = c.iter().zip(hc.iter()).map(|(ci, hci)| ci.conj() * hci).sum::<Complex64>();
+    let num = c.iter().zip(hc.iter()).map(|(ci, hci)| ci * hci).sum::<f64>();
     let sc = s.dot(c);
-    let den = c.iter().zip(sc.iter()).map(|(ci, sci)| ci.conj() * sci).sum::<Complex64>();
-
-    (num / den).re 
+    let den = c.iter().zip(sc.iter()).map(|(ci, sci)| ci * sci).sum::<f64>();
+    num / den 
 }
 

@@ -1,7 +1,6 @@
 // noci.rs
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{SVD, Determinant};
-use num_complex::Complex64;
 use core::f64;
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -11,19 +10,19 @@ use rayon::current_thread_index;
 use crate::{AoData, SCFState};
 use crate::utils::print_array2;
 
-use crate::maths::{einsum_ba_ab, einsum_ba_acbd_dc, general_evp_complex};
+use crate::maths::{einsum_ba_ab_real, einsum_ba_acbd_dc_real, general_evp_real};
 
 // Storage for per SCF basis set pair.
 pub struct Pair {
-    pub munu_s_noci: Complex64,
+    pub munu_s_noci: f64,
     pub s_tilde: Array1<f64>,
-    pub s_red: Complex64,
+    pub s_red: f64,
     pub zeros: Vec<usize>,
-    pub c_mu_tc: Array2<Complex64>,
-    pub c_nu_tc: Array2<Complex64>,
-    pub munu_w: Option<Array2<Complex64>>,
-    pub munu_p_i: Option<Array2<Complex64>>,
-    pub munu_p_j: Option<Array2<Complex64>>,
+    pub c_mu_tc: Array2<f64>,
+    pub c_nu_tc: Array2<f64>,
+    pub munu_w: Option<Array2<f64>>,
+    pub munu_p_i: Option<Array2<f64>>,
+    pub munu_p_j: Option<Array2<f64>>,
     pub phase: f64,
 }
 
@@ -49,7 +48,7 @@ fn calculate_munu_s(states: &[SCFState], s_spin: &Array2<f64>, mu: usize, nu: us
 ///      `states`: Vec<SCFState>, vector of all the calculated SCF states.
 ///      `munu_s`: Array2,  occupied orbital overlap matrix between SCF states \mu and \nu.
 fn calculate_munu_s_noci(states: &[SCFState], munu_s: &Array2<f64>, mu: usize, nu: usize) -> 
-    (Complex64, Array1<f64>, Array2<Complex64>, Array2<Complex64>, f64) {
+    (f64, Array1<f64>, Array2<f64>, Array2<f64>, f64) {
 
     let c_mu_occ = &states[mu].cs_occ;
     let c_nu_occ = &states[nu].cs_occ;
@@ -61,8 +60,6 @@ fn calculate_munu_s_noci(states: &[SCFState], munu_s: &Array2<f64>, mu: usize, n
     // Rotate occupied MOs and store as complex.
     let c_mu_t = c_mu_occ.dot(&u);
     let c_nu_t = c_nu_occ.dot(&v);
-    let c_mu_tc = c_mu_t.map(|&x| Complex64::new(x, 0.0));
-    let c_nu_tc = c_nu_t.map(|&x| Complex64::new(x, 0.0));
 
     // Calculate phase associated with this basis pair.
     let det_u = u.det().unwrap();
@@ -71,9 +68,9 @@ fn calculate_munu_s_noci(states: &[SCFState], munu_s: &Array2<f64>, mu: usize, n
 
     // Compute {}^{\mu\nu}S_{NOCI} matrix elements.
     let prod: f64 = s_tilde.iter().copied().product();
-    let munu_s_noci = Complex64::new(phase * prod, 0.0);
+    let munu_s_noci = phase * prod;
 
-    (munu_s_noci, s_tilde, c_mu_tc, c_nu_tc, phase)
+    (munu_s_noci, s_tilde, c_mu_t, c_nu_t, phase)
 }
     
 /// Calculate the reduced NOCI overlap matrix element {}^{\mu\nu}s_red for a pair of states \mu \nu as the product of all 
@@ -81,7 +78,7 @@ fn calculate_munu_s_noci(states: &[SCFState], munu_s: &Array2<f64>, mu: usize, n
 /// # Arguments
 ///     `s_vals`: Array1, singular values of s_tilde for all pair \mu \nu of SCF states. 
 ///     `tol`: f64, tolerance up to which a number is considered zero. 
-fn calculate_s_red(s_vals: &Array1<f64>, tol: f64) -> (Complex64, Vec<usize>) {
+fn calculate_s_red(s_vals: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
     let mut prod = 1.0f64;
     let mut zeros = Vec::new();
 
@@ -93,7 +90,7 @@ fn calculate_s_red(s_vals: &Array1<f64>, tol: f64) -> (Complex64, Vec<usize>) {
         }
     }
 
-    (Complex64::new(prod, 0.0), zeros)
+    (prod, zeros)
 }
 
 /// Calculate {}^{\mu\nu}P_i = {}^{\mu}c_i^a {}^{\nu}c_i^b* co-density matrix where {}^{\mu}c_i^a, 
@@ -102,13 +99,13 @@ fn calculate_s_red(s_vals: &Array1<f64>, tol: f64) -> (Complex64, Vec<usize>) {
 ///     `c_mu_tilde`: Array2, U rotated MO coefficients for a given pair of states. 
 ///     `c_nu_tilde`: Array2, V rotated MO coefficients for a given pair of states. 
 ///     `i`: usize, MO index.
-fn calculate_codensity_p_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2<Complex64>,
-                              i: usize,) -> Array2<Complex64> {
+fn calculate_codensity_p_pair(c_mu_tilde: &Array2<f64>,c_nu_tilde: &Array2<f64>,
+                              i: usize,) -> Array2<f64> {
     let nso = c_mu_tilde.nrows();
-    let mut munu_p_i = Array2::<Complex64>::zeros((nso, nso));
+    let mut munu_p_i = Array2::<f64>::zeros((nso, nso));
     for x in 0..nso {
         for y in 0..nso {
-            munu_p_i[(x, y)] = c_mu_tilde[(x, i)] * c_nu_tilde[(y, i)].conj();
+            munu_p_i[(x, y)] = c_mu_tilde[(x, i)] * c_nu_tilde[(y, i)];
         }
     }
     munu_p_i
@@ -122,19 +119,18 @@ fn calculate_codensity_p_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2
 ///     `c_nu_tilde`: Array2, V rotated MO coefficients for a given pair of states. 
 ///     `s_vals`: Array1, singular values of s_tilde for a given pair of states.
 ///     `tol`: f64, tolerance up to which a number is considered zero. 
-fn calculate_codensity_w_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2<Complex64>,
-                              s_vals: &Array1<f64>, tol: f64,) -> Array2<Complex64> {
+fn calculate_codensity_w_pair(c_mu_tilde: &Array2<f64>,c_nu_tilde: &Array2<f64>,
+                              s_vals: &Array1<f64>, tol: f64,) -> Array2<f64> {
     let mut c_mu_scaled = c_mu_tilde.to_owned();
     
     // Scale columns of {}^{\mu}c_i^a by 1 / s_i 
     for (i, mut col) in c_mu_scaled.axis_iter_mut(Axis(1)).enumerate() {
-        let w = if s_vals[i].abs() > tol {Complex64::new(1.0 / s_vals[i], 0.0)} else {Complex64::new(0.0, 0.0)};
+        let w = if s_vals[i].abs() > tol {1.0 / s_vals[i]} else {0.0};
         col.mapv_inplace(|z| z * w);
     }
 
     // Calculate \sum_{i} 1 / s_i * {}^{\mu}c_i^a {}^{\nu}c_i^b*
-    let c_nu_conj = c_nu_tilde.mapv(|z| z.conj());
-    c_mu_scaled.dot(&c_nu_conj.t())
+    c_mu_scaled.dot(&c_nu_tilde.t())
 }
 
 /// Calculate one electron and nuclear Hamiltonian matrix elements using the generalised 
@@ -151,27 +147,27 @@ fn calculate_codensity_w_pair(c_mu_tilde: &Array2<Complex64>,c_nu_tilde: &Array2
 ///          given pair \mu \nu.
 ///          `munu_w`: Weighted codensity atrix for the pair.
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn one_electron_h(ao: &AoData, pair: &Pair) -> (Complex64, Complex64) {
+fn one_electron_h(ao: &AoData, pair: &Pair) -> (f64, f64) {
                       
     let (munu_h1, munu_h_nuc) = match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w.
         0 => {
-            let val = einsum_ba_ab(pair.munu_w.as_ref().unwrap(), &ao.h_spin);
+            let val = einsum_ba_ab_real(pair.munu_w.as_ref().unwrap(), &ao.h_spin);
             let h1_val = pair.s_red * pair.phase * val;
-            let h_nuc_val = pair.phase * pair.s_red * Complex64::new(ao.enuc, 0.0);
+            let h_nuc_val = pair.phase * pair.s_red * ao.enuc;
             (h1_val, h_nuc_val)
         }
         // With 1 zero (s_i = 0 for 1 i) we use P_i.
         1 => {
-            let val = einsum_ba_ab(pair.munu_p_i.as_ref().unwrap(), &ao.h_spin);
+            let val = einsum_ba_ab_real(pair.munu_p_i.as_ref().unwrap(), &ao.h_spin);
             let h1_val = pair.s_red * pair.phase * val;
-            let h_nuc_val = Complex64::new(0.0, 0.0);
+            let h_nuc_val = 0.0;
             (h1_val, h_nuc_val)
         // Otherwise the matrix element is zero.
         }
         _ => {
-            let h1_val = Complex64::new(0.0, 0.0);
-            let h_nuc_val = Complex64::new(0.0, 0.0);
+            let h1_val = 0.0;
+            let h_nuc_val = 0.0;
             (h1_val, h_nuc_val)
         }
     };
@@ -192,27 +188,27 @@ fn one_electron_h(ao: &AoData, pair: &Pair) -> (Complex64, Complex64) {
 ///          given pair \mu \nu.
 ///          `munu_w`: Weighted codensity atrix for the pair.
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn two_electron_h(ao: &AoData, pair: &Pair) -> Complex64 {
+fn two_electron_h(ao: &AoData, pair: &Pair) -> f64 {
 
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
         0 => {
-            let val = Complex64::new(0.5, 0.0) * einsum_ba_acbd_dc(pair.munu_w.as_ref().unwrap(), &ao.eri_spin, pair.munu_w.as_ref().unwrap());
+            let val = 0.5 * einsum_ba_acbd_dc_real(pair.munu_w.as_ref().unwrap(), &ao.eri_spin, pair.munu_w.as_ref().unwrap());
             pair.s_red * pair.phase * val
         }
         // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
         1 => {
-            let val = einsum_ba_acbd_dc(pair.munu_w.as_ref().unwrap(), &ao.eri_spin, pair.munu_p_i.as_ref().unwrap());
+            let val = einsum_ba_acbd_dc_real(pair.munu_w.as_ref().unwrap(), &ao.eri_spin, pair.munu_p_i.as_ref().unwrap());
             pair.s_red * pair.phase * val 
         // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
         // one side and P_j on the other.
         }
         2 => {
-            let val = einsum_ba_acbd_dc(pair.munu_p_i.as_ref().unwrap(), &ao.eri_spin, pair.munu_p_j.as_ref().unwrap());
+            let val = einsum_ba_acbd_dc_real(pair.munu_p_i.as_ref().unwrap(), &ao.eri_spin, pair.munu_p_j.as_ref().unwrap());
             pair.s_red * pair.phase * val
         }
         // Otherwise the matrix element is zero.
-        _ => {Complex64::new(0.0, 0.0)}
+        _ => {0.0}
     }
 }
 
@@ -222,13 +218,13 @@ fn two_electron_h(ao: &AoData, pair: &Pair) -> Complex64 {
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
 pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState]) 
-                            -> (Array2<Complex64>, Array2<Complex64>, Duration) {
+                            -> (Array2<f64>, Array2<f64>, Duration) {
     // Tolerance for a number being non-zero.
     let tol = 1e-12;
     let nstates = scfstates.len();
     
-    let mut h = Array2::<Complex64>::zeros((nstates, nstates));
-    let mut s = Array2::<Complex64>::zeros((nstates, nstates));
+    let mut h = Array2::<f64>::zeros((nstates, nstates));
+    let mut s = Array2::<f64>::zeros((nstates, nstates));
 
     // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
     // diagonal included). This can be done as {}^{\mu\nu}X[\mu, \nu] = ({}^{\mu\nu}X[\nu, \mu])^T
@@ -244,7 +240,7 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
     // Progress update every 5 minutes.
     let report = Duration::from_secs(300);
     let last_report = AtomicU64::new(0); 
-    let tmp: Vec<(usize, usize, Complex64, Complex64)> = pairs.par_iter().map(|&(mu, nu)| {
+    let tmp: Vec<(usize, usize, f64, f64)> = pairs.par_iter().map(|&(mu, nu)| {
 
         // Progress counter.
         let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -303,8 +299,8 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
         s[(mu, nu)] = s_munu;
         // Hermitian.
         if mu != nu {
-            h[(nu, mu)] = h_munu.conj();
-            s[(nu, mu)] = s_munu.conj();
+            h[(nu, mu)] = h_munu;
+            s[(nu, mu)] = s_munu;
         }
     }
     (h, s, d_h)
@@ -314,18 +310,18 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
 /// # Arguments:
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array1<Complex64>, Duration) {
+pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array1<f64>, Duration) {
     let tol = f64::EPSILON;
     let (h, s, d_h) = build_noci_matrices(ao, scfstates);
         
     println!("NOCI-reference Hamiltonian:");
-    print_array2(&h.map(|z: &Complex64| z.re));
+    print_array2(&h);
     println!("NOCI-reference Overlap:");
-    print_array2(&s.map(|z: &Complex64| z.re));
+    print_array2(&s);
     println!("Shifted NOCI-reference Hamiltonian");
-    let h_shift = &h.map(|z: &Complex64| z.re) - scfstates[0].e * &s.map(|z: &Complex64| z.re);
+    let h_shift = &h.map(|z: &f64| z) - scfstates[0].e * &s;
     print_array2(&h_shift);
-    let (evals, c) = general_evp_complex(&h, &s, true, tol);
+    let (evals, c) = general_evp_real(&h, &s, true, tol);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
 
     // Assumes columns of c are energy ordered eigenvectors

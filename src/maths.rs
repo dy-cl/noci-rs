@@ -83,14 +83,14 @@ pub fn general_evp_complex(f: &Array2<Complex64>, s: &Array2<Complex64>, project
 /// # Arguments 
 ///     `g`: Array2, matrix 1. 
 ///     `h`: Array2, matrix 2.
-pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
+pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
     let n = g.nrows();
     
     // Convert ndarrays into memory ordered slice.
     let gs = g.as_slice_memory_order().unwrap();
     let hs = h.as_slice_memory_order().unwrap();
 
-    let mut acc = Complex64::new(0.0, 0.0);
+    let mut acc = 0.0;
     
     // Index of 2D tensor element in 1D is given by (a * n) + b.
     for a in 0..n {
@@ -114,8 +114,8 @@ pub fn einsum_ba_ab(g: &Array2<Complex64>, h: &Array2<f64>) -> Complex64 {
 ///     `g`: Array2, matrix 1. 
 ///     `t`: Array4, 4D tensor.
 ///     `h`: Array2, matrix 2.
-pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Complex64>)
-                         -> Complex64 {
+pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
+                         -> f64 {
     let n = g.nrows();
 
     // Convert ndarrays into memory ordered slice.
@@ -123,10 +123,10 @@ pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Comp
     let hs = h.as_slice_memory_order().unwrap();
     let ts = t.as_slice_memory_order().unwrap();
 
-    let mut acc = Complex64::new(0.0, 0.0);
+    let mut acc = 0.0;
 
     // Transpose h[d, c] = ht[c, d] into layout which is contiguous by d as this will be fastest index.
-    let mut ht = vec![Complex64::new(0.0, 0.0); n * n];
+    let mut ht = vec![0.0; n * n];
     for d in 0..n {
         let d_idx = d * n;
         for c in 0..n {
@@ -142,8 +142,7 @@ pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Comp
         for b in 0..n {
             let g_ba = unsafe {*gs.get_unchecked(b * n + a)};
             // Accumulate real and imaginary parts separately so only real operations used.
-            let mut re = 0.0f64;
-            let mut im = 0.0f64;
+            let mut sum = 0.0f64;
             for c in 0..n {
                 // ht[c, d] (h[d, c]).
                 let ht_cd = &ht[c * n..(c + 1) * n]; 
@@ -152,11 +151,10 @@ pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Comp
                 for d in 0..n {
                     let t_acbd = unsafe {*ts.get_unchecked(abc_idx + d)};
                     let h_dc = unsafe {*ht_cd.get_unchecked(d)};
-                    re += t_acbd * h_dc.re;
-                    im += t_acbd * h_dc.im;
+                    sum += t_acbd * h_dc;
                 }
             }
-            acc += g_ba * Complex64::new(re, im);
+            acc += g_ba * sum;
         }
     }
     acc
@@ -166,10 +164,10 @@ pub fn einsum_ba_acbd_dc(g: &Array2<Complex64>, t: &Array4<f64>, h: &Array2<Comp
 /// # Arguments  
 /// `h`: Array2, matrix. 
 /// `c`: Array1, vector.
-pub fn parallel_matvec(h: &Array2<Complex64>, c: &Array1<Complex64>) -> Array1<Complex64> {
+pub fn parallel_matvec_real(h: &Array2<f64>, c: &Array1<f64>) -> Array1<f64> {
     // Iterate over rows of the matrix h in parallel, for each computing its dot product with
     // vector c, and finally collect the results into a vector.
-    let result: Vec<Complex64> = h.axis_iter(Axis(0)).into_par_iter().map(|row| {row.iter().zip(c.iter()).map(|(&hij, &cj)| hij * cj).sum::<Complex64>()}).collect();
+    let result: Vec<f64> = h.axis_iter(Axis(0)).into_par_iter().map(|row| {row.iter().zip(c.iter()).map(|(&hij, &cj)| hij * cj).sum::<f64>()}).collect();
     Array1::from_vec(result)
 }
 

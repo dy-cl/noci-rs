@@ -2,7 +2,6 @@
 use std::process::Command;
 use std::time::{Instant, Duration};
 use ndarray::Array1;
-use num_complex::Complex64;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
@@ -11,7 +10,10 @@ use noci_rs::read::read_integrals;
 use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
 use noci_rs::noci::{calculate_noci_energy, build_noci_matrices};
 use noci_rs::deterministic::{propagate, projected_energy};
+use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::SCFState;
+
+
 
 fn main() {
     let t_total = Instant::now();
@@ -107,7 +109,7 @@ fn main() {
 
                 // Embed reference NOCI coefficient vector in full NOCI-QMC space.
                 let n_qmc = noci_qmc_basis.len();
-                let mut c0_qmc = Array1::<Complex64>::zeros(n_qmc);  
+                let mut c0_qmc = Array1::<f64>::zeros(n_qmc);  
                 
                 // If we are not interested in plotting evolution of individual coefficients we use the
                 // reference NOCI coefficients as our initial guess as this is the best guess, however,
@@ -123,8 +125,10 @@ fn main() {
                 // If we are interested in plotting the evolution of individual coefficients we use an
                 // equal weighting of all SCF states as our initial guess.
                 } else {
-                    c0_qmc = Array1::from_elem(n_qmc, Complex64::new(1.0 / (n_qmc as f64).sqrt(), 0.0));
-                };   
+                    c0_qmc = Array1::from_elem(n_qmc, 1.0 / (n_qmc as f64).sqrt());
+                };  
+                let ref_indices: Vec<usize> = noci_reference_basis.iter().map(|ref_st| {noci_qmc_basis.iter()
+                                              .position(|qmc_st| qmc_st.label == ref_st.label).unwrap()}).collect();
                 println!("Initial wavefunction ansatz (C0-QMC): {}", c0_qmc);
 
                 // Propagate coefficient vector deterministically in full NOCI-QMC basis.
@@ -135,6 +139,7 @@ fn main() {
                 match propagation_result {
                     Some(c) => {
                         e_tot_opt = Some(projected_energy(&h_qmc, &s_qmc, &c));
+                        wavefunction_sparsity(c.as_slice().unwrap(), &ref_indices);
                         if input.write.write_coeffs {
                             // Write all coefficients to a file. Currently if we are doing multiple
                             // geometries this file will just overwrite itself and so we end up with only
@@ -147,15 +152,15 @@ fn main() {
                                 writeln!(writer, "iter {}", iter.iter).unwrap();
                                 writeln!(writer, "Full coefficients:").unwrap();
                                 for (i, z) in iter.c_full.iter().enumerate() {
-                                    writeln!(writer, "{:4} {:.8e}  {:.8e}", i, z.re, z.im).unwrap();
+                                    writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
                                 }
                                 writeln!(writer, "Relevant space coefficients:").unwrap();
                                 for (i, z) in iter.c_relevant.iter().enumerate() {
-                                    writeln!(writer, "{:4} {:.8e} {:.8e}", i, z.re, z.im).unwrap();
+                                    writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
                                 }
                                 writeln!(writer, "Null space coefficients:").unwrap();
                                 for (i, z) in iter.c_null.iter().enumerate() {
-                                    writeln!(writer, "{:4} {:.8e} {:.8e}", i, z.re, z.im).unwrap();
+                                    writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
                                 }
                                 writeln!(writer).unwrap(); 
                             }
@@ -182,7 +187,6 @@ fn main() {
                 println!("NOCI-QMC basis size: {}", n_qmc);
             }
             println!("{}", "=".repeat(100));
-
             println!("Total PySCF time: {:?}", d_gen);
             println!("Total SCF time: {:?}", d_scf);
             print!("");
