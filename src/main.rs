@@ -1,222 +1,312 @@
-// main.rs
+// main.rs 
 use std::process::Command;
 use std::time::{Instant, Duration};
-use ndarray::Array1;
+use std::default::Default;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+use ndarray::Array1;
+
+use noci_rs::input::Input;
+use noci_rs::AoData;
+use noci_rs::SCFState;
+
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
-use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
+use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_deterministic_noci_basis};
 use noci_rs::noci::{calculate_noci_energy, build_noci_matrices};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::utils::{wavefunction_sparsity};
-use noci_rs::SCFState;
 
+// Timing storage for various segements of code.
+#[derive(Default, Clone, Copy)]
+struct Timings {
+    pyscf: Duration,
+    scf: Duration,
+    noci_ref_total: Duration,
+    noci_ref_h: Duration,
+    qmc_total: Duration,
+    qmc_basis: Duration,
+    qmc_h: Duration,
+    qmc_prop: Duration,
+}
 
+// Printed results for a given geometry.
+struct Results {
+    r: f64,
+    states: Vec<SCFState>,
+    e_rhf: f64,
+    e_noci_ref: f64,
+    e_noci_qmc_det: Option<f64>,
+    e_fci: Option<f64>,
+    timings: Timings,
+}
 
+type Atoms = Vec<String>;
+
+/// Main.
 fn main() {
     let t_total = Instant::now();
     let input_path = match std::env::args().nth(1) {
-        Some(p) => p, 
+        Some(p) => p,
         None => {
-            eprintln!("Usage: cargo run <input.lua>"); 
+            eprintln!("Usage: cargo run <input.lua>");
             std::process::exit(1);
         }
     };
-
     let input = load_input(&input_path);
-    let mut prev_states: Vec<SCFState> = Vec::new();
-   
+
     println!("Running SCF for {} geometries...", input.mol.r_list.len());
-    for (i, r) in input.mol.r_list.iter().copied().enumerate(){
+    let mut prev_states: Vec<SCFState> = Vec::new();
+    
+    for (i, r) in input.mol.r_list.iter().copied().enumerate() {
         println!("\n");
-        let atoms = &input.mol.geoms[i];
-        let atomsj = serde_json::to_string(atoms).unwrap();
-        let t_gen = Instant::now();
-        // Run interface to PySCF which generates AO integrals, overlap matrix, density matrices etc.
-        let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.mol.basis)
-                                            .arg("--unit").arg(&input.mol.unit).arg("--out").arg("data.h5").arg("--fci")
-                                            .arg(if input.scf.do_fci { "true" } else { "false" }).status().unwrap();
-        if !status.success() {
-            eprintln!("Failed to generate mol with status {status}");
-            std::process::exit(1);
-        }
-        let d_gen = t_gen.elapsed();
-        
-        // Read integrals from the generated data.
-        let ao = read_integrals("data.h5");
-
-        let mut use_prev_seed = !prev_states.is_empty();
-        let mut tried_unseed = false;
-        
-        loop {
-            let t_scf = Instant::now();
-            // Calculate SCF states.
-            // If we have solutions at a previous geometry, use them.
-            let states = if use_prev_seed {
-                generate_reference_noci_basis(&ao, &input, Some(&prev_states))
-            } else {
-                generate_reference_noci_basis(&ao, &input, None)
-            };
-            let d_scf = t_scf.elapsed();
-            println!("{}", "=".repeat(100));
-       
-            // Determine which states are to be used in the reference NOCI basis.
-            let t_noci_reference = Instant::now();
-            let mut noci_reference_basis = Vec::new();
-            for state in states.iter() {
-                if state.noci_basis {
-                    noci_reference_basis.push(state.clone());
-                }
-            }
-
-            // Pass SCF states to NOCI subroutines to and NOCI energy from the given basis.
-            let (e_noci, c0, d_h1_h2_reference) = calculate_noci_energy(&ao, &noci_reference_basis);
-            let d_noci_reference = t_noci_reference.elapsed();
-
-            // Optional deterministic propagation results.
-            let mut e_tot_opt: Option<f64> = None;
-            let mut n_qmc_deterministic_opt: Option<usize> = None;
-            let mut d_noci_qmc_deterministic = Duration::ZERO;
-            let mut d_noci_qmc_deterministic_basis_construction = Duration::ZERO;
-            let mut d_h1_h2_qmc = Duration::ZERO;
-            let mut d_noci_qmc_deterministic_propagation = Duration::ZERO;
-            let mut coefficients = Vec::new();
-
-            if input.qmc.deterministic {
-                // Construct the requested excitation space NOCI-QMC basis ontop of the reference basis and
-                // get the corresponding Hamiltonian and overlap.
-                let t_noci_qmc_deterministic = Instant::now();
-                let t_noci_qmc_deterministic_basis_construction = Instant::now();
-                println!("{}", "=".repeat(100));
-                println!("Building NOCI-QMC basis....");
-                let noci_qmc_basis = generate_qmc_noci_basis(&ao, &noci_reference_basis, &input);
-                println!("Built NOCI-QMC basis of {} determinants.", noci_qmc_basis.len());
-                let n = noci_qmc_basis.len();
-                n_qmc_deterministic_opt = Some(noci_qmc_basis.len());
-                println!("Calculating NOCI-QMC matrix elements for {} determinants ({} elements)...", n, n * n);
-                println!("Progress will be printed every 5 minutes...");
-                d_noci_qmc_deterministic_basis_construction = t_noci_qmc_deterministic_basis_construction.elapsed();
-                let (h_qmc, s_qmc, d_h1_h2_qmc_local) = build_noci_matrices(&ao, &noci_qmc_basis);
-                d_h1_h2_qmc = d_h1_h2_qmc_local;
-                println!("Finished calculating NOCI-QMC matrix elements.");
-                
-                // Choose intial shift energy.
-                let es = states[0].e; // RHF energy.
-                println!("Running deterministic NOCI-QMC propagation....");
-                let t_noci_qmc_deterministic_propagation = Instant::now();
-
-                // Embed reference NOCI coefficient vector in full NOCI-QMC space.
-                let n_qmc = noci_qmc_basis.len();
-                let mut c0_qmc = Array1::<f64>::zeros(n_qmc);  
-                
-                // If we are not interested in plotting evolution of individual coefficients we use the
-                // reference NOCI coefficients as our initial guess as this is the best guess, however,
-                // the coefficients often don't change much which makes for a boring plot.
-                if !input.write.write_coeffs {
-                    // Iterate over states in the full NOCI-QMC basis and place reference coefficients on the
-                    // states with reference state labels. This could break if the reference states are not in
-                    // the expected order so should be made more robust.
-                    for (i, ref_st) in noci_reference_basis.iter().enumerate() {
-                        let idx = noci_qmc_basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
-                        c0_qmc[idx] = c0[i];
-                    }
-                // If we are interested in plotting the evolution of individual coefficients we use an
-                // equal weighting of all SCF states as our initial guess.
-                } else {
-                    c0_qmc = Array1::from_elem(n_qmc, 1.0 / (n_qmc as f64).sqrt());
-                };  
-                let ref_indices: Vec<usize> = noci_reference_basis.iter().map(|ref_st| {noci_qmc_basis.iter()
-                                              .position(|qmc_st| qmc_st.label == ref_st.label).unwrap()}).collect();
-                println!("Initial wavefunction ansatz (C0-QMC): {}", c0_qmc);
-
-                // Propagate coefficient vector deterministically in full NOCI-QMC basis.
-                let propagation_result = propagate(&h_qmc, &s_qmc, &c0_qmc, es, &mut coefficients, &input);
-                d_noci_qmc_deterministic_propagation = t_noci_qmc_deterministic_propagation.elapsed();
-                d_noci_qmc_deterministic = t_noci_qmc_deterministic.elapsed();
-
-                match propagation_result {
-                    Some(c) => {
-                        e_tot_opt = Some(projected_energy(&h_qmc, &s_qmc, &c));
-                        wavefunction_sparsity(c.as_slice().unwrap(), &ref_indices);
-                        if input.write.write_coeffs {
-                            // Write all coefficients to a file. Currently if we are doing multiple
-                            // geometries this file will just overwrite itself and so we end up with only
-                            // the coefficients of the final geometry. Also this writing is slow. 
-                            println!("Writing coefficients to file...");
-                            let filepath = format!("{}/{}", input.write.coeffs_dir, input.write.coeffs_filename);
-                            let file = File::create(filepath).unwrap();
-                            let mut writer = BufWriter::new(file);
-                            for iter in &coefficients {
-                                writeln!(writer, "iter {}", iter.iter).unwrap();
-                                writeln!(writer, "Full coefficients:").unwrap();
-                                for (i, z) in iter.c_full.iter().enumerate() {
-                                    writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
-                                }
-                                writeln!(writer, "Relevant space coefficients:").unwrap();
-                                for (i, z) in iter.c_relevant.iter().enumerate() {
-                                    writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
-                                }
-                                writeln!(writer, "Null space coefficients:").unwrap();
-                                for (i, z) in iter.c_null.iter().enumerate() {
-                                    writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
-                                }
-                                writeln!(writer).unwrap(); 
-                            }
-                        }
-                    } None => {
-                        println!("Propagation failed.");
-                        if use_prev_seed && !tried_unseed {
-                            println!("Retrying SCF/NOCI/NOCI-QMC without seeding from previous geometry.");
-                            use_prev_seed = false;
-                            tried_unseed = true;
-                            continue;
-                        } else {
-                            println!("{}", "=".repeat(100));
-                            println!("R: {}, propagation did not converge. Skipping geometry.", r);
-                            break;
-                        }
-                    }
-                }
-            } 
-            
-            println!("{}", "=".repeat(100));
-            println!("NOCI reference basis size: {}", noci_reference_basis.len());
-            if let Some(n_qmc) = n_qmc_deterministic_opt {
-                println!("NOCI-QMC basis size: {}", n_qmc);
-            }
-            println!("{}", "=".repeat(100));
-            println!("Total PySCF time: {:?}", d_gen);
-            println!("Total SCF time: {:?}", d_scf);
-            print!("");
-
-            println!("Total Reference NOCI time: {:?}", d_noci_reference);
-            println!(r"  H_1 & H_2: {:?}", d_h1_h2_reference);
-            print!("");
-
-            if input.qmc.deterministic {
-                println!("Total NOCI-QMC deterministic time: {:?}", d_noci_qmc_deterministic);
-                println!(r"  Basis generation:  {:?}", d_noci_qmc_deterministic_basis_construction);
-                println!(r"  H_1 & H_2: {:?}", d_h1_h2_qmc);
-                println!(r"  Deterministic propagation:  {:?}", d_noci_qmc_deterministic_propagation);
-            }
-
-            println!("{}", "=".repeat(100));
-            println!("R: {}", r);
-            for (i, state) in states.iter().enumerate() {
-                println!("State({}): {},  E: {}", i + 1, state.label, state.e);
-            }
-            println!("State(NOCI-reference): E: {}, [E - E(RHF)]: {}", e_noci, e_noci - states[0].e);
-            if let Some(e_tot) = e_tot_opt {
-                println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_tot, e_tot - states[0].e);
-            }
-            if let Some(e_fci) = ao.e_fci {
-                println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - states[0].e);
-            }
-            prev_states = states.clone();
-            break;
-        }
+        let atoms: &Atoms = &input.mol.geoms[i];
+        let res = run(r, atoms, &input, &prev_states);  
+        print_report(&res, &input);
+        prev_states = res.states.clone();
     }
     println!("\n Total wall time: {:?}", t_total.elapsed());
+}
+
+/// Wrapper fuction to call each required or requested type of calculation. Ordering is: 1)
+/// Generate integrals in PySCF, run SCF for requested states, run the reference NOCI calculation,
+/// and finally run the deterministic propagation NOCI-QMC calculation.
+/// # Arguments:
+///     `r`: f64, current geometry.
+///     `atoms`: Vec<String>, atom types.
+///     `prev_states`: [SCFState], converged SCF states at previous r, used for seeding.
+fn run(r: f64, atoms: &Atoms, input: &Input, prev_states: &[SCFState]) -> Results {
+    
+    // Initialise timings struct and call PySCF.
+    let mut timings = Timings {
+        pyscf: run_pyscf(atoms, input),
+        ..Default::default()
+    };
+    
+    // Read in data generated by PySCF.
+    let ao: AoData = read_integrals("data.h5");
+    
+    // Run SCF calculations.
+    let (states, d_scf) = run_scf(&ao, input, prev_states);
+    timings.scf = d_scf;
+    
+    // Run NOCI reference calculation.
+    let (noci_reference_basis, e_noci_ref, c0, d_noci_ref_total, d_h_ref) = run_reference_noci(&ao, &states);
+    timings.noci_ref_total = d_noci_ref_total;
+    timings.noci_ref_h = d_h_ref;
+    
+    // Run deterministic NOCI-QMC calculation.
+    let mut e_noci_qmc_det: Option<f64> = None;
+    if input.qmc.deterministic {
+        let (e_det, d_qmc_det_total, d_qmc_det_basis, d_qmc_det_h, d_qmc_det_prop) 
+            = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0);
+        e_noci_qmc_det = Some(e_det);
+        timings.qmc_total = d_qmc_det_total;
+        timings.qmc_basis = d_qmc_det_basis;
+        timings.qmc_h = d_qmc_det_h;
+        timings.qmc_prop = d_qmc_det_prop;
+    }
+
+    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_fci: ao.e_fci, timings, states: states.clone()}
+}
+
+/// Call PySCF script to get the two electron integrals and core hamiltonian.
+/// # Arguments: 
+///     `atoms`: Vec<String>, atom types.
+///     `input`: Input, user input specifications.
+fn run_pyscf(atoms: &Atoms, input: &Input) -> Duration {
+    let t_gen = Instant::now();
+    let atomsj = serde_json::to_string(atoms).unwrap();
+    
+    // Call PySCF script via command line.
+    let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.mol.basis)
+                                        .arg("--unit").arg(&input.mol.unit).arg("--out").arg("data.h5").arg("--fci")
+                                        .arg(if input.scf.do_fci { "true" } else { "false" }).status().unwrap();
+
+    if !status.success() {
+        eprintln!("Failed to generate mol with status {status}");
+        std::process::exit(1);
+    }
+
+    t_gen.elapsed()
+}
+
+/// Run SCF calculations for user requested SCF states.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data.
+///     `input`: Input, user input specifications.
+///     `prev_states`: [SCFState], converged SCF states at previous r, used for seeding. 
+fn run_scf(ao: &AoData, input: &Input, prev_states: &[SCFState]) -> (Vec<SCFState>, Duration) {
+    let t_scf = Instant::now();
+    
+    // Use the previous states to seed new SCF calculations if they exist.
+    let states = if prev_states.is_empty() {
+        generate_reference_noci_basis(ao, input, None)
+    } else {
+        generate_reference_noci_basis(ao, input, Some(prev_states))
+    };
+
+    (states, t_scf.elapsed())
+}
+
+/// Construct the reference NOCI basis and find the reference NOCI energy via calculation of NOCI
+/// Hamiltonian and overlap followed by solving GEVP.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data.
+///     `states`: [SCFState], converged SCF states. 
+fn run_reference_noci(ao: &AoData, states: &[SCFState]) -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
+    let t_noci = Instant::now();
+    
+    // Filter for the SCF states the user requested to be used in the NOCI basis.
+    let noci_reference_basis: Vec<SCFState> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    // Call matrix element and diagonalisation routines.
+    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, &noci_reference_basis);
+
+    (noci_reference_basis, e_noci_ref, c0.to_vec(), t_noci.elapsed(), d_h_ref)
+}
+
+/// Perform the deterministic propagation in the NOCI-QMC space. This involves calculating the NOCI
+/// Hamiltonian and overlap including the additional Slater determinants, followed by repeated
+/// application of a ground-state propagator to a coefficient vector of basis states.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data.
+///     `input`: Input, user input specifications.
+///     `states`: [SCFState], converged SCF states. 
+///     `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
+///                             to be in the NOCI basis.
+///     `c0`: [f64], initial coefficient vector of basis states.
+fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64]) 
+                             -> (f64, Duration, Duration, Duration, Duration) {
+    let t_total = Instant::now();
+
+    println!("{}", "=".repeat(100));
+    println!("Building NOCI-QMC basis....");
+    
+    // Build excitations atop NOCI-reference basis.
+    let t_basis = Instant::now();
+    let basis = generate_qmc_deterministic_noci_basis(ao, noci_reference_basis, input);
+    let d_basis = t_basis.elapsed();
+
+    let n = basis.len();
+    println!("Built NOCI-QMC basis of {} determinants.", n);
+    println!("Calculating NOCI-QMC deterministic propagation matrix elements for {} determinants ({} elements)...", n, n * n);
+    println!("Progress will be printed every 5 minutes...");
+    
+    // Call matrix element routines.
+    let (h, s, d_h) = build_noci_matrices(ao, &basis);
+    println!("Finished calculating NOCI-QMC matrix elements.");
+    
+    // Choose initial shift.
+    let es = states[0].e; // RHF energy.
+    println!("Running deterministic NOCI-QMC propagation....");
+
+     // Embed reference NOCI coefficient vector in full NOCI-QMC space.
+    let mut c0qmc = Array1::<f64>::zeros(n);  
+    
+    // If we are not interested in plotting evolution of individual coefficients we use the
+    // reference NOCI coefficients as our initial guess as this is the best guess, however,
+    // the coefficients often don't change much which makes for a boring plot.
+    if !input.write.write_coeffs {
+        // Iterate over states in the full NOCI-QMC basis and place reference coefficients on the
+        // states with reference state labels. This could break if the reference states are not in
+        // the expected order so should be made more robust.
+        for (i, ref_st) in noci_reference_basis.iter().enumerate() {
+            let idx = basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
+            c0qmc[idx] = c0[i];
+        }
+    // If we are interested in plotting the evolution of individual coefficients we use an
+    // equal weighting of all SCF states as our initial guess.
+    } else {
+        c0qmc = Array1::from_elem(n, 1.0 / (n as f64).sqrt());
+    }; 
+
+    println!("Initial wavefunction ansatz (C0-QMC): {}", c0qmc);
+    
+    // Save indices in the coefficients vector of the references.
+    let ref_indices: Vec<usize> = noci_reference_basis.iter().map(|ref_st| {basis.iter()
+                                  .position(|qmc_st| qmc_st.label == ref_st.label).unwrap()}).collect();
+    
+    // Coefficient storage if we are writing.
+    let mut coefficients = Vec::new();
+    
+    // Perform the propagation.
+    let t_prop = Instant::now();
+    let c = propagate(&h, &s, &c0qmc, es, &mut coefficients, input);
+    let d_prop = t_prop.elapsed();
+
+    let cfinal = match c {
+        Some(c) => c,
+        None => {
+            println!("Propagation failed."); 
+            std::process::exit(1);
+        }
+    };
+    
+    // Calculate energy and final diagnostics.
+    let e = projected_energy(&h, &s, &cfinal);
+    wavefunction_sparsity(cfinal.as_slice().unwrap(), &ref_indices);
+    
+    // Write projected coefficients to a file. This should currently only be used if doing a single 
+    // geometry at a time otherwise the previous file will be overwritten.
+    if input.write.write_coeffs {
+        println!("Writing coefficients to file...");
+        let filepath = format!("{}/{}", input.write.coeffs_dir, input.write.coeffs_filename);
+        let file = File::create(filepath).unwrap();
+        let mut writer = BufWriter::new(file);
+        for iter in &coefficients {
+            writeln!(writer, "iter {}", iter.iter).unwrap();
+            writeln!(writer, "Full coefficients:").unwrap();
+            for (i, z) in iter.c_full.iter().enumerate() {
+                writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
+            }
+            writeln!(writer, "Relevant space coefficients:").unwrap();
+            for (i, z) in iter.c_relevant.iter().enumerate() {
+                writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
+            }
+            writeln!(writer, "Null space coefficients:").unwrap();
+            for (i, z) in iter.c_null.iter().enumerate() {
+                writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
+            }
+            writeln!(writer).unwrap(); 
+        }
+    }
+
+    let d_total = t_total.elapsed();
+
+    (e, d_total, d_basis, d_h, d_prop)
+}
+
+/// Print important information for current geometry.
+/// # Arguments:
+///     `res`: Results, contains the aforementioned important information.
+///     `input`: Input, user input specifications.
+fn print_report(res: &Results, input: &Input) {
+    println!("{}", "=".repeat(100));
+
+    println!("Total PySCF time: {:?}", res.timings.pyscf);
+    println!("Total SCF time: {:?}", res.timings.scf);
+
+    println!("Total Reference NOCI time: {:?}", res.timings.noci_ref_total);
+    println!(r"  H_1 & H_2: {:?}", res.timings.noci_ref_h);
+
+    if input.qmc.deterministic {
+        println!("Total NOCI-QMC deterministic time: {:?}", res.timings.qmc_total);
+        println!(r"  Basis generation:  {:?}", res.timings.qmc_basis);
+        println!(r"  H_1 & H_2: {:?}", res.timings.qmc_h);
+        println!(r"  Deterministic propagation:  {:?}", res.timings.qmc_prop);
+    }
+
+    println!("{}", "=".repeat(100));
+    println!("R: {}", res.r);
+    for (i, st) in res.states.iter().enumerate() {
+        println!("State({}): {},  E: {}", i + 1, st.label, st.e);
+    }
+
+    println!("State(NOCI-reference): E: {}, [E - E(RHF)]: {}", res.e_noci_ref, res.e_noci_ref - res.e_rhf);
+
+    if let Some(e) = res.e_noci_qmc_det {println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e, e - res.e_rhf);}
+    if let Some(e_fci) = res.e_fci {println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);}
+
+    println!("{}", "=".repeat(100));
 }

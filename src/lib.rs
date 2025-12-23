@@ -9,8 +9,9 @@ pub mod input;
 pub mod maths;
 pub mod deterministic;
 
-use ndarray::{Array1, Array2, Array4};
 use std::sync::Arc;
+
+use ndarray::{Array1, Array2, Array4};
 
 /// AO integrals and other related data storage.
 pub struct AoData {

@@ -2,8 +2,9 @@
 use ndarray::{s, Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO, Norm};
 
-use crate::maths::parallel_matvec_real;
 use crate::input::{Input, Propagator};
+
+use crate::maths::parallel_matvec_real;
 
 // Storage for the chosen propagator expressed in the basis of projectors.
 pub struct ProjPropagator {

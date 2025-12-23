@@ -1,5 +1,6 @@
-use rlua::{Lua, Value, Table};
 use std::fs;
+
+use rlua::{Lua, Value, Table};
 
 // Choice of propagator.
 pub enum Propagator {

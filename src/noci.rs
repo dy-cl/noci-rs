@@ -1,15 +1,15 @@
 // noci.rs
-use ndarray::{Array1, Array2, Axis};
-use ndarray_linalg::{SVD, Determinant};
-use core::f64;
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use ndarray::{Array1, Array2, Axis};
+use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
 use rayon::current_thread_index;
 
 use crate::{AoData, SCFState};
-use crate::utils::print_array2;
 
+use crate::utils::print_array2;
 use crate::maths::{einsum_ba_ab_real, einsum_ba_acbd_dc_real, general_evp_real};
 
 // Storage for per SCF basis set pair.

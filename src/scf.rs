@@ -1,6 +1,7 @@
 // scf.rs
-use ndarray::{Axis, Array1, Array2, Array4, s};
 use std::sync::Arc;
+
+use ndarray::{Axis, Array1, Array2, Array4, s};
 
 use crate::{AoData, SCFState};
 use crate::input::{Input, Spin, Excitation};

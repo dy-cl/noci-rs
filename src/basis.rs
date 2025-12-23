@@ -1,11 +1,13 @@
 // basis.rs
-use ndarray::{Array1, Array2};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ndarray::{Array1, Array2};
+
 use crate::{AoData, SCFState};
-use crate::scf::{spin_block_mo_coeffs, scf_cycle};
 use crate::input::Input;
+
+use crate::scf::{spin_block_mo_coeffs, scf_cycle};
 
 pub struct SpinOccupation {
     occ_alpha: Vec<usize>,
@@ -253,7 +255,7 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
 ///     ao: AoData struct, contains AO integrals and other system data.
 ///     refs: [SCFState], array of reference states for which excitations are generated.
 ///     input: Input struct, contains user inputted options. 
-pub fn generate_qmc_noci_basis(ao: &AoData, refs: &[SCFState], input: &Input) -> Vec<SCFState> {
+pub fn generate_qmc_deterministic_noci_basis(ao: &AoData, refs: &[SCFState], input: &Input) -> Vec<SCFState> {
     let mut out: Vec<SCFState> = Vec::new();
     for r in refs {
         // Include reference states in NOCI-QMC basis.
