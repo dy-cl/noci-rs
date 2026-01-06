@@ -186,7 +186,7 @@ fn one_electron_h(ao: &AoData, pair: &Pair) -> (f64, f64) {
 ///         `phase`: f64, Phase associated with determinant pair \mu \nu.
 ///         `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
 ///          given pair \mu \nu.
-///          `munu_w`: Weighted codensity atrix for the pair.
+///         `munu_w`: Weighted codensity atrix for the pair.
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
 fn two_electron_h(ao: &AoData, pair: &Pair) -> f64 {
 
@@ -212,15 +212,62 @@ fn two_electron_h(ao: &AoData, pair: &Pair) -> f64 {
     }
 }
 
+/// Calculate the Hamiltonian and overlap matrices for a given pair of states \mu and \nu out of the NOCI or
+/// NOCI-QMC basis using the generalised Slater-Condon rules.
+/// # Arguments:
+///    `ao`: AoData struct, contains AO integrals and other system data. 
+///    `scfstates`: Vec<SCFState>, vector of all the calculated SCF states.
+///     `mu`: usize, index of state mu.
+///     `nu`: usize, index of state nu.
+pub fn calculate_hs_pair(ao: &AoData, scfstates: &[SCFState], mu: usize, nu: usize) -> (f64, f64) {
+
+    // Tolerance for a number being non-zero.
+    let tol = 1e-12;
+    // Calculate matrix elements for this pair.
+    let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
+    let (munu_s_noci, s_tilde, c_mu_tc, c_nu_tc, phase) = calculate_munu_s_noci(scfstates, &munu_s, mu, nu);
+    let (s_red, zeros) = calculate_s_red(&s_tilde, tol);
+    
+    // Only compute codensity matrices for this pair if they will be used. For the weighted
+    // co-density matrices we do not compute it if the number of zeros is greater than 1, and
+    // for the unweighted co-density matrices we compute when the number of zeros is 1 or 2
+    let munu_w = match zeros.len() {
+        0 | 1 => Some(calculate_codensity_w_pair(&c_mu_tc, &c_nu_tc, &s_tilde, tol)),
+        _ => None, 
+    };
+    let (munu_p_i, munu_p_j) = match zeros.len() {
+        1 => {
+            let i = zeros[0];
+            (Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, i)), None)
+        }
+        2 => {
+            let i = zeros[0];
+            let j = zeros[1];
+            (
+                Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, i)),
+                Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, j)),
+            )
+        }
+        _ => (None, None),
+    };
+
+    let pair = Pair {munu_s_noci, s_tilde, s_red, zeros, c_mu_tc, c_nu_tc, munu_w, munu_p_i, munu_p_j, phase};
+
+    let (munu_h1, munu_h_nuc) = one_electron_h(ao, &pair);
+    let munu_h2 = two_electron_h(ao, &pair);
+    let munu_h = munu_h1 + munu_h2 + munu_h_nuc;
+
+    (munu_h, munu_s_noci)
+
+}
+
 /// Using occupied MO coefficients of each Non-orthogonal Configuration Interaction (NOCI) basis 
-/// state form the Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
+/// state form the full Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
 /// # Arguments:
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
 pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState]) 
                             -> (Array2<f64>, Array2<f64>, Duration) {
-    // Tolerance for a number being non-zero.
-    let tol = 1e-12;
     let nstates = scfstates.len();
     
     let mut h = Array2::<f64>::zeros((nstates, nstates));
@@ -253,43 +300,10 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
                 println!("H and S matrix elements: {done} / {total_pairs}, ({pct}%), elapsed: {:.1?}", t_h.elapsed());
                 }
         }
-
-        // Calculate matrix elements for this pair.
-        let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
-        let (munu_s_noci, s_tilde, c_mu_tc, c_nu_tc, phase) = calculate_munu_s_noci(scfstates, &munu_s, mu, nu);
-        let (s_red, zeros) = calculate_s_red(&s_tilde, tol);
         
-        // Only compute codensity matrices for this pair if they will be used. For the weighted
-        // co-density matrices we do not compute it if the number of zeros is greater than 1, and
-        // for the unweighted co-density matrices we compute when the number of zeros is 1 or 2
-        let munu_w = match zeros.len() {
-            0 | 1 => Some(calculate_codensity_w_pair(&c_mu_tc, &c_nu_tc, &s_tilde, tol)),
-            _ => None, 
-        };
-        let (munu_p_i, munu_p_j) = match zeros.len() {
-            1 => {
-                let i = zeros[0];
-                (Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, i)), None)
-            }
-            2 => {
-                let i = zeros[0];
-                let j = zeros[1];
-                (
-                    Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, i)),
-                    Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, j)),
-                )
-            }
-            _ => (None, None),
-        };
-
-        let pair = Pair {munu_s_noci, s_tilde, s_red, zeros, c_mu_tc, c_nu_tc, munu_w, munu_p_i, munu_p_j, phase};
-
-        let (munu_h1, munu_h_nuc) = one_electron_h(ao, &pair);
-        let munu_h2 = two_electron_h(ao, &pair);
-        let munu_h = munu_h1 + munu_h2 + munu_h_nuc;
-
-        (mu, nu, munu_h, munu_s_noci)
-    }).collect();
+        // Calculate matrix elements per pair and return.
+        let (munu_h, munu_s_noci) = calculate_hs_pair(ao, scfstates, mu, nu);
+        (mu, nu, munu_h, munu_s_noci)}).collect();
 
     let d_h = t_h.elapsed();
 

@@ -64,17 +64,32 @@ pub struct DiisOptions {
     pub space: usize,
 }
 
-// Storage for QMC options 
-pub struct QMCOptions {
-    pub deterministic: bool,
-    pub singles: bool, 
+// Storage for NOCI excitation options.
+pub struct ExcitationOptions {
+    pub singles: bool,
     pub doubles: bool,
-    pub dt: f64, 
-    pub e_tol: f64,
+}
+
+// Storage for NOCI propagation options
+pub struct PropagationOptions {
+    pub dt: f64,
     pub max_steps: usize,
-    pub propagator: Propagator,
+}
+
+// Storage for deterministic propagation options 
+pub struct DeterministicOptions {
     pub dynamic_shift: bool,
     pub dynamic_shift_alpha: f64,
+    pub e_tol: f64,
+    pub propagator: Propagator,
+}
+
+// Storage for QMC propagation options 
+pub struct QMCOptions {
+    pub initial_population: i64,
+    pub target_population: i64,
+    pub shift_damping: f64, 
+    pub shift_update_freq: usize,
 }
 
 // Storage for output options
@@ -91,7 +106,10 @@ pub struct Input {
     pub scf: SCFInfo,
     pub write: WriteOptions,
     pub states: Vec<StateRecipe>,
-    pub qmc: QMCOptions,
+    pub det: Option<DeterministicOptions>,
+    pub qmc: Option<QMCOptions>,
+    pub excit: ExcitationOptions,
+    pub prop: PropagationOptions,
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -106,12 +124,13 @@ pub fn load_input(path: &str) -> Input {
     ctx.load(&src).exec().unwrap();
     let globals = ctx.globals();
 
-    // Table headers.
+    // Non-optional table headers.
     let mol_tbl: rlua::Table = globals.get("mol").unwrap();
     let scf_tbl: rlua::Table = globals.get("scf").unwrap();
     let write_tbl: rlua::Table = globals.get("write").unwrap();
     let state_tbl: rlua::Table = globals.get("states").unwrap();
-    let qmc_tbl: Table = globals.get("qmc").unwrap();
+    let excit_tbl: Table = globals.get("excit").unwrap();
+    let prop_tbl: Table = globals.get("prop").unwrap();
     
     // Mol table.
     let basis: String = mol_tbl.get("basis").unwrap();
@@ -209,24 +228,39 @@ pub fn load_input(path: &str) -> Input {
         states.push(StateRecipe {label, spin_bias, spatial_bias, excitation, noci});
     }
     
-    // QMC table
-    let deterministic: bool = qmc_tbl.get("deterministic").unwrap();
-    let singles: bool = qmc_tbl.get("singles").unwrap();
-    let doubles: bool = qmc_tbl.get("doubles").unwrap();
-    let dt: f64 = qmc_tbl.get("dt").unwrap();
-    let qmc_e_tol: f64 = qmc_tbl.get("e_tol").unwrap();
-    let max_steps: usize = qmc_tbl.get("max_steps").unwrap();
-    let propagator_str: String = qmc_tbl.get("propagator").unwrap();
-    let propagator = match propagator_str.as_str() {
-        "unshifted" => Propagator::Unshifted,
-        "shifted" => Propagator::Shifted,
-        _ => {eprintln!("Propagator must be 'unshifted', 'shifted'."); std::process::exit(1);} 
-    };
-    let dynamic_shift = qmc_tbl.get("dynamic_shift").unwrap();
-    let dynamic_shift_alpha = qmc_tbl.get("dynamic_shift_alpha").unwrap();
+    // Deterministic table.
+    let det: Option<DeterministicOptions> = globals.get::<_, Option<rlua::Table>>("det").unwrap().map(|det_tbl| {
+        let propagator_str: String = det_tbl.get("propagator").unwrap();
+        let propagator = match propagator_str.as_str() {
+            "unshifted" => Propagator::Unshifted,
+            "shifted" => Propagator::Shifted,
+            _ => { eprintln!("Propagator must be 'unshifted' or 'shifted'."); std::process::exit(1);}
+        };
+        let dynamic_shift: bool = det_tbl.get("dynamic_shift").unwrap();
+        let dynamic_shift_alpha: f64 = det_tbl.get("dynamic_shift_alpha").unwrap();
+        let e_tol: f64 = det_tbl.get("e_tol").unwrap();
+        DeterministicOptions {dynamic_shift, dynamic_shift_alpha, e_tol, propagator}
+    });
 
-    let qmc = QMCOptions {deterministic, singles, doubles, dt, e_tol: qmc_e_tol, max_steps, propagator, dynamic_shift, dynamic_shift_alpha};
+    // QMC table.
+    let qmc: Option<QMCOptions> = globals.get::<_, Option<rlua::Table>>("qmc").unwrap().map(|qmc_tbl| {
+        let initial_population: i64 = qmc_tbl.get("initial_population").unwrap();
+        let target_population: i64 = qmc_tbl.get("target_population").unwrap();
+        let shift_damping: f64 = qmc_tbl.get("shift_damping").unwrap();
+        let shift_update_freq: usize = qmc_tbl.get("shift_update_freq").unwrap();
+        QMCOptions {initial_population, target_population, shift_damping, shift_update_freq}
+    });
 
-    Input {mol, scf, write, states, qmc}
+    // Excitation table. 
+    let singles = excit_tbl.get("singles").unwrap();
+    let doubles = excit_tbl.get("doubles").unwrap();
+    let excit = ExcitationOptions {singles, doubles};
+
+    // Propagation table.
+    let dt = prop_tbl.get("dt").unwrap();
+    let max_steps = prop_tbl.get("max_steps").unwrap();
+    let prop = PropagationOptions {dt, max_steps};
+
+    Input {mol, scf, write, states, det, qmc, excit, prop}
 }
 

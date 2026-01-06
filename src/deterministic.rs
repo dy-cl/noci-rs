@@ -150,7 +150,7 @@ pub fn propagate_step_shifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>,
     c - &dtc
 }
 
-/// Propagate nsteps number of time-step updates.
+/// Propagate nsteps number of time-step updates or until convergence in the energy.
 /// # Arguments
 ///     `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis. 
 ///     `s`: Array2, Overlap matrix in full NOCI-QMC basis.
@@ -163,10 +163,11 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
 
     let mut c_norm = c0.clone(); 
     let mut e_prev = projected_energy(h, s, c0);
-    
     let mut logamp: f64 = 0.0;
-
     let de_max = 10.0;
+
+    // Unwrap deterministic propagation specific options
+    let det = input.det.as_ref().unwrap();
     
     // If we're doing deterministic investigation into relevant and null subspaces we need to
     // calculate projectors onto these spaces which involves diagonalising S. Of course for larger
@@ -182,7 +183,7 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
         let sc0n = s.dot(&c0_null);
         let hc0n = h.dot(&c0_null);
         println!("Action of S and H on initial null vector: ||Scn|| = {}, ||Hcn|| = {}.", sc0n.norm(), hc0n.norm());
-        let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.qmc.dt, &input.qmc.propagator);
+        let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.prop.dt, &det.propagator);
         println!("With initial shift: {}, ||Unn|| = {}, ||Urr|| = {}, ||Urn|| = {}, ||Unr|| = {}.",
                  es, &proj_propagator.unn.norm(), &proj_propagator.urr.norm(), &proj_propagator.urn.norm(), &proj_propagator.unr.norm());
         let nnull = proj_propagator.unn.nrows();
@@ -207,14 +208,14 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
     println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
             0, e_prev, 0, es, c0_1norm, den);
 
-    for it in 0..input.qmc.max_steps {
+    for it in 0..input.prop.max_steps {
 
         // Select propagator.
-        let mut c_new_norm = match input.qmc.propagator {
+        let mut c_new_norm = match det.propagator {
             // U_{\Pi\Lambda}(\Delta\tau) = (1 + \Delta\tau E_s)\delta_{\Lambda}^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_s S_{\Pi\Lambda})
-            Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.qmc.dt),
+            Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
             // U_{\Pi\Lambda}(\Delta\tau) = \delta_\Lambda^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_sS_{\Pi\Lambda})
-            Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.qmc.dt),
+            Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.prop.dt),
         };
 
         // Normalise.
@@ -230,8 +231,8 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
         logamp += norm.ln();
         
         // Update shift dynamically if requested.
-        if input.qmc.dynamic_shift {
-            let a = input.qmc.dynamic_shift_alpha;  
+        if det.dynamic_shift {
+            let a = det.dynamic_shift_alpha;  
             es = (1.0 - a) * es + a * e;
         }
 
@@ -247,7 +248,6 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
 
         // Print table rows.
         let c1norm = c_new_norm.iter().map(|z| z.abs()).sum::<f64>();
-        
         println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
                 it + 1, e, de, es, c1norm, den);
         // If our energy change between iterations is large we likely have problems with
@@ -258,7 +258,7 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
             return None
         }
 
-        if de < input.qmc.e_tol {
+        if de < det.e_tol {
             return Some(c_new_norm)
         }
         c_norm = c_new_norm;

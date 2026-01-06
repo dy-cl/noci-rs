@@ -260,15 +260,15 @@ pub fn generate_qmc_deterministic_noci_basis(ao: &AoData, refs: &[SCFState], inp
     for r in refs {
         // Include reference states in NOCI-QMC basis.
         out.push(r.clone());
-         // If no excitations requested for this ref, continue
-        if !(input.qmc.singles || input.qmc.doubles) {
+        // If no excitations requested for this ref, continue
+        if !(input.excit.singles || input.excit.doubles) {
             continue;
         }
 
         let spin_occ = get_spin_occupation(r);
 
         // Single excitations 
-        if input.qmc.singles {
+        if input.excit.singles {
             // Single excitations spin alpha 
             for &i in &spin_occ.occ_alpha {
                 for &a in &spin_occ.virt_alpha {
@@ -297,7 +297,7 @@ pub fn generate_qmc_deterministic_noci_basis(ao: &AoData, refs: &[SCFState], inp
         }
         
         // Double excitations
-        if input.qmc.doubles {
+        if input.excit.doubles {
             // Double excitations spin alpha spin alpha 
             let occ_a = &spin_occ.occ_alpha;
             let virt_a = &spin_occ.virt_alpha;

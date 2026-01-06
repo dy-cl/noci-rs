@@ -16,6 +16,7 @@ use noci_rs::read::read_integrals;
 use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_deterministic_noci_basis};
 use noci_rs::noci::{calculate_noci_energy, build_noci_matrices};
 use noci_rs::deterministic::{propagate, projected_energy};
+use noci_rs::stochastic::{step};
 use noci_rs::utils::{wavefunction_sparsity};
 
 // Timing storage for various segements of code.
@@ -25,10 +26,15 @@ struct Timings {
     scf: Duration,
     noci_ref_total: Duration,
     noci_ref_h: Duration,
-    qmc_total: Duration,
-    qmc_basis: Duration,
-    qmc_h: Duration,
-    qmc_prop: Duration,
+    // Deterministic timings.
+    qmc_det_total: Duration,
+    qmc_det_basis: Duration,
+    qmc_det_h: Duration,
+    qmc_det_prop: Duration,
+    // Stochastic timings. No timing for forming Hamiltonian as we do not do this in true QMC.
+    qmc_stoch_total: Duration,
+    qmc_stoch_basis: Duration,
+    qmc_stoch_prop: Duration,
 }
 
 // Printed results for a given geometry.
@@ -38,6 +44,7 @@ struct Results {
     e_rhf: f64,
     e_noci_ref: f64,
     e_noci_qmc_det: Option<f64>,
+    e_noci_qmc_stoch: Option<f64>,
     e_fci: Option<f64>,
     timings: Timings,
 }
@@ -98,17 +105,26 @@ fn run(r: f64, atoms: &Atoms, input: &Input, prev_states: &[SCFState]) -> Result
     
     // Run deterministic NOCI-QMC calculation.
     let mut e_noci_qmc_det: Option<f64> = None;
-    if input.qmc.deterministic {
-        let (e_det, d_qmc_det_total, d_qmc_det_basis, d_qmc_det_h, d_qmc_det_prop) 
-            = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0);
+    if input.det.is_some() {
+        let (e_det, d_qmc_det_total, d_qmc_det_basis, d_qmc_det_h, d_qmc_det_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0);
         e_noci_qmc_det = Some(e_det);
-        timings.qmc_total = d_qmc_det_total;
-        timings.qmc_basis = d_qmc_det_basis;
-        timings.qmc_h = d_qmc_det_h;
-        timings.qmc_prop = d_qmc_det_prop;
+        timings.qmc_det_total = d_qmc_det_total;
+        timings.qmc_det_basis = d_qmc_det_basis;
+        timings.qmc_det_h = d_qmc_det_h;
+        timings.qmc_det_prop = d_qmc_det_prop;
     }
 
-    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_fci: ao.e_fci, timings, states: states.clone()}
+    // Run stochastic NOCI-QMC calculation
+    let mut e_noci_qmc_stoch: Option<f64> = None;
+    if input.qmc.is_some() {
+        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &states, &c0);
+        e_noci_qmc_stoch = Some(e_qmc);
+        timings.qmc_stoch_total = d_qmc_stoch_total;
+        timings.qmc_stoch_basis = d_qmc_stoch_basis;
+        timings.qmc_stoch_prop = d_qmc_stoch_prop;
+    }
+
+    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_fci: ao.e_fci, timings, states: states.clone()}
 }
 
 /// Call PySCF script to get the two electron integrals and core hamiltonian.
@@ -277,6 +293,35 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     (e, d_total, d_basis, d_h, d_prop)
 }
 
+pub fn run_qmc_stochastic_noci(ao: &AoData, input: &Input, noci_reference_basis: &[SCFState], c0: &[f64]) -> (f64, Duration, Duration, Duration) {
+
+    let t_total = Instant::now();
+
+    println!("{}", "=".repeat(100));
+    println!("Building NOCI-QMC basis....");
+    
+    // Build excitations atop NOCI-reference basis.
+    let t_basis = Instant::now();
+    let basis = generate_qmc_deterministic_noci_basis(ao, noci_reference_basis, input);
+    let d_basis = t_basis.elapsed();
+
+    let n = basis.len();
+    println!("Built NOCI-QMC basis of {} determinants.", n);
+
+    // Choose initial shift.
+    let mut es = 0.0;
+    println!("Running stochastic NOCI-QMC propagation....");
+
+    // Perform the propagation.
+    let t_prop = Instant::now();
+    let e = step(c0, ao, &basis, &mut es, input);
+    let d_prop = t_prop.elapsed();
+
+    let d_total = t_total.elapsed();
+
+    (e, d_total, d_basis, d_prop)
+}
+
 /// Print important information for current geometry.
 /// # Arguments:
 ///     `res`: Results, contains the aforementioned important information.
@@ -290,11 +335,17 @@ fn print_report(res: &Results, input: &Input) {
     println!("Total Reference NOCI time: {:?}", res.timings.noci_ref_total);
     println!(r"  H_1 & H_2: {:?}", res.timings.noci_ref_h);
 
-    if input.qmc.deterministic {
-        println!("Total NOCI-QMC deterministic time: {:?}", res.timings.qmc_total);
-        println!(r"  Basis generation:  {:?}", res.timings.qmc_basis);
-        println!(r"  H_1 & H_2: {:?}", res.timings.qmc_h);
-        println!(r"  Deterministic propagation:  {:?}", res.timings.qmc_prop);
+    if input.det.is_some() {
+        println!("Total NOCI-QMC deterministic time: {:?}", res.timings.qmc_det_total);
+        println!(r"  Basis generation:  {:?}", res.timings.qmc_det_basis);
+        println!(r"  H_1 & H_2: {:?}", res.timings.qmc_det_h);
+        println!(r"  Deterministic propagation:  {:?}", res.timings.qmc_det_prop);
+    }
+
+    if input.qmc.is_some() {
+        println!("Total NOCI-QMC stochastic time: {:?}", res.timings.qmc_stoch_total);
+        println!(r"  Basis generation:  {:?}", res.timings.qmc_stoch_basis);
+        println!(r"  Deterministic propagation:  {:?}", res.timings.qmc_stoch_prop);
     }
 
     println!("{}", "=".repeat(100));
@@ -304,8 +355,8 @@ fn print_report(res: &Results, input: &Input) {
     }
 
     println!("State(NOCI-reference): E: {}, [E - E(RHF)]: {}", res.e_noci_ref, res.e_noci_ref - res.e_rhf);
-
-    if let Some(e) = res.e_noci_qmc_det {println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e, e - res.e_rhf);}
+    if let Some(e_det) = res.e_noci_qmc_det {println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_det, e_det - res.e_rhf);}
+    if res.e_noci_qmc_stoch.is_some() {println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");}
     if let Some(e_fci) = res.e_fci {println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);}
 
     println!("{}", "=".repeat(100));

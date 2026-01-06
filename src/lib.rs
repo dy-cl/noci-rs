@@ -8,6 +8,7 @@ pub mod utils;
 pub mod input;
 pub mod maths;
 pub mod deterministic;
+pub mod stochastic;
 
 use std::sync::Arc;
 
