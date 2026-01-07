@@ -1,7 +1,7 @@
 // stochastic.rs
 use std::collections::HashMap;
 use rand::Rng;
-use rand::rngs::StdRng;
+use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
 use crate::AoData;
@@ -10,15 +10,101 @@ use crate::input::Input;
 
 use crate::noci::calculate_hs_pair;
 
-// Storage for walkers, determinant index and signed population.
-pub type Walkers = HashMap<usize, i64>;
+// Storage for walker information.
+pub struct Walkers {
+    // Signed population vector length n determinants.
+    pop: Vec<i64>,
+    // List of indices with non-zero population.
+    occ: Vec<usize>,
+    // Position of index in `occ` or usize::MAX if not present, length n determinants.
+    pos: Vec<usize>,
+}
+
+impl Walkers {
+    /// Construct empty walker object for n determinants.
+    /// # Arguments: 
+    ///    `n`: usize, number of determinants. 
+    pub fn new(n: usize) -> Self {
+        Self {
+            pop: vec![0; n],
+            occ: Vec::new(),
+            pos: vec![usize::MAX; n],
+        }
+    }
+    
+    /// Return the current population of determinant i.
+    /// # Arguments: 
+    ///     `self`: Walkers, object containing information about current walkers.
+    ///     `i`: usize, determinant index of choice.
+    pub fn get(&self, i: usize) -> i64 {
+        self.pop[i]
+    }
+    
+    /// Return a list of occupied determinant indices.
+    /// # Arguments:
+    ///     `self`: Walkers, object containing information about current walkers.
+    pub fn occ(&self) -> &[usize] {
+        &self.occ
+    }
+
+    /// Add dn (change in population) to determinant i, modifying pop, occ and pos as required
+    /// # Arguments:
+    ///     `self`: Walkers, object containing information about current walkers.
+    ///     `i`: usize, determinant index of choice. 
+    ///     `dn`: i64, change in population of determinant i.
+    pub fn add(&mut self, i: usize, dn: i64) {
+        // No changes to be made.
+        if dn == 0 {return;}
+        
+        // Update population vector.
+        let old = self.pop[i];
+        let new = old + dn;
+        self.pop[i] = new;
+        
+        // If old population of determinant i was 0 and we are introducing population we must
+        // add determinant i to the occupied list and store its position in pos.
+        if old == 0 && new != 0 {
+            // Position of determinant i in occupied list is the current end.
+            self.pos[i] = self.occ.len();
+            self.occ.push(i);
+        // If old population of determinant i was not 0 and we have removed population we must
+        // remove i from the occupied list and remove its position from pos.
+        } else if old != 0 && new == 0 {
+            // Find where i is in occ. Should not return usize::MAX.
+            let p = self.pos[i];
+            // Pop the last occupied determinant index from occ.
+            let last = self.occ.pop().unwrap();
+
+            // If the popped element is not i, then i was somewhere in the middle of occ and we
+            // must move the popped element (last) to position p where i used to be. The position of  
+            // last is then updated in the position vector. If the popped element is i then we do
+            // nothing as we have directly removed it by popping.
+            if last != i {
+                self.occ[p] = last;
+                self.pos[last] = p;
+            }
+            // Position i is no longer occupied.
+            self.pos[i] = usize::MAX;
+        }
+    }
+
+    /// Compute the total walker population 1-norm.
+    /// # Arguments:
+    ///     `self`: Walkers, object containing information about current walkers.
+    pub fn norm(&self) -> i64 {
+        self.occ.iter().map(|&i| self.pop[i].abs()).sum()
+    }
+}
 
 // Storage for Monte Carlo state. 
 pub struct MCState {
     pub walkers: Walkers,
-    pub delta: HashMap<usize, i64>,
+    // Changes to walker population of length n determinants.
+    pub delta: Vec<i64>,
+    // Indices for which delta[i] != 0, i.e., determinants with changed population.
+    pub changed: Vec<usize>,
     pub cache: ElemCache,
-    pub rng: StdRng,
+    pub rng: SmallRng,
 }
 
 // Cache storage for already computed H, S matrix elements, avoids needless recomputation.
@@ -77,6 +163,30 @@ impl Default for ElemCache {
     }
 }
 
+fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
+    if dn == 0 {return;}
+    // If current delta for this determinant is zero this function being called is its first
+    // modification for this iteration and so we record this fact in changed.
+    if mc.delta[i] == 0 {
+        mc.changed.push(i);
+    }
+    // Add the population change to delta.
+    mc.delta[i] += dn;
+}
+
+fn apply_delta(mc: &mut MCState) {
+    // Consider only changed determinants.
+    for &i in &mc.changed {
+        // Total population change for this determinant for this iteration.
+        let dn = mc.delta[i];
+        // As we are applying the change we reset the delta.
+        mc.delta[i] = 0;
+
+        mc.walkers.add(i, dn);
+    }
+    // Reset list of changed determinants.
+    mc.changed.clear()
+}
 
 /// For each entry in initial coefficient vector c0 calculate (c0_i / ||c||) * N_0 (initial population) 
 /// and assign this value  as the initial walker population on this determinant. Sign of population is given 
@@ -84,8 +194,9 @@ impl Default for ElemCache {
 /// # Arguments:
 ///     `c0`: Vec<f64>: Initial determinant coefficient vector.
 ///     `init_pop`: Number of walkers to start with.
-pub fn initialse_walkers(c0: &[f64], init_pop: i64) -> Walkers {
-    let mut w = Walkers::new();
+///     `n`: Number of determinants.
+pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize) -> Walkers {
+    let mut w = Walkers::new(n);
     // Calculate 1-norm of initial coefficient vector.
     let norm1: f64 = c0.iter().map(|x| x.abs()).sum::<f64>();
 
@@ -95,34 +206,14 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64) -> Walkers {
         // Decide sign when not zero.
         if ni != 0 {
             let sgn = if ci >= 0.0 {1} else {-1};
-            w.insert(i, sgn * ni);
+            w.add(i, sgn * ni);
         }
     }
+
     // Alternatively place all weight on first reference (index 0)
     //w.insert(0, init_pop);
 
     w
-}
-
-/// Apply the accumulated delta (change in walker populations) from one iteration to the full
-/// walker population. 
-/// # Arguments:
-///     delta: HashMap, contains changes in walker population for each determinant.
-///     Walkers: Hashmap, contains full walker population for each determinant.
-fn apply_delta(walkers: &mut Walkers, delta: &mut HashMap<usize, i64>) {
-    // Loop over indices i of determinants and their population change dn.
-    for (i, dn) in delta.drain() {
-        // If population change is 0 we leave the determinant alone.
-        if dn == 0 {continue;}
-        // Walker population on determinant i. If i is not in the HashMap of walkers we insert it
-        // with zero population.
-        let ni = walkers.entry(i).or_insert(0);
-        // Apply change in population and perform annhilation.
-        *ni += dn;
-        if *ni == 0 {
-            walkers.remove(&i);
-        }
-    }
 }
 
 /// Perform off-diagonal spawning (amplitude transfer) step by calculating:
@@ -142,19 +233,22 @@ fn apply_delta(walkers: &mut Walkers, delta: &mut HashMap<usize, i64>) {
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64, es: f64, mc: &mut MCState) {
 
-    let parent_sign: i64 = if ngamma > 0 { 1 } else { -1 };
+    let parent_sign: i64 = if ngamma > 0 {1} else {-1};
+    let nwalkers = ngamma.unsigned_abs();
+
+    let ndets = basis.len();
+    // Probability of choosing a Lambda when using uniform excitation.
+    let pgen = 1.0 / ((ndets - 1) as f64);
     
     // Iterate over all walkers on state Gamma.
-    for _ in 0..ngamma.abs() {
+    for _ in 0..nwalkers {
         // Simplistic uniform excitation generation for now. This should of course be developed.
         // Select Lambda from all (n - 1) avaliable determinants (i.e., those that are not Gamma).
         let mut lambda = mc.rng.gen_range(0..(basis.len() - 1));
         // If Lambda index is the same or more than Gamma index we must map it back into the full
         // index set.
         if lambda >= gamma {lambda += 1;}
-        // Probability of choosing this Lambda when using uniform excitation.
-        let pgen = 1.0 / ((basis.len() - 1) as f64);
-
+     
         // Calculate or retrieve matrix elements H_{\Lambda\Gamma}, S_{\Lambda\Gamma} from cache.
         let (hlg, slg) = mc.cache.find_elem(ao, basis, lambda, gamma);
 
@@ -170,8 +264,9 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64,
 
         let ksign: i64 = if k > 0.0 {1} else {-1};
         let child_sign: i64 = -ksign * parent_sign;
-
-        *mc.delta.entry(lambda).or_insert(0) += nchildren * child_sign;
+        
+        // Accumulate population change in delta.
+        add_delta(mc, lambda, nchildren * child_sign);
     }
 }
 
@@ -200,21 +295,16 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt:
     // Sign of parent walkers on state Gamma determines which way round death and cloning occur.
     let parent_sign = if ngamma > 0 {1} else {-1};
 
-    // If 
     if pdeath == 0.0 {return;}
     // Iterate over all walkers on state Gamma.
     for _ in 0..ngamma.abs() {
         // Compare probability against randomly generated number in [0, 1].
         if mc.rng.gen_range(0.0..1.0) < p {
-            let dn = if pdeath > 0.0 {
-                // Death of walker. Remove one walker of the parent's sign.
-                -parent_sign
-            } else {
-                // Cloning of walker. Add one walker of the parent's sign.
-                parent_sign
-            };
-            // Store this population change at index Gamma in delta HashMap.
-            *mc.delta.entry(gamma).or_insert(0) += dn;
+            // If walker dies we remove 1 walker of the parent's sign. If walker is cloned we add
+            // one walker of the parent's sign.
+            let dn = if pdeath > 0.0 {-parent_sign} else {parent_sign};
+            // Accumulate population change in delta.
+            add_delta(mc, gamma, dn);
         }
     }
 }
@@ -232,22 +322,19 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
     let mut num = 0.0; 
     let mut den = 0.0; 
 
-    for (&gamma, &ngamma) in walkers.iter() {
-        if ngamma == 0 {continue;}
+    for &gamma in walkers.occ() {
+        let ngamma = walkers.get(gamma);
         // Calculate or retrieve matrix elements H_{\Gamma, \text{Reference}}, S_{\Gamma,
         // \text{Reference}} from cache.
         let (hgr, sgr) = cache.find_elem(ao, basis, gamma, iref);
-
         num += (ngamma as f64) * hgr;
         den += (ngamma as f64) * sgr;
     }
-
     num / den
 }
 
 /// Compute the number of walkers $\tilde{N}_w(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)||$ that are
 /// not belonging to the null space as opposed to doing $N_w(\tau) = ||C^\Gamma(\tau)||_1$.
-/// Warning: this is currently very very very slow and should be improved with haste.
 /// # Arguments
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
@@ -256,18 +343,21 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
 ///     H_{ij}, S_{ij}.
 fn nw_sc(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache) -> f64 {
-    //p_{\Pi} = \sum_\Omega S_{\Pi, \Omega} N_{\Omega}
-    let mut p: HashMap<usize, f64> = HashMap::new();
+    let ndets = basis.len();
+    let mut acc = 0.0;
 
-    let occ: Vec<(usize, i64)> = walkers.iter().map(|(&i, &ni)| (i, ni)).collect();
-    // N_w = \sum_{\Pi} |p_{\Pi}|
-    for (omega, nomega) in &occ {
-        for (pi, _) in &occ {
-            let (_, spo) = cache.find_elem(ao, basis, *pi, *omega);
-            *p.entry(*pi).or_insert(0.0) += (*nomega as f64) * spo;
+    for gamma in 0..ndets {
+        //p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
+        let mut pgamma = 0.0;
+        for &omega in walkers.occ() {
+            let nomega = walkers.get(omega);
+            let (_, sgo) = cache.find_elem(ao, basis, gamma, omega);
+            pgamma += (nomega as f64) * sgo;
         }
+        // ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma} |p_{\Gamma}|.
+        acc += pgamma.abs();
     }
-    p.values().map(|x| x.abs()).sum()
+    acc
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
@@ -282,20 +372,18 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     
     // Unwrap QMC propagation specific options
     let qmc = input.qmc.as_ref().unwrap();
+    let ndets = basis.len();
 
     // Initialise walker populations based on total initial population and c0.
     println!("Initialising walkers.....");
-    let w = initialse_walkers(c0, qmc.initial_population);
+    let w = initialse_walkers(c0, qmc.initial_population, ndets);
 
-    // Shift update parameters, these should become an input option.
-    let zeta = 0.05;
-    let a = 50usize;
     // Flag activated once total walker population exceeds target population 
     let mut reached = false;
 
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
-    let rng = StdRng::from_entropy();
-    let mut mc = MCState {walkers: w, delta: HashMap::new(), cache: ElemCache::new(), rng};
+    let rng = SmallRng::from_entropy();
+    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache: ElemCache::new(), rng};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
     let iref = 0;
@@ -308,36 +396,34 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16}", "iter", "E", "Ecorr", "Shift", "Nw (||C||)", "Nw (||SC||)");
     // Print initial.
     println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-              0, eproj, eproj - basis[0].e, es, qmc.initial_population, nsprev);
+              0, eproj, eproj - basis[0].e, *es, qmc.initial_population, nsprev);
 
     for it in 0..input.prop.max_steps {
-        // Copy walkers into occ.
-        let occ: Vec<(usize, i64)> = mc.walkers.iter().map(|(&i, &ni)| (i, ni)).collect(); 
-
-        for (gamma, ngamma) in occ {
-
+        // Copy occupied list.
+        let occ = mc.walkers.occ().to_vec();
+        for gamma in occ {
+            let ngamma = mc.walkers.get(gamma);
             // If the walker population on state Gamma is zero we ignore it.
             if ngamma == 0 {continue;}
-            
             // Diagonal death and cloning step.
             death_cloning(ao, basis, gamma, ngamma, input.prop.dt, *es, &mut mc);
-            
             // Off-diagonal amplitude transfer.
             spawning(ao, basis, gamma, ngamma, input.prop.dt, *es, &mut mc);
         }
         // Update walker populations according to accumulated delta. Annhilation happens
         // automatically here.
-        apply_delta(&mut mc.walkers, &mut mc.delta);
-        let n: i64 = mc.walkers.values().map(|n| n.abs()).sum();
-        let ns: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache); 
+        apply_delta(&mut mc);
+
+        let nwc = mc.walkers.norm();
+        let ns = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
         if ns > (qmc.target_population as f64) && !reached {
             reached = true;
             nsprev = ns;
         }
 
         // Update shift once total population has exceeded target population.
-        if reached && (it + 1) % a == 0 {
-            *es -= (zeta / (input.prop.dt * (a as f64))) * (ns / nsprev).ln();
+        if reached && (it + 1) % qmc.shift_update_freq == 0 {
+            *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (ns / nsprev).ln();
             nsprev = ns;
         }
 
@@ -346,7 +432,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache);
 
         // Print table rows.
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, es, n, ns);
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, *es, nwc, ns);
     }
     eproj
 }
