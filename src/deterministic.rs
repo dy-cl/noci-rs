@@ -105,7 +105,12 @@ impl ProjPropagator {
         let identityr = Array2::<f64>::eye(hrr.nrows());
         let identityn = Array2::<f64>::eye(hnn.nrows());
 
-        let identityfac = match prop {Propagator::Unshifted => 1.0, Propagator::Shifted   => 1.0 + dt * es};
+        let identityfac = match prop {
+            Propagator::Unshifted => 1.0, 
+            Propagator::Shifted => 1.0 + dt * es,
+            // Not yet implemented. Redirect to normal shift.
+            Propagator::DifferenceDoublyShifted => 1.0 + dt * es,
+        };
 
         let urr = &(identityfac * &identityr) - &(dt * (&hrr - &srr.mapv(|z| es * z)));
         let unn = &(identityfac * &identityn) - &(dt * (&hnn - &snn.mapv(|z| es * z)));
@@ -183,7 +188,7 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
         let sc0n = s.dot(&c0_null);
         let hc0n = h.dot(&c0_null);
         println!("Action of S and H on initial null vector: ||Scn|| = {}, ||Hcn|| = {}.", sc0n.norm(), hc0n.norm());
-        let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.prop.dt, &det.propagator);
+        let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.prop.dt, &input.prop.propagator);
         println!("With initial shift: {}, ||Unn|| = {}, ||Urr|| = {}, ||Urn|| = {}, ||Unr|| = {}.",
                  es, &proj_propagator.unn.norm(), &proj_propagator.urr.norm(), &proj_propagator.urn.norm(), &proj_propagator.unr.norm());
         let nnull = proj_propagator.unn.nrows();
@@ -211,11 +216,11 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
     for it in 0..input.prop.max_steps {
 
         // Select propagator.
-        let mut c_new_norm = match det.propagator {
-            // U_{\Pi\Lambda}(\Delta\tau) = (1 + \Delta\tau E_s)\delta_{\Lambda}^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_s S_{\Pi\Lambda})
+        let mut c_new_norm = match input.prop.propagator {
             Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
-            // U_{\Pi\Lambda}(\Delta\tau) = \delta_\Lambda^\Pi - \Delta\tau(H_{\Pi\Lambda} - E_sS_{\Pi\Lambda})
             Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.prop.dt),
+            // Not implemented yet. Redirect to normal shift.  
+            Propagator::DifferenceDoublyShifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
         };
 
         // Normalise.

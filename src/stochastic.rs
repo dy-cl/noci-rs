@@ -6,7 +6,7 @@ use rand::SeedableRng;
 
 use crate::AoData;
 use crate::SCFState;
-use crate::input::Input;
+use crate::input::{Input, Propagator};
 
 use crate::noci::calculate_hs_pair;
 
@@ -223,15 +223,16 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize) -> Walkers {
 /// with the same sign of its parent if H_{\Lambda\Gamma} > 0 and -sign if H_{\Lambda\Gamma} < 0. Furthermore, 
 /// if P_{\text{spawn}} > 1 then we spawn floor(P_{\text{spawn}}) extra children and a final child with 
 /// probability P_{\text{spawn}} - floor(P_{\text{spawn}}).
-/// # Arguments:
+/// # Arguments
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `gamma`: usize, index of determinant \Gamma. 
 ///     `ngamma`: i64, walker population on determinant \Gamma.
 ///     `dt`: f64, time-step.
-///     `es`: f64, shift energy.
+///     `es`: f64, non-overlap transformed shift energy.
+///     `es_s`: f64, overlap-transformed shift energy.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64, es: f64, mc: &mut MCState) {
+fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState) {
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
@@ -252,9 +253,13 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64,
         // Calculate or retrieve matrix elements H_{\Lambda\Gamma}, S_{\Lambda\Gamma} from cache.
         let (hlg, slg) = mc.cache.find_elem(ao, basis, lambda, gamma);
 
-        // Spawning probability. 
-        let k = hlg - es * slg;
-        let pspawn = dt * k.abs() / pgen;
+        // Spawning probability.
+        let k = match input.prop.propagator {
+            Propagator::Unshifted => hlg - es_s * slg,
+            Propagator::Shifted => hlg - es_s * slg,
+            Propagator::DifferenceDoublyShifted => hlg - (0.5 * (es_s + es)) * slg,
+        };
+        let pspawn = input.prop.dt * k.abs() / pgen;
         
         // Evaluate spawning outcomes
         let m = pspawn.floor() as i64;
@@ -262,8 +267,8 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64,
         let extra = if mc.rng.gen_range(0.0..1.0) < frac {1} else {0};
         let nchildren = m + extra;
 
-        let ksign: i64 = if k > 0.0 {1} else {-1};
-        let child_sign: i64 = -ksign * parent_sign;
+        let sign: i64 = if k > 0.0 {1} else {-1};
+        let child_sign: i64 = -sign * parent_sign;
         
         // Accumulate population change in delta.
         add_delta(mc, lambda, nchildren * child_sign);
@@ -281,15 +286,20 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64,
 ///     `gamma`: usize, index of determinant \Gamma. 
 ///     `ngamma`: i64, walker population on determinant \Gamma.
 ///     `dt`: f64, time-step.
-///     `es`: f64, shift energy.
+///     `es`: f64, non-overlap transformed shift energy.
+///     `es_s`: f64, overlap-transformed shift energy.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, dt: f64, es: f64, mc: &mut MCState) {
+fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState) {
 
     // Calculate or retrieve matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma} from cache.
     let (hgg, sgg) = mc.cache.find_elem(ao, basis, gamma, gamma);
 
     // Death probability.
-    let pdeath = dt * (hgg - sgg * es - es);
+    let pdeath = match input.prop.propagator {
+        Propagator::Shifted => input.prop.dt * (hgg - sgg * es_s - es_s),
+        Propagator::Unshifted => input.prop.dt * (hgg - sgg * es_s),
+        Propagator::DifferenceDoublyShifted => input.prop.dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
+    };
     let p = pdeath.abs();
 
     // Sign of parent walkers on state Gamma determines which way round death and cloning occur.
@@ -374,6 +384,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let qmc = input.qmc.as_ref().unwrap();
     let ndets = basis.len();
 
+    // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
+    // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
+    let mut es_s = *es;
+
     // Initialise walker populations based on total initial population and c0.
     println!("Initialising walkers.....");
     let w = initialse_walkers(c0, qmc.initial_population, ndets);
@@ -389,14 +403,15 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let iref = 0;
     let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache);
 
-    let mut nsprev: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
+    let mut nwscprev: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
+    let mut nwcprev = qmc.initial_population;
 
     // Print table header.
     println!("{}", "=".repeat(100));
-    println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16}", "iter", "E", "Ecorr", "Shift", "Nw (||C||)", "Nw (||SC||)");
+    println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)");
     // Print initial.
-    println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-              0, eproj, eproj - basis[0].e, *es, qmc.initial_population, nsprev);
+    println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
+              0, eproj, eproj - basis[0].e, *es, es_s, nwcprev, nwscprev);
 
     for it in 0..input.prop.max_steps {
         // Copy occupied list.
@@ -406,25 +421,31 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
             // If the walker population on state Gamma is zero we ignore it.
             if ngamma == 0 {continue;}
             // Diagonal death and cloning step.
-            death_cloning(ao, basis, gamma, ngamma, input.prop.dt, *es, &mut mc);
+            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc);
             // Off-diagonal amplitude transfer.
-            spawning(ao, basis, gamma, ngamma, input.prop.dt, *es, &mut mc);
+            spawning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc);
         }
         // Update walker populations according to accumulated delta. Annhilation happens
         // automatically here.
         apply_delta(&mut mc);
-
+        
+        // Non overlap-transformed walker population.
         let nwc = mc.walkers.norm();
-        let ns = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
-        if ns > (qmc.target_population as f64) && !reached {
+        // Overlap-transformed walker population.
+        let nwsc = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
+        // Activate the shift based on the transformed population.
+        if nwsc > (qmc.target_population as f64) && !reached {
             reached = true;
-            nsprev = ns;
+            nwscprev = nwsc;
+            nwcprev = nwc;
         }
 
         // Update shift once total population has exceeded target population.
         if reached && (it + 1) % qmc.shift_update_freq == 0 {
-            *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (ns / nsprev).ln();
-            nsprev = ns;
+            *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwc as f64 / nwcprev as f64).ln();
+            es_s -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwsc / nwscprev).ln();
+            nwscprev = nwsc;
+            nwcprev = nwc;
         }
 
         // Update energy. 
@@ -432,7 +453,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache);
 
         // Print table rows.
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, *es, nwc, ns);
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc, nwsc);
     }
     eproj
 }

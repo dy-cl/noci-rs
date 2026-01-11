@@ -6,6 +6,7 @@ use rlua::{Lua, Value, Table};
 pub enum Propagator {
     Unshifted,
     Shifted,
+    DifferenceDoublyShifted,
 }
 
 // Electron spin for excitation input.
@@ -74,6 +75,7 @@ pub struct ExcitationOptions {
 pub struct PropagationOptions {
     pub dt: f64,
     pub max_steps: usize,
+    pub propagator: Propagator,
 }
 
 // Storage for deterministic propagation options 
@@ -81,7 +83,6 @@ pub struct DeterministicOptions {
     pub dynamic_shift: bool,
     pub dynamic_shift_alpha: f64,
     pub e_tol: f64,
-    pub propagator: Propagator,
 }
 
 // Storage for QMC propagation options 
@@ -230,16 +231,10 @@ pub fn load_input(path: &str) -> Input {
     
     // Deterministic table.
     let det: Option<DeterministicOptions> = globals.get::<_, Option<rlua::Table>>("det").unwrap().map(|det_tbl| {
-        let propagator_str: String = det_tbl.get("propagator").unwrap();
-        let propagator = match propagator_str.as_str() {
-            "unshifted" => Propagator::Unshifted,
-            "shifted" => Propagator::Shifted,
-            _ => { eprintln!("Propagator must be 'unshifted' or 'shifted'."); std::process::exit(1);}
-        };
-        let dynamic_shift: bool = det_tbl.get("dynamic_shift").unwrap();
+                let dynamic_shift: bool = det_tbl.get("dynamic_shift").unwrap();
         let dynamic_shift_alpha: f64 = det_tbl.get("dynamic_shift_alpha").unwrap();
         let e_tol: f64 = det_tbl.get("e_tol").unwrap();
-        DeterministicOptions {dynamic_shift, dynamic_shift_alpha, e_tol, propagator}
+        DeterministicOptions {dynamic_shift, dynamic_shift_alpha, e_tol}
     });
 
     // QMC table.
@@ -259,7 +254,14 @@ pub fn load_input(path: &str) -> Input {
     // Propagation table.
     let dt = prop_tbl.get("dt").unwrap();
     let max_steps = prop_tbl.get("max_steps").unwrap();
-    let prop = PropagationOptions {dt, max_steps};
+    let propagator_str: String = prop_tbl.get("propagator").unwrap();
+    let propagator = match propagator_str.as_str() {
+            "unshifted" => Propagator::Unshifted,
+            "shifted" => Propagator::Shifted,
+            "difference-doubly-shifted" => Propagator::DifferenceDoublyShifted,
+            _ => { eprintln!("Propagator must be 'unshifted', 'shifted' or 'difference-doubly-shifted'."); std::process::exit(1);}
+    };
+    let prop = PropagationOptions {dt, max_steps, propagator};
 
     Input {mol, scf, write, states, det, qmc, excit, prop}
 }
