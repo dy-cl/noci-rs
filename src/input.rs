@@ -6,6 +6,7 @@ use rlua::{Lua, Value, Table};
 pub enum Propagator {
     Unshifted,
     Shifted,
+    DoublyShifted,
     DifferenceDoublyShifted,
 }
 
@@ -258,8 +259,9 @@ pub fn load_input(path: &str) -> Input {
     let propagator = match propagator_str.as_str() {
             "unshifted" => Propagator::Unshifted,
             "shifted" => Propagator::Shifted,
+            "doubly-shifted" => Propagator::DoublyShifted,
             "difference-doubly-shifted" => Propagator::DifferenceDoublyShifted,
-            _ => { eprintln!("Propagator must be 'unshifted', 'shifted' or 'difference-doubly-shifted'."); std::process::exit(1);}
+            _ => { eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', or 'difference-doubly-shifted'."); std::process::exit(1);}
     };
     let prop = PropagationOptions {dt, max_steps, propagator};
 

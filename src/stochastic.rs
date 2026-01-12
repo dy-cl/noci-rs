@@ -195,8 +195,12 @@ fn apply_delta(mc: &mut MCState) {
 ///     `c0`: Vec<f64>: Initial determinant coefficient vector.
 ///     `init_pop`: Number of walkers to start with.
 ///     `n`: Number of determinants.
-pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize) -> Walkers {
+pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCache, ao: &AoData, basis: &[SCFState], iref: usize) -> Walkers {
     let mut w = Walkers::new(n);
+
+    // Ill-conditioning threshold.
+    let threshold = 1e-6; 
+
     // Calculate 1-norm of initial coefficient vector.
     let norm1: f64 = c0.iter().map(|x| x.abs()).sum::<f64>();
 
@@ -209,10 +213,28 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize) -> Walkers {
             w.add(i, sgn * ni);
         }
     }
+    
+    // Calculate projected energy denominator \Sum_{\Gamma} N_{\Gamma} S_{\Gamma, iref}. If this
+    // quantity is very small we have large amounts of overcompleteness and therefore
+    // ill-conditioning in the NOCI-QMC overlap matrix.
+    let mut den = 0.0; 
+    for &gamma in w.occ() {
+        let ngamma = w.get(gamma);
+        // Calculate or retrieve matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,
+        // \text{Reference}} from cache.
+        let (_, sgr) = cache.find_elem(ao, basis, gamma, iref);
+        den += (ngamma as f64) * sgr;
+    }
 
-    // Alternatively place all weight on first reference (index 0)
-    //w.insert(0, init_pop);
-
+    // If the NOCI-QMC overlap matrix is very ill-conditioned starting with all walkers on the RHF
+    // reference rather than distributed according to c0 can prevent initial blow-ups in the
+    // projected energy.
+    if den.abs() < threshold {
+        println!("NOCI-QMC overlap very ill-conditioned. Starting from reference index 0 (Denominator: {})", den);
+        let mut w0 = Walkers::new(n);
+        w0.add(0, init_pop);
+        return w0;
+    }
     w
 }
 
@@ -257,6 +279,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,
         let k = match input.prop.propagator {
             Propagator::Unshifted => hlg - es_s * slg,
             Propagator::Shifted => hlg - es_s * slg,
+            Propagator::DoublyShifted => hlg - es_s * slg,
             Propagator::DifferenceDoublyShifted => hlg - (0.5 * (es_s + es)) * slg,
         };
         let pspawn = input.prop.dt * k.abs() / pgen;
@@ -296,8 +319,9 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
 
     // Death probability.
     let pdeath = match input.prop.propagator {
-        Propagator::Shifted => input.prop.dt * (hgg - sgg * es_s - es_s),
         Propagator::Unshifted => input.prop.dt * (hgg - sgg * es_s),
+        Propagator::Shifted => input.prop.dt * (hgg - sgg * es_s - es_s),
+        Propagator::DoublyShifted => input.prop.dt * (hgg - sgg * es_s - es),
         Propagator::DifferenceDoublyShifted => input.prop.dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
     };
     let p = pdeath.abs();
@@ -384,23 +408,26 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let qmc = input.qmc.as_ref().unwrap();
     let ndets = basis.len();
 
+    let iref = 0;
+    let mut cache = ElemCache::new();
+
     // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
     // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
     let mut es_s = *es;
 
     // Initialise walker populations based on total initial population and c0.
     println!("Initialising walkers.....");
-    let w = initialse_walkers(c0, qmc.initial_population, ndets);
+    let w = initialse_walkers(c0, qmc.initial_population, ndets, &mut cache, ao, basis, iref);
 
-    // Flag activated once total walker population exceeds target population 
-    let mut reached = false;
+    // Flags activated once total walker population exceeds target population 
+    let mut reached_sc = false;
+    let mut reached_c = false;
 
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
     let rng = SmallRng::from_entropy();
-    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache: ElemCache::new(), rng};
+    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
-    let iref = 0;
     let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache);
 
     let mut nwscprev: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
@@ -433,19 +460,24 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         let nwc = mc.walkers.norm();
         // Overlap-transformed walker population.
         let nwsc = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
-        // Activate the shift based on the transformed population.
-        if nwsc > (qmc.target_population as f64) && !reached {
-            reached = true;
-            nwscprev = nwsc;
+        
+        // Activate overlap-transformed and non-overlap transformed shifts.
+        if !reached_c && (nwc > qmc.target_population) {
+            reached_c = true;
             nwcprev = nwc;
         }
-
-        // Update shift once total population has exceeded target population.
-        if reached && (it + 1) % qmc.shift_update_freq == 0 {
+        if !reached_sc && (nwsc > qmc.target_population as f64) {
+            reached_sc = true;
+            nwscprev = nwsc;
+        }
+        // Update shift once total populations have exceeded target population.
+        if reached_c && (it + 1) % qmc.shift_update_freq == 0 {
             *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwc as f64 / nwcprev as f64).ln();
+            nwcprev = nwc;
+        }
+        if reached_sc && (it + 1) % qmc.shift_update_freq == 0 {
             es_s -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwsc / nwscprev).ln();
             nwscprev = nwsc;
-            nwcprev = nwc;
         }
 
         // Update energy. 
