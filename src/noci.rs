@@ -212,7 +212,20 @@ fn two_electron_h(ao: &AoData, pair: &Pair) -> f64 {
     }
 }
 
-/// Calculate the Hamiltonian and overlap matrices for a given pair of states \mu and \nu out of the NOCI or
+/// Calculate only the overlap matrix for a given pair of states \mu and \nu out of the NOCI or
+/// NOCI-QMC basis using the generalised Slater-Condon rules.
+/// # Arguments:
+///    `ao`: AoData struct, contains AO integrals and other system data. 
+///    `scfstates`: Vec<SCFState>, vector of all the calculated SCF states.
+///     `mu`: usize, index of state mu.
+///     `nu`: usize, index of state nu.
+pub fn calculate_s_pair(ao: &AoData, scfstates: &[SCFState], mu: usize, nu: usize) -> f64 {
+    let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
+    let (munu_s_noci, _, _, _, _) = calculate_munu_s_noci(scfstates, &munu_s, mu, nu);
+    munu_s_noci
+}
+
+/// Calculate both the Hamiltonian and overlap matrices for a given pair of states \mu and \nu out of the NOCI or
 /// NOCI-QMC basis using the generalised Slater-Condon rules.
 /// # Arguments:
 ///    `ao`: AoData struct, contains AO integrals and other system data. 
@@ -258,7 +271,6 @@ pub fn calculate_hs_pair(ao: &AoData, scfstates: &[SCFState], mu: usize, nu: usi
     let munu_h = munu_h1 + munu_h2 + munu_h_nuc;
 
     (munu_h, munu_s_noci)
-
 }
 
 /// Using occupied MO coefficients of each Non-orthogonal Configuration Interaction (NOCI) basis 

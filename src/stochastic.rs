@@ -11,7 +11,7 @@ use crate::AoData;
 use crate::SCFState;
 use crate::input::{Input, Propagator};
 
-use crate::noci::calculate_hs_pair;
+use crate::noci::{calculate_s_pair, calculate_hs_pair};
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
 
 // Storage for walker information.
@@ -103,10 +103,9 @@ impl Walkers {
 // Storage for Monte Carlo state. 
 pub struct MCState {
     pub walkers: Walkers,
-    // Changes to walker population of length n determinants.
-    pub delta: Vec<i64>,
-    // Indices for which delta[i] != 0, i.e., determinants with changed population.
-    pub changed: Vec<usize>,
+    pub delta: Vec<i64>, // Changes to walker population of length n determinants.
+    pub changed: Vec<usize>, // Indices for which delta[i] != 0, i.e., determinants with changed population.
+    pub pg: Vec<f64>, // Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
     pub cache: ElemCache,
     pub rng: SmallRng,
 }
@@ -114,7 +113,8 @@ pub struct MCState {
 // Cache storage for already computed H, S matrix elements, avoids needless recomputation.
 pub struct ElemCache {
     // (i, j) element indices and H_{ij}, S_{ij} element values.
-    map: HashMap<(usize, usize), (f64, f64)>,
+    maph: HashMap<(usize, usize), f64>,
+    maps: HashMap<(usize, usize), f64>,
 }
 
 impl ElemCache {
@@ -123,9 +123,7 @@ impl ElemCache {
     /// # Arguments:
     ///     None.
     fn new() -> Self {
-        Self {
-            map: HashMap::new()
-        }
+        Self {maph: HashMap::new(), maps: HashMap::new()}
     }
     
     /// Return a canonical ordering of the pair of indices i, j. Assigns smallest element to be in
@@ -137,25 +135,41 @@ impl ElemCache {
         if i <= j {(i, j)} else {(j, i)}
     }
     
-    /// Find matrix elements H_{ij} and S_{ij} either from the cache or by computing them for the
-    /// first time.
+    /// Find matrix element S_{ij} either from cache or by computing it for the first time.
     /// # Arguments:
     ///     `self`: ElemCache, contains only HashMap of state index to H_{ij}, S_{ij} hash map.
     ///     `basis`: Vec<SCFState>, vector of all SCF states in the basis.
     ///     `i`: usize, index of state i. 
     ///     `j`: usize, index of state k.
-    fn find_elem(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize) -> (f64, f64) {
+    fn find_s(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize) -> f64 {
         // Get the sorted pair of indices 
         let (a, b) = Self::key(i, j);
         
-        // If we have already computed these matrix elements just return it.
-        if let Some(&(h, s)) = self.map.get(&(a, b)) {
-            return (h, s)
+        // If we have already computed this matrix element just return it.
+        if let Some(&s) = self.maps.get(&(a, b)) {
+            return s;
         }
 
-        // Otherwise compute them for the first time
+        // Otherwise compute it for the first time
+        let s = calculate_s_pair(ao, basis, a, b);
+        self.maps.insert((a, b), s);
+        s
+    }
+    
+    /// Find matrix elemss H_{ij} and S_{ij} from cache or by computing them for the first time.  
+    fn find_hs(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize) -> (f64, f64) {
+        // Get the sorted pair of indices
+        let (a, b) = Self::key(i, j);
+
+        // If we have already computed these matrix elements just return them.
+        if let (Some(&h), Some(&s)) = (self.maph.get(&(a, b)), self.maps.get(&(a, b))) {
+            return (h, s);
+        }
+
+        // Otherwise compute them for the first time.
         let (h, s) = calculate_hs_pair(ao, basis, a, b);
-        self.map.insert((a, b), (h, s));
+        self.maph.insert((a, b), h);
+        self.maps.insert((a, b), s);
         (h, s)
     }
 }
@@ -199,7 +213,8 @@ fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
 /// in mc.walkers.
 /// # Arguments:
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn apply_delta(mc: &mut MCState) {
+fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
+    let mut applied = Vec::with_capacity(mc.changed.len());
     // Consider only changed determinants.
     for &i in &mc.changed {
         // Total population change for this determinant for this iteration.
@@ -207,9 +222,11 @@ fn apply_delta(mc: &mut MCState) {
         // As we are applying the change we reset the delta.
         mc.delta[i] = 0;
         mc.walkers.add(i, dn);
+        applied.push(PopulationUpdate { det: i as u64, dn });
     }
     // Reset list of changed determinants.
-    mc.changed.clear()
+    mc.changed.clear();
+    applied
 }
 
 /// For each entry in initial coefficient vector c0 calculate (c0_i / ||c||) * N_0 (initial population) 
@@ -249,7 +266,7 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCa
         let ngamma = w.get(gamma);
         // Calculate or retrieve matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,
         // \text{Reference}} from cache.
-        let (_, sgr) = cache.find_elem(ao, basis, gamma, iref);
+        let sgr = cache.find_s(ao, basis, gamma, iref);
         den += (ngamma as f64) * sgr;
     }
 
@@ -305,7 +322,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,
         if lambda >= gamma {lambda += 1;}
      
         // Calculate or retrieve matrix elements H_{\Lambda\Gamma}, S_{\Lambda\Gamma} from cache.
-        let (hlg, slg) = mc.cache.find_elem(ao, basis, lambda, gamma);
+        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
 
         // Spawning probability.
         let k = match input.prop.propagator {
@@ -354,7 +371,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState) {
 
     // Calculate or retrieve matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma} from cache.
-    let (hgg, sgg) = mc.cache.find_elem(ao, basis, gamma, gamma);
+    let (hgg, sgg) = mc.cache.find_hs(ao, basis, gamma, gamma);
 
     // Death probability.
     let pdeath = match input.prop.propagator {
@@ -399,7 +416,7 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
         let ngamma = walkers.get(gamma);
         // Calculate or retrieve matrix elements H_{\Gamma, \text{Reference}}, S_{\Gamma,
         // \text{Reference}} from cache.
-        let (hgr, sgr) = cache.find_elem(ao, basis, gamma, iref);
+        let (hgr, sgr) = cache.find_hs(ao, basis, gamma, iref);
         num += (ngamma as f64) * hgr;
         den += (ngamma as f64) * sgr;
     }
@@ -413,17 +430,15 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
     numglobal / denglobal
 }
 
-/// Compute the number of walkers $\tilde{N}_w(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)||$ that are
-/// not belonging to the null space as opposed to doing $N_w(\tau) = ||C^\Gamma(\tau)||_1$.
-/// # Arguments
+/// Initialise the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}. 
+/// # Arguments:
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `walkers`: Walkers, object containing information about current walkers.
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
 ///     H_{ij}, S_{ij}.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-fn nw_sc(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator) -> f64 {
-
+fn init_p(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator) -> Vec<f64> {
     let ndets = basis.len();
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
@@ -435,24 +450,54 @@ fn nw_sc(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCac
     let start = (ndets * irank) / nranks;
     let end = (ndets * (irank + 1)) / nranks;
 
-    let mut acclocal = 0.0;
-
+    let mut p = vec![0.0; end - start];
     for gamma in start..end {
         //p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
         let mut pgamma = 0.0;
         for entry in &global {
-            // Here we use dn to mean population.
+            // Here we use dn to mean total population.
             let nomega = entry.dn as f64;
             let omega = entry.det as usize;
-            let (_, sgo) = cache.find_elem(ao, basis, gamma, omega);
+            let sgo = cache.find_s(ao, basis, gamma, omega);
             pgamma += nomega * sgo;
         }
-        // ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma} |p_{\Gamma}|.
-        acclocal += pgamma.abs();
+        p[gamma - start] = pgamma
     }
-    let mut accglobal = 0.0;
-    world.all_reduce_into(&acclocal, &mut accglobal, SystemOperation::sum());
-    accglobal
+    p
+}
+
+/// Update the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
+///     H_{ij}, S_{ij}.
+///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
+///     `plocal`: [f64], vector p_{\Gamma} on this rank.
+///     `dlocal`: [PopulationUpdate], local determinant population updates.
+fn update_p(ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate]) {
+    let ndets = basis.len();
+    let irank = world.rank() as usize;
+    let nranks = world.size() as usize;
+
+    let dglobal = gather_all_walkers(world, dlocal);
+
+    // Range of determinant indices that current rank will process.
+    let start = (ndets * irank) / nranks;
+    let end = (ndets * (irank + 1)) / nranks;
+    
+    for gamma in start..end {
+        //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
+        let mut dpgamma = 0.0;
+        for entry in &dglobal {
+            // Here we use dn to mean population change.
+            let dnomega = entry.dn as f64;
+            let omega = entry.det as usize;
+            let sgo = cache.find_s(ao, basis, gamma, omega);
+            dpgamma += dnomega * sgo;
+        } 
+        plocal[gamma - start] += dpgamma;
+    }
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
@@ -491,12 +536,15 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
 
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
     let rng = SmallRng::from_entropy();
-    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng};
+    let pg = init_p(ao, basis, &w, &mut cache, world);
+    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng, pg};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
     let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
 
-    let mut nwscprev: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache, world);
+    let mut nwscprev = 0.0;
+    let nwscprev_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
+    world.all_reduce_into(&nwscprev_local, &mut nwscprev, SystemOperation::sum());
     let mut nwcprev = qmc.initial_population;
 
     // Print table header.
@@ -529,15 +577,21 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
             let det = update.det as usize;
             add_delta(&mut mc, det, update.dn); 
         }
-        // Apply local and recieved deltas. Annhilation is fully local process here.
-        apply_delta(&mut mc);
-        
+        // Apply local and recieved deltas. Annhilation is fully local process here.  
+        // The change in population is also stored to update overlap-transformed walker population.
+        let d = apply_delta(&mut mc);
+        update_p(ao, basis, &mut mc.cache, world, &mut mc.pg, &d);
+
         // Non overlap-transformed walker population.
-        let nwclocal = mc.walkers.norm() as i64;
         let mut nwc = 0i64;
+        let nwclocal = mc.walkers.norm() as i64;
         world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
         // Overlap-transformed walker population.
-        let nwsc = nw_sc(ao, basis, &mc.walkers, &mut mc.cache, world);
+        let mut nwsc = 0.0;
+        // Calculate overlap-transformed walker population as: 
+        //\tilde{N}_w(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma} |p_{\Gamma}| N_{\Gamma}$
+        let nwsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
+        world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
         
         // Activate overlap-transformed and non-overlap transformed shifts.
         if !reached_c && (nwc > qmc.target_population) {
