@@ -3,12 +3,16 @@ use std::collections::HashMap;
 use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use mpi::topology::Communicator;
+use mpi::collective::SystemOperation;
+use mpi::traits::*;
 
 use crate::AoData;
 use crate::SCFState;
 use crate::input::{Input, Propagator};
 
 use crate::noci::calculate_hs_pair;
+use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
 
 // Storage for walker information.
 pub struct Walkers {
@@ -157,12 +161,29 @@ impl ElemCache {
 }
 
 impl Default for ElemCache {
-    // Default cache is empty cache.
+    /// Create the default cache which is an empty cache.
+    /// # Arguments:
+    ///     None.
     fn default() -> Self {
         Self::new()
     }
 }
 
+// Storage for population update communication across ranks. Is also used for computation of
+// \tilde{N}_w. In this case we interpret dn as the total population.
+#[repr(C)]
+#[derive(Copy, Clone, Equivalence)]
+pub struct PopulationUpdate {
+    pub det: u64,
+    pub dn: i64,
+}
+
+/// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
+/// Note that the actual populations stored in mc.walkers are not yet changed here.
+/// # Arguments:
+///     `mc`: MCState, contains information about the current Monte Carlo state.
+///     `i`: usize, index of determinant i to be updated.
+///     `dn`: i64, population change on determinant i. 
 fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
     if dn == 0 {return;}
     // If current delta for this determinant is zero this function being called is its first
@@ -174,6 +195,10 @@ fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
     mc.delta[i] += dn;
 }
 
+/// Apply accumulated population changes from the mc.delta vector to the actual populations stored
+/// in mc.walkers.
+/// # Arguments:
+///     `mc`: MCState, contains information about the current Monte Carlo state.
 fn apply_delta(mc: &mut MCState) {
     // Consider only changed determinants.
     for &i in &mc.changed {
@@ -181,7 +206,6 @@ fn apply_delta(mc: &mut MCState) {
         let dn = mc.delta[i];
         // As we are applying the change we reset the delta.
         mc.delta[i] = 0;
-
         mc.walkers.add(i, dn);
     }
     // Reset list of changed determinants.
@@ -195,6 +219,9 @@ fn apply_delta(mc: &mut MCState) {
 ///     `c0`: Vec<f64>: Initial determinant coefficient vector.
 ///     `init_pop`: Number of walkers to start with.
 ///     `n`: Number of determinants.
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `iref`: usize, index of the first reference determinant.
 pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCache, ao: &AoData, basis: &[SCFState], iref: usize) -> Walkers {
     let mut w = Walkers::new(n);
 
@@ -254,7 +281,12 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCa
 ///     `es`: f64, non-overlap transformed shift energy.
 ///     `es_s`: f64, overlap-transformed shift energy.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState) {
+///     `irank`: usize, number of current rank.
+///     `nranks`: usize, total number of ranks.
+///     `send_buf`: Vec<Vec<PopulationUpdate>>, MPI send buffer which contains information about
+///     population updates that need to happen at determinants not owned by this rank.
+fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState,
+            irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>) {
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
@@ -292,9 +324,16 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,
 
         let sign: i64 = if k > 0.0 {1} else {-1};
         let child_sign: i64 = -sign * parent_sign;
+        let dn = child_sign * nchildren;
         
-        // Accumulate population change in delta.
-        add_delta(mc, lambda, nchildren * child_sign);
+        // Apply spawwning population updates locally if the determinant to be updated is owned by
+        // current thread, otherwise add the population update message to the send buffer.
+        let destination = owner(lambda, nranks);
+        if destination == irank {
+            add_delta(mc, lambda, nchildren * child_sign);
+        } else {
+            send_buf[destination].push(PopulationUpdate {det: lambda as u64, dn});
+        }
     }
 }
 
@@ -347,12 +386,12 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
 /// # Arguments
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
-///     `walkers`: Walkers, hash map between determinant index and walker population at that
-///     determinant.
+///     `walkers`: Walkers, object containing information about current walkers.
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
 ///     H_{ij}, S_{ij}.
 ///     `iref`: usize, index of determinant we are projecting onto.
-fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, cache: &mut ElemCache) -> f64 {
+///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
+fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, cache: &mut ElemCache, world: &impl Communicator) -> f64 {
     let mut num = 0.0; 
     let mut den = 0.0; 
 
@@ -364,7 +403,14 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
         num += (ngamma as f64) * hgr;
         den += (ngamma as f64) * sgr;
     }
-    num / den
+    
+    // Reduce contributions from each thread to get full projected energy.
+    let mut numglobal = 0.0;
+    let mut denglobal = 0.0;
+    world.all_reduce_into(&num, &mut numglobal, SystemOperation::sum());
+    world.all_reduce_into(&den, &mut denglobal, SystemOperation::sum());
+
+    numglobal / denglobal
 }
 
 /// Compute the number of walkers $\tilde{N}_w(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)||$ that are
@@ -372,26 +418,41 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 /// # Arguments
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
-///     `walkers`: Walkers, hash map between determinant index and walker population at that
-///     determinant.
+///     `walkers`: Walkers, object containing information about current walkers.
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
 ///     H_{ij}, S_{ij}.
-fn nw_sc(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache) -> f64 {
-    let ndets = basis.len();
-    let mut acc = 0.0;
+///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
+fn nw_sc(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator) -> f64 {
 
-    for gamma in 0..ndets {
+    let ndets = basis.len();
+    let irank = world.rank() as usize;
+    let nranks = world.size() as usize;
+
+    let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
+    let global = gather_all_walkers(world, &local);
+
+    // Range of determinant indices that current rank will process.
+    let start = (ndets * irank) / nranks;
+    let end = (ndets * (irank + 1)) / nranks;
+
+    let mut acclocal = 0.0;
+
+    for gamma in start..end {
         //p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
         let mut pgamma = 0.0;
-        for &omega in walkers.occ() {
-            let nomega = walkers.get(omega);
+        for entry in &global {
+            // Here we use dn to mean population.
+            let nomega = entry.dn as f64;
+            let omega = entry.det as usize;
             let (_, sgo) = cache.find_elem(ao, basis, gamma, omega);
-            pgamma += (nomega as f64) * sgo;
+            pgamma += nomega * sgo;
         }
         // ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma} |p_{\Gamma}|.
-        acc += pgamma.abs();
+        acclocal += pgamma.abs();
     }
-    acc
+    let mut accglobal = 0.0;
+    world.all_reduce_into(&acclocal, &mut accglobal, SystemOperation::sum());
+    accglobal
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
@@ -402,7 +463,11 @@ fn nw_sc(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCac
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `es`: f64, initial shift energy.
 ///     `input`: Input, user specified input options.
-pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &Input) -> f64 {
+///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
+pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &Input, world: &impl Communicator) -> f64 {
+
+    let irank = world.rank() as usize;
+    let nranks = world.size() as usize;
     
     // Unwrap QMC propagation specific options
     let qmc = input.qmc.as_ref().unwrap();
@@ -416,8 +481,9 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let mut es_s = *es;
 
     // Initialise walker populations based on total initial population and c0.
-    println!("Initialising walkers.....");
+    if irank == 0 {println!("Initialising walkers.....");}
     let w = initialse_walkers(c0, qmc.initial_population, ndets, &mut cache, ao, basis, iref);
+    let w = local_walkers(w, irank, nranks);
 
     // Flags activated once total walker population exceeds target population 
     let mut reached_sc = false;
@@ -428,38 +494,50 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
-    let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache);
+    let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
 
-    let mut nwscprev: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
+    let mut nwscprev: f64 = nw_sc(ao, basis, &mc.walkers, &mut mc.cache, world);
     let mut nwcprev = qmc.initial_population;
 
     // Print table header.
-    println!("{}", "=".repeat(100));
-    println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)");
-    // Print initial.
-    println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-              0, eproj, eproj - basis[0].e, *es, es_s, nwcprev, nwscprev);
+    if irank == 0 {
+        println!("{}", "=".repeat(100));
+        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)");
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  0, eproj, eproj - basis[0].e, *es, es_s, nwcprev, nwscprev);
+    }
 
     for it in 0..input.prop.max_steps {
-        // Copy occupied list.
+        
+        // Local send buffers
+        let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
+        
+        // Iterate over occupied determinants owned by current rank.
         let occ = mc.walkers.occ().to_vec();
         for gamma in occ {
             let ngamma = mc.walkers.get(gamma);
             // If the walker population on state Gamma is zero we ignore it.
             if ngamma == 0 {continue;}
-            // Diagonal death and cloning step.
+            // Diagonal death and cloning step. Diagonal step is entirely local.
             death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc);
-            // Off-diagonal amplitude transfer.
-            spawning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc);
+            // Off-diagonal amplitude transfer. 
+            spawning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc, irank, nranks, &mut send);
         }
-        // Update walker populations according to accumulated delta. Annhilation happens
-        // automatically here.
+
+        // Exchange population updates between ranks and add any recieved updates to local delta. 
+        let recieved = communicate_spawn_updates(world, &send);
+        for update in recieved {
+            let det = update.det as usize;
+            add_delta(&mut mc, det, update.dn); 
+        }
+        // Apply local and recieved deltas. Annhilation is fully local process here.
         apply_delta(&mut mc);
         
         // Non overlap-transformed walker population.
-        let nwc = mc.walkers.norm();
+        let nwclocal = mc.walkers.norm() as i64;
+        let mut nwc = 0i64;
+        world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
         // Overlap-transformed walker population.
-        let nwsc = nw_sc(ao, basis, &mc.walkers, &mut mc.cache);
+        let nwsc = nw_sc(ao, basis, &mc.walkers, &mut mc.cache, world);
         
         // Activate overlap-transformed and non-overlap transformed shifts.
         if !reached_c && (nwc > qmc.target_population) {
@@ -482,10 +560,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
 
         // Update energy. 
         let iref = 0;
-        let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache);
+        let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
 
         // Print table rows.
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc, nwsc);
+        if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc, nwsc);}
     }
     eproj
 }

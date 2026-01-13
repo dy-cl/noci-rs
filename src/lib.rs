@@ -9,8 +9,11 @@ pub mod input;
 pub mod maths;
 pub mod deterministic;
 pub mod stochastic;
+pub mod mpiutils;
 
 use std::sync::Arc;
+
+use serde::{Serialize, Deserialize};
 
 use ndarray::{Array1, Array2, Array4};
 
@@ -44,7 +47,7 @@ pub struct AoData {
 }
 
 /// Storage for SCF state attributes, contains energy and spin MO coefficients.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SCFState {
     // Energy of SCF state in Ha, scalar.
     pub e: f64,  
