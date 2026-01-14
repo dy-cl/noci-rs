@@ -432,23 +432,17 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 
 /// Initialise the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}. 
 /// # Arguments:
+///     `start`: usize, first determinant index owned by this rank.
+///     `end`: usize, final determinant index owned by this rank.
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `walkers`: Walkers, object containing information about current walkers.
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
 ///     H_{ij}, S_{ij}.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-fn init_p(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator) -> Vec<f64> {
-    let ndets = basis.len();
-    let irank = world.rank() as usize;
-    let nranks = world.size() as usize;
-
+fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator) -> Vec<f64> {
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
-
-    // Range of determinant indices that current rank will process.
-    let start = (ndets * irank) / nranks;
-    let end = (ndets * (irank + 1)) / nranks;
 
     let mut p = vec![0.0; end - start];
     for gamma in start..end {
@@ -468,6 +462,8 @@ fn init_p(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCa
 
 /// Update the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
 /// # Arguments:
+///     `start`: usize, first determinant index owned by this rank.
+///     `end`: usize, final determinant index owned by this rank.
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
@@ -475,17 +471,9 @@ fn init_p(ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCa
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
 ///     `plocal`: [f64], vector p_{\Gamma} on this rank.
 ///     `dlocal`: [PopulationUpdate], local determinant population updates.
-fn update_p(ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate]) {
-    let ndets = basis.len();
-    let irank = world.rank() as usize;
-    let nranks = world.size() as usize;
-
+fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate]) {
     let dglobal = gather_all_walkers(world, dlocal);
 
-    // Range of determinant indices that current rank will process.
-    let start = (ndets * irank) / nranks;
-    let end = (ndets * (irank + 1)) / nranks;
-    
     for gamma in start..end {
         //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
         let mut dpgamma = 0.0;
@@ -509,10 +497,13 @@ fn update_p(ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl
 ///     `es`: f64, initial shift energy.
 ///     `input`: Input, user specified input options.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &Input, world: &impl Communicator) -> f64 {
+pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &Input, ref_indices: &[usize], world: &impl Communicator) -> f64 {
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
+    let ndets = basis.len();
+    let start = (ndets * irank) / nranks;
+    let end = (ndets * (irank + 1)) / nranks;
     
     // Unwrap QMC propagation specific options
     let qmc = input.qmc.as_ref().unwrap();
@@ -520,6 +511,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
 
     let iref = 0;
     let mut cache = ElemCache::new();
+
+    // Construct reference index mask.
+    let mut isref = vec![false; basis.len()];
+    for &i in ref_indices {isref[i] = true;}
 
     // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
     // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
@@ -536,22 +531,28 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
 
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
     let rng = SmallRng::from_entropy();
-    let pg = init_p(ao, basis, &w, &mut cache, world);
+    let pg = init_p(start, end, ao, basis, &w, &mut cache, world);
     let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng, pg};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
     let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
-
+    
+    // Initialise populations.
     let mut nwscprev = 0.0;
     let nwscprev_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
     world.all_reduce_into(&nwscprev_local, &mut nwscprev, SystemOperation::sum());
     let mut nwcprev = qmc.initial_population;
+    let mut nrefprev = 0.0; 
+    let nrefprev_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
+    world.all_reduce_into(&nrefprev_local, &mut nrefprev, SystemOperation::sum());
 
     // Print table header.
     if irank == 0 {
         println!("{}", "=".repeat(100));
-        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)");
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  0, eproj, eproj - basis[0].e, *es, es_s, nwcprev, nwscprev);
+        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", 
+                 "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)", "Nref(||SC||)");
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  
+                 0, eproj, eproj - basis[0].e, *es, es_s, nwcprev as f64, nwscprev, nrefprev);
     }
 
     for it in 0..input.prop.max_steps {
@@ -580,9 +581,9 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         // Apply local and recieved deltas. Annhilation is fully local process here.  
         // The change in population is also stored to update overlap-transformed walker population.
         let d = apply_delta(&mut mc);
-        update_p(ao, basis, &mut mc.cache, world, &mut mc.pg, &d);
+        update_p(start, end, ao, basis, &mut mc.cache, world, &mut mc.pg, &d);
 
-        // Non overlap-transformed walker population.
+        // Calculate non overlap-transformed walker population.
         let mut nwc = 0i64;
         let nwclocal = mc.walkers.norm() as i64;
         world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
@@ -592,6 +593,12 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         //\tilde{N}_w(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma} |p_{\Gamma}| N_{\Gamma}$
         let nwsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
         world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
+        // Overlap-transformed reference walker population.
+        let mut nref = 0.0; 
+        // Calculate overlap transformed reference only walker population as:
+        //\tilde{N}_{w, refs}(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma, \Gamma \in refs} |p_{\Gamma}| N_{\Gamma}$
+        let nref_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
+        world.all_reduce_into(&nref_local, &mut nref, SystemOperation::sum());
         
         // Activate overlap-transformed and non-overlap transformed shifts.
         if !reached_c && (nwc > qmc.target_population) {
@@ -617,7 +624,8 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
 
         // Print table rows.
-        if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc, nwsc);}
+        if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
+                       it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc as f64, nwsc, nref);}
     }
     eproj
 }

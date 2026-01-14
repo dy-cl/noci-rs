@@ -15,7 +15,7 @@ use noci_rs::SCFState;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
-use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_deterministic_noci_basis};
+use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
 use noci_rs::noci::{calculate_noci_energy, build_noci_matrices};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{step};
@@ -119,6 +119,8 @@ fn run(r: f64, atoms: &Atoms, input: &Input, prev_states: &[SCFState], world: &i
         
         // Run NOCI reference calculation.
         let (refb, e_ref, c0v, d_tot, d_h_ref) = run_reference_noci(&ao, &states);
+        // Note that noci_reference_basis and states above are the same if every requested basis
+        // state in the input file has noci = true.
         noci_reference_basis = refb;
         e_noci_ref = e_ref;
         c0 = c0v;
@@ -144,7 +146,7 @@ fn run(r: f64, atoms: &Atoms, input: &Input, prev_states: &[SCFState], world: &i
 
     // Run stochastic NOCI-QMC calculation
     if input.qmc.is_some() {
-        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &states, &c0, world);
+        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world);
         e_noci_qmc_stoch = Some(e_qmc);
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
@@ -227,7 +229,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Build excitations atop NOCI-reference basis.
     let t_basis = Instant::now();
-    let basis = generate_qmc_deterministic_noci_basis(ao, noci_reference_basis, input);
+    let basis = generate_qmc_noci_basis(ao, noci_reference_basis, input);
     let d_basis = t_basis.elapsed();
 
     let n = basis.len();
@@ -243,16 +245,12 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     let es = states[0].e; // RHF energy.
     println!("Running deterministic NOCI-QMC propagation....");
 
-     // Embed reference NOCI coefficient vector in full NOCI-QMC space.
-    let mut c0qmc = Array1::<f64>::zeros(n);  
-    
+    // Embed reference NOCI coefficient vector in full NOCI-QMC space.
+    let mut c0qmc = Array1::<f64>::zeros(n); 
     // If we are not interested in plotting evolution of individual coefficients we use the
     // reference NOCI coefficients as our initial guess as this is the best guess, however,
     // the coefficients often don't change much which makes for a boring plot.
     if !input.write.write_coeffs {
-        // Iterate over states in the full NOCI-QMC basis and place reference coefficients on the
-        // states with reference state labels. This could break if the reference states are not in
-        // the expected order so should be made more robust.
         for (i, ref_st) in noci_reference_basis.iter().enumerate() {
             let idx = basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
             c0qmc[idx] = c0[i];
@@ -332,9 +330,20 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &Input, noci_reference_basis:
     
     // Build excitations atop NOCI-reference basis.
     let t_basis = Instant::now();
-    let basis = generate_qmc_deterministic_noci_basis(ao, noci_reference_basis, input);
+    let basis = generate_qmc_noci_basis(ao, noci_reference_basis, input);
     let d_basis = t_basis.elapsed();
     let n = basis.len();
+
+    // Save indices in the coefficients vector of the references.
+    let ref_indices: Vec<usize> = noci_reference_basis.iter().map(|ref_st| {basis.iter()
+                                  .position(|qmc_st| qmc_st.label == ref_st.label).unwrap()}).collect();
+
+    // Embed reference NOCI coefficient vector in full NOCI-QMC space.
+    let mut c0qmc = vec![0.0_f64; n]; 
+    for (i, ref_st) in noci_reference_basis.iter().enumerate() {
+            let idx = basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
+            c0qmc[idx] = c0[i];
+    }
 
     if irank == 0 {
         println!("Built NOCI-QMC basis of {} determinants.", n);
@@ -346,7 +355,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &Input, noci_reference_basis:
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let e = step(c0, ao, &basis, &mut es, input, world);
+    let e = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world);
     let d_prop = t_prop.elapsed();
 
     let d_total = t_total.elapsed();
