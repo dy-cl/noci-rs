@@ -9,7 +9,7 @@ use mpi::traits::*;
 
 use crate::AoData;
 use crate::SCFState;
-use crate::input::{Input, Propagator};
+use crate::input::{Input, Propagator, ExcitationGen};
 
 use crate::noci::{calculate_s_pair, calculate_hs_pair};
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
@@ -305,13 +305,18 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCa
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState,
             irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>) {
 
+    // Unwrap QMC propagation specific options
+    let qmc = input.qmc.as_ref().unwrap();
+
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
 
     let ndets = basis.len();
     // Probability of choosing a Lambda when using uniform excitation.
-    let pgen = 1.0 / ((ndets - 1) as f64);
-    
+    let pgen = match qmc.excitation_gen {
+            ExcitationGen::Uniform => 1.0 / ((ndets - 1) as f64), 
+    };
+
     // Iterate over all walkers on state Gamma.
     for _ in 0..nwalkers {
         // Simplistic uniform excitation generation for now. This should of course be developed.
@@ -329,7 +334,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,
             Propagator::Unshifted => hlg - es_s * slg,
             Propagator::Shifted => hlg - es_s * slg,
             Propagator::DoublyShifted => hlg - es_s * slg,
-            Propagator::DifferenceDoublyShifted => hlg - (0.5 * (es_s + es)) * slg,
+            Propagator::DifferenceDoublyShifted => hlg - es_s * slg,
         };
         let pspawn = input.prop.dt * k.abs() / pgen;
         

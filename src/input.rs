@@ -10,6 +10,11 @@ pub enum Propagator {
     DifferenceDoublyShifted,
 }
 
+// Choice of excitation generator.
+pub enum ExcitationGen {
+    Uniform,
+}
+
 // Electron spin for excitation input.
 pub enum Spin {
     Alpha, 
@@ -92,6 +97,7 @@ pub struct QMCOptions {
     pub target_population: i64,
     pub shift_damping: f64, 
     pub shift_update_freq: usize,
+    pub excitation_gen: ExcitationGen,
     pub seed: Option<u64>,
 }
 
@@ -245,8 +251,13 @@ pub fn load_input(path: &str) -> Input {
         let target_population: i64 = qmc_tbl.get("target_population").unwrap();
         let shift_damping: f64 = qmc_tbl.get("shift_damping").unwrap();
         let shift_update_freq: usize = qmc_tbl.get("shift_update_freq").unwrap();
+        let excitation_gen_str: String = qmc_tbl.get("excitation_gen").unwrap();
+        let excitation_gen = match excitation_gen_str.as_str() {
+            "uniform" => ExcitationGen::Uniform,
+            _ => {eprintln!("Excitation generator must be 'uniform'."); std::process::exit(1);},
+        };
         let seed: Option<u64>  = qmc_tbl.get("seed").unwrap_or(None);
-        QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, seed}
+        QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, excitation_gen, seed}
     });
 
     // Excitation table. 
@@ -263,7 +274,7 @@ pub fn load_input(path: &str) -> Input {
             "shifted" => Propagator::Shifted,
             "doubly-shifted" => Propagator::DoublyShifted,
             "difference-doubly-shifted" => Propagator::DifferenceDoublyShifted,
-            _ => { eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', or 'difference-doubly-shifted'."); std::process::exit(1);}
+            _ => {eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', or 'difference-doubly-shifted'."); std::process::exit(1);}
     };
     let prop = PropagationOptions {dt, max_steps, propagator};
 
