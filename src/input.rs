@@ -92,6 +92,7 @@ pub struct QMCOptions {
     pub target_population: i64,
     pub shift_damping: f64, 
     pub shift_update_freq: usize,
+    pub seed: Option<u64>,
 }
 
 // Storage for output options
@@ -244,7 +245,8 @@ pub fn load_input(path: &str) -> Input {
         let target_population: i64 = qmc_tbl.get("target_population").unwrap();
         let shift_damping: f64 = qmc_tbl.get("shift_damping").unwrap();
         let shift_update_freq: usize = qmc_tbl.get("shift_update_freq").unwrap();
-        QMCOptions {initial_population, target_population, shift_damping, shift_update_freq}
+        let seed: Option<u64>  = qmc_tbl.get("seed").unwrap_or(None);
+        QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, seed}
     });
 
     // Excitation table. 

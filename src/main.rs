@@ -386,7 +386,7 @@ fn print_report(res: &Results, input: &Input) {
     if input.qmc.is_some() {
         println!("Total NOCI-QMC stochastic time: {:?}", res.timings.qmc_stoch_total);
         println!(r"  Basis generation:  {:?}", res.timings.qmc_stoch_basis);
-        println!(r"  Deterministic propagation:  {:?}", res.timings.qmc_stoch_prop);
+        println!(r"  Stochastic propagation:  {:?}", res.timings.qmc_stoch_prop);
     }
 
     println!("{}", "=".repeat(100));

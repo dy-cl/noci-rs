@@ -529,8 +529,13 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let mut reached_sc = false;
     let mut reached_c = false;
 
+    // Initialise RNG. If user provides a seed for deterministic runs we turn it into distinct per
+    // rank seeds. Otherwise the seeds are random. Uses `Golden Ratio Hashing` via 0x9E3779B9. 
+    let base: u64 = qmc.seed.unwrap_or_else(rand::random::<u64>);
+    let seed = base.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
+    let rng = SmallRng::seed_from_u64(seed);
+
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
-    let rng = SmallRng::from_entropy();
     let pg = init_p(start, end, ao, basis, &w, &mut cache, world);
     let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng, pg};
 

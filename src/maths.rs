@@ -1,8 +1,12 @@
 // maths.rs
+use std::cell::RefCell;
+
 use ndarray::{Array1, Array2, Array4, Axis};
 use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
+
+thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
 
 /// Loewdin symmetric orthogonalizer, computes X = S^{-1/2} for real/complex matrices.
 /// # Arguments 
@@ -107,6 +111,39 @@ pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
     acc
 }
 
+/// Perform dot product between two vectors with unrolled loop of length 8.
+/// # Arguments:
+///     `x`: [f64], vector 1.
+///     `y`: [f64], vector 2.
+#[inline(always)]
+fn dot_product_unroll8(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len();
+    let mut sum = 0.0;
+    let mut i = 0usize;
+
+    // Accumulate contributions to dot product sum 8 at a time.
+    while i + 8 <= n {
+        unsafe {
+            sum += *x.get_unchecked(i) * *y.get_unchecked(i);
+            sum += *x.get_unchecked(i + 1) * *y.get_unchecked(i + 1);
+            sum += *x.get_unchecked(i + 2) * *y.get_unchecked(i + 2);
+            sum += *x.get_unchecked(i + 3) * *y.get_unchecked(i + 3);
+            sum += *x.get_unchecked(i + 4) * *y.get_unchecked(i + 4);
+            sum += *x.get_unchecked(i + 5) * *y.get_unchecked(i + 5);
+            sum += *x.get_unchecked(i + 6) * *y.get_unchecked(i + 6);
+            sum += *x.get_unchecked(i + 7) * *y.get_unchecked(i + 7);
+        }
+        i += 8;
+    }
+
+    // Accumulate less than 8 remaining contributions.
+    while i < n {
+        unsafe { sum += *x.get_unchecked(i) * *y.get_unchecked(i); }
+        i += 1;
+    }
+    sum
+}
+
 /// Calculate Einstein summation of matrices `g` and `h` and 4D tensor `t` as 
 /// \sum_{a,c}\sum_{b,d} g_{b,a} t_{a,c,b,d} h_{d,c}. Assumes `g`, `h` and `t` all 
 /// have axes of equal length.
@@ -114,8 +151,7 @@ pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
 ///     `g`: Array2, matrix 1. 
 ///     `t`: Array4, 4D tensor.
 ///     `h`: Array2, matrix 2.
-pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
-                         -> f64 {
+pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
     let n = g.nrows();
 
     // Convert ndarrays into memory ordered slice.
@@ -123,41 +159,52 @@ pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
     let hs = h.as_slice_memory_order().unwrap();
     let ts = t.as_slice_memory_order().unwrap();
 
-    let mut acc = 0.0;
-
-    // Transpose h[d, c] = ht[c, d] into layout which is contiguous by d as this will be fastest index.
-    let mut ht = vec![0.0; n * n];
-    for d in 0..n {
-        let d_idx = d * n;
-        for c in 0..n {
-            // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
-            // this produces undefined behaviour rather than a panic, check this when debugging. 
-            // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
-            ht[c * n + d] = unsafe{*hs.get_unchecked(d_idx + c)};
+    let mut acc = 0.0f64;
+    
+    // Reuse ht across calls to this function.
+    HT_SCRATCH.with(|buf| {
+        // Transpose h[d, c] = ht[c, d] into layout which is contiguous by d as this will be fastest index.
+        let mut ht = buf.borrow_mut();
+        ht.resize(n * n, 0.0);
+        for d in 0..n {
+            let d_idx = d * n;
+            for c in 0..n {
+                // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
+                // this produces undefined behaviour rather than a panic, check this when debugging. 
+                // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
+                ht[c * n + d] = unsafe{*hs.get_unchecked(d_idx + c)};
+            }
         }
-    }
 
-    // Index of 4D tensor element in 1D is given by (((a * n + c) * n + b) * n + d).
-    for a in 0..n {
-        for b in 0..n {
-            let g_ba = unsafe {*gs.get_unchecked(b * n + a)};
-            // Accumulate real and imaginary parts separately so only real operations used.
-            let mut sum = 0.0f64;
+        // Index of 4D tensor element in 1D is given by (((a * n + c) * n + b) * n + d). So d varies
+        // fastes, then b, then c, then a. Therefore iteration should be in order, a, c, b, d.
+        // So iterate (a,c,b,d) for contiguous access.
+        for a in 0..n {
+            // For a given a, the block t[a, :, :, :] starts at a * n^3. See above element indexing.
+            let ta_index = a * n * n * n;
             for c in 0..n {
                 // ht[c, d] (h[d, c]).
-                let ht_cd = &ht[c * n..(c + 1) * n]; 
-                // Index of block start [a, c, b, 0].
-                let abc_idx = ((a * n + c) * n + b) * n;
-                for d in 0..n {
-                    let t_acbd = unsafe {*ts.get_unchecked(abc_idx + d)};
-                    let h_dc = unsafe {*ht_cd.get_unchecked(d)};
-                    sum += t_acbd * h_dc;
+                let ht_cd = &ht[c * n..(c + 1) * n];
+                // For a given a, c, the block t[a, c, :, :] starts at a*n^3 + c*n^2. See above element indexing.
+                let tac_index = ta_index + c * n * n;
+
+                for b in 0..n {
+                    let g_ba = unsafe {*gs.get_unchecked(b * n + a)};
+                    if g_ba == 0.0 {continue;}
+                    
+                    // For a given a, c, b, the block t[a, c, b, :] starts at a*n^3 + c*n^2 + b*n. See above element indexing.
+                    let tacb_index = tac_index + b * n;
+                    // Get the vector t[a, c, b, :].
+                    let tacb_vec = unsafe {ts.get_unchecked(tacb_index..tacb_index + n)};
+                    
+                    // Compute dot product of t[a, c, b, :] with ht[:, c] with unrolling.
+                    let sum = dot_product_unroll8(tacb_vec, ht_cd);
+                    acc += g_ba * sum;
                 }
             }
-            acc += g_ba * sum;
         }
-    }
-    acc
+        acc
+    })
 }
 
 /// Calculate a matrix vector product HC = U in parallel.
