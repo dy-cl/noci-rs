@@ -192,6 +192,14 @@ pub struct PopulationUpdate {
     pub dn: i64,
 }
 
+// Storage for heat-bath excitation related quantities 
+pub struct HeatBath {
+    pub sumlg: f64, 
+    pub cumulatives: Vec<f64>, 
+    pub lambdas: Vec<usize>, 
+    pub ks: Vec<f64>,
+}
+
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
 /// Note that the actual populations stored in mc.walkers are not yet changed here.
 /// # Arguments:
@@ -282,6 +290,140 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCa
     w
 }
 
+/// Compute the off-diagonal coupling between determinants depending on which propagator is used.
+/// All currently implemented propagators have the same off-diagonal component:
+/// |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|.
+/// # Arguments:
+///      hlg: f64, matrix element H_{\Lambda\Gamma}
+///      slg: f64, matrix element S_{\Lambda\Gamma}
+///      es_s: f64, E_s^S(\tau) shift energy.
+///      prop: Propagator, chosen propagator.
+fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
+    // These are currently all the same, but for future-proofness if more propagators are
+    // introduced this function is worth having.
+    match prop {
+        Propagator::Unshifted => hlg - es_s * slg,
+        Propagator::Shifted => hlg - es_s * slg,
+        Propagator::DoublyShifted => hlg - es_s * slg,
+        Propagator::DifferenceDoublyShifted => hlg - es_s * slg,
+    }
+}
+
+/// Initialise per-determinant heat-bath excitation generation quantities such that they can be
+/// precomputed per-determinant rather than per walker. Calculates total weight
+/// \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|, cumulative sums
+/// \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|, the Lambda index corresponding to each
+/// cumulative sum, and the couplings H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}.
+/// # Arguments:
+///     `gamma`: usize, parent determinant index.
+///     `es_s`: f64, E_s^S(\tau) shift energy.
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `input`: Input, user specified input options.
+///     `mc`: MCState, contains information about the current Monte Carlo state.
+fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: &mut MCState, input: &Input) -> HeatBath {
+    let ndets = basis.len();
+    // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
+    let mut sumlg = 0.0_f64;
+    // Cumulative sums A_n = \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|. 
+    let mut cumulatives: Vec<f64> = Vec::new();
+    // Corresponding Lambda indices to the cumulatives.
+    let mut lambdas: Vec<usize> = Vec::new();
+    // H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} for a given Lambda. 
+    let mut ks: Vec<f64> = Vec::new();
+
+    cumulatives.reserve(ndets - 1);
+    lambdas.reserve(ndets - 1);
+    ks.reserve(ndets - 1);
+
+    for lambda in 0..ndets {
+        if lambda == gamma {continue;}
+        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
+        let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+
+        sumlg += k.abs();
+        cumulatives.push(sumlg);
+        lambdas.push(lambda);
+        ks.push(k);
+    }
+    HeatBath {sumlg, cumulatives, lambdas, ks}
+}
+
+/// Propose a determinant for spawning using a uniform excitation scheme, and calculate the probability 
+/// P_{\text{gen}} that it was chosen.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `gamma`: usize, index of determinant being spawned from.
+///      es_s: f64, E_s^S(\tau) shift energy.
+///     `input`: Input, user specified input options.
+///     `mc`: MCState, contains information about the current Monte Carlo state.
+fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState) -> (f64, f64, usize) {
+    let ndets = basis.len();
+    // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
+    // more than the Gamma index we map it back into the full index set.
+    let mut lambda = mc.rng.gen_range(0..(ndets - 1));
+    if lambda >= gamma {lambda += 1;}
+
+    let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
+    let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+    // Uniform generation probability
+    let pgen = 1.0 / ((ndets - 1) as f64);
+    (pgen, k, lambda) 
+}
+
+/// Propose a determinant for spawning using a heat-bath excitation scheme, and calculate the probability 
+/// P_{\text{gen}} that it was chosen. Warning: This implements the exact heat-bath excitation scheme rather than any 
+/// approximate version, this means it is very very slow and should really only be used for benchmarking other 
+/// excitation schemes.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `gamma`: usize, index of determinant being spawned from.
+///      es_s: f64, E_s^S(\tau) shift energy.
+///     `input`: Input, user specified input options.
+///     `mc`: MCState, contains information about the current Monte Carlo state.
+fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, hb: &HeatBath) -> (f64, f64, usize) {
+    let ndets = basis.len();
+
+    // If \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} (sumlg) 
+    // is zero (unsure how likely this is) then fallback to uniform distribution.
+    if hb.sumlg == 0.0 {
+        let mut lambda = mc.rng.gen_range(0..(ndets - 1));
+        if lambda >= gamma {lambda += 1;}
+        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
+        let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+        let pgen = 1.0 / ((ndets - 1) as f64);
+        return (pgen, k, lambda);
+    }
+
+    // We want P_{\text{gen}} = |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| / 
+    // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|. We
+    // choose a number (target) uniformly in \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}
+    // (sumlg) and define the sequence of cumulative sums:
+    //      A_1 = |H_{1\Gamma} - E_s^S(\tau)S_{1\Gamma}|
+    //      ..
+    //      A_n = \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|.
+    // The probability that target is between A_{j-1} and A_{j} is:
+    //     |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| / 
+    //     \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|,
+    // which is exactly the distribution we want to sample. We can therefore add the A's
+    // until we pass the target at which point the last tested \Lambda is the one chosen
+    // with the correct probability, and we can compute k and pgen accordingly.
+    let target = mc.rng.gen_range(0.0..hb.sumlg);
+    // Find first index where the cumulative sum is more than the target. Binary search returns
+    // Result <usize, usize> where Ok(i) is element exactly equal to target and Err(i) is insertion
+    // index where target would be inserted to keep array sorted. In both cases this is what we
+    // want.
+    let i = match hb.cumulatives.binary_search_by(|x| x.partial_cmp(&target).unwrap()) {Ok(i) => i, Err(i) => i};
+
+    // Return P_{\text{gen}}, H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} and index of Lambda.
+    let lambda = hb.lambdas[i];
+    let k = hb.ks[i];
+    let pgen = k.abs() / hb.sumlg;
+    (pgen, k, lambda)
+}
+
 /// Perform off-diagonal spawning (amplitude transfer) step by calculating:
 ///     $P_{\text{Spawn}}(\Lambda|\Gamma) = \frac{\Delta\tau|H_{\Lambda\Gamma} - 
 ///     E_sS_{\Lambda\Gamma}|}{P_{\text{gen}}(\Lambda|\Gamma)}$
@@ -295,47 +437,34 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCa
 ///     `gamma`: usize, index of determinant \Gamma. 
 ///     `ngamma`: i64, walker population on determinant \Gamma.
 ///     `dt`: f64, time-step.
-///     `es`: f64, non-overlap transformed shift energy.
 ///     `es_s`: f64, overlap-transformed shift energy.
+///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
 ///     `irank`: usize, number of current rank.
 ///     `nranks`: usize, total number of ranks.
 ///     `send_buf`: Vec<Vec<PopulationUpdate>>, MPI send buffer which contains information about
 ///     population updates that need to happen at determinants not owned by this rank.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState,
+fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, mc: &mut MCState,
             irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>) {
-
-    // Unwrap QMC propagation specific options
-    let qmc = input.qmc.as_ref().unwrap();
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
 
-    let ndets = basis.len();
-    // Probability of choosing a Lambda when using uniform excitation.
-    let pgen = match qmc.excitation_gen {
-            ExcitationGen::Uniform => 1.0 / ((ndets - 1) as f64), 
-    };
+    // Precompute per determinant heat-bath excitation generation quantities.
+    let mut hb: Option<HeatBath> = None;
+    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, mc, input));}
 
     // Iterate over all walkers on state Gamma.
     for _ in 0..nwalkers {
-        // Simplistic uniform excitation generation for now. This should of course be developed.
-        // Select Lambda from all (n - 1) avaliable determinants (i.e., those that are not Gamma).
-        let mut lambda = mc.rng.gen_range(0..(basis.len() - 1));
-        // If Lambda index is the same or more than Gamma index we must map it back into the full
-        // index set.
-        if lambda >= gamma {lambda += 1;}
-     
-        // Calculate or retrieve matrix elements H_{\Lambda\Gamma}, S_{\Lambda\Gamma} from cache.
-        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
-
-        // Spawning probability.
-        let k = match input.prop.propagator {
-            Propagator::Unshifted => hlg - es_s * slg,
-            Propagator::Shifted => hlg - es_s * slg,
-            Propagator::DoublyShifted => hlg - es_s * slg,
-            Propagator::DifferenceDoublyShifted => hlg - es_s * slg,
+        // Calculate generation probability, k = |H_{\Gamma\Lambda} - E_s^S(\tau)
+        // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
+        // generation scheme.
+        let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
+            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, mc),
+            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, mc, hb.as_ref().unwrap()),
         };
+
+        // Calculate spawning probability.
         let pspawn = input.prop.dt * k.abs() / pgen;
         
         // Evaluate spawning outcomes
@@ -372,6 +501,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,
 ///     `dt`: f64, time-step.
 ///     `es`: f64, non-overlap transformed shift energy.
 ///     `es_s`: f64, overlap-transformed shift energy.
+///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState) {
 
@@ -579,7 +709,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
             // Diagonal death and cloning step. Diagonal step is entirely local.
             death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc);
             // Off-diagonal amplitude transfer. 
-            spawning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc, irank, nranks, &mut send);
+            spawning(ao, basis, gamma, ngamma, es_s, input, &mut mc, irank, nranks, &mut send);
         }
 
         // Exchange population updates between ranks and add any recieved updates to local delta. 

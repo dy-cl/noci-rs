@@ -13,6 +13,7 @@ pub enum Propagator {
 // Choice of excitation generator.
 pub enum ExcitationGen {
     Uniform,
+    HeatBath,
 }
 
 // Electron spin for excitation input.
@@ -254,7 +255,8 @@ pub fn load_input(path: &str) -> Input {
         let excitation_gen_str: String = qmc_tbl.get("excitation_gen").unwrap();
         let excitation_gen = match excitation_gen_str.as_str() {
             "uniform" => ExcitationGen::Uniform,
-            _ => {eprintln!("Excitation generator must be 'uniform'."); std::process::exit(1);},
+            "heat-bath" => ExcitationGen::HeatBath,
+            _ => {eprintln!("Excitation generator must be 'uniform' or 'heat-bath'."); std::process::exit(1);},
         };
         let seed: Option<u64>  = qmc_tbl.get("seed").unwrap_or(None);
         QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, excitation_gen, seed}
