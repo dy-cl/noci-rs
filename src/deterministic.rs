@@ -180,7 +180,7 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
     // systems this should not be done as diagonalising S has equal cost to solving GEVP of full
     // NOCI-QMC basis.
     let mut projectors: Option<Projectors> = None;
-    if input.write.write_coeffs {
+    if input.write.write_deterministic_coeffs {
         let p = Projectors::calculate_projectors(s, 1e-14);
         let (c0_relevant, c0_null) = p.project(&c_norm);
 

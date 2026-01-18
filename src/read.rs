@@ -72,7 +72,5 @@ pub fn read_integrals(path: &str) -> AoData {
     let e_fci: Option<f64> = f.dataset("E_fci").ok().and_then(|ds| ds.read_scalar::<f64>().ok());  
 
 
-    AoData {
-        s_ao, s_spin, h, h_spin, eri, eri_spin, enuc, nao, nelec, dm, aolabels, e_fci
-    }
+    AoData {s_ao, s_spin, h, h_spin, eri, eri_spin, enuc, nao, nelec, dm, aolabels, e_fci}
 }

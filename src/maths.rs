@@ -6,7 +6,7 @@ use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
+thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new()); static GT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
 
 /// Loewdin symmetric orthogonalizer, computes X = S^{-1/2} for real/complex matrices.
 /// # Arguments 
@@ -116,32 +116,59 @@ pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
 ///     `x`: [f64], vector 1.
 ///     `y`: [f64], vector 2.
 #[inline(always)]
-fn dot_product_unroll8(x: &[f64], y: &[f64]) -> f64 {
-    let n = x.len();
-    let mut sum = 0.0;
+fn dot_product_unroll8(mut x: *const f64, mut y: *const f64, n: usize) -> f64 {
     let mut i = 0usize;
 
-    // Accumulate contributions to dot product sum 8 at a time.
-    while i + 8 <= n {
-        unsafe {
-            sum += *x.get_unchecked(i) * *y.get_unchecked(i);
-            sum += *x.get_unchecked(i + 1) * *y.get_unchecked(i + 1);
-            sum += *x.get_unchecked(i + 2) * *y.get_unchecked(i + 2);
-            sum += *x.get_unchecked(i + 3) * *y.get_unchecked(i + 3);
-            sum += *x.get_unchecked(i + 4) * *y.get_unchecked(i + 4);
-            sum += *x.get_unchecked(i + 5) * *y.get_unchecked(i + 5);
-            sum += *x.get_unchecked(i + 6) * *y.get_unchecked(i + 6);
-            sum += *x.get_unchecked(i + 7) * *y.get_unchecked(i + 7);
-        }
-        i += 8;
-    }
+    let mut s0 = 0.0;
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+    
+    unsafe {
+        // Accumulate contributions to dot product sum 8 at a time.
+        while i + 8 <= n {
+            let x0 = *x;       
+            let y0 = *y;
+            let x1 = *x.add(1); 
+            let y1 = *y.add(1);
+            let x2 = *x.add(2); 
+            let y2 = *y.add(2);
+            let x3 = *x.add(3); 
+            let y3 = *y.add(3);
+            let x4 = *x.add(4); 
+            let y4 = *y.add(4);
+            let x5 = *x.add(5); 
+            let y5 = *y.add(5);
+            let x6 = *x.add(6); 
+            let y6 = *y.add(6);
+            let x7 = *x.add(7); 
+            let y7 = *y.add(7);
 
-    // Accumulate less than 8 remaining contributions.
-    while i < n {
-        unsafe { sum += *x.get_unchecked(i) * *y.get_unchecked(i); }
-        i += 1;
+            s0 = x0.mul_add(y0, s0);
+            s1 = x1.mul_add(y1, s1);
+            s2 = x2.mul_add(y2, s2);
+            s3 = x3.mul_add(y3, s3);
+            s0 = x4.mul_add(y4, s0);
+            s1 = x5.mul_add(y5, s1);
+            s2 = x6.mul_add(y6, s2);
+            s3 = x7.mul_add(y7, s3);
+            
+            x = x.add(8);
+            y = y.add(8);
+            i += 8;
+        }
+
+        let mut sum = s0 + s1 + s2 + s3;
+        
+        // Accumulate less than 8 remaining contributions.
+        while i < n {
+            sum = (*x).mul_add(*y, sum);
+            x = x.add(1);
+            y = y.add(1);
+            i += 1;
+        }
+        sum
     }
-    sum
 }
 
 /// Calculate Einstein summation of matrices `g` and `h` and 4D tensor `t` as 
@@ -161,49 +188,70 @@ pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
 
     let mut acc = 0.0f64;
     
-    // Reuse ht across calls to this function.
-    HT_SCRATCH.with(|buf| {
-        // Transpose h[d, c] = ht[c, d] into layout which is contiguous by d as this will be fastest index.
-        let mut ht = buf.borrow_mut();
-        ht.resize(n * n, 0.0);
-        for d in 0..n {
-            let d_idx = d * n;
-            for c in 0..n {
-                // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
-                // this produces undefined behaviour rather than a panic, check this when debugging. 
-                // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
-                ht[c * n + d] = unsafe{*hs.get_unchecked(d_idx + c)};
-            }
-        }
+    // Reuse ht and gt across calls to this function.
+    HT_SCRATCH.with(|hbuf| {
+        GT_SCRATCH.with(|gbuf| {
+            // Transpose h[d, c] = ht[c, d] and g[a, b] = gt[b, a] into contiguous in fastest index layouts.
+            let mut ht = hbuf.borrow_mut();
+            let mut gt = gbuf.borrow_mut();
+            
+            ht.resize(n * n, 0.0);
+            gt.resize(n * n, 0.0);
 
-        // Index of 4D tensor element in 1D is given by (((a * n + c) * n + b) * n + d). So d varies
-        // fastes, then b, then c, then a. Therefore iteration should be in order, a, c, b, d.
-        // So iterate (a,c,b,d) for contiguous access.
-        for a in 0..n {
-            // For a given a, the block t[a, :, :, :] starts at a * n^3. See above element indexing.
-            let ta_index = a * n * n * n;
-            for c in 0..n {
-                // ht[c, d] (h[d, c]).
-                let ht_cd = &ht[c * n..(c + 1) * n];
-                // For a given a, c, the block t[a, c, :, :] starts at a*n^3 + c*n^2. See above element indexing.
-                let tac_index = ta_index + c * n * n;
-
-                for b in 0..n {
-                    let g_ba = unsafe {*gs.get_unchecked(b * n + a)};
-                    if g_ba == 0.0 {continue;}
-                    
-                    // For a given a, c, b, the block t[a, c, b, :] starts at a*n^3 + c*n^2 + b*n. See above element indexing.
-                    let tacb_index = tac_index + b * n;
-                    // Get the vector t[a, c, b, :].
-                    let tacb_vec = unsafe {ts.get_unchecked(tacb_index..tacb_index + n)};
-                    
-                    // Compute dot product of t[a, c, b, :] with ht[:, c] with unrolling.
-                    let sum = dot_product_unroll8(tacb_vec, ht_cd);
-                    acc += g_ba * sum;
+            for d in 0..n {
+                let d_idx = d * n;
+                for c in 0..n {
+                    // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
+                    // this produces undefined behaviour rather than a panic, check this when debugging. 
+                    // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
+                    unsafe {*ht.get_unchecked_mut(c * n + d) = *hs.get_unchecked(d_idx + c);}
                 }
             }
-        }
-        acc
+            for b in 0..n {
+                let b_idx = b * n;
+                for a in 0..n {
+                    // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
+                    // this produces undefined behaviour rather than a panic, check this when debugging. 
+                    // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
+                    unsafe{*gt.get_unchecked_mut(a * n + b) = *gs.get_unchecked(b_idx + a);}
+                }
+            }
+
+            unsafe {
+                let ts_ptr = ts.as_ptr();
+                let ht_ptr = ht.as_ptr();
+                let gt_ptr = gt.as_ptr();
+                // Index of 4D tensor element in 1D is given by (((a * n + c) * n + b) * n + d). So d varies
+                // fastes, then b, then c, then a. Therefore iteration should be in order, a, c, b, d.
+                // So iterate (a,c,b,d) for contiguous access.
+                for a in 0..n {
+                    // For a given a, the block t[a, :, :, :] starts at a * n^3. See above element indexing.
+                    let ta_index = a * n * n * n;
+                    // gt[b, a] (g[a, b])
+                    let gt_b_ptr = gt_ptr.add(a * n);
+                    for c in 0..n {
+                        // ht[c, d] (h[d, c]).
+                        let ht_c_ptr = ht_ptr.add(c * n);
+                        // For a given a, c, the block t[a, c, :, :] starts at a*n^3 + c*n^2. See above element indexing.
+                        let tac_index = ta_index + c * n * n;
+                        for b in 0..n {
+                            let g_ba_ptr = *gt_b_ptr.add(b);
+                            if g_ba_ptr == 0.0 {continue;}
+                            
+                            // For a given a, c, b, the block t[a, c, b, :] starts at a*n^3 + c*n^2 + b*n. See above element indexing.
+                            // Get the vector t[a, c, b, :].
+                            let tacb_vec_ptr = ts_ptr.add(tac_index + b * n);
+                            
+                            // Compute dot product of t[a, c, b, :] with ht[:, c] with unrolling and
+                            // accumulate g_{b,a} t_{a,c,b,d} h_{d,c}. 
+                            let dot = dot_product_unroll8(tacb_vec_ptr, ht_c_ptr, n);
+                            acc = g_ba_ptr.mul_add(dot, acc);
+                        }
+                    }
+                }
+            }
+            acc
+        })
     })
 }
 
@@ -217,5 +265,4 @@ pub fn parallel_matvec_real(h: &Array2<f64>, c: &Array1<f64>) -> Array1<f64> {
     let result: Vec<f64> = h.axis_iter(Axis(0)).into_par_iter().map(|row| {row.iter().zip(c.iter()).map(|(&hij, &cj)| hij * cj).sum::<f64>()}).collect();
     Array1::from_vec(result)
 }
-
 

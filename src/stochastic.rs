@@ -108,6 +108,7 @@ pub struct MCState {
     pub pg: Vec<f64>, // Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
     pub cache: ElemCache,
     pub rng: SmallRng,
+    pub excitation_hist: Option<ExcitationHist> // Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
 }
 
 // Cache storage for already computed H, S matrix elements, avoids needless recomputation.
@@ -138,6 +139,7 @@ impl ElemCache {
     /// Find matrix element S_{ij} either from cache or by computing it for the first time.
     /// # Arguments:
     ///     `self`: ElemCache, contains only HashMap of state index to H_{ij}, S_{ij} hash map.
+    ///     `ao`: AoData, contains AO integrals and other system data.
     ///     `basis`: Vec<SCFState>, vector of all SCF states in the basis.
     ///     `i`: usize, index of state i. 
     ///     `j`: usize, index of state k.
@@ -156,7 +158,13 @@ impl ElemCache {
         s
     }
     
-    /// Find matrix elemss H_{ij} and S_{ij} from cache or by computing them for the first time.  
+    /// Find matrix elemss H_{ij} and S_{ij} from cache or by computing them for the first time. 
+    /// # Arguments:
+    ///     `self`: ElemCache, contains only HashMap of state index to H_{ij}, S_{ij} hash map.
+    ///     `ao`: AoData, contains AO integrals and other system data. 
+    ///     `basis`: Vec<SCFState>, vector of all SCF states in the basis.
+    ///     `i`: usize, index of state i. 
+    ///     `j`: usize, index of state k.
     fn find_hs(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize) -> (f64, f64) {
         // Get the sorted pair of indices
         let (a, b) = Self::key(i, j);
@@ -198,6 +206,49 @@ pub struct HeatBath {
     pub cumulatives: Vec<f64>, 
     pub lambdas: Vec<usize>, 
     pub ks: Vec<f64>,
+}
+
+// Storage for histogrammed data 
+pub struct ExcitationHist {
+    pub logmin: f64,
+    pub logmax: f64,
+    pub noverflow_low: u64,
+    pub noverflow_high: u64,
+    pub counts: Vec<u64>,
+    pub nbins: usize,
+    pub ntotal: u64,
+}
+
+impl ExcitationHist {
+    /// Constructor for ExcitationHist object. Creates ExcitationHist with chosen parameters.
+    /// # Arguments:
+    ///     `logmin`: f64, minimum histogram value on a logarithmic scale. 
+    ///     `logmax`: f64, maximum histogram value on a logarithmic scale.
+    ///     `nbins`: usize, number of histogram bins.
+    pub fn new(logmin: f64, logmax: f64, nbins: usize) -> Self {
+        Self {logmin, logmax, noverflow_low: 0, noverflow_high: 0, counts: vec![0u64; nbins], nbins, ntotal: 0}
+    }
+    
+    /// Add a computed spawning probability to the histogram.
+    /// Arguments: 
+    ///     self: ExcitationHist.
+    ///     pspawn: f64, spawning probability as defined in population dynamics routines.
+    pub fn add(&mut self, pspawn: f64) {
+        self.ntotal += 1;
+
+        if !pspawn.is_finite() || pspawn <= 0.0 {self.noverflow_low += 1; return;}
+
+        let logpspawn = pspawn.ln();
+
+        if logpspawn < self.logmin {self.noverflow_low += 1; return;}
+        if logpspawn >= self.logmax {self.noverflow_high += 1; return;}
+
+        // Fractional position of logpspawn in histogram range.
+        let t = (logpspawn - self.logmin) / (self.logmax - self.logmin);
+        // Convert to bin units.
+        let b = (t * self.nbins as f64) as usize;
+        self.counts[b] += 1;
+    }
 }
 
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
@@ -466,7 +517,10 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 
         // Calculate spawning probability.
         let pspawn = input.prop.dt * k.abs() / pgen;
-        
+
+        // Store excitation sample if requested.
+        if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {hist.add(pspawn);}
+
         // Evaluate spawning outcomes
         let m = pspawn.floor() as i64;
         let frac = pspawn - (m as f64);
@@ -498,7 +552,6 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `gamma`: usize, index of determinant \Gamma. 
 ///     `ngamma`: i64, walker population on determinant \Gamma.
-///     `dt`: f64, time-step.
 ///     `es`: f64, non-overlap transformed shift energy.
 ///     `es_s`: f64, overlap-transformed shift energy.
 ///     `input`: Input, user specified input options.
@@ -631,8 +684,9 @@ fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &m
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `es`: f64, initial shift energy.
 ///     `input`: Input, user specified input options.
-///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &Input, ref_indices: &[usize], world: &impl Communicator) -> f64 {
+///     `ref_indices`: [usize], indices of the reference determinants embedded in the full space.
+///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
+pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>) {
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
@@ -650,6 +704,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     // Construct reference index mask.
     let mut isref = vec![false; basis.len()];
     for &i in ref_indices {isref[i] = true;}
+    
+    // If the number of references is 1 then the unshifted propagator is correct.
+    if irank == 0 {println!("Number of references is 1. Setting propagator to unshifted.....");}
+    if ref_indices.len() == 1 {input.prop.propagator = Propagator::Unshifted;}
 
     // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
     // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
@@ -670,9 +728,12 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
     let seed = base.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
     let rng = SmallRng::seed_from_u64(seed);
 
+    // Initialise excitation generation histogram if requested.
+    let excitation_hist = if input.write.write_excitation_hist {Some(ExcitationHist::new(-60.0, 1e-12, 100))} else {None};
+
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
     let pg = init_p(start, end, ao, basis, &w, &mut cache, world);
-    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng, pg};
+    let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng, pg, excitation_hist};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
     let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
@@ -767,7 +828,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &I
         if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
                        it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc as f64, nwsc, nref);}
     }
-    eproj
+    (eproj, mc.excitation_hist)
 }
 
 

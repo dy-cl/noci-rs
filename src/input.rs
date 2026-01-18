@@ -105,9 +105,9 @@ pub struct QMCOptions {
 // Storage for output options
 pub struct WriteOptions {
     pub verbose: bool,
-    pub write_coeffs: bool,
-    pub coeffs_dir: String,
-    pub coeffs_filename: String,
+    pub write_deterministic_coeffs: bool,
+    pub write_excitation_hist: bool,
+    pub write_dir: String,
 }
 
 /// Storage for Input file parameters.
@@ -194,10 +194,10 @@ pub fn load_input(path: &str) -> Input {
 
     // Write table.
     let verbose: bool = write_tbl.get("verbose").unwrap();
-    let write_coeffs: bool = write_tbl.get("write_coeffs").unwrap();
-    let coeffs_dir: String = write_tbl.get("coeffs_dir").unwrap();
-    let coeffs_filename: String = write_tbl.get("coeffs_filename").unwrap();
-    let write = WriteOptions {verbose, write_coeffs, coeffs_dir, coeffs_filename};
+    let write_deterministic_coeffs: bool = write_tbl.get("write_deterministic_coeffs").unwrap();
+    let write_excitation_hist: bool = write_tbl.get("write_excitation_hist").unwrap();
+    let write_dir: String = write_tbl.get("write_dir").unwrap();
+    let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_dir};
 
     // States table.
     let mut states: Vec<StateRecipe> = Vec::new();

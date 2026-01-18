@@ -64,7 +64,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let input = load_input(&input_path);
+    let mut input = load_input(&input_path);
 
     let mut prev_states: Vec<SCFState> = Vec::new();
     
@@ -72,10 +72,13 @@ fn main() {
     let world = universe.world(); 
     let irank = world.rank();
 
-    for (i, r) in input.mol.r_list.iter().copied().enumerate() {
+    let rlist = input.mol.r_list.clone();
+    let geoms = input.mol.geoms.clone();
+
+    for (i, r) in rlist.iter().copied().enumerate() {
         println!("\n");
-        let atoms: &Atoms = &input.mol.geoms[i];
-        let res = run(r, atoms, &input, &prev_states, &world);  
+        let atoms: &Atoms = &geoms[i];
+        let res = run(r, atoms, &mut input, &prev_states, &world);  
         if irank == 0 {print_report(&res, &input);}
         prev_states = res.states.clone();
     }
@@ -89,7 +92,7 @@ fn main() {
 ///     `r`: f64, current geometry.
 ///     `atoms`: Vec<String>, atom types.
 ///     `prev_states`: [SCFState], converged SCF states at previous r, used for seeding.
-fn run(r: f64, atoms: &Atoms, input: &Input, prev_states: &[SCFState], world: &impl Communicator) -> Results {
+fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world: &impl Communicator) -> Results {
 
     let irank = world.rank();
     let mut timings = Timings::default();
@@ -210,9 +213,7 @@ fn run_reference_noci(ao: &AoData, states: &[SCFState]) -> (Vec<SCFState>, f64, 
     (noci_reference_basis, e_noci_ref, c0.to_vec(), t_noci.elapsed(), d_h_ref)
 }
 
-/// Perform the deterministic propagation in the NOCI-QMC space. This involves calculating the NOCI
-/// Hamiltonian and overlap including the additional Slater determinants, followed by repeated
-/// application of a ground-state propagator to a coefficient vector of basis states.
+/// Perform the deterministic propagation in the NOCI-QMC space. 
 /// # Arguments:
 ///     `ao`: AoData, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
@@ -250,7 +251,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     // If we are not interested in plotting evolution of individual coefficients we use the
     // reference NOCI coefficients as our initial guess as this is the best guess, however,
     // the coefficients often don't change much which makes for a boring plot.
-    if !input.write.write_coeffs {
+    if !input.write.write_deterministic_coeffs {
         for (i, ref_st) in noci_reference_basis.iter().enumerate() {
             let idx = basis.iter().position(|qmc_st| qmc_st.label == ref_st.label).unwrap();
             c0qmc[idx] = c0[i];
@@ -289,9 +290,9 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Write projected coefficients to a file. This should currently only be used if doing a single 
     // geometry at a time otherwise the previous file will be overwritten.
-    if input.write.write_coeffs {
+    if input.write.write_deterministic_coeffs {
         println!("Writing coefficients to file...");
-        let filepath = format!("{}/{}", input.write.coeffs_dir, input.write.coeffs_filename);
+        let filepath = format!("{}/{}", input.write.write_dir, "coefficients");
         let file = File::create(filepath).unwrap();
         let mut writer = BufWriter::new(file);
         for iter in &coefficients {
@@ -317,7 +318,16 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     (e, d_total, d_basis, d_h, d_prop)
 }
 
-pub fn run_qmc_stochastic_noci(ao: &AoData, input: &Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator) 
+/// Perform stochastic propagation in the NOCI-QMC space. 
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data.
+///     `input`: Input, user input specifications.
+///     `states`: [SCFState], converged SCF states. 
+///     `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
+///                             to be in the NOCI basis.
+///     `c0`: [f64], initial coefficient vector of basis states.
+///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
+pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator) 
                                -> (f64, Duration, Duration, Duration) {
 
     let t_total = Instant::now();
@@ -355,8 +365,24 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &Input, noci_reference_basis:
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let e = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world);
+    let (e, local_hist) = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world);
     let d_prop = t_prop.elapsed();
+
+    // Write excitation histogram to a file. This should currently only be used if doing a single 
+    // geometry at a time otherwise the previous file will be overwritten. Writes one file per rank.
+    if let Some(hist) = local_hist.as_ref() && input.write.write_excitation_hist {
+        if irank == 0 {println!("Writing excitation samples to file...");}
+        let filepath = format!("{}/excitationsamples{}", input.write.write_dir, irank);
+        let file = File::create(filepath).unwrap();
+        let mut writer = BufWriter::new(file);
+
+        writeln!(writer, "{} {} {}", hist.logmin, hist.logmax, hist.nbins).unwrap();
+        writeln!(writer, "{} {} {}", hist.ntotal, hist.noverflow_low, hist.noverflow_high).unwrap();
+
+        for &c in &hist.counts {
+            writeln!(writer, "{}", c).unwrap();
+        }
+    }
 
     let d_total = t_total.elapsed();
 
