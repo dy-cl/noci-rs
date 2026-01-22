@@ -230,7 +230,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Build excitations atop NOCI-reference basis.
     let t_basis = Instant::now();
-    let basis = generate_qmc_noci_basis(ao, noci_reference_basis, input);
+    let basis = generate_qmc_noci_basis(noci_reference_basis, input);
     let d_basis = t_basis.elapsed();
 
     let n = basis.len();
@@ -239,7 +239,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     println!("Progress will be printed every 5 minutes...");
     
     // Call matrix element routines.
-    let (h, s, d_h) = build_noci_matrices(ao, &basis);
+    let (h, s, d_h) = build_noci_matrices(ao, &basis, noci_reference_basis);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.
@@ -340,7 +340,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
     
     // Build excitations atop NOCI-reference basis.
     let t_basis = Instant::now();
-    let basis = generate_qmc_noci_basis(ao, noci_reference_basis, input);
+    let basis = generate_qmc_noci_basis(noci_reference_basis, input);
     let d_basis = t_basis.elapsed();
     let n = basis.len();
 

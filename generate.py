@@ -26,10 +26,10 @@ def get_misc(mol):
 
     return Enuc, nao, nelec, aolabels
 
-def dump_hdf5(eri, S, h, dm, Enuc, nao, nelec, aolabels, path):
+def dump_hdf5(eri, S, h, dm, Enuc, nao, nelec, aolabels, path, fci_energy):
     
     with h5py.File(path, 'w') as f:
-        f.create_dataset('eri', data = eris)
+        f.create_dataset('eri', data = eri)
         f.create_dataset('S', data = S)
         f.create_dataset('h', data = h)
         f.create_dataset('dm', data = dm)
@@ -59,5 +59,5 @@ if __name__ == '__main__':
         mf = scf.RHF(mol).run()
         cisolver = fci.FCI(mol, mf.mo_coeff)
         fci_energy, fcivec = cisolver.kernel()
-    dump_hdf5(eris, S, h, dm, Enuc, nao, nelec, aolabels, args.out)
+    dump_hdf5(eris, S, h, dm, Enuc, nao, nelec, aolabels, args.out, fci_energy)
 

@@ -1,53 +1,16 @@
 // read.rs
 use hdf5::File;
 use hdf5::types::VarLenUnicode;
-use ndarray::{Array1, Array2, Array4, s};
+use ndarray::{Array1, Array2, Array4};
 
 use crate::{AoData};
 
-/// Build spin-block AO overlap [[s_ao, 0], [0, s_ao]] so a and b MOs
-/// (Ca != Cb for UHF) can be treated in one spin-orbital basis for NOCI. 
-/// The same procedure is done for ca and cb (i.e., forming cs = [[ca, 0], [0, cb]])
-/// in basis.rs as we finalise the SCF states (thus defining ca and cb) before NOCI there.
-/// [[s_ao, 0], [0, s_ao]] may be formed here immediately as it uses only read in data.
-fn spin_block_ao_ovlp(s_ao: &Array2<f64>) -> Array2<f64> {
-    let nao = s_ao.nrows();
-    let mut s_spin = Array2::<f64>::zeros((2 * nao, 2 * nao));
-    s_spin.slice_mut(s![0..nao, 0..nao]).assign(s_ao);
-    s_spin.slice_mut(s![nao..2*nao, nao..2*nao]).assign(s_ao);
-    s_spin
-}
-
-/// Build spin-orbital two-electron integral tensor <ab||cd> from spatial ERIs. This 
-/// is done for the same reasons as described above. 
+/// Antisymmetrise the ERIs.
 /// # Arguments 
-///     eri: Array4, spatial AO ERIs in chemists notation.
-///     nao: usize, number of AOs.
-fn spin_block_eris(eri: &Array4<f64>, nao: usize) -> Array4<f64> {
-    let nso = 2 * nao;
-    let eri_coul = eri.view().permuted_axes([0, 2, 1, 3]).to_owned();
-    let eri_exch = eri.view().permuted_axes([0, 3, 2, 1]).to_owned();
-    let eri_asym = &eri_coul - &eri_exch;
-    let mut eri_spin = Array4::<f64>::zeros((nso, nso, nso, nso));
-    // aaaa block
-    eri_spin.slice_mut(s![0..nao, 0..nao, 0..nao, 0..nao]).assign(&eri_asym);
-    // bbbb block
-    eri_spin.slice_mut(s![nao..nso, nao..nso, nao..nso, nao..nso]).assign(&eri_asym);
-    // abab block
-    eri_spin.slice_mut(s![0..nao, nao..nso, 0..nao, nao..nso]).assign(&eri_coul);
-    // baba block
-    eri_spin.slice_mut(s![nao..nso, 0..nao, nao..nso, 0..nao]).assign(&eri_coul);
-    eri_spin
-}
-
-/// Build spin block one electron Hamiltonian [[h, 0], [0, h]]. This is done for 
-/// the same reasons as described above. 
-fn spin_block_h(h: &Array2<f64>) -> Array2<f64> {
-    let nao = h.nrows();
-    let mut h_spin = Array2::<f64>::zeros((2 * nao, 2 * nao));
-    h_spin.slice_mut(s![0..nao, 0..nao]).assign(h);
-    h_spin.slice_mut(s![nao..2 * nao, nao..2 * nao]).assign(h);
-    h_spin
+fn antisymmetrise(eri_coul: &Array4<f64>) -> Array4<f64> {
+    let eri_exch = eri_coul.view().permuted_axes([0, 1, 3, 2]).to_owned();
+    //let eri_exch = eri_coul.view().permuted_axes([0, 3, 2, 1]).to_owned();
+    eri_coul - &eri_exch
 }
 
 /// Read in AO integrals (h, eri, s, dm) and other miscellaneous data (enuc, nao,  nelec, aolabels) 
@@ -56,21 +19,18 @@ fn spin_block_h(h: &Array2<f64>) -> Array2<f64> {
 ///     path: String, path to data file.
 pub fn read_integrals(path: &str) -> AoData {
     let f = File::open(path).unwrap();
-    let nao: usize = f.dataset("nao").unwrap().read_scalar().unwrap();
-    let eri: Array4<f64> = f.dataset("eri").unwrap().read().unwrap();
-    let eri_spin = spin_block_eris(&eri, nao);
-    let s_ao: Array2<f64> = f.dataset("S").unwrap().read().unwrap();
-    let s_spin = spin_block_ao_ovlp(&s_ao);
+    let n: usize = f.dataset("nao").unwrap().read_scalar().unwrap();
+    let eri_coul: Array4<f64> = f.dataset("eri").unwrap().read().unwrap();
+    let eri_asym = antisymmetrise(&eri_coul);
+    let s: Array2<f64> = f.dataset("S").unwrap().read().unwrap();
     let h: Array2<f64> = f.dataset("h").unwrap().read().unwrap();
-    let h_spin = spin_block_h(&h);
     let enuc: f64 = f.dataset("Enuc").unwrap().read_scalar().unwrap();
     let nelec: Array1<i64> = f.dataset("nelec").unwrap().read().unwrap();
     let dm: Array2<f64> = f.dataset("dm").unwrap().read().unwrap();
     let ds = f.dataset("aolabels").unwrap();
     let arr = ds.read_1d::<VarLenUnicode>().unwrap();       
-    let aolabels: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+    let labels: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
     let e_fci: Option<f64> = f.dataset("E_fci").ok().and_then(|ds| ds.read_scalar::<f64>().ok());  
 
-
-    AoData {s_ao, s_spin, h, h_spin, eri, eri_spin, enuc, nao, nelec, dm, aolabels, e_fci}
+    AoData {s, h, eri_coul, eri_asym, enuc, n, nelec, dm, labels, e_fci}
 }

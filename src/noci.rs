@@ -1,334 +1,382 @@
 // noci.rs
 use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
-use rayon::current_thread_index;
 
 use crate::{AoData, SCFState};
+use crate::nonorthogonalwicks::{lg_overlap, WicksReferencePair};
 
 use crate::utils::print_array2;
-use crate::maths::{einsum_ba_ab_real, einsum_ba_acbd_dc_real, general_evp_real};
+use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_dc_real, general_evp_real};
 
-// Storage for per SCF basis set pair.
+// Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
 pub struct Pair {
-    pub munu_s_noci: f64,
-    pub s_tilde: Array1<f64>,
+    pub s: f64,
+    pub tilde_s: Array1<f64>,
     pub s_red: f64,
     pub zeros: Vec<usize>,
-    pub c_mu_tc: Array2<f64>,
-    pub c_nu_tc: Array2<f64>,
-    pub munu_w: Option<Array2<f64>>,
-    pub munu_p_i: Option<Array2<f64>>,
-    pub munu_p_j: Option<Array2<f64>>,
+    pub l_tilde_c_occ: Array2<f64>,
+    pub g_tilde_c_occ: Array2<f64>,
+    pub w: Option<Array2<f64>>,
+    pub p_i: Option<Array2<f64>>,
+    pub p_j: Option<Array2<f64>>,
     pub phase: f64,
 }
 
-/// Calculate the occupied MO overlap {}^{\mu\nu}S for SCF states \mu and \nu as:
-/// {}^{\mu\nu}S = C_{\mu}^{occ, \dagger} S C_{\nu}^{occ}.
-/// # Arguments
-///     `states`: Vec<SCFState>, vector of all the calculated SCF states.
-///     `s_spin`: Array2, spin block diagonal AO overlap matrix.
-///     `mu`: usize, index of state mu.
-///     `nu`: usize, index of state nu.
-fn calculate_munu_s(states: &[SCFState], s_spin: &Array2<f64>, mu: usize, nu: usize) -> Array2<f64> {
-    let c_mu_occ = &states[mu].cs_occ; 
-    let c_nu_occ = &states[nu].cs_occ;
-    // {}^{\mu\nu}S = C_{\mu}^{occ, \dagger} S C_{\nu}^{occ}
-    c_mu_occ.t().dot(&s_spin.dot(c_nu_occ))
+/// Given an MO coefficient matrix and a corresponding occupancy vector, return the occupied only
+/// coefficient matrix.
+/// # Arguments:
+///     `c`: Array2, MO coefficient matrix.
+///     `occ`: Array1, occupancy vector.
+fn occ_coeffs(c: &Array2<f64>, occ: &Array1<f64>) -> Array2<f64> {
+    // occ is length nmo; treat >0.5 as occupied
+    let occ_idx: Vec<usize> = occ.iter().enumerate().filter_map(|(i, &x)| if x > 0.5 {Some(i)} else {None}).collect();
+
+    let nbas = c.nrows();
+    let nocc = occ_idx.len();
+    let mut c_occ = Array2::<f64>::zeros((nbas, nocc));
+
+    for (k, &i) in occ_idx.iter().enumerate() {c_occ.column_mut(k).assign(&c.index_axis(Axis(1), i));}
+
+    c_occ
 }
 
-/// Calculate overlap between SCF NOCI reference basis states for a pair \mu, \nu. We perform SVD
-/// on {}^{\mu\nu}S states as: {}^{\mu\nu}S = U {}^{\mu\nu}S_{SVD} V^{\dagger}, form the
-/// corresponding rotated MOs \tilde{C}_{\mu}^{occ} and \tilde{C}_{\mu}^{occ} and calculate
-/// {}^{\mu\nu}S_{NOCI} as the product of diagonal (singular) values in {}^{\mu\nu}S_{SVD}.
-/// # Arguments 
-///      `states`: Vec<SCFState>, vector of all the calculated SCF states.
-///      `munu_s`: Array2,  occupied orbital overlap matrix between SCF states \mu and \nu.
-fn calculate_munu_s_noci(states: &[SCFState], munu_s: &Array2<f64>, mu: usize, nu: usize) -> 
-    (f64, Array1<f64>, Array2<f64>, Array2<f64>, f64) {
-
-    let c_mu_occ = &states[mu].cs_occ;
-    let c_nu_occ = &states[nu].cs_occ;
-
-    let (u, s_tilde, v_dag) = munu_s.svd(true, true).unwrap();
-    let u = u.unwrap();
-    let v = v_dag.unwrap().t().to_owned();
-
-    // Rotate occupied MOs and store as complex.
-    let c_mu_t = c_mu_occ.dot(&u);
-    let c_nu_t = c_nu_occ.dot(&v);
-
-    // Calculate phase associated with this basis pair.
-    let det_u = u.det().unwrap();
-    let det_v = v.det().unwrap();
-    let phase = det_u * det_v;
-
-    // Compute {}^{\mu\nu}S_{NOCI} matrix elements.
-    let prod: f64 = s_tilde.iter().copied().product();
-    let munu_s_noci = phase * prod;
-
-    (munu_s_noci, s_tilde, c_mu_t, c_nu_t, phase)
-}
-    
-/// Calculate the reduced NOCI overlap matrix element {}^{\mu\nu}s_red for a pair of states \mu \nu as the product of all 
-/// non-zero (up to a tolerance) singular values of the SVD decomposed {}^{\mu\nu}s_tilde.
+/// Calculate the reduced occupied MO overlap scalar of {}^{\Lambda\Gamma} \tilde{S} as the product of
+/// all non-zero singular values of the SVD'd {}^{\Lambda\Gamma} \tilde{S}.
 /// # Arguments
-///     `s_vals`: Array1, singular values of s_tilde for all pair \mu \nu of SCF states. 
+///     `tilde_s`: Array1, vector of singular values, the diagonal of {}^{\Lambda\Gamma} \tilde{S}. 
 ///     `tol`: f64, tolerance up to which a number is considered zero. 
-fn calculate_s_red(s_vals: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
+fn calculate_s_red(tilde_s: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
     let mut prod = 1.0f64;
     let mut zeros = Vec::new();
 
-    for (i, &v) in s_vals.iter().enumerate() {
+    for (i, &v) in tilde_s.iter().enumerate() {
         if v.abs() > tol {
             prod *= v;      
         } else {
             zeros.push(i);
         }
     }
-
     (prod, zeros)
 }
 
-/// Calculate {}^{\mu\nu}P_i = {}^{\mu}c_i^a {}^{\nu}c_i^b* co-density matrix where {}^{\mu}c_i^a, 
-/// {}^{\nu}c_i^b are the rotated MO coefficients of state mu and nu respectively.
+/// Calculate overlap between determinants \Lambda and \Gamma. An SVD is performed on the occupied
+/// MO overlap matrix {}^{\Lambda\Gamma} S_{ij} as {}^{\Lambda\Gamma} S_{ij} = U {}^{\Lambda\Gamma}\tilde{S}_{ij} V^{\dagger}, 
+/// each set of occupied MOs are rotated to form {}^\Lambda \tilde{C} and {}^\Gamma \tilde{C}, and
+/// the overlap element between the determinants the product of diagonal (singular) values in {}^{\Lambda\Gamma}\tilde{S}_{ij}.
+/// # Arguments:
+///     `l_c_occ`: Array2, occupied MO coefficient matrix {}^\Lambda C.
+///     `g_c_occ`: Array2, occupied MO coefficient matrix {}^\Gamma C.
+///     `s_munu`: Array2, AO overlap matrix.
+///     `tol`: f64, tolerance up to which a number is considered zero. 
+fn build_s_pair(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f64>, tol: f64) -> Pair {
+    
+    // Occupied MO overlap.
+    let s_ij = l_c_occ.t().dot(&s_munu.dot(g_c_occ));
+
+    // SVD the MO overlap matrix.
+    let (u, tilde_s, vdag) = s_ij.svd(true, true).unwrap();
+    let u = u.unwrap();
+    let v = vdag.unwrap().t().to_owned();
+    let phase = u.det().unwrap() * v.det().unwrap();
+
+    // Calculate the reduced MO overlap matrix.
+    let (s_red, zeros) = calculate_s_red(&tilde_s, tol);
+
+    // Rotate occupied MO coefficients
+    let l_tilde_c_occ = l_c_occ.dot(&u);
+    let g_tilde_c_occ = g_c_occ.dot(&v);
+    
+    // Calculate only the required quantities given the number of zeros.
+    let w = match zeros.len() {
+        0 | 1 => Some(calculate_codensity_w_pair(&l_tilde_c_occ, &g_tilde_c_occ, &tilde_s, tol)),
+        _ => None,
+    };
+
+    let (p_i, p_j) = match zeros.len() {
+        1 => (
+            Some(calculate_codensity_p_pair(&l_tilde_c_occ, &g_tilde_c_occ, zeros[0])), 
+            None
+        ),
+        2 => (
+            Some(calculate_codensity_p_pair(&l_tilde_c_occ, &g_tilde_c_occ, zeros[0])), 
+            Some(calculate_codensity_p_pair(&l_tilde_c_occ, &g_tilde_c_occ, zeros[1]))
+        ),
+        _ => (None, None),
+    };
+
+    // Overlap matrix element for this pair.
+    let prod: f64 = tilde_s.iter().copied().product();
+    let s = phase * prod;
+
+    Pair {s, tilde_s, s_red, zeros, l_tilde_c_occ, g_tilde_c_occ, w, p_i, p_j, phase}
+}
+    
+/// Calculate {}^{\Lambda\Gamma}P_i^{\mu\nu} = {}^{\Lambda} \tilde{C}_i^\mu {}^{\Gamma}\tilde{C}_i^\nu* 
+/// co-density matrix where {}^{\Lambda} \tilde{C}_i^\mu and {}^{\Gamma}\tilde{C}_i^\nu* are the 
+/// rotated MO coefficients of determinant \Lambda and \Gamma respectively.
 /// # Arguments 
-///     `c_mu_tilde`: Array2, U rotated MO coefficients for a given pair of states. 
-///     `c_nu_tilde`: Array2, V rotated MO coefficients for a given pair of states. 
+///     `l_tilde_c_occ`: Array2, U rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
+///     `g_tilde_c_occ`: Array2, V rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
 ///     `i`: usize, MO index.
-fn calculate_codensity_p_pair(c_mu_tilde: &Array2<f64>,c_nu_tilde: &Array2<f64>,
-                              i: usize,) -> Array2<f64> {
-    let nso = c_mu_tilde.nrows();
+fn calculate_codensity_p_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array2<f64>, i: usize) -> Array2<f64> {
+    let nso = l_tilde_c_occ.nrows();
     let mut munu_p_i = Array2::<f64>::zeros((nso, nso));
     for x in 0..nso {
         for y in 0..nso {
-            munu_p_i[(x, y)] = c_mu_tilde[(x, i)] * c_nu_tilde[(y, i)];
+            munu_p_i[(x, y)] = l_tilde_c_occ[(x, i)] * g_tilde_c_occ[(y, i)];
         }
     }
     munu_p_i
 }
 
-/// Calculate {}^{\mu\nu}W = \sum_{i} 1 / s_i * {}^{\mu}c_i^a {}^{\nu}c_i^b* weighted co-density 
-/// matrix where s_i are the singular values of the SVD decomposed s_tilde, and {}^{\mu}c_i^a, 
-/// {}^{\nu}c_i^b are the rotated MO coefficients of state mu and nu respectively.
-/// # Arguments 
-///     `c_mu_tilde`: Array2, U rotated MO coefficients for a given pair of states. 
-///     `c_nu_tilde`: Array2, V rotated MO coefficients for a given pair of states. 
-///     `s_vals`: Array1, singular values of s_tilde for a given pair of states.
+/// Calculate {}^{\Lambda\Gamma}W^{\mu\nu} = \sum_{i} 1 / s_i * {}^{\Lambda}\tilde{C}_i^\mu {}^{\Gamma}\tilde{C}_i^\nu* 
+/// weighted co-density  matrix where s_i are the singular values of the SVD decomposed MO overlap matrix, 
+/// and {}^{\Lambda}\tilde{C}_i^\mu and {}^{\Gamma}\tilde{C}_i^\nu are the occupied rotated MO coefficients of state 
+/// \Gamma and \Lambda respectively.
+/// # Arguments:
+///     `l_tilde_c_occ`: Array2, U rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
+///     `g_tilde_c_occ`: Array2, V rotated occupied MO coefficients for pair of states \Lambda, \Gamma.
+///     `s_vals`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
 ///     `tol`: f64, tolerance up to which a number is considered zero. 
-fn calculate_codensity_w_pair(c_mu_tilde: &Array2<f64>,c_nu_tilde: &Array2<f64>,
-                              s_vals: &Array1<f64>, tol: f64,) -> Array2<f64> {
-    let mut c_mu_scaled = c_mu_tilde.to_owned();
+fn calculate_codensity_w_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array2<f64>, tilde_s: &Array1<f64>, tol: f64) -> Array2<f64> {
+    let mut l_tilde_c_occ_scaled = l_tilde_c_occ.to_owned();
     
-    // Scale columns of {}^{\mu}c_i^a by 1 / s_i 
-    for (i, mut col) in c_mu_scaled.axis_iter_mut(Axis(1)).enumerate() {
-        let w = if s_vals[i].abs() > tol {1.0 / s_vals[i]} else {0.0};
+    for (i, mut col) in l_tilde_c_occ_scaled.axis_iter_mut(Axis(1)).enumerate() {
+        let w = if tilde_s[i].abs() > tol {1.0 / tilde_s[i]} else {0.0};
         col.mapv_inplace(|z| z * w);
     }
 
-    // Calculate \sum_{i} 1 / s_i * {}^{\mu}c_i^a {}^{\nu}c_i^b*
-    c_mu_scaled.dot(&c_nu_tilde.t())
+    l_tilde_c_occ_scaled.dot(&g_tilde_c_occ.t())
 }
 
 /// Calculate one electron and nuclear Hamiltonian matrix elements using the generalised 
-/// Slater-Condon rules for a pair of Slater determinants \mu and \nu. 
-/// # Arguments
-///     `pair`: Pair struct, contains the following data concerning a pair of SCF states:
-///         `enuc`: Scalar, nuclear repulsion energy. 
-///         `s_vals`: Array3, Singular values of the SVD decomposed s_tilde for each SCF state pair.
-///         `s_red`: Array2, Product of the non-zero values of s_vals for each SCF state pair.
-///         `c_mu_tc`: Array2, Rotated MO coefficient matrix of determinant \mu.
-///         `c_nu_tc`: Array2, Rotated MO coefficient matrix of determinant \nu.
+/// Slater-Condon rules for a pair of determinants \Lambda and \Gamma. 
+/// # Arguments:
+///     `pair`: Pair struct, contains the following data concerning a pair of determinants:
+///         `s`: f64, overlap matrix element for this pair.
+///         `tilde_s`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
+///         `s_red`: f64, product of the non-zero values of tilde_s.
+///         `zeros`: [usize], array containing zero singular value indices.
+///         `l_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Lambda.
+///         `g_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Gamma.
+///         `w`: Array2, weighted codensity matrix {}^{\Lambda\Gamma}W^{\mu\nu} for this pair.
+///         `p_i`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_i^{\mu\nu}.
+///         `p_j`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_j^{\mu\nu}. 
 ///         `phase`: f64, Phase associated with determinant pair \mu \nu.
-///         `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
-///          given pair \mu \nu.
-///          `munu_w`: Weighted codensity atrix for the pair.
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn one_electron_h(ao: &AoData, pair: &Pair) -> (f64, f64) {
-                      
-    let (munu_h1, munu_h_nuc) = match pair.zeros.len() {
-        // With no zeros (s_i != 0 for all i) we use munu_w.
-        0 => {
-            let val = einsum_ba_ab_real(pair.munu_w.as_ref().unwrap(), &ao.h_spin);
-            let h1_val = pair.s_red * pair.phase * val;
-            let h_nuc_val = pair.phase * pair.s_red * ao.enuc;
-            (h1_val, h_nuc_val)
-        }
-        // With 1 zero (s_i = 0 for 1 i) we use P_i.
-        1 => {
-            let val = einsum_ba_ab_real(pair.munu_p_i.as_ref().unwrap(), &ao.h_spin);
-            let h1_val = pair.s_red * pair.phase * val;
-            let h_nuc_val = 0.0;
-            (h1_val, h_nuc_val)
-        // Otherwise the matrix element is zero.
-        }
-        _ => {
-            let h1_val = 0.0;
-            let h_nuc_val = 0.0;
-            (h1_val, h_nuc_val)
-        }
-    };
-    (munu_h1, munu_h_nuc)
-}
-
-/// Calculate two electron Hamiltonian matrix elements using the generalised 
-/// Slater-Condon rules for a pair of Slater determinants \mu and \nu.
-/// # Arguments
-///     `pair`: Pair struct, contains the following data concerning a pair of SCF states:
-///         `enuc`: Scalar, nuclear repulsion energy. 
-///         `s_vals`: Array3, Singular values of the SVD decomposed s_tilde for each SCF state pair.
-///         `s_red`: Array2, Product of the non-zero values of s_vals for each SCF state pair.
-///         `c_mu_tc`: Array2, Rotated MO coefficient matrix of determinant \mu.
-///         `c_nu_tc`: Array2, Rotated MO coefficient matrix of determinant \nu.
-///         `phase`: f64, Phase associated with determinant pair \mu \nu.
-///         `zeros`: [usize], Array containing orbital indices whose singular values are zero for a
-///          given pair \mu \nu.
-///         `munu_w`: Weighted codensity atrix for the pair.
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn two_electron_h(ao: &AoData, pair: &Pair) -> f64 {
-
+fn one_electron_h(ao: &AoData, pair: &Pair) -> f64 {
     match pair.zeros.len() {
-        // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
-        0 => {
-            let val = 0.5 * einsum_ba_acbd_dc_real(pair.munu_w.as_ref().unwrap(), &ao.eri_spin, pair.munu_w.as_ref().unwrap());
-            pair.s_red * pair.phase * val
-        }
-        // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
-        1 => {
-            let val = einsum_ba_acbd_dc_real(pair.munu_w.as_ref().unwrap(), &ao.eri_spin, pair.munu_p_i.as_ref().unwrap());
-            pair.s_red * pair.phase * val 
-        // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on 
-        // one side and P_j on the other.
-        }
-        2 => {
-            let val = einsum_ba_acbd_dc_real(pair.munu_p_i.as_ref().unwrap(), &ao.eri_spin, pair.munu_p_j.as_ref().unwrap());
-            pair.s_red * pair.phase * val
-        }
+        // With no zeros (s_i != 0 for all i) we use munu_w.
+        0 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.w.as_ref().unwrap(), &ao.h),
+        // With 1 zero (s_i = 0 for 1 i) we use P_i.
+        1 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.p_i.as_ref().unwrap(), &ao.h),
         // Otherwise the matrix element is zero.
-        _ => {0.0}
+        _ => 0.0,
     }
 }
 
-/// Calculate only the overlap matrix for a given pair of states \mu and \nu out of the NOCI or
-/// NOCI-QMC basis using the generalised Slater-Condon rules.
+/// Calculate two electron Hamiltonian matrix elements for electrons of the same spin 
+/// using the generalised Slater-Condon rules for a pair of determinants \Lambda and \Gamma.
 /// # Arguments:
-///    `ao`: AoData struct, contains AO integrals and other system data. 
-///    `scfstates`: Vec<SCFState>, vector of all the calculated SCF states.
-///     `mu`: usize, index of state mu.
-///     `nu`: usize, index of state nu.
-pub fn calculate_s_pair(ao: &AoData, scfstates: &[SCFState], mu: usize, nu: usize) -> f64 {
-    let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
-    let (munu_s_noci, _, _, _, _) = calculate_munu_s_noci(scfstates, &munu_s, mu, nu);
-    munu_s_noci
+///     `pair`: Pair struct, contains the following data concerning a pair of determinants:
+///         `s`: f64, overlap matrix element for this pair.
+///         `tilde_s`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
+///         `s_red`: f64, product of the non-zero values of tilde_s.
+///         `zeros`: [usize], array containing zero singular value indices.
+///         `l_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Lambda.
+///         `g_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Gamma.
+///         `w`: Array2, weighted codensity matrix {}^{\Lambda\Gamma}W^{\mu\nu} for this pair.
+///         `p_i`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_i^{\mu\nu}.
+///         `p_j`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_j^{\mu\nu}. 
+///         `phase`: f64, Phase associated with determinant pair \mu \nu.
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+fn two_electron_h_same(ao: &AoData, pair: &Pair) -> f64 {
+    match pair.zeros.len() {
+        // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
+        0 => 0.5 * pair.s_red * pair.phase * einsum_ba_abcd_dc_real(pair.w.as_ref().unwrap(), &ao.eri_asym, pair.w.as_ref().unwrap()),
+        // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
+        1 => pair.s_red * pair.phase * einsum_ba_abcd_dc_real(pair.w.as_ref().unwrap(), &ao.eri_asym, pair.p_i.as_ref().unwrap()),
+        // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on one side and P_j on the other.
+        2 => pair.s_red * pair.phase * einsum_ba_abcd_dc_real(pair.p_i.as_ref().unwrap(), &ao.eri_asym, pair.p_j.as_ref().unwrap()),
+        // Otherwise the matrix element is 0.
+        _ => 0.0,
+    }
 }
 
-/// Calculate both the Hamiltonian and overlap matrices for a given pair of states \mu and \nu out of the NOCI or
-/// NOCI-QMC basis using the generalised Slater-Condon rules.
+/// Calculate two electron Hamiltonian matrix elements for electrons of opposite spin 
+/// using the generalised Slater-Condon rules for a pair of determinants \Lambda and \Gamma.
 /// # Arguments:
-///    `ao`: AoData struct, contains AO integrals and other system data. 
-///    `scfstates`: Vec<SCFState>, vector of all the calculated SCF states.
-///     `mu`: usize, index of state mu.
-///     `nu`: usize, index of state nu.
-pub fn calculate_hs_pair(ao: &AoData, scfstates: &[SCFState], mu: usize, nu: usize) -> (f64, f64) {
+///     `pair`: Pair struct, contains the following data concerning a pair of determinants:
+///         `s`: f64, overlap matrix element for this pair.
+///         `tilde_s`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
+///         `s_red`: f64, product of the non-zero values of tilde_s.
+///         `zeros`: [usize], array containing zero singular value indices.
+///         `l_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Lambda.
+///         `g_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Gamma.
+///         `w`: Array2, weighted codensity matrix {}^{\Lambda\Gamma}W^{\mu\nu} for this pair.
+///         `p_i`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_i^{\mu\nu}.
+///         `p_j`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_j^{\mu\nu}. 
+///         `phase`: f64, Phase associated with determinant pair \mu \nu.
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+fn two_electron_h_diff(ao: &AoData, pa: &Pair, pb: &Pair) -> f64 {
+    match (pa.zeros.len(), pb.zeros.len()) {
+        // With no zeros (s_i != 0 for all i) for both spins we use munu_w on both sides.
+        (0, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_dc_real(pa.w.as_ref().unwrap(), &ao.eri_coul, pb.w.as_ref().unwrap()),
+        // With one zero in beta spin only we use W^a and P_i^b.
+        (0, 1) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_dc_real(pa.w.as_ref().unwrap(), &ao.eri_coul, pb.p_i.as_ref().unwrap()),
+        // With one zero in alpha spin only we use P_i^a and W_b.
+        (1, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_dc_real(pa.p_i.as_ref().unwrap(), &ao.eri_coul, pb.w.as_ref().unwrap()),
+        // With one zero in both spins we use P_i^a and P_i^b.
+        (1, 1) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_dc_real(pa.p_i.as_ref().unwrap(), &ao.eri_coul, pb.p_i.as_ref().unwrap()),
+        // Otherwise the matrix element is zero.
+        _ => 0.0,
+    }
+}
+
+/// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
+/// generalised Slater-Condon rules.
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
+///     `l`: usize, index of state \Lambda.
+///     `g`: usize, index of state \Gamma.
+pub fn calculate_s_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> f64 {
 
     // Tolerance for a number being non-zero.
     let tol = 1e-12;
-    // Calculate matrix elements for this pair.
-    let munu_s = calculate_munu_s(scfstates, &ao.s_spin, mu, nu);
-    let (munu_s_noci, s_tilde, c_mu_tc, c_nu_tc, phase) = calculate_munu_s_noci(scfstates, &munu_s, mu, nu);
-    let (s_red, zeros) = calculate_s_red(&s_tilde, tol);
-    
-    // Only compute codensity matrices for this pair if they will be used. For the weighted
-    // co-density matrices we do not compute it if the number of zeros is greater than 1, and
-    // for the unweighted co-density matrices we compute when the number of zeros is 1 or 2
-    let munu_w = match zeros.len() {
-        0 | 1 => Some(calculate_codensity_w_pair(&c_mu_tc, &c_nu_tc, &s_tilde, tol)),
-        _ => None, 
-    };
-    let (munu_p_i, munu_p_j) = match zeros.len() {
-        1 => {
-            let i = zeros[0];
-            (Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, i)), None)
-        }
-        2 => {
-            let i = zeros[0];
-            let j = zeros[1];
-            (
-                Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, i)),
-                Some(calculate_codensity_p_pair(&c_mu_tc, &c_nu_tc, j)),
-            )
-        }
-        _ => (None, None),
-    };
 
-    let pair = Pair {munu_s_noci, s_tilde, s_red, zeros, c_mu_tc, c_nu_tc, munu_w, munu_p_i, munu_p_j, phase};
+    // Per spin occupid coefficients.
+    let l_ca_occ = occ_coeffs(&determinants[l].ca, &determinants[l].oa);
+    let g_ca_occ = occ_coeffs(&determinants[g].ca, &determinants[g].oa);
+    let l_cb_occ = occ_coeffs(&determinants[l].cb, &determinants[l].ob);
+    let g_cb_occ = occ_coeffs(&determinants[g].cb, &determinants[g].ob);
 
-    let (munu_h1, munu_h_nuc) = one_electron_h(ao, &pair);
-    let munu_h2 = two_electron_h(ao, &pair);
-    let munu_h = munu_h1 + munu_h2 + munu_h_nuc;
+    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
 
-    (munu_h, munu_s_noci)
+    // Overlap matrix element for this pair. 
+    pa.s * pb.s
 }
 
-/// Using occupied MO coefficients of each Non-orthogonal Configuration Interaction (NOCI) basis 
-/// state form the full Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
+/// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
+/// using generalised Slater-Condon rules.
 /// # Arguments:
-///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState]) 
-                            -> (Array2<f64>, Array2<f64>, Duration) {
-    let nstates = scfstates.len();
+///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
+///     `l`: usize, index of state \Lambda.
+///     `g`: usize, index of state \Gamma.
+pub fn calculate_hs_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> (f64, f64) {
+
+    // Tolerance for a number being non-zero.
+    let tol = 1e-12;
+
+    // Per spin occupid coefficients.
+    let l_ca_occ = occ_coeffs(&determinants[l].ca, &determinants[l].oa);
+    let g_ca_occ = occ_coeffs(&determinants[g].ca, &determinants[g].oa);
+    let l_cb_occ = occ_coeffs(&determinants[l].cb, &determinants[l].ob);
+    let g_cb_occ = occ_coeffs(&determinants[g].cb, &determinants[g].ob);
+
+    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+
+    // Overlap matrix element for this pair. 
+    let s = pa.s * pb.s;
     
-    let mut h = Array2::<f64>::zeros((nstates, nstates));
-    let mut s = Array2::<f64>::zeros((nstates, nstates));
+    let hnuc = match (pa.zeros.len(), pb.zeros.len()) {
+        (0, 0) => ao.enuc * s,
+        _ => 0.0,
+    };
 
-    // Build list of all upper-triangle pairs (\mu, \nu) which have \mu <= \nu (i.e., 
-    // diagonal included). This can be done as {}^{\mu\nu}X[\mu, \nu] = ({}^{\mu\nu}X[\nu, \mu])^T
-    // where X is either S or H.
-    let pairs: Vec<(usize, usize)> = (0..nstates).flat_map(|mu| (mu..nstates).map(move |nu| (mu, nu))).collect();
+    let h1a = one_electron_h(ao, &pa);
+    let h1b = one_electron_h(ao, &pb);
+    let h1 = pb.s * h1a + pa.s * h1b;
 
-    // Progress monitoring setup.
-    let total_pairs = pairs.len();
-    let counter = AtomicUsize::new(0);
+    let h2aa = two_electron_h_same(ao, &pa); 
+    let h2bb = two_electron_h_same(ao, &pb); 
+    let h2ab = two_electron_h_diff(ao, &pa, &pb);
+    let h2 = pb.s * h2aa + pa.s * h2bb + h2ab;
+
+    (hnuc + h1 + h2, s)
+}
+
+/// Form the full Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data.
+///     `determinants`: Vec<SCFState>, vector of all determinants in the NOCI basis.
+///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
+pub fn build_noci_matrices(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState]) -> (Array2<f64>, Array2<f64>, Duration) {
+    let ndets = determinants.len();
+    
+    let mut h = Array2::<f64>::zeros((ndets, ndets));
+    let mut s = Array2::<f64>::zeros((ndets, ndets));
+    let mut s_wicks = Array2::<f64>::zeros((ndets, ndets));
+    
+    // Testing new matrix element calculation routine.
+    let nref = noci_reference_basis.len();
+    let mut wicksa: Vec<Vec<WicksReferencePair>> = Vec::with_capacity(nref);
+    let mut wicksb: Vec<Vec<WicksReferencePair>> = Vec::with_capacity(nref);
+
+    for ri in noci_reference_basis.iter() {
+        let ri_ca_occ = occ_coeffs(&ri.ca, &ri.oa);
+        let ri_cb_occ = occ_coeffs(&ri.cb, &ri.ob);
+
+        let mut rowa: Vec<WicksReferencePair> = Vec::with_capacity(nref);
+        let mut rowb: Vec<WicksReferencePair> = Vec::with_capacity(nref);
+
+        for rj in noci_reference_basis.iter() {
+            let rj_ca_occ = occ_coeffs(&rj.ca, &rj.oa);
+            let rj_cb_occ = occ_coeffs(&rj.cb, &rj.ob);
+
+            rowa.push(WicksReferencePair::new(&ao.s, &rj.ca, &ri.ca, &rj_ca_occ, &ri_ca_occ));
+            rowb.push(WicksReferencePair::new(&ao.s, &rj.cb, &ri.cb, &rj_cb_occ, &ri_cb_occ));
+        }
+
+        wicksa.push(rowa);
+        wicksb.push(rowb);
+    }
+
+    // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma.  
+    let pairs: Vec<(usize, usize)> = (0..ndets).flat_map(|mu| (mu..ndets).map(move |nu| (mu, nu))).collect();
 
     // Calculate Hamiltonian matrix elements in parallel.
     let t_h = Instant::now();
-    // Progress update every 5 minutes.
-    let report = Duration::from_secs(300);
-    let last_report = AtomicU64::new(0); 
-    let tmp: Vec<(usize, usize, f64, f64)> = pairs.par_iter().map(|&(mu, nu)| {
+    let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map(|&(l, g)| {
 
-        // Progress counter.
-        let done = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        if current_thread_index() == Some(0) {
-            let elapsed = t_h.elapsed().as_millis() as u64;
-            let interval = report.as_millis() as u64;
-            if elapsed >= last_report.load(Ordering::Relaxed) + interval {
-                last_report.store(elapsed, Ordering::Relaxed);
-                let pct = (100 * done) / total_pairs;
-                println!("H and S matrix elements: {done} / {total_pairs}, ({pct}%), elapsed: {:.1?}", t_h.elapsed());
-                }
-        }
-        
-        // Calculate matrix elements per pair and return.
-        let (munu_h, munu_s_noci) = calculate_hs_pair(ao, scfstates, mu, nu);
-        (mu, nu, munu_h, munu_s_noci)}).collect();
+        // Calculate matrix elements for this pair.
+        let (lg_h, lg_s) = calculate_hs_pair(ao, determinants, l, g);
+
+        // Testing new matrix element calculation routine. 
+        let wa = &wicksa[determinants[l].parent][determinants[g].parent]; 
+        let wb = &wicksb[determinants[l].parent][determinants[g].parent];
+        let s_a = lg_overlap(wa, &determinants[l].excitation.alpha, &determinants[g].excitation.alpha);
+        let s_b = lg_overlap(wb, &determinants[l].excitation.beta, &determinants[g].excitation.beta);
+        let lg_s_wicks = s_a * s_b;
+
+        (l, g, lg_h, lg_s, lg_s_wicks)}).collect();
 
     let d_h = t_h.elapsed();
 
     // Scatter Hamiltonian and overlap matrix elements into full matrices. 
-    for (mu, nu, h_munu, s_munu) in tmp {
-        h[(mu, nu)] = h_munu;
-        s[(mu, nu)] = s_munu;
+    for (l, g, lg_h, lg_s, lg_s_wicks) in tmp {
+        h[(l, g)] = lg_h;
+        s[(l, g)] = lg_s;
+        s_wicks[(l, g)] = lg_s_wicks;
         // Hermitian.
-        if mu != nu {
-            h[(nu, mu)] = h_munu;
-            s[(nu, mu)] = s_munu;
+        if l != g {
+            h[(g, l)] = lg_h;
+            s[(g, l)] = lg_s;
+            s_wicks[(g, l)] = lg_s_wicks;
         }
     }
+    println!("{}", "=".repeat(100));
+    println!("Overlap matrix calculated in standard fashion:");
+    print_array2(&s);
+    println!("Overlap matric calculated via non-orthogonal Wick's theorem:");
+    print_array2(&s_wicks);
+    println!("{}", "=".repeat(100));
     (h, s, d_h)
 }
 
@@ -338,7 +386,7 @@ pub fn build_noci_matrices(ao: &AoData, scfstates: &[SCFState])
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
 pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array1<f64>, Duration) {
     let tol = f64::EPSILON;
-    let (h, s, d_h) = build_noci_matrices(ao, scfstates);
+    let (h, s, d_h) = build_noci_matrices(ao, scfstates, scfstates);
         
     println!("NOCI-reference Hamiltonian:");
     print_array2(&h);

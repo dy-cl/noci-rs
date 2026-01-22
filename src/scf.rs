@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use ndarray::{Axis, Array1, Array2, Array4, s};
 
-use crate::{AoData, SCFState};
-use crate::input::{Input, Spin, Excitation};
+use crate::{AoData, SCFState, Excitation, ExcitationSpin};
+use crate::input::{Input, Spin, SCFExcitation};
 use crate::diis::Diis;
 
 use crate::maths::general_evp_real;
@@ -125,33 +125,6 @@ fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: u
     idx
 }
 
-/// Assembles the spin diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]) and the 
-/// occupied only variant.
-/// # Arguments
-///     `ca`: Array2, spin a MO coefficients.
-///     `cb`: Array2, spin b MO coefficients.
-///     `oa`: Occupancy vector for spin a MOs.
-///     `ob`: Occupancy vector for spin b MOs.
-///     `nao`: Number of AOs.
-pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>, 
-                            ob: &Array1<f64>, nao: usize) -> (Array2<f64>, Array2<f64>) {
-
-        let mut cs = Array2::<f64>::zeros((2 * nao, 2 * nao));
-        cs.slice_mut(s![0..nao, 0..nao]).assign(ca);
-        cs.slice_mut(s![nao..2 * nao, nao..2 * nao]).assign(cb);
-        
-        // Number of AOs is equal to number of MOs here.
-        let mut cols: Vec<usize> = oa.iter().enumerate()
-                                   .filter_map(|(i, &occ)| if occ > 0.5 { Some(i) } else { None })
-                                   .collect();
-        cols.extend(ob.iter().enumerate()
-                    .filter_map(|(i, &occ)| if occ > 0.5 { Some(nao + i) } else { None }));
-
-        let cs_occ = cs.select(Axis(1), &cols);
-
-        (cs, cs_occ)
-}
-
 /// Unrestricted SCF cycle with Loewdin orthogonalization.
 /// Uses AO integrals from AoData struct.
 /// # Arguments
@@ -161,10 +134,10 @@ pub fn spin_block_mo_coeffs(ca: &Array2<f64>, cb: &Array2<f64>, oa: &Array1<f64>
 ///     `input`: Input struct, contains user specified input data.
 ///     `i`: Index of the SCF state.
 pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, 
-                 excitation: Option<&Excitation>, i: usize) -> Option<SCFState> { 
+                 scfexcitation: Option<&SCFExcitation>, i: usize) -> Option<SCFState> { 
     let h = &ao.h; 
-    let eri = &ao.eri;
-    let s = &ao.s_ao;
+    let eri = &ao.eri_coul;
+    let s = &ao.s;
     let enuc = ao.enuc;
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
@@ -180,7 +153,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     let mut cb_occ_old: Option<Array2<f64>> = None;
     
     if input.write.verbose {
-        match excitation {
+        match scfexcitation {
             Some(ex) => {
                 let sp = match ex.spin {
                     Spin::Alpha => "alpha",
@@ -216,7 +189,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         let (eb, cb) = general_evp_real(&fb_use, s, false, 1e-8);
 
         // Flags true only if excitation is requested on alpha, beta or both.
-        let (mom_a, mom_b) = if let Some(ex) = excitation {
+        let (mom_a, mom_b) = if let Some(ex) = scfexcitation {
             match ex.spin {
                 Spin::Alpha => (true, false),
                 Spin::Beta  => (false, true),
@@ -233,7 +206,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
                 Some(ca_occ_old) => mom_select(ca_occ_old, &ca, s, na),
                 // If coefficients not avaliable, seed by occupying columns specified in input.
                 None => {
-                    let ex = excitation.unwrap();
+                    let ex = scfexcitation.unwrap();
                     let mut idx: Vec<usize> = (0..na).collect();
                     // Transform user input, allows user to specify occ = -1
                     // to choose HOMO.
@@ -260,7 +233,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
                 Some(cb_occ_old) => mom_select(cb_occ_old, &cb, s, nb),
                 // If coefficients not avaliable, seed by occupying columns specified in input.
                 None => {
-                    let ex = excitation.unwrap();
+                    let ex = scfexcitation.unwrap();
                     let mut idx: Vec<usize> = (0..nb).collect();
                     // Transform user input, allows user to specify occ = -1
                     // to choose HOMO.
@@ -305,24 +278,25 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         }
         
         if d_e < input.scf.e_tol {
-            // Form spin block diagonal MO coefficient matrix (i.e., [[ca, 0], [0, cb]]), 
-            // this is later required for NOCI calculations.
-            let (cs, cs_occ) = spin_block_mo_coeffs(&ca, &cb, &oa, &ob, ao.nao);
-
             // Allow for excited determinants to point at this data without copying it in memory.
             let ca = Arc::new(ca);
             let cb = Arc::new(cb);
             let da = Arc::new(da_new);
             let db = Arc::new(db_new);
-            let cs = Arc::new(cs);
 
             println!("Coefficients ca:");
             print_array2(&ca);
             println!("Coefficients cb:");
             print_array2(&cb);
-
-            return Some(SCFState {e: e_new, oa, ob, ca, cb, cs, cs_occ, da, db, 
-                        label: input.states[i].label.clone(), noci_basis: input.states[i].noci});
+            
+            // SCF is only performed on reference states so the excitation here is empty. This is
+            // distinct from scfexcitation in which we may use an excited SCF solution as part of
+            // the reference states for QMC.
+            let excitation = Excitation {
+                alpha: ExcitationSpin {holes: vec![],  parts: vec![]},  
+                beta:  ExcitationSpin {holes: vec![],  parts: vec![]}
+            };
+            return Some(SCFState {e: e_new, oa, ob, ca, cb, da, db, label: input.states[i].label.clone(), noci_basis: input.states[i].noci, parent: i, excitation});
         }
         da = da_new; 
         db = db_new;

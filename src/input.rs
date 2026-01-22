@@ -40,7 +40,7 @@ pub struct SCFInfo {
 }
 
 // Storage for excitation data.
-pub struct Excitation {
+pub struct SCFExcitation {
     pub spin: Spin, 
     pub occ: i32, 
     pub vir: i32,
@@ -63,7 +63,7 @@ pub struct StateRecipe {
     pub label: String, 
     pub spin_bias: Option<SpinBias>,
     pub spatial_bias: Option<SpatialBias>,
-    pub excitation: Option<Excitation>,
+    pub scfexcitation: Option<SCFExcitation>,
     pub noci: bool,
 }
 
@@ -225,7 +225,7 @@ pub fn load_input(path: &str) -> Input {
                                       std::process::exit(1);}
                             }).collect();
         SpatialBias {pattern, pol}}); 
-        let excitation = t.get::<_, Option<rlua::Table>>("excit").unwrap_or(None)
+        let scfexcitation = t.get::<_, Option<rlua::Table>>("excit").unwrap_or(None)
                          .map(|ex| {
                             let s: String = ex.get("spin").unwrap();
                             let spin = match s.as_str() {
@@ -234,8 +234,8 @@ pub fn load_input(path: &str) -> Input {
                                 "both" => Spin::Both,
                                 _ => { eprintln!("Excitation spin must be 'alpha', 'beta', or 'both'"); std::process::exit(1);}
                             };
-        Excitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
-        states.push(StateRecipe {label, spin_bias, spatial_bias, excitation, noci});
+        SCFExcitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
+        states.push(StateRecipe {label, spin_bias, spatial_bias, scfexcitation, noci});
     }
     
     // Deterministic table.

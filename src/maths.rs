@@ -172,13 +172,13 @@ fn dot_product_unroll8(mut x: *const f64, mut y: *const f64, n: usize) -> f64 {
 }
 
 /// Calculate Einstein summation of matrices `g` and `h` and 4D tensor `t` as 
-/// \sum_{a,c}\sum_{b,d} g_{b,a} t_{a,c,b,d} h_{d,c}. Assumes `g`, `h` and `t` all 
+/// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{d,c}. Assumes `g`, `h` and `t` all 
 /// have axes of equal length.
 /// # Arguments
 ///     `g`: Array2, matrix 1. 
 ///     `t`: Array4, 4D tensor.
 ///     `h`: Array2, matrix 2.
-pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
+pub fn einsum_ba_abcd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
     let n = g.nrows();
 
     // Convert ndarrays into memory ordered slice.
@@ -221,30 +221,29 @@ pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
                 let ts_ptr = ts.as_ptr();
                 let ht_ptr = ht.as_ptr();
                 let gt_ptr = gt.as_ptr();
-                // Index of 4D tensor element in 1D is given by (((a * n + c) * n + b) * n + d). So d varies
+                // Index of 4D tensor element in 1D is given by (((a * n + b) * n + c) * n + d). So d varies
                 // fastes, then b, then c, then a. Therefore iteration should be in order, a, c, b, d.
-                // So iterate (a,c,b,d) for contiguous access.
+                // So iterate (a,b,c,d) for contiguous access.
                 for a in 0..n {
                     // For a given a, the block t[a, :, :, :] starts at a * n^3. See above element indexing.
                     let ta_index = a * n * n * n;
                     // gt[b, a] (g[a, b])
-                    let gt_b_ptr = gt_ptr.add(a * n);
-                    for c in 0..n {
-                        // ht[c, d] (h[d, c]).
-                        let ht_c_ptr = ht_ptr.add(c * n);
-                        // For a given a, c, the block t[a, c, :, :] starts at a*n^3 + c*n^2. See above element indexing.
-                        let tac_index = ta_index + c * n * n;
-                        for b in 0..n {
-                            let g_ba_ptr = *gt_b_ptr.add(b);
-                            if g_ba_ptr == 0.0 {continue;}
+                    let gt_a_ptr = gt_ptr.add(a * n);
+                    for b in 0..n {
+                        let g_ba_ptr = *gt_a_ptr.add(b);
+                        if g_ba_ptr == 0.0 {continue;}
+                        // For a given a, b, the block t[a, b, :, :] starts at a*n^3 + b*n^2. See above element indexing.
+                        let tab_index = ta_index + b * n * n;
+                        for c in 0..n {
+                            // ht[c, d] (h[d, c]).
+                            let ht_c_ptr = ht_ptr.add(c * n);
+                            // For a given a, b, c, the block t[a, b, c, :] starts at a*n^3 + b*n^2 + c*n. See above element indexing.
+                            // Get the vector t[a, b, c, :].
+                            let tabc_vec_ptr = ts_ptr.add(tab_index + c * n);
                             
-                            // For a given a, c, b, the block t[a, c, b, :] starts at a*n^3 + c*n^2 + b*n. See above element indexing.
-                            // Get the vector t[a, c, b, :].
-                            let tacb_vec_ptr = ts_ptr.add(tac_index + b * n);
-                            
-                            // Compute dot product of t[a, c, b, :] with ht[:, c] with unrolling and
-                            // accumulate g_{b,a} t_{a,c,b,d} h_{d,c}. 
-                            let dot = dot_product_unroll8(tacb_vec_ptr, ht_c_ptr, n);
+                            // Compute dot product of t[a, b, c, :] with ht[:, c] with unrolling and
+                            // accumulate g_{b,a} t_{a,b,c,d} h_{d,c}. 
+                            let dot = dot_product_unroll8(tabc_vec_ptr, ht_c_ptr, n);
                             acc = g_ba_ptr.mul_add(dot, acc);
                         }
                     }

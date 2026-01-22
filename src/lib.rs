@@ -10,8 +10,9 @@ pub mod maths;
 pub mod deterministic;
 pub mod stochastic;
 pub mod mpiutils;
+pub mod nonorthogonalwicks;
 
-use std::sync::Arc;
+use std::{sync::Arc};
 
 use serde::{Serialize, Deserialize};
 
@@ -20,30 +21,39 @@ use ndarray::{Array1, Array2, Array4};
 /// AO integrals and other related data storage.
 pub struct AoData {
     // AO overlap matrix, (nao, nao).
-    pub s_ao: Array2<f64>, 
-    // Spin block diagonal AO overlap matrix [[s_ao, 0], [0, s_ao]], (2 * nao, 2 * nao). 
-    pub s_spin: Array2<f64>,  
+    pub s: Array2<f64>, 
     // Core Hamiltonian matrix, (nao, nao).
     pub h: Array2<f64>,
-    // Core Hamiltonian matrix in spin block diagonal variant, (2 * nao, 2 * nao).
-    pub h_spin: Array2<f64>,
     // Initial RHF ground state density matrix, (nao, nao). We can build spin biased and
     // excited states from this ansatz.
     pub dm: Array2<f64>, 
-    // Electron repulsion integrals (ERIs) in chemists notation, (nao, nao, nao, nao).
-    pub eri: Array4<f64>,
-    // Antisymmetrised ERIs in spin orbital space, (2 * nao, 2 * nao, 2 * nao, 2 * nao).
-    pub eri_spin: Array4<f64>,
+    // Coulommb electron repulsion integrals (ERIs) stored as [a, c, b, d].
+    pub eri_coul: Array4<f64>,
+    // Antisymmetrised electron repulsion integrals (ERIs) in chemists notation stored as [a, c, b, d].
+    pub eri_asym: Array4<f64>,
     // Nuclear repulsion energy, scalar.
     pub enuc: f64, 
     // Number of AOs, scalar.
-    pub nao: usize, 
+    pub n: usize, 
     // Number of spin alpha and spin beta electrons, (2,).
     pub nelec: Array1<i64>, 
     // AO label strings from PySCF e.g. "0 H 1s"
-    pub aolabels: Vec<String>,
+    pub labels: Vec<String>,
     // Optional FCI calculation energy from PySCF.
     pub e_fci: Option<f64>,
+}
+
+// Description of excited determinant relative to reference.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Excitation {
+    alpha: ExcitationSpin,
+    beta: ExcitationSpin,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ExcitationSpin {
+    pub holes: Vec<usize>,
+    pub parts: Vec<usize>
 }
 
 /// Storage for SCF state attributes, contains energy and spin MO coefficients.
@@ -59,10 +69,6 @@ pub struct SCFState {
     pub ca: Arc<Array2<f64>>,  
     // MO coefficients for spin b electrons, (nao, nao).
     pub cb: Arc<Array2<f64>>,  
-    // MO coefficients in spin diagonal block [[ca, 0], [0, cb]], (2 * nao, 2 * nao).
-    pub cs: Arc<Array2<f64>>, 
-    // Occupied only MO coefficients of the spin digonal matrix, (2 * nao, nocca + noccb).
-    pub cs_occ: Array2<f64>,
     // SCF converged density matrix spin a. 
     pub da: Arc<Array2<f64>>, 
     // SCF converged density matrix spin b. 
@@ -71,4 +77,8 @@ pub struct SCFState {
     pub label: String,
     // Is this state used in the NOCI basis?
     pub noci_basis: bool,
+    // Index of reference parent determinant if excited for QMC basis.
+    pub parent: usize,
+    // Excitation relative to parent if excited for QMC basis.
+    pub excitation: Excitation,
   }
