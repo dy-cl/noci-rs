@@ -44,13 +44,13 @@ pub struct AoData {
 }
 
 // Description of excited determinant relative to reference.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Excitation {
     alpha: ExcitationSpin,
     beta: ExcitationSpin,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ExcitationSpin {
     pub holes: Vec<usize>,
     pub parts: Vec<usize>

@@ -111,6 +111,33 @@ pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
     acc
 }
 
+pub fn einsum_ab_ba_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
+    let n = g.nrows();
+    let gs = g.as_slice_memory_order().unwrap();
+    let hs = h.as_slice_memory_order().unwrap();
+    let mut acc = 0.0;
+    for a in 0..n {
+        let arow = a * n;
+        for b in 0..n {
+            let g_ab = unsafe { *gs.get_unchecked(arow + b) };
+            let h_ba = unsafe { *hs.get_unchecked(b * n + a) };
+            acc += g_ab * h_ba;
+        }
+    }
+    acc
+}
+
+pub fn einsum_ab_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
+    let n = g.nrows();
+    let gs = g.as_slice_memory_order().unwrap();
+    let hs = h.as_slice_memory_order().unwrap();
+    let mut acc = 0.0;
+    for i in 0..(n*n) {
+        acc += unsafe { *gs.get_unchecked(i) } * unsafe { *hs.get_unchecked(i) };
+    }
+    acc
+}
+
 /// Perform dot product between two vectors with unrolled loop of length 8.
 /// # Arguments:
 ///     `x`: [f64], vector 1.
@@ -172,13 +199,13 @@ fn dot_product_unroll8(mut x: *const f64, mut y: *const f64, n: usize) -> f64 {
 }
 
 /// Calculate Einstein summation of matrices `g` and `h` and 4D tensor `t` as 
-/// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{d,c}. Assumes `g`, `h` and `t` all 
+/// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c, d}. Assumes `g`, `h` and `t` all 
 /// have axes of equal length.
 /// # Arguments
 ///     `g`: Array2, matrix 1. 
 ///     `t`: Array4, 4D tensor.
 ///     `h`: Array2, matrix 2.
-pub fn einsum_ba_abcd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
+pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
     let n = g.nrows();
 
     // Convert ndarrays into memory ordered slice.
@@ -191,7 +218,7 @@ pub fn einsum_ba_abcd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
     // Reuse ht and gt across calls to this function.
     HT_SCRATCH.with(|hbuf| {
         GT_SCRATCH.with(|gbuf| {
-            // Transpose h[d, c] = ht[c, d] and g[a, b] = gt[b, a] into contiguous in fastest index layouts.
+            // Transpose g[a, b] = gt[b, a] into contiguous in fastest index layouts.
             let mut ht = hbuf.borrow_mut();
             let mut gt = gbuf.borrow_mut();
             
@@ -199,12 +226,11 @@ pub fn einsum_ba_abcd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
             gt.resize(n * n, 0.0);
 
             for d in 0..n {
-                let d_idx = d * n;
                 for c in 0..n {
                     // Use of get_unchecked means no out of bounds checking is performed. If index i is invalid 
                     // this produces undefined behaviour rather than a panic, check this when debugging. 
                     // Use of unsafe is consequently required as get_unchecked is an unsafe operation.
-                    unsafe {*ht.get_unchecked_mut(c * n + d) = *hs.get_unchecked(d_idx + c);}
+                    unsafe { *ht.get_unchecked_mut(c * n + d) = *hs.get_unchecked(c * n + d); }
                 }
             }
             for b in 0..n {
@@ -254,6 +280,74 @@ pub fn einsum_ba_abcd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
     })
 }
 
+pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
+    let n = g.nrows();
+
+    let gs = g.as_slice_memory_order().unwrap();
+    let hs = h.as_slice_memory_order().unwrap();
+    let ts = t.as_slice_memory_order().unwrap();
+
+    let mut acc = 0.0f64;
+
+    HT_SCRATCH.with(|hbuf| {
+        GT_SCRATCH.with(|gbuf| {
+            let mut ht = hbuf.borrow_mut();
+            let mut gt = gbuf.borrow_mut();
+
+            ht.resize(n * n, 0.0);
+            gt.resize(n * n, 0.0);
+
+            // ht[c,d] = h[d,c]
+            for c in 0..n {
+                let c_idx = c * n;
+                for d in 0..n {
+                    unsafe {
+                        //*ht.get_unchecked_mut(c_idx + d) = *hs.get_unchecked(d * n + c);
+                        *ht.get_unchecked_mut(c_idx + d) = *hs.get_unchecked(c * n + d);
+                    }
+                }
+            }
+
+            // gt[a,b] = g[b,a]
+            for b in 0..n {
+                let b_idx = b * n;
+                for a in 0..n {
+                    unsafe {
+                        *gt.get_unchecked_mut(a * n + b) = *gs.get_unchecked(b_idx + a);
+                    }
+                }
+            }
+
+            unsafe {
+                let ts_ptr = ts.as_ptr();
+                let ht_ptr = ht.as_ptr();
+                let gt_ptr = gt.as_ptr();
+
+                for a in 0..n {
+                    let gt_a_ptr = gt_ptr.add(a * n); 
+                    for c in 0..n {
+                        let ht_c_ptr = ht_ptr.add(c * n); 
+                        let tac_base = (a * n + c) * n * n; 
+                        for b in 0..n {
+                            let g_ba = *gt_a_ptr.add(b);
+                            if g_ba == 0.0 {
+                                continue;
+                            }
+
+                            let tabc_vec_ptr = ts_ptr.add(tac_base + b * n);
+
+                            let dot = dot_product_unroll8(tabc_vec_ptr, ht_c_ptr, n);
+                            acc = g_ba.mul_add(dot, acc);
+                        }
+                    }
+                }
+            }
+            acc
+        })
+    })
+}
+
+
 /// Calculate a matrix vector product HC = U in parallel.
 /// # Arguments  
 /// `h`: Array2, matrix. 
@@ -265,3 +359,107 @@ pub fn parallel_matvec_real(h: &Array2<f64>, c: &Array1<f64>) -> Array1<f64> {
     Array1::from_vec(result)
 }
 
+pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, c_lam_r: &Array2<f64>, c_sig_s: &Array2<f64>) -> Array4<f64> {
+    let nbas = c_mu_p.nrows();
+    let nmo_p = c_mu_p.ncols();
+    let nmo_q = c_nu_q.ncols();
+    let nmo_r = c_lam_r.ncols();
+    let nmo_s = c_sig_s.ncols();
+
+    let mut t1 = Array4::<f64>::zeros((nbas, nbas, nbas, nmo_s));
+    for mu in 0..nbas {
+        for nu in 0..nbas {
+            for lam in 0..nbas {
+                for s in 0..nmo_s {
+                    let mut acc = 0.0;
+                    for sig in 0..nbas {
+                        acc += eri[(mu, nu, lam, sig)] * c_sig_s[(sig, s)];
+                    }
+                    t1[(mu, nu, lam, s)] = acc;
+                }
+            }
+        }
+    }
+
+    let mut t2 = Array4::<f64>::zeros((nbas, nbas, nmo_r, nmo_s));
+    for mu in 0..nbas {
+        for nu in 0..nbas {
+            for r in 0..nmo_r {
+                for s in 0..nmo_s {
+                    let mut acc = 0.0;
+                    for lam in 0..nbas {
+                        acc += t1[(mu, nu, lam, s)] * c_lam_r[(lam, r)];
+                    }
+                    t2[(mu, nu, r, s)] = acc;
+                }
+            }
+        }
+    }
+
+    let mut t3 = Array4::<f64>::zeros((nbas, nmo_q, nmo_r, nmo_s));
+    for mu in 0..nbas {
+        for q in 0..nmo_q {
+            for r in 0..nmo_r {
+                for s in 0..nmo_s {
+                    let mut acc = 0.0;
+                    for nu in 0..nbas {
+                        acc += t2[(mu, nu, r, s)] * c_nu_q[(nu, q)];
+                    }
+                    t3[(mu, q, r, s)] = acc;
+                }
+            }
+        }
+    }
+
+    let mut out = Array4::<f64>::zeros((nmo_p, nmo_q, nmo_r, nmo_s));
+    for p in 0..nmo_p {
+        for q in 0..nmo_q {
+            for r in 0..nmo_r {
+                for s in 0..nmo_s {
+                    let mut acc = 0.0;
+                    for mu in 0..nbas {
+                        acc += t3[(mu, q, r, s)] * c_mu_p[(mu, p)];
+                    }
+                    out[(p, q, r, s)] = acc;
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn contract_pq_rs(v_pqrs: &Array4<f64>, m_rs: &Array2<f64>) -> Array2<f64> {
+    let (np, nq, nr, ns) = v_pqrs.dim();
+
+    let mut out = Array2::<f64>::zeros((np, nq));
+    for p in 0..np {
+        for q in 0..nq {
+            let mut acc = 0.0;
+            for r in 0..nr {
+                for s in 0..ns {
+                    acc += v_pqrs[(p, q, r, s)] * m_rs[(r, s)];
+                }
+            }
+            out[(p, q)] = acc;
+        }
+    }
+    out
+}
+
+pub fn contract_pq_rs_transposed(v_pqrs: &Array4<f64>, m_sr: &Array2<f64>) -> Array2<f64> {
+    let (np, nq, nr, ns) = v_pqrs.dim();
+
+    let mut out = Array2::<f64>::zeros((np, nq));
+    for p in 0..np {
+        for q in 0..nq {
+            let mut acc = 0.0;
+            for r in 0..nr {
+                for s in 0..ns {
+                    acc += v_pqrs[(p, q, r, s)] * m_sr[(s, r)];
+                }
+            }
+            out[(p, q)] = acc;
+        }
+    }
+    out
+}

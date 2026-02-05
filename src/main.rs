@@ -206,7 +206,10 @@ fn run_reference_noci(ao: &AoData, states: &[SCFState]) -> (Vec<SCFState>, f64, 
     let t_noci = Instant::now();
     
     // Filter for the SCF states the user requested to be used in the NOCI basis.
-    let noci_reference_basis: Vec<SCFState> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let mut noci_reference_basis: Vec<SCFState> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
+        st.parent = i;
+    }
     // Call matrix element and diagonalisation routines.
     let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, &noci_reference_basis);
 

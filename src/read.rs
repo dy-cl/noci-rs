@@ -5,11 +5,11 @@ use ndarray::{Array1, Array2, Array4};
 
 use crate::{AoData};
 
-/// Antisymmetrise the ERIs.
+/// Antisymmetrise the ERIs as:
+///     t[a, b, c, d] = (ab|cd) --> (ab||cd) = (ab|cd) - (ac|bd).
 /// # Arguments 
 fn antisymmetrise(eri_coul: &Array4<f64>) -> Array4<f64> {
-    let eri_exch = eri_coul.view().permuted_axes([0, 1, 3, 2]).to_owned();
-    //let eri_exch = eri_coul.view().permuted_axes([0, 3, 2, 1]).to_owned();
+    let eri_exch = eri_coul.view().permuted_axes([0, 2, 1, 3]).to_owned();
     eri_coul - &eri_exch
 }
 

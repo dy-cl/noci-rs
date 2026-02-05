@@ -255,7 +255,9 @@ pub fn generate_qmc_noci_basis(refs: &[SCFState], input: &Input) -> Vec<SCFState
     let mut out: Vec<SCFState> = Vec::new();
     for (parent, r) in refs.iter().enumerate() {
         // Include reference states in NOCI-QMC basis.
-        out.push(r.clone());
+        let mut rcopy = r.clone();
+        rcopy.parent = parent;
+        out.push(rcopy);
         // If no excitations requested for this ref, continue
         if !(input.excit.singles || input.excit.doubles) {
             continue;

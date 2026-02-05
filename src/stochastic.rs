@@ -175,7 +175,7 @@ impl ElemCache {
         }
 
         // Otherwise compute them for the first time.
-        let (h, s) = calculate_hs_pair(ao, basis, a, b);
+        let (h, _h1, _h2, _, _, _, s) = calculate_hs_pair(ao, basis, a, b);
         self.maph.insert((a, b), h);
         self.maps.insert((a, b), s);
         (h, s)
