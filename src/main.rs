@@ -16,7 +16,7 @@ use noci_rs::SCFState;
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
 use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
-use noci_rs::noci::{calculate_noci_energy, build_noci_matrices};
+use noci_rs::noci::{build_noci_matrices, calculate_noci_energy};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{step};
 use noci_rs::utils::{wavefunction_sparsity};
@@ -121,7 +121,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         timings.scf = d_scf;
         
         // Run NOCI reference calculation.
-        let (refb, e_ref, c0v, d_tot, d_h_ref) = run_reference_noci(&ao, &states);
+        let (refb, e_ref, c0v, d_tot, d_h_ref) = run_reference_noci(&ao, &input, &states);
         // Note that noci_reference_basis and states above are the same if every requested basis
         // state in the input file has noci = true.
         noci_reference_basis = refb;
@@ -201,8 +201,9 @@ fn run_scf(ao: &AoData, input: &Input, prev_states: &[SCFState]) -> (Vec<SCFStat
 /// Hamiltonian and overlap followed by solving GEVP.
 /// # Arguments:
 ///     `ao`: AoData, contains AO integrals and other system data.
+///     `input`: Input, user input specifications.
 ///     `states`: [SCFState], converged SCF states. 
-fn run_reference_noci(ao: &AoData, states: &[SCFState]) -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
+fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState]) -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
     let t_noci = Instant::now();
     
     // Filter for the SCF states the user requested to be used in the NOCI basis.
@@ -211,7 +212,7 @@ fn run_reference_noci(ao: &AoData, states: &[SCFState]) -> (Vec<SCFState>, f64, 
         st.parent = i;
     }
     // Call matrix element and diagonalisation routines.
-    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, &noci_reference_basis);
+    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, &input, &noci_reference_basis);
 
     (noci_reference_basis, e_noci_ref, c0.to_vec(), t_noci.elapsed(), d_h_ref)
 }
@@ -242,7 +243,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     println!("Progress will be printed every 5 minutes...");
     
     // Call matrix element routines.
-    let (h, s, d_h) = build_noci_matrices(ao, &basis, noci_reference_basis);
+    let (h, s, d_h) = build_noci_matrices(ao, input, &basis, noci_reference_basis);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.

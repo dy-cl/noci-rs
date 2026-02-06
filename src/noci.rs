@@ -1,16 +1,15 @@
 // noci.rs
-//use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
 
 use crate::{AoData, SCFState};
-use crate::nonorthogonalwicks::{lg_h2_diff, lg_h2_same, lg_h1, lg_overlap, WicksReferencePair, SameSpin, DiffSpin};
+use crate::input::Input;
 
-use crate::utils::print_array2;
+use crate::utils::{excitation_phase, occvec_to_bits, print_array2};
+use crate::nonorthogonalwicks::{lg_h2_diff, lg_h2_same, lg_h1, lg_overlap, WicksReferencePair, SameSpin, DiffSpin};
 use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_cd_real, general_evp_real};
 
 // Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
@@ -245,7 +244,7 @@ fn two_electron_h_diff(ao: &AoData, pa: &Pair, pb: &Pair) -> f64 {
 ///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_s_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> f64 {
+pub fn calculate_s_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> f64 {
 
     // Tolerance for a number being non-zero.
     let tol = 1e-12;
@@ -270,7 +269,7 @@ pub fn calculate_s_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: usi
 ///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> (f64, f64, f64, f64, f64, f64, f64) {
+pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> (f64, f64) {
 
     // Tolerance for a number being non-zero.
     let tol = 1e-12;
@@ -301,7 +300,73 @@ pub fn calculate_hs_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: us
     let h2ab = two_electron_h_diff(ao, &pa, &pb);
     let h2 = h2aa + h2bb + h2ab;
 
-    (hnuc + h1 + h2, h2aa, h2bb, h2ab, h1, h2, s)
+    (hnuc + h1 + h2, s)
+}
+
+fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState]) -> Vec<Vec<WicksReferencePair>> {
+    let nref = noci_reference_basis.len();
+    let mut wicks = Vec::with_capacity(nref);
+
+    for ri in noci_reference_basis.iter() {
+        let mut row = Vec::with_capacity(nref);
+        for rj in noci_reference_basis.iter() {
+            let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa);
+            let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob);
+            let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob);
+            row.push(WicksReferencePair { aa, bb, ab });
+        }
+        wicks.push(row);
+    }
+    wicks
+}
+
+/// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
+/// using extended non-orthogonal Wick's theorem.
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
+///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
+///     `l`: usize, index of state \Lambda.
+///     `g`: usize, index of state \Gamma.
+pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>], l: usize, g: usize) -> (f64, f64) {
+
+    // Tolerance for a number being non-zero.
+    let tol = 1e-12;
+
+    let lp = determinants[l].parent;
+    let gp = determinants[g].parent;
+
+    let w = &wicks[lp][gp];
+
+    let ex_la = &determinants[l].excitation.alpha;
+    let ex_ga = &determinants[g].excitation.alpha;
+    let ex_lb = &determinants[l].excitation.beta;
+    let ex_gb = &determinants[g].excitation.beta;
+
+    let occ_la = occvec_to_bits(&noci_reference_basis[lp].oa, tol);
+    let occ_lb = occvec_to_bits(&noci_reference_basis[lp].ob, tol);
+    let occ_ga = occvec_to_bits(&noci_reference_basis[gp].oa, tol);
+    let occ_gb = occvec_to_bits(&noci_reference_basis[gp].ob, tol);
+
+    let ph_a = excitation_phase(occ_la, &ex_la.holes, &ex_la.parts) * excitation_phase(occ_ga, &ex_ga.holes, &ex_ga.parts);
+    let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
+
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb);
+    let s = sa * sb;
+
+    let h1a = lg_h1(&w.aa, ex_la, ex_ga);
+    let h1b = lg_h1(&w.bb, ex_lb, ex_gb);
+    let h1 = ph_a * h1a * sb + ph_b * h1b * sa;
+
+    let h2aa = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga);
+    let h2bb = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb);
+    let h2ab = (ph_a * ph_b) * lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb);
+    let h2 = h2aa + h2bb + h2ab;
+    
+    let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
+
+    (hnuc + h1 + h2, s)
 }
 
 /// Form the full Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
@@ -309,137 +374,41 @@ pub fn calculate_hs_pair(ao: &AoData, determinants: &[SCFState], l: usize, g: us
 ///     `ao`: AoData struct, contains AO integrals and other system data.
 ///     `determinants`: Vec<SCFState>, vector of all determinants in the NOCI basis.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
-pub fn build_noci_matrices(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState]) -> (Array2<f64>, Array2<f64>, Duration) {
+///     `input`: Input, user input specifications.
+pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState]) -> (Array2<f64>, Array2<f64>, Duration) {
     let ndets = determinants.len();
     
     let mut h = Array2::<f64>::zeros((ndets, ndets));
     let mut s = Array2::<f64>::zeros((ndets, ndets));
     
-    // Testing new matrix element calculation routine.
-    let nref = noci_reference_basis.len();
-    let mut wicks: Vec<Vec<WicksReferencePair>> = Vec::with_capacity(nref);
-    for ri in noci_reference_basis.iter() {
-        let mut row: Vec<WicksReferencePair> = Vec::with_capacity(nref);
-
-        for rj in noci_reference_basis.iter() {
-            //println!("PARENTS (AA): L: {}, G: {}", ri.parent, rj.parent);
-            let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa);
-            //println!("PARENTS (BB): L: {}, G: {}", ri.parent, rj.parent);
-            let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob);
-            //println!("PARENTS (AB): L: {}, G: {}", ri.parent, rj.parent);
-            let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob);
-
-            row.push(WicksReferencePair { aa, bb, ab });
-        }
-        wicks.push(row);
-    }
-
+    println!("Precomputing Wick's intermediates....");
+    let wicks = if input.wicks.enable || input.wicks.compare {Some(build_wicks(ao, noci_reference_basis))} else {None};
+ 
     // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma. 
-    let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     let pairs: Vec<(usize, usize)> = (0..ndets).flat_map(|mu| (mu..ndets).map(move |nu| (mu, nu))).collect();
 
     // Calculate Hamiltonian matrix elements in parallel.
     let t_h = Instant::now();
-    let tmp: Vec<(usize, usize, f64, f64, f64)> = pool.install(|| { 
-        pairs.par_iter().map(|&(l, g)| {
-
-            // Calculate matrix elements for this pair.
-            let (h, h2aa, h2bb, h2ab, h1, h2, s) = calculate_hs_pair(ao, determinants, l, g);
-
-            let lp = determinants[l].parent;
-            let gp = determinants[g].parent;
-
-            //println!("PARENTS (AA): L: {}, G: {}", lp, gp);
-
-            // Wicks testing.
-            let w = &wicks[determinants[l].parent][determinants[g].parent];
-            let ex_la = &determinants[l].excitation.alpha;
-            let ex_ga = &determinants[g].excitation.alpha;
-            let ex_lb = &determinants[l].excitation.beta;
-            let ex_gb = &determinants[g].excitation.beta;
-
-            let occ_la = occvec_to_bits(&noci_reference_basis[lp].oa, 1e-12);
-            let occ_lb = occvec_to_bits(&noci_reference_basis[lp].ob, 1e-12);
-            let occ_ga = occvec_to_bits(&noci_reference_basis[gp].oa, 1e-12);
-            let occ_gb = occvec_to_bits(&noci_reference_basis[gp].ob, 1e-12);
-
-            let ph_a = excitation_phase(occ_la, &ex_la.holes, &ex_la.parts) * excitation_phase(occ_ga, &ex_ga.holes, &ex_ga.parts);
-            let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
-
-            let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga);
-            let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb);
-            let s_w = sa * sb;
-
-            let h1a = lg_h1(&w.aa, ex_la, ex_ga);
-            let h1b = lg_h1(&w.bb, ex_lb, ex_gb);
-            let h1_w = ph_a * h1a * sb + ph_b * h1b * sa;
-
-            let h2aa_w = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga);
-            let h2bb_w = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb);
-            let h2ab_w = (ph_a * ph_b) * lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb);
-            let h2_w = h2aa_w + h2bb_w + h2ab_w;
-
-            let hnuc_w = match (w.aa.m, w.bb.m) {
-                (0, 0) => ao.enuc * s_w,
-                _ => 0.0,
+    let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map(|&(l, g)| {
+        let (h, s, d) = if input.wicks.compare {
+            let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g);
+            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g);
+            let d = (hn - hw).abs() + (sn - sw).abs();
+            (hw, sw, d)
+        } else {
+            let (h, s) = if input.wicks.enable {
+                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g)
+            } else {
+                calculate_hs_pair_naive(ao, determinants, l, g)
             };
-
-            let h_w = hnuc_w + h1_w + h2_w;
-
-            let dtot = (s - s_w).abs() + (h1 - h1_w).abs() + (h2 - h2_w).abs();
-            //let ds = (s - s_w).abs();
-            //let dh1 = (h1 - h1_w).abs();
-            //let dh2aa = (h2aa - h2aa_w).abs();
-            //let dh2bb = (h2bb - h2bb_w).abs();
-            //let dh2ab = (h2ab - h2ab_w).abs();
-            //let dh2 = (h2 - h2_w ).abs();
-            
-            //println!(
-            //    concat!(
-            //        "Lambda Alpha holes: {:?}, Lambda Alpha parts: {:?}\n",
-            //        "Gamma  Alpha holes: {:?}, Gamma  Alpha parts: {:?}\n",
-            //        "Lambda Beta  holes: {:?}, Lambda Beta  parts: {:?}\n",
-            //        "Gamma  Beta  holes: {:?}, Gamma  Beta  parts: {:?}\n",
-            //        "l:{l:>3} g:{g:>3}  | S    {s:+.10} (w {sw:+.10}) | d {ds:+.10}\n",
-            //        "             | H1   {h1:+.10} (w {h1w:+.10}) | d {dh1:+.10}\n",
-            //        "             | H2   {h2:+.10} (w {h2w:+.10}) | d {dh2:+.10}\n",
-            //        "             | H2aa {h2aa:+.10} (w {h2aaw:+.10}) | d {dh2aa:+.10}\n",
-            //        "             | H2bb {h2bb:+.10} (w {h2bbw:+.10}) | d {dh2bb:+.10}\n",
-            //        "             | H2ab {h2ab:+.10} (w {h2abw:+.10}) | d {dh2ab:+.10}\n",
-            //        "             | dtot    {dtot:+.10}\n",
-            //    ),
-            //    ex_la.holes, ex_la.parts,
-            //    ex_ga.holes, ex_ga.parts,
-            //    ex_lb.holes, ex_lb.parts,
-            //    ex_gb.holes, ex_gb.parts,
-            //    l = l, g = g,
-
-            //    s = s,   sw = s_w,   ds = ds,
-            //    h1 = h1, h1w = h1_w, dh1 = dh1,
-            //    h2 = h2, h2w = h2_w, dh2 = dh2,
-
-            //    h2aa = h2aa, h2aaw = h2aa_w, dh2aa = dh2aa,
-            //    h2bb = h2bb, h2bbw = h2bb_w, dh2bb = dh2bb,
-            //    h2ab = h2ab, h2abw = h2ab_w, dh2ab = dh2ab,
-            //    dtot = dtot,
-            //);
-
-            (l, g, h_w, s_w, dtot)
-        })
-        .collect()
-    });
-
+            (h, s, 0.0)
+        };
+        (l, g, h, s, d)}).collect();
     let d_h = t_h.elapsed();
 
-    // Calculate discrepancy between naively calculated matrix elements and Wicks ones.
-    let mut dtot_sum = 0.0_f64;
-    for (_, _, _, _, dtot) in &tmp {
-        dtot_sum += *dtot;
-    }
-    println!("Wicks vs naive discrepancy: sum(|Δ|) over all pairs: {:.6e}", dtot_sum);
-
-    // Scatter Hamiltonian and overlap matrix elements into full matrices. 
-    for (l, g, lg_h, lg_s, _) in tmp {
+    // Scatter Hamiltonian and overlap matrix elements into full matrices.
+    let mut td = 0.0;
+    for (l, g, lg_h, lg_s, d) in tmp {
         h[(l, g)] = lg_h;
         s[(l, g)] = lg_s;
         // Hermitian.
@@ -447,17 +416,21 @@ pub fn build_noci_matrices(ao: &AoData, determinants: &[SCFState], noci_referenc
             h[(g, l)] = lg_h;
             s[(g, l)] = lg_s;
         }
+        td += d;
     }
+    println!("Total naive–wicks discrepancy: {:.6e}", td);
+
     (h, s, d_h)
 }
 
 /// Calculate NOCI energy by solving GEVP with NOCI Hamiltonian and overlap.
 /// # Arguments:
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array1<f64>, Duration) {
+///     `ao`: AoData struct, contains AO integrals and other system data.
+///     `input`: Input, user input specifications.
+pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState]) -> (f64, Array1<f64>, Duration) {
     let tol = f64::EPSILON;
-    let (h, s, d_h) = build_noci_matrices(ao, scfstates, scfstates);
+    let (h, s, d_h) = build_noci_matrices(ao, input, scfstates, scfstates);
         
     println!("NOCI-reference Hamiltonian:");
     print_array2(&h);
@@ -472,40 +445,5 @@ pub fn calculate_noci_energy(ao: &AoData, scfstates: &[SCFState]) -> (f64, Array
     // Assumes columns of c are energy ordered eigenvectors
     let c0 = c.column(0).to_owned(); 
     (evals[0], c0, d_h)
-}
-
-// Fermionic phase logic.
-
-fn occvec_to_bits(occ: &Array1<f64>, tol: f64) -> u64 {
-    let mut bits = 0u64;
-    for (i, &x) in occ.iter().enumerate() {
-        if x > 1.0 - tol { bits |= 1u64 << i; }
-    }
-    bits
-}
-
-fn excitation_phase(mut occ: u64, holes: &[usize], parts: &[usize]) -> f64 {
-    fn below(bits: u64, p: usize) -> u32 {
-        if p == 0 { return 0; }
-        (bits & ((1u64 << p) - 1)).count_ones()
-    }
-
-    let mut ph = 1.0;
-
-    let mut hs = holes.to_vec();
-    hs.sort_unstable_by(|a,b| b.cmp(a));    
-    for &i in &hs {
-        if (below(occ, i) & 1) == 1 { ph = -ph; }
-        occ &= !(1u64 << i);
-    }
-
-    let mut ps = parts.to_vec();
-    ps.sort_unstable();                     
-    for &a in &ps {
-        if (below(occ, a) & 1) == 1 { ph = -ph; }
-        occ |= 1u64 << a;
-    }
-
-    ph
 }
 

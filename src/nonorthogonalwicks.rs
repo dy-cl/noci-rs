@@ -2,10 +2,9 @@
 use ndarray::{Array1, Array2, Array4, Axis, s};
 use ndarray_linalg::{SVD, Determinant, Solve};
 
-use crate::utils::print_array2;
 use crate::{ExcitationSpin};
 
-use crate::maths::{einsum_ba_ab_real, einsum_ab_ba_real, einsum_ab_ab_real, einsum_ba_abcd_cd_real, einsum_ba_acbd_dc_real, eri_ao2mo};
+use crate::maths::{einsum_ba_ab_real, eri_ao2mo};
 use crate::noci::occ_coeffs;
 
 // Whether a given orbital index belongs to the bra or ket.
@@ -84,7 +83,7 @@ impl SameSpin {
         let s_occ = Self::calculate_mo_overlap_matrix(&l_c_occ, &g_c_occ, s_munu);
 
         // SVD and rotate the occupied orbitals.
-        let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, u, v, phase) = Self::perform_svd_and_rotate(&s_occ, &l_c_occ, &g_c_occ);
+        let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, phase) = Self::perform_svd_and_rotate(&s_occ, &l_c_occ, &g_c_occ);
 
         // Multiply diagonal non-zero values of {}^{\Gamma\Lambda} \tilde{S} together.
         let tilde_s_prod = tilde_s_occ.iter().filter(|&&x| x.abs() > tol).product::<f64>();
@@ -97,21 +96,6 @@ impl SameSpin {
         let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros);
         let mao: [Array2<f64>; 2] = [m0, m1];
 
-        let (m0_lg, m1_lg) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros);
-        let (m0_gl, m1_gl) = Self::construct_m(&tilde_s_occ, &g_tilde_c_occ, &l_tilde_c_occ, &zeros);
-
-        fn max_abs(a: &Array2<f64>) -> f64 {
-            a.iter().fold(0.0, |m, &x| m.max(x.abs()))
-        }
-
-        let d0 = &m0_lg - &m0_gl.t();
-        let d1 = &m1_lg - &m1_gl.t();
-
-        //println!("max|m0_lg - m0_gl^T|: {:.6e}", max_abs(&d0));
-        //println!("max|m1_lg - m1_gl^T|: {:.6e}", max_abs(&d1));
-        //println!("max|m0_lg - m0_lg^T|: {:.6e}", max_abs(&(&m0_lg - &m0_lg.t())));
-        //println!("max|m0_gl - m0_gl^T|: {:.6e}", max_abs(&(&m0_gl - &m0_gl.t())));
-
         // Construct the {}^{\Gamma\Lambda} X_{ij}^{m_k} and {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices.
         let (x0, y0) = Self::construct_xy(g_c, l_c, s_munu, &mao[0], true);
         let (x1, y1) = Self::construct_xy(g_c, l_c, s_munu, &mao[1], false);
@@ -122,91 +106,8 @@ impl SameSpin {
         let nbas = mao[0].nrows();
         let mut jkao: [Array2<f64>; 2] = [Array2::<f64>::zeros((nbas, nbas)), Array2::<f64>::zeros((nbas, nbas))];
         for mi in 0..2 {
-            
-            // Compare einsum routines to excplicitly calculated traces.
             let j = Self::build_j_coulomb(eri, &mao[mi]);
-            let ej = einsum_ba_ab_real(&j, &mao[mi]);
-
             let k = Self::build_k_exchange(eri, &mao[mi]);
-            let ek = einsum_ba_ab_real(&k, &mao[mi]);
-
-            let ejk = ej - ek;
-
-            //println!("DEBUG (SAME): mi: {}, Tr(JM) (Einsum): {}, Tr(KP) (Einsum): {}, Tr((J-K)M): {}", mi, ej, ek, ejk);
-
-            let mut trjm = 0.0;
-            let mut trjmt = 0.0;
-            let mut trkm = 0.0;
-            let mut trkmt = 0.0;
-            for mu in 0..nbas {
-                for nu in 0..nbas {
-                    trjm  += j[(mu,nu)] * mao[mi][(nu, mu)];
-                    trjmt += j[(mu,nu)] * mao[mi][(mu, nu)];
-                    trkm  += k[(mu,nu)] * mao[mi][(nu, mu)];
-                    trkmt += k[(mu,nu)] * mao[mi][(mu, nu)];
-                }
-            }
-            //println!("Tr(JM) (Explicit): {}, Tr(JM^T) (Explicit): {}", trJ_p, trJ_pt);
-            //println!("Tr(KM) (Explicit): {}, Tr(KM^T) (Explicit): {}", trK_p, trK_pt);
-
-            // Evaluate level of symmetry of M.
-            let p = &mao[mi];
-            let mut max_asym: f64 = 0.0;
-            let mut max_diag: f64 = 0.0;
-            for mu in 0..nbas {
-                max_diag = max_diag.max(p[(mu,mu)].abs());
-                for nu in 0..nbas {
-                    max_asym = max_asym.max((p[(mu,nu)] - p[(nu,mu)]).abs());
-                }
-            }
-            //println!("mi: {}: max|M - M^T|: {}, max|<ii|: {}", mi, max_asym, max_diag);
-            //println!("mi: {}: Tr(M): {}", mi, (0..nbas).map(|i| p[(i,i)]).sum::<f64>());
-            
-            // Try all possible permutations of ERIs to see which aligns bes with the required
-            // Tr(KM), should check that this is a correct target 100%. We also vary using M^T or M
-            // on the LHS and RHS.
-            let perms: [[usize;4]; 24] = [
-                [0,1,2,3],[0,1,3,2],[0,2,1,3],[0,2,3,1],[0,3,1,2],[0,3,2,1],
-                [1,0,2,3],[1,0,3,2],[1,2,0,3],[1,2,3,0],[1,3,0,2],[1,3,2,0],
-                [2,0,1,3],[2,0,3,1],[2,1,0,3],[2,1,3,0],[2,3,0,1],[2,3,1,0],
-                [3,0,1,2],[3,0,2,1],[3,1,0,2],[3,1,2,0],[3,2,0,1],[3,2,1,0],
-            ];
-
-            let m = &mao[mi];
-            let mt = m.t().to_owned();
-            let ms: [(&Array2<f64>, &str); 2] = [(m, "M"), (&mt, "M^T")];
-            let target = trkm;
-            let mut best = (1e300, [0, 1, 2, 3], "L?", "R?", 0.0);
-            for perm in perms {
-                let erip = eri.view().permuted_axes(perm).to_owned();
-                for (ml, ltag) in &ms {
-                    for (mr, rtag) in &ms {
-                        let e = einsum_ba_acbd_dc_real(ml, &erip, mr);
-                        let diff = (e - target).abs();
-                        if diff < best.0 {
-                            best = (diff, perm, *ltag, *rtag, e);
-                        }
-                    }
-                }
-            }
-            //println!("BEST (perm, L, R) for Tr(KM): perm: {:?},  L: {},  R: {},  e: {},  target: {},  |diff|: {}", best.1, best.2, best.3, best.4, target, best.0);
-
-            let ej = einsum_ba_abcd_cd_real(p, eri, p);
-            let eri_exch = eri.view().permuted_axes([0, 2, 1, 3]).to_owned();
-            let ek = einsum_ba_acbd_dc_real(p, &eri_exch, p);
-            
-            // eJ should match Tr(JM).
-            //println!("eJ: {}", eJ);
-            //println!("Tr(JM): {}", trJ_p);
-            
-            // eK should match Tr(KM).
-            //println!("eK: {}", eK);
-            //println!("Tr(KM): {}", trK_p);
-            
-            // Therefore eJ - eK should equal Tr(JM) - tr(KM)
-            //println!("eJ - eK: {}", eJ - eK);
-            //println!("Tr((J-K)M): {}", trJ_p - trK_p);
-
             jkao[mi] = &j - &k;
         }
 
@@ -271,7 +172,6 @@ impl SameSpin {
                 }
             }
         }
-        //println!(" ");
         Self {x, y, f0, f, v0, v, j, tilde_s_prod, phase, m, nmo}
     }
 
@@ -294,8 +194,7 @@ impl SameSpin {
     ///     `gl_s`: Array2, occupied coefficient matrix {}^{\Gamma\Lambda} S_{ij}.
     ///     `g_c_occ`: Array2, occupied coefficients ({}^\Gamma C^*)_i^\mu.
     ///     `l_c_occ`: Array2, occupied coefficients ({}^\Lambda C)_j^\nu.
-    pub fn perform_svd_and_rotate(lg_s: &Array2<f64>, l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>) 
-                                  -> (Array1<f64>, Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>, f64){
+    pub fn perform_svd_and_rotate(lg_s: &Array2<f64>, l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>) -> (Array1<f64>, Array2<f64>, Array2<f64>, f64){
         // SVD.
         let (u, gl_tilde_s, v_dag) = lg_s.svd(true, true).unwrap();
         let u = u.unwrap();
@@ -312,7 +211,7 @@ impl SameSpin {
         let det_v = v.det().unwrap();
         let ph = det_u * det_v;
         
-        (gl_tilde_s, g_tilde_c, l_tilde_c, u, v, ph)
+        (gl_tilde_s, g_tilde_c, l_tilde_c, ph)
     }
     
     /// Form the matrices {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and{}^{\Gamma\Lambda} M^{\sigma\tau, 1} as:
@@ -454,7 +353,6 @@ impl SameSpin {
                 let mut acc = 0.0;
                 for mu in 0..n {
                     for nu in 0..n {
-                        //acc += eri[(s, t, mu, nu)] * m[(nu, mu)];
                         acc += eri[(s, t, mu, nu)] * m[(mu, nu)];
                         
                     }
@@ -473,7 +371,6 @@ impl SameSpin {
                 let mut acc = 0.0;
                 for mu in 0..n {
                     for nu in 0..n {
-                        //acc += eri[(s, mu, t, nu)] * m[(mu, nu)];
                         acc += eri[(s, mu, nu, t)] * m[(mu, nu)];
                     }
                 }
@@ -499,8 +396,8 @@ impl DiffSpin {
         let sa_occ = SameSpin::calculate_mo_overlap_matrix(&l_ca_occ, &g_ca_occ, s_munu);
         let sb_occ = SameSpin::calculate_mo_overlap_matrix(&l_cb_occ, &g_cb_occ, s_munu);
 
-        let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _, _, _) = SameSpin::perform_svd_and_rotate(&sa_occ, &l_ca_occ, &g_ca_occ);
-        let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _, _, _) = SameSpin::perform_svd_and_rotate(&sb_occ, &l_cb_occ, &g_cb_occ);
+        let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _phase) = SameSpin::perform_svd_and_rotate(&sa_occ, &l_ca_occ, &g_ca_occ);
+        let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) = SameSpin::perform_svd_and_rotate(&sb_occ, &l_cb_occ, &g_cb_occ);
 
         let zerosa: Vec<usize> = tilde_sa_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
         let zerosb: Vec<usize> = tilde_sb_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
@@ -824,18 +721,15 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
         let ind: u64 = bits >> 2;
 
         let det_mix = mix_columns(&det0, &det1, ind);
-        let (det_det, adjt_det) = adjugate_transpose(&det_mix);
+        let Some((det_det, adjt_det)) = adjugate_transpose(&det_mix) else {continue;};
 
         let mut contrib = 0.0f64;
 
         // Equation 30.
         let q = (m1 as usize) + (m2 as usize);
         let x = w.v0[q] * det_det;
-        //let t30 = x;
         contrib += x;
-
-        // Equation 34a.
-        //let mut t34 = 0.0;
+        
         for k in 0..l {
 
             let mk = m_col(k);
@@ -851,17 +745,14 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
             
             let x = det_det + (&v1 - &v2).dot(&a);
             contrib -= 2.0 * x;
-            //t34 -= 2.0 * x;
         }
-
-        //let mut t38 = 0.0;
-
+        
         for i in 0..l {
             for j in 0..l {
                 let phase = if ((i + j) & 1) == 0 { 1.0 } else { -1.0 };
 
                 let det_mix2 = minor(&det_mix, i, j);
-                let (det_det2, adjt_det2) = adjugate_transpose(&det_mix2);
+                let Some((det_det2, adjt_det2)) = adjugate_transpose(&det_mix2) else {continue;};
 
                 let ri_fixed = rows[i];
                 let cj_fixed = cols[j];
@@ -878,8 +769,7 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
 
                     let jslice2 = minor(&jslice_full, i, j);
 
-                    // v1 is the k2-th column of jslice2
-                    let mut v1 = jslice2.column(k2).to_owned();
+                    let v1 = jslice2.column(k2).to_owned();
 
                     let v2 = det_mix2.column(k2).to_owned();
                     let a  = adjt_det2.column(k2).to_owned();
@@ -888,17 +778,16 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
 
                     let x = 1.0 * phase * det_repl;
                     contrib += x;
-                    //t38 += x;
                 }
             }
         }
-        //println!("DEBUG (SAME): t30: {:+.12}, t34: {:+.12}, t38: {:+.12}", t30, t34, t38);
         acc += contrib;
     }
     w.phase * w.tilde_s_prod * acc
 }
 
 pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin) -> f64 {
+
     let (rows_a_lab, cols_a_lab) = construct_determinant_lables(l_ex_a, g_ex_a);
     let (rows_b_lab, cols_b_lab) = construct_determinant_lables(l_ex_b, g_ex_b);
     
@@ -913,19 +802,11 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
     if w.aa.m > la + 1 {return 0.0;}
     if w.bb.m > lb + 1 {return 0.0;}
 
-    let deta0  = build_d(&w.aa.x[0], &w.aa.y[0], &rows_a, &cols_a);    let deta1 = build_d(&w.aa.x[1], &w.aa.y[1], &rows_a, &cols_a);
+    let deta0  = build_d(&w.aa.x[0], &w.aa.y[0], &rows_a, &cols_a);    
+    let deta1 = build_d(&w.aa.x[1], &w.aa.y[1], &rows_a, &cols_a);
     let detb0  = build_d(&w.bb.x[0], &w.bb.y[0], &rows_b, &cols_b);
     let detb1 = build_d(&w.bb.x[1], &w.bb.y[1], &rows_b, &cols_b);
     
-    //println!("deta0:");
-    //print_array2(&deta0);
-    //println!("deta1:");
-    //print_array2(&deta1);
-    //println!("detb0:");
-    //print_array2(&detb0);
-    //println!("detb1:");
-    //print_array2(&detb1);
-
     let mut acc = 0.0;
 
     for bits_a in iter_m_combinations(la + 1, w.aa.m) {
@@ -934,13 +815,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
         let inda: u64 = bits_a >> 1;
 
         let deta_mix = mix_columns(&deta0, &deta1, inda);
-        let (det_deta, adjt_deta) = adjugate_transpose(&deta_mix);
-
-        //println!("deta_mix:");
-        //print_array2(&deta_mix);
-        //println!("adj_deta:");
-        //print_array2(&adjt_deta);
-        //println!("det_deta: {}", det_deta);
+        let Some((det_deta, adjt_deta)) = adjugate_transpose(&deta_mix) else {continue;};
 
         for bits_b in iter_m_combinations(lb + 1, w.bb.m) {
             let mb0 = (bits_b & 1) == 1;
@@ -948,25 +823,14 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
             let indb: u64 = bits_b >> 1;
 
             let detb_mix = mix_columns(&detb0, &detb1, indb);
-            let (det_detb, adjt_detb) = adjugate_transpose(&detb_mix);
-
-            //println!("detb_mix:");
-            //print_array2(&detb_mix);
-            //println!("adj_detb:");
-            //print_array2(&adjt_detb);
-            //println!("det_detb: {}", det_detb);
+            let Some((det_detb, adjt_detb)) = adjugate_transpose(&detb_mix) else {continue;};
 
             let mut contrib = 0.0f64;
 
-            //println!("DEBUG: bitstringa: {:b}, bitstringb: {:b}, ma0: {}, mb0: {}, inda: {:b}, indb: {:b}", bits_a, bits_b, ma0, mb0, inda, indb);
-
             // Equation 30.
             let x = w.ab.vab0[ma0 as usize][mb0 as usize] * det_deta * det_detb;
-            //let t30 = x;
             contrib += x;
         
-            // Equation 34a.
-            //let mut t34a = 0.0;
             for k in 0..la {
 
                 let mak = ma_col(k);
@@ -983,11 +847,9 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                 
                 let x = (det_deta + (&v1 - &v2).dot(&a)) * det_detb;
                 contrib -= x;
-                //t34a -= x;
             }
 
             // Equation 34b.
-            //let mut t34b = 0.0;
             for k in 0..lb {
 
                 let mbk = mb_col(k);
@@ -1004,11 +866,9 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
 
                 let x = (det_detb + (&v1 - &v2).dot(&a)) * det_deta;
                 contrib -= x;
-                //t34b -= x;
             }
             
             // Equation 38b.
-            //let mut t38b = 0.0;
             for (i, &ra) in rows_a.iter().enumerate() {
                 for (j, &ca) in cols_a.iter().enumerate() {
                     let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
@@ -1016,36 +876,19 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                     let deta0_minor = minor(&deta0, i, j);
                     let deta1_minor = minor(&deta1, i, j);
 
-                    //println!("i: {}, j: {}", i, j);
-                    //println!("deta0_minor:");
-                    //print_array2(&deta0_minor);
-                    //println!("deta1_minor:");
-                    //print_array2(&deta1_minor);
-
                     let inda_cols: u64 = bits_a >> 1;        
                     let inda2: u64 = remove_bit(inda_cols, j); 
 
                     let deta_minor_mix = mix_columns(&deta0_minor, &deta1_minor, inda2);
                     let det_deta_minor_mix = deta_minor_mix.det().unwrap();
 
-                    //println!("deta_minor_mix:");
-                    //print_array2(&deta_minor_mix);
-                    //println!("det_deta_minor_mix: {}", det_deta_minor_mix);
-
                     for k in 0..lb {
-
-                        //println!("i: {}, j: {}, k: {}", i, j, k);
 
                         let mbk = mb_col(k);
                         let ma1 = ma_col(j);
 
-                        //println!("mb0: {}, mbk: {}, ma0: {}, ma1: {}", mb0, mbk, ma0, ma1);
-
                         let iib = &w.ab.iiba[mb0 as usize][mbk as usize][ma0 as usize][ma1 as usize];
                         let iisliceb = slice_ii(iib, &rows_b, &cols_b, ra, ca, true);
-
-                        //println!("iisliceb:");
-                        //print_array2(&iisliceb);
 
                         let mut v1 = Array1::<f64>::zeros(lb);
                         for r in 0..lb {
@@ -1057,13 +900,11 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
 
                         let x = 0.5 * phase * (det_detb + (&v1 - &v2).dot(&a)) * det_deta_minor_mix;
                         contrib += x;
-                        //t38b += x;
                     }
                 }
             }
 
             // Equation 38a.
-            //let mut t38a = 0.0;
             for (i, &rb) in rows_b.iter().enumerate() {
                 for (j, &cb) in cols_b.iter().enumerate() {
                     let phase = if ((i + j) & 1) == 0 { 1.0 } else { -1.0 };
@@ -1071,37 +912,20 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                     let detb0_minor = minor(&detb0, i, j);
                     let detb1_minor = minor(&detb1, i, j);
 
-                    //println!("i: {}, j: {}", i, j);
-                    //println!("detb0_minor:");
-                    //print_array2(&detb0_minor);
-                    //println!("detb1_minor:");
-                    //print_array2(&detb1_minor);
-
                     let indb_cols: u64 = bits_b >> 1;          
                     let indb2: u64 = remove_bit(indb_cols, j);
 
                     let detb_minor_mix = mix_columns(&detb0_minor, &detb1_minor, indb2);
                     let det_detb_minor_mix = detb_minor_mix.det().unwrap();
                     
-                    //println!("detb_minor_mix:");
-                    //print_array2(&detb_minor_mix);
-                    //println!("det_detb_minor_mix: {}", det_detb_minor_mix);
-
                     for k in 0..la {
-
-                        //println!("i: {}, j: {}, k: {}", i, j, k);
 
                         let mak = ma_col(k);
                         let mb1 = mb_col(j);
 
-                        //println!("ma0: {}, mak: {}, mb0: {}, mbj1: {}", ma0, mak, mb0, mb1);
-
                         let iia = &w.ab.iiab[ma0 as usize][mak as usize][mb0 as usize][mb1 as usize];
                         let iislicea = slice_ii(iia, &rows_a, &cols_a, rb, cb, true);
                         
-                        //println!("iislicea:");
-                        //print_array2(&iislicea);
-
                         let mut v1 = Array1::<f64>::zeros(la);
                         for r in 0..la {
                             v1[r] = iislicea[(r, k)];
@@ -1112,11 +936,9 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
 
                         let x = 0.5 * phase * (det_deta + (&v1 - &v2).dot(&a)) * det_detb_minor_mix;
                         contrib += x;
-                        //t38a += x;
                     }
                 }
             }
-            //println!("DEBUG (DIFF): t30: {:+.12}, t34a: {:+.12}, t34b: {:+.12}, t38a: {:+.12}, t38b: {:+.12}", t30, t34a, t34b, t38a, t38b);
             acc += contrib;
         }
     }
@@ -1196,8 +1018,21 @@ fn minor(m: &Array2<f64>, r_rm: usize, c_rm: usize) -> Array2<f64> {
     out
 }
 
-fn adjugate_transpose(a: &Array2<f64>) -> (f64, Array2<f64>) {
+fn adjugate_transpose(a: &Array2<f64>) -> Option<(f64, Array2<f64>)> {
     let n = a.nrows();
+
+    if n == 0 {return Some((1.0, Array2::zeros((0, 0))));}
+    if n == 1 {return Some((a[(0, 0)], Array2::from_elem((1, 1), 1.0)));}
+
+    // Conditioning test.
+    let cond = 1e12;
+    let (_, s, _) = a.svd(false, false).ok()?;
+    let smax = s[0];
+    let smin = s[s.len() - 1];
+    if smin <= 0.0 || smax / smin > cond {
+        return None;
+    }
+
     let det = a.det().unwrap();
 
     let mut adjt = Array2::<f64>::zeros((n, n));
@@ -1208,6 +1043,5 @@ fn adjugate_transpose(a: &Array2<f64>) -> (f64, Array2<f64>) {
         let x = at.solve_into(e).unwrap();     
         adjt.column_mut(i).assign(&(&x * det)); 
     }
-    (det, adjt) 
+    Some((det, adjt))
 }
-

@@ -11,7 +11,7 @@ use crate::AoData;
 use crate::SCFState;
 use crate::input::{Input, Propagator, ExcitationGen};
 
-use crate::noci::{calculate_s_pair, calculate_hs_pair};
+use crate::noci::{calculate_s_pair_naive, calculate_hs_pair_naive};
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
 
 // Storage for walker information.
@@ -153,7 +153,7 @@ impl ElemCache {
         }
 
         // Otherwise compute it for the first time
-        let s = calculate_s_pair(ao, basis, a, b);
+        let s = calculate_s_pair_naive(ao, basis, a, b);
         self.maps.insert((a, b), s);
         s
     }
@@ -175,7 +175,7 @@ impl ElemCache {
         }
 
         // Otherwise compute them for the first time.
-        let (h, _h1, _h2, _, _, _, s) = calculate_hs_pair(ao, basis, a, b);
+        let (h, s) = calculate_hs_pair_naive(ao, basis, a, b);
         self.maph.insert((a, b), h);
         self.maps.insert((a, b), s);
         (h, s)

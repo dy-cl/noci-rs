@@ -67,7 +67,7 @@ pub struct StateRecipe {
     pub noci: bool,
 }
 
-// Storage for DIIS options 
+// Storage for DIIS options.
 pub struct DiisOptions {
     pub space: usize,
 }
@@ -78,21 +78,21 @@ pub struct ExcitationOptions {
     pub doubles: bool,
 }
 
-// Storage for NOCI propagation options
+// Storage for NOCI propagation options.
 pub struct PropagationOptions {
     pub dt: f64,
     pub max_steps: usize,
     pub propagator: Propagator,
 }
 
-// Storage for deterministic propagation options 
+// Storage for deterministic propagation options. 
 pub struct DeterministicOptions {
     pub dynamic_shift: bool,
     pub dynamic_shift_alpha: f64,
     pub e_tol: f64,
 }
 
-// Storage for QMC propagation options 
+// Storage for QMC propagation options.
 pub struct QMCOptions {
     pub initial_population: i64,
     pub target_population: i64,
@@ -102,7 +102,7 @@ pub struct QMCOptions {
     pub seed: Option<u64>,
 }
 
-// Storage for output options
+// Storage for output options.
 pub struct WriteOptions {
     pub verbose: bool,
     pub write_deterministic_coeffs: bool,
@@ -110,7 +110,13 @@ pub struct WriteOptions {
     pub write_dir: String,
 }
 
-/// Storage for Input file parameters.
+// Storage for Wick's options.
+pub struct WicksOptions {
+    pub compare: bool,
+    pub enable: bool,
+}
+
+// Storage for Input file parameters.
 pub struct Input {
     pub mol: MolOptions,
     pub scf: SCFInfo,
@@ -120,6 +126,7 @@ pub struct Input {
     pub qmc: Option<QMCOptions>,
     pub excit: ExcitationOptions,
     pub prop: PropagationOptions,
+    pub wicks: WicksOptions,
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -141,6 +148,7 @@ pub fn load_input(path: &str) -> Input {
     let state_tbl: rlua::Table = globals.get("states").unwrap();
     let excit_tbl: Table = globals.get("excit").unwrap();
     let prop_tbl: Table = globals.get("prop").unwrap();
+    let wicks_tbl: Table = globals.get("wicks").unwrap();
     
     // Mol table.
     let basis: String = mol_tbl.get("basis").unwrap();
@@ -279,7 +287,12 @@ pub fn load_input(path: &str) -> Input {
             _ => {eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', or 'difference-doubly-shifted'."); std::process::exit(1);}
     };
     let prop = PropagationOptions {dt, max_steps, propagator};
+    
+    // Wick's table.
+    let compare = wicks_tbl.get("compare").unwrap();
+    let enable = wicks_tbl.get("enable").unwrap();
+    let wicks = WicksOptions {compare, enable};
 
-    Input {mol, scf, write, states, det, qmc, excit, prop}
+    Input {mol, scf, write, states, det, qmc, excit, prop, wicks}
 }
 

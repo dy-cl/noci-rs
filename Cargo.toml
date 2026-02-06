@@ -19,7 +19,7 @@ bincode = {version = "1"}
 [profile.release]
 opt-level = 3
 debug = false
-strip = true
+strip = false
 debug-assertions = false
 overflow-checks = false
 lto = 'fat'
