@@ -244,10 +244,7 @@ fn two_electron_h_diff(ao: &AoData, pa: &Pair, pb: &Pair) -> f64 {
 ///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_s_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> f64 {
-
-    // Tolerance for a number being non-zero.
-    let tol = 1e-12;
+pub fn calculate_s_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize, tol: f64) -> f64 {
 
     // Per spin occupid coefficients.
     let l_ca_occ = occ_coeffs(&determinants[l].ca, &determinants[l].oa);
@@ -269,10 +266,7 @@ pub fn calculate_s_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, 
 ///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize) -> (f64, f64) {
-
-    // Tolerance for a number being non-zero.
-    let tol = 1e-12;
+pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize, tol: f64) -> (f64, f64) {
 
     // Per spin occupid coefficients.
     let l_ca_occ = occ_coeffs(&determinants[l].ca, &determinants[l].oa);
@@ -303,16 +297,16 @@ pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize,
     (hnuc + h1 + h2, s)
 }
 
-fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState]) -> Vec<Vec<WicksReferencePair>> {
+fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> Vec<Vec<WicksReferencePair>> {
     let nref = noci_reference_basis.len();
     let mut wicks = Vec::with_capacity(nref);
 
     for ri in noci_reference_basis.iter() {
         let mut row = Vec::with_capacity(nref);
         for rj in noci_reference_basis.iter() {
-            let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa);
-            let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob);
-            let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob);
+            let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
+            let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
+            let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
             row.push(WicksReferencePair { aa, bb, ab });
         }
         wicks.push(row);
@@ -328,10 +322,7 @@ fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState]) -> Vec<Vec<WicksR
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>], l: usize, g: usize) -> (f64, f64) {
-
-    // Tolerance for a number being non-zero.
-    let tol = 1e-12;
+pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>], l: usize, g: usize, tol: f64) -> (f64, f64) {
 
     let lp = determinants[l].parent;
     let gp = determinants[g].parent;
@@ -351,17 +342,17 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
     let ph_a = excitation_phase(occ_la, &ex_la.holes, &ex_la.parts) * excitation_phase(occ_ga, &ex_ga.holes, &ex_ga.parts);
     let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
 
-    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga);
-    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb);
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, tol);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, tol);
     let s = sa * sb;
 
-    let h1a = lg_h1(&w.aa, ex_la, ex_ga);
-    let h1b = lg_h1(&w.bb, ex_lb, ex_gb);
+    let h1a = lg_h1(&w.aa, ex_la, ex_ga, tol);
+    let h1b = lg_h1(&w.bb, ex_lb, ex_gb, tol);
     let h1 = ph_a * h1a * sb + ph_b * h1b * sa;
 
-    let h2aa = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga);
-    let h2bb = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb);
-    let h2ab = (ph_a * ph_b) * lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb);
+    let h2aa = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga, tol);
+    let h2bb = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb, tol);
+    let h2ab = (ph_a * ph_b) * lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, tol);
     let h2 = h2aa + h2bb + h2ab;
     
     let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
@@ -375,14 +366,14 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
 ///     `determinants`: Vec<SCFState>, vector of all determinants in the NOCI basis.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `input`: Input, user input specifications.
-pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState]) -> (Array2<f64>, Array2<f64>, Duration) {
-    let ndets = determinants.len();
+pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState], tol: f64) -> (Array2<f64>, Array2<f64>, Duration) {
     
+    let ndets = determinants.len();
     let mut h = Array2::<f64>::zeros((ndets, ndets));
     let mut s = Array2::<f64>::zeros((ndets, ndets));
     
     println!("Precomputing Wick's intermediates....");
-    let wicks = if input.wicks.enable || input.wicks.compare {Some(build_wicks(ao, noci_reference_basis))} else {None};
+    let wicks = if input.wicks.enable || input.wicks.compare {Some(build_wicks(ao, noci_reference_basis, tol))} else {None};
  
     // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma. 
     let pairs: Vec<(usize, usize)> = (0..ndets).flat_map(|mu| (mu..ndets).map(move |nu| (mu, nu))).collect();
@@ -391,15 +382,15 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
     let t_h = Instant::now();
     let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map(|&(l, g)| {
         let (h, s, d) = if input.wicks.compare {
-            let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g);
-            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g);
+            let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g, tol);
+            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g, tol);
             let d = (hn - hw).abs() + (sn - sw).abs();
             (hw, sw, d)
         } else {
             let (h, s) = if input.wicks.enable {
-                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g)
+                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g, tol)
             } else {
-                calculate_hs_pair_naive(ao, determinants, l, g)
+                calculate_hs_pair_naive(ao, determinants, l, g, tol)
             };
             (h, s, 0.0)
         };
@@ -428,9 +419,8 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
-pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState]) -> (f64, Array1<f64>, Duration) {
-    let tol = f64::EPSILON;
-    let (h, s, d_h) = build_noci_matrices(ao, input, scfstates, scfstates);
+pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64) -> (f64, Array1<f64>, Duration) {
+    let (h, s, d_h) = build_noci_matrices(ao, input, scfstates, scfstates, tol);
         
     println!("NOCI-reference Hamiltonian:");
     print_array2(&h);
@@ -439,7 +429,7 @@ pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState])
     println!("Shifted NOCI-reference Hamiltonian");
     let h_shift = &h.map(|z: &f64| z) - scfstates[0].e * &s;
     print_array2(&h_shift);
-    let (evals, c) = general_evp_real(&h, &s, true, tol);
+    let (evals, c) = general_evp_real(&h, &s, true, f64::EPSILON);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
 
     // Assumes columns of c are energy ordered eigenvectors

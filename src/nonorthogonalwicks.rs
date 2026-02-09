@@ -4,7 +4,7 @@ use ndarray_linalg::{SVD, Determinant};
 
 use crate::{ExcitationSpin};
 
-use crate::maths::{einsum_ba_ab_real, eri_ao2mo, minor, adjugate_transpose, mix_columns, build_d};
+use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x_real, minor, adjugate_transpose, mix_columns, build_d};
 use crate::noci::occ_coeffs;
 
 // Whether a given orbital index belongs to the bra or ket.
@@ -64,8 +64,7 @@ impl SameSpin {
     ///     `l_c`: Array2, full AO coefficient matrix of |^\Lambda\Psi\rangle.
     ///     `go`: Array1, occupancy vector for |^\Gamma\Psi\rangle.
     ///     `lo`: Array1, occupancy vector for |^\Lambda\Psi\rangle. 
-    pub fn new(eri: &Array4<f64>, h_munu: &Array2<f64>, s_munu: &Array2<f64>, g_c: &Array2<f64>, l_c: &Array2<f64>, go: &Array1<f64>, lo: &Array1<f64>) -> Self {
-        let tol = 1e-12;
+    pub fn new(eri: &Array4<f64>, h_munu: &Array2<f64>, s_munu: &Array2<f64>, g_c: &Array2<f64>, l_c: &Array2<f64>, go: &Array1<f64>, lo: &Array1<f64>, tol: f64) -> Self {
         let nmo = g_c.ncols();
         let nbas = l_c.nrows();
 
@@ -76,11 +75,8 @@ impl SameSpin {
         let l_c_occ = occ_coeffs(l_c, lo);
         let g_c_occ = occ_coeffs(g_c, go);
 
-        // Get occupied MO overlap matrix.
-        let s_occ = Self::calculate_mo_overlap_matrix(&l_c_occ, &g_c_occ, s_munu);
-
         // SVD and rotate the occupied orbitals.
-        let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, phase) = Self::perform_svd_and_rotate(&s_occ, &l_c_occ, &g_c_occ);
+        let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, phase) = Self::perform_ortho_and_svd_and_rotate(s_munu, &l_c_occ, &g_c_occ, 1e-20);
 
         // Multiply diagonal non-zero values of {}^{\Gamma\Lambda} \tilde{S} together.
         let tilde_s_prod = tilde_s_occ.iter().filter(|&&x| x.abs() > tol).product::<f64>();
@@ -88,9 +84,11 @@ impl SameSpin {
         // Find indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S} and count them.
         let zeros: Vec<usize> = tilde_s_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
         let m = zeros.len();
-
-        // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices.
-        let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros);
+        
+        // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices. 
+        // The argument order here is swapped compared to what the function asks for, but it does not match the naive
+        // implementation if we swap them.
+        let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros, tol);
         let mao: [Array2<f64>; 2] = [m0, m1];
 
         // Construct the {}^{\Gamma\Lambda} X_{ij}^{m_k} and {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices.
@@ -98,7 +96,7 @@ impl SameSpin {
         let (x1, y1) = Self::construct_xy(g_c, l_c, s_munu, &mao[1], false);
         let x: [Array2<f64>; 2] = [x0, x1];
         let y: [Array2<f64>; 2] = [y0, y1];
-        
+
         // Construct Coulomb and exchange contractions of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k}, 
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k} and {}^{\Gamma\Lambda} K_{\mun\u}^{m_k}. These
         // quantities are used in many of the following intermediates so we precompute here.
@@ -109,6 +107,9 @@ impl SameSpin {
             let k = Self::build_k_exchange(eri, &mao[mi]);
             jkao[mi] = &j - &k;
         }
+
+        println!("M0 max: {:.3e}, frob: {:.3e} | M1 max: {:.3e}, frob: {:.3e}", maxabs(&mao[0]), frob(&mao[0]), maxabs(&mao[1]), frob(&mao[1]));
+        println!("(J-K)0 max: {:.3e}, frob: {:.3e} | (J-K)1 max: {:.3e}, frob: {:.3e}", maxabs(&jkao[0]), frob(&jkao[0]), maxabs(&jkao[1]), frob(&jkao[1]));
         
         // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
         // intermediates required for one body matrix elements.
@@ -194,6 +195,7 @@ impl SameSpin {
                 }
             }
         }
+        println!(" ");
         Self {x, y, f0, f, v0, v, j, tilde_s_prod, phase, m, nmo}
     }
 
@@ -213,27 +215,36 @@ impl SameSpin {
     ///     |{}^\Gamma \Psi_i\rangle = \sum_{\mu} {}^\Gamma c_i^\mu U_{ij} |\phi_\mu \rangle.
     ///     |{}^\Lambda \Psi_j\rangle = \sum_{\nu} {}^\Lambda c_j^\nu V_{ij} |\phi_\nu \rangle.
     /// # Arguments:
-    ///     `gl_s`: Array2, occupied coefficient matrix {}^{\Gamma\Lambda} S_{ij}.
     ///     `g_c_occ`: Array2, occupied coefficients ({}^\Gamma C^*)_i^\mu.
     ///     `l_c_occ`: Array2, occupied coefficients ({}^\Lambda C)_j^\nu.
-    pub fn perform_svd_and_rotate(lg_s: &Array2<f64>, l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>) -> (Array1<f64>, Array2<f64>, Array2<f64>, f64){
+    pub fn perform_ortho_and_svd_and_rotate(s_munu: &Array2<f64>, l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, tol: f64) 
+                                            -> (Array1<f64>, Array2<f64>, Array2<f64>, f64) {
+        
+        // Orthonormalise.
+        let s_ll = l_c_occ.t().dot(&s_munu.dot(l_c_occ));
+        let s_gg = g_c_occ.t().dot(&s_munu.dot(g_c_occ));
+        let x_l = loewdin_x_real(&s_ll, true, tol);
+        let x_g = loewdin_x_real(&s_gg, true, tol);
+        let l_c_occ_ortho = l_c_occ.dot(&x_l);
+        let g_c_occ_ortho = g_c_occ.dot(&x_g);
+
+        let lg_s = l_c_occ_ortho.t().dot(&s_munu.dot(&g_c_occ_ortho));
+
         // SVD.
-        let (u, gl_tilde_s, v_dag) = lg_s.svd(true, true).unwrap();
+        let (u, lg_tilde_s, v_dag) = lg_s.svd(true, true).unwrap();
         let u = u.unwrap();
         let v = v_dag.unwrap().t().to_owned();
         
         // Rotate MOs.
-        //let g_tilde_c = g_c_occ.dot(&u);
-        //let l_tilde_c = l_c_occ.dot(&v);
-        let l_tilde_c = l_c_occ.dot(&u);
-        let g_tilde_c = g_c_occ.dot(&v);
+        let l_tilde_c = l_c_occ_ortho.dot(&u);
+        let g_tilde_c = g_c_occ_ortho.dot(&v);
         
         // Calculate phase associated with rotation.
         let det_u = u.det().unwrap();
         let det_v = v.det().unwrap();
         let ph = det_u * det_v;
         
-        (gl_tilde_s, g_tilde_c, l_tilde_c, ph)
+        (lg_tilde_s, g_tilde_c, l_tilde_c, ph)
     }
     
     /// Form the matrices {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and{}^{\Gamma\Lambda} M^{\sigma\tau, 1} as:
@@ -247,16 +258,15 @@ impl SameSpin {
     ///     `g_c_tilde_occ`: Array2, rotated occupied coefficients ({}^\Gamma \tilde{C}^*)_i^\mu.
     ///     `l_c_tilde_occ`: Array2, rotated occupied coefficients ({}^\Lambda \tilde{C})_j^\nu.
     ///     `zeros`: Vec<usize>, indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S}. 
-    pub fn construct_m(lg_tilde_s: &Array1<f64>, g_tilde_c_occ: &Array2<f64>, l_tilde_c_occ: &Array2<f64>, zeros: &Vec<usize>) -> (Array2<f64>, Array2<f64>) {
-        let tol = 1e-12;
+    pub fn construct_m(lg_tilde_s: &Array1<f64>, g_tilde_c_occ: &Array2<f64>, l_tilde_c_occ: &Array2<f64>, zeros: &Vec<usize>, tol: f64) -> (Array2<f64>, Array2<f64>) {
         let nbas = g_tilde_c_occ.nrows();
         let nocc = g_tilde_c_occ.ncols();
         
-        // Calculate {}^{\Gamma\Lambda} W^{\sigma\tau} (weighted co-density matrix) as:
-        //      {}^{\Gamma\Lambda} W^{\sigma\tau} = \sum_i (^\Gamma \tilde{C})^\sigma_i (1 /
-        //      {}^{\Gamma\Lambda} \tilde{S}_i) (^\Lambda \tilde{C}^*)^\tau_i
-        //  for all i where {}^{\Gamma\Lambda} \tilde{S}_i != 0. This result is stored in
-        //  {}^{\Gamma\Lambda} M^{\sigma\tau, 0}, where the zero indicates this quantity will be
+        // Calculate {}^{\Lambda\Gamma} W^{\sigma\tau} (weighted co-density matrix) as:
+        //      {}^{\Lambda\Gamma} W^{\sigma\tau} = \sum_i (^\Lambda \tilde{C})^\sigma_i (1 /
+        //      {}^{\Lambda\Gamma} \tilde{S}_i) (^\Gamma \tilde{C}^*)^\tau_i
+        //  for all i where {}^{\Lambda\Gamma} \tilde{S}_i != 0. This result is stored in
+        //  {}^{\Lambda\Gamma} M^{\sigma\tau, 0}, where the zero indicates this quantity will be
         //  used when m_k = 0. 
         let mut l_tilde_c_occ_scaled = l_tilde_c_occ.clone();
         for k in 0..nocc {
@@ -273,12 +283,12 @@ impl SameSpin {
         let mut lg_m1 = Array2::<f64>::zeros((nbas, nbas));
         let mut ll_m0 = Array2::<f64>::zeros((nbas, nbas));
         
-        // Calculate {}^{\Gamma\Gamma} P^{\sigma\tau}_k (co-density matrix) as:
-        //      {}^{\Gamma\Gamma} P^{\sigma\tau}_k = ({}^\Gamma \tilde{C})^\sigma_k ({}^\Gamma
+        // Calculate {}^{\Lambda\Lambda} P^{\sigma\tau}_k (co-density matrix) as:
+        //      {}^{\Lambda\Lambda} P^{\sigma\tau}_k = ({}^\Lambda \tilde{C})^\sigma_k ({}^\Lambda
         //      \tilde{C}^*)^\tau_k
-        // for all k where {}^{\Gamma\Gamma} \tilde{S}_k = 0 and sum together to form {}^{\Gamma\Gamma} P^{\sigma\tau}.
-        // This result is added to {}^{\Gamma\Lambda} M^{\sigma\tau, 0} which now
-        // contains contributions from the \Gamma, \Gamma co-density matrix and \Gamma \Lambda
+        // for all k where {}^{\Lambda\Lambda} \tilde{S}_k = 0 and sum together to form {}^{\Lambda\Lambda} P^{\sigma\tau}.
+        // This result is added to {}^{\Lambda\Gamma} M^{\sigma\tau, 0} which now
+        // contains contributions from the \Lambda, \Lambda co-density matrix and \Lambda \Gamma
         // weighted co-density matrix.
         for &k in zeros {
             let l_tilde_c_occ_k = l_tilde_c_occ.column(k).to_owned();
@@ -287,14 +297,14 @@ impl SameSpin {
         }
         lg_m0 += &ll_m0;
         
-        // Calculate {}^{\Gamma\Lambda} P^{\sigma\tau}_k (co-density matrix) as:
-        //      {}^{\Gamma\Lambda} P^{\sigma\tau}_k = ({}^\Gamma \tilde{C})^\sigma_k ({}^\Lambda
+        // Calculate {}^{\Lambda\Gamma} P^{\sigma\tau}_k (co-density matrix) as:
+        //      {}^{\Lambda\Gamma} P^{\sigma\tau}_k = ({}^\Lambda \tilde{C})^\sigma_k ({}^\Gamma
         //      \tilde{C}^*)^\tau_k
-        // for all k where {}^{\Gamma\Lambda} \tilde{S}_k = 0 and sum together to form {}^{\Gamma\Lambda} P^{\sigma\tau}.
-        // This result is added to {}^{\Gamma\Lambda} M^{\sigma\tau, 0} which now
+        // for all k where {}^{\Lambda\Gamma} \tilde{S}_k = 0 and sum together to form {}^{\Lambda\Gamma} P^{\sigma\tau}.
+        // This result is added to {}^{\Lambda\Gamma} M^{\sigma\tau, 0} which now
         // contains the correct contributions to be:
-        //  {}^{\Gamma\Lambda} M^{\sigma\tau, 0} = {}^{\Gamma\Lambda} W^{\sigma\tau} + {}^{\Gamma\Lambda} P^{\sigma\tau} + {}^{\Gamma\Gamma} P^{\sigma\tau} 
-        //  as required. Similarly we make {}^{\Gamma\Lambda} M^{\sigma\tau, 1} = {}^{\Gamma\Lambda} P^{\sigma\tau}.  
+        //  {}^{\Lambda\Gamma} M^{\sigma\tau, 0} = {}^{\Lambda\Gamma} W^{\sigma\tau} + {}^{\Lambda\Gamma} P^{\sigma\tau} + {}^{\Lambda\Lambda} P^{\sigma\tau} 
+        //  as required. Similarly we make {}^{\Lambda\Gamma} M^{\sigma\tau, 1} = {}^{\Lambda\Gamma} P^{\sigma\tau}.  
         for &k in zeros {
             let l_tilde_c_occ_k = l_tilde_c_occ.column(k).to_owned();
             let g_tilde_c_occ_k = g_tilde_c_occ.column(k).to_owned(); 
@@ -449,38 +459,33 @@ impl DiffSpin {
     ///     `loa`: Array1, alpha occupancy vector for |^\Lambda\Psi\rangle.
     ///     `lob`: Array1, beta occupancy vector for |^\Lambda\Psi\rangle.
     pub fn new(eri: &Array4<f64>, s_munu: &Array2<f64>, g_ca: &Array2<f64>, g_cb: &Array2<f64>, l_ca: &Array2<f64>, l_cb: &Array2<f64>, 
-           goa: &Array1<f64>, gob: &Array1<f64>, loa: &Array1<f64>, lob: &Array1<f64>) -> Self {
-        let tol = 1e-12;
+           goa: &Array1<f64>, gob: &Array1<f64>, loa: &Array1<f64>, lob: &Array1<f64>, tol: f64) -> Self {
         let nmo = g_ca.ncols();
 
         let l_ca_occ = occ_coeffs(l_ca, loa);
         let g_ca_occ = occ_coeffs(g_ca, goa);
         let l_cb_occ = occ_coeffs(l_cb, lob);
         let g_cb_occ = occ_coeffs(g_cb, gob);
-        
-        // Get occupied MO overlap matrix per spin.
-        let sa_occ = SameSpin::calculate_mo_overlap_matrix(&l_ca_occ, &g_ca_occ, s_munu);
-        let sb_occ = SameSpin::calculate_mo_overlap_matrix(&l_cb_occ, &g_cb_occ, s_munu);
-        
+
         // SVD and rotate the occupied orbitals per spin.
-        let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _phase) = SameSpin::perform_svd_and_rotate(&sa_occ, &l_ca_occ, &g_ca_occ);
-        let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) = SameSpin::perform_svd_and_rotate(&sb_occ, &l_cb_occ, &g_cb_occ);
+        let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _phase) = SameSpin::perform_ortho_and_svd_and_rotate(s_munu, &l_ca_occ, &g_ca_occ, 1e-20);
+        let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) = SameSpin::perform_ortho_and_svd_and_rotate(s_munu, &l_cb_occ, &g_cb_occ, 1e-20);
         
         // Find indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S} and count them per spin.
         // No longer writing per spin from here onwards, hopefully it is clear.
         let zerosa: Vec<usize> = tilde_sa_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
         let zerosb: Vec<usize> = tilde_sb_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
-        
+
         // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices.
-        let (m0a, m1a) = SameSpin::construct_m(&tilde_sa_occ, &l_tilde_ca_occ, &g_tilde_ca_occ, &zerosa);
-        let (m0b, m1b) = SameSpin::construct_m(&tilde_sb_occ, &l_tilde_cb_occ, &g_tilde_cb_occ, &zerosb);
+        let (m0a, m1a) = SameSpin::construct_m(&tilde_sa_occ, &l_tilde_ca_occ, &g_tilde_ca_occ, &zerosa, tol);
+        let (m0b, m1b) = SameSpin::construct_m(&tilde_sb_occ, &l_tilde_cb_occ, &g_tilde_cb_occ, &zerosb, tol);
         let ma = [&m0a, &m1a];
         let mb = [&m0b, &m1b];
         
         // Construct only the Coulomb contraction of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k}, 
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k}. No exchange here due to differing spins.
-        let ja = [SameSpin::build_j_coulomb(eri, &m0a), SameSpin::build_j_coulomb(eri, &m1a)];
-        let jb = [SameSpin::build_j_coulomb(eri, &m0b), SameSpin::build_j_coulomb(eri, &m1b)];
+        let ja = [SameSpin::build_j_coulomb(eri, ma[0]), SameSpin::build_j_coulomb(eri, ma[1])];
+        let jb = [SameSpin::build_j_coulomb(eri, mb[0]), SameSpin::build_j_coulomb(eri, mb[1])];
         
         // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}. 
         // This can be rewritten (and thus calculated) as V_{ab, 0}^{m_i, m_j} = \sum_{pr} (J_{\mu\nu}^{m_i}) {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
@@ -498,10 +503,10 @@ impl DiffSpin {
         // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and 
         // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
         // down the line. Again analogous to the same spin case but with spin resolved quantities.
-        let (cx_a0, xc_a0) = Self::build_cx_xc(&m0a, s_munu, l_ca, g_ca, 0);
-        let (cx_a1, xc_a1) = Self::build_cx_xc(&m1a, s_munu, l_ca, g_ca, 1);
-        let (cx_b0, xc_b0) = Self::build_cx_xc(&m0b, s_munu, l_cb, g_cb, 0);
-        let (cx_b1, xc_b1) = Self::build_cx_xc(&m1b, s_munu, l_cb, g_cb, 1);
+        let (cx_a0, xc_a0) = Self::build_cx_xc(ma[0], s_munu, l_ca, g_ca, 0);
+        let (cx_a1, xc_a1) = Self::build_cx_xc(ma[1], s_munu, l_ca, g_ca, 1);
+        let (cx_b0, xc_b0) = Self::build_cx_xc(mb[0], s_munu, l_cb, g_cb, 0);
+        let (cx_b1, xc_b1) = Self::build_cx_xc(mb[1], s_munu, l_cb, g_cb, 1);
         let cx_a = [&cx_a0, &cx_a1];
         let xc_a = [&xc_a0, &xc_a1];
         let cx_b = [&cx_b0, &cx_b1];
@@ -690,7 +695,7 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
-pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 {
+pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
 
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
 
@@ -712,7 +717,7 @@ pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
     // Iterate over all possible distributions of zeros amongst the columns.
     for bitstring in iter_m_combinations(l, w.m) {
         let det = mix_columns(&det0, &det1, bitstring);
-        let (d, _) = adjugate_transpose(&det).unwrap();
+        let (d, _) = adjugate_transpose(&det, tol).unwrap();
         acc += d;
     }
     w.phase * w.tilde_s_prod * acc
@@ -724,7 +729,7 @@ pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
-pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 {
+pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
     
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
     
@@ -752,7 +757,7 @@ pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 
         
         // First term in the sum of Eqn 26 involves the same sum over all possible bitstrings with
         // the F0 matrix multiplying the contraction determinant.
-        let (det_det, _) = adjugate_transpose(&det).unwrap();
+        let (det_det, _) = adjugate_transpose(&det, tol).unwrap();
         let mut contrib = det_det * w.f0[mi as usize];
         
         // Remaining terms in Eqn 26 consist of the same sum over all possible bitstrings, but now
@@ -770,7 +775,7 @@ pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 
                 det_f[(a, b)] = f[(ra, cb)]
             }
             // Calculate contribution.
-            let (det_det_f, _) = adjugate_transpose(&det_f).unwrap();
+            let (det_det_f, _) = adjugate_transpose(&det_f, tol).unwrap();
             contrib -= det_det_f;
         }
         acc += contrib;
@@ -784,7 +789,7 @@ pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
-pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 {
+pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
     
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
 
@@ -812,7 +817,7 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
         
         // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 2.
         let det_mix = mix_columns(&det0, &det1, ind);
-        let Some((det_det, adjt_det)) = adjugate_transpose(&det_mix) else {continue;};
+        let Some((det_det, adjt_det)) = adjugate_transpose(&det_mix, tol) else {continue;};
 
         let mut contrib = 0.0f64;
 
@@ -850,7 +855,7 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
                 
                 // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                 let det_mix2 = minor(&det_mix, i, j);
-                let Some((det_det2, adjt_det2)) = adjugate_transpose(&det_mix2) else {continue;};
+                let Some((det_det2, adjt_det2)) = adjugate_transpose(&det_mix2, tol) else {continue;};
                 
                 // Select indices that give the correct slice of J.
                 let ri_fixed = rows[i];
@@ -893,7 +898,7 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
-pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin) -> f64 {
+pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, tol: f64) -> f64 {
 
     let (rows_a_lab, cols_a_lab) = construct_determinant_lables(l_ex_a, g_ex_a);
     let (rows_b_lab, cols_b_lab) = construct_determinant_lables(l_ex_b, g_ex_b);
@@ -928,7 +933,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
         // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
         // spin alpha.
         let deta_mix = mix_columns(&deta0, &deta1, inda);
-        let Some((det_deta, adjt_deta)) = adjugate_transpose(&deta_mix) else {continue;};
+        let Some((det_deta, adjt_deta)) = adjugate_transpose(&deta_mix, tol) else {continue;};
         
         // Iterate over all possible distributions of beta zeros amongst the columns.
         for bits_b in iter_m_combinations(lb + 1, w.bb.m) {
@@ -939,7 +944,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
             // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
             // spin beta.
             let detb_mix = mix_columns(&detb0, &detb1, indb);
-            let Some((det_detb, adjt_detb)) = adjugate_transpose(&detb_mix) else {continue;};
+            let Some((det_detb, adjt_detb)) = adjugate_transpose(&detb_mix, tol) else {continue;};
 
             let mut contrib = 0.0f64;
 
@@ -997,7 +1002,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                 
                     // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                     let deta_mix_minor = minor(&deta_mix, i, j);
-                    let Some((det_deta_minor_mix, _adjt_deta_mix_minor)) = adjugate_transpose(&deta_mix_minor) else {continue;};
+                    let Some((det_deta_minor_mix, _adjt_deta_mix_minor)) = adjugate_transpose(&deta_mix_minor, tol) else {continue;};
                     
                     // Inner sum iterates over all columns of the determinant and replaces column
                     // k with the appropriate column of II.
@@ -1034,7 +1039,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                     
                     // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                     let detb_mix_minor = minor(&detb_mix, i, j);
-                    let Some((det_detb_minor_mix, _adjt_detb_mix_minor)) = adjugate_transpose(&detb_mix_minor) else {continue;};
+                    let Some((det_detb_minor_mix, _adjt_detb_mix_minor)) = adjugate_transpose(&detb_mix_minor, tol) else {continue;};
                     
                     // Inner sum iterates over all columns of the L determinant and replaces column
                     // k with the appropriate column of II.
@@ -1091,6 +1096,15 @@ fn slice_ii(t: &Array4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_f
 
 fn lbl_to_idx(lbl: Label, nmo: usize) -> usize {
     label_to_idx(lbl.0, lbl.2, nmo)
+}
+
+// Debugging functions 
+
+fn maxabs(a: &Array2<f64>) -> f64 {
+    a.iter().fold(0.0, |m,&x| m.max(x.abs()))
+}
+fn frob(a: &Array2<f64>) -> f64 {
+    a.iter().map(|x| x*x).sum::<f64>().sqrt()
 }
 
 

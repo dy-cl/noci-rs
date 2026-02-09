@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 
 use ndarray::{Array1, Array2, Array4, Axis};
-use ndarray_linalg::{Eigh, UPLO, Determinant};
+use ndarray_linalg::{SVD, Eigh, UPLO, Determinant};
 use rayon::prelude::*;
 
 thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new()); static GT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
@@ -371,47 +371,65 @@ pub fn minor(m: &Array2<f64>, r_rm: usize, c_rm: usize) -> Array2<f64> {
     out
 }
 
-/// Calculate determinant and transpose of adjugate matrix using cofactor expansion. 
-/// For each i, j calculate the minor matrix M_{i, j} (see above), find its determinant, and
-/// compute adjt_{i, j} = -1^{i + j} det(M_{i, j}). The determinant is subsequently found as 
-/// det(A) = \sum_j A_{0, j} * adjt_{0, j}.
-/// # Arguments:
-///     `a`: Array2, input matrix.
-pub fn adjugate_transpose(a: &Array2<f64>) -> Option<(f64, Array2<f64>)> {
+pub fn adjugate_transpose(a: &Array2<f64>, thresh: f64) -> Option<(f64, Array2<f64>)> {
     let n = a.nrows();
-
-    if n == 0 {return Some((1.0, Array2::zeros((0, 0))));}
+    if n != a.ncols() {return None;}
+    if n == 0 {return Some((1.0, Array2::<f64>::zeros((0, 0))));}
     if n == 1 {return Some((a[(0, 0)], Array2::from_elem((1, 1), 1.0)));}
+    let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
+    let u = u_opt?;
+    let vt = vt_opt?;
+    let v = vt.t().to_owned(); 
 
-    let mut adjt = Array2::<f64>::zeros((n, n));
+    let det_u = u.det().ok()?;
+    let det_vt = vt.det().ok()?;
+    let mut red_det = det_u * det_vt;
+
+    let mut det = red_det;
+
+    let mut invs = Array1::<f64>::zeros(n);
+    let mut zeros: Vec<usize> = Vec::new();
+
     for i in 0..n {
-        for j in 0..n {
-            let mut m = Array2::<f64>::zeros((n - 1, n - 1));
-            let mut ii = 0;
-            for r in 0..n {
-                if r == i { continue; }
-                let mut jj = 0;
-                for c in 0..n {
-                    if c == j { continue; }
-                    m[(ii, jj)] = a[(r, c)];
-                    jj += 1;
-                }
-                ii += 1;
-            }
-            let detm = match n - 1 {
-                0 => 1.0,
-                1 => m[(0, 0)],
-                _ => m.det().unwrap_or(0.0),
-            };
-            adjt[(i, j)] = if ((i + j) & 1) == 0 {detm} else {-detm};
+        let si = s[i];
+        det *= si;
+        if si.abs() > thresh {
+            red_det *= si;        
+            invs[i] = 1.0 / si;
+        } else {
+            zeros.push(i);
         }
     }
+    let nzero = zeros.len();
 
-    let mut det = 0.0;
-    for j in 0..n {
-        det += a[(0, j)] * adjt[(0, j)];
-    }
+    let mut adj = Array2::<f64>::zeros((n, n));
 
+    if nzero == 0 {
+        for i in 0..n {
+            let alpha = invs[i];
+            let vi = v.column(i);
+            let ui = u.column(i);
+            for r in 0..n {
+                let vr = vi[r];
+                for c in 0..n {
+                    adj[(r, c)] += alpha * vr * ui[c];
+                }
+            }
+        }
+        adj *= det;
+    } else if nzero == 1 {
+        let k = zeros[0];
+        let vk = v.column(k);
+        let uk = u.column(k);
+        for r in 0..n {
+            let vr = vk[r];
+            for c in 0..n {
+                adj[(r, c)] = red_det * vr * uk[c];
+            }
+        }
+    } 
+
+    let adjt = adj.t().to_owned();
     Some((det, adjt))
 }
 

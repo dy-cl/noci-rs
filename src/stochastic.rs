@@ -143,7 +143,7 @@ impl ElemCache {
     ///     `basis`: Vec<SCFState>, vector of all SCF states in the basis.
     ///     `i`: usize, index of state i. 
     ///     `j`: usize, index of state k.
-    fn find_s(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize) -> f64 {
+    fn find_s(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64) -> f64 {
         // Get the sorted pair of indices 
         let (a, b) = Self::key(i, j);
         
@@ -153,7 +153,7 @@ impl ElemCache {
         }
 
         // Otherwise compute it for the first time
-        let s = calculate_s_pair_naive(ao, basis, a, b);
+        let s = calculate_s_pair_naive(ao, basis, a, b, tol);
         self.maps.insert((a, b), s);
         s
     }
@@ -165,7 +165,7 @@ impl ElemCache {
     ///     `basis`: Vec<SCFState>, vector of all SCF states in the basis.
     ///     `i`: usize, index of state i. 
     ///     `j`: usize, index of state k.
-    fn find_hs(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize) -> (f64, f64) {
+    fn find_hs(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64) -> (f64, f64) {
         // Get the sorted pair of indices
         let (a, b) = Self::key(i, j);
 
@@ -175,7 +175,7 @@ impl ElemCache {
         }
 
         // Otherwise compute them for the first time.
-        let (h, s) = calculate_hs_pair_naive(ao, basis, a, b);
+        let (h, s) = calculate_hs_pair_naive(ao, basis, a, b, tol);
         self.maph.insert((a, b), h);
         self.maps.insert((a, b), s);
         (h, s)
@@ -298,7 +298,7 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `iref`: usize, index of the first reference determinant.
-pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCache, ao: &AoData, basis: &[SCFState], iref: usize) -> Walkers {
+pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCache, ao: &AoData, basis: &[SCFState], iref: usize, tol: f64) -> Walkers {
     let mut w = Walkers::new(n);
 
     // Ill-conditioning threshold.
@@ -325,7 +325,7 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCa
         let ngamma = w.get(gamma);
         // Calculate or retrieve matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,
         // \text{Reference}} from cache.
-        let sgr = cache.find_s(ao, basis, gamma, iref);
+        let sgr = cache.find_s(ao, basis, gamma, iref, tol);
         den += (ngamma as f64) * sgr;
     }
 
@@ -372,7 +372,7 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: &mut MCState, input: &Input) -> HeatBath {
+fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: &mut MCState, input: &Input, tol: f64) -> HeatBath {
     let ndets = basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
     let mut sumlg = 0.0_f64;
@@ -389,7 +389,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: 
 
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
-        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
+        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma, tol);
         let k = coupling(hlg, slg, es_s, &input.prop.propagator);
 
         sumlg += k.abs();
@@ -409,14 +409,14 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: 
 ///      es_s: f64, E_s^S(\tau) shift energy.
 ///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState) -> (f64, f64, usize) {
+fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, tol: f64) -> (f64, f64, usize) {
     let ndets = basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
     // more than the Gamma index we map it back into the full index set.
     let mut lambda = mc.rng.gen_range(0..(ndets - 1));
     if lambda >= gamma {lambda += 1;}
 
-    let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
+    let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma, tol);
     let k = coupling(hlg, slg, es_s, &input.prop.propagator);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
@@ -434,7 +434,7 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input:
 ///      es_s: f64, E_s^S(\tau) shift energy.
 ///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, hb: &HeatBath) -> (f64, f64, usize) {
+fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, hb: &HeatBath, tol: f64) -> (f64, f64, usize) {
     let ndets = basis.len();
 
     // If \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} (sumlg) 
@@ -442,7 +442,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
     if hb.sumlg == 0.0 {
         let mut lambda = mc.rng.gen_range(0..(ndets - 1));
         if lambda >= gamma {lambda += 1;}
-        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma);
+        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma, tol);
         let k = coupling(hlg, slg, es_s, &input.prop.propagator);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
@@ -496,14 +496,14 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
 ///     `send_buf`: Vec<Vec<PopulationUpdate>>, MPI send buffer which contains information about
 ///     population updates that need to happen at determinants not owned by this rank.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, mc: &mut MCState,
-            irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>) {
+            irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>, tol: f64) {
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
 
     // Precompute per determinant heat-bath excitation generation quantities.
     let mut hb: Option<HeatBath> = None;
-    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, mc, input));}
+    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, mc, input, tol));}
 
     // Iterate over all walkers on state Gamma.
     for _ in 0..nwalkers {
@@ -511,8 +511,8 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
         // generation scheme.
         let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
-            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, mc),
-            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, mc, hb.as_ref().unwrap()),
+            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, mc, tol),
+            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, mc, hb.as_ref().unwrap(), tol),
         };
 
         // Calculate spawning probability.
@@ -556,10 +556,10 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 ///     `es_s`: f64, overlap-transformed shift energy.
 ///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState) {
+fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState, tol: f64) {
 
     // Calculate or retrieve matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma} from cache.
-    let (hgg, sgg) = mc.cache.find_hs(ao, basis, gamma, gamma);
+    let (hgg, sgg) = mc.cache.find_hs(ao, basis, gamma, gamma, tol);
 
     // Death probability.
     let pdeath = match input.prop.propagator {
@@ -596,7 +596,7 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
 ///     H_{ij}, S_{ij}.
 ///     `iref`: usize, index of determinant we are projecting onto.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, cache: &mut ElemCache, world: &impl Communicator) -> f64 {
+fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, cache: &mut ElemCache, world: &impl Communicator, tol: f64) -> f64 {
     let mut num = 0.0; 
     let mut den = 0.0; 
 
@@ -604,7 +604,7 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
         let ngamma = walkers.get(gamma);
         // Calculate or retrieve matrix elements H_{\Gamma, \text{Reference}}, S_{\Gamma,
         // \text{Reference}} from cache.
-        let (hgr, sgr) = cache.find_hs(ao, basis, gamma, iref);
+        let (hgr, sgr) = cache.find_hs(ao, basis, gamma, iref, tol);
         num += (ngamma as f64) * hgr;
         den += (ngamma as f64) * sgr;
     }
@@ -628,7 +628,7 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 ///     `cache`: ElemCache, hash map between two determinant indices i, j and matrix elements
 ///     H_{ij}, S_{ij}.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator) -> Vec<f64> {
+fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator, tol: f64) -> Vec<f64> {
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
 
@@ -640,7 +640,7 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
             // Here we use dn to mean total population.
             let nomega = entry.dn as f64;
             let omega = entry.det as usize;
-            let sgo = cache.find_s(ao, basis, gamma, omega);
+            let sgo = cache.find_s(ao, basis, gamma, omega, tol);
             pgamma += nomega * sgo;
         }
         p[gamma - start] = pgamma
@@ -659,7 +659,7 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
 ///     `plocal`: [f64], vector p_{\Gamma} on this rank.
 ///     `dlocal`: [PopulationUpdate], local determinant population updates.
-fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate]) {
+fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64) {
     let dglobal = gather_all_walkers(world, dlocal);
 
     for gamma in start..end {
@@ -669,7 +669,7 @@ fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &m
             // Here we use dn to mean population change.
             let dnomega = entry.dn as f64;
             let omega = entry.det as usize;
-            let sgo = cache.find_s(ao, basis, gamma, omega);
+            let sgo = cache.find_s(ao, basis, gamma, omega, tol);
             dpgamma += dnomega * sgo;
         } 
         plocal[gamma - start] += dpgamma;
@@ -686,7 +686,7 @@ fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &m
 ///     `input`: Input, user specified input options.
 ///     `ref_indices`: [usize], indices of the reference determinants embedded in the full space.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
-pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>) {
+pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64) -> (f64, Option<ExcitationHist>) {
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
@@ -715,7 +715,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
     // Initialise walker populations based on total initial population and c0.
     if irank == 0 {println!("Initialising walkers.....");}
-    let w = initialse_walkers(c0, qmc.initial_population, ndets, &mut cache, ao, basis, iref);
+    let w = initialse_walkers(c0, qmc.initial_population, ndets, &mut cache, ao, basis, iref, tol);
     let w = local_walkers(w, irank, nranks);
 
     // Flags activated once total walker population exceeds target population 
@@ -732,11 +732,11 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let excitation_hist = if input.write.write_excitation_hist {Some(ExcitationHist::new(-60.0, 1e-12, 100))} else {None};
 
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
-    let pg = init_p(start, end, ao, basis, &w, &mut cache, world);
+    let pg = init_p(start, end, ao, basis, &w, &mut cache, world, tol);
     let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), cache, rng, pg, excitation_hist};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
-    let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
+    let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world, tol);
     
     // Initialise populations.
     let mut nwscprev = 0.0;
@@ -768,9 +768,9 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
             // If the walker population on state Gamma is zero we ignore it.
             if ngamma == 0 {continue;}
             // Diagonal death and cloning step. Diagonal step is entirely local.
-            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc);
+            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc, tol);
             // Off-diagonal amplitude transfer. 
-            spawning(ao, basis, gamma, ngamma, es_s, input, &mut mc, irank, nranks, &mut send);
+            spawning(ao, basis, gamma, ngamma, es_s, input, &mut mc, irank, nranks, &mut send, tol);
         }
 
         // Exchange population updates between ranks and add any recieved updates to local delta. 
@@ -782,7 +782,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         // Apply local and recieved deltas. Annhilation is fully local process here.  
         // The change in population is also stored to update overlap-transformed walker population.
         let d = apply_delta(&mut mc);
-        update_p(start, end, ao, basis, &mut mc.cache, world, &mut mc.pg, &d);
+        update_p(start, end, ao, basis, &mut mc.cache, world, &mut mc.pg, &d, tol);
 
         // Calculate non overlap-transformed walker population.
         let mut nwc = 0i64;
@@ -822,7 +822,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
         // Update energy. 
         let iref = 0;
-        let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world);
+        let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world, tol);
 
         // Print table rows.
         if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
