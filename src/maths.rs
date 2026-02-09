@@ -2,8 +2,7 @@
 use std::cell::RefCell;
 
 use ndarray::{Array1, Array2, Array4, Axis};
-use ndarray_linalg::{Eigh, UPLO};
-use num_complex::Complex64;
+use ndarray_linalg::{Eigh, UPLO, Determinant};
 use rayon::prelude::*;
 
 thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new()); static GT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
@@ -30,23 +29,6 @@ pub fn loewdin_x_real(s: &Array2<f64>, project: bool, tol: f64) -> Array2<f64> {
     evecs.dot(&d).dot(&evecs.t())
 }
 
-pub fn loewdin_x_complex(s: &Array2<Complex64>, project: bool, tol: f64) -> Array2<Complex64> {
-    // S = U \Lambda U^{\dagger}
-    let (lambdas, u) = s.eigh(UPLO::Lower).unwrap(); 
-    // \Lambda^{-1/2}
-    let invsqrt: Array1<Complex64> = lambdas.mapv(|x| { 
-        if project {
-            if x > tol {Complex64::new(1.0 / x.sqrt(), 0.0)} else {Complex64::new(0.0, 0.0)}
-        } else {
-           Complex64::new(1.0 / x.sqrt(), 0.0) 
-        }
-    });
-    let d = Array2::from_diag(&invsqrt);
-    // X = U \Lambda^{-1/2} U^{\dagger}
-    let u_dag = u.t().map(|z| z.conj());
-    u.dot(&d).dot(&u_dag)
-}
-
 /// Solve the real/complex generalized eigenproblem F C = S C e using the Loewdin orthogonalizer.
 /// # Arguments
 ///     `f`: Array2, Hermitian matrix, uses only the lower triangle. Often Fock matrix 
@@ -61,20 +43,6 @@ pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f6
     let x = loewdin_x_real(s, project, tol); 
     // \tilde{F} = X^T F X.
     let ft = x.t().dot(f).dot(&x);
-    // \tilde{F} U = \epsilon U.
-    let (epsilon, u) = ft.eigh(UPLO::Lower).unwrap();
-    // C = X U. 
-    let c = x.dot(&u);
-    (epsilon, c)
-}
-
-pub fn general_evp_complex(f: &Array2<Complex64>, s: &Array2<Complex64>, project: bool, 
-                           tol: f64) -> (Array1<f64>, Array2<Complex64>) {
-    // X = S^{-1/2}
-    let x = loewdin_x_complex(s, project, tol); 
-    // \tilde{F} = X^{\dagger} F X.
-    let xt = x.t().map(|z| z.conj());
-    let ft = xt.dot(f).dot(&x);
     // \tilde{F} U = \epsilon U.
     let (epsilon, u) = ft.eigh(UPLO::Lower).unwrap();
     // C = X U. 
@@ -107,33 +75,6 @@ pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
             let h_ab = unsafe {*hs.get_unchecked(a * n + b)};
             acc += g_ba * h_ab; 
         }
-    }
-    acc
-}
-
-pub fn einsum_ab_ba_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
-    let n = g.nrows();
-    let gs = g.as_slice_memory_order().unwrap();
-    let hs = h.as_slice_memory_order().unwrap();
-    let mut acc = 0.0;
-    for a in 0..n {
-        let arow = a * n;
-        for b in 0..n {
-            let g_ab = unsafe { *gs.get_unchecked(arow + b) };
-            let h_ba = unsafe { *hs.get_unchecked(b * n + a) };
-            acc += g_ab * h_ba;
-        }
-    }
-    acc
-}
-
-pub fn einsum_ab_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
-    let n = g.nrows();
-    let gs = g.as_slice_memory_order().unwrap();
-    let hs = h.as_slice_memory_order().unwrap();
-    let mut acc = 0.0;
-    for i in 0..(n*n) {
-        acc += unsafe { *gs.get_unchecked(i) } * unsafe { *hs.get_unchecked(i) };
     }
     acc
 }
@@ -280,74 +221,6 @@ pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
     })
 }
 
-pub fn einsum_ba_acbd_dc_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
-    let n = g.nrows();
-
-    let gs = g.as_slice_memory_order().unwrap();
-    let hs = h.as_slice_memory_order().unwrap();
-    let ts = t.as_slice_memory_order().unwrap();
-
-    let mut acc = 0.0f64;
-
-    HT_SCRATCH.with(|hbuf| {
-        GT_SCRATCH.with(|gbuf| {
-            let mut ht = hbuf.borrow_mut();
-            let mut gt = gbuf.borrow_mut();
-
-            ht.resize(n * n, 0.0);
-            gt.resize(n * n, 0.0);
-
-            // ht[c,d] = h[d,c]
-            for c in 0..n {
-                let c_idx = c * n;
-                for d in 0..n {
-                    unsafe {
-                        //*ht.get_unchecked_mut(c_idx + d) = *hs.get_unchecked(d * n + c);
-                        *ht.get_unchecked_mut(c_idx + d) = *hs.get_unchecked(c * n + d);
-                    }
-                }
-            }
-
-            // gt[a,b] = g[b,a]
-            for b in 0..n {
-                let b_idx = b * n;
-                for a in 0..n {
-                    unsafe {
-                        *gt.get_unchecked_mut(a * n + b) = *gs.get_unchecked(b_idx + a);
-                    }
-                }
-            }
-
-            unsafe {
-                let ts_ptr = ts.as_ptr();
-                let ht_ptr = ht.as_ptr();
-                let gt_ptr = gt.as_ptr();
-
-                for a in 0..n {
-                    let gt_a_ptr = gt_ptr.add(a * n); 
-                    for c in 0..n {
-                        let ht_c_ptr = ht_ptr.add(c * n); 
-                        let tac_base = (a * n + c) * n * n; 
-                        for b in 0..n {
-                            let g_ba = *gt_a_ptr.add(b);
-                            if g_ba == 0.0 {
-                                continue;
-                            }
-
-                            let tabc_vec_ptr = ts_ptr.add(tac_base + b * n);
-
-                            let dot = dot_product_unroll8(tabc_vec_ptr, ht_c_ptr, n);
-                            acc = g_ba.mul_add(dot, acc);
-                        }
-                    }
-                }
-            }
-            acc
-        })
-    })
-}
-
-
 /// Calculate a matrix vector product HC = U in parallel.
 /// # Arguments  
 /// `h`: Array2, matrix. 
@@ -359,6 +232,15 @@ pub fn parallel_matvec_real(h: &Array2<f64>, c: &Array1<f64>) -> Array1<f64> {
     Array1::from_vec(result)
 }
 
+/// Transform ERIs from AO to MO basis as:
+///     (pq|rs) = \sum_{\mu\nu\lambda\sigma} (\mu\nu|\lambda\sigma) C_{\mu, p} C_{\nu, q} C_{\lambda, r} C_{\sigma, s}.
+/// Contraction is performed one indexd at a time for O(n^5) work.
+/// # Arguments:
+///     `eri`: Array4, AO basis ERIs.
+///     `c_mu_p`: Array2, MO coefficients C_{\mu, p}. 
+///     `c_nu_q`: Array2, MO coefficients C_{\nu, q}.
+///     `c_lam_r`: Array2, MO coefficients C_{\lambda, r}.
+///     `c_sigma_s`: Array2, MO coefficients C_{\sigma, s}.
 pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, c_lam_r: &Array2<f64>, c_sig_s: &Array2<f64>) -> Array4<f64> {
     let nbas = c_mu_p.nrows();
     let nmo_p = c_mu_p.ncols();
@@ -428,38 +310,108 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
     out
 }
 
-pub fn contract_pq_rs(v_pqrs: &Array4<f64>, m_rs: &Array2<f64>) -> Array2<f64> {
-    let (np, nq, nr, ns) = v_pqrs.dim();
-
-    let mut out = Array2::<f64>::zeros((np, nq));
-    for p in 0..np {
-        for q in 0..nq {
-            let mut acc = 0.0;
-            for r in 0..nr {
-                for s in 0..ns {
-                    acc += v_pqrs[(p, q, r, s)] * m_rs[(r, s)];
-                }
-            }
-            out[(p, q)] = acc;
+/// Build square L x L contraction determinant with X elements in the diagonal and lower half, Y
+/// elements in the upper half.
+/// # Arguments:
+///     `x`: Array2, X matrix elements.
+///     `y`: Array2, Y matrix elements.
+///     `rows`: [usize], row indices of X or Y.
+///     `cols`: [usize], column indices of X or Y.
+pub fn build_d(x: &Array2<f64>, y: &Array2<f64>, rows: &[usize], cols: &[usize],) -> Array2<f64> {
+    let l = rows.len();
+    let mut out = Array2::<f64>::zeros((l, l));
+    for i in 0..l {
+        let r = rows[i];
+        for j in 0..l {
+            let c = cols[j];
+            out[(i, j)] = if i >= j {x[(r, c)]} else {y[(r, c)]};
         }
     }
     out
 }
 
-pub fn contract_pq_rs_transposed(v_pqrs: &Array4<f64>, m_sr: &Array2<f64>) -> Array2<f64> {
-    let (np, nq, nr, ns) = v_pqrs.dim();
-
-    let mut out = Array2::<f64>::zeros((np, nq));
-    for p in 0..np {
-        for q in 0..nq {
-            let mut acc = 0.0;
-            for r in 0..nr {
-                for s in 0..ns {
-                    acc += v_pqrs[(p, q, r, s)] * m_sr[(s, r)];
-                }
-            }
-            out[(p, q)] = acc;
+/// Mix columns of det1 into det0 as prescribed by a bitstring. For each column c if bit c of the
+/// bitstring is 1 the output column c is taken from det1 and det0 otherwise.
+/// # Arguments:
+///    `det0`: Array2, base matrix.
+///    `det1`: Array2, mixing matrix.
+///    `bits`: usize, bitstring.
+pub fn mix_columns(det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) -> Array2<f64> {
+    let n = det0.ncols();
+    let mut out = det0.clone();
+    for c in 0..n {
+        if ((bits >> c) & 1) == 1 {
+            out.column_mut(c).assign(&det1.column(c));
         }
     }
     out
 }
+
+/// Calculate minor of a square matrix, that is, the matrix obtained by removing row `r_rm` and
+/// column `c_rm`.
+/// # Arguments:
+///     `m`: Array2, base matrix.
+///     `r_rm`: usize, row index to remove.
+///     `c_rm`: usize, column index to remove.
+pub fn minor(m: &Array2<f64>, r_rm: usize, c_rm: usize) -> Array2<f64> {
+    let n = m.nrows();
+    if n == 0 {return Array2::<f64>::zeros((0, 0));}
+    let mut out = Array2::<f64>::zeros((n - 1, n - 1));
+    let mut ii = 0;
+    for i in 0..n {
+        if i == r_rm {continue;}
+        let mut jj = 0;
+        for j in 0..n {
+            if j == c_rm {continue;}
+            out[(ii, jj)] = m[(i, j)];
+            jj += 1;
+        }
+        ii += 1;
+    }
+    out
+}
+
+/// Calculate determinant and transpose of adjugate matrix using cofactor expansion. 
+/// For each i, j calculate the minor matrix M_{i, j} (see above), find its determinant, and
+/// compute adjt_{i, j} = -1^{i + j} det(M_{i, j}). The determinant is subsequently found as 
+/// det(A) = \sum_j A_{0, j} * adjt_{0, j}.
+/// # Arguments:
+///     `a`: Array2, input matrix.
+pub fn adjugate_transpose(a: &Array2<f64>) -> Option<(f64, Array2<f64>)> {
+    let n = a.nrows();
+
+    if n == 0 {return Some((1.0, Array2::zeros((0, 0))));}
+    if n == 1 {return Some((a[(0, 0)], Array2::from_elem((1, 1), 1.0)));}
+
+    let mut adjt = Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..n {
+            let mut m = Array2::<f64>::zeros((n - 1, n - 1));
+            let mut ii = 0;
+            for r in 0..n {
+                if r == i { continue; }
+                let mut jj = 0;
+                for c in 0..n {
+                    if c == j { continue; }
+                    m[(ii, jj)] = a[(r, c)];
+                    jj += 1;
+                }
+                ii += 1;
+            }
+            let detm = match n - 1 {
+                0 => 1.0,
+                1 => m[(0, 0)],
+                _ => m.det().unwrap_or(0.0),
+            };
+            adjt[(i, j)] = if ((i + j) & 1) == 0 {detm} else {-detm};
+        }
+    }
+
+    let mut det = 0.0;
+    for j in 0..n {
+        det += a[(0, j)] * adjt[(0, j)];
+    }
+
+    Some((det, adjt))
+}
+

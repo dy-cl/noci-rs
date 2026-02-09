@@ -1,10 +1,10 @@
 // nonorthogonalwicks.rs 
 use ndarray::{Array1, Array2, Array4, Axis, s};
-use ndarray_linalg::{SVD, Determinant, Solve};
+use ndarray_linalg::{SVD, Determinant};
 
 use crate::{ExcitationSpin};
 
-use crate::maths::{einsum_ba_ab_real, eri_ao2mo};
+use crate::maths::{einsum_ba_ab_real, eri_ao2mo, minor, adjugate_transpose, mix_columns, build_d};
 use crate::noci::occ_coeffs;
 
 // Whether a given orbital index belongs to the bra or ket.
@@ -17,20 +17,17 @@ pub enum Type {Hole, Part}
 pub type Label = (Side, Type, usize);
 
 pub struct SameSpin {
-    // X[mi], Y[mi]
-    pub x: [Array2<f64>; 2],
-    pub y: [Array2<f64>; 2],
+    pub x: [Array2<f64>; 2], // X[mi]
+    pub y: [Array2<f64>; 2], // Y[mi]
 
-    // F0[mi], F[mi][mj]
-    pub f0: [f64; 2],
-    pub f: [[Array2<f64>; 2]; 2],
+    pub f0: [f64; 2], // F0[mi]
+    pub f: [[Array2<f64>; 2]; 2], // F[mi][mj]
 
-    // V0[mi][mj], V[mi][mj][mk]
-    pub v0: [f64; 3],
-    pub v: [[[Array2<f64>; 2]; 2]; 2],
+    pub v0: [f64; 3], // V0[mi][mj]
+    pub v: [[[Array2<f64>; 2]; 2]; 2], // V[mi][mj][mk]
 
-    // J[mi][mj][mk][ml]
-    pub j: [[[[Array4<f64>; 2]; 2]; 2]; 2],
+    pub j: [[[[Array4<f64>; 2]; 2]; 2]; 2],  // J[mi][mj][mk][ml]
+
 
     pub tilde_s_prod: f64,
     pub phase: f64,
@@ -56,17 +53,17 @@ pub struct WicksReferencePair {
 }
 
 impl SameSpin {
-    /// Constructor for the WicksReferencePair object which contains the precomputed values
+    /// Constructor for the WicksReferencePair object of SameSpin which contains the precomputed values
     /// per pair of reference determinants required to evaluate arbitrary excited determinants 
-    /// in O(1) time.
+    /// in O(1) time when the excitations are of the same spin.
     /// # Arguments:
     ///     `eri`: Array4, electron repulsion integrals. 
     ///     `h_munu`: Array2, AO core Hamiltonian.
     ///     `s_munu`: Array2, AO overlap matrix.
     ///     `g_c`: Array2, full AO coefficient matrix of |^\Gamma\Psi\rangle.
     ///     `l_c`: Array2, full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    ///     `g_c_occ`: Array2, occupied AO coefficient matrix of |^\Gamma\Psi\rangle.
-    ///     `l_c_occ`: Array2, occupied AO coefficient matrix of |^\Lambda\Psi\rangle.
+    ///     `go`: Array1, occupancy vector for |^\Gamma\Psi\rangle.
+    ///     `lo`: Array1, occupancy vector for |^\Lambda\Psi\rangle. 
     pub fn new(eri: &Array4<f64>, h_munu: &Array2<f64>, s_munu: &Array2<f64>, g_c: &Array2<f64>, l_c: &Array2<f64>, go: &Array1<f64>, lo: &Array1<f64>) -> Self {
         let tol = 1e-12;
         let nmo = g_c.ncols();
@@ -99,10 +96,12 @@ impl SameSpin {
         // Construct the {}^{\Gamma\Lambda} X_{ij}^{m_k} and {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices.
         let (x0, y0) = Self::construct_xy(g_c, l_c, s_munu, &mao[0], true);
         let (x1, y1) = Self::construct_xy(g_c, l_c, s_munu, &mao[1], false);
-
         let x: [Array2<f64>; 2] = [x0, x1];
         let y: [Array2<f64>; 2] = [y0, y1];
         
+        // Construct Coulomb and exchange contractions of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k}, 
+        // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k} and {}^{\Gamma\Lambda} K_{\mun\u}^{m_k}. These
+        // quantities are used in many of the following intermediates so we precompute here.
         let nbas = mao[0].nrows();
         let mut jkao: [Array2<f64>; 2] = [Array2::<f64>::zeros((nbas, nbas)), Array2::<f64>::zeros((nbas, nbas))];
         for mi in 0..2 {
@@ -110,22 +109,29 @@ impl SameSpin {
             let k = Self::build_k_exchange(eri, &mao[mi]);
             jkao[mi] = &j - &k;
         }
-
+        
+        // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
+        // intermediates required for one body matrix elements.
         let (f0_0, f00) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
         let (_, f01) = Self::construct_f(l_c, h_munu, &x[0], &y[1]);
         let (_, f10) = Self::construct_f(l_c, h_munu, &x[1], &y[0]);
         let (f0_1, f11) = Self::construct_f(l_c, h_munu, &x[1], &y[1]);
-
         let f0: [f64; 2] = [f0_0, f0_1];
         let f: [[Array2<f64>; 2]; 2] = [[f00, f01], [f10, f11]];
-
+        
+        // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and 
+        // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
+        // down the line.
         let mut cx: [Array2<f64>; 2] = [Array2::<f64>::zeros((nbas, 2*nmo)), Array2::<f64>::zeros((nbas, 2*nmo))];
         let mut xc: [Array2<f64>; 2] = [Array2::<f64>::zeros((nbas, 2*nmo)), Array2::<f64>::zeros((nbas, 2*nmo))];
         for mi in 0..2 {
             (cx[mi], xc[mi]) = DiffSpin::build_cx_xc(&mao[mi], s_munu, l_c, g_c, mi);
         }
 
-        // Construct v0[mi][mj]
+        // Construct {}^{\Lambda\Gamma} V_0^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs) -
+        // {}^{\Lambda}(ps|qr)) {}^{\Lambda\Gamma} X_{sq}^{m_i} {}^{\Lambda\Gamma}. This can be
+        // rewritten (and thus calculated) as V_0^{m_i, m_j} = \sum_{pr} (J_{\mu\nu}^{m_i} - K_{\mu\nu}^{m_i}) 
+        // {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
         let mut v0 = [0.0f64; 3];
         v0[0] = einsum_ba_ab_real(&jkao[0], &mao[0]);
         if m > 1 {
@@ -135,7 +141,15 @@ impl SameSpin {
             v0[1] = 0.0;
         }
 
-        // Construct v[mi][mj][mk]
+        // Construct {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} intermediates for two electron
+        // Hamiltonian matrix elements. These are given as:
+        //      {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} = \sum_{pq} {}^{\Lambda\Gamma} Y_{ap}^{m_1}
+        //      (\sum_{rs} ({}^{\Lambda}(pr|qs) - {}^{\Lambda}(ps|qr)) {}^{\Lambda\Gamma} X_{sr}^{m_2}) 
+        //      {}^{\Lambda\Gamma} X_{qb}^{m_3},
+        // where the use of X or Y on the left and righthand sides depends on the ordering of
+        // \Lambda and \Gamma. Again using our precomputed quantities we rewrite as:
+        //      {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} = \sum_{pq} C_{L,ap}^{m_1} (J_{\mu\nu}^{m_2} - K_{\mu\nu}^{m_2})
+        //      C_{R,qb}^{m_3}.
         let mut v: [[[Array2<f64>; 2]; 2]; 2] = std::array::from_fn(|_| {
             std::array::from_fn(|_| {
                 std::array::from_fn(|_| Array2::<f64>::zeros((2 * nmo, 2 * nmo)))
@@ -145,12 +159,20 @@ impl SameSpin {
             for mj in 0..2 {
                 for mk in 0..2 {
                     v[mi][mj][mk] = cx[mi].t().dot(&jkao[mk]).dot(&xc[mj]);
-                    //v[mi][mj][mk] = 2.0 * cx[mi].t().dot(&jkao[mk]).dot(&xc[mj]);
                 }
             }
         }
 
-        // Construct j[mi][mj][mk][ml]
+        // Construct {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} intermediates for two electron
+        // Hamiltonian matrix elements. These are given as:
+        //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} = \sum_{prqs} ({}^{\Lambda}(pr|qs) - {}^{\Lambda}(ps|qr))
+        //      {}^{\Lambda\Gamma} Y_{ap}^{m_1} {}^{\Lambda\Gamma} X_{rb}^{m_2} {}^{\Lambda\Gamma} Y_{cq}^{m_3} {}^{\Lambda\Gamma} X_{sd}^{m_4},
+        // where the use of X or Y in each part depends on the ordering of \Lambda and \Gamma. Again using our quantities
+        // this may instead be calculated as
+        //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1, m_2, m_3, m_4} = \sum_{\mu\nu\tau\sigma} C_{L,a\mu}^{m_1} C_{R,b\nu}^{m_2}
+        //      ((\mu\nu|\tau\sigma) - (\mu\sigma|\tau\nu)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
+        // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
+        // basis.
         let mut j: [[[[Array4<f64>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
             std::array::from_fn(|_| {
                 std::array::from_fn(|_| {
@@ -319,7 +341,22 @@ impl SameSpin {
 
         (x, y)
     }
-
+    
+    /// Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
+    /// intermediates required for one-body coupling as:
+    ///     {}^{\Lambda\Lambda} F_0^{m_i} = \sum_{pq} {}^\Lambda f_{pq} {\Lambda\Lambda} X_{qp}^{m_i}
+    /// where {}^{\Lambda} f_{pq} is the required onebody operator in the MO basis for determinant
+    /// \Lambda, and:
+    ///     {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j} = \sum_{pq} {\Gamma\Lambda} X_{ap}^{m_i}
+    ///     {\Lambda\Lambda} f_{pq} {\Lambda\Lambda} X_{qb}^{m_j},
+    /// where the use of X or Y and their quadrants depends on the requested ordering of \Lambda,
+    /// \Gamma in {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}.
+    /// # Arguments:
+    ///     `g_c`: Array2, full AO coefficient matrix of |^\Gamma\Psi\rangle.
+    ///     `l_c`: Array2, full AO coefficient matrix of |^\Lambda\Psi\rangle.
+    ///     `h_munu`: Array2, one-electron core AO hamiltonian.
+    ///     `x`: Array2, {}^{\Gamma\Lambda} X_{ij}^{m_k}.
+    ///     `y`: Array2, {}^{\Gamma\Lambda} Y_{ij}^{m_k}
     fn construct_f(l_c: &Array2<f64>, h_munu: &Array2<f64>, x: &Array2<f64>, y: &Array2<f64>) -> (f64, Array2<f64>) {
         let nmo = l_c.ncols();
         let ll_h = l_c.t().dot(h_munu).dot(l_c);
@@ -344,7 +381,14 @@ impl SameSpin {
 
         (ll_f0, f)
     }
-
+    
+    /// Calculate the Coulomb contraction J^{m_k}_{\mu\nu} required for the two electron
+    /// intermediates as:
+    ///     J^{m_k}_{\mu\nu} = \sum_{\sigma\tau} ({}^{\Lambda}(\mu\nu|\sigma\tau)) {}^{\Gamma\Lambda} M^{\mu\nu, m_k}
+    /// where {}^{\Gamma\Lambda} M^{m_k} is the AO-space M matrix. 
+    /// # Arguments:
+    ///     `eri`: Array4, AO basis ERIs (not-antisymmetrised).
+    ///     `m`: Array2, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
     fn build_j_coulomb(eri: &Array4<f64>, m: &Array2<f64>) -> Array2<f64> {
         let n = m.nrows();
         let mut j = Array2::<f64>::zeros((n, n));
@@ -354,7 +398,6 @@ impl SameSpin {
                 for mu in 0..n {
                     for nu in 0..n {
                         acc += eri[(s, t, mu, nu)] * m[(mu, nu)];
-                        
                     }
                 }
                 j[(s, t)] = acc;
@@ -362,7 +405,14 @@ impl SameSpin {
         }
         j
     }
-
+    
+    /// Calculate the Coulomb contraction K^{m_k}_{\mu\nu} required for the two electron
+    /// intermediates as:
+    ///     K^{m_k}_{\mu\nu} = \sum_{\sigma\tau} ({}^{\Lambda}(\mu\sigma|\tau\nu)) {}^{\Gamma\Lambda} M^{\mu\nu, m_k}
+    /// where {}^{\Gamma\Lambda} M^{m_k} is the AO-space M matrix. 
+    /// # Arguments:
+    ///     `eri`: Array4, AO basis ERIs (not-antisymmetrised).
+    ///     `m`: Array2, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
     fn build_k_exchange(eri: &Array4<f64>, m: &Array2<f64>) -> Array2<f64> {
         let n = m.nrows();
         let mut k = Array2::<f64>::zeros((n, n));
@@ -379,10 +429,25 @@ impl SameSpin {
         }
         k
     }
-
 }
 
 impl DiffSpin {
+    /// Constructor for the WicksReferencePair object of DiffSpin which contains the precomputed values
+    /// per pair of reference determinants required to evaluate arbitrary excited determinants 
+    /// in O(1) time when the excitations are of different spin. As such, the quantities here are
+    /// lesser as we only need to evaluate two electron terms with these intermediates.
+    /// # Arguments:
+    ///     `eri`: Array4, electron repulsion integrals. 
+    ///     `h_munu`: Array2, AO core Hamiltonian.
+    ///     `s_munu`: Array2, AO overlap matrix.
+    ///     `g_ca`: Array2, spin alpha AO coefficient matrix of |^\Gamma\Psi\rangle.
+    ///     `g_cb`: Array2, spin beta AO coefficient matrix of |^\Gamma\Psi\rangle.
+    ///     `l_ca`: Array2, spin alpha AO coefficient matrix of |^\Lambda\Psi\rangle.
+    ///     `l_cb`: Array2, spin beta AO coefficient matrix of |^\Lambda\Psi\rangle.
+    ///     `goa`: Array1, alpha occupancy vector for |^\Gamma\Psi\rangle.
+    ///     `gob`: Array1, beta occupancy vector for |^\Gamma\Psi\rangle.
+    ///     `loa`: Array1, alpha occupancy vector for |^\Lambda\Psi\rangle.
+    ///     `lob`: Array1, beta occupancy vector for |^\Lambda\Psi\rangle.
     pub fn new(eri: &Array4<f64>, s_munu: &Array2<f64>, g_ca: &Array2<f64>, g_cb: &Array2<f64>, l_ca: &Array2<f64>, l_cb: &Array2<f64>, 
            goa: &Array1<f64>, gob: &Array1<f64>, loa: &Array1<f64>, lob: &Array1<f64>) -> Self {
         let tol = 1e-12;
@@ -393,24 +458,34 @@ impl DiffSpin {
         let l_cb_occ = occ_coeffs(l_cb, lob);
         let g_cb_occ = occ_coeffs(g_cb, gob);
         
+        // Get occupied MO overlap matrix per spin.
         let sa_occ = SameSpin::calculate_mo_overlap_matrix(&l_ca_occ, &g_ca_occ, s_munu);
         let sb_occ = SameSpin::calculate_mo_overlap_matrix(&l_cb_occ, &g_cb_occ, s_munu);
-
+        
+        // SVD and rotate the occupied orbitals per spin.
         let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _phase) = SameSpin::perform_svd_and_rotate(&sa_occ, &l_ca_occ, &g_ca_occ);
         let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) = SameSpin::perform_svd_and_rotate(&sb_occ, &l_cb_occ, &g_cb_occ);
-
+        
+        // Find indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S} and count them per spin.
+        // No longer writing per spin from here onwards, hopefully it is clear.
         let zerosa: Vec<usize> = tilde_sa_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
         let zerosb: Vec<usize> = tilde_sb_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
-
+        
+        // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices.
         let (m0a, m1a) = SameSpin::construct_m(&tilde_sa_occ, &l_tilde_ca_occ, &g_tilde_ca_occ, &zerosa);
         let (m0b, m1b) = SameSpin::construct_m(&tilde_sb_occ, &l_tilde_cb_occ, &g_tilde_cb_occ, &zerosb);
-
         let ma = [&m0a, &m1a];
         let mb = [&m0b, &m1b];
-
+        
+        // Construct only the Coulomb contraction of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k}, 
+        // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k}. No exchange here due to differing spins.
         let ja = [SameSpin::build_j_coulomb(eri, &m0a), SameSpin::build_j_coulomb(eri, &m1a)];
         let jb = [SameSpin::build_j_coulomb(eri, &m0b), SameSpin::build_j_coulomb(eri, &m1b)];
         
+        // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}. 
+        // This can be rewritten (and thus calculated) as V_{ab, 0}^{m_i, m_j} = \sum_{pr} (J_{\mu\nu}^{m_i}) {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
+        // This is directly analogous to {}^{\Lambda\Gamma} V_0^{m_i, m_j} in the same spin case
+        // but with exchange omitted.
         let mut vab0 = [[0.0f64; 2]; 2]; 
         let mut vba0 = [[0.0f64; 2]; 2]; 
         for i in 0..2 {
@@ -419,17 +494,29 @@ impl DiffSpin {
                 vba0[j][i] = einsum_ba_ab_real(&jb[j], ma[i]); 
             }
         }
-
+           
+        // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and 
+        // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
+        // down the line. Again analogous to the same spin case but with spin resolved quantities.
         let (cx_a0, xc_a0) = Self::build_cx_xc(&m0a, s_munu, l_ca, g_ca, 0);
         let (cx_a1, xc_a1) = Self::build_cx_xc(&m1a, s_munu, l_ca, g_ca, 1);
         let (cx_b0, xc_b0) = Self::build_cx_xc(&m0b, s_munu, l_cb, g_cb, 0);
         let (cx_b1, xc_b1) = Self::build_cx_xc(&m1b, s_munu, l_cb, g_cb, 1);
-
         let cx_a = [&cx_a0, &cx_a1];
         let xc_a = [&xc_a0, &xc_a1];
         let cx_b = [&cx_b0, &cx_b1];
         let xc_b = [&xc_b0, &xc_b1];
-
+        
+        // Construct {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} intermediates for two electron
+        // Hamiltonian matrix elements. These are given as:
+        //      {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} = \sum_{pq} {}^{\Lambda\Gamma} Y_{ap}^{m_1}
+        //      (\sum_{rs} ({}^{\Lambda}(pr|qs)) {}^{\Lambda\Gamma} X_{sr}^{m_2}) {}^{\Lambda\Gamma} X_{qb}^{m_3},
+        // where the use of X or Y on the left and righthand sides depends on the ordering of
+        // \Lambda and \Gamma. Again using our precomputed quantities we rewrite as:
+        //      {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} = \sum_{pq} C_{L,ap}^{m_1} (J_{\mu\nu}^{m_2})
+        //      C_{R,qb}^{m_3}.
+        //  Once more this is analogous to the SameSpin case but with exchange removed. The
+        //  similarities here hint at a possible generalisation of the code.
         let mut vab: [[[Array2<f64>; 2]; 2]; 2] = std::array::from_fn(|_| {std::array::from_fn(|_| std::array::from_fn(|_| Array2::<f64>::zeros((2*nmo, 2*nmo))))});
         let mut vba: [[[Array2<f64>; 2]; 2]; 2] = std::array::from_fn(|_| {std::array::from_fn(|_| std::array::from_fn(|_| Array2::<f64>::zeros((2*nmo, 2*nmo))))});
         for ma0 in 0..2 {
@@ -443,6 +530,16 @@ impl DiffSpin {
             }
         }
         
+        // Construct {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} intermediates for two electron
+        // Hamiltonian matrix elements. These are given as:
+        //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} = \sum_{prqs} ({}^{\Lambda}(pr|qs))
+        //      {}^{\Lambda\Gamma} Y_{ap}^{m_1} {}^{\Lambda\Gamma} X_{rb}^{m_2} {}^{\Lambda\Gamma} Y_{cq}^{m_3} {}^{\Lambda\Gamma} X_{sd}^{m_4},
+        // where the use of X or Y in each part depends on the ordering of \Lambda and \Gamma. Again using our quantities
+        // this may instead be calculated as
+        //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1, m_2, m_3, m_4} = \sum_{\mu\nu\tau\sigma} C_{L,a\mu}^{m_1} C_{R,b\nu}^{m_2}
+        //      ((\mu\nu|\tau\sigma)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
+        // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
+        // basis. This is unsuprisngly analogous to the 4-index J tensor in SameSpin.
         let mut iiab: [[[[Array4<f64>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
             std::array::from_fn(|_| {
                 std::array::from_fn(|_| std::array::from_fn(|_| Array4::<f64>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))))
@@ -474,12 +571,21 @@ impl DiffSpin {
 
         Self {vab0, vab, vba0, vba, iiab, iiba}
     }
-
+        
+    /// Build the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and 
+    /// {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices such that our intermediates can be computed more
+    /// easily.
+    /// # Arguments:
+    ///     `m`: Array2, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
+    ///     `s`: Array2, AO overlap matrix S_{\mu\nu}.
+    ///     `cx`: Array2, AO coefficient matrix for \Lambda. Should be renamed.
+    ///     `cw`: Array2, AO coefficient matrix for \Gamma. Should be renamed.
+    ///     `i`: usize, selector for m being 0 or 1.
     fn build_cx_xc(m: &Array2<f64>, s: &Array2<f64>, cx: &Array2<f64>, cw: &Array2<f64>, i: usize) -> (Array2<f64>, Array2<f64>) {
         let nao = cx.nrows();
         let nmo = cx.ncols();
-        let mut cx_out = Array2::<f64>::zeros((nao, 2*nmo));
-        let mut xc_out = Array2::<f64>::zeros((nao, 2*nmo));
+        let mut cx_out = Array2::<f64>::zeros((nao, 2 * nmo));
+        let mut xc_out = Array2::<f64>::zeros((nao, 2 * nmo));
 
         let one_minus_i = (1 - i) as f64;
 
@@ -489,8 +595,8 @@ impl DiffSpin {
         cx_out.slice_mut(s![.., 0..nmo]).assign(&(mts.dot(cx) - &(cx * one_minus_i)));
         xc_out.slice_mut(s![.., 0..nmo]).assign(&ms.dot(cx));
 
-        cx_out.slice_mut(s![.., nmo..2*nmo]).assign(&mts.dot(cw));
-        xc_out.slice_mut(s![.., nmo..2*nmo]).assign(&(ms.dot(cw) - &(cw * one_minus_i)));
+        cx_out.slice_mut(s![.., nmo..2 * nmo]).assign(&mts.dot(cw));
+        xc_out.slice_mut(s![.., nmo..2 * nmo]).assign(&(ms.dot(cw) - &(cw * one_minus_i)));
 
         (cx_out, xc_out)
     }
@@ -577,6 +683,13 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
     }
 }
 
+/// Calculate overlap matrix element between two determinants |{}^\Lambda \Psi\rangle and
+/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. Utilises
+/// a sum over possible ways to distribute zeros across the columns of the L by L determinant.
+/// # Arguments:
+///     `w`: SameSpin: same spin Wick's reference pair intermediates.
+///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
 pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 {
 
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
@@ -589,193 +702,181 @@ pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
     // Convert the contraction determinant labels into actual indices.
     let rows: Vec<usize> = rows_label.into_iter().map(|(s, _t, i)| label_to_idx(s, i, w.nmo)).collect();
     let cols: Vec<usize> = cols_label.into_iter().map(|(s, _t, i)| label_to_idx(s, i, w.nmo)).collect();
+      
+    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
+    let det0 = build_d(&w.x[0], &w.y[0], &rows, &cols);
+    let det1 = build_d(&w.x[1], &w.y[1], &rows, &cols);
 
     let mut acc = 0.0;
-    
+
     // Iterate over all possible distributions of zeros amongst the columns.
     for bitstring in iter_m_combinations(l, w.m) {
-        // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
-        let mut det0 = Array2::<f64>::zeros((l, l)); 
-        let mut det1 = Array2::<f64>::zeros((l, l));
-
-        for a in 0..l {
-            for b in 0..l {
-                let ra = rows[a];
-                let cb = cols[b];
-                // Lower triangle and diagonal of the determinant uses X0 or X1.
-                if a >= b {
-                    det0[(a, b)] = w.x[0][(ra, cb)];
-                    det1[(a, b)] = w.x[1][(ra, cb)];
-                // Upper triangle uses Y0 or Y1.
-                } else {
-                    det0[(a, b)] = w.y[0][(ra, cb)];
-                    det1[(a, b)] = w.y[1][(ra, cb)];
-                }
-            }
-        }
-        
-        // Iterate over columns and decide to keep the 0 determinant or exchange a column for the
-        // one determinant version.
-        let mut det = det0.clone();
-        for b in 0..l {
-            // Extract the m_k for this coulmn by moving the 1 or 0 to the rightmost point of the
-            // bitstring, read it (&1) and convert into boolean (== 1). 
-            let useone = ((bitstring >> b) & 1) == 1;
-            // If we are  using the one determinant, exchange all entries in a column.
-            if useone {
-                for a in 0..l {
-                    det[(a, b)] = det1[(a, b)];
-                }
-            }
-        }
-        acc += det.det().unwrap();
+        let det = mix_columns(&det0, &det1, bitstring);
+        let (d, _) = adjugate_transpose(&det).unwrap();
+        acc += d;
     }
     w.phase * w.tilde_s_prod * acc
 }
 
+/// Calculate one electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
+/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
+/// # Arguments:
+///     `w`: SameSpin: same spin Wick's reference pair intermediates.
+///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
 pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 {
     
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
     
-    // If the total excitation rank + 1 is less than the number of zero-singular values in
+    // If the total excitation rank L + 1 is less than the number of zero-singular values in
     // {}^{\Gamma\Lambda} \tilde{S} the one electron matrix element is zero.
     let l = rows_label.len();
     if w.m > (l + 1) {return 0.0;}
 
-    let mut acc = 0.0;
-
     // Convert the contraction determinant labels into actual indices.
     let rows: Vec<usize> = rows_label.into_iter().map(|(s,_t,i)| label_to_idx(s, i, w.nmo)).collect();
     let cols: Vec<usize> = cols_label.into_iter().map(|(s,_t,i)| label_to_idx(s, i, w.nmo)).collect();
+    
+    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
+    let det0 = build_d(&w.x[0], &w.y[0], &rows, &cols);
+    let det1 = build_d(&w.x[1], &w.y[1], &rows, &cols);
 
+    let mut acc = 0.0;
+    
     // Iterate over all possible distributions of zeros amongst the columns.
     for bitstring in iter_m_combinations(l + 1, w.m) {
-        let m1_one = (bitstring & 1) == 1;
+        let mi = (bitstring & 1) == 1;
 
-        let mut det0 = Array2::<f64>::zeros((l, l));
-        let mut det1 = Array2::<f64>::zeros((l, l));
-
-        for a in 0..l {
-            for b in 0..l {
-                let ra = rows[a];
-                let cb = cols[b]; 
-
-                if a >= b {
-                    det0[(a, b)] = w.x[0][(ra, cb)];
-                    det1[(a, b)] = w.x[1][(ra, cb)];
-                } else {
-                    det0[(a, b)] = w.y[0][(ra, cb)];
-                    det1[(a, b)] = w.y[1][(ra, cb)];
-                }
-            }
-        }
-
-        let mut det = det0.clone();
+        let mcol: u64 = bitstring >> 1;
+        let det = mix_columns(&det0, &det1, mcol);
+        
+        // First term in the sum of Eqn 26 involves the same sum over all possible bitstrings with
+        // the F0 matrix multiplying the contraction determinant.
+        let (det_det, _) = adjugate_transpose(&det).unwrap();
+        let mut contrib = det_det * w.f0[mi as usize];
+        
+        // Remaining terms in Eqn 26 consist of the same sum over all possible bitstrings, but now
+        // we iterate over columns, forming a new determinant for each with the current column
+        // replaced by the F matrices.
         for b in 0..l {
-            let mb_one = ((bitstring >> (b + 1)) & 1) == 1;
-            if mb_one {
-                for a in 0..l {
-                    det[(a, b)] = det1[(a, b)]
-                }
-            }
-        }
-    
-        // First term in the sum of Eqn 23.
-        let mut contrib = det.det().unwrap() * w.f0[m1_one as usize];
-
-        for b in 0..l {
-            let mb_one = ((bitstring >> (b + 1)) & 1) == 1; 
-            let f = &w.f[m1_one as usize][mb_one as usize];
-
+            // Find correct zero index for this column and use to select F.
+            let mj = ((bitstring >> (b + 1)) & 1) == 1; 
+            let f = &w.f[mi as usize][mj as usize];
+            // Replace column of det with F matrices.
             let mut det_f = det.clone(); 
             for a in 0..l {
                 let ra = rows[a];
                 let cb = cols[b];
                 det_f[(a, b)] = f[(ra, cb)]
             }
-            contrib -= det_f.det().unwrap();
+            // Calculate contribution.
+            let (det_det_f, _) = adjugate_transpose(&det_f).unwrap();
+            contrib -= det_det_f;
         }
         acc += contrib;
     }
     w.phase * w.tilde_s_prod * acc
 }
 
+/// Calculate the same-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
+/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
+/// # Arguments:
+///     `w`: SameSpin: same spin Wick's reference pair intermediates.
+///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
 pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> f64 {
     
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
+
+    // If the total excitation rank L + 2 is less than the number of zero-singular values in
+    // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
     let l = rows_label.len();
     if w.m > (l + 2) {return 0.0;}
-
+    
+    // Convert the contraction determinant labels into actual indices.
     let rows: Vec<usize> = rows_label.iter().map(|(s,_t,i)| label_to_idx(*s, *i, w.nmo)).collect();
     let cols: Vec<usize> = cols_label.iter().map(|(s,_t,i)| label_to_idx(*s, *i, w.nmo)).collect();
-
+    
+    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1).
     let det0 = build_d(&w.x[0], &w.y[0], &rows, &cols);
     let det1 = build_d(&w.x[1], &w.y[1], &rows, &cols);
 
     let mut acc = 0.0;
-
+    
+    // Iterate over all possible distributions of zeros amongst the columns.
     for bits in iter_m_combinations(l + 2, w.m) {
         let m1 = (bits & 1) == 1;
         let m2 = ((bits >> 1) & 1) == 1;
-        let m_col = |k: usize| ((bits >> (k + 2)) & 1) == 1;
+        let mcol = |k: usize| ((bits >> (k + 2)) & 1) == 1;
         let ind: u64 = bits >> 2;
-
+        
+        // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 2.
         let det_mix = mix_columns(&det0, &det1, ind);
         let Some((det_det, adjt_det)) = adjugate_transpose(&det_mix) else {continue;};
 
         let mut contrib = 0.0f64;
 
-        // Equation 30.
+        // Equation 30 sum over all distributions of zeros with V0 matrix multiplying size L + 2 determinant.
         let q = (m1 as usize) + (m2 as usize);
         let x = w.v0[q] * det_det;
         contrib += x;
         
+        // Equation 34 sum over all distributions of zeros and iterating over all columns replacing
+        // the current column with the V matrices to form a new determinant.
         for k in 0..l {
-
-            let mk = m_col(k);
-            
+            let mk = mcol(k);
+            // Choose correct column of V based upon zero distributions. 
             let vcol = &w.v[m1 as usize][m2 as usize][mk as usize];
+
+            // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
+            // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
+            // indicates the kth column of D. 
             let mut v1 = Array1::<f64>::zeros(l);
             for r in 0..l {
                 v1[r] = vcol[(rows[r], cols[k])];
             }
-
             let v2 = det_mix.column(k).to_owned();
             let a = adjt_det.column(k).to_owned();
-            
             let x = det_det + (&v1 - &v2).dot(&a);
             contrib -= 2.0 * x;
         }
         
+        // Equation 38 double sum over excitation ranks (i, j) which vary the two electron 4-index tensor
+        // J accordingly, and within each double sum is another sum over columns of determinant
+        // where column k is replaced with J matrices to form a new determinant.
         for i in 0..l {
             for j in 0..l {
-                let phase = if ((i + j) & 1) == 0 { 1.0 } else { -1.0 };
-
+                let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+                
+                // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                 let det_mix2 = minor(&det_mix, i, j);
                 let Some((det_det2, adjt_det2)) = adjugate_transpose(&det_mix2) else {continue;};
-
+                
+                // Select indices that give the correct slice of J.
                 let ri_fixed = rows[i];
                 let cj_fixed = cols[j];
 
-                let mj = m_col(j);
-
+                let mj = mcol(j);
+                
+                // Inner sum iterates over all columns of the L - 1 determinant and replaces column
+                // k with the appropriate column of J.
                 for k2 in 0..(l - 1) {
-                    let k_full = if k2 < j { k2 } else { k2 + 1 };
-
-                    let mk = m_col(k_full);
-
+                    let k_full = if k2 < j {k2} else {k2 + 1};
+                    let mk = mcol(k_full);
+                    
+                    // Extract slice of J corresponding to the current distribution of zeros and
+                    // get the correct minor matrix so as to align with the L - 1 dimensions.
                     let j4 = &w.j[m1 as usize][m2 as usize][mk as usize][mj as usize];
                     let jslice_full = slice_ii(j4, &rows, &cols, ri_fixed, cj_fixed, true);
-
-                    let jslice2 = minor(&jslice_full, i, j);
-
+                    let jslice2 = minor(&jslice_full, i, j);   
+                    
+                    // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
+                    // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
+                    // indicates the kth column of D. 
                     let v1 = jslice2.column(k2).to_owned();
-
                     let v2 = det_mix2.column(k2).to_owned();
                     let a  = adjt_det2.column(k2).to_owned();
-
                     let det_repl = det_det2 + (&v1 - &v2).dot(&a);
-
                     let x = 1.0 * phase * det_repl;
                     contrib += x;
                 }
@@ -786,143 +887,163 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
     w.phase * w.tilde_s_prod * acc
 }
 
+/// Calculate the different-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
+/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
+/// # Arguments:
+///     `w`: SameSpin: same spin Wick's reference pair intermediates.
+///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
 pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin) -> f64 {
 
     let (rows_a_lab, cols_a_lab) = construct_determinant_lables(l_ex_a, g_ex_a);
     let (rows_b_lab, cols_b_lab) = construct_determinant_lables(l_ex_b, g_ex_b);
     
+    // Convert the contraction determinant labels into actual indices.
     let rows_a: Vec<usize> = rows_a_lab.iter().map(|&lbl| lbl_to_idx(lbl, w.aa.nmo)).collect();
     let cols_a: Vec<usize> = cols_a_lab.iter().map(|&lbl| lbl_to_idx(lbl, w.aa.nmo)).collect();
     let rows_b: Vec<usize> = rows_b_lab.iter().map(|&lbl| lbl_to_idx(lbl, w.bb.nmo)).collect();
     let cols_b: Vec<usize> = cols_b_lab.iter().map(|&lbl| lbl_to_idx(lbl, w.bb.nmo)).collect();
 
+    // If the per-spin excitation rank L + 1 is less than the number of zero-singular values in
+    // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
     let la = rows_a_lab.len();
     let lb = rows_b_lab.len();
-
     if w.aa.m > la + 1 {return 0.0;}
     if w.bb.m > lb + 1 {return 0.0;}
 
+    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1) per spin.
     let deta0  = build_d(&w.aa.x[0], &w.aa.y[0], &rows_a, &cols_a);    
     let deta1 = build_d(&w.aa.x[1], &w.aa.y[1], &rows_a, &cols_a);
     let detb0  = build_d(&w.bb.x[0], &w.bb.y[0], &rows_b, &cols_b);
     let detb1 = build_d(&w.bb.x[1], &w.bb.y[1], &rows_b, &cols_b);
     
     let mut acc = 0.0;
-
+    
+    // Iterate over all possible distributions of alpha zeros amongst the columns.
     for bits_a in iter_m_combinations(la + 1, w.aa.m) {
         let ma0 = (bits_a & 1) == 1;
         let ma_col = |k: usize| ((bits_a >> (k + 1)) & 1) == 1;
         let inda: u64 = bits_a >> 1;
-
+        
+        // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
+        // spin alpha.
         let deta_mix = mix_columns(&deta0, &deta1, inda);
         let Some((det_deta, adjt_deta)) = adjugate_transpose(&deta_mix) else {continue;};
-
+        
+        // Iterate over all possible distributions of beta zeros amongst the columns.
         for bits_b in iter_m_combinations(lb + 1, w.bb.m) {
             let mb0 = (bits_b & 1) == 1;
             let mb_col = |k: usize| ((bits_b >> (k + 1)) & 1) == 1;
             let indb: u64 = bits_b >> 1;
-
+            
+            // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
+            // spin beta.
             let detb_mix = mix_columns(&detb0, &detb1, indb);
             let Some((det_detb, adjt_detb)) = adjugate_transpose(&detb_mix) else {continue;};
 
             let mut contrib = 0.0f64;
 
-            // Equation 30.
+            // Equation 30 sum over all distributions of zeros with V0_{ab} matrix multiplying the
+            // alpha and beta size La and Lb determinants respectively.
             let x = w.ab.vab0[ma0 as usize][mb0 as usize] * det_deta * det_detb;
             contrib += x;
-        
+            
+            // Equation 34 alpha sum over all distributions of zeros and iterating over all columns replacing
+            // the current column with the V matrices to form a new determinant.
             for k in 0..la {
-
+                // Choose correct column of V based upon zero distributions.
                 let mak = ma_col(k);
-
                 let vcol = &w.ab.vab[ma0 as usize][mb0 as usize][mak as usize];
 
+                // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
+                // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
+                // indicates the kth column of D. 
                 let mut v1 = Array1::<f64>::zeros(la);
                 for r in 0..la {
                     v1[r] = vcol[(rows_a[r], cols_a[k])];
                 }
-
                 let v2 = deta_mix.column(k).to_owned();
-                let a = adjt_deta.column(k).to_owned();
-                
+                let a = adjt_deta.column(k).to_owned(); 
                 let x = (det_deta + (&v1 - &v2).dot(&a)) * det_detb;
                 contrib -= x;
             }
 
-            // Equation 34b.
+            // Equation 34 beta sum over all distributions of zeros and iterating over all columns replacing
+            // the current column with the V matrices to form a new determinant.
             for k in 0..lb {
-
+                // Choose correct column of V based upon zero distributions.
                 let mbk = mb_col(k);
-
                 let vcol = &w.ab.vba[mb0 as usize][ma0 as usize][mbk as usize];
-
+                
+                // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
+                // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
+                // indicates the kth column of D. 
                 let mut v1 = Array1::<f64>::zeros(lb);
                 for r in 0..lb {
                     v1[r] = vcol[(rows_b[r], cols_b[k])];
                 }
-
                 let v2 = detb_mix.column(k).to_owned();
                 let a = adjt_detb.column(k).to_owned();
-
                 let x = (det_detb + (&v1 - &v2).dot(&a)) * det_deta;
                 contrib -= x;
             }
             
-            // Equation 38b.
+            // Equation 38 beta double sum over excitation ranks (i, j) which vary the two electron 4-index tensor
+            // II (no exchange, but otherwise analogous to J in same spin case) accordingly, and within each double 
+            // sum is another sum over columns of determinant where column k is replaced with II matrices to form a new determinant.
             for (i, &ra) in rows_a.iter().enumerate() {
                 for (j, &ca) in cols_a.iter().enumerate() {
                     let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
-
-                    let deta0_minor = minor(&deta0, i, j);
-                    let deta1_minor = minor(&deta1, i, j);
-
-                    let inda_cols: u64 = bits_a >> 1;        
-                    let inda2: u64 = remove_bit(inda_cols, j); 
-
-                    let deta_minor_mix = mix_columns(&deta0_minor, &deta1_minor, inda2);
-                    let det_deta_minor_mix = deta_minor_mix.det().unwrap();
-
+                
+                    // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
+                    let deta_mix_minor = minor(&deta_mix, i, j);
+                    let Some((det_deta_minor_mix, _adjt_deta_mix_minor)) = adjugate_transpose(&deta_mix_minor) else {continue;};
+                    
+                    // Inner sum iterates over all columns of the determinant and replaces column
+                    // k with the appropriate column of II.
                     for k in 0..lb {
-
                         let mbk = mb_col(k);
                         let ma1 = ma_col(j);
-
+                        
+                        // Extract slice of II corresponding to the current distribution of zeros and
+                        // get the correct minor matrix so as to align with the L - 1 dimensions.
                         let iib = &w.ab.iiba[mb0 as usize][mbk as usize][ma0 as usize][ma1 as usize];
                         let iisliceb = slice_ii(iib, &rows_b, &cols_b, ra, ca, true);
-
+                        
+                        // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
+                        // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
+                        // indicates the kth column of D. 
                         let mut v1 = Array1::<f64>::zeros(lb);
                         for r in 0..lb {
                             v1[r] = iisliceb[(r, k)];
                         }
-
                         let v2 = detb_mix.column(k).to_owned();
                         let a = adjt_detb.column(k).to_owned();
-
                         let x = 0.5 * phase * (det_detb + (&v1 - &v2).dot(&a)) * det_deta_minor_mix;
                         contrib += x;
                     }
                 }
             }
 
-            // Equation 38a.
+            // Equation 38 alpha double sum over excitation ranks (i, j) which vary the two electron 4-index tensor
+            // II (no exchange, but otherwise analogous to J in same spin case) accordingly, and within each double 
+            // sum is another sum over columns of determinant where column k is replaced with II matrices to form a new determinant.
             for (i, &rb) in rows_b.iter().enumerate() {
                 for (j, &cb) in cols_b.iter().enumerate() {
-                    let phase = if ((i + j) & 1) == 0 { 1.0 } else { -1.0 };
-
-                    let detb0_minor = minor(&detb0, i, j);
-                    let detb1_minor = minor(&detb1, i, j);
-
-                    let indb_cols: u64 = bits_b >> 1;          
-                    let indb2: u64 = remove_bit(indb_cols, j);
-
-                    let detb_minor_mix = mix_columns(&detb0_minor, &detb1_minor, indb2);
-                    let det_detb_minor_mix = detb_minor_mix.det().unwrap();
+                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
                     
+                    // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
+                    let detb_mix_minor = minor(&detb_mix, i, j);
+                    let Some((det_detb_minor_mix, _adjt_detb_mix_minor)) = adjugate_transpose(&detb_mix_minor) else {continue;};
+                    
+                    // Inner sum iterates over all columns of the L determinant and replaces column
+                    // k with the appropriate column of II.
                     for k in 0..la {
-
                         let mak = ma_col(k);
                         let mb1 = mb_col(j);
-
+                        
+                        // Extract slice of II corresponding to the current distribution of zeros and
+                        // get the correct minor matrix so as to align with the L - 1 dimensions.
                         let iia = &w.ab.iiab[ma0 as usize][mak as usize][mb0 as usize][mb1 as usize];
                         let iislicea = slice_ii(iia, &rows_a, &cols_a, rb, cb, true);
                         
@@ -930,10 +1051,12 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                         for r in 0..la {
                             v1[r] = iislicea[(r, k)];
                         }
-
+                        
+                        // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
+                        // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
+                        // indicates the kth column of D. 
                         let v2 = deta_mix.column(k).to_owned();
                         let a = adjt_deta.column(k).to_owned();
-
                         let x = 0.5 * phase * (det_deta + (&v1 - &v2).dot(&a)) * det_detb_minor_mix;
                         contrib += x;
                     }
@@ -966,82 +1089,8 @@ fn slice_ii(t: &Array4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_f
     out
 }
 
-fn remove_bit(mask: u64, j: usize) -> u64 {
-    let low = mask & ((1u64 << j) - 1);
-    let high = mask >> (j + 1);
-    low | (high << j)
-}
-
 fn lbl_to_idx(lbl: Label, nmo: usize) -> usize {
     label_to_idx(lbl.0, lbl.2, nmo)
 }
 
-fn build_d(x: &Array2<f64>, y: &Array2<f64>, rows: &[usize], cols: &[usize],) -> Array2<f64> {
-    let l = rows.len();
-    let mut out = Array2::<f64>::zeros((l, l));
-    for i in 0..l {
-        let r = rows[i];
-        for j in 0..l {
-            let c = cols[j];
-            out[(i, j)] = if i >= j {x[(r, c)]} else {y[(r, c)]};
-        }
-    }
-    out
-}
 
-fn mix_columns(det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) -> Array2<f64> {
-    let n = det0.ncols();
-    let mut out = det0.clone();
-    for c in 0..n {
-        if ((bits >> c) & 1) == 1 {
-            out.column_mut(c).assign(&det1.column(c));
-        }
-    }
-    out
-}
-
-fn minor(m: &Array2<f64>, r_rm: usize, c_rm: usize) -> Array2<f64> {
-    let n = m.nrows();
-    if n == 0 {return Array2::<f64>::zeros((0, 0));}
-    let mut out = Array2::<f64>::zeros((n - 1, n - 1));
-    let mut ii = 0;
-    for i in 0..n {
-        if i == r_rm {continue;}
-        let mut jj = 0;
-        for j in 0..n {
-            if j == c_rm {continue;}
-            out[(ii, jj)] = m[(i, j)];
-            jj += 1;
-        }
-        ii += 1;
-    }
-    out
-}
-
-fn adjugate_transpose(a: &Array2<f64>) -> Option<(f64, Array2<f64>)> {
-    let n = a.nrows();
-
-    if n == 0 {return Some((1.0, Array2::zeros((0, 0))));}
-    if n == 1 {return Some((a[(0, 0)], Array2::from_elem((1, 1), 1.0)));}
-
-    // Conditioning test.
-    let cond = 1e12;
-    let (_, s, _) = a.svd(false, false).ok()?;
-    let smax = s[0];
-    let smin = s[s.len() - 1];
-    if smin <= 0.0 || smax / smin > cond {
-        return None;
-    }
-
-    let det = a.det().unwrap();
-
-    let mut adjt = Array2::<f64>::zeros((n, n));
-    let at = a.t().to_owned();              
-    for i in 0..n {
-        let mut e = Array1::<f64>::zeros(n);
-        e[i] = 1.0;
-        let x = at.solve_into(e).unwrap();     
-        adjt.column_mut(i).assign(&(&x * det)); 
-    }
-    Some((det, adjt))
-}
