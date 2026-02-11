@@ -185,7 +185,7 @@ fn run_pyscf(atoms: &Atoms, input: &Input) -> Duration {
 ///     `ao`: AoData, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
 ///     `prev_states`: [SCFState], converged SCF states at previous r, used for seeding. 
-fn run_scf(ao: &AoData, input: &Input, prev_states: &[SCFState]) -> (Vec<SCFState>, Duration) {
+fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> (Vec<SCFState>, Duration) {
     let t_scf = Instant::now();
     
     // Use the previous states to seed new SCF calculations if they exist.

@@ -3,9 +3,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ndarray::{Array1, Array2};
+use rand::{SeedableRng};
+use rand::rngs::StdRng;
 
-use crate::{AoData, SCFState, Excitation, ExcitationSpin};
-use crate::input::Input;
+use crate::{AoData, Excitation, ExcitationSpin, SCFState};
+use crate::input::{Input, StateType, StateRecipe, Metadynamics};
+use crate::utils::random_pattern;
 
 use crate::scf::scf_cycle;
 
@@ -88,7 +91,7 @@ fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], 
 ///     `w`: SCFState, reference state from which distance is computed. 
 ///     `x`: SCFState, state to which distance is computed.
 ///     `s`: Array2, AO overlap matrix
-fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
+pub fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
     // Calculate electron number N as Tr(D_r S).
     let na = (w.da.dot(s)).diag().sum();
     let nb = (w.db.dot(s)).diag().sum();
@@ -148,31 +151,21 @@ fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
         }).map(|(i, _)| i).collect()
 }
 
-
-/// Pass given AO data and previous SCF solutions to SCF cycle to form the requested reference NOCI basis.
-/// # Arguments 
+/// Generate the SCF states using the maximum orbital overlap procedure.
+/// # Arguments:
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
 ///     `input`: Input struct, contains user inputted options. 
 ///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
-pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
-    
+///     `prev_map`: HashMap, map between the SCFState object and its label.
+///     `recipes`: [StateRecipe], instructions for how to construct each state.
+fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, prev_map: &HashMap<&str, &SCFState>, recipes: &[StateRecipe]) -> Vec<SCFState> {
+
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
     let d_tol = 1e-2;
     
-    // Construct lookuptable from state label to previous SCF states. Allows for seeding of SCF
-    // states at a subsequent geometry to be done by label rather than via index which breaks
-    // easily.
-    let mut prev_map: HashMap<&str, &SCFState> = HashMap::new();
-    if let Some(ps) = prev {
-        for st in ps {
-            prev_map.insert(&st.label, st);
-        }
-    }
-
-    let mut out: Vec<SCFState> = Vec::with_capacity(input.states.len());
-
-    for (i, recipe) in input.states.iter().enumerate() {
+    let mut out: Vec<SCFState> = Vec::with_capacity(recipes.len());
+    for (i, recipe) in recipes.iter().enumerate() {
         if input.write.verbose {
             let left = "=".repeat(45);
             let right = "=".repeat(46);
@@ -222,7 +215,10 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
             bias_spatial(&mut da, &mut db, &atomao, spb.pol, &spb.pattern);
         }
 
-        let state: SCFState = scf_cycle(&da, &db, ao, input, scfexcitation, i).expect("SCF did not converge");
+        let label = &recipes[i].label;
+        let noci_basis = recipes[i].noci;
+
+        let state: SCFState = scf_cycle(&da, &db, ao, input, label, noci_basis, scfexcitation, i, None).expect("SCF did not converge");
 
         // Remove duplicate states from the basis to avoid singularity issues.
         let mut is_duplicate = false;
@@ -243,6 +239,275 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &Input, prev: Option<&[
             out.push(state);
         }
     }
+    out
+}
+
+/// Generate the SCF states using the SCF metadynamics procedure.
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `input`: Input struct, contains user inputted options. 
+///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
+///     `prev_map`: HashMap, map between the SCFState object and its label.
+///     `meta`: Metadynamics, SCF metadynamics parameters.
+fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, prev_map: &HashMap<&str, &SCFState>, meta: &mut Metadynamics) -> Vec<SCFState> {
+
+    let da0: Array2<f64> = ao.dm.clone() * 0.5;
+    let db0: Array2<f64> = ao.dm.clone() * 0.5;
+    let d_tol = 1e-2;
+    let rhf_tol = 1e-6;
+
+    let mut biases_rhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf);
+    let mut biases_uhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_uhf);
+
+    let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
+    let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
+    let mut states: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf + meta.nstates_uhf);
+    
+    let mut attempt = 0_u64;
+    let mut irhf = 0;
+    while biases_uhf.len() < meta.nstates_uhf || biases_rhf.len() < meta.nstates_rhf {
+        
+        attempt += 1;
+        if attempt > (meta.max_attempts as u64) {
+            println!("Maximum number of attempts to find UHF solution has been exceeded. UHF is likely not distinct from RHF at this geometry.");
+            break;
+        }
+
+        // Attempt spin biased state. Usually produces UHF but can collapse to RHF.
+        if  meta.nstates_uhf > 0 && biases_uhf.len() < meta.nstates_uhf {
+            
+            // Assume that all metadynamics found states are to be used in NOCI basis.
+            let noci_basis = true;
+
+            let pair = biases_uhf.len() / 2;
+            let base = biases_uhf.len();
+            if base + 1 >= meta.labels_uhf.len() {break;}
+
+            let labela = &meta.labels_uhf[base];
+            let labelb = &meta.labels_uhf[base + 1];
+      
+            let mut cand: [Option<SCFState>; 2] = [None, None];
+
+            // If previous densities for the current label exist use them. Otherwise start from RHF density.
+            let (mut da, mut db) = (da0.clone(), db0.clone());
+            if let Some(st) = prev_map.get(labela.as_str()).copied() {
+                da = (*st.da).clone();
+                db = (*st.db).clone();
+            } else if let Some(st) = prev_map.get(labelb.as_str()).copied() {
+                da = (*st.da).clone();
+                db = (*st.db).clone();
+            }
+
+            // If a bias pattern which was previously successful in obtaining a UHF state exists
+            // then we should reuse it. Otherwise generate a new pattern.
+            let pattern: Vec<i8> = if let Some(p) = meta.spin_patterns_uhf[base].as_ref() {
+                p.clone()
+            } else {
+                let mut rng = StdRng::seed_from_u64(attempt.wrapping_add((pair as u64).wrapping_mul(0x9E3779B97F4A7C15_u64)));
+                random_pattern(&mut rng, natoms)
+            };
+
+            let (da0, db0) = (da.clone(), db.clone());
+
+            // Any spin-broken UHF state should have a spin-flipped degernerate counterpart, find both.
+            for j in 0..2 {
+
+                let labelidx = base + j;
+                if labelidx >= meta.nstates_uhf {break;}
+                let label = &meta.labels_uhf[labelidx];
+                
+                let (mut daj, mut dbj) = (da0.clone(), db0.clone());
+
+                // Bias the densities as prescribed by the pattern.
+                bias_spin(&mut daj, &mut dbj, &atomao, meta.spinpol, &pattern);
+                
+                // When j == 1 we swap the densities so as to get the spin-flipped density.
+                if j == 1 {std::mem::swap(&mut daj, &mut dbj);}
+
+                if input.write.verbose {
+                    let left = "=".repeat(45);
+                    let right = "=".repeat(46);
+                    println!("{}Begin UHF Metadynamics Biased SCF{}", left, right);
+                    println!("State({}): {}, Spin-flip: {}, Attempt: {}", labelidx, label, j, attempt);
+                }
+
+                let biased = {
+                    let biasi = if biases_uhf.is_empty() {None} else {Some(biases_uhf.as_slice())};
+                    scf_cycle(&daj, &dbj, ao, input, &label.to_string(), noci_basis, None, labelidx, biasi).expect("SCF did not converge")
+                };
+                
+                if input.write.verbose {
+                    let left = "=".repeat(45);
+                    let right = "=".repeat(46);
+                    println!("{}Begin UHF Metadynamics Relaxed SCF{}", left, right);
+                    println!("State({}): {}, Spin-flip: {}, Attempt: {}", labelidx, label, j, attempt);
+                }
+
+                let relaxed = scf_cycle(&biased.da, &biased.db, ao, input, &label.to_string(), noci_basis, None, labelidx, None).expect("SCF did not converge");
+
+                let mut candidate = relaxed;
+                candidate.noci_basis = true;
+
+                // Ensure found state is not a duplicate. 
+                let is_duplicate = states.iter().map(|st| (st, electron_distance(st, &candidate, &ao.s))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).is_some_and(|(closest, d2)| {
+                    if d2 < d_tol {
+                        println!("Removed state '{}' from basis as duplicate of '{}' (d^2 = {:.6})", candidate.label, closest.label, d2);
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if is_duplicate {continue;}
+
+                // If we have collapsed to RHF we should change the label of the state.
+                let mut drhf = 0.0;
+                for (&a, &b) in candidate.da.iter().zip(candidate.db.iter()) {
+                    drhf += (a - b).abs();
+                }
+                // RHF branch.
+                if drhf < rhf_tol {
+                    // Even if zero RHF were requested, UHF and RHF may not be distinct so we add
+                    // it to the states anyway to avoid having an empty basis.
+                    if meta.nstates_rhf == 0 {
+                        meta.nstates_rhf = 1;
+                        meta.labels_rhf.push("RHF".to_string());
+                        meta.spatial_patterns_rhf.push(Some(pattern.clone()));
+                    }
+                    candidate.label = meta.labels_rhf[irhf].clone();
+                    meta.spatial_patterns_rhf[irhf] = Some(pattern.clone());
+                    // All duplicates removed by this point. Since we have successfully found a new
+                    // state, reset the attempts counter.
+                    attempt = 0;
+                    biases_rhf.push(candidate.clone());
+                    states.push(candidate);
+                    irhf += 1;
+                } else {
+                // UHF branch.
+                    candidate.label = label.clone();
+                    meta.spin_patterns_uhf[base] = Some(pattern.clone());
+                    if biases_uhf.len() + 1 < meta.nstates_uhf && j == 0 {
+                        meta.spin_patterns_uhf[base + 1] = Some(pattern.clone());
+                    }
+                    // All duplicates removed by this point. Since we have successfully found a new
+                    // state, reset the attempts counter.
+                    attempt = 0;
+                    cand[j] = Some(candidate);
+                }
+            }
+
+            if cand[0].is_some() && cand[1].is_some() {
+                biases_uhf.push(cand[0].take().unwrap());
+                biases_uhf.push(cand[1].take().unwrap());
+                meta.spin_patterns_uhf[base] = Some(pattern.clone());
+            } else {
+                continue;
+            }
+        }
+
+        // Attempt spatial biased state. Should only produce RHF.
+        if meta.nstates_rhf > 0 && biases_rhf.len() < meta.nstates_rhf {
+
+            // Assume that all metadynamics found states are to be used in NOCI basis.
+            let noci_basis = true;
+
+            let label = &meta.labels_rhf[irhf];
+            
+            // If previous densities for the current label exist use them. Otherwise start from RHF density.
+            let (mut da, mut db) = (da0.clone(), db0.clone());
+            if let Some(st) = prev_map.get(label.as_str()).copied() {
+                da = (*st.da).clone();
+                db = (*st.db).clone();
+            }
+            
+            // If a bias pattern which was previously successful in obtaining an RHF state exists
+            // then we should reuse it. Otherwise generate a new pattern.
+            let pattern: Vec<i8> = if let Some(p) = meta.spatial_patterns_rhf[irhf].as_ref() {
+                p.clone()
+            } else {
+                let mut rng = StdRng::seed_from_u64(attempt.wrapping_add((irhf as u64).wrapping_mul(0x9E3779B97F4A7C15_u64)));
+                random_pattern(&mut rng, natoms)
+            };
+
+            // Bias the densities as prescribed by the pattern.
+            bias_spin(&mut da, &mut db, &atomao, meta.spatialpol, &pattern);
+
+            if input.write.verbose {
+                let left = "=".repeat(45);
+                let right = "=".repeat(46);
+                println!("{}Begin RHF Metadynamics Biased SCF{}", left, right);
+                println!("State({}): {}, Attempt: {}", irhf, label, attempt);
+            }
+
+            let biased = {
+                let biasi = if biases_uhf.is_empty() {None} else {Some(biases_uhf.as_slice())};
+                scf_cycle(&da, &db, ao, input, &label.to_string(), noci_basis, None, irhf, biasi).expect("SCF did not converge")
+            };
+            
+            if input.write.verbose {
+                let left = "=".repeat(45);
+                let right = "=".repeat(46);
+                println!("{}Begin RHF Metadynamics Relaxed SCF{}", left, right);
+                println!("State({}): {}, Attempt: {}", irhf, label, attempt);
+            }
+
+            let relaxed = scf_cycle(&biased.da, &biased.db, ao, input, &label.to_string(), noci_basis, None, irhf, None).expect("SCF did not converge");
+
+            let mut candidate = relaxed;
+            candidate.noci_basis = true;
+
+            // Ensure found state is not a duplicate. 
+            let is_duplicate = states.iter().map(|st| (st, electron_distance(st, &candidate, &ao.s))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).is_some_and(|(closest, d2)| {
+                if d2 < d_tol {
+                    println!("Removed state '{}' from basis as duplicate of '{}' (d^2 = {:.6})", candidate.label, closest.label, d2);
+                    true
+                } else {
+                    false
+                }
+            });
+            if is_duplicate {continue;}
+            // No need to check for UHF vs RHF here, if we started with equal densities we should
+            // not escape this. All duplicates removed by this point. Since we have successfully found a new
+            // state, reset the attempts counter.
+            attempt = 0;
+            biases_rhf.push(candidate.clone());
+            states.push(candidate);
+            irhf += 1;
+        }
+    }
+    states
+}
+
+/// Pass given AO data and previous SCF solutions to SCF cycle to form the requested reference NOCI basis.
+/// # Arguments 
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `input`: Input struct, contains user inputted options. 
+///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
+pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
+    
+    // Construct lookuptable from state label to previous SCF states. Allows for seeding of SCF
+    // states at a subsequent geometry to be done by label rather than via index which breaks
+    // easily.
+    let mut prev_map: HashMap<&str, &SCFState> = HashMap::new();
+    if let Some(ps) = prev {
+        for st in ps {
+            prev_map.insert(&st.label, st);
+        }
+    }
+
+    // Move states out to allow borrows.
+    let mut states = std::mem::replace(&mut input.states, StateType::Mom(Vec::new()));
+
+    let out = match &mut states {
+        StateType::Mom(recipes) => {
+            generate_states_mom(ao, &*input, prev, &prev_map, recipes)
+        }
+        StateType::Metadynamics(meta) => {
+            generate_states_metadynamics(ao, &*input, prev, &prev_map, meta)
+        }
+    };
+
+    // Put back. Note that this is not very idiomatic. Should definetly refactor this somehow.
+    input.states = states;
     out
 }
 

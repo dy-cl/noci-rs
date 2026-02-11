@@ -16,7 +16,7 @@ pub struct Diis {
 impl Diis {
     /// Constructor for DIIS object, initialises object with DIIS space m. 
     /// History of Fock and error matrices are initialised as vectors with length m.
-    /// # Arguments:
+    /// # Arguments
     ///     `m`: usize, size of the DIIS space.
     pub fn new(m: usize) -> Self {
         Self {

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use ndarray::{Axis, Array1, Array2, Array4, s};
 
 use crate::{AoData, SCFState, Excitation, ExcitationSpin};
-use crate::input::{Input, Spin, SCFExcitation};
+use crate::input::{Input, Spin, SCFExcitation, StateType};
+use crate::basis::{electron_distance};
 use crate::diis::Diis;
 
 use crate::maths::general_evp_real;
@@ -125,6 +126,39 @@ fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: u
     idx
 }
 
+/// Construct the metadynamics bias term \sum_\Lambda {}^\Lambda D_{\mu\nu} N_{\Lambda}
+/// \lambda_\Lambda exp(-\lambda_\Lambda d_{0\Lambda}^2). 
+/// # Arguments:
+///     `da`: Array2, spin a density matrix.
+///     `db`: Array2, spin b density matrix.
+///     `ao`: AoData struct, contains AO integrals and metadata.
+///     `biases`: [SCFState], previously found states when using metadynamics.
+///     `lambda`: f64, bias strength.
+fn metadynamics_bias(da: &Array2<f64>, db: &Array2<f64>, ao: &AoData, biases: &[SCFState], lambda: f64) -> (Array2<f64>, Array2<f64>) {
+    let nbf = da.nrows();
+    let mut ba = Array2::<f64>::zeros((nbf, nbf));
+    let mut bb = Array2::<f64>::zeros((nbf, nbf));
+
+    // Create temporary SCFState object with only the densities present such that we can reuse the
+    // electron distance function.
+    let tmpscf = SCFState {e: 0.0, oa: Array1::zeros(nbf), ob: Array1::zeros(nbf), ca: Arc::new(Array2::zeros((nbf, nbf))), cb: Arc::new(Array2::zeros((nbf, nbf))), 
+                           da: Arc::new(da.clone()), db: Arc::new(db.clone()), label: String::new(), noci_basis: false, parent: 0, excitation: Excitation {alpha: ExcitationSpin 
+                           {holes: vec![], parts: vec![] }, beta: ExcitationSpin { holes: vec![], parts: vec![]}}};
+
+    for bias in biases {
+        // d_{0\Lambda}^2 = N - Tr({}^0 D S {}^\Lambda D S).
+        let d2 = electron_distance(&tmpscf, bias, &ao.s);
+        // N_{\Lambda} = Tr({}^\Lambda D S).
+        let nlambda = (bias.da.dot(&ao.s)).diag().sum() + (bias.db.dot(&ao.s)).diag().sum();
+        // C = N_{\Lambda} \lambda exp(-\lambda_\Lambda d_{0\Lambda}^2).
+        let c = nlambda * lambda * (-lambda * d2).exp();
+        // Per-spin bias term accumulation.
+        ba = ba + &*bias.da * c;
+        bb = bb + &*bias.db * c;
+    }
+    (ba, bb)
+}
+
 /// Unrestricted SCF cycle with Loewdin orthogonalization.
 /// Uses AO integrals from AoData struct.
 /// # Arguments
@@ -132,9 +166,13 @@ fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: u
 ///     `db0`: Array2, initial spin b density matrix.
 ///     `ao`: AoData struct, contains AO integrals and metadata.
 ///     `input`: Input struct, contains user specified input data.
+///     `label`: String, label for current scf state.
+///     `noci_basis`: bool, whether or not to use this state in the NOCI basis.
+///     `scfexcitation`: SCFExcitation, use requested excited states.
 ///     `i`: Index of the SCF state.
-pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, 
-                 scfexcitation: Option<&SCFExcitation>, i: usize) -> Option<SCFState> { 
+///     `biases`: [SCFState], previously found states when using metadynamics
+pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, label: &str, noci_basis: bool, 
+                 scfexcitation: Option<&SCFExcitation>, i: usize, biases: Option<&[SCFState]>) -> Option<SCFState> { 
     let h = &ao.h; 
     let eri = &ao.eri_coul;
     let s = &ao.s;
@@ -170,11 +208,24 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
     }
 
+    let lambda: Option<f64> = match &input.states {
+        StateType::Metadynamics(meta) => Some(meta.lambda),
+        _ => None,
+    };
+
     let mut iter = 0;
     while iter < input.scf.max_cycle {
         
         // Form Fock matrices from current densities and add to DIIS history.
-        let (fa_curr, fb_curr) = form_fock_matrices(h, eri, &da, &db);
+        let (mut fa_curr, mut fb_curr) = form_fock_matrices(h, eri, &da, &db);
+
+        // If using metadynamics, add the appropriate bias.
+        if let (Some(bias_states), Some(lambda)) = (biases, lambda) && !bias_states.is_empty() {
+            let (ba, bb) = metadynamics_bias(&da, &db, ao, bias_states, lambda);
+            fa_curr = fa_curr + ba;
+            fb_curr = fb_curr + bb;
+        }
+
         if use_diis {diis.push(&fa_curr, &fb_curr, &da, &db, s);}
         
         // Extrapolate Fock matrix to be diagonalised this iteration.
@@ -296,7 +347,8 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
                 alpha: ExcitationSpin {holes: vec![],  parts: vec![]},  
                 beta:  ExcitationSpin {holes: vec![],  parts: vec![]}
             };
-            return Some(SCFState {e: e_new, oa, ob, ca, cb, da, db, label: input.states[i].label.clone(), noci_basis: input.states[i].noci, parent: i, excitation});
+            
+            return Some(SCFState {e: e_new, oa, ob, ca, cb, da, db, label: label.to_string(), noci_basis, parent: i, excitation});
         }
         da = da_new; 
         db = db_new;

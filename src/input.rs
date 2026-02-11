@@ -116,17 +116,72 @@ pub struct WicksOptions {
     pub enable: bool,
 }
 
+// Storage for SCF metadynamics options.
+pub struct Metadynamics {
+    pub nstates_rhf: usize,
+    pub nstates_uhf: usize,
+    pub spinpol: f64,
+    pub spatialpol: f64,
+    pub lambda: f64,
+    pub labels_rhf: Vec<String>,
+    pub labels_uhf: Vec<String>,
+    pub spatial_patterns_rhf: Vec<Option<Vec<i8>>>, 
+    pub spin_patterns_uhf: Vec<Option<Vec<i8>>>,   
+    pub max_attempts: usize,
+}
+
+// Storage for state options. 
+pub enum StateType {
+    Mom(Vec<StateRecipe>),
+    Metadynamics(Metadynamics),
+}
+
 // Storage for Input file parameters.
 pub struct Input {
     pub mol: MolOptions,
     pub scf: SCFInfo,
     pub write: WriteOptions,
-    pub states: Vec<StateRecipe>,
+    pub states: StateType,
     pub det: Option<DeterministicOptions>,
     pub qmc: Option<QMCOptions>,
     pub excit: ExcitationOptions,
     pub prop: PropagationOptions,
     pub wicks: WicksOptions,
+}
+
+fn read_state_recipe(t: Table) -> StateRecipe {
+    let label: String = t.get("label").unwrap();
+    let noci: bool = t.get("noci").unwrap_or(true);
+    
+    let spin_bias = t.get::<_, Option<rlua::Table>>("spin_bias").unwrap_or(None)
+                    .map(|sb| {
+                        let pol: f64 = sb.get("pol").unwrap();
+                        let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
+                        let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
+                            _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
+                                  std::process::exit(1);}
+                        }).collect();
+    SpinBias {pattern, pol}});
+    let spatial_bias = t.get::<_, Option<rlua::Table>>("spatial_bias").unwrap_or(None)
+                    .map(|sb| {
+                        let pol: f64 = sb.get("pol").unwrap();
+                        let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
+                        let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
+                            _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
+                                  std::process::exit(1);}
+                        }).collect();
+    SpatialBias {pattern, pol}}); 
+    let scfexcitation = t.get::<_, Option<rlua::Table>>("excit").unwrap_or(None)
+                     .map(|ex| {
+                        let s: String = ex.get("spin").unwrap();
+                        let spin = match s.as_str() {
+                            "alpha" => Spin::Alpha,
+                            "beta" => Spin::Beta,
+                            "both" => Spin::Both,
+                            _ => { eprintln!("Excitation spin must be 'alpha', 'beta', or 'both'"); std::process::exit(1);}
+                        };
+    SCFExcitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
+    StateRecipe {label, spin_bias, spatial_bias, scfexcitation, noci}
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -149,7 +204,11 @@ pub fn load_input(path: &str) -> Input {
     let excit_tbl: Table = globals.get("excit").unwrap();
     let prop_tbl: Table = globals.get("prop").unwrap();
     let wicks_tbl: Table = globals.get("wicks").unwrap();
-    
+
+    // Optional items.
+    let mom_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("mom").unwrap();
+    let meta_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("metadynamics").unwrap();
+
     // Mol table.
     let basis: String = mol_tbl.get("basis").unwrap();
     let unit: String = mol_tbl.get("unit").unwrap();
@@ -207,45 +266,38 @@ pub fn load_input(path: &str) -> Input {
     let write_dir: String = write_tbl.get("write_dir").unwrap();
     let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_dir};
 
-    // States table.
-    let mut states: Vec<StateRecipe> = Vec::new();
-    for st in state_tbl.sequence_values::<rlua::Table>() {
+    // States tables (MOM or metadynamics).
+    let states: StateType = match (mom_tbl, meta_tbl) {
+        (Some(_), Some(_)) => {eprintln!("Cannot use MOM and SCF metadynamics simultaneously."); std::process::exit(1);}
+        (Some(mom_tbl), None) => {
+            let mut recipes: Vec<StateRecipe> = Vec::new();
+            for st in mom_tbl.sequence_values::<rlua::Table>() {
+                let t = st.unwrap();
+                recipes.push(read_state_recipe(t));
+            }
+            StateType::Mom(recipes)
+        }
+        (None, Some(meta_tbl)) => {
+            let nstates_rhf: usize = meta_tbl.get("nstates_rhf").unwrap();
+            let nstates_uhf: usize = meta_tbl.get("nstates_uhf").unwrap();
+            let spinpol: f64 = meta_tbl.get("spinpol").unwrap();
+            let spatialpol: f64 = meta_tbl.get("spatialpol").unwrap();
+            let lambda: f64 = meta_tbl.get("lambda").unwrap();
+            let labels_rhf = (1..=nstates_rhf).map(|k| format!("RHF M {}", k)).collect::<Vec<_>>();
+            let labels_uhf = (1..=nstates_uhf).map(|k| {
+                let pair = k.div_ceil(2);
+                let ab = if (k % 2) == 1 {"A"} else {"B"};
+                format!("UHF M {} {}", pair, ab)
+            }).collect::<Vec<_>>();
+            let spatial_patterns_rhf = vec![None; nstates_rhf];
+            let spin_patterns_uhf = vec![None; nstates_uhf];
+            let max_attempts: usize = meta_tbl.get("max_attempts").unwrap();
+            StateType::Metadynamics(Metadynamics {nstates_rhf, nstates_uhf, spinpol, spatialpol, lambda, labels_rhf, labels_uhf,
+                                                  spatial_patterns_rhf, spin_patterns_uhf, max_attempts})
+        }
+        (None, None) => {eprintln!("Must use either MOM or SCF metadynamics to locate SCF solutions"); std::process::exit(1);}
+    };
 
-        let t = st.unwrap();
-        let label: String = t.get("label").unwrap();
-        let noci: bool = t.get("noci").unwrap_or(true);
-        
-        let spin_bias = t.get::<_, Option<rlua::Table>>("spin_bias").unwrap_or(None)
-                        .map(|sb| {
-                            let pol: f64 = sb.get("pol").unwrap();
-                            let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
-                            let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
-                                _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
-                                      std::process::exit(1);}
-                            }).collect();
-        SpinBias {pattern, pol}});
-        let spatial_bias = t.get::<_, Option<rlua::Table>>("spatial_bias").unwrap_or(None)
-                        .map(|sb| {
-                            let pol: f64 = sb.get("pol").unwrap();
-                            let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
-                            let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
-                                _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
-                                      std::process::exit(1);}
-                            }).collect();
-        SpatialBias {pattern, pol}}); 
-        let scfexcitation = t.get::<_, Option<rlua::Table>>("excit").unwrap_or(None)
-                         .map(|ex| {
-                            let s: String = ex.get("spin").unwrap();
-                            let spin = match s.as_str() {
-                                "alpha" => Spin::Alpha,
-                                "beta" => Spin::Beta,
-                                "both" => Spin::Both,
-                                _ => { eprintln!("Excitation spin must be 'alpha', 'beta', or 'both'"); std::process::exit(1);}
-                            };
-        SCFExcitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
-        states.push(StateRecipe {label, spin_bias, spatial_bias, scfexcitation, noci});
-    }
-    
     // Deterministic table.
     let det: Option<DeterministicOptions> = globals.get::<_, Option<rlua::Table>>("det").unwrap().map(|det_tbl| {
                 let dynamic_shift: bool = det_tbl.get("dynamic_shift").unwrap();

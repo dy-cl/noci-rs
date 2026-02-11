@@ -1,4 +1,6 @@
 // utils.rs
+use rand::{Rng};
+use rand::rngs::StdRng;
 use ndarray::{Array1, Array2, Array4};
 
 /// Print a 2D array as a matrix.
@@ -140,4 +142,7 @@ pub fn excitation_phase(mut occ: u64, holes: &[usize], parts: &[usize]) -> f64 {
     ph
 }
 
+pub fn random_pattern(rng: &mut StdRng, natoms: usize) -> Vec<i8> {
+    (0..natoms).map(|_| match rng.gen_range(0..3) {0 => -1, 1 => 0, _ => 1,}).collect()
+}
 
