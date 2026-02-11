@@ -254,7 +254,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFSt
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
     let d_tol = 1e-2;
-    let rhf_tol = 1e-6;
+    let rhf_tol = 1e-2;
 
     let mut biases_rhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf);
     let mut biases_uhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_uhf);
@@ -348,33 +348,32 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFSt
                 let mut candidate = relaxed;
                 candidate.noci_basis = true;
 
-                // Ensure found state is not a duplicate. 
-                let is_duplicate = states.iter().map(|st| (st, electron_distance(st, &candidate, &ao.s))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).is_some_and(|(closest, d2)| {
-                    if d2 < d_tol {
-                        println!("Removed state '{}' from basis as duplicate of '{}' (d^2 = {:.6})", candidate.label, closest.label, d2);
-                        true
-                    } else {
-                        false
-                    }
-                });
-                if is_duplicate {continue;}
-
                 // If we have collapsed to RHF we should change the label of the state.
                 let mut drhf = 0.0;
                 for (&a, &b) in candidate.da.iter().zip(candidate.db.iter()) {
                     drhf += (a - b).abs();
                 }
-                // RHF branch.
                 if drhf < rhf_tol {
+                    // RHF branch.
+                    // Ignore state if duplicate.
+                    println!("UHF candidate collapsed to RHF: drhf = {:.3e} < {:.3e}", drhf, rhf_tol);
+                    let dup = biases_rhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < d_tol);
+                    if dup {
+                        println!("Removed state '{}' from basis as duplicate.", candidate.label);
+                        continue;
+                    }
+
                     // Even if zero RHF were requested, UHF and RHF may not be distinct so we add
                     // it to the states anyway to avoid having an empty basis.
-                    if meta.nstates_rhf == 0 {
+                    if meta.nstates_rhf == 0 && irhf >= meta.nstates_rhf {
                         meta.nstates_rhf = 1;
                         meta.labels_rhf.push("RHF".to_string());
                         meta.spatial_patterns_rhf.push(Some(pattern.clone()));
                     }
+                    if irhf >= meta.nstates_rhf {continue;}
                     candidate.label = meta.labels_rhf[irhf].clone();
                     meta.spatial_patterns_rhf[irhf] = Some(pattern.clone());
+
                     // All duplicates removed by this point. Since we have successfully found a new
                     // state, reset the attempts counter.
                     attempt = 0;
@@ -382,12 +381,21 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFSt
                     states.push(candidate);
                     irhf += 1;
                 } else {
-                // UHF branch.
+                    // UHF branch.
+                    // Ignore state if duplicate.
+                    println!("UHF candidate stayed UHF: drhf = {:.3e} > {:.3e}", drhf, rhf_tol);
+                    let dup = biases_uhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < d_tol);
+                    if dup {
+                        println!("Removed state '{}' from basis as duplicate.", candidate.label);
+                        continue;
+                    }
+
                     candidate.label = label.clone();
                     meta.spin_patterns_uhf[base] = Some(pattern.clone());
                     if biases_uhf.len() + 1 < meta.nstates_uhf && j == 0 {
                         meta.spin_patterns_uhf[base + 1] = Some(pattern.clone());
                     }
+
                     // All duplicates removed by this point. Since we have successfully found a new
                     // state, reset the attempts counter.
                     attempt = 0;
@@ -396,8 +404,12 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFSt
             }
 
             if cand[0].is_some() && cand[1].is_some() {
-                biases_uhf.push(cand[0].take().unwrap());
-                biases_uhf.push(cand[1].take().unwrap());
+                let st0 = cand[0].take().unwrap();
+                let st1 = cand[1].take().unwrap();
+                biases_uhf.push(st0.clone());
+                biases_uhf.push(st1.clone());
+                states.push(st0);
+                states.push(st1);
                 meta.spin_patterns_uhf[base] = Some(pattern.clone());
             } else {
                 continue;
@@ -465,6 +477,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFSt
                 }
             });
             if is_duplicate {continue;}
+
             // No need to check for UHF vs RHF here, if we started with equal densities we should
             // not escape this. All duplicates removed by this point. Since we have successfully found a new
             // state, reset the attempts counter.
