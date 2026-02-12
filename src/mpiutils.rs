@@ -37,8 +37,15 @@ where
         if irank != 0 {
             bytes.resize(len as usize, 0u8);
         }
-        // Send value from rank 0 to all other ranks
-        root.broadcast_into(&mut bytes[..]);
+
+        // Send value from rank 0 to all other ranks in chunks to avoid overflow.
+        const CHUNK: usize = 256 * 1024 * 1024; 
+        let mut off = 0usize;
+        while off < bytes.len() {
+            let end = (off + CHUNK).min(bytes.len());
+            root.broadcast_into(&mut bytes[off..end]);
+            off = end;
+        }
         
         // On all ranks except 0 deserialise the value and put it back into T.
         if irank != 0 {

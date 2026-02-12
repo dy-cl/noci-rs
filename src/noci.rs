@@ -1,5 +1,7 @@
 // noci.rs
 use std::time::{Duration, Instant};
+use std::fs::{create_dir_all};
+use std::io::{Write};
 
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{SVD, Determinant};
@@ -297,21 +299,57 @@ pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize,
     (hnuc + h1 + h2, s)
 }
 
-fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> Vec<Vec<WicksReferencePair>> {
+pub fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> Vec<Vec<WicksReferencePair>> {
     let nref = noci_reference_basis.len();
-    let mut wicks = Vec::with_capacity(nref);
-
-    for ri in noci_reference_basis.iter() {
-        let mut row = Vec::with_capacity(nref);
-        for rj in noci_reference_basis.iter() {
-            let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
-            let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
-            let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
-            row.push(WicksReferencePair { aa, bb, ab });
-        }
-        wicks.push(row);
-    }
+    
+    // Generally number of references is low so it may be more worth it to use parallelism inside
+    // the Wick's routines rather than here.
+    let wicks = (0..nref).into_par_iter().map(|i| {
+            let ri = &noci_reference_basis[i];
+            let mut row = Vec::with_capacity(nref);
+            for (j, rj) in noci_reference_basis.iter().enumerate() {
+                println!("Building intermediates for reference pair: {}, {}", i, j);
+                let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
+                let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
+                let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
+                row.push(WicksReferencePair { aa, bb, ab });
+            }
+            row
+    }).collect();
+    println!("{}", "=".repeat(100));
     wicks
+}
+
+/// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
+/// extended non-orthogonal Wick's theorem.
+/// # Arguments:
+///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
+///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
+///     `l`: usize, index of state \Lambda.
+///     `g`: usize, index of state \Gamma.
+pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &[SCFState], l: usize, g: usize, tol: f64, wicks: &[Vec<WicksReferencePair>]) -> f64 {
+
+    let lp = determinants[l].parent;
+    let gp = determinants[g].parent;
+
+    let w = &wicks[lp][gp];
+
+    let ex_la = &determinants[l].excitation.alpha;
+    let ex_ga = &determinants[g].excitation.alpha;
+    let ex_lb = &determinants[l].excitation.beta;
+    let ex_gb = &determinants[g].excitation.beta;
+
+    let occ_la = occvec_to_bits(&noci_reference_basis[lp].oa, tol);
+    let occ_lb = occvec_to_bits(&noci_reference_basis[lp].ob, tol);
+    let occ_ga = occvec_to_bits(&noci_reference_basis[gp].oa, tol);
+    let occ_gb = occvec_to_bits(&noci_reference_basis[gp].ob, tol);
+
+    let ph_a = excitation_phase(occ_la, &ex_la.holes, &ex_la.parts) * excitation_phase(occ_ga, &ex_ga.holes, &ex_ga.parts);
+    let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
+
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, tol);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, tol);
+    sa * sb
 }
 
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
@@ -366,20 +404,18 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
 ///     `determinants`: Vec<SCFState>, vector of all determinants in the NOCI basis.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `input`: Input, user input specifications.
-pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState], tol: f64) -> (Array2<f64>, Array2<f64>, Duration) {
+pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&[Vec<WicksReferencePair>]>) 
+                           -> (Array2<f64>, Array2<f64>, Duration) {
     
     let ndets = determinants.len();
     let mut h = Array2::<f64>::zeros((ndets, ndets));
     let mut s = Array2::<f64>::zeros((ndets, ndets));
-    
-    println!("Precomputing Wick's intermediates....");
-    let wicks = if input.wicks.enable || input.wicks.compare {Some(build_wicks(ao, noci_reference_basis, tol))} else {None};
- 
+
     // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma. 
     let pairs: Vec<(usize, usize)> = (0..ndets).flat_map(|mu| (mu..ndets).map(move |nu| (mu, nu))).collect();
 
     // Calculate Hamiltonian matrix elements in parallel.
-    let t_h = Instant::now();
+    let t_hs = Instant::now();
     let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map(|&(l, g)| {
         let (h, s, d) = if input.wicks.compare {
             let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g, tol);
@@ -387,7 +423,7 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
             let d = (hn - hw).abs() + (sn - sw).abs();
             (hw, sw, d)
         } else {
-            let (h, s) = if input.wicks.enable {
+            let (h, s) = if input.wicks.enabled {
                 calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g, tol)
             } else {
                 calculate_hs_pair_naive(ao, determinants, l, g, tol)
@@ -395,7 +431,7 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
             (h, s, 0.0)
         };
         (l, g, h, s, d)}).collect();
-    let d_h = t_h.elapsed();
+    let d_hs = t_hs.elapsed();
 
     // Scatter Hamiltonian and overlap matrix elements into full matrices.
     let mut td = 0.0;
@@ -409,9 +445,32 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
         }
         td += d;
     }
-    println!("Total naive–wicks discrepancy: {:.6e}", td);
+    
+    if input.wicks.compare{println!("Total naive–wicks discrepancy: {:.6e}", td);}
 
-    (h, s, d_h)
+    // Write out the Hamiltonian and Overlap if requested.
+    if input.write.write_matrices{
+        create_dir_all(&input.write.write_dir).unwrap();
+        let mut fhamiltonian = std::io::BufWriter::new(std::fs::File::create(format!("{}/HAMI", input.write.write_dir)).unwrap());
+        for r in 0..h.nrows() {
+            for c in 0..h.ncols() {
+                if c > 0 { write!(fhamiltonian, " ").unwrap(); }
+                write!(fhamiltonian, "{}", h[(r,c)]).unwrap();
+            }
+            writeln!(fhamiltonian).unwrap();
+        }
+
+        let mut foverlap = std::io::BufWriter::new(std::fs::File::create(format!("{}/OVLP", input.write.write_dir)).unwrap());
+        for r in 0..s.nrows() {
+            for c in 0..s.ncols() {
+                if c > 0 { write!(foverlap, " ").unwrap(); }
+                write!(foverlap, "{}", s[(r,c)]).unwrap();
+            }
+            writeln!(foverlap).unwrap();
+        }
+    }
+
+    (h, s, d_hs)
 }
 
 /// Calculate NOCI energy by solving GEVP with NOCI Hamiltonian and overlap.
@@ -419,8 +478,8 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
-pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64) -> (f64, Array1<f64>, Duration) {
-    let (h, s, d_h) = build_noci_matrices(ao, input, scfstates, scfstates, tol);
+pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&[Vec<WicksReferencePair>]>) -> (f64, Array1<f64>, Duration) {
+    let (h, s, d_hs) = build_noci_matrices(ao, input, scfstates, scfstates, tol, wicks);
         
     println!("NOCI-reference Hamiltonian:");
     print_array2(&h);
@@ -434,6 +493,6 @@ pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState],
 
     // Assumes columns of c are energy ordered eigenvectors
     let c0 = c.column(0).to_owned(); 
-    (evals[0], c0, d_h)
+    (evals[0], c0, d_hs)
 }
 

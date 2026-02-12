@@ -16,11 +16,12 @@ use noci_rs::SCFState;
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
 use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
-use noci_rs::noci::{build_noci_matrices, calculate_noci_energy};
+use noci_rs::noci::{build_noci_matrices, calculate_noci_energy, build_wicks};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{step};
 use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::mpiutils::{broadcast};
+use noci_rs::nonorthogonalwicks::WicksReferencePair;
 
 // Timing storage for various segements of code.
 #[derive(Default, Clone, Copy)]
@@ -28,11 +29,12 @@ struct Timings {
     pyscf: Duration,
     scf: Duration,
     noci_ref_total: Duration,
-    noci_ref_h: Duration,
+    noci_ref_hs: Duration,
+    wicks_intermediates: Duration,
     // Deterministic timings.
     qmc_det_total: Duration,
     qmc_det_basis: Duration,
-    qmc_det_h: Duration,
+    qmc_det_hs: Duration,
     qmc_det_prop: Duration,
     // Stochastic timings. No timing for forming Hamiltonian as we do not do this in true QMC.
     qmc_stoch_total: Duration,
@@ -112,6 +114,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     let mut e_noci_ref: f64 = 0.0;
     let mut e_noci_qmc_det: Option<f64> = None;
     let mut e_noci_qmc_stoch: Option<f64> = None;
+    let mut wicks: Option<Vec<Vec<WicksReferencePair>>> = None;
     
     // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
     // for multithreading. SCF calculations are currently single threaded. 
@@ -120,24 +123,41 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         let (st, d_scf) = run_scf(&ao, input, prev_states);
         states = st;
         timings.scf = d_scf;
+
+        noci_reference_basis = states.iter().filter(|s| s.noci_basis).cloned().collect();
+        for (i, st) in noci_reference_basis.iter_mut().enumerate() {
+            st.parent = i;
+        }
+
+        // Construct intermediates for extended non-orthogonal Wick's theorem if using.
+        let t_wi = Instant::now();
+        wicks = if input.wicks.enabled || input.wicks.compare {
+            println!("{}", "=".repeat(100));
+            println!("Precomputing Wick's intermediates....");
+            Some(build_wicks(&ao, &noci_reference_basis, tol))
+        } else {
+            None
+        };
+        let d_wi = t_wi.elapsed();
         
         // Run NOCI reference calculation.
-        let (refb, e_ref, c0v, d_tot, d_h_ref) = run_reference_noci(&ao, input, &states, tol);
+        let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, wicks.as_deref());
         // Note that noci_reference_basis and states above are the same if every requested basis
         // state in the input file has noci = true.
         noci_reference_basis = refb;
         e_noci_ref = e_ref;
         c0 = c0v;
         timings.noci_ref_total = d_tot;
-        timings.noci_ref_h = d_h_ref;
-        
+        timings.noci_ref_hs = d_hs_ref;
+
         // Run deterministic NOCI-QMC calculation.
         if input.det.is_some() {
-            let (e_det, d_tot, d_basis, d_h, d_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0, tol);
+            let (e_det, d_tot, d_basis, d_hs, d_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0, tol, wicks.as_deref());
             e_noci_qmc_det = Some(e_det);
             timings.qmc_det_total = d_tot;
             timings.qmc_det_basis = d_basis;
-            timings.qmc_det_h = d_h;
+            timings.qmc_det_hs = d_hs;
+            timings.wicks_intermediates = d_wi;
             timings.qmc_det_prop = d_prop;
         }
     }
@@ -147,10 +167,11 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     broadcast(world, &mut noci_reference_basis);
     broadcast(world, &mut c0);
     broadcast(world, &mut e_noci_ref);
+    broadcast(world, &mut wicks);
 
     // Run stochastic NOCI-QMC calculation
     if input.qmc.is_some() {
-        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol);
+        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks.as_deref().unwrap());
         e_noci_qmc_stoch = Some(e_qmc);
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
@@ -204,7 +225,8 @@ fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> (Vec<SCF
 ///     `ao`: AoData, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
 ///     `states`: [SCFState], converged SCF states. 
-fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64) -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
+fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, wicks: Option<&[Vec<WicksReferencePair>]>) 
+                      -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
     let t_noci = Instant::now();
     
     // Filter for the SCF states the user requested to be used in the NOCI basis.
@@ -213,7 +235,7 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64)
         st.parent = i;
     }
     // Call matrix element and diagonalisation routines.
-    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, &input, &noci_reference_basis, tol);
+    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, input, &noci_reference_basis, tol, wicks);
 
     (noci_reference_basis, e_noci_ref, c0.to_vec(), t_noci.elapsed(), d_h_ref)
 }
@@ -226,8 +248,8 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64)
 ///     `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
 ///                             to be in the NOCI basis.
 ///     `c0`: [f64], initial coefficient vector of basis states.
-fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], tol: f64) 
-                             -> (f64, Duration, Duration, Duration, Duration) {
+fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], tol: f64, 
+                              wicks: Option<&[Vec<WicksReferencePair>]>) -> (f64, Duration, Duration, Duration, Duration) {
     let t_total = Instant::now();
 
     println!("{}", "=".repeat(100));
@@ -241,10 +263,9 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     let n = basis.len();
     println!("Built NOCI-QMC basis of {} determinants.", n);
     println!("Calculating NOCI-QMC deterministic propagation matrix elements for {} determinants ({} elements)...", n, n * n);
-    println!("Progress will be printed every 5 minutes...");
     
     // Call matrix element routines.
-    let (h, s, d_h) = build_noci_matrices(ao, input, &basis, noci_reference_basis, tol);
+    let (h, s, d_hs) = build_noci_matrices(ao, input, &basis, noci_reference_basis, tol, wicks);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.
@@ -320,7 +341,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 
     let d_total = t_total.elapsed();
 
-    (e, d_total, d_basis, d_h, d_prop)
+    (e, d_total, d_basis, d_hs, d_prop)
 }
 
 /// Perform stochastic propagation in the NOCI-QMC space. 
@@ -332,8 +353,8 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 ///                             to be in the NOCI basis.
 ///     `c0`: [f64], initial coefficient vector of basis states.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
-pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64) 
-                               -> (f64, Duration, Duration, Duration) {
+pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64, 
+                               wicks: &[Vec<WicksReferencePair>]) -> (f64, Duration, Duration, Duration) {
 
     let t_total = Instant::now();
     let irank = world.rank();
@@ -370,7 +391,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let (e, local_hist) = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol);
+    let (e, local_hist) = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, noci_reference_basis, wicks);
     let d_prop = t_prop.elapsed();
 
     // Write excitation histogram to a file. This should currently only be used if doing a single 
@@ -405,12 +426,14 @@ fn print_report(res: &Results, input: &Input) {
     println!("Total SCF time: {:?}", res.timings.scf);
 
     println!("Total Reference NOCI time: {:?}", res.timings.noci_ref_total);
-    println!(r"  H_1 & H_2: {:?}", res.timings.noci_ref_h);
+    println!(r" S & H_1 & H_2: {:?}", res.timings.noci_ref_hs);
+
+    println!("Wick's Intermediates Construction time: {:?}", res.timings.wicks_intermediates);
 
     if input.det.is_some() {
         println!("Total NOCI-QMC deterministic time: {:?}", res.timings.qmc_det_total);
         println!(r"  Basis generation:  {:?}", res.timings.qmc_det_basis);
-        println!(r"  H_1 & H_2: {:?}", res.timings.qmc_det_h);
+        println!(r"  S & H_1 & H_2: {:?}", res.timings.qmc_det_hs);
         println!(r"  Deterministic propagation:  {:?}", res.timings.qmc_det_prop);
     }
 

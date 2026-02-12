@@ -108,12 +108,13 @@ pub struct WriteOptions {
     pub write_deterministic_coeffs: bool,
     pub write_excitation_hist: bool,
     pub write_dir: String,
+    pub write_matrices: bool,
 }
 
 // Storage for Wick's options.
 pub struct WicksOptions {
     pub compare: bool,
-    pub enable: bool,
+    pub enabled: bool,
 }
 
 // Storage for SCF metadynamics options.
@@ -264,7 +265,8 @@ pub fn load_input(path: &str) -> Input {
     let write_deterministic_coeffs: bool = write_tbl.get("write_deterministic_coeffs").unwrap();
     let write_excitation_hist: bool = write_tbl.get("write_excitation_hist").unwrap();
     let write_dir: String = write_tbl.get("write_dir").unwrap();
-    let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_dir};
+    let write_matrices: bool = write_tbl.get("write_matrices").unwrap();
+    let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_matrices, write_dir};
 
     // States tables (MOM or metadynamics).
     let states: StateType = match (mom_tbl, meta_tbl) {
@@ -342,8 +344,8 @@ pub fn load_input(path: &str) -> Input {
     
     // Wick's table.
     let compare = wicks_tbl.get("compare").unwrap();
-    let enable = wicks_tbl.get("enable").unwrap();
-    let wicks = WicksOptions {compare, enable};
+    let enabled = wicks_tbl.get("enabled").unwrap();
+    let wicks = WicksOptions {compare, enabled};
 
     Input {mol, scf, write, states, det, qmc, excit, prop, wicks}
 }

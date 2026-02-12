@@ -246,10 +246,9 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
 /// # Arguments:
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
 ///     `input`: Input struct, contains user inputted options. 
-///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
 ///     `prev_map`: HashMap, map between the SCFState object and its label.
 ///     `meta`: Metadynamics, SCF metadynamics parameters.
-fn generate_states_metadynamics(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, prev_map: &HashMap<&str, &SCFState>, meta: &mut Metadynamics) -> Vec<SCFState> {
+fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&str, &SCFState>, meta: &mut Metadynamics) -> Vec<SCFState> {
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
@@ -515,7 +514,7 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
             generate_states_mom(ao, &*input, prev, &prev_map, recipes)
         }
         StateType::Metadynamics(meta) => {
-            generate_states_metadynamics(ao, &*input, prev, &prev_map, meta)
+            generate_states_metadynamics(ao, &*input, &prev_map, meta)
         }
     };
 

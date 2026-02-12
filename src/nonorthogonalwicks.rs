@@ -1,6 +1,8 @@
 // nonorthogonalwicks.rs 
 use ndarray::{Array1, Array2, Array4, Axis, s};
 use ndarray_linalg::{SVD, Determinant};
+use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 
 use crate::{ExcitationSpin};
 
@@ -16,6 +18,7 @@ pub enum Type {Hole, Part}
 
 pub type Label = (Side, Type, usize);
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SameSpin {
     pub x: [Array2<f64>; 2], // X[mi]
     pub y: [Array2<f64>; 2], // Y[mi]
@@ -28,13 +31,13 @@ pub struct SameSpin {
 
     pub j: [[[[Array4<f64>; 2]; 2]; 2]; 2],  // J[mi][mj][mk][ml]
 
-
     pub tilde_s_prod: f64,
     pub phase: f64,
     pub m: usize,
     pub nmo: usize,
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct DiffSpin {
     pub vab0: [[f64; 2]; 2], // vab0[ma0][mb0]
     pub vab:  [[[Array2<f64>; 2]; 2]; 2], // vab[ma0][mb0][mak]
@@ -46,6 +49,7 @@ pub struct DiffSpin {
     pub iiba: [[[[Array4<f64>; 2]; 2]; 2]; 2], // iiba[mb0][mbk][ma0][maj]
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct WicksReferencePair {
     pub aa: SameSpin,
     pub bb: SameSpin,
@@ -156,12 +160,18 @@ impl SameSpin {
                 std::array::from_fn(|_| Array2::<f64>::zeros((2 * nmo, 2 * nmo)))
             })
         });
-        for mi in 0..2 {
-            for mj in 0..2 {
-                for mk in 0..2 {
-                    v[mi][mj][mk] = cx[mi].t().dot(&jkao[mk]).dot(&xc[mj]);
-                }
-            }
+        let combos: Vec<(usize, usize, usize)> =
+            (0..2).flat_map(|mi|
+            (0..2).flat_map(move |mj|
+            (0..2).map(move |mk| (mi, mj, mk))
+        )).collect();
+        let blocks: Vec<((usize, usize, usize), Array2<f64>)> =
+            combos.into_par_iter().map(|(mi, mj, mk)| {
+                let blk = cx[mi].t().dot(&jkao[mk]).dot(&xc[mj]);
+                ((mi, mj, mk), blk)
+            }).collect();
+        for ((mi, mj, mk), blk) in blocks {
+            v[mi][mj][mk] = blk;
         }
 
         // Construct {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} intermediates for two electron
@@ -183,19 +193,20 @@ impl SameSpin {
                 })
             })
         });
-        for mi in 0..2 {
-            for mj in 0..2 {
-                for mk in 0..2 {
-                    for ml in 0..2 {
-                        let mut blk = eri_ao2mo(eri, &cx[mi], &xc[mj], &cx[mk], &xc[ml]);
-                        let ex = blk.view().permuted_axes([0, 2, 1, 3]).to_owned();
-                        blk -= &ex;
-                        j[mi][mj][mk][ml] = blk;
-                    }
-                }
-            }
+        let combos: Vec<(usize, usize, usize, usize)> =
+            (0..2).flat_map(|mi| (0..2).flat_map(move |mj|
+            (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
+        )).collect();
+        let blocks: Vec<((usize, usize, usize, usize), Array4<f64>)> = combos.into_par_iter().map(|(mi,mj,mk,ml)| {
+            let mut blk = eri_ao2mo(eri, &cx[mi], &xc[mj], &cx[mk], &xc[ml]);
+            let ex = blk.view().permuted_axes([0, 2, 1, 3]).to_owned();
+            blk -= &ex;
+            ((mi, mj, mk, ml), blk)
+        }).collect();
+        for ((mi,mj,mk,ml), blk) in blocks {
+            j[mi][mj][mk][ml] = blk;
         }
-        //println!(" ");
+
         Self {x, y, f0, f, v0, v, j, tilde_s_prod, phase, m, nmo}
     }
 
@@ -402,7 +413,8 @@ impl SameSpin {
     fn build_j_coulomb(eri: &Array4<f64>, m: &Array2<f64>) -> Array2<f64> {
         let n = m.nrows();
         let mut j = Array2::<f64>::zeros((n, n));
-        for s in 0..n {
+
+        j.axis_iter_mut(Axis(0)).into_par_iter().enumerate().for_each(|(s, mut row)| {
             for t in 0..n {
                 let mut acc = 0.0;
                 for mu in 0..n {
@@ -410,12 +422,13 @@ impl SameSpin {
                         acc += eri[(s, t, mu, nu)] * m[(mu, nu)];
                     }
                 }
-                j[(s, t)] = acc;
+                row[t] = acc;
             }
-        }
+        });
         j
     }
-    
+
+        
     /// Calculate the Coulomb contraction K^{m_k}_{\mu\nu} required for the two electron
     /// intermediates as:
     ///     K^{m_k}_{\mu\nu} = \sum_{\sigma\tau} ({}^{\Lambda}(\mu\sigma|\tau\nu)) {}^{\Gamma\Lambda} M^{\mu\nu, m_k}
@@ -426,7 +439,8 @@ impl SameSpin {
     fn build_k_exchange(eri: &Array4<f64>, m: &Array2<f64>) -> Array2<f64> {
         let n = m.nrows();
         let mut k = Array2::<f64>::zeros((n, n));
-        for s in 0..n {
+
+        k.axis_iter_mut(Axis(0)).into_par_iter().enumerate().for_each(|(s, mut row)| {
             for t in 0..n {
                 let mut acc = 0.0;
                 for mu in 0..n {
@@ -434,9 +448,9 @@ impl SameSpin {
                         acc += eri[(s, mu, nu, t)] * m[(mu, nu)];
                     }
                 }
-                k[(s, t)] = acc;
+                row[t] = acc;
             }
-        }
+        });
         k
     }
 }
@@ -524,24 +538,35 @@ impl DiffSpin {
         //  similarities here hint at a possible generalisation of the code.
         let mut vab: [[[Array2<f64>; 2]; 2]; 2] = std::array::from_fn(|_| {std::array::from_fn(|_| std::array::from_fn(|_| Array2::<f64>::zeros((2*nmo, 2*nmo))))});
         let mut vba: [[[Array2<f64>; 2]; 2]; 2] = std::array::from_fn(|_| {std::array::from_fn(|_| std::array::from_fn(|_| Array2::<f64>::zeros((2*nmo, 2*nmo))))});
-        for ma0 in 0..2 {
-            for mb0 in 0..2 {
-                for mak in 0..2 {
-                    vab[ma0][mb0][mak] = cx_a[ma0].t().dot(&jb[mb0].dot(xc_a[mak]));
-                }
-                for mbk in 0..2 {
-                    vba[mb0][ma0][mbk] = cx_b[mb0].t().dot(&ja[ma0].dot(xc_b[mbk]));
-                }
-            }
+        let combos: Vec<(usize, usize, usize)> =
+            (0..2).flat_map(|ma0|
+            (0..2).flat_map(move |mb0|
+            (0..2).map(move |mk| (ma0, mb0, mk))
+        )).collect();
+        let vabblocks: Vec<((usize, usize, usize), Array2<f64>)> =
+            combos.clone().into_par_iter().map(|(ma0, mb0, mak)| {
+                let blk = cx_a[ma0].t().dot(&jb[mb0]).dot(xc_a[mak]);
+                ((ma0, mb0, mak), blk)
+            }).collect();
+        for ((ma0, mb0, mak), blk) in vabblocks {
+            vab[ma0][mb0][mak] = blk;
         }
-        
-        // Construct {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} intermediates for two electron
+        let vbablocks: Vec<((usize, usize, usize), Array2<f64>)> =
+            combos.into_par_iter().map(|(ma0, mb0, mbk)| {
+                let blk = cx_b[mb0].t().dot(&ja[ma0]).dot(xc_b[mbk]);
+                ((mb0, ma0, mbk), blk)
+            }).collect();
+        for ((mb0, ma0, mbk), blk) in vbablocks {
+            vba[mb0][ma0][mbk] = blk;
+        }
+
+        // Construct {}^{\Lambda\Gamma} II_{ab,cd}^{m_1,m_2,m_3,m_4} intermediates for two electron
         // Hamiltonian matrix elements. These are given as:
-        //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1,m_2,m_3,m_4} = \sum_{prqs} ({}^{\Lambda}(pr|qs))
+        //      {}^{\Lambda\Gamma} II_{ab,cd}^{m_1,m_2,m_3,m_4} = \sum_{prqs} ({}^{\Lambda}(pr|qs))
         //      {}^{\Lambda\Gamma} Y_{ap}^{m_1} {}^{\Lambda\Gamma} X_{rb}^{m_2} {}^{\Lambda\Gamma} Y_{cq}^{m_3} {}^{\Lambda\Gamma} X_{sd}^{m_4},
         // where the use of X or Y in each part depends on the ordering of \Lambda and \Gamma. Again using our quantities
         // this may instead be calculated as
-        //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1, m_2, m_3, m_4} = \sum_{\mu\nu\tau\sigma} C_{L,a\mu}^{m_1} C_{R,b\nu}^{m_2}
+        //      {}^{\Lambda\Gamma} II_{ab,cd}^{m_1, m_2, m_3, m_4} = \sum_{\mu\nu\tau\sigma} C_{L,a\mu}^{m_1} C_{R,b\nu}^{m_2}
         //      ((\mu\nu|\tau\sigma)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. This is unsuprisngly analogous to the 4-index J tensor in SameSpin.
@@ -555,23 +580,21 @@ impl DiffSpin {
                 std::array::from_fn(|_| std::array::from_fn(|_| Array4::<f64>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))))
             })
         });
-        for (ma0, cxa0) in cx_a.iter().enumerate() {
-            for (maj, xca_j) in xc_a.iter().enumerate() {
-                for (mb0, cxb0) in cx_b.iter().enumerate() {
-                    for (mbj, xcb_j) in xc_b.iter().enumerate() {
-                        iiab[ma0][maj][mb0][mbj] = eri_ao2mo(eri, cxa0, xca_j, cxb0, xcb_j);
-                    }
-                }
-            }
-        }
-        for (mb0, _cxb0) in cx_b.iter().enumerate() {
-            for (mbk, _xcb_k) in xc_b.iter().enumerate() {
-                for (ma0, _cxa0) in cx_a.iter().enumerate() {
-                    for (maj, _xca_j) in xc_a.iter().enumerate() {
-                        iiba[mb0][mbk][ma0][maj] = iiab[ma0][maj][mb0][mbk].view().permuted_axes([2, 3, 0, 1]).to_owned();
-                    }
-                }
-            }
+
+        let combos: Vec<(usize, usize, usize, usize)> =
+            (0..2).flat_map(|mi| (0..2).flat_map(move |mj|
+            (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
+        )).collect();
+
+        let blocks: Vec<((usize, usize, usize, usize), (Array4<f64>, Array4<f64>))> = combos.into_par_iter().map(|(ma0, maj, mb0, mbj)| {
+            let blk = eri_ao2mo(eri, &cx_a[ma0], &xc_a[maj], &cx_b[mb0], &xc_b[mbj]);
+            let blkt = blk.view().permuted_axes([2, 3, 0, 1]).to_owned(); 
+            ((ma0, maj, mb0, mbj), (blk, blkt))
+        }).collect();
+
+        for ((ma0, maj, mb0, mbj), (blk, blkt)) in blocks {
+            iiab[ma0][maj][mb0][mbj] = blk;
+            iiba[mb0][mbj][ma0][maj] = blkt;
         }
 
         Self {vab0, vab, vba0, vba, iiab, iiba}
