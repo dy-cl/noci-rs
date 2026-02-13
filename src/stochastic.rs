@@ -193,7 +193,7 @@ impl ElemCache {
             calculate_hs_pair_naive(ao, basis, a, b, tol)
         };
 
-        if !input.wicks.enabled {self.maps.insert((a, b), h);}
+        if !input.wicks.enabled {self.maph.insert((a, b), h);}
         if !input.wicks.enabled {self.maps.insert((a, b), s);}
 
         (h, s)
