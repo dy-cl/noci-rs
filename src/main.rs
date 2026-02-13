@@ -12,16 +12,17 @@ use ndarray::Array1;
 use noci_rs::input::Input;
 use noci_rs::AoData;
 use noci_rs::SCFState;
+use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
 use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
-use noci_rs::noci::{build_noci_matrices, calculate_noci_energy, build_wicks};
+use noci_rs::noci::{build_noci_matrices, calculate_noci_energy, build_wicks_shared};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{step};
 use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::mpiutils::{broadcast};
-use noci_rs::nonorthogonalwicks::WicksReferencePair;
+
 
 // Timing storage for various segements of code.
 #[derive(Default, Clone, Copy)]
@@ -114,7 +115,6 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     let mut e_noci_ref: f64 = 0.0;
     let mut e_noci_qmc_det: Option<f64> = None;
     let mut e_noci_qmc_stoch: Option<f64> = None;
-    let mut wicks: Option<Vec<Vec<WicksReferencePair>>> = None;
     
     // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
     // for multithreading. SCF calculations are currently single threaded. 
@@ -128,20 +128,30 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         for (i, st) in noci_reference_basis.iter_mut().enumerate() {
             st.parent = i;
         }
+    }
 
-        // Construct intermediates for extended non-orthogonal Wick's theorem if using.
-        let t_wi = Instant::now();
-        wicks = if input.wicks.enabled || input.wicks.compare {
+    world.barrier();
+    broadcast(world, &mut states);
+    broadcast(world, &mut noci_reference_basis);
+    
+    // Construct intermediates for extended non-orthogonal Wick's theorem if using. The actual
+    // computation happens on only rank 0 (with rayon).
+    let t_wi = Instant::now();
+    let mut wicks_shared: Option<WicksShared> = None;
+    if input.wicks.enabled || input.wicks.compare {
+        if irank == 0 {
             println!("{}", "=".repeat(100));
             println!("Precomputing Wick's intermediates....");
-            Some(build_wicks(&ao, &noci_reference_basis, tol))
-        } else {
-            None
-        };
-        let d_wi = t_wi.elapsed();
-        
+        }
+        wicks_shared = Some(build_wicks_shared(world, &ao, &noci_reference_basis, tol));
+    };
+    let d_wi = t_wi.elapsed();
+    let wicks_view: Option<&WicksView> = wicks_shared.as_ref().map(|ws| ws.view());
+
+    // Deteministic propagation and reference NOCI happen only on rank 0 (with rayon).
+    if irank == 0 {
         // Run NOCI reference calculation.
-        let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, wicks.as_deref());
+        let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, wicks_view);
         // Note that noci_reference_basis and states above are the same if every requested basis
         // state in the input file has noci = true.
         noci_reference_basis = refb;
@@ -150,9 +160,8 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         timings.noci_ref_total = d_tot;
         timings.noci_ref_hs = d_hs_ref;
 
-        // Run deterministic NOCI-QMC calculation.
         if input.det.is_some() {
-            let (e_det, d_tot, d_basis, d_hs, d_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0, tol, wicks.as_deref());
+            let (e_det, d_tot, d_basis, d_hs, d_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0, tol, wicks_view);
             e_noci_qmc_det = Some(e_det);
             timings.qmc_det_total = d_tot;
             timings.qmc_det_basis = d_basis;
@@ -163,15 +172,13 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     }
 
     world.barrier();
-    broadcast(world, &mut states);
     broadcast(world, &mut noci_reference_basis);
     broadcast(world, &mut c0);
     broadcast(world, &mut e_noci_ref);
-    broadcast(world, &mut wicks);
-
-    // Run stochastic NOCI-QMC calculation
+    
+    // Run stochastic NOCI-QMC calculation across all MPI ranks.
     if input.qmc.is_some() {
-        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks.as_deref().unwrap());
+        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks_view);
         e_noci_qmc_stoch = Some(e_qmc);
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
@@ -225,7 +232,7 @@ fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> (Vec<SCF
 ///     `ao`: AoData, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
 ///     `states`: [SCFState], converged SCF states. 
-fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, wicks: Option<&[Vec<WicksReferencePair>]>) 
+fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, wicks: Option<&WicksView>) 
                       -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
     let t_noci = Instant::now();
     
@@ -249,7 +256,7 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64,
 ///                             to be in the NOCI basis.
 ///     `c0`: [f64], initial coefficient vector of basis states.
 fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], tol: f64, 
-                              wicks: Option<&[Vec<WicksReferencePair>]>) -> (f64, Duration, Duration, Duration, Duration) {
+                              wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, Duration) {
     let t_total = Instant::now();
 
     println!("{}", "=".repeat(100));
@@ -354,7 +361,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 ///     `c0`: [f64], initial coefficient vector of basis states.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64, 
-                               wicks: &[Vec<WicksReferencePair>]) -> (f64, Duration, Duration, Duration) {
+                               wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration) {
 
     let t_total = Instant::now();
     let irank = world.rank();

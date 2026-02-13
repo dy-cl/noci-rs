@@ -10,9 +10,9 @@ use mpi::traits::*;
 use crate::AoData;
 use crate::SCFState;
 use crate::input::{Input, Propagator, ExcitationGen};
+use crate::nonorthogonalwicks::WicksView;
 
 use crate::noci::{calculate_s_pair_naive, calculate_hs_pair_naive, calculate_s_pair_wicks, calculate_hs_pair_wicks};
-use crate::nonorthogonalwicks::WicksReferencePair;
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
 
 // Storage for walker information.
@@ -148,22 +148,22 @@ impl ElemCache {
     ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
     ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
     ///              elements using the extended non-orthogonal Wick's theorem.
-    fn find_s(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> f64 {
+    fn find_s(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> f64 {
         // Get the sorted pair of indices 
         let (a, b) = Self::key(i, j);
         
-        // If we have already computed this matrix element just return it.
-        if let Some(&s) = self.maps.get(&(a, b)) {
-            return s;
-        }
-
+        // If we have already computed this matrix element and not using Wicks, just return it.
+        if !input.wicks.enabled && let Some(&s) = self.maps.get(&(a, b)) {return s;}
+       
         // Otherwise compute it for the first time.
         let s = if input.wicks.enabled {
-            calculate_s_pair_wicks(basis, noci_reference_basis, a, b, tol, wicks)
+            let w = wicks.unwrap();
+            calculate_s_pair_wicks(basis, noci_reference_basis, a, b, tol, w)
         } else {
             calculate_s_pair_naive(ao, basis, a, b, tol)
         };
-        self.maps.insert((a, b), s);
+
+        if !input.wicks.enabled {self.maps.insert((a, b), s);}
         s
     }
     
@@ -178,23 +178,24 @@ impl ElemCache {
     ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
     ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
     ///              elements using the extended non-orthogonal Wick's theorem.
-    fn find_hs(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> (f64, f64) {
+    fn find_hs(&mut self, ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, f64) {
         // Get the sorted pair of indices
         let (a, b) = Self::key(i, j);
 
-        // If we have already computed these matrix elements just return them.
-        if let (Some(&h), Some(&s)) = (self.maph.get(&(a, b)), self.maps.get(&(a, b))) {
-            return (h, s);
-        }
+        // If we have already computed this matrix element and not using Wicks, just return it.
+        if !input.wicks.enabled && let (Some(&h), Some(&s)) = (self.maph.get(&(a, b)), self.maps.get(&(a, b))) {return (h, s);}
 
         // Otherwise compute them for the first time.
         let (h, s) = if input.wicks.enabled {
-            calculate_hs_pair_wicks(ao, basis, noci_reference_basis, wicks, a, b, tol)
+            let w = wicks.unwrap();
+            calculate_hs_pair_wicks(ao, basis, noci_reference_basis, w, a, b, tol)
         } else {
             calculate_hs_pair_naive(ao, basis, a, b, tol)
         };
-        self.maph.insert((a, b), h);
-        self.maps.insert((a, b), s);
+
+        if !input.wicks.enabled {self.maps.insert((a, b), h);}
+        if !input.wicks.enabled {self.maps.insert((a, b), s);}
+
         (h, s)
     }
 }
@@ -320,7 +321,7 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, cache: &mut ElemCache, ao: &AoData, basis: &[SCFState], iref: usize, tol: f64,
-                         input: &Input, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> Walkers {
+                         input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> Walkers {
     let mut w = Walkers::new(n);
 
     // Ill-conditioning threshold.
@@ -398,7 +399,7 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: &mut MCState, input: &Input, tol: f64, 
-                  noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> HeatBath {
+                  noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> HeatBath {
     let ndets = basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
     let mut sumlg = 0.0_f64;
@@ -439,7 +440,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: 
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, tol: f64,
-                noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> (f64, f64, usize) {
+                noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, f64, usize) {
     let ndets = basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
     // more than the Gamma index we map it back into the full index set.
@@ -468,7 +469,7 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input:
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, hb: &HeatBath, tol: f64,
-                   noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> (f64, f64, usize) {
+                   noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, f64, usize) {
 
     let ndets = basis.len();
 
@@ -534,7 +535,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, mc: &mut MCState,
-            irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>, tol: f64, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) {
+            irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>, tol: f64, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
@@ -595,7 +596,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 ///     `input`: Input, user specified input options.
 ///     `mc`: MCState, contains information about the current Monte Carlo state.
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState, tol: f64,
-                 noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) {
+                 noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
 
     // Calculate or retrieve matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma} from cache.
     let (hgg, sgg) = mc.cache.find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks);
@@ -640,7 +641,7 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, cache: &mut ElemCache, world: &impl Communicator, tol: f64,
-                    input: &Input, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> f64 {
+                    input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> f64 {
     let mut num = 0.0; 
     let mut den = 0.0; 
 
@@ -677,7 +678,7 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, cache: &mut ElemCache, world: &impl Communicator, tol: f64, 
-          input: &Input, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> Vec<f64> {
+          input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> Vec<f64> {
 
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
@@ -714,7 +715,7 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64,
-            input: &Input, noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) {
+            input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
 
     let dglobal = gather_all_walkers(world, dlocal);
 
@@ -746,7 +747,7 @@ fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &m
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64, 
-            noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>]) -> (f64, Option<ExcitationHist>) {
+            noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, Option<ExcitationHist>) {
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;

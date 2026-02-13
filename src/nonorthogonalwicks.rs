@@ -1,5 +1,7 @@
 // nonorthogonalwicks.rs 
-use ndarray::{Array1, Array2, Array4, Axis, s};
+use std::ptr::NonNull;
+
+use ndarray::{Array1, Array2, ArrayView2, Array4, ArrayView4, Axis, s};
 use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
@@ -7,19 +9,285 @@ use serde::{Serialize, Deserialize};
 use crate::{ExcitationSpin};
 
 use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x_real, minor, adjugate_transpose, mix_columns, build_d};
+use crate::mpiutils::Sharedffi;
 use crate::noci::occ_coeffs;
 
-// Whether a given orbital index belongs to the bra or ket.
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum Side {Gamma, Lambda}
+// Storage in which we split the Wicks data into the shared remote memory access (RMA) and a view 
+// for reading said data.
+pub struct WicksShared {
+    pub rma: WicksRma,   
+    pub view: WicksView, 
+}
 
-#[derive(Debug, Copy, Clone)]
-pub enum Type {Hole, Part}
+impl WicksShared {
+    /// Get a shared reference to the WicksView object.
+    /// # Arguments:
+    ///     `self`: WicksShared, view and RMA for Wick's intermediates.
+    pub fn view(&self) -> &WicksView {&self.view}
+}
 
-pub type Label = (Side, Type, usize);
+// Storage for the RMA data of the Wick's objects.
+pub struct WicksRma {
+    pub shared: Sharedffi, 
+    pub base_ptr: *mut u8, 
+    pub nbytes: usize,     
+}
 
+// Storage for data which allows the Wicks objects to be viewed.
+#[derive(Clone)]
+pub struct WicksView {
+    // Pointer to contiguous data which contains all intermediates.
+    pub slab: NonNull<f64>, 
+    // Length of storage.
+    pub slab_len: usize,
+    // Number of reference determinants.
+    pub nref: usize,
+    // Offset gives where in the storage each tensor for pair p begins.
+    pub off: Vec<PairOffset>,
+    // Scalars that are cheap to store.
+    pub meta: Vec<PairMeta>,
+}
+
+// Implying that WicksView can be shared across threads.
+unsafe impl Sync for WicksView {}
+unsafe impl Send for WicksView {}
+
+impl WicksView {
+    /// Map a pair index (lp, gp) into a 1D flattened index.
+    /// # Arguments:
+    ///     `self`: WicksView, view into Wick's intermediates.
+    ///     `lp`: usize, pair index 1.
+    ///     `gp`: usize, pair index 2.
+    pub fn idx(&self, lp: usize, gp: usize) -> usize {
+        lp * self.nref + gp
+    }
+    
+    /// Get a pointer to the start of the shared tensor storage.
+    /// # Arguments:
+    ///     `self`: WicksView, view into Wick's intermediates.
+    fn slab_ptr(&self) -> *const f64 {
+        self.slab.as_ptr()
+    }
+    
+    /// Read tensor slab beginning at a given offset and interpret the following n * n elements as
+    /// a n by n matrix. Lifetime elision '_ ensures that the ArrayView2 may not outlive the borrow
+    /// of self (WicksView) which in turn is only valid while the remote memory storage is valid.
+    /// # Arguments:
+    ///     `self`: WicksView, view into Wick's intermediates.
+    ///     `off_f64`: usize, offset from the beginning of the tensor slab in units of f64.
+    ///     `n`: usize, size of matrix to be read.
+    pub fn view2(&self, off_f64: usize, n: usize) -> ArrayView2<'_, f64> {
+        unsafe {ArrayView2::from_shape_ptr((n, n), self.slab_ptr().add(off_f64))}
+    }
+
+    /// Read tensor slab beginning at a given offset and interpret the following n * n * n * n elements as
+    /// a n by n by n by n tensor. Lifetime elision '_ ensures that the ArrayView4 may not outlive the borrow
+    /// of self (WicksView) which in turn is only valid while the remote memory storage is valid.
+    /// # Arguments:
+    ///     `self`: WicksView, view into Wick's intermediates.
+    ///     `off_f64`: usize, offset from the beginning of the tensor slab in units of f64.
+    ///     `n`: usize, size of tensor to be read.
+    pub fn view4(&self, off_f64: usize, n: usize) -> ArrayView4<'_, f64> {
+        unsafe {ArrayView4::from_shape_ptr((n, n, n, n), self.slab_ptr().add(off_f64))}
+    }
+    
+    /// Return a view for precomputed intermediates for a given lp, gp. Lifetime elision '_ ensures 
+    /// that the ArrayView4 may not outlive the borrow of self (WicksView) which in turn is only valid 
+    /// while the remote memory storage is valid.
+    /// # Arguments:
+    ///     `self`: WicksView, view into Wick's intermediates.
+    ///     `lp`: usize, pair index 2. 
+    pub fn pair(&self, lp: usize, gp: usize) -> WicksPairView<'_> {
+        let idx = self.idx(lp, gp);
+
+        let aa = SameSpinView {nmo: self.meta[idx].aa.nmo, m: self.meta[idx].aa.m, tilde_s_prod: self.meta[idx].aa.tilde_s_prod, 
+                               phase: self.meta[idx].aa.phase, f0: self.meta[idx].aa.f0, v0: self.meta[idx].aa.v0, w: self, off: self.off[idx].aa};
+        let bb = SameSpinView {nmo: self.meta[idx].bb.nmo, m: self.meta[idx].bb.m, tilde_s_prod: self.meta[idx].bb.tilde_s_prod, 
+                               phase: self.meta[idx].bb.phase, f0: self.meta[idx].bb.f0, v0: self.meta[idx].bb.v0, w: self, off: self.off[idx].bb};
+        let ab = DiffSpinView {nmo: self.meta[idx].ab.nmo, vab0: self.meta[idx].ab.vab0, vba0: self.meta[idx].ab.vba0, w: self, off: self.off[idx].ab};
+
+        WicksPairView {aa, bb, ab}
+    }
+}
+
+// Read only view of same-spin Wick's intermediates. Lifetime parameter 'a ensures that 
+// the view cannot exist longer than the referenced WicksView object.
+#[derive(Clone, Copy)]
+pub struct SameSpinView<'a> {
+    pub nmo: usize,
+    pub m: usize,
+    pub tilde_s_prod: f64,
+    pub phase: f64,
+    pub f0: [f64; 2],
+    pub v0: [f64; 3],
+    w: &'a WicksView,
+    off: SameSpinOffset,
+}
+
+impl<'a> SameSpinView<'a> {
+    /// Get tensor dimension n. 
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    fn n(&self) -> usize {2 * self.nmo}
+    
+    /// Get a view to the X[mi] matrix.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `mi`: usize, zero distribution selector. 
+    pub fn x(&self, mi: usize) -> ArrayView2<'_, f64> {
+        self.w.view2(self.off.x[mi], self.n())
+    }
+    
+    /// Get a view to the Y[mi] matrix.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `mi`: usize, zero distribution selector. 
+    pub fn y(&self, mi: usize) -> ArrayView2<'_, f64> {
+        self.w.view2(self.off.y[mi], self.n())
+    }
+    
+    /// Get a view to the F[mi][mj] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `mi, mj`: usize, zero distribution selectors. 
+    pub fn f(&self, mi: usize, mj: usize) -> ArrayView2<'_, f64> {
+        self.w.view2(self.off.f[mi][mj], self.n())
+    }
+    
+    /// Get a view to the V[mi][mj][mk] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `mi, mj, mk`: usize, zero distribution selector. 
+    pub fn v(&self, mi: usize, mj: usize, mk: usize) -> ArrayView2<'_, f64> {
+        self.w.view2(self.off.v[mi][mj][mk], self.n())
+    }
+    
+    /// Get a view to the J[mi][mj][mk][ml] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `mi, mj, mk, ml`: usize, zero distribution selector. 
+    pub fn j(&self, mi: usize, mj: usize, mk: usize, ml: usize) -> ArrayView4<'_, f64> {
+        self.w.view4(self.off.j[mi][mj][mk][ml], self.n())
+    }
+}
+
+// Read only view of diff-spin Wick's intermediates. Lifetime parameter 'a ensures that 
+// the view cannot exist longer than the referenced WicksView object.
+#[derive(Clone, Copy)]
+pub struct DiffSpinView<'a> {
+    pub nmo: usize,
+    pub vab0: [[f64; 2]; 2],
+    pub vba0: [[f64; 2]; 2],
+    w: &'a WicksView,
+    off: DiffSpinOffset,
+}
+
+impl<'a> DiffSpinView<'a> {
+    /// Get tensor dimension n. 
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    fn n(&self) -> usize {2 * self.nmo}
+    
+    /// Get a view to the Vab[ma0][mb0][mak] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `ma0, mb0, mak`: usize, zero distribution selector. 
+    pub fn vab(&self, ma0: usize, mb0: usize, mak: usize) -> ArrayView2<'a, f64> {
+        self.w.view2(self.off.vab[ma0][mb0][mak], self.n())
+    }
+
+    /// Get a view to the Vba[mb0][ma0][mak] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `ma0, mb0, mak`: usize, zero distribution selector.
+    pub fn vba(&self, mb0: usize, ma0: usize, mbk: usize) -> ArrayView2<'a, f64> {
+        self.w.view2(self.off.vba[mb0][ma0][mbk], self.n())
+    }
+
+    /// Get a view to the IIab[ma0][maj][mb0][mbj] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `ma0, maj, mb0, mbj`: usize, zero distribution selector.
+    pub fn iiab(&self, ma0: usize, maj: usize, mb0: usize, mbj: usize) -> ArrayView4<'a, f64> {
+        self.w.view4(self.off.iiab[ma0][maj][mb0][mbj], self.n())
+    }
+
+    /// Get a view to the IIba[mb0][mbj][ma0][maj] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `ma0, maj, mb0, mbj`: usize, zero distribution selector.
+    pub fn iiba(&self, mb0: usize, mbj: usize, ma0: usize, maj: usize) -> ArrayView4<'a, f64> {
+        self.w.view4(self.off.iiba[mb0][mbj][ma0][maj], self.n())
+    }
+}
+
+// Storage for views of each type of spin pairing.
+#[derive(Clone, Copy)]
+pub struct WicksPairView<'a> {
+    pub aa: SameSpinView<'a>,
+    pub bb: SameSpinView<'a>,
+    pub ab: DiffSpinView<'a>,
+}
+
+// Storage for same-spin metadata and lightweight scalars that we can store outside the shared
+// memory region.
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+pub struct SameSpinMeta {
+    pub tilde_s_prod: f64,
+    pub phase: f64,
+    pub m: usize,
+    pub nmo: usize,
+    pub f0: [f64; 2],
+    pub v0: [f64; 3],
+}
+
+// Storage for diff-spin metadata and lightweight scalars that we can store outside the shared
+// memory region.
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+pub struct DiffSpinMeta {
+    pub nmo: usize,
+    pub vab0: [[f64; 2]; 2],
+    pub vba0: [[f64; 2]; 2],
+}
+
+// Storage for same-spin per reference-pair offset tables into the shared contiguous tensor storage. 
+#[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
+pub struct SameSpinOffset {
+    pub x: [usize; 2],
+    pub y: [usize; 2],
+    pub f: [[usize; 2]; 2],
+    pub v: [[[usize; 2]; 2]; 2],
+    pub j: [[[[usize; 2]; 2]; 2]; 2],
+}
+
+// Storage for diff-spin per reference-pair offset tables into the shared contiguous tensor storage.
+#[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
+pub struct DiffSpinOffset {
+    pub vab: [[[usize; 2]; 2]; 2],
+    pub vba: [[[usize; 2]; 2]; 2],
+    pub iiab: [[[[usize; 2]; 2]; 2]; 2],
+    pub iiba: [[[[usize; 2]; 2]; 2]; 2],
+}
+
+// Storage for all per reference-pair pair offset tables.
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+pub struct PairOffset {
+    pub aa: SameSpinOffset,
+    pub bb: SameSpinOffset,
+    pub ab: DiffSpinOffset,
+}
+
+// Storage for all pair metadata.
+#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+pub struct PairMeta {
+    pub aa: SameSpinMeta,
+    pub bb: SameSpinMeta,
+    pub ab: DiffSpinMeta,
+}
+
+// Owning struct for the same-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct SameSpin {
+pub struct SameSpinBuild {
     pub x: [Array2<f64>; 2], // X[mi]
     pub y: [Array2<f64>; 2], // Y[mi]
 
@@ -37,8 +305,9 @@ pub struct SameSpin {
     pub nmo: usize,
 }
 
+// Owning struct for the diff-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct DiffSpin {
+pub struct DiffSpinBuild {
     pub vab0: [[f64; 2]; 2], // vab0[ma0][mb0]
     pub vab:  [[[Array2<f64>; 2]; 2]; 2], // vab[ma0][mb0][mak]
 
@@ -49,14 +318,112 @@ pub struct DiffSpin {
     pub iiba: [[[[Array4<f64>; 2]; 2]; 2]; 2], // iiba[mb0][mbk][ma0][maj]
 }
 
+// Owning struct for all computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct WicksReferencePair {
-    pub aa: SameSpin,
-    pub bb: SameSpin,
-    pub ab: DiffSpin,
+pub struct WicksReferencePairBuild {
+    pub aa: SameSpinBuild,
+    pub bb: SameSpinBuild,
+    pub ab: DiffSpinBuild,
 }
 
-impl SameSpin {
+// Whether a given orbital index belongs to the bra or ket.
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum Side {Gamma, Lambda}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Type {Hole, Part}
+
+pub type Label = (Side, Type, usize);
+
+/// Calculate and store all the required offsets from the beginning of the large contiguous shared
+/// tensor storage to a given matrix or tensor.
+/// # Arguments:
+///     `nref`: usize, number of references.
+///     `nmo`: usize, number of molecular orbitals.
+pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
+    
+    let n = 2 * nmo;
+    let nn2 = n * n;
+    let nn4 = n * n * n * n;
+    let mut off = vec![PairOffset::default(); nref * nref];
+    let mut i: usize = 0;
+    
+    // For each reference-pair we have n by n f64s or n by n by n by n f64s.
+    // For every pair p we assign all offset locations for all required tensors.
+    for p in off.iter_mut() {
+        for mi in 0..2 {p.aa.x[mi] = i; i += nn2;}
+        for mi in 0..2 {p.aa.y[mi] = i; i += nn2;}
+        for mi in 0..2 {for mj in 0..2 {p.aa.f[mi][mj] = i; i += nn2; }}
+        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.aa.v[mi][mj][mk] = i; i += nn2;}}}
+        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {for ml in 0..2 {p.aa.j[mi][mj][mk][ml] = i; i += nn4;}}}}
+
+        for mi in 0..2 {p.bb.x[mi] = i; i += nn2;}
+        for mi in 0..2 {p.bb.y[mi] = i; i += nn2;}
+        for mi in 0..2 {for mj in 0..2 {p.bb.f[mi][mj] = i; i += nn2;}}
+        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.bb.v[mi][mj][mk] = i; i += nn2;}}}
+        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {for ml in 0..2 {p.bb.j[mi][mj][mk][ml] = i; i += nn4;}}}}
+
+        for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {p.ab.vab[ma0][mb0][mk] = i; i += nn2; }}}
+        for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {p.ab.vba[mb0][ma0][mk] = i; i += nn2; }}}
+
+        for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {p.ab.iiab[ma0][maj][mb0][mbj] = i; i += nn4;}}}}
+        for mb0 in 0..2 {for mbj in 0..2 {for ma0 in 0..2 {for maj in 0..2 {p.ab.iiba[mb0][mbj][ma0][maj] = i; i += nn4;}}}}
+    }
+    (off, i) 
+}
+
+/// Fill the same-spin data owning structs with the same-spin Wick's intermediates using the
+/// prescribed offsets.
+/// # Arguments:
+///     `slab`: [f64], contiguous tensor storage.
+///     `o`: SameSpinOffset, offsets into the storage.
+///     `w`: SameSpinBuild, owned Wick's intermediates.
+pub fn write_same_spin(slab: &mut [f64], o: &SameSpinOffset, w: &SameSpinBuild) {
+    write2(slab, o.x[0], &w.x[0]);
+    write2(slab, o.x[1], &w.x[1]);
+    write2(slab, o.y[0], &w.y[0]);
+    write2(slab, o.y[1], &w.y[1]);
+    for mi in 0..2 {for mj in 0..2 {write2(slab, o.f[mi][mj], &w.f[mi][mj]);}}
+    for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {write2(slab, o.v[mi][mj][mk], &w.v[mi][mj][mk]);}}}
+    for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {for ml in 0..2 {write4(slab, o.j[mi][mj][mk][ml], &w.j[mi][mj][mk][ml]);}}}}
+}
+
+/// Fill the diff-spin data owning structs with the diff-spin Wick's intermediates using the
+/// prescribed offsets.
+/// # Arguments:
+///     `slab`: [f64], contiguous tensor storage.
+///     `o`: DiffSpinOffset, offsets into the storage.
+///     `w`: DiffSpinBuild, owned Wick's intermediates.
+pub fn write_diff_spin(slab: &mut [f64], o: &DiffSpinOffset, w: &DiffSpinBuild) {
+    for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {write2(slab, o.vab[ma0][mb0][mk], &w.vab[ma0][mb0][mk]);}}}
+    for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {write2(slab, o.vba[mb0][ma0][mk], &w.vba[mb0][ma0][mk]);}}}
+    for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {
+        write4(slab, o.iiab[ma0][maj][mb0][mbj], &w.iiab[ma0][maj][mb0][mbj]);
+        write4(slab, o.iiba[mb0][mbj][ma0][maj], &w.iiba[mb0][mbj][ma0][maj]);
+    }}}}
+}
+
+/// Copy matrix into tensor slab provided it is contiguous.
+/// # Arguments:
+///     `slab`: [f64], contiguous tensor storage.
+///     `off`: usize, offset for the start position.
+///     `a`: Array2, matrix to copy.
+fn write2(slab: &mut [f64], off: usize, a: &ndarray::Array2<f64>) {
+    let src = a.as_slice().expect("Array2 must be contiguous");
+    slab[off..off + src.len()].copy_from_slice(src);
+}
+
+/// Copy tensor into tensor slab provided it is contiguous.
+/// # Arguments:
+///     `slab`: [f64], contiguous tensor storage.
+///     `off`: usize, offset for the start position.
+///     `a`: Array4, tensor to copy.
+fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
+    let src = a.as_slice().expect("Array4 must be contiguous");
+    slab[off..off + src.len()].copy_from_slice(src);
+}
+
+impl SameSpinBuild {
     /// Constructor for the WicksReferencePair object of SameSpin which contains the precomputed values
     /// per pair of reference determinants required to evaluate arbitrary excited determinants 
     /// in O(1) time when the excitations are of the same spin.
@@ -130,7 +497,7 @@ impl SameSpin {
         let mut cx: [Array2<f64>; 2] = [Array2::<f64>::zeros((nbas, 2*nmo)), Array2::<f64>::zeros((nbas, 2*nmo))];
         let mut xc: [Array2<f64>; 2] = [Array2::<f64>::zeros((nbas, 2*nmo)), Array2::<f64>::zeros((nbas, 2*nmo))];
         for mi in 0..2 {
-            (cx[mi], xc[mi]) = DiffSpin::build_cx_xc(&mao[mi], s_munu, l_c, g_c, mi);
+            (cx[mi], xc[mi]) = DiffSpinBuild::build_cx_xc(&mao[mi], s_munu, l_c, g_c, mi);
         }
 
         // Construct {}^{\Lambda\Gamma} V_0^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs) -
@@ -199,8 +566,9 @@ impl SameSpin {
         )).collect();
         let blocks: Vec<((usize, usize, usize, usize), Array4<f64>)> = combos.into_par_iter().map(|(mi,mj,mk,ml)| {
             let mut blk = eri_ao2mo(eri, &cx[mi], &xc[mj], &cx[mk], &xc[ml]);
-            let ex = blk.view().permuted_axes([0, 2, 1, 3]).to_owned();
+            let ex = blk.view().permuted_axes([0, 2, 1, 3]).to_owned().as_standard_layout().to_owned();
             blk -= &ex;
+            let blk = blk.as_standard_layout().to_owned();
             ((mi, mj, mk, ml), blk)
         }).collect();
         for ((mi,mj,mk,ml), blk) in blocks {
@@ -455,7 +823,7 @@ impl SameSpin {
     }
 }
 
-impl DiffSpin {
+impl DiffSpinBuild {
     /// Constructor for the WicksReferencePair object of DiffSpin which contains the precomputed values
     /// per pair of reference determinants required to evaluate arbitrary excited determinants 
     /// in O(1) time when the excitations are of different spin. As such, the quantities here are
@@ -482,8 +850,8 @@ impl DiffSpin {
         let g_cb_occ = occ_coeffs(g_cb, gob);
 
         // SVD and rotate the occupied orbitals per spin.
-        let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _phase) = SameSpin::perform_ortho_and_svd_and_rotate(s_munu, &l_ca_occ, &g_ca_occ, 1e-20);
-        let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) = SameSpin::perform_ortho_and_svd_and_rotate(s_munu, &l_cb_occ, &g_cb_occ, 1e-20);
+        let (tilde_sa_occ, g_tilde_ca_occ, l_tilde_ca_occ, _phase) = SameSpinBuild::perform_ortho_and_svd_and_rotate(s_munu, &l_ca_occ, &g_ca_occ, 1e-20);
+        let (tilde_sb_occ, g_tilde_cb_occ, l_tilde_cb_occ, _phase) = SameSpinBuild::perform_ortho_and_svd_and_rotate(s_munu, &l_cb_occ, &g_cb_occ, 1e-20);
         
         // Find indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S} and count them per spin.
         // No longer writing per spin from here onwards, hopefully it is clear.
@@ -491,15 +859,15 @@ impl DiffSpin {
         let zerosb: Vec<usize> = tilde_sb_occ.iter().enumerate().filter_map(|(k, &sk)| if sk.abs() <= tol {Some(k)} else {None}).collect();
 
         // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices.
-        let (m0a, m1a) = SameSpin::construct_m(&tilde_sa_occ, &l_tilde_ca_occ, &g_tilde_ca_occ, &zerosa, tol);
-        let (m0b, m1b) = SameSpin::construct_m(&tilde_sb_occ, &l_tilde_cb_occ, &g_tilde_cb_occ, &zerosb, tol);
+        let (m0a, m1a) = SameSpinBuild::construct_m(&tilde_sa_occ, &l_tilde_ca_occ, &g_tilde_ca_occ, &zerosa, tol);
+        let (m0b, m1b) = SameSpinBuild::construct_m(&tilde_sb_occ, &l_tilde_cb_occ, &g_tilde_cb_occ, &zerosb, tol);
         let ma = [&m0a, &m1a];
         let mb = [&m0b, &m1b];
         
         // Construct only the Coulomb contraction of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k}, 
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k}. No exchange here due to differing spins.
-        let ja = [SameSpin::build_j_coulomb(eri, ma[0]), SameSpin::build_j_coulomb(eri, ma[1])];
-        let jb = [SameSpin::build_j_coulomb(eri, mb[0]), SameSpin::build_j_coulomb(eri, mb[1])];
+        let ja = [SameSpinBuild::build_j_coulomb(eri, ma[0]), SameSpinBuild::build_j_coulomb(eri, ma[1])];
+        let jb = [SameSpinBuild::build_j_coulomb(eri, mb[0]), SameSpinBuild::build_j_coulomb(eri, mb[1])];
         
         // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}. 
         // This can be rewritten (and thus calculated) as V_{ab, 0}^{m_i, m_j} = \sum_{pr} (J_{\mu\nu}^{m_i}) {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
@@ -587,8 +955,8 @@ impl DiffSpin {
         )).collect();
 
         let blocks: Vec<((usize, usize, usize, usize), (Array4<f64>, Array4<f64>))> = combos.into_par_iter().map(|(ma0, maj, mb0, mbj)| {
-            let blk = eri_ao2mo(eri, &cx_a[ma0], &xc_a[maj], &cx_b[mb0], &xc_b[mbj]);
-            let blkt = blk.view().permuted_axes([2, 3, 0, 1]).to_owned(); 
+            let blk = eri_ao2mo(eri, cx_a[ma0], xc_a[maj], cx_b[mb0], xc_b[mbj]).as_standard_layout().to_owned();
+            let blkt = blk.view().permuted_axes([2, 3, 0, 1]).to_owned().as_standard_layout().to_owned();
             ((ma0, maj, mb0, mbj), (blk, blkt))
         }).collect();
 
@@ -718,7 +1086,7 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
-pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
+pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
 
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
 
@@ -730,10 +1098,15 @@ pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, to
     // Convert the contraction determinant labels into actual indices.
     let rows: Vec<usize> = rows_label.into_iter().map(|(s, _t, i)| label_to_idx(s, i, w.nmo)).collect();
     let cols: Vec<usize> = cols_label.into_iter().map(|(s, _t, i)| label_to_idx(s, i, w.nmo)).collect();
+
+    let x0 = w.x(0);
+    let y0 = w.y(0);
+    let x1 = w.x(1);
+    let y1 = w.y(1);
       
     // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
-    let det0 = build_d(&w.x[0], &w.y[0], &rows, &cols);
-    let det1 = build_d(&w.x[1], &w.y[1], &rows, &cols);
+    let det0 = build_d(&x0, &y0, &rows, &cols);
+    let det1 = build_d(&x1, &y1, &rows, &cols);
 
     let mut acc = 0.0;
 
@@ -752,7 +1125,7 @@ pub fn lg_overlap(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, to
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
-pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
+pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
     
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
     
@@ -764,10 +1137,15 @@ pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f6
     // Convert the contraction determinant labels into actual indices.
     let rows: Vec<usize> = rows_label.into_iter().map(|(s,_t,i)| label_to_idx(s, i, w.nmo)).collect();
     let cols: Vec<usize> = cols_label.into_iter().map(|(s,_t,i)| label_to_idx(s, i, w.nmo)).collect();
+
+    let x0 = w.x(0);
+    let y0 = w.y(0);
+    let x1 = w.x(1);
+    let y1 = w.y(1);
     
-    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
-    let det0 = build_d(&w.x[0], &w.y[0], &rows, &cols);
-    let det1 = build_d(&w.x[1], &w.y[1], &rows, &cols);
+    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1).
+    let det0 = build_d(&x0, &y0, &rows, &cols);
+    let det1 = build_d(&x1, &y1, &rows, &cols);
 
     let mut acc = 0.0;
     
@@ -789,7 +1167,7 @@ pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f6
         for b in 0..l {
             // Find correct zero index for this column and use to select F.
             let mj = ((bitstring >> (b + 1)) & 1) == 1; 
-            let f = &w.f[mi as usize][mj as usize];
+            let f = w.f(mi as usize, mj as usize);
             // Replace column of det with F matrices.
             let mut det_f = det.clone(); 
             for a in 0..l {
@@ -812,7 +1190,7 @@ pub fn lg_h1(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f6
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
-pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
+pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, tol: f64) -> f64 {
     
     let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
 
@@ -824,10 +1202,15 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, to
     // Convert the contraction determinant labels into actual indices.
     let rows: Vec<usize> = rows_label.iter().map(|(s,_t,i)| label_to_idx(*s, *i, w.nmo)).collect();
     let cols: Vec<usize> = cols_label.iter().map(|(s,_t,i)| label_to_idx(*s, *i, w.nmo)).collect();
+
+    let x0 = w.x(0);
+    let y0 = w.y(0);
+    let x1 = w.x(1);
+    let y1 = w.y(1);
     
     // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1).
-    let det0 = build_d(&w.x[0], &w.y[0], &rows, &cols);
-    let det1 = build_d(&w.x[1], &w.y[1], &rows, &cols);
+    let det0 = build_d(&x0, &y0, &rows, &cols);
+    let det1 = build_d(&x1, &y1, &rows, &cols);
 
     let mut acc = 0.0;
     
@@ -853,8 +1236,8 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, to
         // the current column with the V matrices to form a new determinant.
         for k in 0..l {
             let mk = mcol(k);
-            // Choose correct column of V based upon zero distributions. 
-            let vcol = &w.v[m1 as usize][m2 as usize][mk as usize];
+            // Choose correct column of V based upon zero distributions.
+            let vcol = w.v(m1 as usize, m2 as usize, mk as usize);
 
             // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
             // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
@@ -894,8 +1277,8 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, to
                     
                     // Extract slice of J corresponding to the current distribution of zeros and
                     // get the correct minor matrix so as to align with the L - 1 dimensions.
-                    let j4 = &w.j[m1 as usize][m2 as usize][mk as usize][mj as usize];
-                    let jslice_full = slice_ii(j4, &rows, &cols, ri_fixed, cj_fixed, true);
+                    let j4 = w.j(m1 as usize, m2 as usize, mk as usize, mj as usize);
+                    let jslice_full = slice_ii(&j4, &rows, &cols, ri_fixed, cj_fixed, true);
                     let jslice2 = minor(&jslice_full, i, j);   
                     
                     // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
@@ -921,7 +1304,7 @@ pub fn lg_h2_same(w: &SameSpin, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, to
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
-pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, tol: f64) -> f64 {
+pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, tol: f64) -> f64 {
 
     let (rows_a_lab, cols_a_lab) = construct_determinant_lables(l_ex_a, g_ex_a);
     let (rows_b_lab, cols_b_lab) = construct_determinant_lables(l_ex_b, g_ex_b);
@@ -939,11 +1322,20 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
     if w.aa.m > la + 1 {return 0.0;}
     if w.bb.m > lb + 1 {return 0.0;}
 
+    let x0aa = w.aa.x(0);
+    let y0aa = w.aa.y(0);
+    let x1aa = w.aa.x(1);
+    let y1aa = w.aa.y(1);
+    let x0bb = w.bb.x(0);
+    let y0bb = w.bb.y(0);
+    let x1bb = w.bb.x(1);
+    let y1bb = w.bb.y(1);
+
     // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1) per spin.
-    let deta0  = build_d(&w.aa.x[0], &w.aa.y[0], &rows_a, &cols_a);    
-    let deta1 = build_d(&w.aa.x[1], &w.aa.y[1], &rows_a, &cols_a);
-    let detb0  = build_d(&w.bb.x[0], &w.bb.y[0], &rows_b, &cols_b);
-    let detb1 = build_d(&w.bb.x[1], &w.bb.y[1], &rows_b, &cols_b);
+    let deta0  = build_d(&x0aa, &y0aa, &rows_a, &cols_a);    
+    let deta1 = build_d(&x1aa, &y1aa, &rows_a, &cols_a);
+    let detb0  = build_d(&x0bb, &y0bb, &rows_b, &cols_b);
+    let detb1 = build_d(&x1bb, &y1bb, &rows_b, &cols_b);
     
     let mut acc = 0.0;
     
@@ -981,7 +1373,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
             for k in 0..la {
                 // Choose correct column of V based upon zero distributions.
                 let mak = ma_col(k);
-                let vcol = &w.ab.vab[ma0 as usize][mb0 as usize][mak as usize];
+                let vcol = &w.ab.vab(ma0 as usize, mb0 as usize, mak as usize);
 
                 // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
                 // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
@@ -1001,7 +1393,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
             for k in 0..lb {
                 // Choose correct column of V based upon zero distributions.
                 let mbk = mb_col(k);
-                let vcol = &w.ab.vba[mb0 as usize][ma0 as usize][mbk as usize];
+                let vcol = &w.ab.vba(mb0 as usize, ma0 as usize, mbk as usize);
                 
                 // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
                 // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
@@ -1035,7 +1427,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                         
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
-                        let iib = &w.ab.iiba[mb0 as usize][mbk as usize][ma0 as usize][ma1 as usize];
+                        let iib = &w.ab.iiba(mb0 as usize, mbk as usize, ma0 as usize, ma1 as usize);
                         let iisliceb = slice_ii(iib, &rows_b, &cols_b, ra, ca, true);
                         
                         // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
@@ -1072,7 +1464,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
                         
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
-                        let iia = &w.ab.iiab[ma0 as usize][mak as usize][mb0 as usize][mb1 as usize];
+                        let iia = &w.ab.iiab(ma0 as usize, mak as usize, mb0 as usize, mb1 as usize);
                         let iislicea = slice_ii(iia, &rows_a, &cols_a, rb, cb, true);
                         
                         let mut v1 = Array1::<f64>::zeros(la);
@@ -1100,7 +1492,7 @@ pub fn lg_h2_diff(w: &WicksReferencePair, l_ex_a: &ExcitationSpin, g_ex_a: &Exci
 
 // Various matrix utilities.
 
-fn slice_ii(t: &Array4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize, first: bool) -> Array2<f64> {
+fn slice_ii(t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize, first: bool) -> Array2<f64> {
     let l = rows.len();
     let mut out = Array2::<f64>::zeros((l, l));
     for r in 0..l {

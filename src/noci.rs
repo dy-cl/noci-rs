@@ -2,17 +2,22 @@
 use std::time::{Duration, Instant};
 use std::fs::{create_dir_all};
 use std::io::{Write};
+use std::ptr::NonNull;
 
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
+use mpi::topology::Communicator;
 
 use crate::{AoData, SCFState};
+use crate::nonorthogonalwicks::{DiffSpinBuild, SameSpinBuild, WicksView, WicksShared, PairMeta, SameSpinMeta, DiffSpinMeta, WicksRma};
+use crate::mpiutils::Sharedffi;
 use crate::input::Input;
 
 use crate::utils::{excitation_phase, occvec_to_bits, print_array2};
-use crate::nonorthogonalwicks::{lg_h2_diff, lg_h2_same, lg_h1, lg_overlap, WicksReferencePair, SameSpin, DiffSpin};
+use crate::nonorthogonalwicks::{lg_h1, lg_h2_diff, lg_h2_same, lg_overlap, write_same_spin, write_diff_spin, assign_offsets};
 use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_cd_real, general_evp_real};
+use crate::mpiutils::{broadcast};
 
 // Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
 pub struct Pair {
@@ -299,25 +304,62 @@ pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize,
     (hnuc + h1 + h2, s)
 }
 
-pub fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> Vec<Vec<WicksReferencePair>> {
+
+/// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node).
+/// # Arguments:
+///     `world`: Communicator, MPI communicator object.
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `noci_reference_basis`: [SCFState], vector of only the reference determinants.
+///     `tol`: f64, tolerance for a number being zero.
+pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> WicksShared {
+
     let nref = noci_reference_basis.len();
-    
-    // Generally number of references is low so it may be more worth it to use parallelism inside
-    // the Wick's routines rather than here.
-    let wicks = (0..nref).into_par_iter().map(|i| {
+    let nmo  = noci_reference_basis[0].ca.ncols();
+
+    let (offset, tensor_len) = assign_offsets(nref, nmo);
+
+    let nbytes = tensor_len * std::mem::size_of::<f64>();
+    let shared = Sharedffi::allocate(world, nbytes);
+    let shared_rank = shared.shared_rank;
+
+    let tensor_ptr = shared.base as *mut f64;
+    let mut meta = vec![PairMeta::default(); nref * nref];
+
+    if shared_rank == 0 {
+        let tensor: &mut [f64] = unsafe {std::slice::from_raw_parts_mut(tensor_ptr, tensor_len)};
+        tensor.fill(f64::NAN);
+
+        for i in 0..nref {
             let ri = &noci_reference_basis[i];
-            let mut row = Vec::with_capacity(nref);
             for (j, rj) in noci_reference_basis.iter().enumerate() {
                 println!("Building intermediates for reference pair: {}, {}", i, j);
-                let aa = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
-                let bb = SameSpin::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
-                let ab = DiffSpin::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
-                row.push(WicksReferencePair { aa, bb, ab });
+
+                let aa = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
+                let bb = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
+                let ab = DiffSpinBuild::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
+
+                let idx = i * nref + j;
+
+                meta[idx].aa = SameSpinMeta {tilde_s_prod: aa.tilde_s_prod, phase: aa.phase, m: aa.m, nmo: aa.nmo, f0: aa.f0, v0: aa.v0};
+                meta[idx].bb = SameSpinMeta {tilde_s_prod: bb.tilde_s_prod, phase: bb.phase, m: bb.m, nmo: bb.nmo, f0: bb.f0, v0: bb.v0};
+                meta[idx].ab = DiffSpinMeta {nmo: ab.vab[0][0][0].nrows() / 2, vab0: ab.vab0, vba0: ab.vba0};
+
+                write_same_spin(tensor, &offset[idx].aa, &aa);
+                write_same_spin(tensor, &offset[idx].bb, &bb);
+                write_diff_spin(tensor, &offset[idx].ab, &ab);
             }
-            row
-    }).collect();
-    println!("{}", "=".repeat(100));
-    wicks
+        }
+    }
+
+    shared.barrier();
+
+    broadcast(world, &mut meta);
+
+    let rma = WicksRma {base_ptr: shared.base, nbytes, shared,};
+    let slab = NonNull::new(tensor_ptr).expect("Should not be null.");
+    let view = WicksView {slab, slab_len: tensor_len, nref, off: offset, meta};
+
+    WicksShared {rma, view}
 }
 
 /// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
@@ -327,12 +369,12 @@ pub fn build_wicks(ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> 
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &[SCFState], l: usize, g: usize, tol: f64, wicks: &[Vec<WicksReferencePair>]) -> f64 {
+pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &[SCFState], l: usize, g: usize, tol: f64, wicks: &WicksView) -> f64 {
 
     let lp = determinants[l].parent;
     let gp = determinants[g].parent;
 
-    let w = &wicks[lp][gp];
+    let w = &wicks.pair(lp, gp);
 
     let ex_la = &determinants[l].excitation.alpha;
     let ex_ga = &determinants[g].excitation.alpha;
@@ -360,12 +402,12 @@ pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &[Vec<WicksReferencePair>], l: usize, g: usize, tol: f64) -> (f64, f64) {
+pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &WicksView, l: usize, g: usize, tol: f64) -> (f64, f64) {
 
     let lp = determinants[l].parent;
     let gp = determinants[g].parent;
 
-    let w = &wicks[lp][gp];
+    let w = wicks.pair(lp, gp);
 
     let ex_la = &determinants[l].excitation.alpha;
     let ex_ga = &determinants[g].excitation.alpha;
@@ -390,7 +432,7 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
 
     let h2aa = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga, tol);
     let h2bb = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb, tol);
-    let h2ab = (ph_a * ph_b) * lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, tol);
+    let h2ab = (ph_a * ph_b) * lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, tol);
     let h2 = h2aa + h2bb + h2ab;
     
     let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
@@ -404,7 +446,7 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
 ///     `determinants`: Vec<SCFState>, vector of all determinants in the NOCI basis.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `input`: Input, user input specifications.
-pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&[Vec<WicksReferencePair>]>) 
+pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&WicksView>) 
                            -> (Array2<f64>, Array2<f64>, Duration) {
     
     let ndets = determinants.len();
@@ -414,17 +456,19 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
     // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma. 
     let pairs: Vec<(usize, usize)> = (0..ndets).flat_map(|mu| (mu..ndets).map(move |nu| (mu, nu))).collect();
 
+    let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
+
     // Calculate Hamiltonian matrix elements in parallel.
     let t_hs = Instant::now();
     let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map(|&(l, g)| {
         let (h, s, d) = if input.wicks.compare {
             let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g, tol);
-            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g, tol);
+            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), l, g, tol);
             let d = (hn - hw).abs() + (sn - sw).abs();
             (hw, sw, d)
         } else {
             let (h, s) = if input.wicks.enabled {
-                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.as_ref().unwrap(), l, g, tol)
+                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), l, g, tol)
             } else {
                 calculate_hs_pair_naive(ao, determinants, l, g, tol)
             };
@@ -478,7 +522,7 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
 ///     `scfstates`: Vec<SCFState>, vector of all the calculated SCF states. 
 ///     `ao`: AoData struct, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
-pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&[Vec<WicksReferencePair>]>) -> (f64, Array1<f64>, Duration) {
+pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
     let (h, s, d_hs) = build_noci_matrices(ao, input, scfstates, scfstates, tol, wicks);
         
     println!("NOCI-reference Hamiltonian:");

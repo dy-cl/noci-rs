@@ -1,7 +1,7 @@
 // maths.rs
 use std::cell::RefCell;
 
-use ndarray::{Array1, Array2, Array4, Axis};
+use ndarray::{Array1, Array2, ArrayView2, Array4, Axis};
 use ndarray_linalg::{SVD, Eigh, UPLO, Determinant};
 use rayon::prelude::*;
 
@@ -317,7 +317,7 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 ///     `y`: Array2, Y matrix elements.
 ///     `rows`: [usize], row indices of X or Y.
 ///     `cols`: [usize], column indices of X or Y.
-pub fn build_d(x: &Array2<f64>, y: &Array2<f64>, rows: &[usize], cols: &[usize],) -> Array2<f64> {
+pub fn build_d(x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize],) -> Array2<f64> {
     let l = rows.len();
     let mut out = Array2::<f64>::zeros((l, l));
     for i in 0..l {
