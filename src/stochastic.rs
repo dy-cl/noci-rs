@@ -613,17 +613,19 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     // Sign of parent walkers on state Gamma determines which way round death and cloning occur.
     let parent_sign = if ngamma > 0 {1} else {-1};
 
+    let m = p.floor() as i64;
+    let frac = p - (m as f64);
+   
     if pdeath == 0.0 {return;}
     // Iterate over all walkers on state Gamma.
     for _ in 0..ngamma.abs() {
         // Compare probability against randomly generated number in [0, 1].
-        if mc.rng.gen_range(0.0..1.0) < p {
-            // If walker dies we remove 1 walker of the parent's sign. If walker is cloned we add
-            // one walker of the parent's sign.
-            let dn = if pdeath > 0.0 {-parent_sign} else {parent_sign};
-            // Accumulate population change in delta.
-            add_delta(mc, gamma, dn);
-        }
+        let extra = if mc.rng.gen_range(0.0..1.0) < frac {1} else {0};
+        let nevents = m + extra;
+        
+        // Accumulate population change in delta.
+        let dn = if pdeath > 0.0 { -parent_sign } else { parent_sign };
+        add_delta(mc, gamma, dn * nevents);
     }
 }
 
@@ -767,12 +769,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     for &i in ref_indices {isref[i] = true;}
     
     // If the number of references is 1 then the unshifted propagator is correct.
-    if irank == 0 {println!("Number of references is 1. Setting propagator to unshifted.....");}
-    if ref_indices.len() == 1 {input.prop.propagator = Propagator::Unshifted;}
-
-    // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
-    // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
-    let mut es_s = *es;
+    if ref_indices.len() == 1 {
+        if irank == 0 {println!("Number of references is 1. Setting propagator to unshifted.....");}
+        input.prop.propagator = Propagator::Unshifted;
+    }
 
     // Initialise walker populations based on total initial population and c0.
     if irank == 0 {println!("Initialising walkers.....");}
@@ -798,7 +798,11 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
     let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world, tol, input, noci_reference_basis, wicks);
-    
+
+    // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
+    // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
+    let mut es_s = *es;
+
     // Initialise populations.
     let mut nwscprev = 0.0;
     let nwscprev_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
@@ -809,12 +813,15 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     world.all_reduce_into(&nrefprev_local, &mut nrefprev, SystemOperation::sum());
 
     // Print table header.
+    let e0 = basis[0].e;
+    let mut es_corr = 0.0;
+    let mut es_s_corr = 0.0;
     if irank == 0 {
         println!("{}", "=".repeat(100));
         println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", 
                  "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)", "Nref(||SC||)");
         println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  
-                 0, eproj, eproj - basis[0].e, *es, es_s, nwcprev as f64, nwscprev, nrefprev);
+                 0, eproj, eproj - e0, es_corr, es_s_corr, nwcprev as f64, nwscprev, nrefprev);
     }
 
     for it in 0..input.prop.max_steps {
@@ -884,10 +891,13 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         // Update energy. 
         let iref = 0;
         let eproj = projected_energy(ao, basis, &mc.walkers, iref, &mut mc.cache, world, tol, input, noci_reference_basis, wicks);
+    
+        es_corr = if reached_c {*es - e0} else {0.0};
+        es_s_corr = if reached_sc {es_s - e0} else {0.0};
 
         // Print table rows.
         if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-                       it + 1, eproj, eproj - basis[0].e, *es, es_s, nwc as f64, nwsc, nref);}
+                       it + 1, eproj, eproj - basis[0].e, es_corr, es_s_corr, nwc as f64, nwsc, nref);}
     }
     (eproj, mc.excitation_hist)
 }

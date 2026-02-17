@@ -394,7 +394,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
     }
 
     // Choose initial shift.
-    let mut es = 0.0;
+    let mut es = basis[0].e;
 
     // Perform the propagation.
     let t_prop = Instant::now();
