@@ -30,5 +30,8 @@ rpath = false
 
 [profile.profiling]
 inherits = "release"
-debug = true
-strip = "none"
+debug = 1          
+strip = "none"     
+lto = "fat"        
+codegen-units = 1  
+panic = "abort"    

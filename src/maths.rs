@@ -313,54 +313,59 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 /// Build square L x L contraction determinant with X elements in the diagonal and lower half, Y
 /// elements in the upper half.
 /// # Arguments:
+///     `d`: Array2, matrix to write into.
 ///     `x`: Array2, X matrix elements.
 ///     `y`: Array2, Y matrix elements.
 ///     `rows`: [usize], row indices of X or Y.
 ///     `cols`: [usize], column indices of X or Y.
-pub fn build_d(x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize],) -> Array2<f64> {
+pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize],) {
     let l = rows.len();
-    let mut out = Array2::<f64>::zeros((l, l));
     for i in 0..l {
         let r = rows[i];
-        for j in 0..l {
+        // Diagonal and lower triangle.
+        for j in 0..=i {
             let c = cols[j];
-            out[(i, j)] = if i >= j {x[(r, c)]} else {y[(r, c)]};
+            d[(i, j)] = x[(r, c)];
+        }
+        // Upper triangle.
+        for j in (i + 1)..l {
+            let c = cols[j];
+            d[(i, j)] = y[(r, c)];
         }
     }
-    out
 }
 
 /// Mix columns of det1 into det0 as prescribed by a bitstring. For each column c if bit c of the
 /// bitstring is 1 the output column c is taken from det1 and det0 otherwise.
 /// # Arguments:
+///     `d`: Array2, matrix to write into.
 ///    `det0`: Array2, base matrix.
 ///    `det1`: Array2, mixing matrix.
 ///    `bits`: usize, bitstring.
-pub fn mix_columns(det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) -> Array2<f64> {
+pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) {
     let n = det0.ncols();
-    let mut out = det0.clone();
+    d.assign(det0);
     for c in 0..n {
         if ((bits >> c) & 1) == 1 {
-            out.column_mut(c).assign(&det1.column(c));
+            d.column_mut(c).assign(&det1.column(c));
         }
     }
-    out
 }
 
 /// Calculate minor of a square matrix, that is, the matrix obtained by removing row `r_rm` and
 /// column `c_rm`.
 /// # Arguments:
+///     `out`: Array2, matrix to be written into.
 ///     `m`: Array2, base matrix.
 ///     `r_rm`: usize, row index to remove.
 ///     `c_rm`: usize, column index to remove.
-pub fn minor(m: &Array2<f64>, r_rm: usize, c_rm: usize) -> Array2<f64> {
+pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
     let n = m.nrows();
-    if n == 0 {return Array2::<f64>::zeros((0, 0));}
-    let mut out = Array2::<f64>::zeros((n - 1, n - 1));
-    let mut ii = 0;
+    if n == 0 {return;}
+    let mut ii = 0usize;
     for i in 0..n {
         if i == r_rm {continue;}
-        let mut jj = 0;
+        let mut jj = 0usize;
         for j in 0..n {
             if j == c_rm {continue;}
             out[(ii, jj)] = m[(i, j)];
@@ -368,7 +373,6 @@ pub fn minor(m: &Array2<f64>, r_rm: usize, c_rm: usize) -> Array2<f64> {
         }
         ii += 1;
     }
-    out
 }
 
 pub fn adjugate_transpose(a: &Array2<f64>, thresh: f64) -> Option<(f64, Array2<f64>)> {

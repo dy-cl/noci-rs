@@ -6,6 +6,7 @@ use rand::SeedableRng;
 use mpi::topology::Communicator;
 use mpi::collective::SystemOperation;
 use mpi::traits::*;
+use rayon::prelude::*;
 
 use crate::AoData;
 use crate::SCFState;
@@ -269,6 +270,12 @@ impl ExcitationHist {
     }
 }
 
+struct GammaUpdates {
+    local: Vec<(usize, i64)>,
+    remote: Vec<PopulationUpdate>,
+    pspawn_samples: Vec<f64>,
+}
+
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
 /// Note that the actual populations stored in mc.walkers are not yet changed here.
 /// # Arguments:
@@ -398,7 +405,7 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: &mut MCState, input: &Input, tol: f64, 
+fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], cache: &mut ElemCache, input: &Input, tol: f64, 
                   noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> HeatBath {
     let ndets = basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
@@ -416,7 +423,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: 
 
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
-        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
+        let (hlg, slg) = cache.find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
         let k = coupling(hlg, slg, es_s, &input.prop.propagator);
 
         sumlg += k.abs();
@@ -439,15 +446,15 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], mc: 
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, tol: f64,
+fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, rng: &mut SmallRng, cache: &mut ElemCache, tol: f64,
                 noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, f64, usize) {
     let ndets = basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
     // more than the Gamma index we map it back into the full index set.
-    let mut lambda = mc.rng.gen_range(0..(ndets - 1));
+    let mut lambda = rng.gen_range(0..(ndets - 1));
     if lambda >= gamma {lambda += 1;}
 
-    let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
+    let (hlg, slg) = cache.find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
     let k = coupling(hlg, slg, es_s, &input.prop.propagator);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
@@ -468,7 +475,7 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input:
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, mc: &mut MCState, hb: &HeatBath, tol: f64,
+fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, rng: &mut SmallRng, cache: &mut ElemCache, hb: &HeatBath, tol: f64,
                    noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, f64, usize) {
 
     let ndets = basis.len();
@@ -476,9 +483,9 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
     // If \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} (sumlg) 
     // is zero (unsure how likely this is) then fallback to uniform distribution.
     if hb.sumlg == 0.0 {
-        let mut lambda = mc.rng.gen_range(0..(ndets - 1));
+        let mut lambda = rng.gen_range(0..(ndets - 1));
         if lambda >= gamma {lambda += 1;}
-        let (hlg, slg) = mc.cache.find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
+        let (hlg, slg) = cache.find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
         let k = coupling(hlg, slg, es_s, &input.prop.propagator);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
@@ -497,7 +504,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
     // which is exactly the distribution we want to sample. We can therefore add the A's
     // until we pass the target at which point the last tested \Lambda is the one chosen
     // with the correct probability, and we can compute k and pgen accordingly.
-    let target = mc.rng.gen_range(0.0..hb.sumlg);
+    let target = rng.gen_range(0.0..hb.sumlg);
     // Find first index where the cumulative sum is more than the target. Binary search returns
     // Result <usize, usize> where Ok(i) is element exactly equal to target and Err(i) is insertion
     // index where target would be inserted to keep array sorted. In both cases this is what we
@@ -534,15 +541,19 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, mc: &mut MCState,
-            irank: usize, nranks: usize, send_buf: &mut Vec<Vec<PopulationUpdate>>, tol: f64, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
+fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState],
+            wicks: Option<&WicksView>, irank: usize, nranks: usize, rng: &mut SmallRng, cache: &mut ElemCache) -> (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>) {
+
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    let mut pspawn_samples = Vec::new();
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
     let nwalkers = ngamma.unsigned_abs();
 
     // Precompute per determinant heat-bath excitation generation quantities.
     let mut hb: Option<HeatBath> = None;
-    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, mc, input, tol, noci_reference_basis, wicks));}
+    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, cache, input, tol, noci_reference_basis, wicks));}
 
     // Iterate over all walkers on state Gamma.
     for _ in 0..nwalkers {
@@ -550,20 +561,20 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
         // generation scheme.
         let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
-            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, mc, tol, noci_reference_basis, wicks),
-            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, mc, hb.as_ref().unwrap(), tol, noci_reference_basis, wicks),
+            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, rng, cache, tol, noci_reference_basis, wicks),
+            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, rng, cache, hb.as_ref().unwrap(), tol, noci_reference_basis, wicks),
         };
 
         // Calculate spawning probability.
         let pspawn = input.prop.dt * k.abs() / pgen;
 
         // Store excitation sample if requested.
-        if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {hist.add(pspawn);}
+        if input.write.write_excitation_hist {pspawn_samples.push(pspawn);}
 
         // Evaluate spawning outcomes
         let m = pspawn.floor() as i64;
         let frac = pspawn - (m as f64);
-        let extra = if mc.rng.gen_range(0.0..1.0) < frac {1} else {0};
+        let extra = if rng.gen_range(0.0..1.0) < frac {1} else {0};
         let nchildren = m + extra;
 
         let sign: i64 = if k > 0.0 {1} else {-1};
@@ -574,11 +585,13 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         // current thread, otherwise add the population update message to the send buffer.
         let destination = owner(lambda, nranks);
         if destination == irank {
-            add_delta(mc, lambda, nchildren * child_sign);
+            local.push((lambda, dn));
         } else {
-            send_buf[destination].push(PopulationUpdate {det: lambda as u64, dn});
+            remote.push(PopulationUpdate {det: lambda as u64, dn});
         }
     }
+
+    (local, remote, pspawn_samples)
 }
 
 /// Perform diagonal death and cloning step by calculating:
@@ -594,12 +607,12 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 ///     `es`: f64, non-overlap transformed shift energy.
 ///     `es_s`: f64, overlap-transformed shift energy.
 ///     `input`: Input, user specified input options.
-///     `mc`: MCState, contains information about the current Monte Carlo state.
-fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, mc: &mut MCState, tol: f64,
-                 noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
-
+fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], 
+                 wicks: Option<&WicksView>, rng: &mut SmallRng, cache: &mut ElemCache) -> Vec<(usize, i64)> {
+    
+    let mut out = Vec::new();
     // Calculate or retrieve matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma} from cache.
-    let (hgg, sgg) = mc.cache.find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks);
+    let (hgg, sgg) = cache.find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks);
 
     // Death probability.
     let pdeath = match input.prop.propagator {
@@ -616,17 +629,18 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     let m = p.floor() as i64;
     let frac = p - (m as f64);
    
-    if pdeath == 0.0 {return;}
+    if pdeath == 0.0 {return out;}
     // Iterate over all walkers on state Gamma.
     for _ in 0..ngamma.abs() {
         // Compare probability against randomly generated number in [0, 1].
-        let extra = if mc.rng.gen_range(0.0..1.0) < frac {1} else {0};
+        let extra = if rng.gen_range(0.0..1.0) < frac {1} else {0};
         let nevents = m + extra;
         
         // Accumulate population change in delta.
-        let dn = if pdeath > 0.0 { -parent_sign } else { parent_sign };
-        add_delta(mc, gamma, dn * nevents);
+        let dn = if pdeath > 0.0 { -parent_sign } else {parent_sign};
+        out.push((gamma, dn * nevents));
     }
+    out
 }
 
 /// Calculate projected energy as \frac{\sum_{H_{\Gamma, \text{Reference}}} N_{\Gamma}}{\sum_{S_{\Gamma, \text{Reference}}} N_{\Gamma}}.
@@ -644,19 +658,17 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, cache: &mut ElemCache, world: &impl Communicator, tol: f64,
                     input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> f64 {
-    let mut num = 0.0; 
-    let mut den = 0.0; 
-
-    for &gamma in walkers.occ() {
-        let ngamma = walkers.get(gamma);
-        // Calculate or retrieve matrix elements H_{\Gamma, \text{Reference}}, S_{\Gamma,
-        // \text{Reference}} from cache.
-        let (hgr, sgr) = cache.find_hs(ao, basis, gamma, iref, tol, input, noci_reference_basis, wicks);
-        num += (ngamma as f64) * hgr;
-        den += (ngamma as f64) * sgr;
-    }
     
-    // Reduce contributions from each thread to get full projected energy.
+    // Calculate projected energy per Rayon thread.
+    let (num, den) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, ElemCache::new()), |(mut num, mut den, mut cache), &gamma| {
+        let ngamma = walkers.get(gamma) as f64;
+        let (hgr, sgr) = cache.find_hs(ao, basis, gamma, iref, tol, input, noci_reference_basis, wicks);
+        num += ngamma * hgr;
+        den += ngamma * sgr;
+        (num, den, cache)
+    }).map(|(num, den, _c)| (num, den)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
+
+    // Reduce contributions from each thread to get full projected energy across MPI ranks.
     let mut numglobal = 0.0;
     let mut denglobal = 0.0;
     world.all_reduce_into(&num, &mut numglobal, SystemOperation::sum());
@@ -721,18 +733,21 @@ fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], cache: &m
 
     let dglobal = gather_all_walkers(world, dlocal);
 
-    for gamma in start..end {
+    plocal.par_iter_mut().enumerate().for_each_init(|| ElemCache::new(), |cache, (idx, pgamma)| {
+        let gamma = start + idx;
+        if gamma >= end {return;}
+        
         //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
-        let mut dpgamma = 0.0;
+        let mut dpgamma = 0.0_f64;
         for entry in &dglobal {
             // Here we use dn to mean population change.
             let dnomega = entry.dn as f64;
             let omega = entry.det as usize;
             let sgo = cache.find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks);
             dpgamma += dnomega * sgo;
-        } 
-        plocal[gamma - start] += dpgamma;
-    }
+        }
+        *pgamma += dpgamma;
+    });
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
@@ -756,7 +771,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let ndets = basis.len();
     let start = (ndets * irank) / nranks;
     let end = (ndets * (irank + 1)) / nranks;
-    
+
     // Unwrap QMC propagation specific options
     let qmc = input.qmc.as_ref().unwrap();
     let ndets = basis.len();
@@ -826,27 +841,60 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
     for it in 0..input.prop.max_steps {
         
-        // Local send buffers
+        // Rayon parallised QMC loop per MPI rank.
+        let occ = mc.walkers.occ().to_vec();
+        let updates: Vec<GammaUpdates> = occ.par_iter().map(|&gamma| {
+            let ngamma = mc.walkers.get(gamma);
+            if ngamma == 0 {return GammaUpdates {local: Vec::new(), remote: Vec::new(), pspawn_samples: Vec::new()};}
+
+            let s = seed ^ (it as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (gamma as u64).wrapping_mul(0xBF58476D1CE4E5B9) ^ (irank as u64).wrapping_mul(0x94D049BB133111EB);
+            let mut rng = SmallRng::seed_from_u64(s);
+            let mut cache = ElemCache::new();
+
+            let mut local = Vec::new();
+            let mut remote = Vec::new();
+            let mut pspawn_samples = Vec::new();
+            
+            // Death and cloning is entirely local.
+            local.extend(death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, noci_reference_basis, wicks, &mut rng, &mut cache));
+            // Spawning may or may not be local.
+            let (l2, r2, s2) = spawning(ao, basis, gamma, ngamma, es_s, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng, &mut cache);
+            local.extend(l2);
+            remote.extend(r2);
+            pspawn_samples.extend(s2);
+
+            GammaUpdates {local, remote, pspawn_samples}
+        }).collect();
+
+        // Per MPI rank send buffers.
         let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
         
-        // Iterate over occupied determinants owned by current rank.
-        let occ = mc.walkers.occ().to_vec();
-        for gamma in occ {
-            let ngamma = mc.walkers.get(gamma);
-            // If the walker population on state Gamma is zero we ignore it.
-            if ngamma == 0 {continue;}
-            // Diagonal death and cloning step. Diagonal step is entirely local.
-            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, &mut mc, tol, noci_reference_basis, wicks);
-            // Off-diagonal amplitude transfer. 
-            spawning(ao, basis, gamma, ngamma, es_s, input, &mut mc, irank, nranks, &mut send, tol, noci_reference_basis, wicks);
+        // Fill the MPI rank quantities with the per Rayon thread data.
+        for gu in updates {
+            for (det, dn) in gu.local {
+                add_delta(&mut mc, det, dn);
+            }
+            if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {
+                    for p in gu.pspawn_samples {hist.add(p);}
+            }
+
+            // Only need to update remote updates if we are using multiple MPI ranks,
+            if nranks > 1 {
+                for up in gu.remote {
+                    let dest = owner(up.det as usize, nranks);
+                    send[dest].push(up);
+                }
+            }
         }
 
         // Exchange population updates between ranks and add any recieved updates to local delta. 
-        let recieved = communicate_spawn_updates(world, &send);
-        for update in recieved {
-            let det = update.det as usize;
-            add_delta(&mut mc, det, update.dn); 
+        if nranks > 1 {
+            let recieved = communicate_spawn_updates(world, &send);
+            for update in recieved {
+                add_delta(&mut mc, update.det as usize, update.dn);
+            }
         }
+
         // Apply local and recieved deltas. Annhilation is fully local process here.  
         // The change in population is also stored to update overlap-transformed walker population.
         let d = apply_delta(&mut mc);

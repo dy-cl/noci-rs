@@ -80,7 +80,7 @@ fn calculate_s_red(tilde_s: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
 ///     `s_munu`: Array2, AO overlap matrix.
 ///     `tol`: f64, tolerance up to which a number is considered zero. 
 fn build_s_pair(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f64>, tol: f64) -> Pair {
-    
+
     // Occupied MO overlap.
     let s_ij = l_c_occ.t().dot(&s_munu.dot(g_c_occ));
 

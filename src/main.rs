@@ -166,8 +166,8 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
             timings.qmc_det_total = d_tot;
             timings.qmc_det_basis = d_basis;
             timings.qmc_det_hs = d_hs;
-            timings.wicks_intermediates = d_wi;
             timings.qmc_det_prop = d_prop;
+            timings.wicks_intermediates = d_wi;
         }
     }
 
@@ -183,6 +183,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
         timings.qmc_stoch_prop = d_qmc_stoch_prop;
+        timings.wicks_intermediates = d_wi;
     }
     Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_fci: ao.e_fci, timings, states: states.clone()}
 }
