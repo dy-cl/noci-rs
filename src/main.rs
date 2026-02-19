@@ -4,15 +4,16 @@ use std::time::{Instant, Duration};
 use std::default::Default;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+
 use mpi::topology::Communicator;
 use mpi::collective::CommunicatorCollectives;
-
 use ndarray::Array1;
 
 use noci_rs::input::Input;
 use noci_rs::AoData;
 use noci_rs::SCFState;
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
+use noci_rs::stochastic::StochStepTimings;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
@@ -25,7 +26,7 @@ use noci_rs::mpiutils::{broadcast};
 
 
 // Timing storage for various segements of code.
-#[derive(Default, Clone, Copy)]
+#[derive(Default)]
 struct Timings {
     pyscf: Duration,
     scf: Duration,
@@ -41,6 +42,7 @@ struct Timings {
     qmc_stoch_total: Duration,
     qmc_stoch_basis: Duration,
     qmc_stoch_prop: Duration,
+    qmc_stoch_step: StochStepTimings,
 }
 
 // Printed results for a given geometry.
@@ -178,11 +180,12 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     
     // Run stochastic NOCI-QMC calculation across all MPI ranks.
     if input.qmc.is_some() {
-        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks_view);
+        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop, step_timings) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks_view);
         e_noci_qmc_stoch = Some(e_qmc);
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
         timings.qmc_stoch_prop = d_qmc_stoch_prop;
+        timings.qmc_stoch_step  = step_timings;
         timings.wicks_intermediates = d_wi;
     }
     Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_fci: ao.e_fci, timings, states: states.clone()}
@@ -362,7 +365,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 ///     `c0`: [f64], initial coefficient vector of basis states.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64, 
-                               wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration) {
+                               wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, StochStepTimings) {
 
     let t_total = Instant::now();
     let irank = world.rank();
@@ -399,7 +402,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let (e, local_hist) = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, noci_reference_basis, wicks);
+    let (e, local_hist, step_timings) = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, noci_reference_basis, wicks);
     let d_prop = t_prop.elapsed();
 
     // Write excitation histogram to a file. This should currently only be used if doing a single 
@@ -420,7 +423,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     let d_total = t_total.elapsed();
 
-    (e, d_total, d_basis, d_prop)
+    (e, d_total, d_basis, d_prop, step_timings)
 }
 
 /// Print important information for current geometry.
@@ -449,6 +452,14 @@ fn print_report(res: &Results, input: &Input) {
         println!("Total NOCI-QMC stochastic time: {:?}", res.timings.qmc_stoch_total);
         println!(r"  Basis generation:  {:?}", res.timings.qmc_stoch_basis);
         println!(r"  Stochastic propagation:  {:?}", res.timings.qmc_stoch_prop);
+        println!(r"     Spawning, Death, Cloning, Collection: {:?}", res.timings.qmc_stoch_step.spawn_death_collect);
+        println!(r"     Accumulate updates and pack MPI buffers: {:?}", res.timings.qmc_stoch_step.acc_pack);
+        println!(r"     Exchange spawn updates MPI: {:?}", res.timings.qmc_stoch_step.mpi_exchange_updates);
+        println!(r"     Unpack updates and accumulate: {:?}", res.timings.qmc_stoch_step.unpack_acc_recieved);
+        println!(r"     Apply population updates: {:?}", res.timings.qmc_stoch_step.apply_delta);
+        println!(r"     Update pG: {:?}", res.timings.qmc_stoch_step.update_p);
+        println!(r"     Calculate ||C||, ||SC||: {:?}", res.timings.qmc_stoch_step.calc_populations);
+        println!(r"     Calculate projected energy  : {:?}", res.timings.qmc_stoch_step.eproj);
     }
 
     println!("{}", "=".repeat(100));
