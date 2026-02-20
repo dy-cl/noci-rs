@@ -344,10 +344,11 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
 ///    `bits`: usize, bitstring.
 pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) {
     let n = det0.ncols();
-    d.assign(det0);
     for c in 0..n {
         if ((bits >> c) & 1) == 1 {
             d.column_mut(c).assign(&det1.column(c));
+        } else {
+            d.column_mut(c).assign(&det0.column(c));
         }
     }
 }

@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use mpi::topology::Communicator;
 
 use crate::{AoData, SCFState};
-use crate::nonorthogonalwicks::{DiffSpinBuild, SameSpinBuild, WicksView, WicksShared, PairMeta, SameSpinMeta, DiffSpinMeta, WicksRma};
+use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WickScratch, WicksRma, WicksShared, WicksView};
 use crate::mpiutils::Sharedffi;
 use crate::input::Input;
 
@@ -369,7 +369,7 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &[SCFState], l: usize, g: usize, tol: f64, wicks: &WicksView) -> f64 {
+pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &[SCFState], l: usize, g: usize, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
 
     let lp = determinants[l].parent;
     let gp = determinants[g].parent;
@@ -389,8 +389,8 @@ pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &
     let ph_a = excitation_phase(occ_la, &ex_la.holes, &ex_la.parts) * excitation_phase(occ_ga, &ex_ga.holes, &ex_ga.parts);
     let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
 
-    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, tol);
-    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, tol);
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, scratch, tol);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, scratch, tol);
     sa * sb
 }
 
@@ -402,7 +402,8 @@ pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `l`: usize, index of state \Lambda.
 ///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &WicksView, l: usize, g: usize, tol: f64) -> (f64, f64) {
+pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &WicksView, scratch: &mut WickScratch, 
+                               l: usize, g: usize, tol: f64) -> (f64, f64) {
 
     let lp = determinants[l].parent;
     let gp = determinants[g].parent;
@@ -422,17 +423,17 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
     let ph_a = excitation_phase(occ_la, &ex_la.holes, &ex_la.parts) * excitation_phase(occ_ga, &ex_ga.holes, &ex_ga.parts);
     let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
 
-    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, tol);
-    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, tol);
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, scratch, tol);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, scratch, tol);
     let s = sa * sb;
 
-    let h1a = lg_h1(&w.aa, ex_la, ex_ga, tol);
-    let h1b = lg_h1(&w.bb, ex_lb, ex_gb, tol);
+    let h1a = lg_h1(&w.aa, ex_la, ex_ga, scratch, tol);
+    let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
     let h1 = ph_a * h1a * sb + ph_b * h1b * sa;
 
-    let h2aa = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga, tol);
-    let h2bb = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb, tol);
-    let h2ab = (ph_a * ph_b) * lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, tol);
+    let h2aa = 0.5 * ph_a * sb * lg_h2_same(&w.aa, ex_la, ex_ga, scratch, tol);
+    let h2bb = 0.5 * ph_b * sa * lg_h2_same(&w.bb, ex_lb, ex_gb,scratch, tol);
+    let h2ab = (ph_a * ph_b) * lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
     let h2 = h2aa + h2bb + h2ab;
     
     let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
@@ -460,15 +461,15 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
 
     // Calculate Hamiltonian matrix elements in parallel.
     let t_hs = Instant::now();
-    let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map(|&(l, g)| {
+    let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map_init(WickScratch::new, |scratch, &(l, g)| {
         let (h, s, d) = if input.wicks.compare {
             let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g, tol);
-            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), l, g, tol);
+            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), scratch, l, g, tol);
             let d = (hn - hw).abs() + (sn - sw).abs();
             (hw, sw, d)
         } else {
             let (h, s) = if input.wicks.enabled {
-                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), l, g, tol)
+                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), scratch, l, g, tol)
             } else {
                 calculate_hs_pair_naive(ao, determinants, l, g, tol)
             };

@@ -24,7 +24,6 @@ use noci_rs::stochastic::{step};
 use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::mpiutils::{broadcast};
 
-
 // Timing storage for various segements of code.
 #[derive(Default)]
 struct Timings {

@@ -1,7 +1,6 @@
 // stochastic.rs
 use std::time::{Instant, Duration};
 
-use rand::Rng;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use mpi::topology::Communicator;
@@ -13,7 +12,7 @@ use rand_distr::{Binomial, Distribution};
 use crate::AoData;
 use crate::SCFState;
 use crate::input::{Input, Propagator, ExcitationGen};
-use crate::nonorthogonalwicks::WicksView;
+use crate::nonorthogonalwicks::{WicksView, WickScratch};
 
 use crate::noci::{calculate_s_pair_naive, calculate_hs_pair_naive, calculate_s_pair_wicks, calculate_hs_pair_wicks};
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
@@ -188,12 +187,6 @@ impl ExcitationHist {
     }
 }
 
-struct GammaUpdates {
-    local: Vec<(usize, i64)>,
-    remote: Vec<PopulationUpdate>,
-    samples: Vec<(f64, u64)>,
-}
-
 /// Find matrix element S_{ij} from Wick's or naive path.
 /// # Arguments:
 ///     `ao`: AoData, contains AO integrals and other system data.
@@ -204,13 +197,14 @@ struct GammaUpdates {
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> f64 {
+fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, 
+          scratch: &mut WickScratch) -> f64 {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
 
     if input.wicks.enabled {
         let w = wicks.unwrap();
-        calculate_s_pair_wicks(basis, noci_reference_basis, a, b, tol, w)
+        calculate_s_pair_wicks(basis, noci_reference_basis, a, b, tol, w, scratch)
     } else {
         calculate_s_pair_naive(ao, basis, a, b, tol)
     }
@@ -226,13 +220,14 @@ fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: 
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, f64) {
+fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, 
+           scratch: &mut WickScratch) -> (f64, f64) {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
 
     if input.wicks.enabled {
         let w = wicks.unwrap();
-        calculate_hs_pair_wicks(ao, basis, noci_reference_basis, w, a, b, tol)
+        calculate_hs_pair_wicks(ao, basis, noci_reference_basis, w, scratch, a, b, tol)
     } else {
         calculate_hs_pair_naive(ao, basis, a, b, tol)
     }
@@ -290,7 +285,7 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis: &[SCFState], iref: usize, tol: f64,
-                         input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> Walkers {
+                         input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> Walkers {
     let mut w = Walkers::new(n);
 
     // Ill-conditioning threshold.
@@ -316,7 +311,7 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis
     for &gamma in w.occ() {
         let ngamma = w.get(gamma);
         // Calculate matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,\text{Reference}} 
-        let sgr = find_s(ao, basis, gamma, iref, tol, input, noci_reference_basis, wicks);
+        let sgr = find_s(ao, basis, gamma, iref, tol, input, noci_reference_basis, wicks, scratch);
         den += (ngamma as f64) * sgr;
     }
 
@@ -367,7 +362,7 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], input: &Input, tol: f64, 
-                  noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> HeatBath {
+                  noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> HeatBath {
     let ndets = basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
     let mut sumlg = 0.0_f64;
@@ -384,7 +379,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
 
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
-        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
+        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
         let k = coupling(hlg, slg, es_s, &input.prop.propagator);
 
         sumlg += k.abs();
@@ -421,7 +416,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>,
-            irank: usize, nranks: usize, rng: &mut SmallRng) -> (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<(f64, u64)>) {
+            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch) -> (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<(f64, u64)>) {
 
     let mut local: Vec<(usize, i64)> = Vec::new();
     let mut remote: Vec<PopulationUpdate> = Vec::new();
@@ -436,7 +431,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
     let mut weight: f64 = 0.0;
     let mut hbi: usize = 0;
     if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {
-        let hbinit = init_heat_bath(gamma, es_s, ao, basis, input, tol, noci_reference_basis, wicks);
+        let hbinit = init_heat_bath(gamma, es_s, ao, basis, input, tol, noci_reference_basis, wicks, scratch);
         weight = hbinit.sumlg;
         hb = Some(hbinit);
     }
@@ -465,7 +460,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
                 nstates -= 1;
                 // If there are no proposed spawnings for this \Lambds we can skip it.
                 if c == 0 {continue;}
-                let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks);
+                let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
                 let k = coupling(hlg, slg, es_s, &input.prop.propagator);
                 (c, k, pgen)
             }
@@ -542,10 +537,10 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 ///     `es_s`: f64, overlap-transformed shift energy.
 ///     `input`: Input, user specified input options.
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], 
-                 wicks: Option<&WicksView>, rng: &mut SmallRng) -> Vec<(usize, i64)> {
+                 wicks: Option<&WicksView>, rng: &mut SmallRng, scratch: &mut WickScratch) -> Vec<(usize, i64)> {
     
     // Calculate matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma}.
-    let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks);
+    let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks, scratch);
 
     // Death probability.
     let pdeath = match input.prop.propagator {
@@ -590,13 +585,13 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
                     input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> f64 {
     
     // Calculate projected energy per Rayon thread.
-    let (num, den) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64), |(mut num, mut den), &gamma| {
+    let (num, den) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratch::new()), |(mut num, mut den, mut scratch), &gamma| {
         let ngamma = walkers.get(gamma) as f64;
-        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, noci_reference_basis, wicks);
+        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, noci_reference_basis, wicks, &mut scratch);
         num += ngamma * hgr;
         den += ngamma * sgr;
-        (num, den)
-    }).map(|(num, den)| (num, den)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
+        (num, den, scratch)
+    }).map(|(num, den, _)| (num, den)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
 
     // Reduce contributions from each thread to get full projected energy across MPI ranks.
     let mut numglobal = 0.0;
@@ -620,7 +615,7 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, world: &impl Communicator, tol: f64, 
-          input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> Vec<f64> {
+          input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> Vec<f64> {
 
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
@@ -633,7 +628,7 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
             // Here we use dn to mean total population.
             let nomega = entry.dn as f64;
             let omega = entry.det as usize;
-            let sgo = find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks);
+            let sgo = find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks, scratch);
             pgamma += nomega * sgo;
         }
         p[gamma - start] = pgamma
@@ -644,7 +639,6 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
 /// Update the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
 /// # Arguments:
 ///     `start`: usize, first determinant index owned by this rank.
-///     `end`: usize, final determinant index owned by this rank.
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
@@ -654,26 +648,23 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn update_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64,
+fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64,
             input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
 
     let dglobal = gather_all_walkers(world, dlocal);
 
-    plocal.par_iter_mut().enumerate().for_each_init(|| (), |_, (idx, pgamma)| {
-        let gamma = start + idx;
-        if gamma >= end {return;}
-        
-        //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
-        let mut dpgamma = 0.0_f64;
-        for entry in &dglobal {
-            // Here we use dn to mean population change.
-            let dnomega = entry.dn as f64;
-            let omega = entry.det as usize;
-            let sgo = find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks);
-            dpgamma += dnomega * sgo;
-        }
-        *pgamma += dpgamma;
-    });
+    //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}. 
+    for entry in &dglobal {
+        // Here we use dn to mean population change.
+        let omega = entry.det as usize;
+        let scale = entry.dn as f64;
+
+        plocal.par_iter_mut().enumerate().for_each_init(|| WickScratch::new(), |scratch, (idx, pgamma)| {
+            let gamma = start + idx;
+            let sgo = find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks, scratch);
+            *pgamma += scale * sgo;
+        });
+    }
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
@@ -703,6 +694,8 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let ndets = basis.len();
 
     let iref = 0;
+    // Serial Wick's scratch.
+    let mut scratch = WickScratch::new();
 
     // Construct reference index mask.
     let mut isref = vec![false; basis.len()];
@@ -716,7 +709,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
     // Initialise walker populations based on total initial population and c0.
     if irank == 0 {println!("Initialising walkers.....");}
-    let w = initialse_walkers(c0, qmc.initial_population, ndets, ao, basis, iref, tol, input, noci_reference_basis, wicks);
+    let w = initialse_walkers(c0, qmc.initial_population, ndets, ao, basis, iref, tol, input, noci_reference_basis, wicks, &mut scratch);
     let w = local_walkers(w, irank, nranks);
 
     // Flags activated once total walker population exceeds target population 
@@ -733,7 +726,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let excitation_hist = if input.write.write_excitation_hist {Some(ExcitationHist::new(-60.0, 1e-12, 100))} else {None};
 
     // Initialise Monte Carlo state. All population updates for a given iteration are accumulated within delta.
-    let pg = init_p(start, end, ao, basis, &w, world, tol, input, noci_reference_basis, wicks);
+    let pg = init_p(start, end, ao, basis, &w, world, tol, input, noci_reference_basis, wicks, &mut scratch);
     let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), rng, pg, excitation_hist};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
@@ -776,50 +769,68 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
     for it in 0..input.prop.max_steps {
         let t0 = Instant::now();
+        
+        // Accumulated updates per Rayon thread. Local contains anything that happens on a
+        // determinant under the control of the current thread, and remote anything that applies to
+        // another thread's determinant.
+        type LocalUpdates = Vec<(usize, i64)>;
+        type RemoteUpdates = Vec<PopulationUpdate>;
+        type Samples = Vec<(f64, u64)>;
 
-        // Rayon parallised QMC loop per MPI rank.
-        let occ = mc.walkers.occ().to_vec();
-        let updates: Vec<GammaUpdates> = occ.par_iter().map(|&gamma| {
-            let ngamma = mc.walkers.get(gamma);
-            if ngamma == 0 {return GammaUpdates {local: Vec::new(), remote: Vec::new(), samples: Vec::new()};}
+        type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratch);
+        
+        // Function to initialise individual thread states.
+        let initialise = || -> ThreadState {(Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(seed ^ (it as u64)), WickScratch::new())};
 
-            let s = seed ^ (it as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (gamma as u64).wrapping_mul(0xBF58476D1CE4E5B9) ^ (irank as u64).wrapping_mul(0x94D049BB133111EB);
-            let mut rng = SmallRng::seed_from_u64(s);
+        // Function to call spawning and death/cloning routines and accumulate population updates.
+        let propagate =  |(mut loc, mut rem, mut samp, mut rng, mut scratch): ThreadState, &gamma: &usize| -> ThreadState {
+              let ngamma = mc.walkers.get(gamma);
+              if ngamma == 0 {return (loc, rem, samp, rng, scratch);}
 
-            let mut local = Vec::new();
-            let mut remote = Vec::new();
-            let mut samples = Vec::new();
-            
             // Death and cloning is entirely local.
-            local.extend(death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, noci_reference_basis, wicks, &mut rng));
-            // Spawning may or may not be local.
-            let (l2, r2, s2) = spawning(ao, basis, gamma, ngamma, es_s, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng);
-            local.extend(l2);
-            remote.extend(r2);
-            samples.extend(s2);
+            loc.extend(death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, noci_reference_basis, wicks, &mut rng, &mut scratch));
+            // Spawning need not be local.
+            let (l2, r2, s2) = spawning(ao, basis, gamma, ngamma, es_s, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng, &mut scratch);
+            loc.extend(l2);
+            rem.extend(r2);
+            samp.extend(s2);
 
-            GammaUpdates {local, remote, samples}
-        }).collect();
+            (loc, rem, samp, rng, scratch)
+        };
+
+        // Function to merge thread updates a and b.
+        let merge = |mut a: ThreadState, b: ThreadState| -> ThreadState {
+            a.0.extend(b.0);
+            a.1.extend(b.1);
+            a.2.extend(b.2);
+            a
+        };
+
+        // Rayon parallised loop over occupied determinants.
+        let occ = mc.walkers.occ();
+        // Iterate over occ in parallel and give each thread its own accumulator in initialise and
+        // propagate, and reduce them into a single total ThreadState. The empty type in .reduce is
+        // what is reduced into by the threads.
+        let (local, remote, samples, _, _): ThreadState = occ.par_iter().fold(initialise, propagate)
+                                         .reduce(|| (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(0), WickScratch::new()), merge);
+        
         d_spawn_death_collect += t0.elapsed().as_secs_f64();
         
         let t0 = Instant::now();
         // Per MPI rank send buffers.
         let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
-        // Fill the MPI rank quantities with the per Rayon thread data.
-        for gu in updates {
-            for (det, dn) in gu.local {
-                add_delta(&mut mc, det, dn);
+        for (det, dn) in local {
+            add_delta(&mut mc, det, dn);
+        }
+        if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {
+            for (p, n) in samples {
+                hist.addn(p, n);
             }
-            if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {
-                    for (p, n) in gu.samples {hist.addn(p, n);}
-            }
-
-            // Only need to update remote updates if we are using multiple MPI ranks,
-            if nranks > 1 {
-                for up in gu.remote {
-                    let dest = owner(up.det as usize, nranks);
-                    send[dest].push(up);
-                }
+        }
+        if nranks > 1 {
+            for up in remote {
+                let dest = owner(up.det as usize, nranks);
+                send[dest].push(up);
             }
         }
         d_acc_pack += t0.elapsed().as_secs_f64();
@@ -834,7 +845,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
                 add_delta(&mut mc, update.det as usize, update.dn);
             }
             d_unpack_acc_recieved += t0.elapsed().as_secs_f64();
-        }
+        }        
 
         // Apply local and recieved deltas. Annhilation is fully local process here.  
         // The change in population is also stored to update overlap-transformed walker population.
@@ -843,7 +854,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         d_apply_delta += t0.elapsed().as_secs_f64();
 
         let t0 = Instant::now();
-        update_p(start, end, ao, basis, world, &mut mc.pg, &d, tol, input, noci_reference_basis, wicks);
+        update_p(start, ao, basis, world, &mut mc.pg, &d, tol, input, noci_reference_basis, wicks);
         d_update_p += t0.elapsed().as_secs_f64();
         
         let t0 = Instant::now();
@@ -905,5 +916,3 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
 
     (eproj, mc.excitation_hist, timings)
 }
-
-
