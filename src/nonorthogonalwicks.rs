@@ -1103,7 +1103,6 @@ impl DiffSpinBuild {
 ///     `g_ex`: Excitation, right excitations relative to reference \Gamma in the ket.
 fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, rows: &mut Vec<Label>, cols: &mut Vec<Label>) {
     // Integer L is the total number of combined excitations from the bra (\Lambda) and ket (\Gamma).
-    let l = l_ex.holes.len() + g_ex.holes.len();
     let nl = l_ex.holes.len();
     let ng = g_ex.holes.len();
 
@@ -1409,7 +1408,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
     // If the per-spin excitation rank L + 1 is less than the number of zero-singular values in
     // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
     let la = l_ex_a.holes.len() + g_ex_a.holes.len();
-    let lb = l_ex_b.holes.len() + g_ex_b.holes.
+    let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
     if w.aa.m > la + 1 {return 0.0;}
     if w.bb.m > lb + 1 {return 0.0;}
     scratch.resizelalb(la, lb);
@@ -1419,13 +1418,13 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
     // Convert the contraction determinant labels into actual indices.
     scratch.rows_a.clear();
-    scratch.rows_a.extend(rows_a_lab.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.aa.nmo)));
+    scratch.rows_a.extend(scratch.rows_label_a.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.aa.nmo)));
     scratch.cols_a.clear();
-    scratch.cols_a.extend(cols_a_lab.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.aa.nmo)));
+    scratch.cols_a.extend(scratch.cols_label_a.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.aa.nmo)));
     scratch.rows_b.clear();
-    scratch.rows_b.extend(rows_b_lab.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
+    scratch.rows_b.extend(scratch.rows_label_b.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
     scratch.cols_b.clear();
-    scratch.cols_b.extend(cols_b_lab.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
+    scratch.cols_b.extend(scratch.cols_label_b.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
     
     let x0aa = w.aa.x(0);
     let y0aa = w.aa.y(0);
