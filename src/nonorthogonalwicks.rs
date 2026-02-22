@@ -1106,6 +1106,9 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, ro
     let nl = l_ex.holes.len();
     let ng = g_ex.holes.len();
 
+    rows.clear();
+    cols.clear();
+
     if nl == 0 && ng == 0 {return;}
     
     // If number of holes in \Lambda determinant is non-zero and number of holes in \Gamma
@@ -1114,6 +1117,7 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, ro
     if nl > 0 && ng == 0 {
         for &a in &l_ex.parts {rows.push((Side::Lambda, Type::Part, a));}
         for &i in &l_ex.holes {cols.push((Side::Lambda, Type::Hole, i));}
+        return;
     }
     
     // If number of holes in \Gamma determinant is non-zero and number of holes in \Lambda
@@ -1122,6 +1126,7 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, ro
     if nl == 0 && ng > 0 {
         for &i in &g_ex.holes {rows.push((Side::Gamma, Type::Hole, i));}
         for &a in &g_ex.parts {cols.push((Side::Gamma, Type::Part, a));}
+        return;
     }
 
     // If both are non-zero we have the ordering:
