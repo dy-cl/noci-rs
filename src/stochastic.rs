@@ -75,36 +75,44 @@ impl Walkers {
     pub fn add(&mut self, i: usize, dn: i64) {
         // No changes to be made.
         if dn == 0 {return;}
-        
-        // Update population vector.
-        let old = self.pop[i];
-        let new = old + dn;
-        self.pop[i] = new;
-        
-        // If old population of determinant i was 0 and we are introducing population we must
-        // add determinant i to the occupied list and store its position in pos.
-        if old == 0 && new != 0 {
-            // Position of determinant i in occupied list is the current end.
-            self.pos[i] = self.occ.len();
-            self.occ.push(i);
-        // If old population of determinant i was not 0 and we have removed population we must
-        // remove i from the occupied list and remove its position from pos.
-        } else if old != 0 && new == 0 {
-            // Find where i is in occ. Should not return usize::MAX.
-            let p = self.pos[i];
-            // Pop the last occupied determinant index from occ.
-            let last = self.occ.pop().unwrap();
-
-            // If the popped element is not i, then i was somewhere in the middle of occ and we
-            // must move the popped element (last) to position p where i used to be. The position of  
-            // last is then updated in the position vector. If the popped element is i then we do
-            // nothing as we have directly removed it by popping.
-            if last != i {
-                self.occ[p] = last;
-                self.pos[last] = p;
+       
+        unsafe {
+            // Update population vector.
+            let pop = self.pop.get_unchecked_mut(i);
+            let old = *pop;
+            let new = old + dn;
+            *pop = new;
+            
+            // If old population of determinant i was 0 and we are introducing population we must
+            // add determinant i to the occupied list and store its position in pos.
+            if old == 0 && new != 0 {
+                let p = self.occ.len();
+                // Position of determinant i in occupied list is the current end.
+                *self.pos.get_unchecked_mut(i) = p;
+                self.occ.push(i);
+                return;
             }
-            // Position i is no longer occupied.
-            self.pos[i] = usize::MAX;
+            // If old population of determinant i was not 0 and we have removed population we must
+            // remove i from the occupied list and remove its position from pos.
+            if old != 0 && new == 0 {
+                // Find where i is in occ. Should not return usize::MAX.
+                let p = *self.pos.get_unchecked(i);
+                // Pop the last occupied determinant index from occ.
+                let last = self.occ.pop().unwrap_unchecked();
+                
+                // If the popped element is not i, then i was somewhere in the middle of occ and we
+                // must move the popped element (last) to position p where i used to be. The position of  
+                // last is then updated in the position vector. If the popped element is i then we do
+                // nothing as we have directly removed it by popping.
+                if last != i {
+                    // move last into position p
+                    *self.occ.get_unchecked_mut(p) = last;
+                    *self.pos.get_unchecked_mut(last) = p;
+                }
+
+                // Position i is no longer occupied.
+                *self.pos.get_unchecked_mut(i) = usize::MAX;
+            }
         }
     }
 
@@ -416,11 +424,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>,
-            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch) -> (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<(f64, u64)>) {
-
-    let mut local: Vec<(usize, i64)> = Vec::new();
-    let mut remote: Vec<PopulationUpdate> = Vec::new();
-    let mut samples: Vec<(f64, u64)> = Vec::new();
+            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch, outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, outsamples: &mut Vec<(f64, u64)>) {
 
     let mut nwalkers: u64 = ngamma.unsigned_abs();
     let ndets = basis.len();
@@ -498,7 +502,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 
         let w = k.abs();
         let pspawn = input.prop.dt * w / pgen;
-        if input.write.write_excitation_hist {samples.push((pspawn, c));}
+        if input.write.write_excitation_hist {outsamples.push((pspawn, c));}
         
         // Spawn floor(probability of spawning) children and additionally extra children with
         // probability: probability of spawning - floor(probability of spawning). 
@@ -515,12 +519,11 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 
         let destination = owner(lambda, nranks);
         if destination == irank {
-            local.push((lambda, dn));
+            outlocal.push((lambda, dn));
         } else {
-            remote.push(PopulationUpdate { det: lambda as u64, dn });
+            outremote.push(PopulationUpdate { det: lambda as u64, dn });
         }
     }
-    (local, remote, samples)
 }
 
 /// Perform diagonal death and cloning step by calculating:
@@ -537,7 +540,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 ///     `es_s`: f64, overlap-transformed shift energy.
 ///     `input`: Input, user specified input options.
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], 
-                 wicks: Option<&WicksView>, rng: &mut SmallRng, scratch: &mut WickScratch) -> Vec<(usize, i64)> {
+                 wicks: Option<&WicksView>, rng: &mut SmallRng, scratch: &mut WickScratch, out: &mut Vec<(usize, i64)>) {
     
     // Calculate matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma}.
     let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks, scratch);
@@ -558,16 +561,15 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     let m = p.floor() as i64;
     let frac = p - (m as f64);
    
-    if pdeath == 0.0 {return Vec::new();}
+    if pdeath == 0.0 {return;}
     // Rather than iterate over all walkers we can sample binominal distribution.
     let extra = if frac > 0.0 {Binomial::new(n as u64, frac).unwrap().sample(rng) as i64} else {0};
     let nevents = n * m + extra;
-    if nevents == 0 {return Vec::new();}
+    if nevents == 0 {return;}
     
     // Accumulate population change in delta.
     let dn = if pdeath > 0.0 {-parent_sign} else {parent_sign};
-
-    vec![(gamma, dn * nevents)]
+    out.push((gamma, dn * nevents));
 }
 
 /// Calculate projected energy as \frac{\sum_{H_{\Gamma, \text{Reference}}} N_{\Gamma}}{\sum_{S_{\Gamma, \text{Reference}}} N_{\Gamma}}.
@@ -652,19 +654,21 @@ fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communic
             input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
 
     let dglobal = gather_all_walkers(world, dlocal);
-
+    
     //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}. 
-    for entry in &dglobal {
-        // Here we use dn to mean population change.
-        let omega = entry.det as usize;
-        let scale = entry.dn as f64;
+    plocal.par_iter_mut().enumerate().for_each_init(WickScratch::new, |scratch, (idx, pgamma)| {
+        let gamma = start + idx;
+        let mut dp = 0.0;
 
-        plocal.par_iter_mut().enumerate().for_each_init(|| WickScratch::new(), |scratch, (idx, pgamma)| {
-            let gamma = start + idx;
-            let sgo = find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks, scratch);
-            *pgamma += scale * sgo;
-        });
-    }
+            for entry in &dglobal {
+                // Here we use dn to mean population change.
+                let omega = entry.det as usize;
+                let scale = entry.dn as f64;
+                let sgo = find_s(ao, basis, gamma, omega, tol, input, noci_reference_basis, wicks, scratch);
+                dp += scale * sgo;
+            }
+            *pgamma += dp;
+    });
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
@@ -780,20 +784,20 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratch);
         
         // Function to initialise individual thread states.
-        let initialise = || -> ThreadState {(Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(seed ^ (it as u64)), WickScratch::new())};
+        let initialise = || -> ThreadState {
+            let tid = rayon::current_thread_index().unwrap_or(0) as u64;
+            (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))), WickScratch::new())
+        };
 
         // Function to call spawning and death/cloning routines and accumulate population updates.
         let propagate =  |(mut loc, mut rem, mut samp, mut rng, mut scratch): ThreadState, &gamma: &usize| -> ThreadState {
-              let ngamma = mc.walkers.get(gamma);
-              if ngamma == 0 {return (loc, rem, samp, rng, scratch);}
+            let ngamma = mc.walkers.get(gamma);
+            if ngamma == 0 {return (loc, rem, samp, rng, scratch);}
 
             // Death and cloning is entirely local.
-            loc.extend(death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, noci_reference_basis, wicks, &mut rng, &mut scratch));
+            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, noci_reference_basis, wicks, &mut rng, &mut scratch, &mut loc);
             // Spawning need not be local.
-            let (l2, r2, s2) = spawning(ao, basis, gamma, ngamma, es_s, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng, &mut scratch);
-            loc.extend(l2);
-            rem.extend(r2);
-            samp.extend(s2);
+            spawning(ao, basis, gamma, ngamma, es_s, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng, &mut scratch, &mut loc, &mut rem, &mut samp);
 
             (loc, rem, samp, rng, scratch)
         };
@@ -813,7 +817,6 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         // what is reduced into by the threads.
         let (local, remote, samples, _, _): ThreadState = occ.par_iter().fold(initialise, propagate)
                                          .reduce(|| (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(0), WickScratch::new()), merge);
-        
         d_spawn_death_collect += t0.elapsed().as_secs_f64();
         
         let t0 = Instant::now();

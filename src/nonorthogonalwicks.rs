@@ -425,6 +425,15 @@ fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
 
 #[derive(Default)]
 pub struct WickScratch {
+    pub rows_label: Vec<Label>,
+    pub cols_label: Vec<Label>,
+
+    pub rows_label_a: Vec<Label>,
+    pub cols_label_a: Vec<Label>,
+
+    pub rows_label_b: Vec<Label>,
+    pub cols_label_b: Vec<Label>,
+
     pub rows: Vec<usize>,
     pub cols: Vec<usize>,
 
@@ -1092,16 +1101,13 @@ impl DiffSpinBuild {
 /// # Arguments:
 ///     `l_ex`: Excitation, left excitations relative to reference \Lambda in the bra.
 ///     `g_ex`: Excitation, right excitations relative to reference \Gamma in the ket.
-fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) -> (Vec<Label>, Vec<Label>) {
+fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, rows: &mut Vec<Label>, cols: &mut Vec<Label>) {
     // Integer L is the total number of combined excitations from the bra (\Lambda) and ket (\Gamma).
     let l = l_ex.holes.len() + g_ex.holes.len();
     let nl = l_ex.holes.len();
     let ng = g_ex.holes.len();
 
-    let mut rows = Vec::with_capacity(l);
-    let mut cols = Vec:: with_capacity(l);
-
-    if nl == 0 && ng == 0 {return (rows, cols);}
+    if nl == 0 && ng == 0 {return;}
     
     // If number of holes in \Lambda determinant is non-zero and number of holes in \Gamma
     // determinant is zero we only need to consider \Lambda determinant. The ordering is:
@@ -1109,7 +1115,6 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
     if nl > 0 && ng == 0 {
         for &a in &l_ex.parts {rows.push((Side::Lambda, Type::Part, a));}
         for &i in &l_ex.holes {cols.push((Side::Lambda, Type::Hole, i));}
-        return (rows, cols);
     }
     
     // If number of holes in \Gamma determinant is non-zero and number of holes in \Lambda
@@ -1118,7 +1123,6 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
     if nl == 0 && ng > 0 {
         for &i in &g_ex.holes {rows.push((Side::Gamma, Type::Hole, i));}
         for &a in &g_ex.parts {cols.push((Side::Gamma, Type::Part, a));}
-        return (rows, cols);
     }
 
     // If both are non-zero we have the ordering:
@@ -1127,8 +1131,6 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin) ->
     for &i in &g_ex.holes {rows.push((Side::Gamma, Type::Hole, i));}
     for &i in &l_ex.holes {cols.push((Side::Lambda, Type::Hole, i));}
     for &a in &g_ex.parts {cols.push((Side::Gamma, Type::Part, a));}
-    
-    (rows, cols)
 }
 
 /// Given the total excitation rank L and the number of zero-overlap orbital couplings find all the
@@ -1174,20 +1176,19 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
 pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
 
-    let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
-
     // If the total excitation rank is less than the number of zero-singular values in
     // {}^{\Gamma\Lambda} \tilde{S} the overlap element is zero.
-    let l = rows_label.len();
+    let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > l {return 0.0;}
-
     scratch.resizel(l);
+
+    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
 
     // Convert the contraction determinant labels into actual indices.
     scratch.rows.clear();
-    scratch.rows.extend(rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
     scratch.cols.clear();
-    scratch.cols.extend(cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
     
     let x0 = w.x(0);
     let y0 = w.y(0);
@@ -1217,20 +1218,19 @@ pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
 pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
-    let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
-    
     // If the total excitation rank L + 1 is less than the number of zero-singular values in
     // {}^{\Gamma\Lambda} \tilde{S} the one electron matrix element is zero.
-    let l = rows_label.len();
+    let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > (l + 1) {return 0.0;}
-
     scratch.resizel(l);
+
+    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
 
     // Convert the contraction determinant labels into actual indices.
     scratch.rows.clear();
-    scratch.rows.extend(rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
     scratch.cols.clear();
-    scratch.cols.extend(cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
     
     let x0 = w.x(0);
     let y0 = w.y(0);
@@ -1289,20 +1289,19 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
 pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
-    let (rows_label, cols_label) = construct_determinant_lables(l_ex, g_ex);
-
     // If the total excitation rank L + 2 is less than the number of zero-singular values in
     // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
-    let l = rows_label.len();
+    let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > (l + 2) {return 0.0;}
-
     scratch.resizel(l);
+
+    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
 
     // Convert the contraction determinant labels into actual indices.
     scratch.rows.clear();
-    scratch.rows.extend(rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
     scratch.cols.clear();
-    scratch.cols.extend(cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
     
     let x0 = w.x(0);
     let y0 = w.y(0);
@@ -1407,8 +1406,16 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
 pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
 
-    let (rows_a_lab, cols_a_lab) = construct_determinant_lables(l_ex_a, g_ex_a);
-    let (rows_b_lab, cols_b_lab) = construct_determinant_lables(l_ex_b, g_ex_b);
+    // If the per-spin excitation rank L + 1 is less than the number of zero-singular values in
+    // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
+    let la = l_ex_a.holes.len() + g_ex_a.holes.len();
+    let lb = l_ex_b.holes.len() + g_ex_b.holes.
+    if w.aa.m > la + 1 {return 0.0;}
+    if w.bb.m > lb + 1 {return 0.0;}
+    scratch.resizelalb(la, lb);
+
+    construct_determinant_lables(l_ex_a, g_ex_a, &mut scratch.rows_label_a, &mut scratch.cols_label_a);
+    construct_determinant_lables(l_ex_b, g_ex_b, &mut scratch.rows_label_b, &mut scratch.cols_label_b);
 
     // Convert the contraction determinant labels into actual indices.
     scratch.rows_a.clear();
@@ -1419,15 +1426,6 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
     scratch.rows_b.extend(rows_b_lab.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
     scratch.cols_b.clear();
     scratch.cols_b.extend(cols_b_lab.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
-
-    // If the per-spin excitation rank L + 1 is less than the number of zero-singular values in
-    // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
-    let la = rows_a_lab.len();
-    let lb = rows_b_lab.len();
-    if w.aa.m > la + 1 {return 0.0;}
-    if w.bb.m > lb + 1 {return 0.0;}
-
-    scratch.resizelalb(la, lb);
     
     let x0aa = w.aa.x(0);
     let y0aa = w.aa.y(0);
