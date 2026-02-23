@@ -589,6 +589,9 @@ pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
 pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
     if n != a.ncols() {return None;}
+
+    adjt.fill(0.0);
+    invs.fill(0.0);
   
     let detquick = match n {
         0 => {Some(1.0)}
@@ -598,8 +601,7 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Ar
         4 => adjt4(adjt, a, thresh),
         _ => None,
     };
-    adjt.fill(0.0);
-    invs.fill(0.0);
+
     if detquick.is_some() {return detquick;}
 
     let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
