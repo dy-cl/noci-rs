@@ -451,7 +451,8 @@ fn print_report(res: &Results, input: &Input) {
         println!("Total NOCI-QMC stochastic time: {:?}", res.timings.qmc_stoch_total);
         println!(r"  Basis generation:  {:?}", res.timings.qmc_stoch_basis);
         println!(r"  Stochastic propagation:  {:?}", res.timings.qmc_stoch_prop);
-        println!(r"     Spawning, Death, Cloning, Collection: {:?}", res.timings.qmc_stoch_step.spawn_death_collect);
+        println!(r"     Walker initialisation: {:?}", res.timings.qmc_stoch_step.initialse_walkers);
+        println!(r"     Spawning, Death and Cloning: {:?}", res.timings.qmc_stoch_step.spawn_death_collect);
         println!(r"     Accumulate updates and pack MPI buffers: {:?}", res.timings.qmc_stoch_step.acc_pack);
         println!(r"     Exchange spawn updates MPI: {:?}", res.timings.qmc_stoch_step.mpi_exchange_updates);
         println!(r"     Unpack updates and accumulate: {:?}", res.timings.qmc_stoch_step.unpack_acc_recieved);

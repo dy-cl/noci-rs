@@ -376,65 +376,89 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
     }
 }
 
-pub fn adjugate_transpose(a: &Array2<f64>, thresh: f64) -> Option<(f64, Array2<f64>)> {
+pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
     if n != a.ncols() {return None;}
-    if n == 0 {return Some((1.0, Array2::<f64>::zeros((0, 0))));}
-    if n == 1 {return Some((a[(0, 0)], Array2::from_elem((1, 1), 1.0)));}
+    if n == 0 {return Some(1.0);}
+    if n == 1 {return Some(a[(0, 0)]);}
+
+    if let Ok(det) = a.det() {return Some(det)}; 
+
     let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
     let u = u_opt?;
     let vt = vt_opt?;
-    let v = vt.t().to_owned(); 
+
+    let det_u = u.det().ok()?;
+    let det_vt = vt.det().ok()?;
+
+    let mut det = det_u * det_vt;
+    for &si in s.iter() {
+        if si.abs() <= thresh {return Some(0.0);}
+        det *= si;
+    }
+    Some(det)
+}
+
+pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+    let n = a.nrows();
+    if n != a.ncols() {return None;}
+    if n == 0 {return Some(1.0);}
+    if n == 1 {
+        adjt.fill(0.0);
+        invs.fill(0.0);
+        adjt[(0, 0)] = 1.0;          
+        return Some(a[(0, 0)]);
+    }
+    
+    adjt.fill(0.0);
+    invs.fill(0.0);
+    let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
+    let u = u_opt?;
+    let vt = vt_opt?;
 
     let det_u = u.det().ok()?;
     let det_vt = vt.det().ok()?;
     let mut red_det = det_u * det_vt;
-
     let mut det = red_det;
 
-    let mut invs = Array1::<f64>::zeros(n);
-    let mut zeros: Vec<usize> = Vec::new();
+    let mut nzero = 0usize;
+    let mut zerok = 0usize;
 
     for i in 0..n {
         let si = s[i];
         det *= si;
         if si.abs() > thresh {
-            red_det *= si;        
+            red_det *= si;
             invs[i] = 1.0 / si;
         } else {
-            zeros.push(i);
+            nzero += 1;
+            zerok = i;
         }
     }
-    let nzero = zeros.len();
-
-    let mut adj = Array2::<f64>::zeros((n, n));
 
     if nzero == 0 {
         for i in 0..n {
             let alpha = invs[i];
-            let vi = v.column(i);
-            let ui = u.column(i);
             for r in 0..n {
-                let vr = vi[r];
+                let ur = u[(r, i)];
+                let scale = alpha * ur;
                 for c in 0..n {
-                    adj[(r, c)] += alpha * vr * ui[c];
+                    adjt[(r, c)] += scale * vt[(i, c)];
                 }
             }
         }
-        adj *= det;
+        *adjt *= det;
     } else if nzero == 1 {
-        let k = zeros[0];
-        let vk = v.column(k);
-        let uk = u.column(k);
+        let k = zerok;
         for r in 0..n {
-            let vr = vk[r];
+            let ur = u[(r, k)];
+            let scale = red_det * ur;
             for c in 0..n {
-                adj[(r, c)] = red_det * vr * uk[c];
+                adjt[(r, c)] = scale * vt[(k, c)];
             }
         }
-    } 
-
-    let adjt = adj.t().to_owned();
-    Some((det, adjt))
+    } else {
+        return None;
+    }
+    Some(det)
 }
-

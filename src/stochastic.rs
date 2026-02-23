@@ -20,6 +20,7 @@ use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_al
 // Storage for stochastic propagation timings.
 #[derive(Default)]
 pub struct StochStepTimings {
+    pub initialse_walkers: Duration,
     pub spawn_death_collect: Duration,
     pub acc_pack: Duration,
     pub mpi_exchange_updates: Duration,
@@ -686,6 +687,16 @@ fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communic
 ///              elements using the extended non-orthogonal Wick's theorem.
 pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64, 
             noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, Option<ExcitationHist>, StochStepTimings) {
+    
+    // Timings.
+    let mut d_spawn_death_collect = 0.0f64;
+    let mut d_acc_pack = 0.0f64;
+    let mut d_mpi_exchange_updates = 0.0f64;
+    let mut d_unpack_acc_recieved = 0.0f64;
+    let mut d_apply_delta = 0.0f64;
+    let mut d_update_p = 0.0f64;
+    let mut d_calc_populations = 0.0f64;
+    let mut d_eproj = 0.0f64;
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
@@ -711,10 +722,12 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         input.prop.propagator = Propagator::Unshifted;
     }
 
-    // Initialise walker populations based on total initial population and c0.
+    // Initialise walker populations based on total initial population and c0
+    let t0 = Instant::now(); 
     if irank == 0 {println!("Initialising walkers.....");}
     let w = initialse_walkers(c0, qmc.initial_population, ndets, ao, basis, iref, tol, input, noci_reference_basis, wicks, &mut scratch);
     let w = local_walkers(w, irank, nranks);
+    let d_initialise_walkers = t0.elapsed();
 
     // Flags activated once total walker population exceeds target population 
     let mut reached_sc = false;
@@ -760,20 +773,11 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  
                  0, eproj, eproj - e0, es_corr, es_s_corr, nwcprev as f64, nwscprev, nrefprev);
     }
-
-    // Timings.
-    let mut d_spawn_death_collect = 0.0f64;
-    let mut d_acc_pack = 0.0f64;
-    let mut d_mpi_exchange_updates = 0.0f64;
-    let mut d_unpack_acc_recieved = 0.0f64;
-    let mut d_apply_delta = 0.0f64;
-    let mut d_update_p = 0.0f64;
-    let mut d_calc_populations = 0.0f64;
-    let mut d_eproj = 0.0f64;
+    
+    // Per MPI rank send buffers.
+    let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
 
     for it in 0..input.prop.max_steps {
-        let t0 = Instant::now();
-        
         // Accumulated updates per Rayon thread. Local contains anything that happens on a
         // determinant under the control of the current thread, and remote anything that applies to
         // another thread's determinant.
@@ -803,10 +807,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         };
 
         // Function to merge thread updates a and b.
-        let merge = |mut a: ThreadState, b: ThreadState| -> ThreadState {
-            a.0.extend(b.0);
-            a.1.extend(b.1);
-            a.2.extend(b.2);
+        let merge = |mut a: ThreadState, mut b: ThreadState| -> ThreadState {
+            a.0.append(&mut b.0);
+            a.1.append(&mut b.1);
+            a.2.append(&mut b.2);
             a
         };
 
@@ -815,13 +819,17 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         // Iterate over occ in parallel and give each thread its own accumulator in initialise and
         // propagate, and reduce them into a single total ThreadState. The empty type in .reduce is
         // what is reduced into by the threads.
-        let (local, remote, samples, _, _): ThreadState = occ.par_iter().fold(initialise, propagate)
-                                         .reduce(|| (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(0), WickScratch::new()), merge);
-        d_spawn_death_collect += t0.elapsed().as_secs_f64();
-        
         let t0 = Instant::now();
-        // Per MPI rank send buffers.
-        let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
+        let (local, remote, samples, _, _): ThreadState = occ.par_iter().fold(initialise, propagate)
+                                            .reduce(|| (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(0), WickScratch::new()), merge);
+        d_spawn_death_collect += t0.elapsed().as_secs_f64();
+
+        let t0 = Instant::now();
+
+        // Clear MPI send buffers from previous iteration if using MPI.
+        if nranks > 1 {for buf in &mut send {buf.clear();}}
+
+        // Apply Rayon thread local updates across all determinants and write excitation samples if requested.
         for (det, dn) in local {
             add_delta(&mut mc, det, dn);
         }
@@ -830,6 +838,8 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
                 hist.addn(p, n);
             }
         }
+        
+        // Fill the MPI send buffer with updates needing to be communicated across ranks. 
         if nranks > 1 {
             for up in remote {
                 let dest = owner(up.det as usize, nranks);
@@ -850,7 +860,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
             d_unpack_acc_recieved += t0.elapsed().as_secs_f64();
         }        
 
-        // Apply local and recieved deltas. Annhilation is fully local process here.  
+        // Apply any local and recieved deltas. Annhilation is fully local process here.  
         // The change in population is also stored to update overlap-transformed walker population.
         let t0 = Instant::now();
         let d = apply_delta(&mut mc);
@@ -912,7 +922,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
                        it + 1, eproj, eproj - basis[0].e, es_corr, es_s_corr, nwc as f64, nwsc, nref);}
     }
 
-    let timings = StochStepTimings {spawn_death_collect: Duration::from_secs_f64(d_spawn_death_collect), acc_pack: Duration::from_secs_f64(d_acc_pack), 
+    let timings = StochStepTimings {initialse_walkers: d_initialise_walkers, spawn_death_collect: Duration::from_secs_f64(d_spawn_death_collect), acc_pack: Duration::from_secs_f64(d_acc_pack), 
                                     mpi_exchange_updates: Duration::from_secs_f64(d_mpi_exchange_updates), unpack_acc_recieved: Duration::from_secs_f64(d_unpack_acc_recieved), 
                                     apply_delta: Duration::from_secs_f64(d_apply_delta), update_p: Duration::from_secs_f64(d_update_p), 
                                     calc_populations: Duration::from_secs_f64(d_calc_populations), eproj: Duration::from_secs_f64(d_eproj)};
