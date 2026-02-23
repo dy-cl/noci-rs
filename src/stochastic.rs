@@ -2,6 +2,7 @@
 use std::time::{Instant, Duration};
 
 use rand::rngs::SmallRng;
+use rand::Rng;
 use rand::SeedableRng;
 use mpi::topology::Communicator;
 use mpi::collective::SystemOperation;
@@ -177,22 +178,21 @@ impl ExcitationHist {
     /// Arguments: 
     ///     self: ExcitationHist.
     ///     pspawn: f64, spawning probability as defined in population dynamics routines.
-    pub fn addn(&mut self, pspawn: f64, n: u64) {
-        if n == 0 {return;}
-        self.ntotal += n;
+    pub fn add(&mut self, pspawn: f64) {
+        self.ntotal += 1;
 
-        if !pspawn.is_finite() || pspawn <= 0.0 {self.noverflow_low += n; return;}
+        if !pspawn.is_finite() || pspawn <= 0.0 {self.noverflow_low += 1; return;}
 
         let logpspawn = pspawn.ln();
 
-        if logpspawn < self.logmin {self.noverflow_low += n; return;}
-        if logpspawn >= self.logmax {self.noverflow_high += n; return;}
+        if logpspawn < self.logmin {self.noverflow_low += 1; return;}
+        if logpspawn >= self.logmax {self.noverflow_high += 1; return;}
 
         // Fractional position of logpspawn in histogram range.
         let t = (logpspawn - self.logmin) / (self.logmax - self.logmin);
         // Convert to bin units.
         let b = (t * self.nbins as f64) as usize;
-        self.counts[b] += n;
+        self.counts[b] += 1;
     }
 }
 
@@ -399,15 +399,97 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
     HeatBath {sumlg, cumulatives, lambdas, ks}
 }
 
+/// Propose a determinant for spawning using a uniform excitation scheme, and calculate the probability 
+/// P_{\text{gen}} that it was chosen.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `gamma`: usize, index of determinant being spawned from.
+///      es_s: f64, E_s^S(\tau) shift energy.
+///     `input`: Input, user specified input options.
+///     `mc`: MCState, contains information about the current Monte Carlo state.
+///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
+///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
+///              elements using the extended non-orthogonal Wick's theorem.
+fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, rng: &mut SmallRng, tol: f64,
+                noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
+    let ndets = basis.len();
+    // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
+    // more than the Gamma index we map it back into the full index set.
+    let mut lambda = rng.gen_range(0..(ndets - 1));
+    if lambda >= gamma {lambda += 1;}
+
+    let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
+    let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+    // Uniform generation probability
+    let pgen = 1.0 / ((ndets - 1) as f64);
+    (pgen, k, lambda) 
+}
+
+/// Propose a determinant for spawning using a heat-bath excitation scheme, and calculate the probability 
+/// P_{\text{gen}} that it was chosen. Warning: This implements the exact heat-bath excitation scheme rather than any 
+/// approximate version, this means it is very very slow and should really only be used for benchmarking other 
+/// excitation schemes.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data. 
+///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
+///     `gamma`: usize, index of determinant being spawned from.
+///      es_s: f64, E_s^S(\tau) shift energy.
+///     `input`: Input, user specified input options.
+///     `mc`: MCState, contains information about the current Monte Carlo state.
+///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
+///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
+///              elements using the extended non-orthogonal Wick's theorem.
+fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, rng: &mut SmallRng, hb: &HeatBath, tol: f64,
+                   noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
+
+    let ndets = basis.len();
+
+    // If \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} (sumlg) 
+    // is zero (unsure how likely this is) then fallback to uniform distribution.
+    if hb.sumlg == 0.0 {
+        let mut lambda = rng.gen_range(0..(ndets - 1));
+        if lambda >= gamma {lambda += 1;}
+        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
+        let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+        let pgen = 1.0 / ((ndets - 1) as f64);
+        return (pgen, k, lambda);
+    }
+
+    // We want P_{\text{gen}} = |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| / 
+    // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|. We
+    // choose a number (target) uniformly in \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}
+    // (sumlg) and define the sequence of cumulative sums:
+    //      A_1 = |H_{1\Gamma} - E_s^S(\tau)S_{1\Gamma}|
+    //      ..
+    //      A_n = \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|.
+    // The probability that target is between A_{j-1} and A_{j} is:
+    //     |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| / 
+    //     \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|,
+    // which is exactly the distribution we want to sample. We can therefore add the A's
+    // until we pass the target at which point the last tested \Lambda is the one chosen
+    // with the correct probability, and we can compute k and pgen accordingly.
+    let target = rng.gen_range(0.0..hb.sumlg);
+    // Find first index where the cumulative sum is more than the target. Binary search returns
+    // Result <usize, usize> where Ok(i) is element exactly equal to target and Err(i) is insertion
+    // index where target would be inserted to keep array sorted. In both cases this is what we
+    // want.
+    let i = match hb.cumulatives.binary_search_by(|x| x.partial_cmp(&target).unwrap()) {Ok(i) => i, Err(i) => i};
+
+    // Return P_{\text{gen}}, H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} and index of Lambda.
+    let lambda = hb.lambdas[i];
+    let k = hb.ks[i];
+    let pgen = k.abs() / hb.sumlg;
+    (pgen, k, lambda)
+}
+
 /// Perform off-diagonal spawning (amplitude transfer) step by calculating:
 ///     $P_{\text{Spawn}}(\Lambda|\Gamma) = \frac{\Delta\tau|H_{\Lambda\Gamma} - 
 ///     E_sS_{\Lambda\Gamma}|}{P_{\text{gen}}(\Lambda|\Gamma)}$
 /// where if P_{\text{spawn}} > random float in [0, 1] we spawn a child walker onto determinant \Lambda 
 /// with the same sign of its parent if H_{\Lambda\Gamma} > 0 and -sign if H_{\Lambda\Gamma} < 0. Furthermore, 
 /// if P_{\text{spawn}} > 1 then we spawn floor(P_{\text{spawn}}) extra children and a final child with 
-/// probability P_{\text{spawn}} - floor(P_{\text{spawn}}). This procedure can be made more
-/// efficient (and is) by Drawing a count c for each candidate child \Lambda and applying the usual
-/// spawning rules in one go.
+/// probability P_{\text{spawn}} - floor(P_{\text{spawn}}).
 /// # Arguments
 ///     `ao`: AoData, contains AO integrals and other system data. 
 ///     `basis`: Vec<SCFState>, list of the full NOCI-QMC basis.
@@ -424,105 +506,50 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>,
-            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch, outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, outsamples: &mut Vec<(f64, u64)>) {
+fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState],
+            wicks: Option<&WicksView>, irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch, outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, 
+            outsamples: &mut Vec<f64>) {
 
-    let mut nwalkers: u64 = ngamma.unsigned_abs();
-    let ndets = basis.len();
-    let mut nstates = ndets - 1;
-    let parentsign: i64 = if ngamma > 0 {1} else {-1};
+    let parent_sign: i64 = if ngamma > 0 {1} else {-1};
+    let nwalkers = ngamma.unsigned_abs();
 
+    // Precompute per determinant heat-bath excitation generation quantities.
     let mut hb: Option<HeatBath> = None;
-    let mut weight: f64 = 0.0;
-    let mut hbi: usize = 0;
-    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {
-        let hbinit = init_heat_bath(gamma, es_s, ao, basis, input, tol, noci_reference_basis, wicks, scratch);
-        weight = hbinit.sumlg;
-        hb = Some(hbinit);
-    }
-    
-    // Iterate over candidate children.
-    for lambda in 0..ndets {
-        if lambda == gamma {continue;}
-        if nwalkers == 0 {break;}
-        
-        // For each child determinant calculate the number of proposed spawnings c, the coupling
-        // |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| and the generation probability
-        // P_{\text{gen}}(\Lambda|\Gamma). Proposed spawnings c_{\Lambda} are distributed in the
-        // same manner as if we made a proposal for each walker.
-        let (c, k, pgen) = match input.qmc.as_ref().unwrap().excitation_gen {
-            // Uniform excitation generation considers all spawning events to be of equal
-            // probability. P_{\text{gen}}(\Lambda|\Gamma) = 1 (N_{\text{dets}} - 1).
-            ExcitationGen::Uniform => {
-                // Probability next proposal lands on the current child determinant \Lambda.
-                let p = 1.0 / (nstates as f64);
-                // Uniform generation probability for any \Lambda != \Gamma.
-                let pgen = 1.0 / (ndets as f64 - 1.0);
-                // Number of spawning proposals for this \Lambda.
-                let c: u64 = Binomial::new(nwalkers, p).unwrap().sample(rng);
-                // Update remaining walkers and states.
-                nwalkers -= c;
-                nstates -= 1;
-                // If there are no proposed spawnings for this \Lambds we can skip it.
-                if c == 0 {continue;}
-                let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-                let k = coupling(hlg, slg, es_s, &input.prop.propagator);
-                (c, k, pgen)
-            }
-            
-            // Heat Bath excitation generation uses P_{\text{\gen}}(\Lambda|\Gamma) = |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| 
-            // / \sum_{\Omega \neq \Gamma} |H_{\Omega\Gamma} - E_s^S(\tau)S_{\Omega\Gamma}| such
-            // that P_{\text{spawn}}(\Lambda|\Gamma) = \Delta\tau \sum_{\Omega \neq \Gamma} |H_{\Omega\Gamma} - E_s^S(\tau)S_{\Omega\Gamma}|
-            // and so P_{\text{\gen}}(\Lambda|\Gamma)P_{\text{spawn}}(\Lambda|\Gamma) = \Delta\tau|H_{\Omega\Gamma} - E_s^S(\tau)S_{\Omega\Gamma}|,
-            // meaning that states with strong coupling are more likely to have children spawned
-            // upon them.
-            ExcitationGen::HeatBath => {
-                let hb = hb.as_ref().unwrap();
-                // Current coupling term already computed by heat bath initialisation.
-                let k = hb.ks[hbi];
-                // Increment determinant count so we retrieve the correct coupling.
-                hbi += 1;
-                let w = k.abs();
-                if weight <= 0.0 {break;}
-                //P_{\text{\gen}}(\Lambda|\Gamma) = |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}| 
-                // / \sum_{\Omega \neq \Gamma} |H_{\Omega\Gamma} - E_s^S(\tau)S_{\Omega\Gamma}|
-                let pgen = w / hb.sumlg;
-                // At the beginning of the loop p is identical to pgen. But as weight is removed
-                // they differ.
-                let p = (w / weight).clamp(0.0, 1.0);
-                // Number of spawning proposals for this \Lambda.
-                let c: u64 = Binomial::new(nwalkers, p).unwrap().sample(rng);
-                // Update remaining walkers and weights.
-                nwalkers -= c;
-                weight -= w;
-                if w == 0.0 {continue;}
-                if c == 0 {continue;}
-                (c, k, pgen)
-            }
+    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, input, tol, noci_reference_basis, wicks, scratch));}
+
+    // Iterate over all walkers on state Gamma.
+    for _ in 0..nwalkers {
+        // Calculate generation probability, k = |H_{\Gamma\Lambda} - E_s^S(\tau)
+        // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
+        // generation scheme.
+        let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
+            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, rng, tol, noci_reference_basis, wicks, scratch),
+            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, rng, hb.as_ref().unwrap(), tol, noci_reference_basis, wicks, scratch),
         };
 
-        let w = k.abs();
-        let pspawn = input.prop.dt * w / pgen;
-        if input.write.write_excitation_hist {outsamples.push((pspawn, c));}
-        
-        // Spawn floor(probability of spawning) children and additionally extra children with
-        // probability: probability of spawning - floor(probability of spawning). 
+        // Calculate spawning probability.
+        let pspawn = input.prop.dt * k.abs() / pgen;
+
+        // Store excitation sample if requested.
+        if input.write.write_excitation_hist {outsamples.push(pspawn);}
+
+        // Evaluate spawning outcomes
         let m = pspawn.floor() as i64;
         let frac = pspawn - (m as f64);
-        let extra = if frac > 0.0 {Binomial::new(c, frac).unwrap().sample(rng) as i64} else {0};
+        let extra = if rng.gen_range(0.0..1.0) < frac {1} else {0};
+        let nchildren = m + extra;
 
-        let nchildren = (c as i64) * m + extra;
-        if nchildren == 0 {continue;}
-
-        let signk: i64 = if k > 0.0 {1} else {-1};
-        let childsign: i64 = -signk * parentsign;
-        let dn = childsign * nchildren;
-
+        let sign: i64 = if k > 0.0 {1} else {-1};
+        let child_sign: i64 = -sign * parent_sign;
+        let dn = child_sign * nchildren;
+        
+        // Apply spawwning population updates locally if the determinant to be updated is owned by
+        // current thread, otherwise add the population update message to the send buffer.
         let destination = owner(lambda, nranks);
         if destination == irank {
             outlocal.push((lambda, dn));
         } else {
-            outremote.push(PopulationUpdate { det: lambda as u64, dn });
+            outremote.push(PopulationUpdate {det: lambda as u64, dn});
         }
     }
 }
@@ -783,7 +810,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         // another thread's determinant.
         type LocalUpdates = Vec<(usize, i64)>;
         type RemoteUpdates = Vec<PopulationUpdate>;
-        type Samples = Vec<(f64, u64)>;
+        type Samples = Vec<f64>;
 
         type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratch);
         
@@ -834,8 +861,8 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
             add_delta(&mut mc, det, dn);
         }
         if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {
-            for (p, n) in samples {
-                hist.addn(p, n);
+            for p in samples {
+                hist.add(p);
             }
         }
         

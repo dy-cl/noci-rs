@@ -423,6 +423,28 @@ fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
     slab[off..off + src.len()].copy_from_slice(src);
 }
 
+/// Write 2D slice of 4D J or II tensors into provided output scratch. The given slice is t[r, c, i, j]  
+/// where r, c are rows, columns and i, j are fixed indices.
+/// # Arguments:
+///     `out`: Array2, preallocated output scratch.
+///     `t`: ArrayView4, view of a 4D tensor.
+///     `rows`: [usize], length excitation rank map from row labels to tensor index.
+///     `cols`: [usize], length excitation rank map from col labels to tensor index.
+///     `i_fixed`: usize, fixed tensor indices for the j dimension.
+///     `j_fixed`: usize, fixed tensor indices for the j dimension.
+fn slice4(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
+    let l = rows.len();
+    for r in 0..l {
+        let rr = rows[r];
+        for c in 0..l {
+            let cc = cols[c];
+            out[(r, c)] = t[(rr, cc, i_fixed, j_fixed)]
+        }
+    }
+}
+
+// Storage for preallocated Wick's data terms such that we do not have to reallocate all of these
+// everytime a matrix element evaluation routine is called.
 #[derive(Default)]
 pub struct WickScratch {
     pub rows_label: Vec<Label>,
@@ -490,7 +512,12 @@ pub struct WickScratch {
 
 impl WickScratch {
     pub fn new() -> Self {Self::default()}
-
+    
+    /// If the previously allocated size of the scratch space is the not the same in  
+    /// the same spin case resize all the scratch space quantities to be correct.
+    /// # Arguments:
+    ///     `self`: WickScratch, scratch space for Wick's quantities.
+    ///     `l`: usize, excitation rank.
     pub fn resizel(&mut self, l: usize) {
         if self.det0.nrows() != l {
             self.det0 = Array2::zeros((l, l));
@@ -513,6 +540,12 @@ impl WickScratch {
         }
     }
 
+    /// If the previously allocated size of the scratch space is the not the same in  
+    /// the different spin case resize all the scratch space quantities to be correct.
+    /// # Arguments:
+    ///     `self`: WickScratch, scratch space for Wick's quantities.
+    ///     `la`: usize, excitation rank spin alpha.
+    ///     `lb`: usize, excitation rank spin beta.
     pub fn resizelalb(&mut self, la: usize, lb: usize) {
         if self.deta0.nrows() != la {
             self.deta0 = Array2::zeros((la, la));
@@ -1408,7 +1441,7 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                     // Extract slice of J corresponding to the current distribution of zeros and
                     // get the correct minor matrix so as to align with the L - 1 dimensions.
                     let j4 = w.j(m1 as usize, m2 as usize, mk as usize, mj as usize);
-                    slice_ii(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);
+                    slice4(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);
                     minor(&mut scratch.jslice2, &scratch.jslice_full, i, j);   
                     
                     // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
@@ -1563,7 +1596,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
                         let iib = &w.ab.iiba(mb0 as usize, mbk as usize, ma0 as usize, ma1 as usize);
-                        slice_ii(&mut scratch.iisliceb, iib, &scratch.rows_b, &scratch.cols_b, ra, ca);
+                        slice4(&mut scratch.iisliceb, iib, &scratch.rows_b, &scratch.cols_b, ra, ca);
                         
                         // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
                         // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
@@ -1600,7 +1633,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
                         let iia = &w.ab.iiab(ma0 as usize, mak as usize, mb0 as usize, mb1 as usize);
-                        slice_ii(&mut scratch.iislicea, iia, &scratch.rows_a, &scratch.cols_a, rb, cb);
+                        slice4(&mut scratch.iislicea, iia, &scratch.rows_a, &scratch.cols_a, rb, cb);
                         
                         // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
                         // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
@@ -1623,15 +1656,4 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
     (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * acc
 }
 
-// Various matrix utilities.
-fn slice_ii(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
-    let l = rows.len();
-    for r in 0..l {
-        let rr = rows[r];
-        for c in 0..l {
-            let cc = cols[c];
-            out[(r, c)] = t[(rr, cc, i_fixed, j_fixed)]
-        }
-    }
-}
 

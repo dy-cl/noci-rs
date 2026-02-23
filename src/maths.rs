@@ -221,6 +221,178 @@ pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
     })
 }
 
+/// Calculate the determinant of a 2 x 2 matrix. Takes Array2.
+/// # Arguments:
+///     `a`: Array2, matrix to calculate the determinant of.
+fn det2(a: &Array2<f64>) -> f64 {
+    let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
+    let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
+    a00 * a11 - a01 * a10
+}
+
+/// Calculate the determinant of a 2 x 2 matrix. Takes 4 scalars.
+/// # Arguments:
+///     `a`: Array2, matrix to calculate the determinant of.
+fn det2scalar(a00: f64, a01: f64, a10: f64, a11: f64) -> f64 {
+    a00 * a11 - a01 * a10
+}
+
+
+/// Calculate the determinant of a 3 x 3 matrix. Takes Array2
+/// # Arguments:
+///     `a`: Array2, matrix to calculate the determinant of.
+fn det3(a: &Array2<f64>) -> f64 {
+    let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
+    let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
+    let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
+    a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
+}
+
+/// Calculate the determinant of a 3 x 3 matrix. Takes 9 scalars.
+/// # Arguments:
+///     `a`: Array2, matrix to calculate the determinant of.
+fn det3scalar(a00: f64, a01: f64, a02: f64, a10: f64, a11: f64, a12: f64, a20: f64, a21: f64, a22: f64) -> f64 {
+    a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
+}
+
+/// Calculate the determinant of a 4 x 4 matrix. Takes Array2.
+/// # Arguments:
+///     `a`: Array2, matrix to calculate the determinant of.
+fn det4(a: &Array2<f64>) -> f64 {
+    let m00 = {
+        let a11 = a[(1, 1)]; let a12 = a[(1, 2)]; let a13 = a[(1, 3)];
+        let a21 = a[(2, 1)]; let a22 = a[(2, 2)]; let a23 = a[(2, 3)];
+        let a31 = a[(3, 1)]; let a32 = a[(3, 2)]; let a33 = a[(3, 3)];
+        a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31)
+    };
+
+    let m01 = {
+        let a10 = a[(1, 0)]; let a12 = a[(1, 2)]; let a13 = a[(1, 3)];
+        let a20 = a[(2, 0)]; let a22 = a[(2, 2)]; let a23 = a[(2, 3)];
+        let a30 = a[(3, 0)]; let a32 = a[(3, 2)]; let a33 = a[(3, 3)];
+        a10 * (a22 * a33 - a23 * a32) - a12 * (a20 * a33 - a23 * a30) + a13 * (a20 * a32 - a22 * a30)
+    };
+
+    let m02 = {
+        let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a13 = a[(1, 3)];
+        let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a23 = a[(2, 3)];
+        let a30 = a[(3, 0)]; let a31 = a[(3, 1)]; let a33 = a[(3, 3)];
+        a10 * (a21 * a33 - a23 * a31) - a11 * (a20 * a33 - a23 * a30) + a13 * (a20 * a31 - a21 * a30)
+    };
+
+    let m03 = {
+        let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
+        let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
+        let a30 = a[(3, 0)]; let a31 = a[(3, 1)]; let a32 = a[(3, 2)];
+        a10 * (a21 * a32 - a22 * a31) - a11 * (a20 * a32 - a22 * a30) + a12 * (a20 * a31 - a21 * a30)
+    };
+
+    let a00 = a[(0, 0)];
+    let a01 = a[(0, 1)];
+    let a02 = a[(0, 2)];
+    let a03 = a[(0, 3)];
+
+    a00 * m00 - a01 * m01 + a02 * m02 - a03 * m03
+}
+
+/// Calculate determinant of 1 by 1 matrix `a` and write its adjugate transpose into `adjt`.
+/// # Arguments:
+///     `adjt`: Array2, scratch space for writing adjugate transpose.
+///     `a`: Array2, input matrix.
+fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
+    adjt[(0, 0)] = 1.0;
+    Some(a[(0, 0)])
+}
+
+/// Calculate determinant of 2 by 2 matrix `a` and write its adjugate transpose into `adjt`.
+/// # Arguments:
+///     `adjt`: Array2, scratch space for writing adjugate transpose.
+///     `a`: Array2, input matrix.
+fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+    let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
+    let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
+
+    let det = det2scalar(a00, a01, a10, a11);
+    if !det.is_finite() || det.abs() <= thresh * thresh {return None;}
+
+    adjt[(0, 0)] =  a11;
+    adjt[(0, 1)] = -a10;
+    adjt[(1, 0)] = -a01;
+    adjt[(1, 1)] =  a00;
+
+    Some(det)
+}
+
+/// Calculate determinant of 3 by 3 matrix `a` and write its adjugate transpose into `adjt`.
+/// # Arguments:
+///     `adjt`: Array2, scratch space for writing adjugate transpose.
+///     `a`: Array2, input matrix.
+fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+    let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
+    let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
+    let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
+
+    let det = det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22);
+    if !det.is_finite() || det.abs() <= thresh * thresh * thresh {return None;}
+
+    let c00 =  det2scalar(a11, a12, a21, a22);
+    let c01 = -det2scalar(a10, a12, a20, a22);
+    let c02 =  det2scalar(a10, a11, a20, a21);
+
+    let c10 = -det2scalar(a01, a02, a21, a22);
+    let c11 =  det2scalar(a00, a02, a20, a22);
+    let c12 = -det2scalar(a00, a01, a20, a21);
+
+    let c20 =  det2scalar(a01, a02, a11, a12);
+    let c21 = -det2scalar(a00, a02, a10, a12);
+    let c22 =  det2scalar(a00, a01, a10, a11);
+
+    adjt[(0, 0)] = c00; adjt[(0, 1)] = c01; adjt[(0, 2)] = c02;
+    adjt[(1, 0)] = c10; adjt[(1, 1)] = c11; adjt[(1, 2)] = c12;
+    adjt[(2, 0)] = c20; adjt[(2, 1)] = c21; adjt[(2, 2)] = c22;
+
+    Some(det)
+}
+
+/// Calculate determinant of 4 by 4 matrix `a` and write its adjugate transpose into `adjt`.
+/// # Arguments:
+///     `adjt`: Array2, scratch space for writing adjugate transpose.
+///     `a`: Array2, input matrix.
+fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+    let det = det4(a);
+    if !det.is_finite() || det.abs() <= thresh.powi(4) {return None;}
+
+    for i in 0..4 {
+        for j in 0..4 {
+            let mut r = [0usize; 3];
+            let mut c = [0usize; 3];
+
+            let mut ri = 0usize;
+            for rr in 0..4 {
+                if rr == i {continue;}
+                r[ri] = rr;
+                ri += 1;
+            }
+
+            let mut ci = 0usize;
+            for cc in 0..4 {
+                if cc == j {continue;}
+                c[ci] = cc;
+                ci += 1;
+            }
+
+            let m00 = a[(r[0], c[0])]; let m01 = a[(r[0], c[1])]; let m02 = a[(r[0], c[2])];
+            let m10 = a[(r[1], c[0])]; let m11 = a[(r[1], c[1])]; let m12 = a[(r[1], c[2])];
+            let m20 = a[(r[2], c[0])]; let m21 = a[(r[2], c[1])]; let m22 = a[(r[2], c[2])];
+
+            let minordet = det3scalar(m00, m01, m02, m10, m11, m12, m20, m21, m22);
+            let sign = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+            adjt[(i, j)] = sign * minordet;
+        }
+    }
+    Some(det)
+}
+
 /// Calculate a matrix vector product HC = U in parallel.
 /// # Arguments  
 /// `h`: Array2, matrix. 
@@ -376,13 +548,20 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
     }
 }
 
+/// Compute determinant of `a` with fast exact formula up to n == 4 (this would need to be larger 
+/// if the code is generalised to allow greater than double excitations), or fallback to SVD determinant
+/// evaluation method when this proves to be troublesome.
+/// # Arguments:
+///     `a`: Array2, matrix to find determinant of.
+///     `thresh`: f64, tolerance for singular values in SVD fallback.
 pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
     if n != a.ncols() {return None;}
     if n == 0 {return Some(1.0);}
     if n == 1 {return Some(a[(0, 0)]);}
 
-    if let Ok(det) = a.det() {return Some(det)}; 
+    let det = match n {2 => det2(a), 3 => det3(a), 4 => det4(a), _ => unreachable!()};
+    if det.is_finite() {return Some(det);}
 
     let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
     let u = u_opt?;
@@ -399,19 +578,30 @@ pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
     Some(det)
 }
 
+/// Compute determinant of `a` with fast exact formula up to n == 4 (this would need to be larger 
+/// if the code is generalised to allow greater than double excitations) and the adjugate-transpose
+/// and fallback to SVD determinant and adjugate-transpose evaluation method when this proves to be
+/// troublesome.
+///     `adjt`: Array2, preallocated output scratch space.
+///     `invs`: Array1, preallocated scratch space for singular values of SVD.
+///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
+///     `thresh`: f64, tolerance for singular values in SVD fallback.
 pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
     if n != a.ncols() {return None;}
-    if n == 0 {return Some(1.0);}
-    if n == 1 {
-        adjt.fill(0.0);
-        invs.fill(0.0);
-        adjt[(0, 0)] = 1.0;          
-        return Some(a[(0, 0)]);
-    }
-    
+  
+    let detquick = match n {
+        0 => {Some(1.0)}
+        1 => adjt1(adjt, a),
+        2 => adjt2(adjt, a, thresh),
+        3 => adjt3(adjt, a, thresh),
+        4 => adjt4(adjt, a, thresh),
+        _ => None,
+    };
     adjt.fill(0.0);
     invs.fill(0.0);
+    if detquick.is_some() {return detquick;}
+
     let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
     let u = u_opt?;
     let vt = vt_opt?;
