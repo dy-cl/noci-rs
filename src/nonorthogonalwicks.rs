@@ -434,11 +434,36 @@ fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
 ///     `j_fixed`: usize, fixed tensor indices for the j dimension.
 fn slice4(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
     let l = rows.len();
-    for r in 0..l {
-        let rr = rows[r];
-        for c in 0..l {
-            let cc = cols[c];
-            out[(r, c)] = t[(rr, cc, i_fixed, j_fixed)]
+    // `out` is contiguous so we write into flat buffer with row-major index as out[(r, c)] == buf[r * ncols + c]
+    let ncols = out.ncols();
+    let buf = out.as_slice_mut().unwrap();
+    // 4D tensor `t` is stored as base + a * strides[0] + b * strides[1] + c * strides[2] + d * strides[3] for 
+    // element at t[a, b, c, d], where base is the start of this memory in the slab.
+    let strides = t.strides();
+    let base = t.as_ptr();
+
+    unsafe { 
+        // For the fixed indices i, j we know that any t[r, c, i, j] can be found as 
+        // base + r * strides[0] + c * strides[1] + i * strides[2] + j * strides[3].
+        let fixed = (i_fixed as isize) * strides[2] + (j_fixed as isize) * strides[3];
+
+        // Iterate over rows of output.
+        for r in 0..l {
+            // Output row r is given by tensor row rr = rows[r]. 
+            let rr = *rows.get_unchecked(r) as isize;
+            // Base offset for current output row is t[rr, 0, i, j] or 
+            // base + rr * strides[0] + 0 + i * strides[2] + j * strides[3] which is
+            // equivalent to rr * strides[0] + fixed.
+            let off = rr * strides[0] + fixed;
+            
+            // Iterate over columns of output.
+            for c in 0..l {
+                // Output col cc given by tensor col cc = cols[c].
+                let cc = *cols.get_unchecked(c) as isize;
+                // Element t[rr, cc, i, j] is base + rr * strides[0] + cc * strides[1] + i * strides[2] + j * strides[3] 
+                // or off + cc * strides[1]. Write into output buffer as row major.
+                buf[(r * ncols) + c] = *base.offset(off + cc * strides[1]);
+            }
         }
     }
 }
