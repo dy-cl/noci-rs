@@ -490,22 +490,43 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 ///     `y`: Array2, Y matrix elements.
 ///     `rows`: [usize], row indices of X or Y.
 ///     `cols`: [usize], column indices of X or Y.
-pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize],) {
+pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize]) {
     let l = rows.len();
-    for i in 0..l {
-        let r = rows[i];
-        // Diagonal and lower triangle.
-        for j in 0..=i {
-            let c = cols[j];
-            d[(i, j)] = x[(r, c)];
-        }
-        // Upper triangle.
-        for j in (i + 1)..l {
-            let c = cols[j];
-            d[(i, j)] = y[(r, c)];
+    let ncols = d.ncols();
+    // `d` is contiguous so we write into the flat buffer with row major index as d[(i, j)] ==
+    // buf[i * ncols + j].
+    let buf = d.as_slice_mut().unwrap();
+    
+    // 2D views for X and Y are stored as base + r * strides[0] + c * strides[1] for an element at
+    // (r, c) where base is the pointer to the start of the slab.
+    let xstr = x.strides();
+    let ystr = y.strides();
+    let xptr = x.as_ptr();
+    let yptr = y.as_ptr();
+
+    unsafe {
+        // Iterate over rows of output.
+        for i in 0..l {
+            // Row index for output row i.
+            let r = *rows.get_unchecked(i) as isize;
+
+            // Lower triange of matrix including diagonal gets X.
+            // X[r, c] is at base + r * xstride[0] + c * xstride[1].
+            for j in 0..=i {
+                let c = *cols.get_unchecked(j) as isize;
+                *buf.get_unchecked_mut((i * ncols) + j) = *xptr.offset(r * xstr[0] + c * xstr[1]);
+            }
+            
+            // Upper triangle gets Y.
+            // Y[r, c] is at based + r * ystride[0] + c * ystride[1].
+            for j in (i + 1)..l {
+                let c = *cols.get_unchecked(j) as isize;
+                *buf.get_unchecked_mut((i * ncols) + j) = *yptr.offset(r * ystr[0] + c * ystr[1]);
+            }
         }
     }
 }
+
 
 /// Mix columns of det1 into det0 as prescribed by a bitstring. For each column c if bit c of the
 /// bitstring is 1 the output column c is taken from det1 and det0 otherwise.
@@ -515,12 +536,20 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
 ///    `det1`: Array2, mixing matrix.
 ///    `bits`: usize, bitstring.
 pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) {
-    let n = det0.ncols();
-    for c in 0..n {
-        if ((bits >> c) & 1) == 1 {
-            d.column_mut(c).assign(&det1.column(c));
-        } else {
-            d.column_mut(c).assign(&det0.column(c));
+    let ncols = det0.ncols();
+    let out = d.as_slice_mut().unwrap();
+    let a0 = det0.as_slice().unwrap();
+    let a1 = det1.as_slice().unwrap();
+
+    unsafe {
+        for r in 0..ncols {
+            let base = r * ncols;
+            for c in 0..ncols {
+                let use1 = ((bits >> c) & 1) != 0;
+                *out.get_unchecked_mut(base + c) =
+                    if use1 {*a1.get_unchecked(base + c)}
+                    else    {*a0.get_unchecked(base + c)};
+            }
         }
     }
 }
@@ -590,9 +619,6 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Ar
     let n = a.nrows();
     if n != a.ncols() {return None;}
 
-    adjt.fill(0.0);
-    invs.fill(0.0);
-  
     let detquick = match n {
         0 => {Some(1.0)}
         1 => adjt1(adjt, a),
@@ -603,6 +629,9 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Ar
     };
 
     if detquick.is_some() {return detquick;}
+
+    adjt.fill(0.0);
+    invs.fill(0.0);
 
     let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
     let u = u_opt?;

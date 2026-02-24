@@ -1255,6 +1255,27 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
     }
 }
 
+pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) { 
+    let l = l_ex.holes.len() + g_ex.holes.len();
+    scratch.resizel(l);
+
+    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
+
+    scratch.rows.clear();
+    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+    scratch.cols.clear();
+    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
+
+    let x0 = w.x(0); 
+    let y0 = w.y(0);
+    let x1 = w.x(1); 
+    let y1 = w.y(1);
+
+    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
+    build_d(&mut scratch.det0, &x0, &y0, &scratch.rows, &scratch.cols);
+    build_d(&mut scratch.det1, &x1, &y1, &scratch.rows, &scratch.cols);
+}
+
 /// Calculate overlap matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. Utilises
 /// a sum over possible ways to distribute zeros across the columns of the L by L determinant.
@@ -1268,24 +1289,6 @@ pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
     // {}^{\Gamma\Lambda} \tilde{S} the overlap element is zero.
     let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > l {return 0.0;}
-    scratch.resizel(l);
-
-    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
-
-    // Convert the contraction determinant labels into actual indices.
-    scratch.rows.clear();
-    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
-    scratch.cols.clear();
-    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
-    
-    let x0 = w.x(0);
-    let y0 = w.y(0);
-    let x1 = w.x(1);
-    let y1 = w.y(1);
-
-    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
-    build_d(&mut scratch.det0, &x0, &y0, &scratch.rows, &scratch.cols);
-    build_d(&mut scratch.det1, &x1, &y1, &scratch.rows, &scratch.cols);
 
     let mut acc = 0.0;
 
@@ -1310,24 +1313,6 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
     // {}^{\Gamma\Lambda} \tilde{S} the one electron matrix element is zero.
     let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > (l + 1) {return 0.0;}
-    scratch.resizel(l);
-
-    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
-
-    // Convert the contraction determinant labels into actual indices.
-    scratch.rows.clear();
-    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
-    scratch.cols.clear();
-    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
-    
-    let x0 = w.x(0);
-    let y0 = w.y(0);
-    let x1 = w.x(1);
-    let y1 = w.y(1);
-
-    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
-    build_d(&mut scratch.det0, &x0, &y0, &scratch.rows, &scratch.cols);
-    build_d(&mut scratch.det1, &x1, &y1, &scratch.rows, &scratch.cols);
 
     let mut acc = 0.0;
 
@@ -1381,24 +1366,6 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
     // {}^{\Gamma\Lambda} \tilde{S} the two electron matrix element is zero.
     let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > (l + 2) {return 0.0;}
-    scratch.resizel(l);
-
-    construct_determinant_lables(l_ex, g_ex, &mut scratch.rows_label, &mut scratch.cols_label);
-
-    // Convert the contraction determinant labels into actual indices.
-    scratch.rows.clear();
-    scratch.rows.extend(scratch.rows_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
-    scratch.cols.clear();
-    scratch.cols.extend(scratch.cols_label.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.nmo)));
-    
-    let x0 = w.x(0);
-    let y0 = w.y(0);
-    let x1 = w.x(1);
-    let y1 = w.y(1);
-
-    // Build two full contraction determinants each having exclusively (X0, Y0) or (X1, Y1). 
-    build_d(&mut scratch.det0, &x0, &y0, &scratch.rows, &scratch.cols);
-    build_d(&mut scratch.det1, &x1, &y1, &scratch.rows, &scratch.cols);
     
     let mut acc = 0.0;
 
