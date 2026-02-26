@@ -1,4 +1,4 @@
-// maths.rs
+/// maths.rs
 use std::cell::RefCell;
 
 use ndarray::{Array1, Array2, ArrayView2, Array4, Axis, s};
@@ -308,12 +308,12 @@ fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
-fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
     let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
 
     let det = det2scalar(a00, a01, a10, a11);
-    if !det.is_finite() || det.abs() <= thresh * thresh {return None;}
+    if !det.is_finite() {return None;}
 
     adjt[(0, 0)] =  a11;
     adjt[(0, 1)] = -a10;
@@ -327,13 +327,13 @@ fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
-fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
     let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
     let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
 
     let det = det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22);
-    if !det.is_finite() || det.abs() <= thresh * thresh * thresh {return None;}
+    if !det.is_finite() {return None;}
 
     let c00 =  det2scalar(a11, a12, a21, a22);
     let c01 = -det2scalar(a10, a12, a20, a22);
@@ -358,9 +358,9 @@ fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
-fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let det = det4(a);
-    if !det.is_finite() || det.abs() <= thresh.powi(4) {return None;}
+    if !det.is_finite() {return None;}
 
     for i in 0..4 {
         for j in 0..4 {
@@ -583,7 +583,7 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
 /// # Arguments:
 ///     `a`: Array2, matrix to find determinant of.
 ///     `thresh`: f64, tolerance for singular values in SVD fallback.
-pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
+pub fn det(a: &Array2<f64>) -> Option<f64> {
     let n = a.nrows();
     if n != a.ncols() {return None;}
     if n == 0 {return Some(1.0);}
@@ -601,9 +601,9 @@ pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
 
     let mut det = det_u * det_vt;
     for &si in s.iter() {
-        if si.abs() <= thresh {return Some(0.0);}
         det *= si;
     }
+
     Some(det)
 }
 
@@ -614,7 +614,7 @@ pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
 ///     `lu`: Array2, preallocated scratch space for LU solve.
 ///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
 ///     `thresh`: f64, tolerance for singularity test.
-pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 
     let n = a.nrows();
 
@@ -624,13 +624,7 @@ pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thr
     // Calculate LU factorisation in place (PA = LU).
     let f = m.factorize_into().ok()?;
     
-    // Use LU data of F to find det(A).
     let det = f.det().ok()?;
-    if !det.is_finite() || det.abs() <= thresh.powi(n as i32) {
-        // If LU solve is rejected for above reasons we must put it back to LMAX x LMAX.
-        *lu = Array2::zeros((6,6));
-        return None;
-    }
     
     // Compute inverse in place.
     let inv = f.inv_into().ok()?; 
@@ -712,7 +706,7 @@ pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, 
         }
     // For more than 1 zero adj(A)^T = 0.
     } else {
-        return None;
+        return Some(det);
     }
     Some(det)
 }
@@ -731,10 +725,10 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, lu: &m
     match n {
         0 => {Some(1.0)}
         1 => adjt1(adjt, a),
-        2 => adjt2(adjt, a, thresh),
-        3 => adjt3(adjt, a, thresh),
-        4 => adjt4(adjt, a, thresh),
-        5 | 6 => {if let Some(det) = adjtlu(adjt, lu, a, thresh) {Some(det)} else {adjtsvd(adjt, invs, a, thresh)}}
+        2 => adjt2(adjt, a),
+        3 => adjt3(adjt, a),
+        4 => adjt4(adjt, a),
+        5 | 6 => {if let Some(det) = adjtlu(adjt, lu, a) {Some(det)} else {adjtsvd(adjt, invs, a, thresh)}}
         // Code currently only does upto doubles so LMAX + 2 = 6.
         _ => unreachable!() 
     }

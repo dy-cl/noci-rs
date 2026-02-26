@@ -390,9 +390,9 @@ pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &
     let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
     
     prepare_same(&w.aa, ex_la, ex_ga, scratch);
-    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, scratch, tol);
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
     prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, scratch, tol);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
     sa * sb
 }
 
@@ -426,12 +426,12 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
     let ph_b = excitation_phase(occ_lb, &ex_lb.holes, &ex_lb.parts) * excitation_phase(occ_gb, &ex_gb.holes, &ex_gb.parts);
     
     prepare_same(&w.aa, ex_la, ex_ga, scratch);
-    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, scratch, tol);
+    let sa = ph_a * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
     let h1a = lg_h1(&w.aa, ex_la, ex_ga, scratch, tol);
     let h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, scratch, tol);
 
     prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, scratch, tol);
+    let sb = ph_b * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
     let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
     let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb,scratch, tol);
 

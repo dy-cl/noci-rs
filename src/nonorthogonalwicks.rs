@@ -8,7 +8,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::{ExcitationSpin};
 
-use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x_real, minor, adjugate_transpose, det_thresh, mix_columns, build_d};
+use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x_real, minor, adjugate_transpose, det, mix_columns, build_d};
 use crate::mpiutils::Sharedffi;
 use crate::noci::occ_coeffs;
 
@@ -610,7 +610,7 @@ impl WickScratch {
             let lbm1 = lb.saturating_sub(1);
             self.detb_mix_minor = Array2::zeros((lbm1, lbm1));
             self.adjt_detb_mix_minor = Array2::zeros((lbm1, lbm1));
-            self.invslam1 = Array1::zeros(lbm1);
+            self.invslbm1 = Array1::zeros(lbm1);
         }
     }
 }
@@ -1299,7 +1299,7 @@ pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
-pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) -> f64 {
 
     // If the total excitation rank is less than the number of zero-singular values in
     // {}^{\Gamma\Lambda} \tilde{S} the overlap element is zero.
@@ -1311,7 +1311,7 @@ pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
     // Iterate over all possible distributions of zeros amongst the columns.
     for bitstring in iter_m_combinations(l, w.m) {
         mix_columns(&mut scratch.det_mix, &scratch.det0, &scratch.det1, bitstring);
-        let Some(d) = det_thresh(&scratch.det_mix, tol) else {continue;};
+        let Some(d) = det(&scratch.det_mix) else {continue;};
         acc += d;
     }
     w.phase * w.tilde_s_prod * acc
@@ -1593,7 +1593,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                 
                     // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                     minor(&mut scratch.deta_mix_minor, &scratch.deta_mix, i, j);
-                    let Some(det_deta_minor_mix) = det_thresh(&scratch.deta_mix_minor, tol) else {continue;};
+                    let Some(det_deta_minor_mix) = det(&scratch.deta_mix_minor) else {continue;};
                     
                     // Inner sum iterates over all columns of the determinant and replaces column
                     // k with the appropriate column of II.
@@ -1630,7 +1630,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                     
                     // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                     minor(&mut scratch.detb_mix_minor, &scratch.detb_mix, i, j);
-                    let Some(det_detb_minor_mix) = det_thresh(&scratch.detb_mix_minor, tol) else {continue;};
+                    let Some(det_detb_minor_mix) = det(&scratch.detb_mix_minor) else {continue;};
                     
                     // Inner sum iterates over all columns of the L determinant and replaces column
                     // k with the appropriate column of II.
