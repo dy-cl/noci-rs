@@ -1,8 +1,8 @@
 // maths.rs
 use std::cell::RefCell;
 
-use ndarray::{Array1, Array2, ArrayView2, Array4, Axis};
-use ndarray_linalg::{SVD, Eigh, UPLO, Determinant};
+use ndarray::{Array1, Array2, ArrayView2, Array4, Axis, s};
+use ndarray_linalg::{SVD, Eigh, UPLO, Determinant, FactorizeInto, InverseInto};
 use rayon::prelude::*;
 
 thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new()); static GT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
@@ -607,36 +607,65 @@ pub fn det_thresh(a: &Array2<f64>, thresh: f64) -> Option<f64> {
     Some(det)
 }
 
-/// Compute determinant of `a` with fast exact formula up to n == 4 (this would need to be larger 
-/// if the code is generalised to allow greater than double excitations) and the adjugate-transpose
-/// and fallback to SVD determinant and adjugate-transpose evaluation method when this proves to be
-/// troublesome.
+/// For determinants where explicit calculation is unwieldy (greater than 4 by 4) we use LU solve
+/// to calculate determinant and adjugate transpose.
+/// # Arguments:
+///     `adjt`: Array2, preallocated output scratch space.
+///     `lu`: Array2, preallocated scratch space for LU solve.
+///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
+///     `thresh`: f64, tolerance for singularity test.
+pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+
+    let n = a.nrows();
+
+    // Copy A into top left of the lu scratch.
+    let mut m = std::mem::take(lu);
+    m.slice_mut(s![0..n, 0..n]).assign(&a.slice(s![0..n, 0..n]));
+    // Calculate LU factorisation in place (PA = LU).
+    let f = m.factorize_into().ok()?;
+    
+    // Use LU data of F to find det(A).
+    let det = f.det().ok()?;
+    if !det.is_finite() || det.abs() <= thresh.powi(n as i32) {
+        // If LU solve is rejected for above reasons we must put it back to LMAX x LMAX.
+        *lu = Array2::zeros((6,6));
+        return None;
+    }
+    
+    // Compute inverse in place.
+    let inv = f.inv_into().ok()?; 
+    // adjt(A)^T = det(A) * (A^{-1})^T.
+    for r in 0..n {
+        for c in 0..n {
+            adjt[(r, c)] = det * inv[(c, r)];
+        }
+    }
+    
+    // Put scratch back to LMAX x LMAX.
+    *lu = inv;
+
+    Some(det)
+}
+
+/// If both explicit calculation or LU solve to find determinant and adjugate transpose fail we
+/// fall back to the SVD routine.
+/// # Arguments:
 ///     `adjt`: Array2, preallocated output scratch space.
 ///     `invs`: Array1, preallocated scratch space for singular values of SVD.
 ///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
-///     `thresh`: f64, tolerance for singular values in SVD fallback.
-pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+///     `thresh`: f64, tolerance for singularity.
+pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
-    if n != a.ncols() {return None;}
-
-    let detquick = match n {
-        0 => {Some(1.0)}
-        1 => adjt1(adjt, a),
-        2 => adjt2(adjt, a, thresh),
-        3 => adjt3(adjt, a, thresh),
-        4 => adjt4(adjt, a, thresh),
-        _ => None,
-    };
-
-    if detquick.is_some() {return detquick;}
 
     adjt.fill(0.0);
     invs.fill(0.0);
-
+    
+    // A = U \tilde{S} V^T.
     let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
     let u = u_opt?;
     let vt = vt_opt?;
-
+    
+    // det(A) = det(U) * det(V^T) * \prod s_i.
     let det_u = u.det().ok()?;
     let det_vt = vt.det().ok()?;
     let mut red_det = det_u * det_vt;
@@ -644,7 +673,8 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Ar
 
     let mut nzero = 0usize;
     let mut zerok = 0usize;
-
+    
+    // Count near-zero singular values.
     for i in 0..n {
         let si = s[i];
         det *= si;
@@ -652,23 +682,25 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Ar
             red_det *= si;
             invs[i] = 1.0 / si;
         } else {
+            // Treat as zero.
             nzero += 1;
             zerok = i;
         }
     }
-
+    
+    // If we have no zeros we have adj(A)^T = det(A) * U * (1 / \tilde{S}) * V^T
     if nzero == 0 {
         for i in 0..n {
-            let alpha = invs[i];
             for r in 0..n {
                 let ur = u[(r, i)];
-                let scale = alpha * ur;
+                let scale = invs[i] * ur;
                 for c in 0..n {
                     adjt[(r, c)] += scale * vt[(i, c)];
                 }
             }
         }
         *adjt *= det;
+    // If we have 1 zero adj(A)^T = reduced det(A) * U_k * V_k^T where k is the zero. 
     } else if nzero == 1 {
         let k = zerok;
         for r in 0..n {
@@ -678,8 +710,32 @@ pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Ar
                 adjt[(r, c)] = scale * vt[(k, c)];
             }
         }
+    // For more than 1 zero adj(A)^T = 0.
     } else {
         return None;
     }
     Some(det)
+}
+
+/// Compute determinant and adjugate transpose of `a` with fast exact formula up to n == 4 and LU solve method 
+/// for n > 4, and fallback to SVD determinant and adjugate-transpose evaluation method when this proves to be
+/// troublesome.
+///     `adjt`: Array2, preallocated output scratch space.
+///     `invs`: Array1, preallocated scratch space for singular values of SVD.
+///     `lu`: Array2, preallocated scratch space for LU solve.
+///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
+///     `thresh`: f64, tolerance for singularity.
+pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
+    let n = a.nrows();
+
+    match n {
+        0 => {Some(1.0)}
+        1 => adjt1(adjt, a),
+        2 => adjt2(adjt, a, thresh),
+        3 => adjt3(adjt, a, thresh),
+        4 => adjt4(adjt, a, thresh),
+        5 | 6 => {if let Some(det) = adjtlu(adjt, lu, a, thresh) {Some(det)} else {adjtsvd(adjt, invs, a, thresh)}}
+        // Code currently only does upto doubles so LMAX + 2 = 6.
+        _ => unreachable!() 
+    }
 }

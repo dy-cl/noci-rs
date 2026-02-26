@@ -533,6 +533,10 @@ pub struct WickScratch {
     pub invslm1:  Array1<f64>,
     pub invslam1: Array1<f64>,
     pub invslbm1: Array1<f64>,
+
+    pub lu: Array2<f64>,
+    pub lua: Array2<f64>,
+    pub lub: Array2<f64>,
 }
 
 impl WickScratch {
@@ -555,6 +559,8 @@ impl WickScratch {
             self.v1 = Array1::zeros(l);
             self.dv1 = Array1::zeros(l);
             self.invs = Array1::zeros(l);
+            // This just needs to be of size LMAX + 2.
+            self.lu = Array2::zeros((6, 6));
 
             let lm1 = l.saturating_sub(1);
             self.dv1m = Array1::zeros(lm1);
@@ -581,6 +587,8 @@ impl WickScratch {
             self.dv1a = Array1::zeros(la);
             self.iislicea = Array2::zeros((la, la));
             self.invsla = Array1::zeros(la);
+             // This just needs to be of size LMAX + 2.
+            self.lua = Array2::zeros((6, 6));
 
             let lam1 = la.saturating_sub(1);
             self.deta_mix_minor = Array2::zeros((lam1, lam1));
@@ -596,6 +604,8 @@ impl WickScratch {
             self.dv1b = Array1::zeros(lb);
             self.iisliceb = Array2::zeros((lb, lb));
             self.invslb = Array1::zeros(lb);
+            // This just needs to be of size LMAX + 2.
+            self.lub = Array2::zeros((6, 6));
 
             let lbm1 = lb.saturating_sub(1);
             self.detb_mix_minor = Array2::zeros((lbm1, lbm1));
@@ -1255,6 +1265,12 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
     }
 }
 
+/// All the same spin routines require a number of the same quantities. It is more efficient to
+/// precompute them once here rather than inside each matrix element routine.
+/// # Arguments:
+///     `w`: SameSpin: same spin Wick's reference pair intermediates.
+///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
 pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) { 
     let l = l_ex.holes.len() + g_ex.holes.len();
     scratch.resizel(l);
@@ -1325,7 +1341,7 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
         
         // First term in the sum of Eqn 26 involves the same sum over all possible bitstrings with
         // the F0 matrix multiplying the contraction determinant.
-        let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &scratch.det_mix, tol) else {continue;};
+        let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &mut scratch.lu, &scratch.det_mix, tol) else {continue;};
         let mut contrib = det_det * w.f0[mi as usize];
 
         // Remaining terms in Eqn 26 consist of the same sum over all possible bitstrings, but now
@@ -1378,7 +1394,7 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
         
         // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 2.
         mix_columns(&mut scratch.det_mix, &scratch.det0, &scratch.det1, ind);
-        let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &scratch.det_mix, tol) else {continue;};
+        let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &mut scratch.lu, &scratch.det_mix, tol) else {continue;};
 
         let mut contrib = 0.0f64;
 
@@ -1416,7 +1432,7 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                 
                 // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                 minor(&mut scratch.det_mix2, &scratch.det_mix, i, j);
-                let Some(det_det2) = adjugate_transpose(&mut scratch.adjt_det2, &mut scratch.invslm1, &scratch.det_mix2, tol) else {continue;};
+                let Some(det_det2) = adjugate_transpose(&mut scratch.adjt_det2, &mut scratch.invslm1, &mut scratch.lu, &scratch.det_mix2, tol) else {continue;};
                 
                 // Select indices that give the correct slice of J.
                 let ri_fixed = scratch.rows[i];
@@ -1508,7 +1524,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
         // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
         // spin alpha.
         mix_columns(&mut scratch.deta_mix, &scratch.deta0, &scratch.deta1, inda);
-        let Some(det_deta) = adjugate_transpose(&mut scratch.adjt_deta, &mut scratch.invsla, &scratch.deta_mix, tol) else {continue;};
+        let Some(det_deta) = adjugate_transpose(&mut scratch.adjt_deta, &mut scratch.invsla, &mut scratch.lua, &scratch.deta_mix, tol) else {continue;};
         
         // Iterate over all possible distributions of beta zeros amongst the columns.
         for bits_b in iter_m_combinations(lb + 1, w.bb.m) {
@@ -1519,7 +1535,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
             // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
             // spin beta.
             mix_columns(&mut scratch.detb_mix, &scratch.detb0, &scratch.detb1, indb);
-            let Some(det_detb) = adjugate_transpose(&mut scratch.adjt_detb, &mut scratch.invslb, &scratch.detb_mix, tol) else {continue;};
+            let Some(det_detb) = adjugate_transpose(&mut scratch.adjt_detb, &mut scratch.invslb, &mut scratch.lub, &scratch.detb_mix, tol) else {continue;};
 
             let mut contrib = 0.0f64;
 
