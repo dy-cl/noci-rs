@@ -7,8 +7,8 @@ import numpy as np
 import math
 
 # Plateau picking quantities.
-MINN = 16 # At later levels if we have too few blocks the data can become noist.
-NEXT = 3 # Require the next N levels to be consistent within given error bars.
+MINN = 8 # At later levels if we have too few blocks the data can become noist.
+NEXT = 1 # Require the next N levels to be consistent within given error bars.
 PLATEAUTOL = 0.25 # How much error can change between levels before it is not a plateau.
 
 def parse() -> argparse.Namespace:
@@ -87,34 +87,35 @@ def plateau(data) -> Optional[int]:
     n = data["N"].to_numpy()
     sigma = data["sigma"].to_numpy()
     dsigma = data["dsigma"].to_numpy()
-    
+
     # Discard levels which have less then our miminum number of blocks.
     valid = np.where(n >= MINN)[0]
     # If there are less than two of these we have nothing to do.
     if valid.size < 2:
         return None
-    
+
     # Highest blocking level still having more than miminum number of blocks.
     last = valid[-1]
 
-    # Iterate low blocking to higher blocking and compare consecutive levels  
+    # Iterate low blocking to higher blocking and compare consecutive levels
     # for growth of error.
-    for i in valid[:-1]:
+    for i in valid:
         if i + NEXT > last:
             break
-        
+
         ok = True
-        j = i + 1
-        if abs(sigma[j] - sigma[i]) <= (dsigma[j] + dsigma[i]):
-            ok = False
-            break
-        if sigma[i] > 0 and abs(sigma[j] - sigma[i]) / sigma[i] > PLATEAUTOL:
-            ok = False
-            break
+        for j in range(i + 1, i + NEXT + 1):
+            if abs(sigma[j] - sigma[i]) > (dsigma[j] + dsigma[i]):
+                ok = False
+                break
+
+            if sigma[i] > 0 and abs(sigma[j] - sigma[i]) / sigma[i] > PLATEAUTOL:
+                ok = False
+                break
 
         if ok:
             return int(i)
-    
+
     # If error keeps growing there is no plateau.
     return None
 
