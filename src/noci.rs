@@ -317,6 +317,8 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
     let nmo  = noci_reference_basis[0].ca.ncols();
 
     let (offset, tensor_len) = assign_offsets(nref, nmo);
+    let bytes = tensor_len.checked_mul(std::mem::size_of::<f64>()).unwrap();
+    println!("Estimated memory required for Wick's intermediates (MiB): {}", bytes as f64 / (1024.0 * 1024.0));
 
     let nbytes = tensor_len * std::mem::size_of::<f64>();
     let shared = Sharedffi::allocate(world, nbytes);
