@@ -738,6 +738,17 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let iref = 0;
     // Serial Wick's scratch.
     let mut scratch = WickScratch::new();
+    println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratch>() as f64 / (1024.0 * 1024.0));
+    
+     // Accumulated updates per Rayon thread. Local contains anything that happens on a
+    // determinant under the control of the current thread, and remote anything that applies to
+    // another thread's determinant.
+    type LocalUpdates = Vec<(usize, i64)>;
+    type RemoteUpdates = Vec<PopulationUpdate>;
+    type Samples = Vec<f64>;
+
+    type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratch);
+    println!("Size of per thread state (MiB): {}", std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0));
 
     // Construct reference index mask.
     let mut isref = vec![false; basis.len()];
@@ -805,15 +816,6 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
 
     for it in 0..input.prop.max_steps {
-        // Accumulated updates per Rayon thread. Local contains anything that happens on a
-        // determinant under the control of the current thread, and remote anything that applies to
-        // another thread's determinant.
-        type LocalUpdates = Vec<(usize, i64)>;
-        type RemoteUpdates = Vec<PopulationUpdate>;
-        type Samples = Vec<f64>;
-
-        type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratch);
-        
         // Function to initialise individual thread states.
         let initialise = || -> ThreadState {
             let tid = rayon::current_thread_index().unwrap_or(0) as u64;
