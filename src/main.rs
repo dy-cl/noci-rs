@@ -7,6 +7,7 @@ use std::io::{BufWriter, Write};
 
 use mpi::topology::Communicator;
 use mpi::collective::CommunicatorCollectives;
+use rayon::ThreadPoolBuilder;
 use ndarray::Array1;
 
 use noci_rs::input::Input;
@@ -60,6 +61,7 @@ type Atoms = Vec<String>;
 
 /// Main.
 fn main() {
+    ThreadPoolBuilder::new().stack_size(128 * 1024 * 1024).build_global().unwrap();
     let t_total = Instant::now();
     let input_path = match std::env::args().nth(1) {
         Some(p) => p,
