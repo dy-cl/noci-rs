@@ -525,6 +525,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
             ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, rng, tol, noci_reference_basis, wicks, scratch),
             ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, rng, hb.as_ref().unwrap(), tol, noci_reference_basis, wicks, scratch),
+            ExcitationGen::ApproximateHeatBath => unimplemented!(),
         };
 
         // Calculate spawning probability.

@@ -14,6 +14,7 @@ pub enum Propagator {
 pub enum ExcitationGen {
     Uniform,
     HeatBath,
+    ApproximateHeatBath,
 }
 
 // Electron spin for excitation input.
@@ -106,9 +107,10 @@ pub struct QMCOptions {
 pub struct WriteOptions {
     pub verbose: bool,
     pub write_deterministic_coeffs: bool,
+    pub write_orbitals: bool,
     pub write_excitation_hist: bool,
-    pub write_dir: String,
     pub write_matrices: bool,
+    pub write_dir: String,
 }
 
 // Storage for Wick's options.
@@ -266,7 +268,8 @@ pub fn load_input(path: &str) -> Input {
     let write_excitation_hist: bool = write_tbl.get("write_excitation_hist").unwrap();
     let write_dir: String = write_tbl.get("write_dir").unwrap();
     let write_matrices: bool = write_tbl.get("write_matrices").unwrap();
-    let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_matrices, write_dir};
+    let write_orbitals: bool = write_tbl.get("write_orbitals").unwrap();
+    let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_matrices, write_dir, write_orbitals};
 
     // States tables (MOM or metadynamics).
     let states: StateType = match (mom_tbl, meta_tbl) {
@@ -318,7 +321,8 @@ pub fn load_input(path: &str) -> Input {
         let excitation_gen = match excitation_gen_str.as_str() {
             "uniform" => ExcitationGen::Uniform,
             "heat-bath" => ExcitationGen::HeatBath,
-            _ => {eprintln!("Excitation generator must be 'uniform' or 'heat-bath'."); std::process::exit(1);},
+            "approximate-heat-bath" => ExcitationGen::ApproximateHeatBath,
+            _ => {eprintln!("Excitation generator must be 'uniform', 'heat-bath' or 'approximate-heat-bath'."); std::process::exit(1);},
         };
         let seed: Option<u64>  = qmc_tbl.get("seed").unwrap_or(None);
         QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, excitation_gen, seed}

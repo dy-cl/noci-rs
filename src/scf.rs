@@ -1,11 +1,14 @@
 // scf.rs
 use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::fs;
 
 use ndarray::{Axis, Array1, Array2, Array4, s};
 
 use crate::{AoData, SCFState, Excitation, ExcitationSpin};
 use crate::input::{Input, Spin, SCFExcitation, StateType};
 use crate::basis::{electron_distance};
+use crate::write::{write_orbitals};
 use crate::diis::Diis;
 
 use crate::maths::general_evp_real;
@@ -335,10 +338,43 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
             let da = Arc::new(da_new);
             let db = Arc::new(db_new);
 
+            // Print MO occupancies.
+            println!("{}", "-".repeat(100));
+            let mut mosa: Vec<(f64, usize, bool)> = (0..ea.len()).map(|i| (ea[i], i, oa[i] > 0.5)).collect();
+            mosa.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            println!("Alpha MOs:");
+            println!("{:^5} {:^5} {:^5}", "MO", "Occ", "E");
+            for (e, i, occ) in mosa.iter() {println!("{:^5} {:^5.6} {:^5.6}", i, if *occ {1} else {0}, e);}
+            println!("{}", "-".repeat(100));
+            let mut mosb: Vec<(f64, usize, bool)> = (0..eb.len()).map(|i| (eb[i], i, ob[i] > 0.5)).collect();
+            mosb.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            println!("Beta MOs:");
+            println!("{:^5} {:^5} {:^5}", "MO", "Occ", "E");
+            for (e, i, occ) in mosb.iter() {println!("{:^5} {:^5.6} {:^5.6}", i, if *occ {1} else {0}, e);}
+            println!("{}", "-".repeat(100));
+
+            // Print MO coeffs.
             println!("Coefficients ca:");
             print_array2(&ca);
             println!("Coefficients cb:");
             print_array2(&cb);
+
+            // Print spin-contamination.
+            let nas = (da.as_ref().dot(s)).diag().sum();
+            let nbs = (db.as_ref().dot(s)).diag().sum();
+            let sz = 0.5 * (nas - nbs);
+            let trdasdbs = da.dot(s).dot(db.as_ref()).dot(s).diag().sum();
+            let s2 = sz * (sz + 1.0) + nbs - trdasdbs;
+            println!("<S2>: {}", s2);
+
+            // Write orbital data if requested.
+            if input.write.write_orbitals {
+                let orbitalsdir: PathBuf = Path::new(&input.write.write_dir).join("orbitals");
+                let _ = fs::create_dir_all(&orbitalsdir);
+                let labelstr = label.replace([' ', ','], "_").replace(['(', ')'], "").replace('/', "_");
+                let fname = orbitalsdir.join(format!("{labelstr}orbitals.h5"));
+                write_orbitals(fname.to_str().unwrap(), ao, label, ca.as_ref(), cb.as_ref(), &ea, &eb, &oa, &ob, da.as_ref(), db.as_ref());
+            }
             
             // SCF is only performed on reference states so the excitation here is empty. This is
             // distinct from scfexcitation in which we may use an excited SCF solution as part of

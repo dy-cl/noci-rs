@@ -3,6 +3,7 @@ pub mod basis;
 pub mod diis;
 pub mod noci;
 pub mod read;
+pub mod write;
 pub mod scf;
 pub mod utils;
 pub mod input;

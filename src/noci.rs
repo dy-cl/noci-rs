@@ -353,10 +353,10 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
                 write_diff_spin(tensor, &offset[idx].ab, &ab);
             }
         }
+        println!("{}", "=".repeat(100));
     }
 
     shared.barrier();
-
     broadcast(world, &mut meta);
 
     let rma = WicksRma {base_ptr: shared.base, nbytes, shared,};
@@ -534,7 +534,8 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
 ///     `input`: Input, user input specifications.
 pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
     let (h, s, d_hs) = build_noci_matrices(ao, input, scfstates, scfstates, tol, wicks);
-        
+    
+    println!("{}", "=".repeat(100));
     println!("NOCI-reference Hamiltonian:");
     print_array2(&h);
     println!("NOCI-reference Overlap:");
