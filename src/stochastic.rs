@@ -792,14 +792,19 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
     let mut es_s = *es;
 
-    // Initialise populations.
-    let mut nwscprev = 0.0;
-    let nwscprev_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
-    world.all_reduce_into(&nwscprev_local, &mut nwscprev, SystemOperation::sum());
-    let mut nwcprev = qmc.initial_population;
-    let mut nrefprev = 0.0; 
-    let nrefprev_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
-    world.all_reduce_into(&nrefprev_local, &mut nrefprev, SystemOperation::sum());
+    // Initialise overlap-transformed populations.
+    let mut nwprevsc = 0.0;
+    let mut nrefprevsc = 0.0; 
+    let nwprevsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
+    world.all_reduce_into(&nwprevsc_local, &mut nwprevsc, SystemOperation::sum());
+    let nrefprevsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
+    world.all_reduce_into(&nrefprevsc_local, &mut nrefprevsc, SystemOperation::sum());
+
+    // Initialse non-overlap transformed populations.
+    let mut nwprevc = qmc.initial_population;
+    let mut nrefprevc: i64 = 0;
+    let nrefprevc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs() as i64).sum();
+    world.all_reduce_into(&nrefprevc_local, &mut nrefprevc, SystemOperation::sum());
 
     // Print table header.
     let e0 = basis[0].e;
@@ -807,10 +812,10 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
     let mut es_s_corr = 0.0;
     if irank == 0 {
         println!("{}", "=".repeat(100));
-        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", 
-                 "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nw (||SC||)", "Nref(||SC||)");
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  
-                 0, eproj, eproj - e0, es_corr, es_s_corr, nwcprev as f64, nwscprev, nrefprev);
+        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}", 
+                 "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nref (||C||)", "Nw (||SC||)", "Nref(||SC||)");
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",  
+                 0, eproj, eproj - e0, es_corr, es_s_corr, nwprevc as f64, nrefprevc as f64, nwprevsc, nrefprevsc);
     }
     
     // Per MPI rank send buffers.
@@ -901,41 +906,46 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         d_update_p += t0.elapsed().as_secs_f64();
         
         let t0 = Instant::now();
+
         // Calculate non overlap-transformed walker population.
         let mut nwc = 0i64;
         let nwclocal = mc.walkers.norm() as i64;
         world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
-        // Overlap-transformed walker population.
+        let mut nrefc: i64 = 0;
+        let nrefc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs() as i64).sum();
+        world.all_reduce_into(&nrefc_local, &mut nrefc, SystemOperation::sum());
+
+        // Calculate overlap-transformed walker population.
         let mut nwsc = 0.0;
         // Calculate overlap-transformed walker population as: 
         //\tilde{N}_w(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma} |p_{\Gamma}| N_{\Gamma}$
         let nwsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
         world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
         // Overlap-transformed reference walker population.
-        let mut nref = 0.0; 
+        let mut nrefsc = 0.0; 
         // Calculate overlap transformed reference only walker population as:
         //\tilde{N}_{w, refs}(\tau) = ||S_{\Gamma\Omega}C^\Omega(\tau)|| = \sum_{\Gamma, \Gamma \in refs} |p_{\Gamma}| N_{\Gamma}$
-        let nref_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
-        world.all_reduce_into(&nref_local, &mut nref, SystemOperation::sum());
+        let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
+        world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
         d_calc_populations += t0.elapsed().as_secs_f64();
         
         // Activate overlap-transformed and non-overlap transformed shifts.
         if !reached_c && (nwc > qmc.target_population) {
             reached_c = true;
-            nwcprev = nwc;
+            nwprevc = nwc;
         }
         if !reached_sc && (nwsc > qmc.target_population as f64) {
             reached_sc = true;
-            nwscprev = nwsc;
+            nwprevsc = nwsc;
         }
         // Update shift once total populations have exceeded target population.
         if reached_c && (it + 1) % qmc.shift_update_freq == 0 {
-            *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwc as f64 / nwcprev as f64).ln();
-            nwcprev = nwc;
+            *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwc as f64 / nwprevc as f64).ln();
+            nwprevc = nwc;
         }
         if reached_sc && (it + 1) % qmc.shift_update_freq == 0 {
-            es_s -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwsc / nwscprev).ln();
-            nwscprev = nwsc;
+            es_s -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwsc / nwprevsc).ln();
+            nwprevsc = nwsc;
         }
 
         // Update energy. 
@@ -948,8 +958,8 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         es_s_corr = if reached_sc {es_s - e0} else {0.0};
 
         // Print table rows.
-        if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-                       it + 1, eproj, eproj - basis[0].e, es_corr, es_s_corr, nwc as f64, nwsc, nref);}
+        if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
+                       it + 1, eproj, eproj - basis[0].e, es_corr, es_s_corr, nwc as f64, nrefc as f64, nwsc, nrefsc);}
     }
 
     let timings = StochStepTimings {initialse_walkers: d_initialise_walkers, spawn_death_collect: Duration::from_secs_f64(d_spawn_death_collect), acc_pack: Duration::from_secs_f64(d_acc_pack), 
