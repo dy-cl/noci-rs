@@ -26,6 +26,7 @@ def extract(path) -> pd.DataFrame:
         + floatre + r"\s+"  # Es
         + floatre + r"\s+"  # EsS
         + floatre + r"\s+"  # Nw (||C||)
+        + floatre + r"\s+"  # Nref (||C||)
         + floatre + r"\s+"  # Nw (||SC||)
         + floatre + r"\s*$" # Nref (||SC||)
     )
@@ -42,11 +43,12 @@ def extract(path) -> pd.DataFrame:
             es = float(m.group(4))
             es_s = float(m.group(5))
             nwc = float(m.group(6))
-            nwsc = float(m.group(7))
-            nrefsc = float(m.group(8))
-            rows.append((it, eproj, ecorr, es, es_s, nwc, nwsc, nrefsc))
+            nrefc = float(m.group(7))
+            nwsc = float(m.group(8))
+            nrefsc = float(m.group(9))
+            rows.append((it, eproj, ecorr, es, es_s, nwc, nrefc, nwsc, nrefsc))
 
-    df = pd.DataFrame(rows, columns = ["iter", "eproj", "ecorr", "es", "esS", "nwc", "nwsc", "nrefsc"])
+    df = pd.DataFrame(rows, columns = ["iter", "eproj", "ecorr", "es", "esS", "nwc", "nrefc", "nwsc", "nrefsc"])
     return df
 
 def blocking(xi) -> pd.DataFrame:
