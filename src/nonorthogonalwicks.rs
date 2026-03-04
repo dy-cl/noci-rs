@@ -670,6 +670,12 @@ impl SameSpinBuild {
             let k = Self::build_k_exchange(eri, &mao[mi]);
             jkao[mi] = &j - &k;
         }
+        
+        //if maxabs(&mao[0]) > 1e5 || maxabs(&mao[1]) > 1e5 {println!("WARNING: HUGE M")};
+        //println!("tilde_s_occ: {:.3e}, tilde_s_prod: {:.3e}", tilde_s_occ, tilde_s_prod);
+        //println!("M0 max: {:.3e}, frob: {:.3e} | M1 max: {:.3e}, frob: {:.3e}", maxabs(&mao[0]), frob(&mao[0]), maxabs(&mao[1]), frob(&mao[1]));
+        //println!("(J-K)0 max: {:.3e}, frob: {:.3e} | (J-K)1 max: {:.3e}, frob: {:.3e}", maxabs(&jkao[0]), frob(&jkao[0]), maxabs(&jkao[1]), frob(&jkao[1]));
+        //println!();
 
         // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
         // intermediates required for one body matrix elements.
@@ -1057,7 +1063,21 @@ impl DiffSpinBuild {
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k}. No exchange here due to differing spins.
         let ja = [SameSpinBuild::build_j_coulomb(eri, ma[0]), SameSpinBuild::build_j_coulomb(eri, ma[1])];
         let jb = [SameSpinBuild::build_j_coulomb(eri, mb[0]), SameSpinBuild::build_j_coulomb(eri, mb[1])];
-        
+
+        //let tilde_sa_prod = tilde_sa_occ.iter().filter(|&&x| x.abs() > tol).product::<f64>();
+        //let tilde_sb_prod = tilde_sb_occ.iter().filter(|&&x| x.abs() > tol).product::<f64>();
+        //if maxabs(ma[0]) > 1e5 || maxabs(ma[1]) > 1e5 {println!("WARNING: HUGE MA")};
+        //println!("tilde_sa_occ: {:.3e}, tilde_sa_prod: {:.3e}", tilde_sa_occ, tilde_sa_prod);
+        //println!("M0a max: {:.3e}, frob: {:.3e} | M1a max: {:.3e}, frob: {:.3e}", maxabs(ma[0]), frob(ma[0]), maxabs(ma[1]), frob(ma[1]));
+        //println!("J0a max: {:.3e}, frob: {:.3e} | J1a max: {:.3e}, frob: {:.3e}", maxabs(&ja[0]), frob(&ja[0]), maxabs(&ja[1]), frob(&ja[1]));
+        //println!();
+
+        //if maxabs(mb[0]) > 1e5 || maxabs(mb[1]) > 1e5 {println!("WARNING: HUGE MB")};
+        //println!("tilde_sb_occ: {:.3e}, tilde_sb_prod: {:.3e}", tilde_sb_occ, tilde_sb_prod);
+        //println!("M0b max: {:.3e}, frob: {:.3e} | M1b max: {:.3e}, frob: {:.3e}", maxabs(&mb[0]), frob(&mb[0]), maxabs(&mb[1]), frob(&mb[1]));
+        //println!("J0b max: {:.3e}, frob: {:.3e} | J1b max: {:.3e}, frob: {:.3e}", maxabs(&jb[0]), frob(&jb[0]), maxabs(&jb[1]), frob(&jb[1]));
+        //println!();
+
         // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}. 
         // This can be rewritten (and thus calculated) as V_{ab, 0}^{m_i, m_j} = \sum_{pr} (J_{\mu\nu}^{m_i}) {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
         // This is directly analogous to {}^{\Lambda\Gamma} V_0^{m_i, m_j} in the same spin case
@@ -1420,6 +1440,7 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
             let a =  scratch.adjt_det.column(k);
             scratch.dv1.assign(&scratch.v1);
             scratch.dv1 -= &v2;
+
             contrib -= 2.0 * (det_det + scratch.dv1.dot(&a));
         }
         
@@ -1433,7 +1454,7 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                 // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
                 minor(&mut scratch.det_mix2, &scratch.det_mix, i, j);
                 let Some(det_det2) = adjugate_transpose(&mut scratch.adjt_det2, &mut scratch.invslm1, &mut scratch.lu, &scratch.det_mix2, tol) else {continue;};
-                
+
                 // Select indices that give the correct slice of J.
                 let ri_fixed = scratch.rows[i];
                 let cj_fixed = scratch.cols[j];
@@ -1445,19 +1466,25 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                 for k2 in 0..(l - 1) {
                     let k_full = if k2 < j {k2} else {k2 + 1};
                     let mk = mcol(k_full);
-                    
-                    // Extract slice of J corresponding to the current distribution of zeros and
+
+                                       // Extract slice of J corresponding to the current distribution of zeros and
                     // get the correct minor matrix so as to align with the L - 1 dimensions.
                     let j4 = w.j(m1 as usize, m2 as usize, mk as usize, mj as usize);
+                    //if maxabs4(j4) > 1e16 {
+                    //    println!("HUGE maxabs4(j4): {}",  maxabs4(j4));
+                    //    println!("(m1, m2, mk, mj): ({},{},{},{})", m1 as usize, m2 as usize, mk as usize, mj as usize);
+                    //    println!();
+                    //}
                     slice4(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);
-                    minor(&mut scratch.jslice2, &scratch.jslice_full, i, j);   
-                    
+                    minor(&mut scratch.jslice2, &scratch.jslice_full, i, j); 
+
                     // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
                     // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
                     // indicates the kth column of D.
                     let v1 = scratch.jslice2.column(k2);
                     let v2 = scratch.det_mix2.column(k2);
-                    let a =  scratch.adjt_det2.column(k2);
+                    let a = scratch.adjt_det2.column(k2);
+
                     scratch.dv1m.assign(&v1);
                     scratch.dv1m -= &v2;
                     contrib += 1.0 * phase * (det_det2 + scratch.dv1m.dot(&a));
@@ -1663,5 +1690,4 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
     (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * acc
 }
-
 
