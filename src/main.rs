@@ -24,6 +24,7 @@ use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{step};
 use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::mpiutils::{broadcast};
+use noci_rs::write::{print_input};
 
 // Timing storage for various segements of code.
 #[derive(Default)]
@@ -62,6 +63,7 @@ type Atoms = Vec<String>;
 /// Main.
 fn main() {
     ThreadPoolBuilder::new().stack_size(128 * 1024 * 1024).build_global().unwrap();
+
     let t_total = Instant::now();
     let input_path = match std::env::args().nth(1) {
         Some(p) => p,
@@ -77,6 +79,9 @@ fn main() {
     let universe = mpi::initialize().unwrap();
     let world = universe.world(); 
     let irank = world.rank();
+
+    if irank == 0 {print_input(&input);}
+    world.barrier();
 
     let rlist = input.mol.r_list.clone();
     let geoms = input.mol.geoms.clone();

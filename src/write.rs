@@ -5,6 +5,157 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2};
 
 use crate::AoData;
+use crate::input::{Input, StateType, Propagator, ExcitationGen, Spin};
+
+/// Print input options at the top of output.
+/// # Arguments:
+///     `input`: Input, user specified input options.
+pub fn print_input(input: &Input) {
+    let left = "=".repeat(45);
+    let right = "=".repeat(46);
+    println!("{}INPUT OPTIONS{}", left, right);
+
+    println!("MOL");
+    println!("BASIS: {}", input.mol.basis);
+    println!("UNIT: {}", input.mol.unit);
+    println!("R: {:?}", input.mol.r_list);
+    println!("NGEOMS: {}", input.mol.geoms.len());
+    if let Some(g0) = input.mol.geoms.first() {
+        println!("GEOM[0]: {:?}", g0);
+    }
+    println!();
+
+    println!("SCF");
+    println!("MAX_CYCLE: {}", input.scf.max_cycle);
+    println!("ETOL: {}", input.scf.e_tol);
+    println!("DIIS SPACE DIM: {}", input.scf.diis.space);
+    println!("DO_FCI: {}", input.scf.do_fci);
+    println!();
+
+    println!("STATES");
+    match &input.states {
+        StateType::Mom(recipes) => {
+            println!("TYPE: MOM");
+            println!("NRECIPES: {}", recipes.len());
+            for (i, r) in recipes.iter().enumerate() {
+                println!("RECIPE {}:", i + 1);
+                println!("  LABEL: {}", r.label);
+                println!("  NOCI: {}", r.noci);
+
+                match &r.spin_bias {
+                    Some(sb) => {
+                        println!("  SPIN_BIAS:");
+                        println!("    POL: {:.6}", sb.pol);
+                        println!("    PATTERN: {:?}", sb.pattern);
+                    }
+                    None => println!("  SPIN_BIAS: NONE"),
+                }
+
+                match &r.spatial_bias {
+                    Some(sb) => {
+                        println!("  SPATIAL_BIAS:");
+                        println!("    POL: {:.6}", sb.pol);
+                        println!("    PATTERN: {:?}", sb.pattern);
+                    }
+                    None => println!("  SPATIAL_BIAS: NONE"),
+                }
+
+                match &r.scfexcitation {
+                    Some(ex) => {
+                        println!("  EXCIT:");
+                        let spin = match ex.spin {
+                            Spin::Alpha => "alpha",
+                            Spin::Beta => "beta",
+                            Spin::Both => "both",
+                        };
+                        println!("    SPIN: {}", spin);
+                        println!("    OCC: {}", ex.occ);
+                        println!("    VIR: {}", ex.vir);
+                    }
+                    None => println!("  EXCIT: NONE"),
+                }
+            }
+        }
+        StateType::Metadynamics(m) => {
+            println!("TYPE: METADYNAMICS");
+            println!("NSTATES_RHF: {}", m.nstates_rhf);
+            println!("NSTATES_UHF: {}", m.nstates_uhf);
+            println!("SPINPOL: {:.6}", m.spinpol);
+            println!("SPATIALPOL: {:.6}", m.spatialpol);
+            println!("LAMBDA: {:.6}", m.lambda);
+            println!("MAX_ATTEMPTS: {}", m.max_attempts);
+        }
+    }
+    println!();
+
+    println!("EXCIT");
+    println!("SINGLES: {}", input.excit.singles);
+    println!("DOUBLES: {}", input.excit.doubles);
+    println!();
+
+    println!("PROP");
+    println!("DT: {}", input.prop.dt);
+    println!("MAX_STEPS: {}", input.prop.max_steps);
+    let propagator = match input.prop.propagator {
+        Propagator::Unshifted => "unshifted",
+        Propagator::Shifted => "shifted",
+        Propagator::DoublyShifted => "doubly-shifted",
+        Propagator::DifferenceDoublyShifted => "difference-doubly-shifted",
+    };
+    println!("PROPAGATOR: {}", propagator);
+    println!();
+
+    println!("DET");
+    match &input.det {
+        Some(d) => {
+            println!("ENABLED: true");
+            println!("DYNAMIC_SHIFT: {}", d.dynamic_shift);
+            println!("DYNAMIC_SHIFT_ALPHA: {}", d.dynamic_shift_alpha);
+            println!("ETOL: {:}", d.e_tol);
+        }
+        None => {
+            println!("ENABLED: false");
+        }
+    }
+    println!();
+
+    println!("QMC");
+    match &input.qmc {
+        Some(q) => {
+            println!("ENABLED: true");
+            println!("INITIAL_POPULATION: {}", q.initial_population);
+            println!("TARGET_POPULATION: {}", q.target_population);
+            println!("SHIFT_DAMPING: {}", q.shift_damping);
+            println!("SHIFT_UPDATE_FREQ: {}", q.shift_update_freq);
+            let excitation_gen = match q.excitation_gen {
+                ExcitationGen::Uniform => "uniform",
+                ExcitationGen::HeatBath => "heat-bath",
+                ExcitationGen::ApproximateHeatBath => "approximate-heat-bath",
+            };
+            println!("EXCITATION_GEN: {}", excitation_gen);
+            println!("SEED: {:?}", q.seed);
+        }
+        None => {
+            println!("ENABLED: false");
+        }
+    }
+    println!();
+
+    println!("WRITE");
+    println!("VERBOSE: {}", input.write.verbose);
+    println!("WRITE_DIR: {}", input.write.write_dir);
+    println!("WRITE_DETERMINISTIC_COEFFS: {}", input.write.write_deterministic_coeffs);
+    println!("WRITE_ORBITALS: {}", input.write.write_orbitals);
+    println!("WRITE_EXCITATION_HIST: {}", input.write.write_excitation_hist);
+    println!("WRITE_MATRICES: {}", input.write.write_matrices);
+    println!();
+
+    println!("WICKS");
+    println!("ENABLED: {}", input.wicks.enabled);
+    println!("COMPARE: {}", input.wicks.compare);
+
+    println!("{}", "=".repeat(100));
+}
 
 /// Write sufficient data of an SCF state into an HDF5  file such that we can plot the orbitals in post. 
 /// Of course, this does not contain the geometry or basis used, but this can be provided in the input to a
