@@ -304,7 +304,6 @@ pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize,
     (hnuc + h1 + h2, s)
 }
 
-
 /// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node).
 /// # Arguments:
 ///     `world`: Communicator, MPI communicator object.
@@ -336,7 +335,7 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
         for i in 0..nref {
             let ri = &noci_reference_basis[i];
             for (j, rj) in noci_reference_basis.iter().enumerate() {
-                println!("Building intermediates for reference pair: {}, {}", i, j);
+                println!("Building intermediates for reference pair: {}, {} on world rank {}", i, j, world.rank());
 
                 let aa = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
                 let bb = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
@@ -353,7 +352,6 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
                 write_diff_spin(tensor, &offset[idx].ab, &ab);
             }
         }
-        println!("{}", "=".repeat(100));
     }
 
     shared.barrier();
