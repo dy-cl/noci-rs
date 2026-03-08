@@ -165,9 +165,9 @@ impl<'a> SameSpinView<'a> {
     /// Get a view to the J[mi][mj][mk][ml] tensor.
     /// # Arguments:
     ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi, mj, mk, ml`: usize, zero distribution selector. 
-    pub fn j(&self, mi: usize, mj: usize, mk: usize, ml: usize) -> ArrayView4<'_, f64> {
-        self.w.view4(self.off.j[mi][mj][mk][ml], self.n())
+    ///     `mi, mj, mk, ml`: usize, zero distribution selector.
+    pub fn j(&self, slot: usize) -> ArrayView4<'_, f64> {
+        self.w.view4(self.off.j[slot], self.n())
     }
 }
 
@@ -211,14 +211,6 @@ impl<'a> DiffSpinView<'a> {
     pub fn iiab(&self, ma0: usize, maj: usize, mb0: usize, mbj: usize) -> ArrayView4<'a, f64> {
         self.w.view4(self.off.iiab[ma0][maj][mb0][mbj], self.n())
     }
-
-    /// Get a view to the IIba[mb0][mbj][ma0][maj] tensor.
-    /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `ma0, maj, mb0, mbj`: usize, zero distribution selector.
-    pub fn iiba(&self, mb0: usize, mbj: usize, ma0: usize, maj: usize) -> ArrayView4<'a, f64> {
-        self.w.view4(self.off.iiba[mb0][mbj][ma0][maj], self.n())
-    }
 }
 
 // Storage for views of each type of spin pairing.
@@ -257,7 +249,7 @@ pub struct SameSpinOffset {
     pub y: [usize; 2],
     pub f: [[usize; 2]; 2],
     pub v: [[[usize; 2]; 2]; 2],
-    pub j: [[[[usize; 2]; 2]; 2]; 2],
+    pub j: [usize; 10], // 10 / 16 4D tensors.
 }
 
 // Storage for diff-spin per reference-pair offset tables into the shared contiguous tensor storage.
@@ -266,7 +258,6 @@ pub struct DiffSpinOffset {
     pub vab: [[[usize; 2]; 2]; 2],
     pub vba: [[[usize; 2]; 2]; 2],
     pub iiab: [[[[usize; 2]; 2]; 2]; 2],
-    pub iiba: [[[[usize; 2]; 2]; 2]; 2],
 }
 
 // Storage for all per reference-pair pair offset tables.
@@ -297,7 +288,7 @@ pub struct SameSpinBuild {
     pub v0: [f64; 3], // V0[mi][mj]
     pub v: [[[Array2<f64>; 2]; 2]; 2], // V[mi][mj][mk]
 
-    pub j: [[[[Array4<f64>; 2]; 2]; 2]; 2],  // J[mi][mj][mk][ml]
+    pub j: [Array4<f64>; 10], // J[mi][mj][mk][ml], but only store 10 / 16.
 
     pub tilde_s_prod: f64,
     pub phase: f64,
@@ -315,7 +306,6 @@ pub struct DiffSpinBuild {
     pub vba:  [[[Array2<f64>; 2]; 2]; 2], // vba[mb0][ma0][mbk]
 
     pub iiab: [[[[Array4<f64>; 2]; 2]; 2]; 2], // iiab[ma0][mak][mb0][mbj]
-    pub iiba: [[[[Array4<f64>; 2]; 2]; 2]; 2], // iiba[mb0][mbk][ma0][maj]
 }
 
 // Owning struct for all computed intermediates.
@@ -355,19 +345,18 @@ pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
         for mi in 0..2 {p.aa.y[mi] = i; i += nn2;}
         for mi in 0..2 {for mj in 0..2 {p.aa.f[mi][mj] = i; i += nn2; }}
         for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.aa.v[mi][mj][mk] = i; i += nn2;}}}
-        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {for ml in 0..2 {p.aa.j[mi][mj][mk][ml] = i; i += nn4;}}}}
+        for s in 0..10 {p.aa.j[s] = i; i += nn4;}
 
         for mi in 0..2 {p.bb.x[mi] = i; i += nn2;}
         for mi in 0..2 {p.bb.y[mi] = i; i += nn2;}
         for mi in 0..2 {for mj in 0..2 {p.bb.f[mi][mj] = i; i += nn2;}}
         for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.bb.v[mi][mj][mk] = i; i += nn2;}}}
-        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {for ml in 0..2 {p.bb.j[mi][mj][mk][ml] = i; i += nn4;}}}}
+        for s in 0..10 {p.bb.j[s] = i; i += nn4;}
 
-        for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {p.ab.vab[ma0][mb0][mk] = i; i += nn2; }}}
-        for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {p.ab.vba[mb0][ma0][mk] = i; i += nn2; }}}
+        for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {p.ab.vab[ma0][mb0][mk] = i; i += nn2;}}}
+        for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {p.ab.vba[mb0][ma0][mk] = i; i += nn2;}}}
 
         for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {p.ab.iiab[ma0][maj][mb0][mbj] = i; i += nn4;}}}}
-        for mb0 in 0..2 {for mbj in 0..2 {for ma0 in 0..2 {for maj in 0..2 {p.ab.iiba[mb0][mbj][ma0][maj] = i; i += nn4;}}}}
     }
     (off, i) 
 }
@@ -385,7 +374,7 @@ pub fn write_same_spin(slab: &mut [f64], o: &SameSpinOffset, w: &SameSpinBuild) 
     write2(slab, o.y[1], &w.y[1]);
     for mi in 0..2 {for mj in 0..2 {write2(slab, o.f[mi][mj], &w.f[mi][mj]);}}
     for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {write2(slab, o.v[mi][mj][mk], &w.v[mi][mj][mk]);}}}
-    for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {for ml in 0..2 {write4(slab, o.j[mi][mj][mk][ml], &w.j[mi][mj][mk][ml]);}}}}
+    for s in 0..10 {write4(slab, o.j[s], &w.j[s]);}
 }
 
 /// Fill the diff-spin data owning structs with the diff-spin Wick's intermediates using the
@@ -397,10 +386,7 @@ pub fn write_same_spin(slab: &mut [f64], o: &SameSpinOffset, w: &SameSpinBuild) 
 pub fn write_diff_spin(slab: &mut [f64], o: &DiffSpinOffset, w: &DiffSpinBuild) {
     for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {write2(slab, o.vab[ma0][mb0][mk], &w.vab[ma0][mb0][mk]);}}}
     for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {write2(slab, o.vba[mb0][ma0][mk], &w.vba[mb0][ma0][mk]);}}}
-    for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {
-        write4(slab, o.iiab[ma0][maj][mb0][mbj], &w.iiab[ma0][maj][mb0][mbj]);
-        write4(slab, o.iiba[mb0][mbj][ma0][maj], &w.iiba[mb0][mbj][ma0][maj]);
-    }}}}
+    for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {write4(slab, o.iiab[ma0][maj][mb0][mbj], &w.iiab[ma0][maj][mb0][mbj]);}}}}
 }
 
 /// Copy matrix into tensor slab provided it is contiguous.
@@ -423,7 +409,7 @@ fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
     slab[off..off + src.len()].copy_from_slice(src);
 }
 
-/// Write 2D slice of 4D J or II tensors into provided output scratch. The given slice is t[r, c, i, j]  
+/// Write 2D slice of 4D J or IIab tensors into provided output scratch. The given slice is t[r, c, i, j]  
 /// where r, c are rows, columns and i, j are fixed indices.
 /// # Arguments:
 ///     `out`: Array2, preallocated output scratch.
@@ -465,6 +451,73 @@ fn slice4(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[us
                 buf[(r * ncols) + c] = *base.offset(off + cc * strides[1]);
             }
         }
+    }
+}
+
+/// Write 2D slice of 4D J and IIab tensor into provided output scratch. The given slice is t[r, c, i, j]  
+/// where r, c are rows, columns and i, j are fixed indices.
+/// # Arguments:
+///     `out`: Array2, preallocated output scratch.
+///     `t`: ArrayView4, view of a 4D tensor.
+///     `rows`: [usize], length excitation rank map from row labels to tensor index.
+///     `cols`: [usize], length excitation rank map from col labels to tensor index.
+///     `i_fixed`: usize, fixed tensor indices for the j dimension.
+///     `j_fixed`: usize, fixed tensor indices for the j dimension.
+fn slice4swap(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
+    let l = rows.len();
+    // `out` is contiguous so we write into flat buffer with row-major index as out[(r, c)] == buf[r * ncols + c]
+    let ncols = out.ncols();
+    let buf = out.as_slice_mut().unwrap();
+    // 4D tensor `t` is stored as base + a * strides[0] + b * strides[1] + c * strides[2] + d * strides[3] for 
+    // element at t[a, b, c, d], where base is the start of this memory in the slab.
+    let strides = t.strides();
+    let base = t.as_ptr();
+
+    unsafe { 
+        // For the fixed indices i, j we know that any t[i, j, r, c] can be found as
+        // base + i * strides[0] + j * strides[1] + r * strides[2] + c * strides[3].
+        let fixed = (i_fixed as isize) * strides[0] + (j_fixed as isize) * strides[1];
+
+        // Iterate over rows of output.
+        for r in 0..l {
+            // Output row r is given by tensor row rr = rows[r]. 
+            let rr = *rows.get_unchecked(r) as isize;
+            // Base offset for current output row is t[i, j, rr, 0] or 
+            // base + i * strides[0] + j * strides[1] + rr * strides[2] + 0, which is
+            // equivalent to fixed + rr * strides[2].
+            let off = fixed + rr * strides[2];
+            
+            // Iterate over columns of output.
+            for c in 0..l {
+                // Output col cc given by tensor col cc = cols[c].
+                let cc = *cols.get_unchecked(c) as isize;
+                // Element t[i, j, rr, cc] is base + i * strides[0] + j * strides[1] + rr * strides[2] + cc * strides[3]
+                // or off + cc * strides[3]. Write into output buffer as row major.
+                buf[(r * ncols) + c] = *base.offset(off + cc * strides[3]);
+            }
+        }
+    }
+}
+
+fn jslot(mi: usize, mj: usize, mk: usize, ml: usize,) -> (usize, bool) {
+    match (mi, mj, mk, ml) {
+        (0, 0, 0, 0) => (0, false),
+        (0, 0, 0, 1) => (1, false),
+        (0, 1, 0, 0) => (1, true),
+        (0, 0, 1, 0) => (2, false),
+        (1, 0, 0, 0) => (2, true),
+        (0, 0, 1, 1) => (3, false),
+        (1, 1, 0, 0) => (3, true),
+        (0, 1, 0, 1) => (4, false),
+        (0, 1, 1, 0) => (5, false),
+        (1, 0, 0, 1) => (5, true),
+        (0, 1, 1, 1) => (6, false),
+        (1, 1, 0, 1) => (6, true),
+        (1, 0, 1, 0) => (7, false),
+        (1, 0, 1, 1) => (8, false),
+        (1, 1, 1, 0) => (8, true),
+        (1, 1, 1, 1) => (9, false),
+        _ => unreachable!(),
     }
 }
 
@@ -745,29 +798,20 @@ impl SameSpinBuild {
         //      {}^{\Lambda\Gamma} J_{ab,cd}^{m_1, m_2, m_3, m_4} = \sum_{\mu\nu\tau\sigma} C_{L,a\mu}^{m_1} C_{R,b\nu}^{m_2}
         //      ((\mu\nu|\tau\sigma) - (\mu\sigma|\tau\nu)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
-        // basis.
-        let mut j: [[[[Array4<f64>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| {
-                std::array::from_fn(|_| {
-                    std::array::from_fn(|_| {
-                        Array4::<f64>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))
-                    })
-                })
-            })
+        // basis. Only 10 of 16 4D tensors of J need be stored due to symmetry.
+        let mut j: [Array4<f64>; 10] = std::array::from_fn(|_| {
+            Array4::<f64>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))
         });
-        let combos: Vec<(usize, usize, usize, usize)> =
-            (0..2).flat_map(|mi| (0..2).flat_map(move |mj|
-            (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
-        )).collect();
-        let blocks: Vec<((usize, usize, usize, usize), Array4<f64>)> = combos.into_par_iter().map(|(mi,mj,mk,ml)| {
+        let combos: [(usize, usize, usize, usize); 10] = [(0, 0, 0, 0), (0, 0, 0, 1), (0, 0, 1, 0), (0, 0, 1, 1), (0, 1, 0, 1), 
+                                                          (0, 1, 1, 0), (0, 1, 1, 1), (1, 0, 1, 0), (1, 0, 1, 1), (1, 1, 1, 1)];
+        let blocks: Vec<(usize, Array4<f64>)> = combos.into_par_iter().enumerate().map(|(s, (mi, mj, mk, ml))| {
             let mut blk = eri_ao2mo(eri, &cx[mi], &xc[mj], &cx[mk], &xc[ml]);
             let ex = blk.view().permuted_axes([0, 2, 1, 3]).to_owned().as_standard_layout().to_owned();
             blk -= &ex;
-            let blk = blk.as_standard_layout().to_owned();
-            ((mi, mj, mk, ml), blk)
+            (s, blk.as_standard_layout().to_owned())
         }).collect();
-        for ((mi,mj,mk,ml), blk) in blocks {
-            j[mi][mj][mk][ml] = blk;
+        for (s, blk) in blocks {
+            j[s] = blk;
         }
 
         Self {x, y, f0, f, v0, v, j, tilde_s_prod, phase, m, nmo}
@@ -1152,29 +1196,22 @@ impl DiffSpinBuild {
                 std::array::from_fn(|_| std::array::from_fn(|_| Array4::<f64>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))))
             })
         });
-        let mut iiba: [[[[Array4<f64>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| {
-                std::array::from_fn(|_| std::array::from_fn(|_| Array4::<f64>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))))
-            })
-        });
 
         let combos: Vec<(usize, usize, usize, usize)> =
             (0..2).flat_map(|mi| (0..2).flat_map(move |mj|
             (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
         )).collect();
 
-        let blocks: Vec<((usize, usize, usize, usize), (Array4<f64>, Array4<f64>))> = combos.into_par_iter().map(|(ma0, maj, mb0, mbj)| {
+        let blocks: Vec<((usize, usize, usize, usize), Array4<f64>)> = combos.into_par_iter().map(|(ma0, maj, mb0, mbj)| {
             let blk = eri_ao2mo(eri, cx_a[ma0], xc_a[maj], cx_b[mb0], xc_b[mbj]).as_standard_layout().to_owned();
-            let blkt = blk.view().permuted_axes([2, 3, 0, 1]).to_owned().as_standard_layout().to_owned();
-            ((ma0, maj, mb0, mbj), (blk, blkt))
+            ((ma0, maj, mb0, mbj), blk)
         }).collect();
 
-        for ((ma0, maj, mb0, mbj), (blk, blkt)) in blocks {
+        for ((ma0, maj, mb0, mbj), blk) in blocks {
             iiab[ma0][maj][mb0][mbj] = blk;
-            iiba[mb0][mbj][ma0][maj] = blkt;
         }
 
-        Self {vab0, vab, vba0, vba, iiab, iiba}
+        Self {vab0, vab, vba0, vba, iiab}
     }
         
     /// Build the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and 
@@ -1467,15 +1504,17 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                     let k_full = if k2 < j {k2} else {k2 + 1};
                     let mk = mcol(k_full);
 
-                                       // Extract slice of J corresponding to the current distribution of zeros and
+                    // Extract slice of J corresponding to the current distribution of zeros and
                     // get the correct minor matrix so as to align with the L - 1 dimensions.
-                    let j4 = w.j(m1 as usize, m2 as usize, mk as usize, mj as usize);
+                    let (slot, swap) = jslot(m1 as usize, m2 as usize, mk as usize, mj as usize);
+                    let j4 = w.j(slot);
                     //if maxabs4(j4) > 1e16 {
                     //    println!("HUGE maxabs4(j4): {}",  maxabs4(j4));
                     //    println!("(m1, m2, mk, mj): ({},{},{},{})", m1 as usize, m2 as usize, mk as usize, mj as usize);
                     //    println!();
                     //}
-                    slice4(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);
+                    if !swap {slice4(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);} 
+                    else {slice4swap(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);}
                     minor(&mut scratch.jslice2, &scratch.jslice_full, i, j); 
 
                     // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
@@ -1630,8 +1669,10 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                         
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
-                        let iib = &w.ab.iiba(mb0 as usize, mbk as usize, ma0 as usize, ma1 as usize);
-                        slice4(&mut scratch.iisliceb, iib, &scratch.rows_b, &scratch.cols_b, ra, ca);
+                        // We want tensor IIba here, but we only store IIab but may read IIab and
+                        // use the relation IIba[mb0][mbk][ma0][ma1] = IIab[ma0][ma1][mb0][mbk].
+                        let iib = w.ab.iiab(ma0 as usize, ma1 as usize, mb0 as usize, mbk as usize);
+                        slice4swap(&mut scratch.iisliceb, &iib, &scratch.rows_b, &scratch.cols_b, ra, ca);
                         
                         // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
                         // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
