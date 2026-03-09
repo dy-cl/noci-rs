@@ -224,6 +224,7 @@ pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
 /// Calculate the determinant of a 2 x 2 matrix. Takes Array2.
 /// # Arguments:
 ///     `a`: Array2, matrix to calculate the determinant of.
+#[inline(always)]
 fn det2(a: &Array2<f64>) -> f64 {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
     let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
@@ -233,6 +234,7 @@ fn det2(a: &Array2<f64>) -> f64 {
 /// Calculate the determinant of a 2 x 2 matrix. Takes 4 scalars.
 /// # Arguments:
 ///     `a`: Array2, matrix to calculate the determinant of.
+#[inline(always)]
 fn det2scalar(a00: f64, a01: f64, a10: f64, a11: f64) -> f64 {
     a00 * a11 - a01 * a10
 }
@@ -241,6 +243,7 @@ fn det2scalar(a00: f64, a01: f64, a10: f64, a11: f64) -> f64 {
 /// Calculate the determinant of a 3 x 3 matrix. Takes Array2
 /// # Arguments:
 ///     `a`: Array2, matrix to calculate the determinant of.
+#[inline(always)]
 fn det3(a: &Array2<f64>) -> f64 {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
     let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
@@ -251,6 +254,7 @@ fn det3(a: &Array2<f64>) -> f64 {
 /// Calculate the determinant of a 3 x 3 matrix. Takes 9 scalars.
 /// # Arguments:
 ///     `a`: Array2, matrix to calculate the determinant of.
+#[inline(always)]
 fn det3scalar(a00: f64, a01: f64, a02: f64, a10: f64, a11: f64, a12: f64, a20: f64, a21: f64, a22: f64) -> f64 {
     a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
 }
@@ -258,6 +262,7 @@ fn det3scalar(a00: f64, a01: f64, a02: f64, a10: f64, a11: f64, a12: f64, a20: f
 /// Calculate the determinant of a 4 x 4 matrix. Takes Array2.
 /// # Arguments:
 ///     `a`: Array2, matrix to calculate the determinant of.
+#[inline(always)]
 fn det4(a: &Array2<f64>) -> f64 {
     let m00 = {
         let a11 = a[(1, 1)]; let a12 = a[(1, 2)]; let a13 = a[(1, 3)];
@@ -299,6 +304,7 @@ fn det4(a: &Array2<f64>) -> f64 {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
+#[inline(always)]
 fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     adjt[(0, 0)] = 1.0;
     Some(a[(0, 0)])
@@ -308,6 +314,7 @@ fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
+#[inline(always)]
 fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
     let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
@@ -327,6 +334,7 @@ fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
+#[inline(always)]
 fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
     let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
@@ -358,6 +366,7 @@ fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Arguments:
 ///     `adjt`: Array2, scratch space for writing adjugate transpose.
 ///     `a`: Array2, input matrix.
+#[inline(always)]
 fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let det = det4(a);
     if !det.is_finite() {return None;}
@@ -490,6 +499,7 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 ///     `y`: Array2, Y matrix elements.
 ///     `rows`: [usize], row indices of X or Y.
 ///     `cols`: [usize], column indices of X or Y.
+#[inline(always)]
 pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize]) {
     let l = rows.len();
     let ncols = d.ncols();
@@ -510,18 +520,22 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
             // Row index for output row i.
             let r = *rows.get_unchecked(i) as isize;
 
+            let xr = r * xstr[0];
+            let yr = r * ystr[0];
+            let incols = i * ncols;
+
             // Lower triange of matrix including diagonal gets X.
             // X[r, c] is at base + r * xstride[0] + c * xstride[1].
             for j in 0..=i {
                 let c = *cols.get_unchecked(j) as isize;
-                *buf.get_unchecked_mut((i * ncols) + j) = *xptr.offset(r * xstr[0] + c * xstr[1]);
+                *buf.get_unchecked_mut(incols + j) = *xptr.offset(xr + c * xstr[1]);
             }
             
             // Upper triangle gets Y.
             // Y[r, c] is at based + r * ystride[0] + c * ystride[1].
             for j in (i + 1)..l {
                 let c = *cols.get_unchecked(j) as isize;
-                *buf.get_unchecked_mut((i * ncols) + j) = *yptr.offset(r * ystr[0] + c * ystr[1]);
+                *buf.get_unchecked_mut(incols + j) = *yptr.offset(yr + c * ystr[1]);
             }
         }
     }
@@ -535,6 +549,7 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
 ///    `det0`: Array2, base matrix.
 ///    `det1`: Array2, mixing matrix.
 ///    `bits`: usize, bitstring.
+#[inline(always)]
 pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) {
     let ncols = det0.ncols();
     let out = d.as_slice_mut().unwrap();
@@ -561,6 +576,7 @@ pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, 
 ///     `m`: Array2, base matrix.
 ///     `r_rm`: usize, row index to remove.
 ///     `c_rm`: usize, column index to remove.
+#[inline(always)]
 pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
     let n = m.nrows();
     if n == 0 {return;}
@@ -583,6 +599,7 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
 /// # Arguments:
 ///     `a`: Array2, matrix to find determinant of.
 ///     `thresh`: f64, tolerance for singular values in SVD fallback.
+#[inline(always)]
 pub fn det(a: &Array2<f64>) -> Option<f64> {
     let n = a.nrows();
     if n != a.ncols() {return None;}
@@ -614,6 +631,7 @@ pub fn det(a: &Array2<f64>) -> Option<f64> {
 ///     `lu`: Array2, preallocated scratch space for LU solve.
 ///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
 ///     `thresh`: f64, tolerance for singularity test.
+#[inline(always)]
 pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 
     let n = a.nrows();
@@ -648,6 +666,7 @@ pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> 
 ///     `invs`: Array1, preallocated scratch space for singular values of SVD.
 ///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
 ///     `thresh`: f64, tolerance for singularity.
+#[inline(always)]
 pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
 
@@ -719,6 +738,7 @@ pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, 
 ///     `lu`: Array2, preallocated scratch space for LU solve.
 ///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
 ///     `thresh`: f64, tolerance for singularity.
+#[inline(always)]
 pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
 

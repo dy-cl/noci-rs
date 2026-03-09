@@ -1363,6 +1363,9 @@ pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
     let l = l_ex.holes.len() + g_ex.holes.len();
     if w.m > l {return 0.0;}
 
+    if w.m == 0 {return w.phase * w.tilde_s_prod * det(&scratch.det0).unwrap_or(0.0);}
+    if w.m == l {return w.phase * w.tilde_s_prod * det(&scratch.det1).unwrap_or(0.0);}
+
     let mut acc = 0.0;
 
     // Iterate over all possible distributions of zeros amongst the columns.
@@ -1380,6 +1383,7 @@ pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+#[inline(always)]
 pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
     // If the total excitation rank L + 1 is less than the number of zero-singular values in
@@ -1391,7 +1395,7 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
 
     // Iterate over all possible distributions of zeros amongst the columns.
     for bitstring in iter_m_combinations(l + 1, w.m) {
-        let mi = (bitstring & 1) == 1;
+        let mi = ((bitstring & 1) == 1) as usize;
 
         let mcol: u64 = bitstring >> 1;
         mix_columns(&mut scratch.det_mix, &scratch.det0, &scratch.det1, mcol);
@@ -1399,28 +1403,20 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
         // First term in the sum of Eqn 26 involves the same sum over all possible bitstrings with
         // the F0 matrix multiplying the contraction determinant.
         let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &mut scratch.lu, &scratch.det_mix, tol) else {continue;};
-        let mut contrib = det_det * w.f0[mi as usize];
+        let mut contrib = det_det * w.f0[mi];
 
-        // Remaining terms in Eqn 26 consist of the same sum over all possible bitstrings, but now
-        // we iterate over columns, forming a new determinant for each with the current column
-        // replaced by the F matrices.
         for b in 0..l {
-            // Find correct zero index for this column and use to select F.
-            let mj = ((bitstring >> (b + 1)) & 1) == 1; 
-            let f = w.f(mi as usize, mj as usize);
-
-            // Replace column of det with F matrices.
+            let mj = ((bitstring >> (b + 1)) & 1) as usize;
+            let f = w.f(mi, mj);
             let cb = scratch.cols[b];
+
+            let mut corr = 0.0;
             for a in 0..l {
                 let ra = scratch.rows[a];
-                scratch.fcol[a] = f[(ra, cb)];
+                let new = f[(ra, cb)];
+                corr += (new - scratch.det_mix[(a, b)]) * scratch.adjt_det[(a, b)];
             }
-            let dcol = &scratch.det_mix.column(b);
-            let acol = scratch.adjt_det.column(b);
-            scratch.dv.assign(&scratch.fcol);
-            scratch.dv -= dcol;
-            let det_det_f = det_det + scratch.dv.dot(&acol);
-            contrib -= det_det_f;
+            contrib -= det_det + corr;
         }
         acc += contrib;
     }
@@ -1433,6 +1429,7 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+#[inline(always)]
 pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
     // If the total excitation rank L + 2 is less than the number of zero-singular values in
@@ -1444,9 +1441,8 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 
     // Iterate over all possible distributions of zeros amongst the columns.
     for bits in iter_m_combinations(l + 2, w.m) {
-        let m1 = (bits & 1) == 1;
-        let m2 = ((bits >> 1) & 1) == 1;
-        let mcol = |k: usize| ((bits >> (k + 2)) & 1) == 1;
+        let m1 = (bits & 1) as usize;
+        let m2 = ((bits >> 1) & 1) as usize;
         let ind: u64 = bits >> 2;
         
         // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 2.
@@ -1456,31 +1452,26 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
         let mut contrib = 0.0f64;
 
         // Equation 30 sum over all distributions of zeros with V0 matrix multiplying size L + 2 determinant.
-        let q = (m1 as usize) + (m2 as usize);
-        let x = w.v0[q] * det_det;
-        contrib += x;
+        contrib += w.v0[m1 + m2] * det_det;
 
         // Equation 34 sum over all distributions of zeros and iterating over all columns replacing
         // the current column with the V matrices to form a new determinant.
         for k in 0..l {
-            let mk = mcol(k);
+            let mk = ((bits >> (k + 2)) & 1) as usize;
             // Choose correct column of V based upon zero distributions.
-            let vcol = w.v(m1 as usize, m2 as usize, mk as usize);
+            let vcol = w.v(m1, m2, mk);
 
-            // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
-            // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
-            // indicates the kth column of D.
+            let ck = scratch.cols[k];
+
+            let mut corr = 0.0;
             for r in 0..l {
-                    scratch.v1[r] = vcol[(scratch.rows[r], scratch.cols[k])];
+                let new = vcol[(scratch.rows[r], ck)];
+                corr += (new - scratch.det_mix[(r, k)]) * scratch.adjt_det[(r, k)];
             }
-            let v2 = scratch.det_mix.column(k);      
-            let a =  scratch.adjt_det.column(k);
-            scratch.dv1.assign(&scratch.v1);
-            scratch.dv1 -= &v2;
 
-            contrib -= 2.0 * (det_det + scratch.dv1.dot(&a));
+            contrib -= 2.0 * (det_det + corr);
         }
-        
+
         // Equation 38 double sum over excitation ranks (i, j) which vary the two electron 4-index tensor
         // J accordingly, and within each double sum is another sum over columns of determinant
         // where column k is replaced with J matrices to form a new determinant.
@@ -1496,17 +1487,17 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                 let ri_fixed = scratch.rows[i];
                 let cj_fixed = scratch.cols[j];
 
-                let mj = mcol(j);
+                let mj = ((bits >> (j + 2)) & 1) as usize;
                 
                 // Inner sum iterates over all columns of the L - 1 determinant and replaces column
                 // k with the appropriate column of J.
                 for k2 in 0..(l - 1) {
                     let k_full = if k2 < j {k2} else {k2 + 1};
-                    let mk = mcol(k_full);
+                    let mk = ((bits >> (k_full + 2)) & 1) as usize;
 
                     // Extract slice of J corresponding to the current distribution of zeros and
                     // get the correct minor matrix so as to align with the L - 1 dimensions.
-                    let (slot, swap) = jslot(m1 as usize, m2 as usize, mk as usize, mj as usize);
+                    let (slot, swap) = jslot(m1, m2, mk, mj);
                     let j4 = w.j(slot);
                     //if maxabs4(j4) > 1e16 {
                     //    println!("HUGE maxabs4(j4): {}",  maxabs4(j4));
@@ -1515,18 +1506,14 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                     //}
                     if !swap {slice4(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);} 
                     else {slice4swap(&mut scratch.jslice_full, &j4, &scratch.rows, &scratch.cols, ri_fixed, cj_fixed);}
-                    minor(&mut scratch.jslice2, &scratch.jslice_full, i, j); 
+                    minor(&mut scratch.jslice2, &scratch.jslice_full, i, j);
 
-                    // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
-                    // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
-                    // indicates the kth column of D.
-                    let v1 = scratch.jslice2.column(k2);
-                    let v2 = scratch.det_mix2.column(k2);
-                    let a = scratch.adjt_det2.column(k2);
-
-                    scratch.dv1m.assign(&v1);
-                    scratch.dv1m -= &v2;
-                    contrib += 1.0 * phase * (det_det2 + scratch.dv1m.dot(&a));
+                    let mut corr = 0.0;
+                    for r in 0..(l - 1) {
+                        let new = scratch.jslice2[(r, k2)];
+                        corr += (new - scratch.det_mix2[(r, k2)]) * scratch.adjt_det2[(r, k2)];
+                    }
+                    contrib += phase * (det_det2 + corr);
                 }
             }
         }
@@ -1541,6 +1528,7 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 ///     `w`: SameSpin: same spin Wick's reference pair intermediates.
 ///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
 ///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+#[inline(always)]
 pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
 
     // If the per-spin excitation rank L + 1 is less than the number of zero-singular values in
@@ -1556,13 +1544,13 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
     // Convert the contraction determinant labels into actual indices.
     scratch.rows_a.clear();
-    scratch.rows_a.extend(scratch.rows_label_a.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.aa.nmo)));
+    for &(s, _t, i) in &scratch.rows_label_a {scratch.rows_a.push(label_to_idx(s, i, w.aa.nmo));}
     scratch.cols_a.clear();
-    scratch.cols_a.extend(scratch.cols_label_a.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.aa.nmo)));
+    for &(s, _t, i) in &scratch.cols_label_a {scratch.cols_a.push(label_to_idx(s, i, w.aa.nmo));}
     scratch.rows_b.clear();
-    scratch.rows_b.extend(scratch.rows_label_b.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
+    for &(s, _t, i) in &scratch.rows_label_b {scratch.rows_b.push(label_to_idx(s, i, w.bb.nmo));}
     scratch.cols_b.clear();
-    scratch.cols_b.extend(scratch.cols_label_b.iter().map(|(s, _t, i)| label_to_idx(*s, *i, w.bb.nmo)));
+    for &(s, _t, i) in &scratch.cols_label_b {scratch.cols_b.push(label_to_idx(s, i, w.bb.nmo));}
     
     let x0aa = w.aa.x(0);
     let y0aa = w.aa.y(0);
@@ -1583,8 +1571,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
     // Iterate over all possible distributions of alpha zeros amongst the columns.
     for bits_a in iter_m_combinations(la + 1, w.aa.m) {
-        let ma0 = (bits_a & 1) == 1;
-        let ma_col = |k: usize| ((bits_a >> (k + 1)) & 1) == 1;
+        let ma0 = (bits_a & 1) as usize;
         let inda: u64 = bits_a >> 1;
         
         // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
@@ -1594,8 +1581,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
         
         // Iterate over all possible distributions of beta zeros amongst the columns.
         for bits_b in iter_m_combinations(lb + 1, w.bb.m) {
-            let mb0 = (bits_b & 1) == 1;
-            let mb_col = |k: usize| ((bits_b >> (k + 1)) & 1) == 1;
+            let mb0 = (bits_b & 1) as usize;
             let indb: u64 = bits_b >> 1;
             
             // Construct mixed X0, Y0, X1, Y1 determinant for the given bitstring of size L + 1 for
@@ -1607,47 +1593,38 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
             // Equation 30 sum over all distributions of zeros with V0_{ab} matrix multiplying the
             // alpha and beta size La and Lb determinants respectively.
-            let x = w.ab.vab0[ma0 as usize][mb0 as usize] * det_deta * det_detb;
-            contrib += x;
+            contrib += w.ab.vab0[ma0][mb0] * det_deta * det_detb;
 
             // Equation 34 alpha sum over all distributions of zeros and iterating over all columns replacing
             // the current column with the V matrices to form a new determinant.
             for k in 0..la {
                 // Choose correct column of V based upon zero distributions.
-                let mak = ma_col(k);
-                let vcol = &w.ab.vab(ma0 as usize, mb0 as usize, mak as usize);
+                let mak = ((bits_a >> (k + 1)) & 1) as usize;
+                let vcol = &w.ab.vab(ma0, mb0, mak);
+                let ck = scratch.cols_a[k];
 
-                // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
-                // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
-                // indicates the kth column of D.
+                let mut corr = 0.0;
                 for r in 0..la {
-                    scratch.v1a[r] = vcol[(scratch.rows_a[r], scratch.cols_a[k])];
+                    let new = vcol[(scratch.rows_a[r], ck)];
+                    corr += (new - scratch.deta_mix[(r, k)]) * scratch.adjt_deta[(r, k)];
                 }
-                let v2 = scratch.deta_mix.column(k);      
-                let a = scratch.adjt_deta.column(k);
-                scratch.dv1a.assign(&scratch.v1a);
-                scratch.dv1a -= &v2;
-                contrib -= (det_deta + scratch.dv1a.dot(&a)) * det_detb;
+                contrib -= (det_deta + corr) * det_detb;
             }
 
             // Equation 34 beta sum over all distributions of zeros and iterating over all columns replacing
             // the current column with the V matrices to form a new determinant.
             for k in 0..lb {
                 // Choose correct column of V based upon zero distributions.
-                let mbk = mb_col(k);
-                let vcol = &w.ab.vba(mb0 as usize, ma0 as usize, mbk as usize);
-                
-                // Calculate det(D (k --> V)), that is, determinant D with column k replaced by V using
-                // the identity, det(D (k --> V)) = det(D) + (V - D(k))^T adj(D(k)) in which D(k)
-                // indicates the kth column of D.
+                let mbk = ((bits_b >> (k + 1)) & 1) as usize;
+                let vcol = &w.ab.vba(mb0, ma0, mbk);
+                let ck = scratch.cols_b[k];
+
+                let mut corr = 0.0;
                 for r in 0..lb {
-                    scratch.v1b[r] = vcol[(scratch.rows_b[r], scratch.cols_b[k])];
+                    let new = vcol[(scratch.rows_b[r], ck)];
+                    corr += (new - scratch.detb_mix[(r, k)]) * scratch.adjt_detb[(r, k)];
                 }
-                let v2 = scratch.detb_mix.column(k);      
-                let a = scratch.adjt_detb.column(k);
-                scratch.dv1b.assign(&scratch.v1b);
-                scratch.dv1b -= &v2;
-                contrib -= (det_detb + scratch.dv1b.dot(&a)) * det_deta;
+                contrib -= (det_detb + corr) * det_deta;
             }
 
             // Equation 38 beta double sum over excitation ranks (i, j) which vary the two electron 4-index tensor
@@ -1655,36 +1632,28 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
             // sum is another sum over columns of determinant where column k is replaced with II matrices to form a new determinant.
             for (i, &ra) in scratch.rows_a.iter().enumerate() {
                 for (j, &ca) in scratch.cols_a.iter().enumerate() {
-                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+
+                    let cofa = scratch.adjt_deta[(i, j)];
+                    let ma1 = ((bits_a >> (j + 1)) & 1) as usize;
                 
-                    // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
-                    minor(&mut scratch.deta_mix_minor, &scratch.deta_mix, i, j);
-                    let Some(det_deta_minor_mix) = det(&scratch.deta_mix_minor) else {continue;};
-                    
                     // Inner sum iterates over all columns of the determinant and replaces column
                     // k with the appropriate column of II.
                     for k in 0..lb {
-                        let mbk = mb_col(k);
-                        let ma1 = ma_col(j);
+                        let mbk = ((bits_b >> (k + 1)) & 1) as usize;
                         
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
                         // We want tensor IIba here, but we only store IIab but may read IIab and
                         // use the relation IIba[mb0][mbk][ma0][ma1] = IIab[ma0][ma1][mb0][mbk].
-                        let iib = w.ab.iiab(ma0 as usize, ma1 as usize, mb0 as usize, mbk as usize);
+                        let iib = w.ab.iiab(ma0, ma1, mb0, mbk);
                         slice4swap(&mut scratch.iisliceb, &iib, &scratch.rows_b, &scratch.cols_b, ra, ca);
-                        
-                        // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
-                        // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
-                        // indicates the kth column of D. 
+
+                        let mut corr = 0.0;
                         for r in 0..lb {
-                            scratch.v1b[r] = scratch.iisliceb[(r, k)];
+                            let new = scratch.iisliceb[(r, k)];
+                            corr += (new - scratch.detb_mix[(r, k)]) * scratch.adjt_detb[(r, k)];
                         }
-                        let v2 = scratch.detb_mix.column(k);      
-                        let a = scratch.adjt_detb.column(k);
-                        scratch.dv1b.assign(&scratch.v1b);
-                        scratch.dv1b -= &v2;
-                        contrib += 0.5 * phase * (det_detb + scratch.dv1b.dot(&a)) * det_deta_minor_mix;
+                        contrib += 0.5 * cofa * (det_detb + corr);
                     }
                 }
             }
@@ -1694,41 +1663,32 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
             // sum is another sum over columns of determinant where column k is replaced with II matrices to form a new determinant.
             for (i, &rb) in scratch.rows_b.iter().enumerate() {
                 for (j, &cb) in scratch.cols_b.iter().enumerate() {
-                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
-                    
-                    // Find the (L - 1) by (L - 1) determinant removing row and column i, j.
-                    minor(&mut scratch.detb_mix_minor, &scratch.detb_mix, i, j);
-                    let Some(det_detb_minor_mix) = det(&scratch.detb_mix_minor) else {continue;};
-                    
+
+                    let cofb = scratch.adjt_detb[(i, j)];
+                    let mb1 = ((bits_b >> (j + 1)) & 1) as usize;
+
                     // Inner sum iterates over all columns of the L determinant and replaces column
                     // k with the appropriate column of II.
                     for k in 0..la {
-                        let mak = ma_col(k);
-                        let mb1 = mb_col(j);
+                        let mak = ((bits_a >> (k + 1)) & 1) as usize;
                         
                         // Extract slice of II corresponding to the current distribution of zeros and
                         // get the correct minor matrix so as to align with the L - 1 dimensions.
-                        let iia = &w.ab.iiab(ma0 as usize, mak as usize, mb0 as usize, mb1 as usize);
+                        let iia = &w.ab.iiab(ma0, mak, mb0, mb1);
                         slice4(&mut scratch.iislicea, iia, &scratch.rows_a, &scratch.cols_a, rb, cb);
-                        
-                        // Calculate det(D (k --> J)), that is, determinant D with column k replaced by J using
-                        // the identity, det(D (k --> J)) = det(D) + (J - D(k))^T adj(D(k)) in which D(k)
-                        // indicates the kth column of D.
+
+                        let mut corr = 0.0;
                         for r in 0..la {
-                            scratch.v1a[r] = scratch.iislicea[(r, k)];
+                            let new = scratch.iislicea[(r, k)];
+                            corr += (new - scratch.deta_mix[(r, k)]) * scratch.adjt_deta[(r, k)];
                         }
-                        let v2 = scratch.deta_mix.column(k);      
-                        let a = scratch.adjt_deta.column(k);
-                        scratch.dv1a.assign(&scratch.v1a);
-                        scratch.dv1a -= &v2;
-                        contrib += 0.5 * phase * (det_deta + scratch.dv1a.dot(&a)) * det_detb_minor_mix;
+                        contrib += 0.5 * cofb * (det_deta + corr);
                     }
                 }
             }
             acc += contrib;
         }
     }
-
     (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * acc
 }
 
