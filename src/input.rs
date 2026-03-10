@@ -7,7 +7,8 @@ pub enum Propagator {
     Unshifted,
     Shifted,
     DoublyShifted,
-    DifferenceDoublyShifted,
+    DifferenceDoublyShiftedU1,
+    DifferenceDoublyShiftedU2,
 }
 
 // Choice of excitation generator.
@@ -341,8 +342,12 @@ pub fn load_input(path: &str) -> Input {
             "unshifted" => Propagator::Unshifted,
             "shifted" => Propagator::Shifted,
             "doubly-shifted" => Propagator::DoublyShifted,
-            "difference-doubly-shifted" => Propagator::DifferenceDoublyShifted,
-            _ => {eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', or 'difference-doubly-shifted'."); std::process::exit(1);}
+            "difference-doubly-shifted-u1" => Propagator::DifferenceDoublyShiftedU1,
+            "difference-doubly-shifted-u2" => Propagator::DifferenceDoublyShiftedU2,
+            _ => {
+                eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', 'difference-doubly-shifted-u1', 'difference-doubly-shifted-u2."); 
+                std::process::exit(1);
+            }
     };
     let prop = PropagationOptions {dt, max_steps, propagator};
     

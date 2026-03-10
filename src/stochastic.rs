@@ -337,21 +337,18 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis
 }
 
 /// Compute the off-diagonal coupling between determinants depending on which propagator is used.
-/// All currently implemented propagators have the same off-diagonal component:
-/// |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|.
 /// # Arguments:
 ///      hlg: f64, matrix element H_{\Lambda\Gamma}
 ///      slg: f64, matrix element S_{\Lambda\Gamma}
 ///      es_s: f64, E_s^S(\tau) shift energy.
 ///      prop: Propagator, chosen propagator.
-fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
-    // These are currently all the same, but for future-proofness if more propagators are
-    // introduced this function is worth having.
+fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
     match prop {
         Propagator::Unshifted => hlg - es_s * slg,
         Propagator::Shifted => hlg - es_s * slg,
         Propagator::DoublyShifted => hlg - es_s * slg,
-        Propagator::DifferenceDoublyShifted => hlg - es_s * slg,
+        Propagator::DifferenceDoublyShiftedU1 => hlg - 0.5 * (es + es_s) * slg,
+        Propagator::DifferenceDoublyShiftedU2 => hlg - es_s * slg,
     }
 }
 
@@ -370,7 +367,7 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, prop: &Propagator) -> f64 {
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], input: &Input, tol: f64, 
+fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFState], input: &Input, tol: f64, 
                   noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> HeatBath {
     let ndets = basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
@@ -389,7 +386,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
         let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-        let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+        let k = coupling(hlg, slg, es_s, es, &input.prop.propagator);
 
         sumlg += k.abs();
         cumulatives.push(sumlg);
@@ -411,7 +408,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, ao: &AoData, basis: &[SCFState], inpu
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, rng: &mut SmallRng, tol: f64,
+fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, tol: f64,
                 noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
     let ndets = basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
@@ -420,7 +417,7 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input:
     if lambda >= gamma {lambda += 1;}
 
     let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-    let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+    let k = coupling(hlg, slg, es_s, es, &input.prop.propagator);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
     (pgen, k, lambda) 
@@ -440,7 +437,7 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input:
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, input: &Input, rng: &mut SmallRng, hb: &HeatBath, tol: f64,
+fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, hb: &HeatBath, tol: f64,
                    noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
 
     let ndets = basis.len();
@@ -451,7 +448,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
         let mut lambda = rng.gen_range(0..(ndets - 1));
         if lambda >= gamma {lambda += 1;}
         let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-        let k = coupling(hlg, slg, es_s, &input.prop.propagator);
+        let k = coupling(hlg, slg, es_s, es, &input.prop.propagator);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
     }
@@ -506,7 +503,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, inp
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState],
+fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, es: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState],
             wicks: Option<&WicksView>, irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch, outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, 
             outsamples: &mut Vec<f64>) {
 
@@ -515,7 +512,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 
     // Precompute per determinant heat-bath excitation generation quantities.
     let mut hb: Option<HeatBath> = None;
-    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, ao, basis, input, tol, noci_reference_basis, wicks, scratch));}
+    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, es, ao, basis, input, tol, noci_reference_basis, wicks, scratch));}
 
     // Iterate over all walkers on state Gamma.
     for _ in 0..nwalkers {
@@ -523,8 +520,8 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
         // generation scheme.
         let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
-            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, input, rng, tol, noci_reference_basis, wicks, scratch),
-            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, input, rng, hb.as_ref().unwrap(), tol, noci_reference_basis, wicks, scratch),
+            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, es, input, rng, tol, noci_reference_basis, wicks, scratch),
+            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, es, input, rng, hb.as_ref().unwrap(), tol, noci_reference_basis, wicks, scratch),
             ExcitationGen::ApproximateHeatBath => unimplemented!(),
         };
 
@@ -579,7 +576,8 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
         Propagator::Unshifted => input.prop.dt * (hgg - sgg * es_s),
         Propagator::Shifted => input.prop.dt * (hgg - sgg * es_s - es_s),
         Propagator::DoublyShifted => input.prop.dt * (hgg - sgg * es_s - es),
-        Propagator::DifferenceDoublyShifted => input.prop.dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
+        Propagator::DifferenceDoublyShiftedU1 => input.prop.dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
+        Propagator::DifferenceDoublyShiftedU2 => input.prop.dt * (hgg - sgg * es_s - (es - es_s)),
     };
     let p = pdeath.abs();
 
@@ -836,7 +834,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
             // Death and cloning is entirely local.
             death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, noci_reference_basis, wicks, &mut rng, &mut scratch, &mut loc);
             // Spawning need not be local.
-            spawning(ao, basis, gamma, ngamma, es_s, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng, &mut scratch, &mut loc, &mut rem, &mut samp);
+            spawning(ao, basis, gamma, ngamma, es_s, *es, input, tol, noci_reference_basis, wicks, irank, nranks, &mut rng, &mut scratch, &mut loc, &mut rem, &mut samp);
 
             (loc, rem, samp, rng, scratch)
         };
@@ -928,7 +926,7 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
         let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
         world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
         d_calc_populations += t0.elapsed().as_secs_f64();
-        
+
         // Activate overlap-transformed and non-overlap transformed shifts.
         if !reached_c && (nwc > qmc.target_population) {
             reached_c = true;
@@ -947,16 +945,16 @@ pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &m
             es_s -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwsc / nwprevsc).ln();
             nwprevsc = nwsc;
         }
-
+        
         // Update energy. 
         let t0 = Instant::now();
         let iref = 0;
         let eproj = projected_energy(ao, basis, &mc.walkers, iref, world, tol, input, noci_reference_basis, wicks);
         d_eproj += t0.elapsed().as_secs_f64();
-    
+
         es_corr = if reached_c {*es - e0} else {0.0};
         es_s_corr = if reached_sc {es_s - e0} else {0.0};
-
+   
         // Print table rows.
         if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
                        it + 1, eproj, eproj - basis[0].e, es_corr, es_s_corr, nwc as f64, nrefc as f64, nwsc, nrefsc);}

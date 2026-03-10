@@ -108,9 +108,9 @@ impl ProjPropagator {
         let identityfac = match prop {
             Propagator::Unshifted => 1.0, 
             Propagator::Shifted => 1.0 + dt * es,
-            // Not yet implemented. Redirect to normal shift.
-            Propagator::DoublyShifted => 1.0 + dt * es,
-            Propagator::DifferenceDoublyShifted => 1.0 + dt * es,
+            Propagator::DoublyShifted => unimplemented!(),
+            Propagator::DifferenceDoublyShiftedU1 => unimplemented!(),
+            Propagator::DifferenceDoublyShiftedU2 => unimplemented!(),
         };
 
         let urr = &(identityfac * &identityr) - &(dt * (&hrr - &srr.mapv(|z| es * z)));
@@ -220,9 +220,9 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
         let mut c_new_norm = match input.prop.propagator {
             Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
             Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.prop.dt),
-            // Not implemented yet. Redirect to normal shift. 
-            Propagator::DoublyShifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
-            Propagator::DifferenceDoublyShifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
+            Propagator::DoublyShifted => unimplemented!(),
+            Propagator::DifferenceDoublyShiftedU1 => unimplemented!(),
+            Propagator::DifferenceDoublyShiftedU2 => unimplemented!(),
         };
 
         // Normalise.

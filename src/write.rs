@@ -100,7 +100,8 @@ pub fn print_input(input: &Input) {
         Propagator::Unshifted => "unshifted",
         Propagator::Shifted => "shifted",
         Propagator::DoublyShifted => "doubly-shifted",
-        Propagator::DifferenceDoublyShifted => "difference-doubly-shifted",
+        Propagator::DifferenceDoublyShiftedU1 => "difference-doubly-shifted-u1",
+        Propagator::DifferenceDoublyShiftedU2 => "difference-doubly-shifted-u2",
     };
     println!("PROPAGATOR: {}", propagator);
     println!();
