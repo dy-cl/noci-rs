@@ -18,10 +18,11 @@ use noci_rs::stochastic::StochStepTimings;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
-use noci_rs::basis::{generate_reference_noci_basis, generate_qmc_noci_basis};
-use noci_rs::noci::{build_noci_matrices, calculate_noci_energy, build_wicks_shared};
+use noci_rs::basis::{generate_reference_noci_basis, generate_excited_basis};
+use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_wicks_shared};
 use noci_rs::deterministic::{propagate, projected_energy};
-use noci_rs::stochastic::{step};
+use noci_rs::stochastic::{qmc_step};
+use noci_rs::snoci::{snoci_step};
 use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::mpiutils::{broadcast};
 use noci_rs::write::{print_input};
@@ -143,7 +144,8 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     broadcast(world, &mut noci_reference_basis);
     
     // Construct intermediates for extended non-orthogonal Wick's theorem if using. The actual
-    // computation happens on only rank 0 (with rayon).
+    // computation happens on only world rank 0 (with rayon). If multiple shared memory regions are 
+    // used multiple copies of the intermediates will be computed.
     let t_wi = Instant::now();
     let mut wicks_shared: Option<WicksShared> = None;
     if input.wicks.enabled || input.wicks.compare {
@@ -156,12 +158,9 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     let d_wi = t_wi.elapsed();
     let wicks_view: Option<&WicksView> = wicks_shared.as_ref().map(|ws| ws.view());
 
-    // Deteministic propagation and reference NOCI happen only on rank 0 (with rayon).
+    // Reference NOCI, deterministic propagation and selected NOCI (SNOCI) occur only on rank 0 (with Rayon).
     if irank == 0 {
-        // Run NOCI reference calculation.
         let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, wicks_view);
-        // Note that noci_reference_basis and states above are the same if every requested basis
-        // state in the input file has noci = true.
         noci_reference_basis = refb;
         e_noci_ref = e_ref;
         c0 = c0v;
@@ -176,6 +175,10 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
             timings.qmc_det_hs = d_hs;
             timings.qmc_det_prop = d_prop;
             timings.wicks_intermediates = d_wi;
+        }
+
+        if input.snoci.is_some() {
+            run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_view);
         }
     }
 
@@ -274,7 +277,8 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Build excitations atop NOCI-reference basis.
     let t_basis = Instant::now();
-    let basis = generate_qmc_noci_basis(noci_reference_basis, input);
+    let include_refs = true;
+    let basis = generate_excited_basis(noci_reference_basis, input, include_refs);
     let d_basis = t_basis.elapsed();
 
     let n = basis.len();
@@ -282,7 +286,8 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     println!("Calculating NOCI-QMC deterministic propagation matrix elements for {} determinants ({} elements)...", n, n * n);
     
     // Call matrix element routines.
-    let (h, s, d_hs) = build_noci_matrices(ao, input, &basis, noci_reference_basis, tol, wicks);
+    let symmetric = true;
+    let (h, s, d_hs) = build_noci_hs(ao, input, &basis, &basis, noci_reference_basis, tol, wicks, symmetric);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.
@@ -383,7 +388,8 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
     
     // Build excitations atop NOCI-reference basis.
     let t_basis = Instant::now();
-    let basis = generate_qmc_noci_basis(noci_reference_basis, input);
+    let include_refs = true;
+    let basis = generate_excited_basis(noci_reference_basis, input, include_refs);
     let d_basis = t_basis.elapsed();
     let n = basis.len();
 
@@ -408,7 +414,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let (e, local_hist, step_timings) = step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, noci_reference_basis, wicks);
+    let (e, local_hist, step_timings) = qmc_step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, noci_reference_basis, wicks);
     let d_prop = t_prop.elapsed();
 
     // Write excitation histogram to a file. This should currently only be used if doing a single 
@@ -430,6 +436,35 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
     let d_total = t_total.elapsed();
 
     (e, d_total, d_basis, d_prop, step_timings)
+}
+
+pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, wicks: Option<&WicksView>) {
+    let opts = input.snoci.as_ref().unwrap();
+    let mut current_space = initial_space.to_vec();
+    // RHF energy from which to define correlation.
+    let e0 = noci_reference_basis[0].e;
+    
+    // Print table header.
+    println!("{}", "=".repeat(100));
+    println!("{:^6} {:^10} {:^11} {:^11} {:^16} {:^16} {:^16} {:^16}", "iter", "# Current", "# Candidate", "# Selected", "E", "Ecorr", "EPT2", "E + EPT2");
+
+    for it in 0..opts.max_iter {
+        let state = snoci_step(ao, &current_space, noci_reference_basis, input, tol, wicks);
+        println!("{:<6} {:>10} {:>11} {:>11} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
+                it, current_space.len(), state.candidates.len(), state.selected.len(), state.ecurrent, state.ecurrent - e0, state.ept2, state.ecurrent + state.ept2);
+
+        // Convergence or stopping.
+        if state.selected.is_empty() {
+            println!("SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).", it, opts.sigma);
+            break;
+        }
+        if state.ept2.abs() < opts.tol {
+            println!("SNOCI stopped at iteration {}: |EPT2|: {:.12} fell below tolerance {:.12}.", it, state.ept2.abs(), opts.tol);
+            break;
+        }
+
+        current_space.extend(state.selected.into_iter());
+    }
 }
 
 /// Print important information for current geometry.

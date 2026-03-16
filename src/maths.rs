@@ -5,31 +5,57 @@ use ndarray::{Array1, Array2, ArrayView2, Array4, Axis, s};
 use ndarray_linalg::{SVD, Eigh, UPLO, Determinant, FactorizeInto, InverseInto};
 use rayon::prelude::*;
 
-thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new()); static GT_SCRATCH: RefCell<Vec<f64>> = RefCell::new(Vec::new());}
+thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::new())}; static GT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::new())};}
 
-/// Loewdin symmetric orthogonalizer, computes X = S^{-1/2} for real/complex matrices.
+/// Return positive eigenvalue subspace of symmetric matrix S. 
+/// # Arguments:
+///     `s`: Array2, symmetric matrix.
+///     `tol`: f64, tolerance for whether a number is considered zero.
+pub fn positive_subspace_real(s: &Array2<f64>, tol: f64) -> (Array1<f64>, Array2<f64>) {
+    let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
+    // Filter out eigenvalues smaller than tol.
+    let pos: Vec<usize> = lambdas.iter().enumerate().filter_map(|(i, &x)| if x > tol {Some(i)} else {None}).collect();
+    let poslambdas = Array1::from_iter(pos.iter().map(|&i| lambdas[i]));
+    
+    // Filter out eigenvectors associated with negative eigenvalues.
+    let mut posvecs = Array2::<f64>::zeros((s.nrows(), pos.len()));
+    for (j, &i) in pos.iter().enumerate() {
+        posvecs.column_mut(j).assign(&evecs.column(i));
+    }
+
+    (poslambdas, posvecs)
+
+}
+
+/// Loewdin symmetric orthogonalizer, computes X = S^{-1/2} and returns X = U \Lambda^{-1/2} U^T 
+/// for real matrices.
 /// # Arguments 
-/// `s`: Array2, Hermitian matrix, uses only the lower triangle. Often AO basis overlap 
-/// matrix is s here.
+/// `s`: Array2, symmetric matrix, uses only the lower triangle. 
 /// `project`: Bool, whether or not to project to non-zero positive subspace of S.
 /// `tol`: Float, tolerance for whether a number is considered zero.
 pub fn loewdin_x_real(s: &Array2<f64>, project: bool, tol: f64) -> Array2<f64> {
-    // S = U \Lambda U^T
-    let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
-    // \Lambda^{-1/2}
-    let invsqrt: Array1<f64> = lambdas.mapv(|x| {
-        if project {
-            if x > tol {1.0 / x.sqrt()} else {0.0}
-        } else {
-            1.0 / x.sqrt()
-        }
-    });
-    let d = Array2::from_diag(&invsqrt);
-    // X = U \Lambda^{-1/2} U^T
-    evecs.dot(&d).dot(&evecs.t())
+    if project {
+        let (vals, vecs) = positive_subspace_real(s, tol);
+        let d = Array2::from_diag(&vals.mapv(|x| 1.0 / x.sqrt()));
+        vecs.dot(&d).dot(&vecs.t())
+    } else {
+        let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
+        let d = Array2::from_diag(&lambdas.mapv(|x| 1.0 / x.sqrt()));
+        evecs.dot(&d).dot(&evecs.t())
+    }
 }
 
-/// Solve the real/complex generalized eigenproblem F C = S C e using the Loewdin orthogonalizer.
+/// Rectangular orthogonalizer, computes X = U_+ \Lambda_+^{-1 / 2}.
+/// # Arguments:
+///     `s`: matrix to orthogonalize.
+///     `tol`: Float, tolerance for whether a number is considered zero. 
+pub fn orthogonaliser_real(s: &Array2<f64>, tol: f64) -> Array2<f64> {
+    let (vals, vecs) = positive_subspace_real(s, tol);
+    let d = Array2::from_diag(&vals.mapv(|x| 1.0 / x.sqrt()));
+    vecs.dot(&d)
+}
+
+/// Solve the real generalized eigenproblem F C = S C e using the Loewdin orthogonalizer.
 /// # Arguments
 ///     `f`: Array2, Hermitian matrix, uses only the lower triangle. Often Fock matrix 
 ///     is f here.
@@ -40,7 +66,11 @@ pub fn loewdin_x_real(s: &Array2<f64>, project: bool, tol: f64) -> Array2<f64> {
 pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f64) 
                         -> (Array1<f64>, Array2<f64>) {
     // X = S^{-1/2}
-    let x = loewdin_x_real(s, project, tol); 
+    let x = if project {
+        orthogonaliser_real(s, tol)
+    } else {
+        loewdin_x_real(s, false, tol)
+    };
     // \tilde{F} = X^T F X.
     let ft = x.t().dot(f).dot(&x);
     // \tilde{F} U = \epsilon U.
@@ -56,7 +86,7 @@ pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f6
 ///     `g`: Array2, matrix 1. 
 ///     `h`: Array2, matrix 2.
 pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
-    let n = g.nrows();
+let n = g.nrows();
     
     // Convert ndarrays into memory ordered slice.
     let gs = g.as_slice_memory_order().unwrap();

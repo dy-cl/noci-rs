@@ -10,6 +10,7 @@ pub mod input;
 pub mod maths;
 pub mod deterministic;
 pub mod stochastic;
+pub mod snoci;
 pub mod mpiutils;
 pub mod nonorthogonalwicks;
 

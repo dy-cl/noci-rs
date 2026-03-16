@@ -22,7 +22,7 @@ use crate::utils::print_array2;
 ///     `eri`: Array4, two electron integrals (pq|rs) in chemist's notation.
 ///     `da`: Array2, a spin density matrix.
 ///     `db`: Array2, b spin density matrix
-fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: &Array2<f64>) 
+pub fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: &Array2<f64>) 
                       -> (Array2<f64>, Array2<f64>) {
 
     let n = h.nrows();

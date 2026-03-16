@@ -96,6 +96,8 @@ impl Drop for Sharedffi {
 /// # Arguments:
 ///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
 ///     `value`: If rank 0 this is the value to broadcast. Any other rank recieves value from 0.
+/// # Type Parameters:
+///     `T`: Type of value being broadcast.
 pub fn broadcast<T>(world: &impl Communicator, value: &mut T)
 where
     // Function can broadcast any type provided that it can be converted to bytes and consequently

@@ -526,15 +526,22 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
 /// Generate a requested amount of all possible excitations on top of the given reference NOCI
 /// basis. Currently not a very generalised implementation to higher levels of excitation. 
 /// # Arguments
-///     refs: [SCFState], array of reference states for which excitations are generated.
-///     input: Input struct, contains user inputted options. 
-pub fn generate_qmc_noci_basis(refs: &[SCFState], input: &Input) -> Vec<SCFState> {
+///     `refs`: [SCFState], array of reference states for which excitations are generated.
+///     `input`: Input struct, contains user inputted options. 
+///     `include_refs`: bool, whether or not to include the references in the returned basis.
+pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bool) -> Vec<SCFState> {
     let mut out: Vec<SCFState> = Vec::new();
-    for (parent, r) in refs.iter().enumerate() {
-        // Include reference states in NOCI-QMC basis.
-        let mut rcopy = r.clone();
-        rcopy.parent = parent;
-        out.push(rcopy);
+    for r in refs.iter() {
+
+        let parent = r.parent;
+
+        // Include reference states in basis if requested.
+        if include_refs {
+            let mut rcopy = r.clone();
+            rcopy.parent = parent;
+            out.push(rcopy);
+        }
+
         // If no excitations requested for this ref, continue
         if !(input.excit.singles || input.excit.doubles) {
             continue;

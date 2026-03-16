@@ -213,9 +213,9 @@ fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: 
 
     if input.wicks.enabled {
         let w = wicks.unwrap();
-        calculate_s_pair_wicks(basis, noci_reference_basis, a, b, tol, w, scratch)
+        calculate_s_pair_wicks(noci_reference_basis, &basis[a], &basis[b], tol, w, scratch)
     } else {
-        calculate_s_pair_naive(ao, basis, a, b, tol)
+        calculate_s_pair_naive(ao, &basis[a], &basis[b], tol)
     }
 }
 
@@ -236,9 +236,9 @@ fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input:
 
     if input.wicks.enabled {
         let w = wicks.unwrap();
-        calculate_hs_pair_wicks(ao, basis, noci_reference_basis, w, scratch, a, b, tol)
+        calculate_hs_pair_wicks(ao, noci_reference_basis, &basis[a], &basis[b], tol, w, scratch)
     } else {
-        calculate_hs_pair_naive(ao, basis, a, b, tol)
+        calculate_hs_pair_naive(ao, &basis[a], &basis[b], tol)
     }
 }
 
@@ -711,7 +711,7 @@ fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communic
 ///     `noci_reference_basis`: [SCFState], only the reference basis determinants.
 ///     `wicks`: [Vec<WicksReferencePair>], intermediates required for evaluating matrix
 ///              elements using the extended non-orthogonal Wick's theorem.
-pub fn step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64, 
+pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64, 
             noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, Option<ExcitationHist>, StochStepTimings) {
     
     // Timings.

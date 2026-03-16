@@ -140,6 +140,15 @@ pub enum StateType {
     Metadynamics(Metadynamics),
 }
 
+// Storage for SNOCI options. 
+pub struct SNOCIOptions {
+    pub sigma: f64,
+    pub tol: f64,
+    pub max_iter: usize,
+    pub max_add: usize,
+    pub max_dim: usize,
+}
+
 // Storage for Input file parameters.
 pub struct Input {
     pub mol: MolOptions,
@@ -148,6 +157,7 @@ pub struct Input {
     pub states: StateType,
     pub det: Option<DeterministicOptions>,
     pub qmc: Option<QMCOptions>,
+    pub snoci: Option<SNOCIOptions>,
     pub excit: ExcitationOptions,
     pub prop: PropagationOptions,
     pub wicks: WicksOptions,
@@ -329,6 +339,16 @@ pub fn load_input(path: &str) -> Input {
         QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, excitation_gen, seed}
     });
 
+    // SNOCI table.
+    let snoci: Option<SNOCIOptions> =  globals.get::<_, Option<rlua::Table>>("snoci").unwrap().map(|snoci_tbl| {
+        let sigma: f64 = snoci_tbl.get("sigma").unwrap();
+        let tol: f64 = snoci_tbl.get("tol").unwrap();
+        let max_iter: usize = snoci_tbl.get("max_iter").unwrap();
+        let max_add: usize = snoci_tbl.get("max_add").unwrap();
+        let max_dim: usize = snoci_tbl.get("max_dim").unwrap();
+        SNOCIOptions {sigma, tol, max_iter, max_add, max_dim}
+    });
+
     // Excitation table. 
     let singles = excit_tbl.get("singles").unwrap();
     let doubles = excit_tbl.get("doubles").unwrap();
@@ -356,6 +376,6 @@ pub fn load_input(path: &str) -> Input {
     let enabled = wicks_tbl.get("enabled").unwrap();
     let wicks = WicksOptions {compare, enabled};
 
-    Input {mol, scf, write, states, det, qmc, excit, prop, wicks}
+    Input {mol, scf, write, states, det, qmc, snoci, excit, prop, wicks}
 }
 

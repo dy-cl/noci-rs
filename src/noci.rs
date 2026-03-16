@@ -1,10 +1,8 @@
 // noci.rs
 use std::time::{Duration, Instant};
-use std::fs::{create_dir_all};
-use std::io::{Write};
 use std::ptr::NonNull;
 
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, Array4, Axis};
 use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
 use mpi::topology::Communicator;
@@ -18,6 +16,68 @@ use crate::utils::{excitation_phase, occvec_to_bits, print_array2};
 use crate::nonorthogonalwicks::{lg_h1, lg_h2_diff, lg_h2_same, lg_overlap, write_same_spin, write_diff_spin, assign_offsets, prepare_same};
 use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_cd_real, general_evp_real};
 use crate::mpiutils::{broadcast};
+use crate::write::write_hs_matrices;
+
+// Trait which defines how returned determinant-pair quatity should be scattered into matrices.
+// Used such that we can have generic scatter functions which return 1 or 2 matrices.
+trait ScatterValue: Sized {
+    type Output;
+    /// Construct zero initialised output. 
+    /// # Arguments:
+    ///     `nl`: usize, length of determinant set 1.
+    ///     `nr`: usize, length of determinant set 2.
+    fn zeros(nl: usize, nr: usize) -> Self::Output;
+    /// Write a value into the output at indices i, j.
+    /// # Arguments:
+    ///     `out`: Self::Output, output container to write into.
+    ///     `i`: usize, row index.
+    ///     `j`: usize, column index.
+    ///     `val`: Self, determinant-pair value to scatter.
+    fn write(out: &mut Self::Output, i: usize, j: usize, val: Self);
+}
+
+impl ScatterValue for f64 {
+    type Output = Array2<f64>;
+    /// Construct zero initialised output. 
+    /// # Arguments:
+    ///     `nl`: usize, length of determinant set 1.
+    ///     `nr`: usize, length of determinant set 2.
+    fn zeros(nl: usize, nr: usize) -> Self::Output {
+        Array2::<f64>::zeros((nl, nr))
+    }
+    /// Write scalar value into matrix position (i, j).
+    /// # Arguments:
+    ///     `out`: Array2<f64>, output matrix.
+    ///     `i`: usize, row index.
+    ///     `j`: usize, column index.
+    ///     `val`: f64, matrix element value.
+    fn write(out: &mut Self::Output, i: usize, j: usize, val: Self) {
+        out[(i, j)] = val;
+    }
+}
+
+impl ScatterValue for (f64, f64) {
+    type Output = (Array2<f64>, Array2<f64>);
+
+    /// Construct zero initialised output. 
+    /// # Arguments:
+    ///     `nl`: usize, length of determinant set 1.
+    ///     `nr`: usize, length of determinant set 2.
+    fn zeros(nl: usize, nr: usize) -> Self::Output {
+        (Array2::<f64>::zeros((nl, nr)), Array2::<f64>::zeros((nl, nr)))
+    }
+
+    /// Write scalar value into matrix position (i, j) in both matrices.
+    /// # Arguments:
+    ///     `out`: (Array2<f64>, Array2<f64>), output matrices.
+    ///     `i`: usize, row index.
+    ///     `j`: usize, column index.
+    ///     `val`: (f64, f64), matrix element values.
+    fn write(out: &mut Self::Output, i: usize, j: usize, val: Self) {
+        out.0[(i, j)] = val.0;
+        out.1[(i, j)] = val.1;
+    }
+}
 
 // Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
 pub struct Pair {
@@ -160,85 +220,102 @@ fn calculate_codensity_w_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array
     l_tilde_c_occ_scaled.dot(&g_tilde_c_occ.t())
 }
 
-/// Calculate one electron and nuclear Hamiltonian matrix elements using the generalised 
+/// Calculate pair density {}^{\Lambda\Gamma} \rho_{ij} using the generalised Slater-Condon rules.
+/// # Arguments:
+///     `pair`: Pair struct, contains data concerning a pair of determinants.
+///     `nao`: usize, number of AOs.
+fn pair_density(pair: &Pair, nao: usize) -> Array2<f64> {
+    match pair.zeros.len() {
+        0 => pair.w.as_ref().unwrap().mapv(|x| x * pair.s_red * pair.phase),
+        1 => pair.p_i.as_ref().unwrap().mapv(|x| x * pair.s_red * pair.phase),
+        _ => Array2::zeros((nao, nao)),
+    }
+}
+
+/// Calculate density matrix of the multi-reference NOCI state.
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data.
+///     `c`: Array1, coefficients of the NOCI wavefunction.
+///     `states`: [SCFState], basis of states for the wavefunction.
+///     `densitites`: [Array2], pair density matrices.
+pub fn noci_density(ao: &AoData, states: &[SCFState], c: &Array1<f64>, tol: f64,) -> (Array2<f64>, Array2<f64>) {
+    let nao = ao.h.nrows();
+    let mut da = Array2::<f64>::zeros((nao, nao));
+    let mut db = Array2::<f64>::zeros((nao, nao));
+
+    for i in 0..states.len() {
+        for j in 0..states.len() {
+            let ldet = &states[i];
+            let gdet = &states[j];
+
+            let l_ca_occ = occ_coeffs(&ldet.ca, &ldet.oa);
+            let g_ca_occ = occ_coeffs(&gdet.ca, &gdet.oa);
+            let l_cb_occ = occ_coeffs(&ldet.cb, &ldet.ob);
+            let g_cb_occ = occ_coeffs(&gdet.cb, &gdet.ob);
+
+            let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+            let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+
+            let rhoa = pair_density(&pa, nao);
+            let rhob = pair_density(&pb, nao);
+
+            let cij = c[i] * c[j];
+            da.scaled_add(cij * pb.s, &rhoa);
+            db.scaled_add(cij * pa.s, &rhob);
+        }
+    }
+    (da, db)
+}
+
+/// Calculate one body matrix elements using the generalised 
 /// Slater-Condon rules for a pair of determinants \Lambda and \Gamma. 
 /// # Arguments:
-///     `pair`: Pair struct, contains the following data concerning a pair of determinants:
-///         `s`: f64, overlap matrix element for this pair.
-///         `tilde_s`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
-///         `s_red`: f64, product of the non-zero values of tilde_s.
-///         `zeros`: [usize], array containing zero singular value indices.
-///         `l_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Lambda.
-///         `g_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Gamma.
-///         `w`: Array2, weighted codensity matrix {}^{\Lambda\Gamma}W^{\mu\nu} for this pair.
-///         `p_i`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_i^{\mu\nu}.
-///         `p_j`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_j^{\mu\nu}. 
-///         `phase`: f64, Phase associated with determinant pair \mu \nu.
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn one_electron_h(ao: &AoData, pair: &Pair) -> f64 {
+///     `o`: Array2, operator to obtain matrix elements of.
+///     `pair`: Pair struct, contains data concerning a pair of determinants.
+fn one_electron(o: &Array2<f64>, pair: &Pair) -> f64 {
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w.
-        0 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.w.as_ref().unwrap(), &ao.h),
+        0 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.w.as_ref().unwrap(), o),
         // With 1 zero (s_i = 0 for 1 i) we use P_i.
-        1 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.p_i.as_ref().unwrap(), &ao.h),
+        1 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.p_i.as_ref().unwrap(), o),
         // Otherwise the matrix element is zero.
         _ => 0.0,
     }
 }
 
-/// Calculate two electron Hamiltonian matrix elements for electrons of the same spin 
+/// Calculate two body matrix elements for electrons of the same spin 
 /// using the generalised Slater-Condon rules for a pair of determinants \Lambda and \Gamma.
 /// # Arguments:
-///     `pair`: Pair struct, contains the following data concerning a pair of determinants:
-///         `s`: f64, overlap matrix element for this pair.
-///         `tilde_s`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
-///         `s_red`: f64, product of the non-zero values of tilde_s.
-///         `zeros`: [usize], array containing zero singular value indices.
-///         `l_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Lambda.
-///         `g_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Gamma.
-///         `w`: Array2, weighted codensity matrix {}^{\Lambda\Gamma}W^{\mu\nu} for this pair.
-///         `p_i`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_i^{\mu\nu}.
-///         `p_j`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_j^{\mu\nu}. 
-///         `phase`: f64, Phase associated with determinant pair \mu \nu.
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn two_electron_h_same(ao: &AoData, pair: &Pair) -> f64 {
+///     `o`: Array2, operator to obtain matrix elements of.
+///     `pair`: Pair struct, contains data concerning a pair of determinants.
+fn two_electron_same(o: &Array4<f64>, pair: &Pair) -> f64 {
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
-        0 => 0.5 * pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.w.as_ref().unwrap(), &ao.eri_asym, pair.w.as_ref().unwrap()),
+        0 => 0.5 * pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.w.as_ref().unwrap(), o, pair.w.as_ref().unwrap()),
         // With 1 zero (s_i = 0 for one index i) we use P_i on one side.
-        1 => pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.w.as_ref().unwrap(), &ao.eri_asym, pair.p_i.as_ref().unwrap()),
+        1 => pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.w.as_ref().unwrap(), o, pair.p_i.as_ref().unwrap()),
         // with 2 zeros (s_i, s_j = 0 for two indices i, j) we use P_i on one side and P_j on the other.
-        2 => pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.p_i.as_ref().unwrap(), &ao.eri_asym, pair.p_j.as_ref().unwrap()),
+        2 => pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.p_i.as_ref().unwrap(), o, pair.p_j.as_ref().unwrap()),
         // Otherwise the matrix element is 0.
         _ => 0.0,
     }
 }
 
-/// Calculate two electron Hamiltonian matrix elements for electrons of opposite spin 
+/// Calculate two body matrix elements for electrons of opposite spin 
 /// using the generalised Slater-Condon rules for a pair of determinants \Lambda and \Gamma.
 /// # Arguments:
-///     `pair`: Pair struct, contains the following data concerning a pair of determinants:
-///         `s`: f64, overlap matrix element for this pair.
-///         `tilde_s`: Array1, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
-///         `s_red`: f64, product of the non-zero values of tilde_s.
-///         `zeros`: [usize], array containing zero singular value indices.
-///         `l_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Lambda.
-///         `g_tilde_c_occ`: Array2, rotated occupied MO coefficient matrix of determinant \Gamma.
-///         `w`: Array2, weighted codensity matrix {}^{\Lambda\Gamma}W^{\mu\nu} for this pair.
-///         `p_i`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_i^{\mu\nu}.
-///         `p_j`: Array2, unweighted codensity matrix {}^{\Lambda\Gamma}P_j^{\mu\nu}. 
-///         `phase`: f64, Phase associated with determinant pair \mu \nu.
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-fn two_electron_h_diff(ao: &AoData, pa: &Pair, pb: &Pair) -> f64 {
+///     `o`: Array2, operator to obtain matrix elements of.
+///     `pair`: Pair struct, contains data concerning a pair of determinants.
+fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
     match (pa.zeros.len(), pb.zeros.len()) {
         // With no zeros (s_i != 0 for all i) for both spins we use munu_w on both sides.
-        (0, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.w.as_ref().unwrap(), &ao.eri_coul, pb.w.as_ref().unwrap()),
+        (0, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.w.as_ref().unwrap(), o, pb.w.as_ref().unwrap()),
         // With one zero in beta spin only we use W^a and P_i^b.
-        (0, 1) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.w.as_ref().unwrap(), &ao.eri_coul, pb.p_i.as_ref().unwrap()),
+        (0, 1) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.w.as_ref().unwrap(), o, pb.p_i.as_ref().unwrap()),
         // With one zero in alpha spin only we use P_i^a and W_b.
-        (1, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.p_i.as_ref().unwrap(), &ao.eri_coul, pb.w.as_ref().unwrap()),
+        (1, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.p_i.as_ref().unwrap(), o, pb.w.as_ref().unwrap()),
         // With one zero in both spins we use P_i^a and P_i^b.
-        (1, 1) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.p_i.as_ref().unwrap(), &ao.eri_coul, pb.p_i.as_ref().unwrap()),
+        (1, 1) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.p_i.as_ref().unwrap(), o, pb.p_i.as_ref().unwrap()),
         // Otherwise the matrix element is zero.
         _ => 0.0,
     }
@@ -248,16 +325,15 @@ fn two_electron_h_diff(ao: &AoData, pa: &Pair, pb: &Pair) -> f64 {
 /// generalised Slater-Condon rules.
 /// # Arguments:
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
-///     `l`: usize, index of state \Lambda.
-///     `g`: usize, index of state \Gamma.
-pub fn calculate_s_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize, tol: f64) -> f64 {
+///     `ldet`: SCFState, state \Lambda.
+///     `gdet`: SCFState, state \Gamma.
+pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
 
     // Per spin occupid coefficients.
-    let l_ca_occ = occ_coeffs(&determinants[l].ca, &determinants[l].oa);
-    let g_ca_occ = occ_coeffs(&determinants[g].ca, &determinants[g].oa);
-    let l_cb_occ = occ_coeffs(&determinants[l].cb, &determinants[l].ob);
-    let g_cb_occ = occ_coeffs(&determinants[g].cb, &determinants[g].ob);
+    let l_ca_occ = occ_coeffs(&ldet.ca, &ldet.oa);
+    let g_ca_occ = occ_coeffs(&gdet.ca, &gdet.oa);
+    let l_cb_occ = occ_coeffs(&ldet.cb, &ldet.ob);
+    let g_cb_occ = occ_coeffs(&gdet.cb, &gdet.ob);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
@@ -266,20 +342,41 @@ pub fn calculate_s_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, 
     pa.s * pb.s
 }
 
+/// Calculate the Fock matrix element between determinants \Lambda and \Gamma using 
+/// generalised Slater-Condon rules.
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data. 
+///     `ldet`: SCFState, state \Lambda.
+///     `gdet`: SCFState, state \Gamma.
+///     `fa`: Array2, NOCI Fock matrix spin alpha.
+///     `fb`: Array2, NOCI Fock matrix spin beta.
+pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
+
+    // Per spin occupid coefficients.
+    let l_ca_occ = occ_coeffs(&ldet.ca, &ldet.oa);
+    let g_ca_occ = occ_coeffs(&gdet.ca, &gdet.oa);
+    let l_cb_occ = occ_coeffs(&ldet.cb, &ldet.ob);
+    let g_cb_occ = occ_coeffs(&gdet.cb, &gdet.ob);
+
+    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+
+    pb.s * one_electron(fa, &pa) + pa.s * one_electron(fb, &pb)
+}
+
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
 /// using generalised Slater-Condon rules.
 /// # Arguments:
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
-///     `l`: usize, index of state \Lambda.
-///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize, g: usize, tol: f64) -> (f64, f64) {
+///     `ldet`: SCFState, state \Lambda.
+///     `gdet`: SCFState, state \Gamma.
+pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
 
     // Per spin occupid coefficients.
-    let l_ca_occ = occ_coeffs(&determinants[l].ca, &determinants[l].oa);
-    let g_ca_occ = occ_coeffs(&determinants[g].ca, &determinants[g].oa);
-    let l_cb_occ = occ_coeffs(&determinants[l].cb, &determinants[l].ob);
-    let g_cb_occ = occ_coeffs(&determinants[g].cb, &determinants[g].ob);
+    let l_ca_occ = occ_coeffs(&ldet.ca, &ldet.oa);
+    let g_ca_occ = occ_coeffs(&gdet.ca, &gdet.oa);
+    let l_cb_occ = occ_coeffs(&ldet.cb, &ldet.ob);
+    let g_cb_occ = occ_coeffs(&gdet.cb, &gdet.ob);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
@@ -292,13 +389,13 @@ pub fn calculate_hs_pair_naive(ao: &AoData, determinants: &[SCFState], l: usize,
         _ => 0.0,
     };
 
-    let h1a = one_electron_h(ao, &pa);
-    let h1b = one_electron_h(ao, &pb);
+    let h1a = one_electron(&ao.h, &pa);
+    let h1b = one_electron(&ao.h, &pb);
     let h1 = pb.s * h1a + pa.s * h1b;
 
-    let h2aa = pb.s * two_electron_h_same(ao, &pa); 
-    let h2bb = pa.s * two_electron_h_same(ao, &pb); 
-    let h2ab = two_electron_h_diff(ao, &pa, &pb);
+    let h2aa = pb.s * two_electron_same(&ao.eri_asym, &pa); 
+    let h2bb = pa.s * two_electron_same(&ao.eri_asym, &pb); 
+    let h2ab = two_electron_diff(&ao.eri_coul, &pa, &pb);
     let h2 = h2aa + h2bb + h2ab;
 
     (hnuc + h1 + h2, s)
@@ -367,21 +464,20 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
 /// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
 /// extended non-orthogonal Wick's theorem.
 /// # Arguments:
-///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
-///     `l`: usize, index of state \Lambda.
-///     `g`: usize, index of state \Gamma.
-pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &[SCFState], l: usize, g: usize, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
+///     `ldet`: SCFState, state \Lambda.
+///     `gdet`: SCFState, state \Gamma.
+pub fn calculate_s_pair_wicks(noci_reference_basis: &[SCFState], ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
 
-    let lp = determinants[l].parent;
-    let gp = determinants[g].parent;
+    let lp = ldet.parent;
+    let gp = gdet.parent;
 
     let w = &wicks.pair(lp, gp);
 
-    let ex_la = &determinants[l].excitation.alpha;
-    let ex_ga = &determinants[g].excitation.alpha;
-    let ex_lb = &determinants[l].excitation.beta;
-    let ex_gb = &determinants[g].excitation.beta;
+    let ex_la = &ldet.excitation.alpha;
+    let ex_ga = &gdet.excitation.alpha;
+    let ex_lb = &ldet.excitation.beta;
+    let ex_gb = &gdet.excitation.beta;
 
     let occ_la = occvec_to_bits(&noci_reference_basis[lp].oa, tol);
     let occ_lb = occvec_to_bits(&noci_reference_basis[lp].ob, tol);
@@ -402,22 +498,20 @@ pub fn calculate_s_pair_wicks(determinants: &[SCFState], noci_reference_basis: &
 /// using extended non-orthogonal Wick's theorem.
 /// # Arguments:
 ///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `determinants`: Vec<SCFState>, vector of all the determinants in the NOCI basis.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
-///     `l`: usize, index of state \Lambda.
-///     `g`: usize, index of state \Gamma.
-pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_reference_basis: &[SCFState], wicks: &WicksView, scratch: &mut WickScratch, 
-                               l: usize, g: usize, tol: f64) -> (f64, f64) {
+///     `ldet`: SCFState, state \Lambda.
+///     `gdet`: SCFState, state \Gamma.
+pub fn calculate_hs_pair_wicks(ao: &AoData, noci_reference_basis: &[SCFState], ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> (f64, f64) {
 
-    let lp = determinants[l].parent;
-    let gp = determinants[g].parent;
+    let lp = ldet.parent;
+    let gp = gdet.parent;
 
-    let w = wicks.pair(lp, gp);
+    let w = &wicks.pair(lp, gp);
 
-    let ex_la = &determinants[l].excitation.alpha;
-    let ex_ga = &determinants[g].excitation.alpha;
-    let ex_lb = &determinants[l].excitation.beta;
-    let ex_gb = &determinants[g].excitation.beta;
+    let ex_la = &ldet.excitation.alpha;
+    let ex_ga = &gdet.excitation.alpha;
+    let ex_lb = &ldet.excitation.beta;
+    let ex_gb = &gdet.excitation.beta;
 
     let occ_la = occvec_to_bits(&noci_reference_basis[lp].oa, tol);
     let occ_lb = occvec_to_bits(&noci_reference_basis[lp].ob, tol);
@@ -437,7 +531,7 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
     let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
     let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb,scratch, tol);
 
-    let h2ab = lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
+    let h2ab = lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
 
     let s = sa * sb;
     let h1 = ph_a * h1a * sb + ph_b * h1b * sa;
@@ -448,81 +542,125 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, determinants: &[SCFState], noci_refe
     (hnuc + h1 + h2, s)
 }
 
-/// Form the full Hamiltonian and overlap matrices using the generalised Slater-Condon rules.
+/// Evaluate arbitrary determinant pair quantity given a closure `o` which computes `T` for the
+/// pair. The closure may be for example the Hamiltonian, overlap or Fock matrix element routines.
+/// # Arguments:
+///     `left`: [SCFState], first set of determinants.  
+///     `right`: [SCFState], second set of determinants.
+///     `symmetric`: bool, is the matrix to be evaluated symmetric.
+///     `o`: O, closure function for matrix element routine.
+///     `input`: Input, user specified input options.
+/// # Type Parameters:
+///     `O`: closure type implementing `Fn(&SCFState, &SCFState) -> T` and `Sync`.
+///     `T`: Send, generic type for return which must be Send for parallelisation.
+fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input: &Input, symmetric: bool, o: O) -> (Vec<(usize, usize, T)>, Duration)
+    where T: Send, O: Fn(&SCFState, &SCFState, Option<&mut WickScratch>) -> T + Sync {
+
+    let nl = left.len();
+    let nr = right.len();
+    
+    // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma.
+    let pairs: Vec<(usize, usize)> = if symmetric {(0..nl).flat_map(|i| (i..nr).map(move |j| (i, j))).collect()} 
+    else {(0..nl).flat_map(|i| (0..nr).map(move |j| (i, j))).collect()};
+    
+    let t0 = Instant::now();
+    let vals = if input.wicks.enabled {
+        pairs.par_iter().map_init(WickScratch::new, |scratch, &(i, j)| {(i, j, o(&left[i], &right[j], Some(scratch)))}).collect()
+    } else {
+         pairs.par_iter().map(|&(i, j)| (i, j, o(&left[i], &right[j], None))).collect()
+    };
+    let dt = t0.elapsed();
+
+    (vals, dt)
+}
+
+/// Scatter matrix elements into 2D Array.
+/// # Arguments:
+///     `vals`: Vec<(usize, usize, f64)>, matrix elements and indices.
+///     `nl`: usize, length of determinant set 1.
+///     `nl`: usize, length of determinant set 2.
+///     `symmetric`: bool, is the matrix symmetric.
+/// # Type Parameters: 
+///     `T`: Matrix element value type to scatter. Can be f64 or (f64, f64).
+fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize, symmetric: bool) -> T::Output 
+    where T: ScatterValue + Copy {
+    let mut out = T::zeros(nl, nr);
+    for (i, j, val) in vals {
+        T::write(&mut out, i, j, val);
+        if symmetric && i != j {
+            T::write(&mut out, j, i, val);
+        }
+    }
+    out
+}
+
+/// Construct full NOCI Fock matrix using generalised Slater-Condon rules.
 /// # Arguments:
 ///     `ao`: AoData struct, contains AO integrals and other system data.
-///     `determinants`: Vec<SCFState>, vector of all determinants in the NOCI basis.
+///     `left`: [SCFState], first set of determinants.  
+///     `right`: [SCFState], second set of determinants.
+///     `fa`: Array2, NOCI Fock matrix spin alpha.
+///     `fb`: Array2, NOCI Fock matrix spin beta.
+///     `symmetric`: bool, is the matrix symmetric.
+///     `tol`: f64, tolerance up to which a number is considered zero.
+///     `input`: Input, user specified input options.
+pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &Array2<f64>, fb: &Array2<f64>, tol: f64, symmetric: bool, input: &Input) -> (Array2<f64>, Duration) {
+    let nl = left.len();
+    let nr = right.len();
+    let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, _scratch| {calculate_f_pair_naive(fb, fa, ao, ldet, gdet, tol)});
+    let f = scatter_matrix_elements(vals, nl, nr, symmetric);
+    (f, dt)
+}
+
+/// Form the full Hamiltonian and overlap matrices using either generalised Slater-Condon rules or
+/// extended non-orthogonal Wick's theorem. 
+/// # Arguments:
+///     `ao`: AoData struct, contains AO integrals and other system data.
+///     `left`: [SCFState], first set of determinants.  
+///     `right`: [SCFState], second set of determinants.
 ///     `noci_reference_basis`: Vec<SCFState>, vector of only the reference determinants.
 ///     `input`: Input, user input specifications.
-pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&WicksView>) 
-                           -> (Array2<f64>, Array2<f64>, Duration) {
-    
-    let ndets = determinants.len();
-    let mut h = Array2::<f64>::zeros((ndets, ndets));
-    let mut s = Array2::<f64>::zeros((ndets, ndets));
+pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&WicksView>, symmetric: bool) 
+                     -> (Array2<f64>, Array2<f64>, Duration) {
 
-    // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma. 
-    let pairs: Vec<(usize, usize)> = (0..ndets).flat_map(|mu| (mu..ndets).map(move |nu| (mu, nu))).collect();
+    let nl = left.len();
+    let nr = right.len();
 
     let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
 
-    // Calculate Hamiltonian matrix elements in parallel.
-    let t_hs = Instant::now();
-    let tmp: Vec<(usize, usize, f64, f64, f64)> = pairs.par_iter().map_init(WickScratch::new, |scratch, &(l, g)| {
-        let (h, s, d) = if input.wicks.compare {
-            let (hn, sn) = calculate_hs_pair_naive(ao, determinants, l, g, tol);
-            let (hw, sw) = calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), scratch, l, g, tol);
-            let d = (hn - hw).abs() + (sn - sw).abs();
-            (hw, sw, d)
+    if input.wicks.compare {
+        let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
+            let (hn, sn) = calculate_hs_pair_naive(ao, ldet, gdet, tol);
+            let (hw, sw) = calculate_hs_pair_wicks(ao, noci_reference_basis, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap());
+            ((hw, sw), (hn - hw).abs() + (sn - sw).abs())
+        });
+
+        let mut td = 0.0;
+        let mut hsvals = Vec::with_capacity(vals.len());
+        for (i, j, (hs, d)) in vals {
+            hsvals.push((i, j, hs));
+            td += d;
+        }
+        println!("Total naive–wicks discrepancy: {:.6e}", td);
+        let (h, s) = scatter_matrix_elements(hsvals, nl, nr, symmetric);
+        return (h, s, dt);
+    }
+
+    let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
+        if input.wicks.enabled {
+            calculate_hs_pair_wicks(ao, noci_reference_basis, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
         } else {
-            let (h, s) = if input.wicks.enabled {
-                calculate_hs_pair_wicks(ao, determinants, noci_reference_basis, wicks.unwrap(), scratch, l, g, tol)
-            } else {
-                calculate_hs_pair_naive(ao, determinants, l, g, tol)
-            };
-            (h, s, 0.0)
-        };
-        (l, g, h, s, d)}).collect();
-    let d_hs = t_hs.elapsed();
-
-    // Scatter Hamiltonian and overlap matrix elements into full matrices.
-    let mut td = 0.0;
-    for (l, g, lg_h, lg_s, d) in tmp {
-        h[(l, g)] = lg_h;
-        s[(l, g)] = lg_s;
-        // Hermitian.
-        if l != g {
-            h[(g, l)] = lg_h;
-            s[(g, l)] = lg_s;
+            calculate_hs_pair_naive(ao, ldet, gdet, tol)
         }
-        td += d;
-    }
-    
-    if input.wicks.compare{println!("Total naive–wicks discrepancy: {:.6e}", td);}
+    });
 
-    // Write out the Hamiltonian and Overlap if requested.
-    if input.write.write_matrices{
-        create_dir_all(&input.write.write_dir).unwrap();
-        let mut fhamiltonian = std::io::BufWriter::new(std::fs::File::create(format!("{}/HAMI", input.write.write_dir)).unwrap());
-        for r in 0..h.nrows() {
-            for c in 0..h.ncols() {
-                if c > 0 { write!(fhamiltonian, " ").unwrap(); }
-                write!(fhamiltonian, "{}", h[(r,c)]).unwrap();
-            }
-            writeln!(fhamiltonian).unwrap();
-        }
+    let (h, s) = scatter_matrix_elements(vals, nl, nr, symmetric);
 
-        let mut foverlap = std::io::BufWriter::new(std::fs::File::create(format!("{}/OVLP", input.write.write_dir)).unwrap());
-        for r in 0..s.nrows() {
-            for c in 0..s.ncols() {
-                if c > 0 { write!(foverlap, " ").unwrap(); }
-                write!(foverlap, "{}", s[(r,c)]).unwrap();
-            }
-            writeln!(foverlap).unwrap();
-        }
+    if input.write.write_matrices {
+        write_hs_matrices(&input.write.write_dir, &h, &s);
     }
 
-    (h, s, d_hs)
+    (h, s, dt)
 }
 
 /// Calculate NOCI energy by solving GEVP with NOCI Hamiltonian and overlap.
@@ -531,7 +669,7 @@ pub fn build_noci_matrices(ao: &AoData, input: &Input, determinants: &[SCFState]
 ///     `ao`: AoData struct, contains AO integrals and other system data.
 ///     `input`: Input, user input specifications.
 pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
-    let (h, s, d_hs) = build_noci_matrices(ao, input, scfstates, scfstates, tol, wicks);
+    let (h, s, d_hs) = build_noci_hs(ao, input, scfstates, scfstates, scfstates, tol, wicks, true);
     
     println!("{}", "=".repeat(100));
     println!("NOCI-reference Hamiltonian:");
