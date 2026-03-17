@@ -15,6 +15,7 @@ use noci_rs::AoData;
 use noci_rs::SCFState;
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
 use noci_rs::stochastic::StochStepTimings;
+use noci_rs::snoci::SNOCIStepTimings;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
@@ -45,6 +46,9 @@ struct Timings {
     qmc_stoch_basis: Duration,
     qmc_stoch_prop: Duration,
     qmc_stoch_step: StochStepTimings,
+    // Select NOCI timings.
+    snoci_total: Duration,
+    snoci_step: SNOCIStepTimings,
 }
 
 // Printed results for a given geometry.
@@ -55,6 +59,7 @@ struct Results {
     e_noci_ref: f64,
     e_noci_qmc_det: Option<f64>,
     e_noci_qmc_stoch: Option<f64>,
+    e_snoci: Option<f64>,
     e_fci: Option<f64>,
     timings: Timings,
 }
@@ -124,6 +129,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     let mut e_noci_ref: f64 = 0.0;
     let mut e_noci_qmc_det: Option<f64> = None;
     let mut e_noci_qmc_stoch: Option<f64> = None;
+    let mut e_snoci: Option<f64> = None;
     
     // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
     // for multithreading. SCF calculations are currently single threaded. 
@@ -156,10 +162,11 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         wicks_shared = Some(build_wicks_shared(world, &ao, &noci_reference_basis, tol));
     };
     let d_wi = t_wi.elapsed();
-    let wicks_view: Option<&WicksView> = wicks_shared.as_ref().map(|ws| ws.view());
+    timings.wicks_intermediates = d_wi;
 
     // Reference NOCI, deterministic propagation and selected NOCI (SNOCI) occur only on rank 0 (with Rayon).
     if irank == 0 {
+        let wicks_view = wicks_shared.as_ref().map(|ws| ws.view());
         let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, wicks_view);
         noci_reference_basis = refb;
         e_noci_ref = e_ref;
@@ -174,11 +181,13 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
             timings.qmc_det_basis = d_basis;
             timings.qmc_det_hs = d_hs;
             timings.qmc_det_prop = d_prop;
-            timings.wicks_intermediates = d_wi;
         }
 
         if input.snoci.is_some() {
-            run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_view);
+            let (e_snoci_res, d_tot, d_step) = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut());
+            e_snoci = Some(e_snoci_res);
+            timings.snoci_total = d_tot;
+            timings.snoci_step = d_step;
         }
     }
 
@@ -189,15 +198,16 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     
     // Run stochastic NOCI-QMC calculation across all MPI ranks.
     if input.qmc.is_some() {
+        let wicks_view = wicks_shared.as_ref().map(|ws| ws.view());
         let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop, step_timings) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks_view);
         e_noci_qmc_stoch = Some(e_qmc);
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
         timings.qmc_stoch_prop = d_qmc_stoch_prop;
         timings.qmc_stoch_step  = step_timings;
-        timings.wicks_intermediates = d_wi;
     }
-    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_fci: ao.e_fci, timings, states: states.clone()}
+
+    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_fci: ao.e_fci, timings, states: states.clone()}
 }
 
 /// Call PySCF script to get the two electron integrals and core hamiltonian.
@@ -438,33 +448,13 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
     (e, d_total, d_basis, d_prop, step_timings)
 }
 
-pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, wicks: Option<&WicksView>) {
-    let opts = input.snoci.as_ref().unwrap();
-    let mut current_space = initial_space.to_vec();
-    // RHF energy from which to define correlation.
-    let e0 = noci_reference_basis[0].e;
-    
-    // Print table header.
-    println!("{}", "=".repeat(100));
-    println!("{:^6} {:^10} {:^11} {:^11} {:^16} {:^16} {:^16} {:^16}", "iter", "# Current", "# Candidate", "# Selected", "E", "Ecorr", "EPT2", "E + EPT2");
-
-    for it in 0..opts.max_iter {
-        let state = snoci_step(ao, &current_space, noci_reference_basis, input, tol, wicks);
-        println!("{:<6} {:>10} {:>11} {:>11} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-                it, current_space.len(), state.candidates.len(), state.selected.len(), state.ecurrent, state.ecurrent - e0, state.ept2, state.ecurrent + state.ept2);
-
-        // Convergence or stopping.
-        if state.selected.is_empty() {
-            println!("SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).", it, opts.sigma);
-            break;
-        }
-        if state.ept2.abs() < opts.tol {
-            println!("SNOCI stopped at iteration {}: |EPT2|: {:.12} fell below tolerance {:.12}.", it, state.ept2.abs(), opts.tol);
-            break;
-        }
-
-        current_space.extend(state.selected.into_iter());
-    }
+pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, wicks: Option<&mut WicksShared>) -> (f64, Duration, SNOCIStepTimings) {
+    let t0 = Instant::now(); 
+    let current_space = initial_space.to_vec();
+   
+    let (state, snoci_timings) = snoci_step(ao, &current_space, noci_reference_basis, input, tol, wicks);
+    let d_tot = t0.elapsed(); 
+    (state.ecurrent, d_tot, snoci_timings)
 }
 
 /// Print important information for current geometry.
@@ -504,6 +494,24 @@ fn print_report(res: &Results, input: &Input) {
         println!(r"     Calculate projected energy  : {:?}", res.timings.qmc_stoch_step.eproj);
     }
 
+    if input.snoci.is_some() {
+        println!("Total SNOCI time: {:?}", res.timings.snoci_total);
+        println!(r"  Current space H & S: {:?}", res.timings.snoci_step.current_hs);
+        println!(r"  Current space GEVP: {:?}", res.timings.snoci_step.current_gevp);
+        println!(r"  Candidate generation: {:?}", res.timings.snoci_step.generate_candidates);
+        println!(r"  Candidate space H & S: {:?}", res.timings.snoci_step.candidate_hs);
+        println!(r"  Pseudoinverse: {:?}", res.timings.snoci_step.psuedoinvserse);
+        println!(r"  Build Omega space S: {:?}", res.timings.snoci_step.s_omega);
+        println!(r"  Generalised Fock build: {:?}", res.timings.snoci_step.generalised_fock);
+        println!(r"  Update Wick Fock intermediates: {:?}", res.timings.snoci_step.update_wicks);
+        println!(r"  Candidate space Fock: {:?}", res.timings.snoci_step.candidate_f);
+        println!(r"  Build Omega space F and V: {:?}", res.timings.snoci_step.f_omega);
+        println!(r"  Orthogonalise candidate space: {:?}", res.timings.snoci_step.ortho_candidate);
+        println!(r"  Diagonalise transformed Fock: {:?}", res.timings.snoci_step.diagonalise_fock);
+        println!(r"  Channel EPT2 contributions: {:?}", res.timings.snoci_step.channel_ept2);
+        println!(r"  Candidate selection: {:?}", res.timings.snoci_step.select);
+    }
+
     println!("{}", "=".repeat(100));
     println!("R: {}", res.r);
     for (i, st) in res.states.iter().enumerate() {
@@ -513,6 +521,7 @@ fn print_report(res: &Results, input: &Input) {
     println!("State(NOCI-reference): E: {}, [E - E(RHF)]: {}", res.e_noci_ref, res.e_noci_ref - res.e_rhf);
     if let Some(e_det) = res.e_noci_qmc_det {println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_det, e_det - res.e_rhf);}
     if res.e_noci_qmc_stoch.is_some() {println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");}
+    if let Some(e_snoci) = res.e_snoci {println!("State(SNOCI): E: {}, [E - E(RHF)]: {}", e_snoci, e_snoci - res.e_rhf);}
     if let Some(e_fci) = res.e_fci {println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);}
 
     println!("{}", "=".repeat(100));

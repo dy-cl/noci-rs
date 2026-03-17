@@ -24,6 +24,23 @@ impl WicksShared {
     /// # Arguments:
     ///     `self`: WicksShared, view and RMA for Wick's intermediates.
     pub fn view(&self) -> &WicksView {&self.view}
+    
+    /// Get a mutable reference to the WicksView object.
+    /// # Arguments:
+    ///     `self`: WicksShared, view and RMA for Wick's intermediates.
+    pub fn view_mut(&mut self) -> &mut WicksView {
+        &mut self.view
+    }
+    
+    /// Get a mutable slice over the full contiguous shared tensor storage.
+    /// The returned slice may be used to overwrite stored matrices or tensors in place.
+    /// # Arguments:
+    ///     `self`: WicksShared, view and RMA for Wick's intermediates.
+    pub fn slab_mut(&mut self) -> &mut [f64] {
+        let ptr = self.rma.base_ptr as *mut f64;
+        let len = self.view.slab_len;
+        unsafe {std::slice::from_raw_parts_mut(ptr, len)}
+    }
 }
 
 // Storage for the RMA data of the Wick's objects.
@@ -101,9 +118,9 @@ impl WicksView {
         let idx = self.idx(lp, gp);
 
         let aa = SameSpinView {nmo: self.meta[idx].aa.nmo, m: self.meta[idx].aa.m, tilde_s_prod: self.meta[idx].aa.tilde_s_prod, 
-                               phase: self.meta[idx].aa.phase, f0: self.meta[idx].aa.f0, v0: self.meta[idx].aa.v0, w: self, off: self.off[idx].aa};
+                               phase: self.meta[idx].aa.phase, f0f: self.meta[idx].aa.f0f, f0h: self.meta[idx].aa.f0h, v0: self.meta[idx].aa.v0, w: self, off: self.off[idx].aa};
         let bb = SameSpinView {nmo: self.meta[idx].bb.nmo, m: self.meta[idx].bb.m, tilde_s_prod: self.meta[idx].bb.tilde_s_prod, 
-                               phase: self.meta[idx].bb.phase, f0: self.meta[idx].bb.f0, v0: self.meta[idx].bb.v0, w: self, off: self.off[idx].bb};
+                               phase: self.meta[idx].bb.phase, f0f: self.meta[idx].bb.f0f, f0h: self.meta[idx].bb.f0h, v0: self.meta[idx].bb.v0, w: self, off: self.off[idx].bb};
         let ab = DiffSpinView {nmo: self.meta[idx].ab.nmo, vab0: self.meta[idx].ab.vab0, vba0: self.meta[idx].ab.vba0, w: self, off: self.off[idx].ab};
 
         WicksPairView {aa, bb, ab}
@@ -118,7 +135,8 @@ pub struct SameSpinView<'a> {
     pub m: usize,
     pub tilde_s_prod: f64,
     pub phase: f64,
-    pub f0: [f64; 2],
+    pub f0f: [f64; 2],
+    pub f0h: [f64; 2],
     pub v0: [f64; 3],
     w: &'a WicksView,
     off: SameSpinOffset,
@@ -146,12 +164,20 @@ impl<'a> SameSpinView<'a> {
         self.w.view2(self.off.y[mi], self.n())
     }
     
-    /// Get a view to the F[mi][mj] tensor.
+    /// Get a view to the Hamiltonian F[mi][mj] tensor.
     /// # Arguments:
     ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
     ///     `mi, mj`: usize, zero distribution selectors. 
-    pub fn f(&self, mi: usize, mj: usize) -> ArrayView2<'_, f64> {
-        self.w.view2(self.off.f[mi][mj], self.n())
+    pub fn fh(&self, mi: usize, mj: usize) -> ArrayView2<'_, f64> {
+        self.w.view2(self.off.fh[mi][mj], self.n())
+    }
+
+    /// Get a view to the Fock F[mi][mj] tensor.
+    /// # Arguments:
+    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    ///     `mi, mj`: usize, zero distribution selectors. 
+    pub fn ff(&self, mi: usize, mj: usize) -> ArrayView2<'_, f64> {
+        self.w.view2(self.off.ff[mi][mj], self.n())
     }
     
     /// Get a view to the V[mi][mj][mk] tensor.
@@ -229,7 +255,8 @@ pub struct SameSpinMeta {
     pub phase: f64,
     pub m: usize,
     pub nmo: usize,
-    pub f0: [f64; 2],
+    pub f0f: [f64; 2],
+    pub f0h: [f64; 2],
     pub v0: [f64; 3],
 }
 
@@ -247,7 +274,8 @@ pub struct DiffSpinMeta {
 pub struct SameSpinOffset {
     pub x: [usize; 2],
     pub y: [usize; 2],
-    pub f: [[usize; 2]; 2],
+    pub fh: [[usize; 2]; 2],
+    pub ff: [[usize; 2]; 2],
     pub v: [[[usize; 2]; 2]; 2],
     pub j: [usize; 10], // 10 / 16 4D tensors.
 }
@@ -282,8 +310,10 @@ pub struct SameSpinBuild {
     pub x: [Array2<f64>; 2], // X[mi]
     pub y: [Array2<f64>; 2], // Y[mi]
 
-    pub f0: [f64; 2], // F0[mi]
-    pub f: [[Array2<f64>; 2]; 2], // F[mi][mj]
+    pub f0f: [f64; 2],
+    pub f0h: [f64; 2],
+    pub fh: [[Array2<f64>; 2]; 2], // F[mi][mj] for one electron Hamiltonian.
+    pub ff: [[Array2<f64>; 2]; 2], // F[mi][mj] for Fock. 
 
     pub v0: [f64; 3], // V0[mi][mj]
     pub v: [[[Array2<f64>; 2]; 2]; 2], // V[mi][mj][mk]
@@ -343,13 +373,15 @@ pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
     for p in off.iter_mut() {
         for mi in 0..2 {p.aa.x[mi] = i; i += nn2;}
         for mi in 0..2 {p.aa.y[mi] = i; i += nn2;}
-        for mi in 0..2 {for mj in 0..2 {p.aa.f[mi][mj] = i; i += nn2; }}
+        for mi in 0..2 { for mj in 0..2 {p.aa.fh[mi][mj] = i; i += nn2;}}
+        for mi in 0..2 { for mj in 0..2 {p.aa.ff[mi][mj] = i; i += nn2;}}
         for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.aa.v[mi][mj][mk] = i; i += nn2;}}}
         for s in 0..10 {p.aa.j[s] = i; i += nn4;}
 
         for mi in 0..2 {p.bb.x[mi] = i; i += nn2;}
         for mi in 0..2 {p.bb.y[mi] = i; i += nn2;}
-        for mi in 0..2 {for mj in 0..2 {p.bb.f[mi][mj] = i; i += nn2;}}
+        for mi in 0..2 {for mj in 0..2 {p.bb.fh[mi][mj] = i; i += nn2;}}
+        for mi in 0..2 {for mj in 0..2 {p.bb.ff[mi][mj] = i; i += nn2;}}
         for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.bb.v[mi][mj][mk] = i; i += nn2;}}}
         for s in 0..10 {p.bb.j[s] = i; i += nn4;}
 
@@ -372,7 +404,8 @@ pub fn write_same_spin(slab: &mut [f64], o: &SameSpinOffset, w: &SameSpinBuild) 
     write2(slab, o.x[1], &w.x[1]);
     write2(slab, o.y[0], &w.y[0]);
     write2(slab, o.y[1], &w.y[1]);
-    for mi in 0..2 {for mj in 0..2 {write2(slab, o.f[mi][mj], &w.f[mi][mj]);}}
+    for mi in 0..2 {for mj in 0..2 {write2(slab, o.fh[mi][mj], &w.fh[mi][mj]);}}
+    for mi in 0..2 {for mj in 0..2 {write2(slab, o.ff[mi][mj], &w.ff[mi][mj]);}}
     for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {write2(slab, o.v[mi][mj][mk], &w.v[mi][mj][mk]);}}}
     for s in 0..10 {write4(slab, o.j[s], &w.j[s]);}
 }
@@ -394,7 +427,7 @@ pub fn write_diff_spin(slab: &mut [f64], o: &DiffSpinOffset, w: &DiffSpinBuild) 
 ///     `slab`: [f64], contiguous tensor storage.
 ///     `off`: usize, offset for the start position.
 ///     `a`: Array2, matrix to copy.
-fn write2(slab: &mut [f64], off: usize, a: &ndarray::Array2<f64>) {
+pub fn write2(slab: &mut [f64], off: usize, a: &ndarray::Array2<f64>) {
     let src = a.as_slice().expect("Array2 must be contiguous");
     slab[off..off + src.len()].copy_from_slice(src);
 }
@@ -731,13 +764,19 @@ impl SameSpinBuild {
         //println!();
 
         // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
-        // intermediates required for one body matrix elements.
-        let (f0_0, f00) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
-        let (_, f01) = Self::construct_f(l_c, h_munu, &x[0], &y[1]);
-        let (_, f10) = Self::construct_f(l_c, h_munu, &x[1], &y[0]);
-        let (f0_1, f11) = Self::construct_f(l_c, h_munu, &x[1], &y[1]);
-        let f0: [f64; 2] = [f0_0, f0_1];
-        let f: [[Array2<f64>; 2]; 2] = [[f00, f01], [f10, f11]];
+        // intermediates required for one electron Hamiltonian matrix elements.
+        let (f0_0h, f00h) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
+        let (_, f01h) = Self::construct_f(l_c, h_munu, &x[0], &y[1]);
+        let (_, f10h) = Self::construct_f(l_c, h_munu, &x[1], &y[0]);
+        let (f0_1h, f11h) = Self::construct_f(l_c, h_munu, &x[1], &y[1]);
+        let f0h: [f64; 2] = [f0_0h, f0_1h];
+        let fh: [[Array2<f64>; 2]; 2] = [[f00h, f01h], [f10h, f11h]];
+        
+        // Initialise {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j} for 
+        // Fock matrix elements to zero as when used in SNOCI these will change per iteration.
+        let f0f: [f64; 2] = [0.0, 0.0];
+        let ff: [[Array2<f64>; 2]; 2] = [[Array2::zeros((2 * nmo, 2 * nmo)), Array2::zeros((2 * nmo, 2 * nmo))],
+                                         [Array2::zeros((2 * nmo, 2 * nmo)), Array2::zeros((2 * nmo, 2 * nmo))]];
         
         // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and 
         // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
@@ -814,7 +853,7 @@ impl SameSpinBuild {
             j[s] = blk;
         }
 
-        Self {x, y, f0, f, v0, v, j, tilde_s_prod, phase, m, nmo}
+        Self {x, y, f0h, fh, f0f, ff, v0, v, j, tilde_s_prod, phase, m, nmo}
     }
 
     /// Calculate the overlap matrix between two sets of occupied orbitals as:
@@ -985,7 +1024,7 @@ impl SameSpinBuild {
     ///     `h_munu`: Array2, one-electron core AO hamiltonian.
     ///     `x`: Array2, {}^{\Gamma\Lambda} X_{ij}^{m_k}.
     ///     `y`: Array2, {}^{\Gamma\Lambda} Y_{ij}^{m_k}
-    fn construct_f(l_c: &Array2<f64>, h_munu: &Array2<f64>, x: &Array2<f64>, y: &Array2<f64>) -> (f64, Array2<f64>) {
+    pub fn construct_f(l_c: &Array2<f64>, h_munu: &Array2<f64>, x: &Array2<f64>, y: &Array2<f64>) -> (f64, Array2<f64>) {
         let nmo = l_c.ncols();
         let ll_h = l_c.t().dot(h_munu).dot(l_c);
         
@@ -1403,11 +1442,11 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
         // First term in the sum of Eqn 26 involves the same sum over all possible bitstrings with
         // the F0 matrix multiplying the contraction determinant.
         let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &mut scratch.lu, &scratch.det_mix, tol) else {continue;};
-        let mut contrib = det_det * w.f0[mi];
+        let mut contrib = det_det * w.f0h[mi];
 
         for b in 0..l {
             let mj = ((bitstring >> (b + 1)) & 1) as usize;
-            let f = w.f(mi, mj);
+            let f = w.fh(mi, mj);
             let cb = scratch.cols[b];
 
             let mut corr = 0.0;
@@ -1422,6 +1461,53 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
     }
     w.phase * w.tilde_s_prod * acc
 }
+
+/// Calculate one electron Fock matrix element between two determinants |{}^\Lambda \Psi\rangle and
+/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
+/// # Arguments:
+///     `w`: SameSpin: same spin Wick's reference pair intermediates.
+///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+#[inline(always)]
+pub fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+    
+    // If the total excitation rank L + 1 is less than the number of zero-singular values in
+    // {}^{\Gamma\Lambda} \tilde{S} the one electron matrix element is zero.
+    let l = l_ex.holes.len() + g_ex.holes.len();
+    if w.m > (l + 1) {return 0.0;}
+
+    let mut acc = 0.0;
+
+    // Iterate over all possible distributions of zeros amongst the columns.
+    for bitstring in iter_m_combinations(l + 1, w.m) {
+        let mi = ((bitstring & 1) == 1) as usize;
+
+        let mcol: u64 = bitstring >> 1;
+        mix_columns(&mut scratch.det_mix, &scratch.det0, &scratch.det1, mcol);
+        
+        // First term in the sum of Eqn 26 involves the same sum over all possible bitstrings with
+        // the F0 matrix multiplying the contraction determinant.
+        let Some(det_det) = adjugate_transpose(&mut scratch.adjt_det, &mut scratch.invs, &mut scratch.lu, &scratch.det_mix, tol) else {continue;};
+        let mut contrib = det_det * w.f0f[mi];
+
+        for b in 0..l {
+            let mj = ((bitstring >> (b + 1)) & 1) as usize;
+            let f = w.ff(mi, mj);
+            let cb = scratch.cols[b];
+
+            let mut corr = 0.0;
+            for a in 0..l {
+                let ra = scratch.rows[a];
+                let new = f[(ra, cb)];
+                corr += (new - scratch.det_mix[(a, b)]) * scratch.adjt_det[(a, b)];
+            }
+            contrib -= det_det + corr;
+        }
+        acc += contrib;
+    }
+    w.phase * w.tilde_s_prod * acc
+}
+
 
 /// Calculate the same-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
