@@ -140,6 +140,15 @@ pub enum StateType {
     Metadynamics(Metadynamics),
 }
 
+// Storage for Davidson diagonalisation in SNOCI options.
+pub struct DavidsonOptions {
+    pub nroots: usize,
+    pub max_subspace: usize,
+    pub max_iter: usize,
+    pub restart_dim: usize,
+    pub res_tol: f64,
+}
+
 // Storage for SNOCI options. 
 pub struct SNOCIOptions {
     pub sigma: f64,
@@ -147,6 +156,7 @@ pub struct SNOCIOptions {
     pub max_iter: usize,
     pub max_add: usize,
     pub max_dim: usize,
+    pub davidson: DavidsonOptions
 }
 
 // Storage for Input file parameters.
@@ -346,7 +356,15 @@ pub fn load_input(path: &str) -> Input {
         let max_iter: usize = snoci_tbl.get("max_iter").unwrap();
         let max_add: usize = snoci_tbl.get("max_add").unwrap();
         let max_dim: usize = snoci_tbl.get("max_dim").unwrap();
-        SNOCIOptions {sigma, tol, max_iter, max_add, max_dim}
+        let davidson_tbl: rlua::Table = snoci_tbl.get("davidson").unwrap();
+        let davidson = DavidsonOptions {
+            nroots: davidson_tbl.get("nroots").unwrap(),
+            max_subspace: davidson_tbl.get("max_subspace").unwrap(),
+            max_iter: davidson_tbl.get("max_iter").unwrap(),
+            restart_dim: davidson_tbl.get("restart_dim").unwrap(),
+            res_tol: davidson_tbl.get("res_tol").unwrap(),
+        };
+        SNOCIOptions {sigma, tol, max_iter, max_add, max_dim, davidson}
     });
 
     // Excitation table. 

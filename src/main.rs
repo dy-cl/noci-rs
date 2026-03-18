@@ -506,8 +506,7 @@ fn print_report(res: &Results, input: &Input) {
         println!(r"  Update Wick Fock intermediates: {:?}", res.timings.snoci_step.update_wicks);
         println!(r"  Candidate space Fock: {:?}", res.timings.snoci_step.candidate_f);
         println!(r"  Build Omega space F and V: {:?}", res.timings.snoci_step.f_omega);
-        println!(r"  Orthogonalise candidate space: {:?}", res.timings.snoci_step.ortho_candidate);
-        println!(r"  Diagonalise transformed Fock: {:?}", res.timings.snoci_step.diagonalise_fock);
+        println!(r"  Davidson Solve: {:?}", res.timings.snoci_step.davidson);
         println!(r"  Channel EPT2 contributions: {:?}", res.timings.snoci_step.channel_ept2);
         println!(r"  Candidate selection: {:?}", res.timings.snoci_step.select);
     }
