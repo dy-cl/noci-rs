@@ -12,6 +12,7 @@ use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, noci_density, up
 use crate::maths::{general_evp_real, loewdin_x_real, parallel_matvec_real};
 use crate::scf::form_fock_matrices;
 
+/// Storage for the current SNOCI iteration state.
 pub struct SNOCIState {
     pub ecurrent: f64,
     pub coeffs: Array1<f64>,
@@ -25,6 +26,7 @@ pub struct SNOCIState {
     pub ept2: f64,
 }
 
+/// Storage for timings of the SNOCI step components.
 #[derive(Default)]
 pub struct SNOCIStepTimings {
     pub current_hs: Duration,
@@ -42,11 +44,18 @@ pub struct SNOCIStepTimings {
     pub select: Duration,
 }
 
+/// Build initial trial basis for generalised Davidson solve.
+/// # Arguments:
+///     `m`: Array2, generally Hamiltonian in candidate space.
+///     `s`: Array2, generally overlap in candidate space.
+///     `nroots`: usize, number of lowest roots to find,
+///     `tol`: f64, tolerance for whether a number is zero.
 fn seed(m: &Array2<f64>, s: &Array2<f64>, nroots: usize, tol: f64,) -> Vec<Array1<f64>> {
     let n = m.nrows();
     let mdiag = m.diag().to_owned();
     let sdiag = s.diag().to_owned();
-
+    
+    // Rank directions by diagonal quotient. This is not a good guess.
     let mut order: Vec<usize> = (0..n).filter(|&i| sdiag[i] > tol).collect();
     order.sort_by(|&i, &j| {
         let qi = mdiag[i] / sdiag[i];
@@ -55,8 +64,9 @@ fn seed(m: &Array2<f64>, s: &Array2<f64>, nroots: usize, tol: f64,) -> Vec<Array
     });
 
     let seeddim = order.len().min((4 * nroots).max(25));
+    // Take the indices of the best `seeddim` ranked directions.
     let idx = &order[..seeddim];
-
+    // Extract subspace of best directions from `m` and `s`.
     let mut m0 = Array2::<f64>::zeros((seeddim, seeddim));
     let mut s0 = Array2::<f64>::zeros((seeddim, seeddim));
     for p in 0..seeddim {
@@ -65,10 +75,12 @@ fn seed(m: &Array2<f64>, s: &Array2<f64>, nroots: usize, tol: f64,) -> Vec<Array
             s0[(p, q)] = s[(idx[p], idx[q])];
         }
     }
-
+    
+    // Solve subspace GEVP.
     let (evals, c0) = general_evp_real(&m0, &s0, true, tol);
     let keep = nroots.min(evals.len());
-
+    
+    // Put subspace eigenvectors into the full space. Only subspace indices hae non-zero entries.
     let mut basis: Vec<Array1<f64>> = Vec::new();
     let mut sbasis: Vec<Array1<f64>> = Vec::new();
     for a in 0..keep {
@@ -76,6 +88,7 @@ fn seed(m: &Array2<f64>, s: &Array2<f64>, nroots: usize, tol: f64,) -> Vec<Array
         for p in 0..seeddim {
             v[idx[p]] = c0[(p, a)];
         }
+        // Orthogonalise.
         if let Some((u, su)) = orthonormalise(v, &basis, &sbasis, s, tol) {
             basis.push(u);
             sbasis.push(su);
@@ -84,6 +97,10 @@ fn seed(m: &Array2<f64>, s: &Array2<f64>, nroots: usize, tol: f64,) -> Vec<Array
     basis
 }
 
+/// Form vector v = \sum_p C_p U_p from basis and coeffs.
+/// # Arguments:
+///     `basis`: [Array1], basis vectors.
+///     `coeffs`: Array1, coefficients c_p.
 fn form_vector(basis: &[Array1<f64>], coeffs: &Array1<f64>) -> Array1<f64> {
     let n = basis[0].len();
     let mut v = Array1::<f64>::zeros(n);
@@ -93,9 +110,15 @@ fn form_vector(basis: &[Array1<f64>], coeffs: &Array1<f64>) -> Array1<f64> {
     v
 }
 
+/// Construct trial subspace M and S matrices in the trial basis.
+/// # Arguments:
+///     `basis`: [Array1], trial basis vectors.
+///     `mbasis`: [Array1], cached Mu vectors.
+///     `sbasis`: [Array1], cached Su vectors.
 fn project_subspace(basis: &[Array1<f64>], mbasis: &[Array1<f64>], sbasis: &[Array1<f64>],) -> (Array2<f64>, Array2<f64>) {
     let k = basis.len();
-
+    
+    // Calculate lower-triangular rows in parallel.
     let rows: Vec<(Vec<f64>, Vec<f64>)> = (0..k).into_par_iter().map(|p| {
         let mut mrow = vec![0.0; p + 1];
         let mut srow = vec![0.0; p + 1];
@@ -106,9 +129,9 @@ fn project_subspace(basis: &[Array1<f64>], mbasis: &[Array1<f64>], sbasis: &[Arr
         (mrow, srow)
     }).collect();
 
+    // Fill the full matrix
     let mut msub = Array2::<f64>::zeros((k, k));
     let mut ssub = Array2::<f64>::zeros((k, k));
-
     for (p, (mrow, srow)) in rows.into_iter().enumerate() {
         for q in 0..=p {
             let mpq = mrow[q];
@@ -122,20 +145,33 @@ fn project_subspace(basis: &[Array1<f64>], mbasis: &[Array1<f64>], sbasis: &[Arr
     (msub, ssub)
 }
 
-fn orthonormalise(mut v: Array1<f64>, basis: &[Array1<f64>], sbasis: &[Array1<f64>], s: &Array2<f64>,tol: f64) -> Option<(Array1<f64>, Array1<f64>)> {
+/// Orthonormalise a vector in the overlap metric such that v^T S v = 1.
+/// # Arguments:
+///     `v`: Array1, candidate vector to orthonormalise.
+///     `basis`: [Array1], existing orthonormal basis vectors.
+///     `sbasis`: [Array1], cached Su vectors corresponding to.
+///     `s`: Array2, overlap.
+///     `tol`: Float, threshold for linear dependence check.
+fn orthonormalise(mut v: Array1<f64>, basis: &[Array1<f64>], sbasis: &[Array1<f64>], s: &Array2<f64>, tol: f64) -> Option<(Array1<f64>, Array1<f64>)> {
     let mut sv = parallel_matvec_real(s, &v);
+
+    // 2 passes of orthgonanlisation.
     for _ in 0..2 {
         for (u, su) in basis.iter().zip(sbasis.iter()) {
+            // Subtract component u^T S v u from v. Removes all components of existing directions 
+            // in the basis from the vector v.
             let proj = u.dot(&sv);
             v.scaled_add(-proj, u);
             sv.scaled_add(-proj, su);
         }
     }
-
+    
+    // Reject vectors that are large or tiny.
     let n2 = v.dot(&sv);
     if !n2.is_finite() || n2 <= tol * tol {
         None
     } else {
+        // Normalise.
         let inv = n2.sqrt().recip();
         v *= inv;
         sv *= inv;
@@ -143,6 +179,12 @@ fn orthonormalise(mut v: Array1<f64>, basis: &[Array1<f64>], sbasis: &[Array1<f6
     }
 }
 
+/// Find lowest roots of GEVP using Davidson solve.
+/// # Arguments:
+///     `m`: Array2, generally Hamiltonian in candidate space.
+///     `s`: Array2, generally overlap in candidate space.
+///     `input`: Input, user-defined input options.
+///     `tol`: f64, tolerance for whether a number is zero.
 fn generalised_davidson(m: &Array2<f64>, s: &Array2<f64>, input: &Input, tol: f64) -> (Array1<f64>, Array2<f64>) {
     let n = m.nrows();
     let options = input.snoci.as_ref().unwrap();
@@ -273,6 +315,14 @@ fn generalised_davidson(m: &Array2<f64>, s: &Array2<f64>, input: &Input, tol: f6
     (deltafinal.slice_move(ndarray::s![0..keep]), zfinal.slice_move(ndarray::s![.., 0..keep]))
 }
 
+/// Perform selected NOCI with selection from single and double excitations of current space.
+/// # Arguments:
+///     `ao`: AoData, contains AO integrals and other system data.
+///     `current_space`: [SCFState], current selected nonorthogonal determinant space.
+///     `noci_reference_basis`: [SCFState], vector of only the reference determinants.
+///     `input`: Input, user-defined input options.
+///     `tol`: f64, tolerance for whether a number is zero.
+///     `wicks`: WicksShared, mutable Wick's intermediates as we need to update Fock intermediates.
 pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, mut wicks: Option<&mut WicksShared>) -> (SNOCIState, SNOCIStepTimings) {
 
     let mut timings = SNOCIStepTimings::default();

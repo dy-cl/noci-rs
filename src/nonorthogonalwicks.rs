@@ -1508,7 +1508,6 @@ pub fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scra
     w.phase * w.tilde_s_prod * acc
 }
 
-
 /// Calculate the same-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
 /// # Arguments:
