@@ -20,7 +20,6 @@ use serde::{Serialize, Deserialize};
 
 use ndarray::{Array1, Array2, Array4};
 
-/// AO integrals and other related data storage.
 pub struct AoData {
     // AO overlap matrix, (nao, nao).
     pub s: Array2<f64>, 
@@ -45,7 +44,6 @@ pub struct AoData {
     pub e_fci: Option<f64>,
 }
 
-// Description of excited determinant relative to reference.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Excitation {
     alpha: ExcitationSpin,
@@ -58,7 +56,6 @@ pub struct ExcitationSpin {
     pub parts: Vec<usize>
 }
 
-/// Storage for SCF state attributes, contains energy and spin MO coefficients.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SCFState {
     // Energy of SCF state in Ha, scalar.

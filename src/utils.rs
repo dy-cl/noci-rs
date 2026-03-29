@@ -5,7 +5,9 @@ use ndarray::{Array1, Array2, Array4};
 
 /// Print a 2D array as a matrix.
 /// # Arguments
-///     `a`:  Array2, matrix to print.
+/// `a`:  Array2, matrix to print.
+/// # Returns
+/// `()`, prints the matrix to stdout.
 pub fn print_array2(a: &Array2<f64>) {
     let (nr, nc) = a.dim();
     for i in 0..nr {
@@ -18,7 +20,9 @@ pub fn print_array2(a: &Array2<f64>) {
 
 /// Print a 4D array as grid of 2D blocks.
 /// # Arguments 
-///    `t`: Array4, tensor to print. 
+/// `t`: Array4, tensor to print. 
+/// # Returns
+/// `()`, prints the tensor to stdout.
 pub fn print_array4(t: &Array4<f64>) {
     let (np, nq, nr, ns) = t.dim();
     for p in 0..np {
@@ -38,8 +42,10 @@ pub fn print_array4(t: &Array4<f64>) {
 /// reference states) required to reach 99%, 99.9%, .... of the total coefficient weight. Yields approximate 
 /// indication of the sparsity of a wavefunction.  
 /// # Arguments 
-///     `c`: [f64], basis coefficient vector.
-///     `ref_indices`, indices of the reference states in the coefficient vector.
+/// `c`: [f64], basis coefficient vector.
+/// `ref_indices`: indices of the reference states in the coefficient vector.
+/// # Returns
+/// `()`, prints wavefunction sparsity diagnostics to stdout.
 pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
 
     // Construct mask for the references.
@@ -95,8 +101,10 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
 
 /// Convert an occupation vector into a bitstring.
 /// # Arguments:
-///     `occ`: Array1, occupancy vector.
-///     `tol`: f64, tolerance for a occupancy element being almost 1.
+/// `occ`: Array1, occupancy vector.
+/// `tol`: f64, tolerance for a occupancy element being almost 1.
+/// # Returns
+/// `u64`, occupancy bitstring.
 pub fn occvec_to_bits(occ: &Array1<f64>, tol: f64) -> u64 {
     let mut bits = 0u64;
     for (i, &x) in occ.iter().enumerate() {
@@ -108,15 +116,19 @@ pub fn occvec_to_bits(occ: &Array1<f64>, tol: f64) -> u64 {
 /// Calculate fermionic sign associated with applying a set of creation and annhilation operators
 /// to a determinant described by a bitstring.
 /// # Arguments:
-///     `occ`: u64, occupancy bitstring.
-///     `holes`: [usize], annhilation operators indices.
-///     `parts`: [usize], creation operator indices.
+/// `occ`: u64, occupancy bitstring.
+/// `holes`: [usize], annhilation operators indices.
+/// `parts`: [usize], creation operator indices.
+/// # Returns
+/// `f64`, fermionic phase factor.
 pub fn excitation_phase(mut occ: u64, holes: &[usize], parts: &[usize]) -> f64 {
 
     /// Calculate how many occupied orbitals are below index p.
     /// # Arguments:
-    ///     `bits`: u64, occupancy bitstring.
-    ///     `p`: usize, a given orbital index.
+    /// `bits`: u64, occupancy bitstring.
+    /// `p`: usize, a given orbital index.
+    /// # Returns
+    /// `u32`, number of occupied orbitals below index `p`.
     fn below(bits: u64, p: usize) -> u32 {
         if p == 0 { return 0; }
         (bits & ((1u64 << p) - 1)).count_ones()
@@ -142,6 +154,12 @@ pub fn excitation_phase(mut occ: u64, holes: &[usize], parts: &[usize]) -> f64 {
     ph
 }
 
+/// Generate a random atomwise pattern with entries in {-1, 0, 1}.
+/// # Arguments:
+/// `rng`: StdRng, random number generator.
+/// `natoms`: usize, number of atoms.
+/// # Returns
+/// `Vec<i8>`, random pattern over the atoms.
 pub fn random_pattern(rng: &mut StdRng, natoms: usize) -> Vec<i8> {
     (0..natoms).map(|_| match rng.gen_range(0..3) {0 => -1, 1 => 0, _ => 1,}).collect()
 }

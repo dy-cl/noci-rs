@@ -22,12 +22,16 @@ pub struct WicksShared {
 impl WicksShared {
     /// Get a shared reference to the WicksView object.
     /// # Arguments:
-    ///     `self`: WicksShared, view and RMA for Wick's intermediates.
+    /// `self`: `WicksShared`, view and RMA for Wick's intermediates.
+    /// # Returns
+    /// `&WicksView`, shared view of the Wick's intermediates.
     pub fn view(&self) -> &WicksView {&self.view}
     
     /// Get a mutable reference to the WicksView object.
     /// # Arguments:
-    ///     `self`: WicksShared, view and RMA for Wick's intermediates.
+    /// `self`: `WicksShared`, view and RMA for Wick's intermediates.
+    /// # Returns
+    /// `&mut WicksView`, mutable view of the Wick's intermediates.
     pub fn view_mut(&mut self) -> &mut WicksView {
         &mut self.view
     }
@@ -35,7 +39,9 @@ impl WicksShared {
     /// Get a mutable slice over the full contiguous shared tensor storage.
     /// The returned slice may be used to overwrite stored matrices or tensors in place.
     /// # Arguments:
-    ///     `self`: WicksShared, view and RMA for Wick's intermediates.
+    /// `self`: `WicksShared`, view and RMA for Wick's intermediates.
+    /// # Returns
+    /// `&mut [f64]`, mutable slice over the full shared tensor slab.
     pub fn slab_mut(&mut self) -> &mut [f64] {
         let ptr = self.rma.base_ptr as *mut f64;
         let len = self.view.slab_len;
@@ -72,16 +78,20 @@ unsafe impl Send for WicksView {}
 impl WicksView {
     /// Map a pair index (lp, gp) into a 1D flattened index.
     /// # Arguments:
-    ///     `self`: WicksView, view into Wick's intermediates.
-    ///     `lp`: usize, pair index 1.
-    ///     `gp`: usize, pair index 2.
+    /// `self`: `WicksView`, view into Wick's intermediates.
+    /// `lp`: `usize`, pair index 1.
+    /// `gp`: `usize`, pair index 2.
+    /// # Returns
+    /// `usize`, flattened pair index.
     pub fn idx(&self, lp: usize, gp: usize) -> usize {
         lp * self.nref + gp
     }
     
     /// Get a pointer to the start of the shared tensor storage.
     /// # Arguments:
-    ///     `self`: WicksView, view into Wick's intermediates.
+    /// `self`: `WicksView`, view into Wick's intermediates.
+    /// # Returns
+    /// `*const f64`, pointer to the start of the shared tensor slab.
     fn slab_ptr(&self) -> *const f64 {
         self.slab.as_ptr()
     }
@@ -90,9 +100,11 @@ impl WicksView {
     /// a n by n matrix. Lifetime elision '_ ensures that the ArrayView2 may not outlive the borrow
     /// of self (WicksView) which in turn is only valid while the remote memory storage is valid.
     /// # Arguments:
-    ///     `self`: WicksView, view into Wick's intermediates.
-    ///     `off_f64`: usize, offset from the beginning of the tensor slab in units of f64.
-    ///     `n`: usize, size of matrix to be read.
+    /// `self`: `WicksView`, view into Wick's intermediates.
+    /// `off_f64`: `usize`, offset from the beginning of the tensor slab in units of f64.
+    /// `n`: `usize`, size of matrix to be read.
+    /// # Returns
+    /// `ArrayView2<'_, f64>`, matrix view into the tensor slab.
     pub fn view2(&self, off_f64: usize, n: usize) -> ArrayView2<'_, f64> {
         unsafe {ArrayView2::from_shape_ptr((n, n), self.slab_ptr().add(off_f64))}
     }
@@ -101,9 +113,11 @@ impl WicksView {
     /// a n by n by n by n tensor. Lifetime elision '_ ensures that the ArrayView4 may not outlive the borrow
     /// of self (WicksView) which in turn is only valid while the remote memory storage is valid.
     /// # Arguments:
-    ///     `self`: WicksView, view into Wick's intermediates.
-    ///     `off_f64`: usize, offset from the beginning of the tensor slab in units of f64.
-    ///     `n`: usize, size of tensor to be read.
+    /// `self`: `WicksView`, view into Wick's intermediates.
+    /// `off_f64`: `usize`, offset from the beginning of the tensor slab in units of f64.
+    /// `n`: `usize`, size of tensor to be read.
+    /// # Returns
+    /// `ArrayView4<'_, f64>`, 4D tensor view into the tensor slab.
     pub fn view4(&self, off_f64: usize, n: usize) -> ArrayView4<'_, f64> {
         unsafe {ArrayView4::from_shape_ptr((n, n, n, n), self.slab_ptr().add(off_f64))}
     }
@@ -112,8 +126,11 @@ impl WicksView {
     /// that the ArrayView4 may not outlive the borrow of self (WicksView) which in turn is only valid 
     /// while the remote memory storage is valid.
     /// # Arguments:
-    ///     `self`: WicksView, view into Wick's intermediates.
-    ///     `lp`: usize, pair index 2. 
+    /// `self`: `WicksView`, view into Wick's intermediates.
+    /// `lp`: `usize`, pair index 1.
+    /// `gp`: `usize`, pair index 2.
+    /// # Returns
+    /// `WicksPairView<'_>`, grouped view of the same-spin and different-spin intermediates for the pair.
     pub fn pair(&self, lp: usize, gp: usize) -> WicksPairView<'_> {
         let idx = self.idx(lp, gp);
 
@@ -145,53 +162,67 @@ pub struct SameSpinView<'a> {
 impl<'a> SameSpinView<'a> {
     /// Get tensor dimension n. 
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// # Returns
+    /// `usize`, tensor dimension `2 * nmo`.
     fn n(&self) -> usize {2 * self.nmo}
     
-    /// Get a view to the X[mi] matrix.
+    /// Get a view to the `X[mi]` matrix.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi`: usize, zero distribution selector. 
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// `mi`: `usize`, zero distribution selector. 
+    /// # Returns
+    /// `ArrayView2<'_, f64>`, view of the `X[mi]` matrix.
     pub fn x(&self, mi: usize) -> ArrayView2<'_, f64> {
         self.w.view2(self.off.x[mi], self.n())
     }
     
-    /// Get a view to the Y[mi] matrix.
+    /// Get a view to the `Y[mi]` matrix.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi`: usize, zero distribution selector. 
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// `mi`: `usize`, zero distribution selector. 
+    /// # Returns
+    /// `ArrayView2<'_, f64>`, view of the `Y[mi]` matrix.
     pub fn y(&self, mi: usize) -> ArrayView2<'_, f64> {
         self.w.view2(self.off.y[mi], self.n())
     }
     
-    /// Get a view to the Hamiltonian F[mi][mj] tensor.
+    /// Get a view to the Hamiltonian `F[mi][mj]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi, mj`: usize, zero distribution selectors. 
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// `mi, mj`: `usize`, zero distribution selectors. 
+    /// # Returns
+    /// `ArrayView2<'_, f64>`, view of the Hamiltonian `F[mi][mj]` matrix.
     pub fn fh(&self, mi: usize, mj: usize) -> ArrayView2<'_, f64> {
         self.w.view2(self.off.fh[mi][mj], self.n())
     }
 
-    /// Get a view to the Fock F[mi][mj] tensor.
+    /// Get a view to the Fock `F[mi][mj]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi, mj`: usize, zero distribution selectors. 
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// `mi, mj`: `usize`, zero distribution selectors. 
+    /// # Returns
+    /// `ArrayView2<'_, f64>`, view of the Fock `F[mi][mj]` matrix.
     pub fn ff(&self, mi: usize, mj: usize) -> ArrayView2<'_, f64> {
         self.w.view2(self.off.ff[mi][mj], self.n())
     }
     
-    /// Get a view to the V[mi][mj][mk] tensor.
+    /// Get a view to the `V[mi][mj][mk]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi, mj, mk`: usize, zero distribution selector. 
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// `mi, mj, mk`: `usize`, zero distribution selector. 
+    /// # Returns
+    /// `ArrayView2<'_, f64>`, view of the `V[mi][mj][mk]` matrix.
     pub fn v(&self, mi: usize, mj: usize, mk: usize) -> ArrayView2<'_, f64> {
         self.w.view2(self.off.v[mi][mj][mk], self.n())
     }
     
-    /// Get a view to the J[mi][mj][mk][ml] tensor.
+    /// Get a view to the `J[mi][mj][mk][ml]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `mi, mj, mk, ml`: usize, zero distribution selector.
+    /// `self`: `SameSpinView`, view to same-spin Wick's intermediates.
+    /// `slot`: `usize`, compressed storage slot for the requested J tensor.
+    /// # Returns
+    /// `ArrayView4<'_, f64>`, view of the requested J tensor.
     pub fn j(&self, slot: usize) -> ArrayView4<'_, f64> {
         self.w.view4(self.off.j[slot], self.n())
     }
@@ -211,29 +242,37 @@ pub struct DiffSpinView<'a> {
 impl<'a> DiffSpinView<'a> {
     /// Get tensor dimension n. 
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
+    /// `self`: `DiffSpinView`, view to diff-spin Wick's intermediates.
+    /// # Returns
+    /// `usize`, tensor dimension `2 * nmo`.
     fn n(&self) -> usize {2 * self.nmo}
     
-    /// Get a view to the Vab[ma0][mb0][mak] tensor.
+    /// Get a view to the `Vab[ma0][mb0][mak]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `ma0, mb0, mak`: usize, zero distribution selector. 
+    /// `self`: `DiffSpinView`, view to diff-spin Wick's intermediates.
+    /// `ma0, mb0, mak`: `usize`, zero distribution selector. 
+    /// # Returns
+    /// `ArrayView2<'a, f64>`, view of the `Vab[ma0][mb0][mak]` matrix.
     pub fn vab(&self, ma0: usize, mb0: usize, mak: usize) -> ArrayView2<'a, f64> {
         self.w.view2(self.off.vab[ma0][mb0][mak], self.n())
     }
 
-    /// Get a view to the Vba[mb0][ma0][mak] tensor.
+    /// Get a view to the `Vba[mb0][ma0][mak]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `ma0, mb0, mak`: usize, zero distribution selector.
+    /// `self`: `DiffSpinView`, view to diff-spin Wick's intermediates.
+    /// `mb0, ma0, mbk`: `usize`, zero distribution selector.
+    /// # Returns
+    /// `ArrayView2<'a, f64>`, view of the `Vba[mb0][ma0][mbk]` matrix.
     pub fn vba(&self, mb0: usize, ma0: usize, mbk: usize) -> ArrayView2<'a, f64> {
         self.w.view2(self.off.vba[mb0][ma0][mbk], self.n())
     }
 
-    /// Get a view to the IIab[ma0][maj][mb0][mbj] tensor.
+    /// Get a view to the `IIab[ma0][maj][mb0][mbj]` tensor.
     /// # Arguments:
-    ///     `self`: SameSpinView, view to same-spin Wick's intermediates.
-    ///     `ma0, maj, mb0, mbj`: usize, zero distribution selector.
+    /// `self`: `DiffSpinView`, view to diff-spin Wick's intermediates.
+    /// `ma0, maj, mb0, mbj`: `usize`, zero distribution selector.
+    /// # Returns
+    /// `ArrayView4<'a, f64>`, view of the `IIab[ma0][maj][mb0][mbj]` tensor.
     pub fn iiab(&self, ma0: usize, maj: usize, mb0: usize, mbj: usize) -> ArrayView4<'a, f64> {
         self.w.view4(self.off.iiab[ma0][maj][mb0][mbj], self.n())
     }
@@ -358,8 +397,10 @@ pub type Label = (Side, Type, usize);
 /// Calculate and store all the required offsets from the beginning of the large contiguous shared
 /// tensor storage to a given matrix or tensor.
 /// # Arguments:
-///     `nref`: usize, number of references.
-///     `nmo`: usize, number of molecular orbitals.
+/// `nref`: `usize`, number of references.
+/// `nmo`: `usize`, number of molecular orbitals.
+/// # Returns
+/// `(Vec<PairOffset>, usize)`, per-pair offset table and total slab length in units of `f64`.
 pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
     
     let n = 2 * nmo;
@@ -396,9 +437,11 @@ pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
 /// Fill the same-spin data owning structs with the same-spin Wick's intermediates using the
 /// prescribed offsets.
 /// # Arguments:
-///     `slab`: [f64], contiguous tensor storage.
-///     `o`: SameSpinOffset, offsets into the storage.
-///     `w`: SameSpinBuild, owned Wick's intermediates.
+/// `slab`: `[f64]`, contiguous tensor storage.
+/// `o`: `SameSpinOffset`, offsets into the storage.
+/// `w`: `SameSpinBuild`, owned Wick's intermediates.
+/// # Returns
+/// `()`, writes the same-spin intermediates into the slab.
 pub fn write_same_spin(slab: &mut [f64], o: &SameSpinOffset, w: &SameSpinBuild) {
     write2(slab, o.x[0], &w.x[0]);
     write2(slab, o.x[1], &w.x[1]);
@@ -413,9 +456,11 @@ pub fn write_same_spin(slab: &mut [f64], o: &SameSpinOffset, w: &SameSpinBuild) 
 /// Fill the diff-spin data owning structs with the diff-spin Wick's intermediates using the
 /// prescribed offsets.
 /// # Arguments:
-///     `slab`: [f64], contiguous tensor storage.
-///     `o`: DiffSpinOffset, offsets into the storage.
-///     `w`: DiffSpinBuild, owned Wick's intermediates.
+/// `slab`: `[f64]`, contiguous tensor storage.
+/// `o`: `DiffSpinOffset`, offsets into the storage.
+/// `w`: `DiffSpinBuild`, owned Wick's intermediates.
+/// # Returns
+/// `()`, writes the diff-spin intermediates into the slab.
 pub fn write_diff_spin(slab: &mut [f64], o: &DiffSpinOffset, w: &DiffSpinBuild) {
     for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {write2(slab, o.vab[ma0][mb0][mk], &w.vab[ma0][mb0][mk]);}}}
     for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {write2(slab, o.vba[mb0][ma0][mk], &w.vba[mb0][ma0][mk]);}}}
@@ -424,9 +469,11 @@ pub fn write_diff_spin(slab: &mut [f64], o: &DiffSpinOffset, w: &DiffSpinBuild) 
 
 /// Copy matrix into tensor slab provided it is contiguous.
 /// # Arguments:
-///     `slab`: [f64], contiguous tensor storage.
-///     `off`: usize, offset for the start position.
-///     `a`: Array2, matrix to copy.
+/// `slab`: `[f64]`, contiguous tensor storage.
+/// `off`: `usize`, offset for the start position.
+/// `a`: `Array2`, matrix to copy.
+/// # Returns
+/// `()`, writes the matrix into the tensor slab.
 pub fn write2(slab: &mut [f64], off: usize, a: &ndarray::Array2<f64>) {
     let src = a.as_slice().expect("Array2 must be contiguous");
     slab[off..off + src.len()].copy_from_slice(src);
@@ -434,9 +481,11 @@ pub fn write2(slab: &mut [f64], off: usize, a: &ndarray::Array2<f64>) {
 
 /// Copy tensor into tensor slab provided it is contiguous.
 /// # Arguments:
-///     `slab`: [f64], contiguous tensor storage.
-///     `off`: usize, offset for the start position.
-///     `a`: Array4, tensor to copy.
+/// `slab`: `[f64]`, contiguous tensor storage.
+/// `off`: `usize`, offset for the start position.
+/// `a`: `Array4`, tensor to copy.
+/// # Returns
+/// `()`, writes the tensor into the tensor slab.
 fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
     let src = a.as_slice().expect("Array4 must be contiguous");
     slab[off..off + src.len()].copy_from_slice(src);
@@ -445,12 +494,14 @@ fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
 /// Write 2D slice of 4D J or IIab tensors into provided output scratch. The given slice is t[r, c, i, j]  
 /// where r, c are rows, columns and i, j are fixed indices.
 /// # Arguments:
-///     `out`: Array2, preallocated output scratch.
-///     `t`: ArrayView4, view of a 4D tensor.
-///     `rows`: [usize], length excitation rank map from row labels to tensor index.
-///     `cols`: [usize], length excitation rank map from col labels to tensor index.
-///     `i_fixed`: usize, fixed tensor indices for the j dimension.
-///     `j_fixed`: usize, fixed tensor indices for the j dimension.
+/// `out`: `Array2`, preallocated output scratch.
+/// `t`: `ArrayView4`, view of a 4D tensor.
+/// `rows`: `[usize]`, length excitation rank map from row labels to tensor index.
+/// `cols`: `[usize]`, length excitation rank map from col labels to tensor index.
+/// `i_fixed`: `usize`, fixed tensor indices for the j dimension.
+/// `j_fixed`: `usize`, fixed tensor indices for the j dimension.
+/// # Returns
+/// `()`, writes the requested 2D slice into `out`.
 fn slice4(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
     let l = rows.len();
     // `out` is contiguous so we write into flat buffer with row-major index as out[(r, c)] == buf[r * ncols + c]
@@ -490,12 +541,14 @@ fn slice4(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[us
 /// Write 2D slice of 4D J and IIab tensor into provided output scratch. The given slice is t[r, c, i, j]  
 /// where r, c are rows, columns and i, j are fixed indices.
 /// # Arguments:
-///     `out`: Array2, preallocated output scratch.
-///     `t`: ArrayView4, view of a 4D tensor.
-///     `rows`: [usize], length excitation rank map from row labels to tensor index.
-///     `cols`: [usize], length excitation rank map from col labels to tensor index.
-///     `i_fixed`: usize, fixed tensor indices for the j dimension.
-///     `j_fixed`: usize, fixed tensor indices for the j dimension.
+/// `out`: `Array2`, preallocated output scratch.
+/// `t`: `ArrayView4`, view of a 4D tensor.
+/// `rows`: `[usize]`, length excitation rank map from row labels to tensor index.
+/// `cols`: `[usize]`, length excitation rank map from col labels to tensor index.
+/// `i_fixed`: `usize`, fixed tensor indices for the j dimension.
+/// `j_fixed`: `usize`, fixed tensor indices for the j dimension.
+/// # Returns
+/// `()`, writes the requested swapped 2D slice into `out`.
 fn slice4swap(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
     let l = rows.len();
     // `out` is contiguous so we write into flat buffer with row-major index as out[(r, c)] == buf[r * ncols + c]
@@ -532,6 +585,12 @@ fn slice4swap(out: &mut Array2<f64>, t: &ArrayView4<f64>, rows: &[usize], cols: 
     }
 }
 
+/// Map selectors (mi, mj, mk, ml) to the compressed storage slot for J and
+/// whether the requested tensor should be read with swapped indices.
+/// # Arguments:
+/// `mi, mj, mk, ml`: `usize`, zero distribution selectors.
+/// # Returns
+/// `(usize, bool)`, compressed slot index and whether swapped access is required.
 fn jslot(mi: usize, mj: usize, mk: usize, ml: usize,) -> (usize, bool) {
     match (mi, mj, mk, ml) {
         (0, 0, 0, 0) => (0, false),
@@ -626,13 +685,19 @@ pub struct WickScratch {
 }
 
 impl WickScratch {
+    /// Construct empty scratch storage for Wick's quantities.
+    /// # Arguments:
+    /// # Returns
+    /// `WickScratch`, default-initialised scratch storage.
     pub fn new() -> Self {Self::default()}
     
     /// If the previously allocated size of the scratch space is the not the same in  
     /// the same spin case resize all the scratch space quantities to be correct.
     /// # Arguments:
-    ///     `self`: WickScratch, scratch space for Wick's quantities.
-    ///     `l`: usize, excitation rank.
+    /// `self`: `WickScratch`, scratch space for Wick's quantities.
+    /// `l`: `usize`, excitation rank.
+    /// # Returns
+    /// `()`, resizes same-spin scratch storage in place.
     pub fn resizel(&mut self, l: usize) {
         if self.det0.nrows() != l {
             self.det0 = Array2::zeros((l, l));
@@ -660,9 +725,11 @@ impl WickScratch {
     /// If the previously allocated size of the scratch space is the not the same in  
     /// the different spin case resize all the scratch space quantities to be correct.
     /// # Arguments:
-    ///     `self`: WickScratch, scratch space for Wick's quantities.
-    ///     `la`: usize, excitation rank spin alpha.
-    ///     `lb`: usize, excitation rank spin beta.
+    /// `self`: `WickScratch`, scratch space for Wick's quantities.
+    /// `la`: `usize`, excitation rank spin alpha.
+    /// `lb`: `usize`, excitation rank spin beta.
+    /// # Returns
+    /// `()`, resizes different-spin scratch storage in place.
     pub fn resizelalb(&mut self, la: usize, lb: usize) {
         if self.deta0.nrows() != la {
             self.deta0 = Array2::zeros((la, la));
@@ -706,13 +773,16 @@ impl SameSpinBuild {
     /// per pair of reference determinants required to evaluate arbitrary excited determinants 
     /// in O(1) time when the excitations are of the same spin.
     /// # Arguments:
-    ///     `eri`: Array4, electron repulsion integrals. 
-    ///     `h_munu`: Array2, AO core Hamiltonian.
-    ///     `s_munu`: Array2, AO overlap matrix.
-    ///     `g_c`: Array2, full AO coefficient matrix of |^\Gamma\Psi\rangle.
-    ///     `l_c`: Array2, full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    ///     `go`: Array1, occupancy vector for |^\Gamma\Psi\rangle.
-    ///     `lo`: Array1, occupancy vector for |^\Lambda\Psi\rangle. 
+    /// `eri`: `Array4`, electron repulsion integrals. 
+    /// `h_munu`: `Array2`, AO core Hamiltonian.
+    /// `s_munu`: `Array2`, AO overlap matrix.
+    /// `g_c`: `Array2`, full AO coefficient matrix of |^\Gamma\Psi\rangle.
+    /// `l_c`: `Array2`, full AO coefficient matrix of |^\Lambda\Psi\rangle.
+    /// `go`: `Array1`, occupancy vector for |^\Gamma\Psi\rangle.
+    /// `lo`: `Array1`, occupancy vector for |^\Lambda\Psi\rangle. 
+    /// `tol`: `f64`, tolerance for whether a number is considered zero.
+    /// # Returns
+    /// `SameSpinBuild`, precomputed same-spin Wick's intermediates for the reference pair.
     pub fn new(eri: &Array4<f64>, h_munu: &Array2<f64>, s_munu: &Array2<f64>, g_c: &Array2<f64>, l_c: &Array2<f64>, go: &Array1<f64>, lo: &Array1<f64>, tol: f64) -> Self {
         let nmo = g_c.ncols();
         let nbas = l_c.nrows();
@@ -859,9 +929,11 @@ impl SameSpinBuild {
     /// Calculate the overlap matrix between two sets of occupied orbitals as:
     ///     {}^{\Gamma\Lambda} S_{ij} = \sum_{\mu\nu} ({}^\Gamma C^*)_i^\mu S_{\mu\nu} ({}^\Lambda C)_j^\nu
     /// # Arguments:
-    ///     `g_c_occ`: Array2, occupied coefficients ({}^\Gamma C^*)_i^\mu.
-    ///     `l_c_occ`: Array2, occupied coefficients ({}^\Lambda C)_j^\nu 
-    ///     `s_munu`: Array2, AO overlap matrix S_{\mu\nu}.
+    /// `g_c_occ`: `Array2`, occupied coefficients ({}^\Gamma C^*)_i^\mu.
+    /// `l_c_occ`: `Array2`, occupied coefficients ({}^\Lambda C)_j^\nu 
+    /// `s_munu`: `Array2`, AO overlap matrix S_{\mu\nu}.
+    /// # Returns
+    /// `Array2<f64>`, occupied-orbital overlap matrix.
     pub fn calculate_mo_overlap_matrix(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f64>) -> Array2<f64> {
         l_c_occ.t().dot(&s_munu.dot(g_c_occ))
     }
@@ -872,8 +944,12 @@ impl SameSpinBuild {
     ///     |{}^\Gamma \Psi_i\rangle = \sum_{\mu} {}^\Gamma c_i^\mu U_{ij} |\phi_\mu \rangle.
     ///     |{}^\Lambda \Psi_j\rangle = \sum_{\nu} {}^\Lambda c_j^\nu V_{ij} |\phi_\nu \rangle.
     /// # Arguments:
-    ///     `g_c_occ`: Array2, occupied coefficients ({}^\Gamma C^*)_i^\mu.
-    ///     `l_c_occ`: Array2, occupied coefficients ({}^\Lambda C)_j^\nu.
+    /// `g_c_occ`: `Array2`, occupied coefficients ({}^\Gamma C^*)_i^\mu.
+    /// `l_c_occ`: `Array2`, occupied coefficients ({}^\Lambda C)_j^\nu.
+    /// `tol`: `f64`, tolerance for the orthonormalisation step.
+    /// # Returns
+    /// `(Array1<f64>, Array2<f64>, Array2<f64>, f64)`, singular values, rotated occupied coefficients
+    /// for \Gamma and \Lambda, and the phase associated with the rotation.
     pub fn perform_ortho_and_svd_and_rotate(s_munu: &Array2<f64>, l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, tol: f64) 
                                             -> (Array1<f64>, Array2<f64>, Array2<f64>, f64) {
         
@@ -911,10 +987,13 @@ impl SameSpinBuild {
     /// {}^{\Gamma\Gamma} P^{\sigma\tau} are constructed sequentially and added into the correct
     /// matrix.
     /// # Arguments:
-    ///     `gl_tilde_s`: Array1, vector of diagonal single values of {}^{\Gamma\Lambda} \tilde{S}.
-    ///     `g_c_tilde_occ`: Array2, rotated occupied coefficients ({}^\Gamma \tilde{C}^*)_i^\mu.
-    ///     `l_c_tilde_occ`: Array2, rotated occupied coefficients ({}^\Lambda \tilde{C})_j^\nu.
-    ///     `zeros`: Vec<usize>, indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S}. 
+    /// `gl_tilde_s`: `Array1`, vector of diagonal single values of {}^{\Gamma\Lambda} \tilde{S}.
+    /// `g_c_tilde_occ`: `Array2`, rotated occupied coefficients ({}^\Gamma \tilde{C}^*)_i^\mu.
+    /// `l_c_tilde_occ`: `Array2`, rotated occupied coefficients ({}^\Lambda \tilde{C})_j^\nu.
+    /// `zeros`: `Vec<usize>`, indices where zeros occur in {}^{\Gamma\Lambda} \tilde{S}. 
+    /// `tol`: `f64`, tolerance for whether a singular value is considered zero.
+    /// # Returns
+    /// `(Array2<f64>, Array2<f64>)`, the M^{0} and M^{1} matrices.
     pub fn construct_m(lg_tilde_s: &Array1<f64>, g_tilde_c_occ: &Array2<f64>, l_tilde_c_occ: &Array2<f64>, zeros: &Vec<usize>, tol: f64) -> (Array2<f64>, Array2<f64>) {
         let nbas = g_tilde_c_occ.nrows();
         let nocc = g_tilde_c_occ.ncols();
@@ -979,11 +1058,13 @@ impl SameSpinBuild {
     ///     {}^{\Gammma\Lambda} Y_{ij}^{0} = {\Gamma\Lambda} X_{ij}^{0} - {}^{\Gammma\Lambda} S_{ij}.
     ///     {}^{\Gammma\Lambda} Y_{ij}^{1} = {\Gamma\Lambda} X_{ij}^{1}.
     /// # Arguments:
-    ///     `s_munu`: Array2, AO overlap matrix.
-    ///     `g_c`: Array2, full AO coefficient matrix of |^\Gamma\Psi\rangle.
-    ///     `l_c`: Array2, full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    ///     `gl_m`: Array2, M matrix{}^{\Gamma\Lambda} M^{\sigma\tau, 0} or  {}^{\Gamma\Lambda} M^{\sigma\tau, 1}. 
-    ///     `subtract`: bool, whether to use m_k = 0 or m_k = 1. 
+    /// `s_munu`: `Array2`, AO overlap matrix.
+    /// `g_c`: `Array2`, full AO coefficient matrix of |^\Gamma\Psi\rangle.
+    /// `l_c`: `Array2`, full AO coefficient matrix of |^\Lambda\Psi\rangle.
+    /// `gl_m`: `Array2`, M matrix{}^{\Gamma\Lambda} M^{\sigma\tau, 0} or  {}^{\Gamma\Lambda} M^{\sigma\tau, 1}. 
+    /// `subtract`: `bool`, whether to use m_k = 0 or m_k = 1. 
+    /// # Returns
+    /// `(Array2<f64>, Array2<f64>)`, the X and Y matrices.
     fn construct_xy(g_c: &Array2<f64>, l_c: &Array2<f64>, s_munu: &Array2<f64>, gl_m: &Array2<f64>, subtract: bool) -> (Array2<f64>, Array2<f64>) {
         let nbas = g_c.nrows();
         let nmo = g_c.ncols();
@@ -1019,11 +1100,13 @@ impl SameSpinBuild {
     /// where the use of X or Y and their quadrants depends on the requested ordering of \Lambda,
     /// \Gamma in {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}.
     /// # Arguments:
-    ///     `g_c`: Array2, full AO coefficient matrix of |^\Gamma\Psi\rangle.
-    ///     `l_c`: Array2, full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    ///     `h_munu`: Array2, one-electron core AO hamiltonian.
-    ///     `x`: Array2, {}^{\Gamma\Lambda} X_{ij}^{m_k}.
-    ///     `y`: Array2, {}^{\Gamma\Lambda} Y_{ij}^{m_k}
+    /// `g_c`: `Array2`, full AO coefficient matrix of |^\Gamma\Psi\rangle.
+    /// `l_c`: `Array2`, full AO coefficient matrix of |^\Lambda\Psi\rangle.
+    /// `h_munu`: `Array2`, one-electron core AO hamiltonian.
+    /// `x`: `Array2`, {}^{\Gamma\Lambda} X_{ij}^{m_k}.
+    /// `y`: `Array2`, {}^{\Gamma\Lambda} Y_{ij}^{m_k}.
+    /// # Returns
+    /// `(f64, Array2<f64>)`, scalar F_0^{m_k} and matrix F_{ab}^{m_i,m_j}.
     pub fn construct_f(l_c: &Array2<f64>, h_munu: &Array2<f64>, x: &Array2<f64>, y: &Array2<f64>) -> (f64, Array2<f64>) {
         let nmo = l_c.ncols();
         let ll_h = l_c.t().dot(h_munu).dot(l_c);
@@ -1054,8 +1137,10 @@ impl SameSpinBuild {
     ///     J^{m_k}_{\mu\nu} = \sum_{\sigma\tau} ({}^{\Lambda}(\mu\nu|\sigma\tau)) {}^{\Gamma\Lambda} M^{\mu\nu, m_k}
     /// where {}^{\Gamma\Lambda} M^{m_k} is the AO-space M matrix. 
     /// # Arguments:
-    ///     `eri`: Array4, AO basis ERIs (not-antisymmetrised).
-    ///     `m`: Array2, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
+    /// `eri`: `Array4`, AO basis ERIs (not-antisymmetrised).
+    /// `m`: `Array2`, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
+    /// # Returns
+    /// `Array2<f64>`, Coulomb contraction matrix.
     fn build_j_coulomb(eri: &Array4<f64>, m: &Array2<f64>) -> Array2<f64> {
         let n = m.nrows();
         let mut j = Array2::<f64>::zeros((n, n));
@@ -1074,14 +1159,15 @@ impl SameSpinBuild {
         j
     }
 
-        
     /// Calculate the Coulomb contraction K^{m_k}_{\mu\nu} required for the two electron
     /// intermediates as:
     ///     K^{m_k}_{\mu\nu} = \sum_{\sigma\tau} ({}^{\Lambda}(\mu\sigma|\tau\nu)) {}^{\Gamma\Lambda} M^{\mu\nu, m_k}
     /// where {}^{\Gamma\Lambda} M^{m_k} is the AO-space M matrix. 
     /// # Arguments:
-    ///     `eri`: Array4, AO basis ERIs (not-antisymmetrised).
-    ///     `m`: Array2, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
+    /// `eri`: `Array4`, AO basis ERIs (not-antisymmetrised).
+    /// `m`: `Array2`, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
+    /// # Returns
+    /// `Array2<f64>`, exchange contraction matrix.
     fn build_k_exchange(eri: &Array4<f64>, m: &Array2<f64>) -> Array2<f64> {
         let n = m.nrows();
         let mut k = Array2::<f64>::zeros((n, n));
@@ -1107,17 +1193,20 @@ impl DiffSpinBuild {
     /// in O(1) time when the excitations are of different spin. As such, the quantities here are
     /// lesser as we only need to evaluate two electron terms with these intermediates.
     /// # Arguments:
-    ///     `eri`: Array4, electron repulsion integrals. 
-    ///     `h_munu`: Array2, AO core Hamiltonian.
-    ///     `s_munu`: Array2, AO overlap matrix.
-    ///     `g_ca`: Array2, spin alpha AO coefficient matrix of |^\Gamma\Psi\rangle.
-    ///     `g_cb`: Array2, spin beta AO coefficient matrix of |^\Gamma\Psi\rangle.
-    ///     `l_ca`: Array2, spin alpha AO coefficient matrix of |^\Lambda\Psi\rangle.
-    ///     `l_cb`: Array2, spin beta AO coefficient matrix of |^\Lambda\Psi\rangle.
-    ///     `goa`: Array1, alpha occupancy vector for |^\Gamma\Psi\rangle.
-    ///     `gob`: Array1, beta occupancy vector for |^\Gamma\Psi\rangle.
-    ///     `loa`: Array1, alpha occupancy vector for |^\Lambda\Psi\rangle.
-    ///     `lob`: Array1, beta occupancy vector for |^\Lambda\Psi\rangle.
+    /// `eri`: `Array4`, electron repulsion integrals. 
+    /// `h_munu`: `Array2`, AO core Hamiltonian.
+    /// `s_munu`: `Array2`, AO overlap matrix.
+    /// `g_ca`: `Array2`, spin alpha AO coefficient matrix of |^\Gamma\Psi\rangle.
+    /// `g_cb`: `Array2`, spin beta AO coefficient matrix of |^\Gamma\Psi\rangle.
+    /// `l_ca`: `Array2`, spin alpha AO coefficient matrix of |^\Lambda\Psi\rangle.
+    /// `l_cb`: `Array2`, spin beta AO coefficient matrix of |^\Lambda\Psi\rangle.
+    /// `goa`: `Array1`, alpha occupancy vector for |^\Gamma\Psi\rangle.
+    /// `gob`: `Array1`, beta occupancy vector for |^\Gamma\Psi\rangle.
+    /// `loa`: `Array1`, alpha occupancy vector for |^\Lambda\Psi\rangle.
+    /// `lob`: `Array1`, beta occupancy vector for |^\Lambda\Psi\rangle.
+    /// `tol`: `f64`, tolerance for whether a number is considered zero.
+    /// # Returns
+    /// `DiffSpinBuild`, precomputed different-spin Wick's intermediates for the reference pair.
     pub fn new(eri: &Array4<f64>, s_munu: &Array2<f64>, g_ca: &Array2<f64>, g_cb: &Array2<f64>, l_ca: &Array2<f64>, l_cb: &Array2<f64>, 
            goa: &Array1<f64>, gob: &Array1<f64>, loa: &Array1<f64>, lob: &Array1<f64>, tol: f64) -> Self {
         let nmo = g_ca.ncols();
@@ -1257,11 +1346,13 @@ impl DiffSpinBuild {
     /// {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices such that our intermediates can be computed more
     /// easily.
     /// # Arguments:
-    ///     `m`: Array2, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
-    ///     `s`: Array2, AO overlap matrix S_{\mu\nu}.
-    ///     `cx`: Array2, AO coefficient matrix for \Lambda. Should be renamed.
-    ///     `cw`: Array2, AO coefficient matrix for \Gamma. Should be renamed.
-    ///     `i`: usize, selector for m being 0 or 1.
+    /// `m`: `Array2`, {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix. 
+    /// `s`: `Array2`, AO overlap matrix S_{\mu\nu}.
+    /// `cx`: `Array2`, AO coefficient matrix for \Lambda. Should be renamed.
+    /// `cw`: `Array2`, AO coefficient matrix for \Gamma. Should be renamed.
+    /// `i`: `usize`, selector for m being 0 or 1.
+    /// # Returns
+    /// `(Array2<f64>, Array2<f64>)`, left and right factorisation matrices.
     fn build_cx_xc(m: &Array2<f64>, s: &Array2<f64>, cx: &Array2<f64>, cw: &Array2<f64>, i: usize) -> (Array2<f64>, Array2<f64>) {
         let nao = cx.nrows();
         let nmo = cx.ncols();
@@ -1289,8 +1380,12 @@ impl DiffSpinBuild {
 /// operations that act as creation operators after normal ordering to the bra (\Lambda), whilst
 /// columns correspond to operations that are annhilations after normal ordering to the bra.
 /// # Arguments:
-///     `l_ex`: Excitation, left excitations relative to reference \Lambda in the bra.
-///     `g_ex`: Excitation, right excitations relative to reference \Gamma in the ket.
+/// `l_ex`: `Excitation`, left excitations relative to reference \Lambda in the bra.
+/// `g_ex`: `Excitation`, right excitations relative to reference \Gamma in the ket.
+/// `rows`: `Vec<Label>`, output row labels.
+/// `cols`: `Vec<Label>`, output column labels.
+/// # Returns
+/// `()`, writes the contraction determinant labels into `rows` and `cols`.
 fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, rows: &mut Vec<Label>, cols: &mut Vec<Label>) {
     // Integer L is the total number of combined excitations from the bra (\Lambda) and ket (\Gamma).
     let nl = l_ex.holes.len();
@@ -1332,8 +1427,10 @@ fn construct_determinant_lables(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, ro
 ///     m_1 + .... + m_L = m.
 /// The return is some type with Iterator implemented which is not specified due to long name.
 /// # Arguments:
-///     `l`: usize, total excitation rank.
-///     `m`: usize, number of zero-overlap orbital couplings.
+/// `l`: `usize`, total excitation rank.
+/// `m`: `usize`, number of zero-overlap orbital couplings.
+/// # Returns
+/// `impl Iterator<Item = u64>`, iterator over all bitstrings satisfying the required number of ones.
 fn iter_m_combinations(l: usize, m: usize) -> impl Iterator<Item = u64> {
     // If the total excitation rank is greater than 64 the below calculation will not work.
     assert!(l < 64);
@@ -1351,9 +1448,11 @@ fn iter_m_combinations(l: usize, m: usize) -> impl Iterator<Item = u64> {
 
 /// Convert the generated contraction determinant labels into position indices.
 /// # Arguments:
-///     `side`: Side, whether the label is from the bra (\Lambda) or ket (\Gamma).
-///     `p`: usize, orbital index in MO basis.
-///     `nmo`: usize, number of MOs.
+/// `side`: `Side`, whether the label is from the bra (\Lambda) or ket (\Gamma).
+/// `p`: `usize`, orbital index in MO basis.
+/// `nmo`: `usize`, number of MOs.
+/// # Returns
+/// `usize`, flattened orbital index in the concatenated orbital space.
 fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
     match side {
         Side::Lambda => p,        // First block.
@@ -1364,9 +1463,12 @@ fn label_to_idx(side: Side, p: usize, nmo: usize) -> usize {
 /// All the same spin routines require a number of the same quantities. It is more efficient to
 /// precompute them once here rather than inside each matrix element routine.
 /// # Arguments:
-///     `w`: SameSpin: same spin Wick's reference pair intermediates.
-///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
-///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
+/// `w`: SameSpin: same spin Wick's reference pair intermediates.
+/// `l_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
+/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// # Returns
+/// `()`, prepares the shared same-spin scratch quantities in place.
 pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) { 
     let l = l_ex.holes.len() + g_ex.holes.len();
     scratch.resizel(l);
@@ -1392,9 +1494,12 @@ pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. Utilises
 /// a sum over possible ways to distribute zeros across the columns of the L by L determinant.
 /// # Arguments:
-///     `w`: SameSpin: same spin Wick's reference pair intermediates.
-///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
-///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
+/// `w`: SameSpin: same spin Wick's reference pair intermediates.
+/// `l_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Gamma \Psi\rangle. 
+/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// # Returns
+/// `f64`, overlap matrix element.
 pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) -> f64 {
 
     // If the total excitation rank is less than the number of zero-singular values in
@@ -1419,9 +1524,13 @@ pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 /// Calculate one electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
 /// # Arguments:
-///     `w`: SameSpin: same spin Wick's reference pair intermediates.
-///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
-///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `w`: SameSpin: same spin Wick's reference pair intermediates.
+/// `l_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// `tol`: `f64`, tolerance for singularity handling in determinant evaluation.
+/// # Returns
+/// `f64`, one-electron Hamiltonian matrix element.
 #[inline(always)]
 pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
@@ -1465,9 +1574,13 @@ pub fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scr
 /// Calculate one electron Fock matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
 /// # Arguments:
-///     `w`: SameSpin: same spin Wick's reference pair intermediates.
-///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
-///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `w`: SameSpin: same spin Wick's reference pair intermediates.
+/// `l_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// `tol`: `f64`, tolerance for singularity handling in determinant evaluation.
+/// # Returns
+/// `f64`, one-electron Fock matrix element.
 #[inline(always)]
 pub fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
@@ -1511,9 +1624,13 @@ pub fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scra
 /// Calculate the same-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
 /// # Arguments:
-///     `w`: SameSpin: same spin Wick's reference pair intermediates.
-///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
-///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `w`: SameSpin: same spin Wick's reference pair intermediates.
+/// `l_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex`: `ExcitationSpin`, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// `tol`: `f64`, tolerance for singularity handling in determinant evaluation.
+/// # Returns
+/// `f64`, same-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
 pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     
@@ -1610,9 +1727,15 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 /// Calculate the different-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
 /// # Arguments:
-///     `w`: SameSpin: same spin Wick's reference pair intermediates.
-///     `l_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Lambda \Psi\rangle.
-///     `g_ex`: ExcitationSpin, spin resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// `w`: `WicksPairView`, same-spin and different-spin Wick's reference pair intermediates.
+/// `l_ex_a`: `ExcitationSpin`, spin alpha excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex_a`: `ExcitationSpin`, spin alpha excitation array for |{}^\Gamma \Psi\rangle.
+/// `l_ex_b`: `ExcitationSpin`, spin beta excitation array for |{}^\Lambda \Psi\rangle.
+/// `g_ex_b`: `ExcitationSpin`, spin beta excitation array for |{}^\Gamma \Psi\rangle.
+/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// `tol`: `f64`, tolerance for singularity handling in determinant evaluation.
+/// # Returns
+/// `f64`, different-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
 pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
 

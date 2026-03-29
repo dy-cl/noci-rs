@@ -18,10 +18,12 @@ use crate::utils::print_array2;
 /// Uses the Coulomb term from the total density and the exchange term from each spin density.
 /// If dm = 0.5 * (da + db) it collapses to the RHF expression.
 /// # Arguments
-///     `h`: Array2, one electron Hamiltonian.
-///     `eri`: Array4, two electron integrals (pq|rs) in chemist's notation.
-///     `da`: Array2, a spin density matrix.
-///     `db`: Array2, b spin density matrix
+/// `h`: Array2, one electron Hamiltonian.
+/// `eri`: Array4, two electron integrals (pq|rs) in chemist's notation.
+/// `da`: Array2, a spin density matrix.
+/// `db`: Array2, b spin density matrix.
+/// # Returns
+/// `(Array2<f64>, Array2<f64>)`, spin alpha and spin beta Fock matrices.
 pub fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: &Array2<f64>) 
                       -> (Array2<f64>, Array2<f64>) {
 
@@ -63,12 +65,14 @@ pub fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, 
 
 /// Calculate energy of an SCF state. 
 /// # Arguments 
-///     `da`: Array2, a spin density matrix.
-///     `db`: Array2, b spin density matrix.
-///     `fa`: Array2, a spin Fock matrix.
-///     `fb`: Array2, b spin Fock matrix.
-///     `h`: Array2, one electron Hamiltonian. 
-///     `Enuc`: f64, nuclear-nuclear repulsion energy.
+/// `da`: Array2, a spin density matrix.
+/// `db`: Array2, b spin density matrix.
+/// `fa`: Array2, a spin Fock matrix.
+/// `fb`: Array2, b spin Fock matrix.
+/// `h`: Array2, one electron Hamiltonian. 
+/// `Enuc`: f64, nuclear-nuclear repulsion energy.
+/// # Returns
+/// `f64`, SCF total energy.
 fn scf_energy(da: &Array2<f64>, db: &Array2<f64>, fa: &Array2<f64>,     
               fb: &Array2<f64>, h: &Array2<f64>, enuc: f64) -> f64 {
     let p = da + db;
@@ -85,9 +89,11 @@ fn scf_energy(da: &Array2<f64>, db: &Array2<f64>, fa: &Array2<f64>,
 /// Calculate MO occupancies as diagonal of a density matrix in the MO basis.
 /// T = C^{\dagger} S D S C.
 /// # Arguments
-///     `c`: Array2, spin MO coefficient matrix.
-///     `d`: Array2, spin density matrix.
-///     `s`: Array2, AO overlap matrix.
+/// `c`: Array2, spin MO coefficient matrix.
+/// `d`: Array2, spin density matrix.
+/// `s`: Array2, AO overlap matrix.
+/// # Returns
+/// `Array1<f64>`, MO occupancies thresholded to 0 or 1.
 fn mo_occupancies(c: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array1<f64> {
     let t = c.t().dot(s).dot(d).dot(s).dot(c);
     let diag = t.diag().to_owned();
@@ -96,8 +102,10 @@ fn mo_occupancies(c: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array1<f
 
 /// Select Aufbau indices given eigenvalues and number of occupancies. 
 /// # Arguments 
-///     `e`: MO energies. 
-///     `nocc`: Number of occupied MOs.
+/// `e`: MO energies. 
+/// `nocc`: Number of occupied MOs.
+/// # Returns
+/// `Vec<usize>`, occupied MO indices selected by Aufbau ordering.
 fn aufbau_indices(e: &Array1<f64>, nocc: usize) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..e.len()).collect();
     idx.sort_by(|&i, &j| e[i].partial_cmp(&e[j]).unwrap());
@@ -110,10 +118,12 @@ fn aufbau_indices(e: &Array1<f64>, nocc: usize) -> Vec<usize> {
 /// MO is scored according to its overlap with the previous iteration. Provided a decent initial 
 /// guess of the excited state this should converge to a desired state.
 /// # Arguments 
-///     `c_occ_old`: Array2, previous iterations occupied MO coefficients.
-///     `c`: Array2, current iterations MO coefficients.
-///     `s`: Array2, AO overlap matrix.
-///     `nocc`: Number of occupied spin orbitals to select.
+/// `c_occ_old`: Array2, previous iterations occupied MO coefficients.
+/// `c`: Array2, current iterations MO coefficients.
+/// `s`: Array2, AO overlap matrix.
+/// `nocc`: Number of occupied spin orbitals to select.
+/// # Returns
+/// `Vec<usize>`, occupied MO indices selected by MOM.
 fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: usize)
               -> Vec<usize> {
     // O = C_old^T S C.
@@ -132,11 +142,13 @@ fn mom_select(c_occ_old: &Array2<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: u
 /// Construct the metadynamics bias term \sum_\Lambda {}^\Lambda D_{\mu\nu} N_{\Lambda}
 /// \lambda_\Lambda exp(-\lambda_\Lambda d_{0\Lambda}^2). 
 /// # Arguments:
-///     `da`: Array2, spin a density matrix.
-///     `db`: Array2, spin b density matrix.
-///     `ao`: AoData struct, contains AO integrals and metadata.
-///     `biases`: [SCFState], previously found states when using metadynamics.
-///     `lambda`: f64, bias strength.
+/// `da`: Array2, spin a density matrix.
+/// `db`: Array2, spin b density matrix.
+/// `ao`: AoData struct, contains AO integrals and metadata.
+/// `biases`: [SCFState], previously found states when using metadynamics.
+/// `lambda`: f64, bias strength.
+/// # Returns
+/// `(Array2<f64>, Array2<f64>)`, spin alpha and spin beta metadynamics bias matrices.
 fn metadynamics_bias(da: &Array2<f64>, db: &Array2<f64>, ao: &AoData, biases: &[SCFState], lambda: f64) -> (Array2<f64>, Array2<f64>) {
     let nbf = da.nrows();
     let mut ba = Array2::<f64>::zeros((nbf, nbf));
@@ -165,15 +177,17 @@ fn metadynamics_bias(da: &Array2<f64>, db: &Array2<f64>, ao: &AoData, biases: &[
 /// Unrestricted SCF cycle with Loewdin orthogonalization.
 /// Uses AO integrals from AoData struct.
 /// # Arguments
-///     `da0`: Array2, initial spin a density matrix.
-///     `db0`: Array2, initial spin b density matrix.
-///     `ao`: AoData struct, contains AO integrals and metadata.
-///     `input`: Input struct, contains user specified input data.
-///     `label`: String, label for current scf state.
-///     `noci_basis`: bool, whether or not to use this state in the NOCI basis.
-///     `scfexcitation`: SCFExcitation, use requested excited states.
-///     `i`: Index of the SCF state.
-///     `biases`: [SCFState], previously found states when using metadynamics
+/// `da0`: Array2, initial spin a density matrix.
+/// `db0`: Array2, initial spin b density matrix.
+/// `ao`: AoData struct, contains AO integrals and metadata.
+/// `input`: Input struct, contains user specified input data.
+/// `label`: String, label for current scf state.
+/// `noci_basis`: bool, whether or not to use this state in the NOCI basis.
+/// `scfexcitation`: SCFExcitation, use requested excited states.
+/// `i`: Index of the SCF state.
+/// `biases`: [SCFState], previously found states when using metadynamics.
+/// # Returns
+/// `Option<SCFState>`, converged SCF state if the SCF cycle succeeds, otherwise `None`.
 pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, label: &str, noci_basis: bool, 
                  scfexcitation: Option<&SCFExcitation>, i: usize, biases: Option<&[SCFState]>) -> Option<SCFState> { 
     let h = &ao.h; 

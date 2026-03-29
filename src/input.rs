@@ -14,7 +14,7 @@ pub enum Propagator {
 impl Propagator {
     /// Return propagator as input string.
     /// # Returns:
-    ///     `&'static str`, string representation used in input parsing.
+    /// `&'static str`, string representation used in input parsing.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Unshifted => "unshifted",
@@ -31,10 +31,10 @@ impl FromStr for Propagator {
     
     /// Parse propagator type from input string.
     /// # Arguments:
-    ///     `s`: &str,  string specifying the propagator type.
+    /// `s`: &str,  string specifying the propagator type.
     /// # Returns:
-    ///     `Result<Self,  Self::Err>`, parsed propagator  if  valid string,  otherwise error
-    ///     message.
+    /// `Result<Self,  Self::Err>`, parsed propagator  if  valid string,  otherwise error
+    /// message.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "unshifted" => Ok(Self::Unshifted),
@@ -50,7 +50,7 @@ impl FromStr for Propagator {
 impl Default for Propagator {
     /// Return default propagator.
     /// # Returns:
-    ///     `Self`, default propagator choice.
+    /// `Self`, default propagator choice.
     fn default() -> Self {
         Self::Unshifted
     }
@@ -67,9 +67,9 @@ impl FromStr for ExcitationGen {
 
     /// Parse excitation generator from input string.
     /// # Arguments:
-    ///     `s`: &str, string specifying the excitation generator.
+    /// `s`: &str, string specifying the excitation generator.
     /// # Returns:
-    ///     `Result<Self, Self::Err>`, parsed excitation generator if valid string, otherwise error message.
+    /// `Result<Self, Self::Err>`, parsed excitation generator if valid string, otherwise error message.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "uniform" => Ok(Self::Uniform),
@@ -83,7 +83,7 @@ impl FromStr for ExcitationGen {
 impl Default for ExcitationGen {
     /// Return default excitation generator.
     /// # Returns:
-    ///     `Self`, default excitation generator choice.
+    /// `Self`, default excitation generator choice.
     fn default() -> Self {
         Self::Uniform
     }
@@ -98,7 +98,7 @@ pub enum Spin {
 impl Spin {
     /// Return excitation spin as input string.
     /// # Returns:
-    ///     `&'static str`, string representation used in input parsing.
+    /// `&'static str`, string representation used in input parsing.
     fn as_str(&self) -> &'static str {
         match self {
             Self::Alpha => "alpha",
@@ -113,9 +113,9 @@ impl FromStr for Spin {
 
     /// Parse excitation spin from input string.
     /// # Arguments:
-    ///     `s`: &str, string specifying the excitation spin.
+    /// `s`: &str, string specifying the excitation spin.
     /// # Returns:
-    ///     `Result<Self, Self::Err>`, parsed spin if valid string, otherwise error message.
+    /// `Result<Self, Self::Err>`, parsed spin if valid string, otherwise error message.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "alpha" => Ok(Self::Alpha),
@@ -129,7 +129,7 @@ impl FromStr for Spin {
 impl Default for Spin {
     /// Return default excitation spin.
     /// # Returns:
-    ///     `Self`, default excitation spin choice.
+    /// `Self`, default excitation spin choice.
     fn default() -> Self {
         Self::Both
     }
@@ -145,7 +145,7 @@ pub struct MolOptions {
 impl Default for MolOptions {
     /// Return default molecular options.
     /// # Returns:
-    ///     `Self`, molecular options with placeholder empty geometry data.
+    /// `Self`, molecular options with placeholder empty geometry data.
     fn default() -> Self {
         Self {
             basis: String::new(),
@@ -163,7 +163,7 @@ pub struct DiisOptions {
 impl Default for DiisOptions {
     /// Return default DIIS options.
     /// # Returns:
-    ///     `Self`, DIIS options with default subspace size.
+    /// `Self`, DIIS options with default subspace size.
     fn default() -> Self {
         Self {
             space: 8,
@@ -181,7 +181,7 @@ pub struct SCFInfo {
 impl Default for SCFInfo {
     /// Return default SCF options.
     /// # Returns:
-    ///     `Self`, SCF options with standard convergence and DIIS settings.
+    /// `Self`, SCF options with standard convergence and DIIS settings.
     fn default() -> Self {
         Self {
             max_cycle: 10_000,
@@ -201,7 +201,7 @@ pub struct SCFExcitation {
 impl Default for SCFExcitation {
     /// Return default SCF excitation.
     /// # Returns:
-    ///     `Self`, excitation with no excitation.
+    /// `Self`, excitation with no excitation.
     fn default() -> Self {
         Self {
             spin: Spin::default(),
@@ -219,7 +219,7 @@ pub struct SpinBias {
 impl Default for SpinBias {
     /// Return default spin bias options.
     /// # Returns:
-    ///     `Self`, spin bias with empty pattern and zero polarization.
+    /// `Self`, spin bias with empty pattern and zero polarization.
     fn default() -> Self {
         Self {
             pattern: Vec::new(),
@@ -236,7 +236,7 @@ pub struct SpatialBias {
 impl Default for SpatialBias {
     /// Return default spatial bias options.
     /// # Returns:
-    ///     `Self`, spatial bias with empty pattern and zero polarization.
+    /// `Self`, spatial bias with empty pattern and zero polarization.
     fn default() -> Self {
         Self {
             pattern: Vec::new(),
@@ -256,8 +256,8 @@ pub struct StateRecipe {
 impl Default for StateRecipe {
     /// Return default state recipe.
     /// # Returns:
-    ///     `Self`, state recipe with empty label and no bias or excitation. We assume that a state
-    ///     is desired to be used within NOCI by default.
+    /// `Self`, state recipe with empty label and no bias or excitation. We assume that a state
+    /// is desired to be used within NOCI by default.
     fn default() -> Self {
         Self {
             label: String::new(),
@@ -277,7 +277,7 @@ pub struct ExcitationOptions {
 impl Default for ExcitationOptions {
     /// Return default NOCI excitation options.
     /// # Returns:
-    ///     `Self`, excitation options with singles and doubles enabled.
+    /// `Self`, excitation options with singles and doubles enabled.
     fn default() -> Self {
         Self {
             singles: true,
@@ -295,7 +295,7 @@ pub struct PropagationOptions {
 impl Default for PropagationOptions {
     /// Return default propagation options.
     /// # Returns:
-    ///     `Self`, propagation options with default timestep, step count, and propagator.
+    /// `Self`, propagation options with default timestep, step count, and propagator.
     fn default() -> Self {
         Self {
             dt: 1e-4,
@@ -314,7 +314,7 @@ pub struct DeterministicOptions {
 impl Default for DeterministicOptions {
     /// Return default deterministic propagation options.
     /// # Returns:
-    ///     `Self`, deterministic propagation options with dynamic shift disabled.
+    /// `Self`, deterministic propagation options with dynamic shift disabled.
     fn default() -> Self {
         Self {
             dynamic_shift: true,
@@ -336,7 +336,7 @@ pub struct QMCOptions {
 impl Default for QMCOptions {
     /// Return default QMC propagation options.
     /// # Returns:
-    ///     `Self`, QMC propagation options with default population and shift settings.
+    /// `Self`, QMC propagation options with default population and shift settings.
     fn default() -> Self {
         Self {
             initial_population: 100,
@@ -361,7 +361,7 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     /// Return default output options.
     /// # Returns:
-    ///     `Self`, output options with all optional writes disabled.
+    /// `Self`, output options with all optional writes disabled.
     fn default() -> Self {
         Self {
             verbose: true,
@@ -382,7 +382,7 @@ pub struct WicksOptions {
 impl Default for WicksOptions {
     /// Return default Wick's theorem options.
     /// # Returns:
-    ///     `Self`, Wick's options with comparison disabled.
+    /// `Self`, Wick's options with comparison disabled.
     fn default() -> Self {
         Self {
             compare: false,
@@ -407,7 +407,7 @@ pub struct Metadynamics {
 impl Default for Metadynamics {
     /// Return default metadynamics options.
     /// # Returns:
-    ///     `Self`, metadynamics options with no requested states and empty labels and patterns.
+    /// `Self`, metadynamics options with no requested states and empty labels and patterns.
     fn default() -> Self {
         Self {
             nstates_rhf: 0,
@@ -432,7 +432,7 @@ pub enum StateType {
 impl Default for StateType {
     /// Return default state specification.
     /// # Returns:
-    ///     `Self`, default empty MOM state list.
+    /// `Self`, default empty MOM state list.
     fn default() -> Self {
         Self::Mom(Vec::new())
     }
@@ -447,7 +447,7 @@ pub struct GMRESOptions {
 impl Default for GMRESOptions {
     /// Return default GMRES options.
     /// # Returns:
-    ///     `Self`, GMRES options with default iteration limit and residual tolerance.
+    /// `Self`, GMRES options with default iteration limit and residual tolerance.
     fn default() -> Self {
         Self {
             max_iter: 100,
@@ -469,7 +469,7 @@ pub struct SNOCIOptions {
 impl Default for SNOCIOptions {
     /// Return default SNOCI options.
     /// # Returns:
-    ///     `Self`, SNOCI options with default selection and GMRES parameters.
+    /// `Self`, SNOCI options with default selection and GMRES parameters.
     fn default() -> Self {
         Self {
             sigma: 1e-6,
@@ -499,7 +499,7 @@ impl Input {
     /// Return immutable reference to propagation options. Will panic if propagation options are
     /// missing when doing QMC or deterministic propagation.
     /// # Returns:
-    ///     `&PropagationOptions`, immutable reference to propagation options.
+    /// `&PropagationOptions`, immutable reference to propagation options.
     pub fn prop_ref(&self) -> &PropagationOptions {
         self.prop.as_ref().unwrap_or_else(|| {
             panic!("Propagation options are required when running deterministic or QMC propagation")
@@ -509,7 +509,7 @@ impl Input {
     /// Return mutable reference to propagation options. Will panic if propagation options are
     /// missing when doing QMC or deterministic propagation.
     /// # Returns:
-    ///     `&mut PropagationOptions`, mutable reference to propagation options.
+    /// `&mut PropagationOptions`, mutable reference to propagation options.
     pub fn prop_mut(&mut self) -> &mut PropagationOptions {
         self.prop.as_mut().unwrap_or_else(|| {
             panic!("Propagation options are required when running deterministic or QMC propagation")
@@ -520,7 +520,7 @@ impl Input {
 impl Default for Input {
     /// Return default input options.
     /// # Returns:
-    ///     `Self`, input options with placeholder mol and states data and default settings elsewhere.
+    /// `Self`, input options with placeholder mol and states data and default settings elsewhere.
     fn default() -> Self {
         Self {
             mol: MolOptions::default(),
@@ -539,9 +539,9 @@ impl Default for Input {
 
 /// Read integer pattern entries taking values in {-1, 0, 1}.
 /// # Arguments:
-///     `pat_tbl`: Table, Lua table containing the pattern entries.
+/// `pat_tbl`: Table, Lua table containing the pattern entries.
 /// # Returns:
-///     `Vec<i8>`, parsed pattern entries.
+/// `Vec<i8>`, parsed pattern entries.
 fn read_pattern(pat_tbl: Table) -> Vec<i8> {
     pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {
         -1 => -1,
@@ -556,10 +556,10 @@ fn read_pattern(pat_tbl: Table) -> Vec<i8> {
 
 /// Read basis state recipe from Lua table.
 /// # Arguments:
-///     `t`: Table, Lua table containing the state recipe specification.
+/// `t`: Table, Lua table containing the state recipe specification.
 /// # Returns:
-///     `StateRecipe`, parsed state recipe with optional spin bias, spatial bias, and SCF excitation
-///     data.
+/// `StateRecipe`, parsed state recipe with optional spin bias, spatial bias, and SCF excitation
+/// data.
 fn read_state_recipe(t: Table) -> StateRecipe {
     let defaults = StateRecipe::default();
     let label: String = t.get("label").unwrap_or(defaults.label);
@@ -600,7 +600,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
 
 /// Read input parameters from lua file and assign to Input object.
 /// # Arguments
-///     path: str, file path to input file.
+/// `path`: str, file path to input file.
 pub fn load_input(path: &str) -> Input {
 
     let src = fs::read_to_string(path).unwrap();

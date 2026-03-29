@@ -19,11 +19,13 @@ pub struct SpinOccupation {
     virt_beta: Vec<usize>,
 }
 
-/// Multiply a square sub-block of matrix by scalar. 
-/// # Arguments
-///     `d`: Array2, Any matrix (typically a spin density matrix) which is modified in place.
-///     `idx`: [usize], AO indices which form the square sub-block. 
-///     `scale`: Float, Scalar multiplicative factor.
+/// Multiply a square sub-block of a matrix by a scalar in place.
+/// # Arguments:
+/// `d`: `Array2`, matrix to be modified in place.
+/// `idx`: `[usize]`, row and column indices defining the square sub-block.
+/// `scale`: `f64`, multiplicative factor applied to the selected sub-block.
+/// # Returns:
+/// `()`, modifies `d` in place.
 fn scale_block(d: &mut Array2<f64>, idx: &[usize], scale: f64) {
     for &i in idx {
         for &j in idx{
@@ -33,13 +35,14 @@ fn scale_block(d: &mut Array2<f64>, idx: &[usize], scale: f64) {
 }
 
 /// Bias density matrices towards a spatial symmetry broken RHF guess. We will have da = db.
-/// # Arguments
 /// # Arguments 
-///     `da`: Array2, Spin density matrix a.
-///     `db`: Array2, Spin density matrix b.
-///     `atomao`: [Vec<usize>], Global AO indices of AOs belonging to atom i. 
-///     `pol`: Float, Bias strength.
-///     `pattern`: Integer, spin biasing pattern.
+/// `da`: `Array2`, Spin density matrix a.
+/// `db`: `Array2`, Spin density matrix b.
+/// `atomao`: `[Vec<usize>]`, Global AO indices of AOs belonging to atom i. 
+/// `pol`: `Float`, Bias strength.
+/// `pattern`: `Integer`, spin biasing pattern.
+/// # Returns
+/// `()`, modifies `da` and `db` in place.
 fn bias_spatial(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], pol: f64, pattern: &[i8]) { 
     let up = 1.0 + pol;
     let dn = 1.0 - pol;
@@ -61,11 +64,13 @@ fn bias_spatial(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>
 
 /// Bias density matrices towards a spin symmetry-broken UHF guess. We will have da != db.
 /// # Arguments 
-///     `da`: Array2, Spin density matrix a.
-///     `db`: Array2, Spin density matrix b.
-///     `atomao`: [Vec<usize>], Global AO indices of AOs belonging to atom i. 
-///     `pol`: Float, Bias strength.
-///     `pattern`: Integer, spin biasing pattern.
+/// `da`: `Array2`, Spin density matrix a.
+/// `db`: `Array2`, Spin density matrix b.
+/// `atomao`: `[Vec<usize>]`, Global AO indices of AOs belonging to atom i. 
+/// `pol`: `Float`, Bias strength.
+/// `pattern`: `Integer`, spin biasing pattern.
+/// # Returns
+/// `()`, modifies `da` and `db` in place.
 fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], pol: f64, pattern: &[i8]) {
     let up = 1.0 + pol;
     let dn = 1.0 - pol;
@@ -88,9 +93,11 @@ fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], 
 /// Calculate the distance between SCF states from Phys. Rev. Lett. 101, 193001 as 
 /// d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).
 /// # Arguments 
-///     `w`: SCFState, reference state from which distance is computed. 
-///     `x`: SCFState, state to which distance is computed.
-///     `s`: Array2, AO overlap matrix
+/// `w`: `SCFState`, reference state from which distance is computed. 
+/// `x`: `SCFState`, state to which distance is computed.
+/// `s`: `Array2`, AO overlap matrix.
+/// # Returns
+/// `f64`, electron distance between the two SCF states.
 pub fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
     // Calculate electron number N as Tr(D_r S).
     let na = (w.da.dot(s)).diag().sum();
@@ -106,7 +113,9 @@ pub fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
 /// Using the occupation vectors oa, ob, get positions p of oa, ob which are equal to 0 and 1. That is, 
 /// the virtual and occupied column indices for each spin.
 /// # Arguments
-///     `st`: SCFState, state which we are finding virtual and occupied indices.
+/// `st`: `SCFState`, state which we are finding virtual and occupied indices.
+/// # Returns
+/// `SpinOccupation`, occupied and virtual orbital indices for alpha and beta spin.
 fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
     //  For each entry in oa/ob find all indices p where o[p] > 0.5.
     let occ_alpha: Vec<usize> = st.oa.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
@@ -119,13 +128,17 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
     SpinOccupation{occ_alpha, virt_alpha, occ_beta, virt_beta}
 }
 
-/// Copy a reference SCF state (i.e., those that form the deterministic NOCI basis) and replace the
+// Copy a reference SCF state (i.e., those that form the deterministic NOCI basis) and replace the
 /// oa, ob with modified occupancies, and rebuild cs_occ accordingly.
 /// # Arguments 
-///    `reference`: SCFState, SCF state from which to build an excited state.
-///    `oa_ex`: Array1, Excited occupied indices spin alpha.
-///    `ob_ex`: Array1, Excited occupied indices spin beta. 
-///    `label_suffix`: String, what to append to reference state label to indicate excitation.
+/// `reference`: `SCFState`, SCF state from which to build an excited state.
+/// `oa_ex`: `Array1`, Excited occupied indices spin alpha.
+/// `ob_ex`: `Array1`, Excited occupied indices spin beta. 
+/// `label_suffix`: `String`, what to append to reference state label to indicate excitation.
+/// `parent`: `usize`, index of the parent reference determinant.
+/// `excitation`: `Excitation`, excitation carried by the excited state.
+/// # Returns
+/// `SCFState`, excited state built from the reference state with modified occupancies.
 fn make_excited_state(reference: &SCFState, oa_ex: Array1<f64>, ob_ex: Array1<f64>, label_suffix: &str,
                       parent: usize, excitation: Excitation) -> SCFState{
 
@@ -135,10 +148,12 @@ fn make_excited_state(reference: &SCFState, oa_ex: Array1<f64>, ob_ex: Array1<f6
 
 /// Given aolabels (which contains) information about which atom an AO belongs to, find the AO
 /// indices of a set of given atoms. For example if we had aolabels = ["0 1s", "0 1s", "1 1s", "1
-/// 1s"] (i.e., H2 in minimal basis) and atoms = [0] the function returns [0, 1].
+/// 1s"] (i.e., H2 in minimal basis) and atoms = `[0]` the function returns [0, 1].
 /// # Arguments
-///     `aolabels`: Labels which map AOs to atoms.
-///     `atoms`: Atom indices for which we wish to know the corresponding AO indices.
+/// `aolabels`: Labels which map AOs to atoms.
+/// `atoms`: Atom indices for which we wish to know the corresponding AO indices.
+/// # Returns
+/// `Vec<usize>`, AO indices belonging to the requested atom set.
 fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
     // Iterate over all AO labels which contain for example "2 1s".
     aolabels.iter().enumerate()
@@ -153,11 +168,13 @@ fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
 
 /// Generate the SCF states using the maximum orbital overlap procedure.
 /// # Arguments:
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `input`: Input struct, contains user inputted options. 
-///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
-///     `prev_map`: HashMap, map between the SCFState object and its label.
-///     `recipes`: [StateRecipe], instructions for how to construct each state.
+/// `ao`: `AoData struct`, contains AO integrals and other system data. 
+/// `input`: `Input struct`, contains user inputted options. 
+/// `prev`: `Option<[SCFState]>`, may or may not contain states from a previous geometry.
+/// `prev_map`: `HashMap`, map between the SCFState object and its label.
+/// `recipes`: `[StateRecipe]`, instructions for how to construct each state.
+/// # Returns:
+/// `Vec<SCFState>`, generated SCF states.
 fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, prev_map: &HashMap<&str, &SCFState>, recipes: &[StateRecipe]) -> Vec<SCFState> {
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
@@ -244,10 +261,12 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
 
 /// Generate the SCF states using the SCF metadynamics procedure.
 /// # Arguments:
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `input`: Input struct, contains user inputted options. 
-///     `prev_map`: HashMap, map between the SCFState object and its label.
-///     `meta`: Metadynamics, SCF metadynamics parameters.
+/// `ao`: `AoData struct`, contains AO integrals and other system data. 
+/// `input`: `Input struct`, contains user inputted options. 
+/// `prev_map`: `HashMap`, map between the SCFState object and its label.
+/// `meta`: `Metadynamics`, SCF metadynamics parameters.
+/// # Returns:
+/// `Vec<SCFState>`, generated SCF states.
 fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&str, &SCFState>, meta: &mut Metadynamics) -> Vec<SCFState> {
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
@@ -491,9 +510,11 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 
 /// Pass given AO data and previous SCF solutions to SCF cycle to form the requested reference NOCI basis.
 /// # Arguments 
-///     `ao`: AoData struct, contains AO integrals and other system data. 
-///     `input`: Input struct, contains user inputted options. 
-///     `prev`: Option<[SCFState]>, may or may not contain states from a previous geometry.
+/// `ao`: `AoData struct`, contains AO integrals and other system data. 
+/// `input`: `Input struct`, contains user inputted options. 
+/// `prev`: `Option<[SCFState]>`, may or may not contain states from a previous geometry.
+/// # Returns
+/// `Vec<SCFState>`, requested reference NOCI basis.
 pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Option<&[SCFState]>,) -> Vec<SCFState> {
     
     // Construct lookuptable from state label to previous SCF states. Allows for seeding of SCF
@@ -526,9 +547,11 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
 /// Generate a requested amount of all possible excitations on top of the given reference NOCI
 /// basis. Currently not a very generalised implementation to higher levels of excitation. 
 /// # Arguments
-///     `refs`: [SCFState], array of reference states for which excitations are generated.
-///     `input`: Input struct, contains user inputted options. 
-///     `include_refs`: bool, whether or not to include the references in the returned basis.
+/// `refs`: `[SCFState]`, array of reference states for which excitations are generated.
+/// `input`: `Input struct`, contains user inputted options. 
+/// `include_refs`: `bool`, whether or not to include the references in the returned basis.
+/// # Returns
+/// `Vec<SCFState>`, generated excited basis, optionally including the reference states.
 pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bool) -> Vec<SCFState> {
     let mut out: Vec<SCFState> = Vec::new();
     for r in refs.iter() {

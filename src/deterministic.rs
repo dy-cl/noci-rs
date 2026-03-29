@@ -6,7 +6,6 @@ use crate::input::{Input, Propagator};
 
 use crate::maths::parallel_matvec_real;
 
-// Storage for the chosen propagator expressed in the basis of projectors.
 pub struct ProjPropagator {
     pub urr: Array2<f64>,
     pub unn: Array2<f64>,
@@ -14,7 +13,6 @@ pub struct ProjPropagator {
     pub urn: Array2<f64>,
 }
 
-// Storage for projectors that project the coefficients to relevant and null subspaces.
 pub struct Projectors {
     ur: Array2<f64>,
     ur_dag: Array2<f64>,
@@ -22,7 +20,6 @@ pub struct Projectors {
     un_dag: Array2<f64>,
 }
 
-// Storage for coefficients at each time-step.
 pub struct Coefficients {
     pub iter: usize, 
     pub c_full: Array1<f64>,
@@ -38,8 +35,10 @@ impl Projectors {
     /// matrices U_r (relevant) and U_n (null) are used to form the projectors as:
     ///     P_r = U_r U_r^\dagger, P_n = U_n U_n^\dagger.
     /// # Arguments 
-    ///     `s`: Array2, overlap matrix in full NOCI-QMC basis.
-    ///     `eps`: f64, tolerance for an eigenvalue being null or relevant.
+    /// `s`: Array2, overlap matrix in full NOCI-QMC basis.
+    /// `eps`: f64, tolerance for an eigenvalue being null or relevant.
+    /// # Returns
+    /// `Projectors`, projectors onto the relevant and null subspaces of the overlap matrix.
     pub fn calculate_projectors(s: &Array2<f64>, eps: f64) -> Self {
         // S = U \Lambda U^\dagger
         let (lambda, u) = s.eigh(UPLO::Lower).unwrap();
@@ -76,9 +75,11 @@ impl Projectors {
 
     /// Project a full NOCI-QMC coefficient vector c into the relevant and null subsapces of the
     /// overlap matrix S as:
-    ///     c_r = P_r c = U_r U_r^\dagger, c_n = P_n c = U_n U_n^\dagger c.
+    ///     c_r = P_r c = U_r U_r^\dagger c, c_n = P_n c = U_n U_n^\dagger c.
     /// # Arguments
-    ///     `c`: Array1, coefficient vector in the full NOCI-QMC basis.
+    /// `c`: Array1, coefficient vector in the full NOCI-QMC basis.
+    /// # Returns
+    /// `(Array1<f64>, Array1<f64>)`, coefficients projected into the relevant and null subspaces.
     pub fn project(&self, c: &Array1<f64>) -> (Array1<f64>, Array1<f64>) {
         // C_r = U_r U_r^\dagger C  
         let yr = parallel_matvec_real(&self.ur_dag, c);
@@ -95,6 +96,15 @@ impl ProjPropagator {
     /// Express a propjector in the null and relevant subspace basis by forming the matrix (U_{rr},
     /// U_{nr} \\ U_{rn} U_{nn}). All elements of the propragator can be projected by doing for
     /// example: H_{rn} = U_r^\dagger H U_n. 
+    /// # Arguments
+    /// `h`: Array2, NOCI Hamiltonian in the full NOCI-QMC basis.
+    /// `s`: Array2, overlap matrix in the full NOCI-QMC basis.
+    /// `p`: Projectors, projectors onto the relevant and null subspaces.
+    /// `es`: f64, energy shift.
+    /// `dt`: f64, propagation time step.
+    /// `prop`: Propagator, propagator choice.
+    /// # Returns
+    /// `ProjPropagator`, propagator blocks expressed in the relevant and null subspace basis.
     pub fn calculate_projected_propagator(h: &Array2<f64>, s: &Array2<f64>, p: &Projectors, es: f64, dt: f64, prop: &Propagator) -> Self {
         // H_{ur} = H U_r, H_{un} = H U_n, S_{ur} = S U_r, S_{un} = S U_n.
         let hur = h.dot(&p.ur); let hun = h.dot(&p.un); let sur = s.dot(&p.ur); let sun = s.dot(&p.un);
@@ -124,11 +134,13 @@ impl ProjPropagator {
 
 /// Perform one deterministic update step of NOCI-QMC unshifted propagator:
 /// # Arguments
-///     `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis.
-///     `s`: Array2, Overlap matrix in full NOCI-QMC basis.
-///     `c`: Array1, NOCI-QMC coefficient vector.
-///     `esc`: Scalar, Energy shift.
-///     `dt`: Propagation time step.
+/// `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis.
+/// `s`: Array2, Overlap matrix in full NOCI-QMC basis.
+/// `c`: Array1, NOCI-QMC coefficient vector.
+/// `esc`: Scalar, Energy shift.
+/// `dt`: Propagation time step.
+/// # Returns
+/// `Array1<f64>`, updated NOCI-QMC coefficient vector after one unshifted propagation step.
 pub fn propagate_step_unshifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>, esc: f64, dt: f64) 
                                 -> Array1<f64> {
     let hc = parallel_matvec_real(h, c);
@@ -141,11 +153,13 @@ pub fn propagate_step_unshifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64
 /// Perform one deterministic update step of NOCI-QMC shifted propagator:
 /// - \Delta\tau \sum_{\Gamma \neq \Lambda}(H_{\Lambda\Gamma} - E_s S_{\Lambda\Gamma})C^\Gamma(\tau).
 /// # Arguments
-///     `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis.
-///     `s`: Array2, Overlap matrix in full NOCI-QMC basis.
-///     `c`: Array1, NOCI-QMC coefficient vector.
-///     `esc`: Scalar, Energy shift, we just use the reference NOCI energy for this here.
-///     `dt`: Propagation time step.
+/// `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis.
+/// `s`: Array2, Overlap matrix in full NOCI-QMC basis.
+/// `c`: Array1, NOCI-QMC coefficient vector.
+/// `esc`: Scalar, Energy shift, we just use the reference NOCI energy for this here.
+/// `dt`: Propagation time step.
+/// # Returns
+/// `Array1<f64>`, updated NOCI-QMC coefficient vector after one shifted propagation step.
 pub fn propagate_step_shifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>, esc: f64, dt: f64) 
                               -> Array1<f64> {
     let hc = parallel_matvec_real(h, c);
@@ -158,12 +172,14 @@ pub fn propagate_step_shifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>,
 
 /// Propagate nsteps number of time-step updates or until convergence in the energy.
 /// # Arguments
-///     `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis. 
-///     `s`: Array2, Overlap matrix in full NOCI-QMC basis.
-///     `c0`: Array1, Initial NOCI-QMC coefficient vector, start from reference NOCI coefficients.
-///     `es`: Scalar, Energy shift, we just use the reference HF energy for this here.
-///     `max_steps`: Maximum number of time-step updates to perform.
-///     `e_tol`: Energy tolerance which determines convergence.
+/// `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis. 
+/// `s`: Array2, Overlap matrix in full NOCI-QMC basis.
+/// `c0`: Array1, Initial NOCI-QMC coefficient vector, start from reference NOCI coefficients.
+/// `es`: Scalar, Energy shift, we just use the reference HF energy for this here.
+/// `history`: `Vec<Coefficients>`, storage for coefficient history during propagation.
+/// `input`: Input, user inputted options.
+/// # Returns
+/// `Option<Array1<f64>>`, converged coefficient vector if propagation succeeds, otherwise `None`.
 pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64, history: &mut Vec<Coefficients>, 
                  input: &Input) -> Option<Array1<f64>> {
 
@@ -277,9 +293,11 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
 /// E(\tau) = \frac{C^\Lambda\langle\Psi_\Lambda|\hat H|\Psi_\Gamma\rangle C^\Gamma}{C^\Lambda\langle\Psi_\Lambda|\Psi_\Gamma\rangle C^\Gamma} 
 /// = \frac{C^\Lambda H_{\Lambda\Gamma}C^{\Gamma} }{C^\Lambda S_{\Lambda\Gamma}C^\Gamma}.
 /// # Arguments
-///     `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis. Shifted by E_s * S.
-///     `s`: Array2, Overlap matrix in full NOCI-QMC basis.
-///     `c`: Array1, NOCI-QMC coefficient vector.
+/// `h`: Array2, NOCI Hamiltonian in full NOCI-QMC basis. Shifted by E_s * S.
+/// `s`: Array2, Overlap matrix in full NOCI-QMC basis.
+/// `c`: Array1, NOCI-QMC coefficient vector.
+/// # Returns
+/// `f64`, projected energy corresponding to coefficient vector `c`.
 pub fn projected_energy(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>) -> f64 {
     let hc = h.dot(c);
     let num = c.iter().zip(hc.iter()).map(|(ci, hci)| ci * hci).sum::<f64>();

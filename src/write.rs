@@ -12,7 +12,9 @@ use crate::input::{Input, StateType, ExcitationGen, Spin};
 
 /// Print input options at the top of output.
 /// # Arguments:
-///     `input`: Input, user specified input options.
+/// `input`: Input, user specified input options.
+/// # Returns
+/// `()`, prints the parsed input options to stdout.
 pub fn print_input(input: &Input) {
     let left = "=".repeat(45);
     let right = "=".repeat(46);
@@ -162,17 +164,19 @@ pub fn print_input(input: &Input) {
 /// Of course, this does not contain the geometry or basis used, but this can be provided in the input to a
 /// plotting script provided we have not forgotten what was used.
 /// # Arguments:
-///     `path`: String, filepath for the HDF5 file.
-///     `label`: String, sanitised label of the SCF state.
-///     `ao`: AoData struct, contains AO integrals and metadata.
-///     `ca`: Array2, MO coefficients spin alpha.  
-///     `cb`: Array2, MO coefficients spin beta.
-///     `ea`: Array1, MO energies spin alpha. 
-///     `eb`: Array1, MO energies spin beta.
-///     `oa`: Array1, MO occupancies spin alpha.
-///     `ob`: Array1, MO occupancies spin beta.
-///     `da`: Array2, spin alpha density matrix.
-///     `db`: Array2, spin beta density matrix.
+/// `path`: String, filepath for the HDF5 file.
+/// `label`: String, sanitised label of the SCF state.
+/// `ao`: AoData struct, contains AO integrals and metadata.
+/// `ca`: Array2, MO coefficients spin alpha.  
+/// `cb`: Array2, MO coefficients spin beta.
+/// `ea`: Array1, MO energies spin alpha. 
+/// `eb`: Array1, MO energies spin beta.
+/// `oa`: Array1, MO occupancies spin alpha.
+/// `ob`: Array1, MO occupancies spin beta.
+/// `da`: Array2, spin alpha density matrix.
+/// `db`: Array2, spin beta density matrix.
+/// # Returns
+/// `()`, writes orbital data to the HDF5 file at `path`.
 pub fn write_orbitals(path: &str, ao: &AoData, label: &str, ca: &Array2<f64>, cb: &Array2<f64>, ea: &Array1<f64>, eb: &Array1<f64>,
                       oa: &Array1<f64>, ob: &Array1<f64>, da: &Array2<f64>, db: &Array2<f64>) {
     let f = File::create(path).unwrap();
@@ -199,8 +203,10 @@ pub fn write_orbitals(path: &str, ao: &AoData, label: &str, ca: &Array2<f64>, cb
 
 /// Write a matrix to a text file.
 /// # Arguments:
-///     `path`: &str, output file path.
-///     `m`: Array2, matrix to write.
+/// `path`: &str, output file path.
+/// `m`: Array2, matrix to write.
+/// # Returns
+/// `()`, writes the matrix to the requested file.
 pub fn write_matrix(path: &str, m: &Array2<f64>) {
     let mut f = BufWriter::new(StdFile::create(path).unwrap());
     for r in 0..m.nrows() {
@@ -216,9 +222,11 @@ pub fn write_matrix(path: &str, m: &Array2<f64>) {
 
 /// Write Hamiltonian and overlap matrices to the write directory.
 /// # Arguments:
-///     `write_dir`: &str, output directory.
-///     `h`: Array2, Hamiltonian matrix.
-///     `s`: Array2, overlap matrix.
+/// `write_dir`: &str, output directory.
+/// `h`: Array2, Hamiltonian matrix.
+/// `s`: Array2, overlap matrix.
+/// # Returns
+/// `()`, writes the Hamiltonian and overlap matrices to `write_dir`.
 pub fn write_hs_matrices(write_dir: &str, h: &Array2<f64>, s: &Array2<f64>) {
     create_dir_all(write_dir).unwrap();
     write_matrix(&format!("{}/HAMI", write_dir), h);

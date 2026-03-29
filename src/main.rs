@@ -102,13 +102,17 @@ fn main() {
     if irank == 0 {println!("\n Total wall time: {:?}", t_total.elapsed());}
 }
 
-/// Wrapper fuction to call each required or requested type of calculation. Ordering is: 1)
+// Wrapper fuction to call each required or requested type of calculation. Ordering is: 1)
 /// Generate integrals in PySCF, run SCF for requested states, run the reference NOCI calculation,
 /// and finally run the deterministic propagation NOCI-QMC calculation.
 /// # Arguments:
-///     `r`: f64, current geometry.
-///     `atoms`: Vec<String>, atom types.
-///     `prev_states`: [SCFState], converged SCF states at previous r, used for seeding.
+/// `r`: f64, current geometry.
+/// `atoms`: Vec<String>, atom types.
+/// `input`: Input, user input specifications.
+/// `prev_states`: [SCFState], converged SCF states at previous r, used for seeding.
+/// `world`: Communicator, MPI communicator object.
+/// # Returns
+/// `Results`, calculated energies, timings, and SCF states for the current geometry.
 fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world: &impl Communicator) -> Results {
     
     let tol = 1e-8;
@@ -212,8 +216,10 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
 
 /// Call PySCF script to get the two electron integrals and core hamiltonian.
 /// # Arguments: 
-///     `atoms`: Vec<String>, atom types.
-///     `input`: Input, user input specifications.
+/// `atoms`: Vec<String>, atom types.
+/// `input`: Input, user input specifications.
+/// # Returns
+/// `Duration`, wall time spent generating integrals with PySCF.
 fn run_pyscf(atoms: &Atoms, input: &Input) -> Duration {
     let t_gen = Instant::now();
     let atomsj = serde_json::to_string(atoms).unwrap();
@@ -233,9 +239,11 @@ fn run_pyscf(atoms: &Atoms, input: &Input) -> Duration {
 
 /// Run SCF calculations for user requested SCF states.
 /// # Arguments:
-///     `ao`: AoData, contains AO integrals and other system data.
-///     `input`: Input, user input specifications.
-///     `prev_states`: [SCFState], converged SCF states at previous r, used for seeding. 
+/// `ao`: AoData, contains AO integrals and other system data.
+/// `input`: Input, user input specifications.
+/// `prev_states`: [SCFState], converged SCF states at previous r, used for seeding. 
+/// # Returns
+/// `(Vec<SCFState>, Duration)`, converged SCF states and total SCF wall time.
 fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> (Vec<SCFState>, Duration) {
     let t_scf = Instant::now();
     
@@ -252,9 +260,14 @@ fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> (Vec<SCF
 /// Construct the reference NOCI basis and find the reference NOCI energy via calculation of NOCI
 /// Hamiltonian and overlap followed by solving GEVP.
 /// # Arguments:
-///     `ao`: AoData, contains AO integrals and other system data.
-///     `input`: Input, user input specifications.
-///     `states`: [SCFState], converged SCF states. 
+/// `ao`: AoData, contains AO integrals and other system data.
+/// `input`: Input, user input specifications.
+/// `states`: [SCFState], converged SCF states.
+/// `tol`: f64, tolerance up to which a number is considered zero.
+/// `wicks`: Option<&WicksView>, optional precomputed Wick's intermediates.
+/// # Returns
+/// `(Vec<SCFState>, f64, Vec<f64>, Duration, Duration)`, reference NOCI basis, reference NOCI
+/// energy, reference NOCI coefficients, total reference NOCI wall time, and matrix-build wall time.
 fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, wicks: Option<&WicksView>) 
                       -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
     let t_noci = Instant::now();
@@ -272,12 +285,17 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64,
 
 /// Perform the deterministic propagation in the NOCI-QMC space. 
 /// # Arguments:
-///     `ao`: AoData, contains AO integrals and other system data.
-///     `input`: Input, user input specifications.
-///     `states`: [SCFState], converged SCF states. 
-///     `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
-///                             to be in the NOCI basis.
-///     `c0`: [f64], initial coefficient vector of basis states.
+/// `ao`: AoData, contains AO integrals and other system data.
+/// `input`: Input, user input specifications.
+/// `states`: [SCFState], converged SCF states. 
+/// `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
+/// to be in the NOCI basis.
+/// `c0`: [f64], initial coefficient vector of basis states.
+/// `tol`: f64, tolerance up to which a number is considered zero.
+/// `wicks`: Option<&WicksView>, optional precomputed Wick's intermediates.
+/// # Returns
+/// `(f64, Duration, Duration, Duration, Duration)`, propagated energy, total wall time, basis
+/// generation wall time, Hamiltonian/overlap build wall time, and propagation wall time.
 fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], tol: f64, 
                               wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, Duration) {
     let t_total = Instant::now();
@@ -378,13 +396,17 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 
 /// Perform stochastic propagation in the NOCI-QMC space. 
 /// # Arguments:
-///     `ao`: AoData, contains AO integrals and other system data.
-///     `input`: Input, user input specifications.
-///     `states`: [SCFState], converged SCF states. 
-///     `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
-///                             to be in the NOCI basis.
-///     `c0`: [f64], initial coefficient vector of basis states.
-///     `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
+/// `ao`: AoData, contains AO integrals and other system data.
+/// `input`: Input, user input specifications.
+/// `noci_reference_basis`: [SCFState], the converged SCF states filtered for those requested
+/// to be in the NOCI basis.
+/// `c0`: [f64], initial coefficient vector of basis states.
+/// `world`: Communicator, MPI communicator object (MPI_COMM_WORLD).
+/// `tol`: f64, tolerance up to which a number is considered zero.
+/// `wicks`: Option<&WicksView>, optional precomputed Wick's intermediates.
+/// # Returns
+/// `(f64, Duration, Duration, Duration, StochStepTimings)`, stochastic energy estimate, total
+/// wall time, basis generation wall time, propagation wall time, and per-step timings.
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64, 
                                wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, StochStepTimings) {
 
@@ -448,6 +470,17 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
     (e, d_total, d_basis, d_prop, step_timings)
 }
 
+/// Run SNOCI starting from the current determinant space.
+/// # Arguments:
+/// `ao`: AoData, contains AO integrals and other system data.
+/// `initial_space`: [SCFState], current determinant space used as the starting point for SNOCI.
+/// `noci_reference_basis`: [SCFState], vector of only the reference determinants.
+/// `input`: Input, user input specifications.
+/// `tol`: f64, tolerance up to which a number is considered zero.
+/// `wicks`: Option<&mut WicksShared>, optional shared-memory Wick's intermediates storage.
+/// # Returns
+/// `(f64, Duration, SNOCIStepTimings)`, current SNOCI energy, total SNOCI wall time, and
+/// timings for the SNOCI step components.
 pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, wicks: Option<&mut WicksShared>) -> (f64, Duration, SNOCIStepTimings) {
     let t0 = Instant::now(); 
     let current_space = initial_space.to_vec();
@@ -459,8 +492,10 @@ pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: 
 
 /// Print important information for current geometry.
 /// # Arguments:
-///     `res`: Results, contains the aforementioned important information.
-///     `input`: Input, user input specifications.
+/// `res`: Results, contains the aforementioned important information.
+/// `input`: Input, user input specifications.
+/// # Returns
+/// `()`, prints the report to stdout.
 fn print_report(res: &Results, input: &Input) {
     println!("{}", "=".repeat(100));
 

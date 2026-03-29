@@ -9,8 +9,10 @@ thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::n
 
 /// Return positive eigenvalue subspace of symmetric matrix S. 
 /// # Arguments:
-///     `s`: Array2, symmetric matrix.
-///     `tol`: f64, tolerance for whether a number is considered zero.
+/// `s`: Array2, symmetric matrix.
+/// `tol`: f64, tolerance for whether a number is considered zero.
+/// # Returns
+/// `(Array1<f64>, Array2<f64>)`, positive eigenvalues and their associated eigenvectors.
 pub fn positive_subspace_real(s: &Array2<f64>, tol: f64) -> (Array1<f64>, Array2<f64>) {
     let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
     // Filter out eigenvalues smaller than tol.
@@ -33,6 +35,8 @@ pub fn positive_subspace_real(s: &Array2<f64>, tol: f64) -> (Array1<f64>, Array2
 /// `s`: Array2, symmetric matrix, uses only the lower triangle. 
 /// `project`: Bool, whether or not to project to non-zero positive subspace of S.
 /// `tol`: Float, tolerance for whether a number is considered zero.
+/// # Returns
+/// `Array2<f64>`, Loewdin symmetric orthogonalizer.
 pub fn loewdin_x_real(s: &Array2<f64>, project: bool, tol: f64) -> Array2<f64> {
     if project {
         let (vals, vecs) = positive_subspace_real(s, tol);
@@ -47,8 +51,10 @@ pub fn loewdin_x_real(s: &Array2<f64>, project: bool, tol: f64) -> Array2<f64> {
 
 /// Rectangular orthogonalizer, computes X = U_+ \Lambda_+^{-1 / 2}.
 /// # Arguments:
-///     `s`: matrix to orthogonalize.
-///     `tol`: Float, tolerance for whether a number is considered zero. 
+/// `s`: matrix to orthogonalize.
+/// `tol`: Float, tolerance for whether a number is considered zero. 
+/// # Returns
+/// `Array2<f64>`, rectangular orthogonalizer for the positive subspace of `s`.
 pub fn orthogonaliser_real(s: &Array2<f64>, tol: f64) -> Array2<f64> {
     let (vals, vecs) = positive_subspace_real(s, tol);
     let d = Array2::from_diag(&vals.mapv(|x| 1.0 / x.sqrt()));
@@ -57,12 +63,14 @@ pub fn orthogonaliser_real(s: &Array2<f64>, tol: f64) -> Array2<f64> {
 
 /// Solve the real generalized eigenproblem F C = S C e using the Loewdin orthogonalizer.
 /// # Arguments
-///     `f`: Array2, Hermitian matrix, uses only the lower triangle. Often Fock matrix 
-///     is f here.
-///     `s`: Array2, Hermitian matrix, uses only the lower triangle. Often AO basis overlap 
-///     matrix is s here.
-///     `project`: Bool, whether or not to project to non-zero positive subspace of S.
-///     `tol`: Float, tolerance for whether a number is considered zero.
+/// `f`: Array2, Hermitian matrix, uses only the lower triangle. Often Fock matrix 
+/// is f here.
+/// `s`: Array2, Hermitian matrix, uses only the lower triangle. Often AO basis overlap 
+/// matrix is s here.
+/// `project`: Bool, whether or not to project to non-zero positive subspace of S.
+/// `tol`: Float, tolerance for whether a number is considered zero.
+/// # Returns
+/// `(Array1<f64>, Array2<f64>)`, eigenvalues and eigenvectors of the generalized eigenproblem.
 pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f64) 
                         -> (Array1<f64>, Array2<f64>) {
     // X = S^{-1/2}
@@ -83,8 +91,10 @@ pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f6
 /// Calculate Einstein summation of matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{ab}. 
 /// Assumes `g` and `h` are of identical shape.
 /// # Arguments 
-///     `g`: Array2, matrix 1. 
-///     `h`: Array2, matrix 2.
+/// `g`: Array2, matrix 1. 
+/// `h`: Array2, matrix 2.
+/// # Returns
+/// `f64`, contracted scalar.
 pub fn einsum_ba_ab_real(g: &Array2<f64>, h: &Array2<f64>) -> f64 {
 let n = g.nrows();
     
@@ -111,8 +121,11 @@ let n = g.nrows();
 
 /// Perform dot product between two vectors with unrolled loop of length 8.
 /// # Arguments:
-///     `x`: [f64], vector 1.
-///     `y`: [f64], vector 2.
+/// `x`: [f64], vector 1.
+/// `y`: [f64], vector 2.
+/// `n`: usize, vector length.
+/// # Returns
+/// `f64`, dot product of the two vectors.
 #[inline(always)]
 fn dot_product_unroll8(mut x: *const f64, mut y: *const f64, n: usize) -> f64 {
     let mut i = 0usize;
@@ -173,9 +186,11 @@ fn dot_product_unroll8(mut x: *const f64, mut y: *const f64, n: usize) -> f64 {
 /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c, d}. Assumes `g`, `h` and `t` all 
 /// have axes of equal length.
 /// # Arguments
-///     `g`: Array2, matrix 1. 
-///     `t`: Array4, 4D tensor.
-///     `h`: Array2, matrix 2.
+/// `g`: Array2, matrix 1. 
+/// `t`: Array4, 4D tensor.
+/// `h`: Array2, matrix 2.
+/// # Returns
+/// `f64`, contracted scalar.
 pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>) -> f64 {
     let n = g.nrows();
 
@@ -253,7 +268,9 @@ pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
 
 /// Calculate the determinant of a 2 x 2 matrix. Takes Array2.
 /// # Arguments:
-///     `a`: Array2, matrix to calculate the determinant of.
+/// `a`: Array2, matrix to calculate the determinant of.
+/// # Returns
+/// `f64`, determinant of the matrix.
 #[inline(always)]
 fn det2(a: &Array2<f64>) -> f64 {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
@@ -263,16 +280,22 @@ fn det2(a: &Array2<f64>) -> f64 {
 
 /// Calculate the determinant of a 2 x 2 matrix. Takes 4 scalars.
 /// # Arguments:
-///     `a`: Array2, matrix to calculate the determinant of.
+/// `a00`: f64, matrix element (0, 0).
+/// `a01`: f64, matrix element (0, 1).
+/// `a10`: f64, matrix element (1, 0).
+/// `a11`: f64, matrix element (1, 1).
+/// # Returns
+/// `f64`, determinant of the matrix.
 #[inline(always)]
 fn det2scalar(a00: f64, a01: f64, a10: f64, a11: f64) -> f64 {
     a00 * a11 - a01 * a10
 }
 
-
 /// Calculate the determinant of a 3 x 3 matrix. Takes Array2
 /// # Arguments:
-///     `a`: Array2, matrix to calculate the determinant of.
+/// `a`: Array2, matrix to calculate the determinant of.
+/// # Returns
+/// `f64`, determinant of the matrix.
 #[inline(always)]
 fn det3(a: &Array2<f64>) -> f64 {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
@@ -283,7 +306,17 @@ fn det3(a: &Array2<f64>) -> f64 {
 
 /// Calculate the determinant of a 3 x 3 matrix. Takes 9 scalars.
 /// # Arguments:
-///     `a`: Array2, matrix to calculate the determinant of.
+/// `a00`: f64, matrix element (0, 0).
+/// `a01`: f64, matrix element (0, 1).
+/// `a02`: f64, matrix element (0, 2).
+/// `a10`: f64, matrix element (1, 0).
+/// `a11`: f64, matrix element (1, 1).
+/// `a12`: f64, matrix element (1, 2).
+/// `a20`: f64, matrix element (2, 0).
+/// `a21`: f64, matrix element (2, 1).
+/// `a22`: f64, matrix element (2, 2).
+/// # Returns
+/// `f64`, determinant of the matrix.
 #[inline(always)]
 fn det3scalar(a00: f64, a01: f64, a02: f64, a10: f64, a11: f64, a12: f64, a20: f64, a21: f64, a22: f64) -> f64 {
     a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
@@ -291,7 +324,9 @@ fn det3scalar(a00: f64, a01: f64, a02: f64, a10: f64, a11: f64, a12: f64, a20: f
 
 /// Calculate the determinant of a 4 x 4 matrix. Takes Array2.
 /// # Arguments:
-///     `a`: Array2, matrix to calculate the determinant of.
+/// `a`: Array2, matrix to calculate the determinant of.
+/// # Returns
+/// `f64`, determinant of the matrix.
 #[inline(always)]
 fn det4(a: &Array2<f64>) -> f64 {
     let m00 = {
@@ -332,8 +367,10 @@ fn det4(a: &Array2<f64>) -> f64 {
 
 /// Calculate determinant of 1 by 1 matrix `a` and write its adjugate transpose into `adjt`.
 /// # Arguments:
-///     `adjt`: Array2, scratch space for writing adjugate transpose.
-///     `a`: Array2, input matrix.
+/// `adjt`: Array2, scratch space for writing adjugate transpose.
+/// `a`: Array2, input matrix.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     adjt[(0, 0)] = 1.0;
@@ -342,8 +379,10 @@ fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 
 /// Calculate determinant of 2 by 2 matrix `a` and write its adjugate transpose into `adjt`.
 /// # Arguments:
-///     `adjt`: Array2, scratch space for writing adjugate transpose.
-///     `a`: Array2, input matrix.
+/// `adjt`: Array2, scratch space for writing adjugate transpose.
+/// `a`: Array2, input matrix.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
@@ -362,8 +401,10 @@ fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 
 /// Calculate determinant of 3 by 3 matrix `a` and write its adjugate transpose into `adjt`.
 /// # Arguments:
-///     `adjt`: Array2, scratch space for writing adjugate transpose.
-///     `a`: Array2, input matrix.
+/// `adjt`: Array2, scratch space for writing adjugate transpose.
+/// `a`: Array2, input matrix.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
@@ -394,8 +435,10 @@ fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 
 /// Calculate determinant of 4 by 4 matrix `a` and write its adjugate transpose into `adjt`.
 /// # Arguments:
-///     `adjt`: Array2, scratch space for writing adjugate transpose.
-///     `a`: Array2, input matrix.
+/// `adjt`: Array2, scratch space for writing adjugate transpose.
+/// `a`: Array2, input matrix.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let det = det4(a);
@@ -436,6 +479,8 @@ fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Arguments  
 /// `h`: Array2, matrix. 
 /// `c`: Array1, vector.
+/// # Returns
+/// `Array1<f64>`, matrix-vector product.
 pub fn parallel_matvec_real(h: &Array2<f64>, c: &Array1<f64>) -> Array1<f64> {
     // Iterate over rows of the matrix h in parallel, for each computing its dot product with
     // vector c, and finally collect the results into a vector.
@@ -447,11 +492,13 @@ pub fn parallel_matvec_real(h: &Array2<f64>, c: &Array1<f64>) -> Array1<f64> {
 ///     (pq|rs) = \sum_{\mu\nu\lambda\sigma} (\mu\nu|\lambda\sigma) C_{\mu, p} C_{\nu, q} C_{\lambda, r} C_{\sigma, s}.
 /// Contraction is performed one indexd at a time for O(n^5) work.
 /// # Arguments:
-///     `eri`: Array4, AO basis ERIs.
-///     `c_mu_p`: Array2, MO coefficients C_{\mu, p}. 
-///     `c_nu_q`: Array2, MO coefficients C_{\nu, q}.
-///     `c_lam_r`: Array2, MO coefficients C_{\lambda, r}.
-///     `c_sigma_s`: Array2, MO coefficients C_{\sigma, s}.
+/// `eri`: Array4, AO basis ERIs.
+/// `c_mu_p`: Array2, MO coefficients C_{\mu, p}. 
+/// `c_nu_q`: Array2, MO coefficients C_{\nu, q}.
+/// `c_lam_r`: Array2, MO coefficients C_{\lambda, r}.
+/// `c_sigma_s`: Array2, MO coefficients C_{\sigma, s}.
+/// # Returns
+/// `Array4<f64>`, ERIs transformed to the MO basis.
 pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, c_lam_r: &Array2<f64>, c_sig_s: &Array2<f64>) -> Array4<f64> {
     let nbas = c_mu_p.nrows();
     let nmo_p = c_mu_p.ncols();
@@ -524,11 +571,13 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 /// Build square L x L contraction determinant with X elements in the diagonal and lower half, Y
 /// elements in the upper half.
 /// # Arguments:
-///     `d`: Array2, matrix to write into.
-///     `x`: Array2, X matrix elements.
-///     `y`: Array2, Y matrix elements.
-///     `rows`: [usize], row indices of X or Y.
-///     `cols`: [usize], column indices of X or Y.
+/// `d`: Array2, matrix to write into.
+/// `x`: Array2, X matrix elements.
+/// `y`: Array2, Y matrix elements.
+/// `rows`: [usize], row indices of X or Y.
+/// `cols`: [usize], column indices of X or Y.
+/// # Returns
+/// `()`, writes the contraction determinant into `d`.
 #[inline(always)]
 pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize]) {
     let l = rows.len();
@@ -571,14 +620,15 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
     }
 }
 
-
 /// Mix columns of det1 into det0 as prescribed by a bitstring. For each column c if bit c of the
 /// bitstring is 1 the output column c is taken from det1 and det0 otherwise.
 /// # Arguments:
-///     `d`: Array2, matrix to write into.
-///    `det0`: Array2, base matrix.
-///    `det1`: Array2, mixing matrix.
-///    `bits`: usize, bitstring.
+/// `d`: Array2, matrix to write into.
+/// `det0`: Array2, base matrix.
+/// `det1`: Array2, mixing matrix.
+/// `bits`: usize, bitstring.
+/// # Returns
+/// `()`, writes the mixed matrix into `d`.
 #[inline(always)]
 pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) {
     let ncols = det0.ncols();
@@ -602,10 +652,12 @@ pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, 
 /// Calculate minor of a square matrix, that is, the matrix obtained by removing row `r_rm` and
 /// column `c_rm`.
 /// # Arguments:
-///     `out`: Array2, matrix to be written into.
-///     `m`: Array2, base matrix.
-///     `r_rm`: usize, row index to remove.
-///     `c_rm`: usize, column index to remove.
+/// `out`: Array2, matrix to be written into.
+/// `m`: Array2, base matrix.
+/// `r_rm`: usize, row index to remove.
+/// `c_rm`: usize, column index to remove.
+/// # Returns
+/// `()`, writes the minor into `out`.
 #[inline(always)]
 pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
     let n = m.nrows();
@@ -627,8 +679,9 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
 /// if the code is generalised to allow greater than double excitations), or fallback to SVD determinant
 /// evaluation method when this proves to be troublesome.
 /// # Arguments:
-///     `a`: Array2, matrix to find determinant of.
-///     `thresh`: f64, tolerance for singular values in SVD fallback.
+/// `a`: Array2, matrix to find determinant of.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 pub fn det(a: &Array2<f64>) -> Option<f64> {
     let n = a.nrows();
@@ -657,10 +710,12 @@ pub fn det(a: &Array2<f64>) -> Option<f64> {
 /// For determinants where explicit calculation is unwieldy (greater than 4 by 4) we use LU solve
 /// to calculate determinant and adjugate transpose.
 /// # Arguments:
-///     `adjt`: Array2, preallocated output scratch space.
-///     `lu`: Array2, preallocated scratch space for LU solve.
-///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
-///     `thresh`: f64, tolerance for singularity test.
+/// `adjt`: Array2, preallocated output scratch space.
+/// `lu`: Array2, preallocated scratch space for LU solve.
+/// `a`: Array2, matrix to find determinant and adjugate-transpose of.
+/// `thresh`: f64, tolerance for singularity test.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 
@@ -692,10 +747,12 @@ pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> 
 /// If both explicit calculation or LU solve to find determinant and adjugate transpose fail we
 /// fall back to the SVD routine.
 /// # Arguments:
-///     `adjt`: Array2, preallocated output scratch space.
-///     `invs`: Array1, preallocated scratch space for singular values of SVD.
-///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
-///     `thresh`: f64, tolerance for singularity.
+/// `adjt`: Array2, preallocated output scratch space.
+/// `invs`: Array1, preallocated scratch space for singular values of SVD.
+/// `a`: Array2, matrix to find determinant and adjugate-transpose of.
+/// `thresh`: f64, tolerance for singularity.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
@@ -763,11 +820,14 @@ pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, 
 /// Compute determinant and adjugate transpose of `a` with fast exact formula up to n == 4 and LU solve method 
 /// for n > 4, and fallback to SVD determinant and adjugate-transpose evaluation method when this proves to be
 /// troublesome.
-///     `adjt`: Array2, preallocated output scratch space.
-///     `invs`: Array1, preallocated scratch space for singular values of SVD.
-///     `lu`: Array2, preallocated scratch space for LU solve.
-///     `a`: Array2, matrix to find determinant and adjugate-transpose of.
-///     `thresh`: f64, tolerance for singularity.
+/// # Arguments:
+/// `adjt`: Array2, preallocated output scratch space.
+/// `invs`: Array1, preallocated scratch space for singular values of SVD.
+/// `lu`: Array2, preallocated scratch space for LU solve.
+/// `a`: Array2, matrix to find determinant and adjugate-transpose of.
+/// `thresh`: f64, tolerance for singularity.
+/// # Returns
+/// `Option<f64>`, determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
 pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
     let n = a.nrows();
