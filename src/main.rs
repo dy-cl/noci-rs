@@ -496,18 +496,16 @@ fn print_report(res: &Results, input: &Input) {
 
     if input.snoci.is_some() {
         println!("Total SNOCI time: {:?}", res.timings.snoci_total);
-        println!(r"  Current space H & S: {:?}", res.timings.snoci_step.current_hs);
-        println!(r"  Current space GEVP: {:?}", res.timings.snoci_step.current_gevp);
+        println!(r"  Current space H, S and GEVP: {:?}", res.timings.snoci_step.current_space);
         println!(r"  Candidate generation: {:?}", res.timings.snoci_step.generate_candidates);
         println!(r"  Candidate space H & S: {:?}", res.timings.snoci_step.candidate_hs);
-        println!(r"  Pseudoinverse: {:?}", res.timings.snoci_step.psuedoinvserse);
+        println!(r"  Pseudoinverse: {:?}", res.timings.snoci_step.pseudoinverse);
         println!(r"  Build Omega space S: {:?}", res.timings.snoci_step.s_omega);
         println!(r"  Generalised Fock build: {:?}", res.timings.snoci_step.generalised_fock);
         println!(r"  Update Wick Fock intermediates: {:?}", res.timings.snoci_step.update_wicks);
-        println!(r"  Candidate space Fock: {:?}", res.timings.snoci_step.candidate_f);
+        println!(r"  Candidate space Fock: {:?}", res.timings.snoci_step.candidate_fock);
         println!(r"  Build Omega space F and V: {:?}", res.timings.snoci_step.f_omega);
-        println!(r"  Davidson Solve: {:?}", res.timings.snoci_step.davidson);
-        println!(r"  Channel EPT2 contributions: {:?}", res.timings.snoci_step.channel_ept2);
+        println!(r"  GMRES Solve: {:?}", res.timings.snoci_step.gmres);
         println!(r"  Candidate selection: {:?}", res.timings.snoci_step.select);
     }
 

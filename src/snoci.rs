@@ -1,8 +1,7 @@
 //snoci.rs
 use std::time::{Instant, Duration};
 
-use ndarray::{Array1, Array2};
-use rayon::prelude::*;
+use ndarray::{Array1, Array2, Axis};
 
 use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared};
@@ -12,7 +11,6 @@ use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, noci_density, up
 use crate::maths::{general_evp_real, loewdin_x_real, parallel_matvec_real};
 use crate::scf::form_fock_matrices;
 
-/// Storage for the current SNOCI iteration state.
 pub struct SNOCIState {
     pub ecurrent: f64,
     pub coeffs: Array1<f64>,
@@ -21,298 +19,357 @@ pub struct SNOCIState {
     pub candidates: Vec<SCFState>,
     pub selected: Vec<SCFState>,
     pub candidate_scores: Vec<f64>,
-    pub channel_denoms: Vec<f64>,
-    pub channel_pt2: Vec<f64>,
     pub ept2: f64,
 }
 
-/// Storage for timings of the SNOCI step components.
+struct GmresResult {
+    pub x: Array1<f64>,
+    pub residual_rms: f64,
+    pub iterations: usize,
+    pub converged: bool,
+}
+
+struct CandidateSpaceMatrixElems {
+    // List of all candidate states.
+    candidates: Vec<SCFState>,
+    // Candidate-candidate space overlap.
+    s_ab: Array2<f64>,
+    // Candidate-current space Hamiltonian.
+    h_ai: Array2<f64>,
+    // Candidate-current space overlap.
+    s_ai: Array2<f64>,
+}
+
+struct FilteredCandidateSpaceMatrixElems {
+    // List of all filtered candidate states.
+    candidates: Vec<SCFState>,
+    // Filtered candidate-candidate space after projecting out current space directions.
+    s_ab_omega: Array2<f64>,
+    // Filtered candidate-candidate space Hamiltonian.
+    h_ai: Array2<f64>,
+    // Filtered candidate-candidate space overlap.
+    s_ai: Array2<f64>,
+    // Filtered candidate-candidate space overlap transposed.
+    s_ia: Array2<f64>,
+}
+
+struct FockMatrixElems {
+    // Current-current space Fock.
+    f_ii: Array2<f64>,
+    // Candidate-current space Fock.
+    f_ai: Array2<f64>,
+    // Candidate-current space Fock transposed.
+    f_ia: Array2<f64>,
+    // Candidate-candidate space Fock.
+    f_ab: Array2<f64>,
+}
+
 #[derive(Default)]
 pub struct SNOCIStepTimings {
-    pub current_hs: Duration,
-    pub current_gevp: Duration,
+    pub current_space: Duration,
     pub generate_candidates: Duration,
     pub candidate_hs: Duration,
-    pub psuedoinvserse: Duration,
+    pub pseudoinverse: Duration,
     pub s_omega: Duration,
     pub generalised_fock: Duration,
     pub update_wicks: Duration,
-    pub candidate_f: Duration,
+    pub candidate_fock: Duration,
     pub f_omega: Duration,
-    pub davidson: Duration,
-    pub channel_ept2: Duration,
+    pub gmres: Duration,
     pub select: Duration,
 }
 
-/// Build initial trial basis for generalised Davidson solve.
+/// Solve a linear system using (currently) unrestarted GMRES.
 /// # Arguments:
-///     `m`: Array2, generally Hamiltonian in candidate space.
-///     `s`: Array2, generally overlap in candidate space.
-///     `nroots`: usize, number of lowest roots to find,
-///     `tol`: f64, tolerance for whether a number is zero.
-fn seed(m: &Array2<f64>, s: &Array2<f64>, nroots: usize, tol: f64,) -> Vec<Array1<f64>> {
-    let n = m.nrows();
-    let mdiag = m.diag().to_owned();
-    let sdiag = s.diag().to_owned();
+///     `m`: &Array2<f64>, matrix defining the linear system Mx = b.
+///     `b`: &Array1<f64>, right-hand side vector.
+///     `max_iter`: usize, maximum number of GMRES iterations.
+///     `tol`: f64, residual RMS convergence tolerance.
+/// # Returns:
+///     `GmresResult`, approximate solution vector together with final residual RMS, number of
+///     iterations performed, and convergence flag.
+fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresResult {
+    let n = b.len();
+    // Initial guess as all zeros.
+    let mut x = Array1::<f64>::zeros(n);
     
-    // Rank directions by diagonal quotient. This is not a good guess.
-    let mut order: Vec<usize> = (0..n).filter(|&i| sdiag[i] > tol).collect();
-    order.sort_by(|&i, &j| {
-        let qi = mdiag[i] / sdiag[i];
-        let qj = mdiag[j] / sdiag[j];
-        qi.partial_cmp(&qj).unwrap()
-    });
-
-    let seeddim = order.len().min((4 * nroots).max(25));
-    // Take the indices of the best `seeddim` ranked directions.
-    let idx = &order[..seeddim];
-    // Extract subspace of best directions from `m` and `s`.
-    let mut m0 = Array2::<f64>::zeros((seeddim, seeddim));
-    let mut s0 = Array2::<f64>::zeros((seeddim, seeddim));
-    for p in 0..seeddim {
-        for q in 0..seeddim {
-            m0[(p, q)] = m[(idx[p], idx[q])];
-            s0[(p, q)] = s[(idx[p], idx[q])];
-        }
-    }
+    // Empty system is converged.
+    if n == 0 {return GmresResult {x, residual_rms: 0.0, iterations: 0, converged: true};}
     
-    // Solve subspace GEVP.
-    let (evals, c0) = general_evp_real(&m0, &s0, true, tol);
-    let keep = nroots.min(evals.len());
+    // Initial residual is simply b as initial guess is zero.
+    let r = b.clone();
+    // Residual norm.
+    let beta = r.dot(&r).sqrt();
+    // Check if initial residual is converged and return if so.
+    let mut final_residual_rms = beta / (n as f64).sqrt();
+    let mut converged = final_residual_rms < tol;
+    if converged {return GmresResult {x, residual_rms: final_residual_rms, iterations: 0, converged: true};}
     
-    // Put subspace eigenvectors into the full space. Only subspace indices hae non-zero entries.
-    let mut basis: Vec<Array1<f64>> = Vec::new();
-    let mut sbasis: Vec<Array1<f64>> = Vec::new();
-    for a in 0..keep {
-        let mut v = Array1::<f64>::zeros(n);
-        for p in 0..seeddim {
-            v[idx[p]] = c0[(p, a)];
-        }
-        // Orthogonalise.
-        if let Some((u, su)) = orthonormalise(v, &basis, &sbasis, s, tol) {
-            basis.push(u);
-            sbasis.push(su);
-        }
-    }
-    basis
-}
-
-/// Form vector v = \sum_p C_p U_p from basis and coeffs.
-/// # Arguments:
-///     `basis`: [Array1], basis vectors.
-///     `coeffs`: Array1, coefficients c_p.
-fn form_vector(basis: &[Array1<f64>], coeffs: &Array1<f64>) -> Array1<f64> {
-    let n = basis[0].len();
-    let mut v = Array1::<f64>::zeros(n);
-    for (u, &c) in basis.iter().zip(coeffs.iter()) {
-        v.scaled_add(c, u);
-    }
-    v
-}
-
-/// Construct trial subspace M and S matrices in the trial basis.
-/// # Arguments:
-///     `basis`: [Array1], trial basis vectors.
-///     `mbasis`: [Array1], cached Mu vectors.
-///     `sbasis`: [Array1], cached Su vectors.
-fn project_subspace(basis: &[Array1<f64>], mbasis: &[Array1<f64>], sbasis: &[Array1<f64>],) -> (Array2<f64>, Array2<f64>) {
-    let k = basis.len();
+    // Arnoldi basis vectors.
+    let mut q: Vec<Array1<f64>> = Vec::with_capacity(max_iter + 1);
+    q.push(r.mapv(|ri| ri / beta));
     
-    // Calculate lower-triangular rows in parallel.
-    let rows: Vec<(Vec<f64>, Vec<f64>)> = (0..k).into_par_iter().map(|p| {
-        let mut mrow = vec![0.0; p + 1];
-        let mut srow = vec![0.0; p + 1];
-        for q in 0..=p {
-            mrow[q] = basis[p].dot(&mbasis[q]);
-            srow[q] = basis[p].dot(&sbasis[q]);
-        }
-        (mrow, srow)
-    }).collect();
-
-    // Fill the full matrix
-    let mut msub = Array2::<f64>::zeros((k, k));
-    let mut ssub = Array2::<f64>::zeros((k, k));
-    for (p, (mrow, srow)) in rows.into_iter().enumerate() {
-        for q in 0..=p {
-            let mpq = mrow[q];
-            let spq = srow[q];
-            msub[(p, q)] = mpq;
-            msub[(q, p)] = mpq;
-            ssub[(p, q)] = spq;
-            ssub[(q, p)] = spq;
-        }
-    }
-    (msub, ssub)
-}
-
-/// Orthonormalise a vector in the overlap metric such that v^T S v = 1.
-/// # Arguments:
-///     `v`: Array1, candidate vector to orthonormalise.
-///     `basis`: [Array1], existing orthonormal basis vectors.
-///     `sbasis`: [Array1], cached Su vectors corresponding to.
-///     `s`: Array2, overlap.
-///     `tol`: Float, threshold for linear dependence check.
-fn orthonormalise(mut v: Array1<f64>, basis: &[Array1<f64>], sbasis: &[Array1<f64>], s: &Array2<f64>, tol: f64) -> Option<(Array1<f64>, Array1<f64>)> {
-    let mut sv = parallel_matvec_real(s, &v);
-
-    // 2 passes of orthgonanlisation.
-    for _ in 0..2 {
-        for (u, su) in basis.iter().zip(sbasis.iter()) {
-            // Subtract component u^T S v u from v. Removes all components of existing directions 
-            // in the basis from the vector v.
-            let proj = u.dot(&sv);
-            v.scaled_add(-proj, u);
-            sv.scaled_add(-proj, su);
-        }
-    }
+    // Upper Hessenberg matrix.
+    let mut h = Array2::<f64>::zeros((max_iter + 1, max_iter));
+    //  Rotations for Givens rotations.
+    let mut cs = vec![0.0; max_iter];
+    let mut sn = vec![0.0; max_iter];
+    // RHS  of least-squares problem.
+    let mut g = Array1::<f64>::zeros(max_iter + 1);
+    g[0] = beta;
     
-    // Reject vectors that are large or tiny.
-    let n2 = v.dot(&sv);
-    if !n2.is_finite() || n2 <= tol * tol {
-        None
-    } else {
-        // Normalise.
-        let inv = n2.sqrt().recip();
-        v *= inv;
-        sv *= inv;
-        Some((v, sv))
-    }
-}
+    // Counter for number of GMRES iterations.
+    let mut kfinal = 0usize;
 
-/// Find lowest roots of GEVP using Davidson solve.
-/// # Arguments:
-///     `m`: Array2, generally Hamiltonian in candidate space.
-///     `s`: Array2, generally overlap in candidate space.
-///     `input`: Input, user-defined input options.
-///     `tol`: f64, tolerance for whether a number is zero.
-fn generalised_davidson(m: &Array2<f64>, s: &Array2<f64>, input: &Input, tol: f64) -> (Array1<f64>, Array2<f64>) {
-    let n = m.nrows();
-    let options = input.snoci.as_ref().unwrap();
-
-    // Approximation of the correction `t` will use diagonals M_{\alpha \alpha}^{(k)} and S_{\alpha \alpha}^{(k)}.
-    let mdiag = m.diag().to_owned();
-    let sdiag = s.diag().to_owned();
-
-    // Assemble initial trial subspace {U_{\alpha p}^{(k, 0)}}.
-    // We use coordinate unit vectors in original projected candidate basis, choosing vectors 
-    // which have the smallest values of  M_{\alpha \alpha}^{(k)} / S_{\alpha \alpha}^{(k)} as a 
-    // guess of the eigenvalues.
-    let mut order: Vec<usize> = (0..n).filter(|&i| sdiag[i] > tol).collect();
-    order.sort_by(|&i, &j| {
-        let qi = mdiag[i] / sdiag[i];
-        let qj = mdiag[j] / sdiag[j];
-        qi.partial_cmp(&qj).unwrap()
-    });
-
-    let mut basis = seed(m, s, options.davidson.nroots, tol);
-    if basis.is_empty() {return (Array1::zeros(0), Array2::zeros((n, 0)));}
-
-    // Converged eigenvectors and eigenvalues Z_{\beta a}^{(k)} and \Delta_a^{(k)}.
-    let mut zfinal = Array2::<f64>::zeros((n, options.davidson.nroots));
-    let mut deltafinal = Array1::<f64>::zeros(options.davidson.nroots);
-
-    let mut mbasis: Vec<Array1<f64>> = basis.iter().map(|u| parallel_matvec_real(m, u)).collect();
-    let mut sbasis: Vec<Array1<f64>> = basis.iter().map(|u| parallel_matvec_real(s, u)).collect();
-
-    for _ in 0..options.davidson.max_iter {
-        // Project M_{\alpha \beta}^{(k)} and S_{\alpha \beta}^{(k)} into the trial subspace to
-        // get M_{pq}^{(k, m)} and S_{pq}^{(k, m)}.
-        let (msub, ssub) = project_subspace(&basis, &mbasis, &sbasis);
-
-        // Solve GEVP in the small trial subspace.
-        let (delta, c) = general_evp_real(&msub, &ssub, true, tol);
-        let keep = options.davidson.nroots.min(delta.len());
-
-        // Ritz vector (approximate Z_{\alpha a}^{(k, m)}) and residual R_{\alpha a}^{(k, m)}.
-        let mut zritz: Vec<Array1<f64>> = Vec::with_capacity(keep);
-        let mut residual: Vec<Array1<f64>> = Vec::with_capacity(keep);
-        let mut converged = 0usize;
+    for k in 0..max_iter {
+        // Arnoldi step.
+        let mut w = parallel_matvec_real(m, &q[k]);
         
-        // For each of the lowest eigenpairs we construct full-space Ritz vector and test it with
-        // the residual.
-        for a in 0..keep {
-            // Coefficient C_{pa}^{(k, m)} for trial vector U_{\alpha p}^{(k, m)}
-            let ca = c.column(a).to_owned();
-            // Z_{\alpha a}^{(k, m)} = \sum_p^m U_{\alpha p}^{(k, m)} C_{pa}^{(k, m)}
-            let z = form_vector(&basis, &ca);
-
-            // Calculate residual R_{\alpha a}^{(k, m)} = \sum_{\beta \in \mathcal{S}_N^{(k)}} M_{\alpha\beta}^{(k)} Z_{\beta a}^{(k, m)} 
-            // - \Delta_a^{(k, m)} \sum_{\beta \in \mathcal{S}_N^{(k)}} S_{\alpha\beta}^{(k)} Z_{\beta a}^{(k, m)}.
-            let mz = form_vector(&mbasis, &ca);
-            let sz = form_vector(&sbasis, &ca);
-            let mut r = mz.clone();
-            r.scaled_add(-delta[a], &sz);
-
-            // Check for convergence for this root.
-            let rnorm = r.dot(&r).sqrt();
-            if rnorm < options.davidson.res_tol {converged += 1;}
-
-            // Save current best \Delta_a^{(k, m)} and Z_{\alpha a}^{(k, m)}.
-            deltafinal[a] = delta[a];
-            zfinal.column_mut(a).assign(&z);
-
-            zritz.push(z);
-            residual.push(r);
+        // Gram-Schmidt orthogonalisation of w against existing Krylov basis.
+        for j in 0..=k {
+            h[(j, k)] = q[j].dot(&w);
+            w.scaled_add(-h[(j, k)], &q[j]);
+        }
+        h[(k + 1, k)] = w.dot(&w).sqrt();
+        // Non-zero remainder means we append next Arnoldi basis vector.
+        if h[(k + 1, k)] > tol {
+            q.push(w.mapv(|x| x / h[(k + 1, k)]));
+        }
+        
+        // Apply accumulated Givens rotations.
+        for j in 0..k {
+            let temp = cs[j] * h[(j, k)] + sn[j] * h[(j + 1, k)];
+            h[(j + 1, k)] = -sn[j] * h[(j, k)] + cs[j] * h[(j + 1, k)];
+            h[(j, k)] = temp;
+        }
+        // Construct new Givens rotation
+        let hk = h[(k, k)];
+        let hk1 = h[(k + 1, k)];
+        let denom = (hk * hk + hk1 * hk1).sqrt();
+        if denom > tol {
+            cs[k] = hk / denom;
+            sn[k] = hk1 / denom;
+        } else {
+            cs[k] = 1.0;
+            sn[k] = 0.0;
         }
 
-        // If we have converged the required number of roots than return.
-        if converged == keep {return (deltafinal.slice_move(ndarray::s![0..keep]), zfinal.slice_move(ndarray::s![.., 0..keep]))}
+        // Apply new Givens rotation to  Hessenberg column and RHS.
+        h[(k, k)] = cs[k] * hk + sn[k] * hk1;
+        h[(k + 1, k)] = 0.0;
+        g[k + 1] = -sn[k] * g[k];
+        g[k] *= cs[k];
 
-        // Construct new search directions.
-        let mut dirs: Vec<Array1<f64>> = Vec::new();
-        let mut dirsm: Vec<Array1<f64>> = Vec::new();
-        let mut dirss: Vec<Array1<f64>> = Vec::new();
-        for a in 0..keep {
-            let deltaa = delta[a];
-            let r = &residual[a];
-
-            // Approximate correction T_{\alpha a}^{(k, m)}.
-            let mut t = Array1::<f64>::zeros(n);
-            for i in 0..n {
-                let denom = mdiag[i] - deltaa * sdiag[i];
-                if denom.abs() > tol {t[i] = -r[i] / denom};
-            }
-            
-            // Orthogonalise new directions against old trial basis and already accepted new directions.
-            let mut allbasis: Vec<Array1<f64>> = Vec::with_capacity(basis.len() + dirs.len());
-            let mut allsbasis: Vec<Array1<f64>> = Vec::with_capacity(sbasis.len() + dirss.len());
-            allbasis.extend(basis.iter().cloned());
-            allbasis.extend(dirs.iter().cloned());
-            allsbasis.extend(sbasis.iter().cloned());
-            allsbasis.extend(dirss.iter().cloned());
-
-            if let Some((v, sv)) = orthonormalise(t, &allbasis, &allsbasis, s, tol) {
-                let mv = parallel_matvec_real(m, &v);
-                dirs.push(v);
-                dirsm.push(mv);
-                dirss.push(sv);
-            }
-
-        }
-
-        if dirs.is_empty() {return (deltafinal.slice_move(ndarray::s![0..keep]), zfinal.slice_move(ndarray::s![.., 0..keep]))}
-        basis.extend(dirs);
-        mbasis.extend(dirsm);
-        sbasis.extend(dirss);
-
-        // If the subspace gets too large we can restart only with the best trial vectors. 
-        if basis.len() > options.davidson.max_subspace {
-            let mut restartedbasis: Vec<Array1<f64>> = Vec::new();
-            let mut restartedsbasis: Vec<Array1<f64>> = Vec::new();
-            for a in 0..keep.min(options.davidson.restart_dim) {
-                let z = zfinal.column(a).to_owned();
-                if let Some((v, sv)) = orthonormalise(z, &restartedbasis, &restartedsbasis, s, tol) {
-                    restartedbasis.push(v);
-                    restartedsbasis.push(sv);
-                }
-            }
-            basis = restartedbasis;
-            sbasis = restartedsbasis;
-            mbasis = basis.iter().map(|u| parallel_matvec_real(m, u)).collect();
-        }
+        kfinal = k + 1;
+        
+        // Residual is magnitude of last component of rotated RHS
+        let res_rms = g[k + 1].abs() / (n as f64).sqrt();
+        if res_rms < tol {break;}
     }
-    let keep = options.davidson.nroots.min(deltafinal.len());
-    (deltafinal.slice_move(ndarray::s![0..keep]), zfinal.slice_move(ndarray::s![.., 0..keep]))
+    
+    // Solve upper-triangular system via back substitution.
+    let mut y = Array1::<f64>::zeros(kfinal);
+    for ii in 0..kfinal {
+        let i = kfinal - 1 - ii;
+        let mut rhs = g[i];
+        for j in (i + 1)..kfinal {
+            rhs -= h[(i, j)] * y[j];
+        }
+        y[i] = rhs / h[(i, i)];
+    }
+    
+    // Reconstruct GMRES solution.
+    for j in 0..kfinal {
+        x.scaled_add(y[j], &q[j]);
+    }
+    
+    //  Find true residual and norm.
+    let mut rtrue = b.clone();
+    rtrue.scaled_add(-1.0, &parallel_matvec_real(m, &x));
+    final_residual_rms = rtrue.dot(&rtrue).sqrt() / (n as f64).sqrt();
+    converged = final_residual_rms < tol;
+
+    GmresResult {x, residual_rms: final_residual_rms, iterations: kfinal, converged}
+}
+
+/// Build Hamiltonian and overlap matrix elements for the current space and solve the resulting
+/// generalised eigenvalue problem.
+/// # Arguments:
+///     `ao`: AoData, AO integrals and other system data.
+///     `current_space`: [SCFState], current selected nonorthogonal determinant space.
+///     `noci_reference_basis`: [SCFState], vector of only the reference determinants.
+///     `input`: Input, user-defined input options.
+///     `wicks`: Option<&WicksShared>, optional shared Wick's intermediates.
+///     `tol`: f64, tolerance for whether a number is considered zero.
+/// # Returns:
+///     `(Array2<f64>, Array2<f64>, f64, Array1<f64>)`, Hamiltonian matrix in the current space,
+///     overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
+fn solve_current_space(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, 
+                       wicks: Option<&WicksShared>, tol: f64)  -> (Array2<f64>, Array2<f64>, f64, Array1<f64>)  {
+        // Get Hamiltonian and overlap matrix elements for the current space.
+        let (hcurrent, scurrent, _) = build_noci_hs(ao, input, current_space, current_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), true);
+        // Solve current space GEVP.
+        let (evals, c) = general_evp_real(&hcurrent, &scurrent, true, tol);
+        // Extract lowest eigenvalue and eigenvector.
+        let ecurrent = evals[0];
+        let coeffs = c.column(0).to_owned();
+        (hcurrent, scurrent, ecurrent, coeffs)
+}
+
+/// Build candidate-candidate and candidate-current overlap and Hamiltonian matrix elements.
+/// # Arguments:
+///     `ao`: AoData, AO integrals and other system data.
+///     `selected_space`: [SCFState], current selected nonorthogonal determinant space.
+///     `candidates`: [SCFState], candidate determinants generated from the selected space.
+///     `noci_reference_basis`: [SCFState], vector of only the reference determinants.
+///     `wicks`: Option<&WicksShared>, optional shared Wick's intermediates.
+///     `tol`: f64, tolerance for whether a number is considered zero.
+///     `input`: Input, user-defined input options.
+/// # Returns:
+///     `CandidateSpaceMatrixElems`, candidate-space overlap and Hamiltonian matrix elements.
+fn build_candidate_space(ao: &AoData, selected_space: &[SCFState], candidates: &[SCFState], noci_reference_basis: &[SCFState],
+                            wicks: Option<&WicksShared>, tol: f64, input: &Input) -> CandidateSpaceMatrixElems {
+    // Candidate-candidate overlap.
+    let (s_ab, _) = build_noci_s(ao, input, candidates, candidates, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), true);
+    // Candidate-current Hamiltonian and overlap.
+    let (h_ai, s_ai, _) = build_noci_hs(ao, input, candidates, selected_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false);
+    CandidateSpaceMatrixElems {candidates: candidates.to_vec(), s_ab, h_ai, s_ai}
+}
+
+/// Project the candidate space out of the current selected space and remove linearly dependent candidates.
+/// # Arguments:
+///     `candidate_space`: CandidateSpaceMatrixElems, candidate-space overlap and Hamiltonian matrix elements.
+///     `s_ij_inv`: &Array2<f64>, inverse metric in the current space.
+///     `metric_tol`: f64, threshold below which projected candidate norms are discarded.
+/// # Returns:
+///     `Option<FilteredCandidateSpaceMatrixElems>`, projected and filtered candidate-space matrix
+///     elements if any candidates survive, otherwise `None`.
+fn filter_candidate_space(candidate_space: CandidateSpaceMatrixElems, s_ij_inv: &Array2<f64>, metric_tol:  f64) -> Option<FilteredCandidateSpaceMatrixElems> {
+    // Projection of candidate-space metric into current space S_{ai} S^{ij} S_{jb}.
+    let sbi_ij_ja = candidate_space.s_ai.dot(&s_ij_inv.dot(&candidate_space.s_ai.t()));
+    // Projected candidate-space metric S_{\Omega, ab} =  S_{ab} - S_{ai} S^{ij} S_{jb}. Components
+    // that lie in current space are projected out.
+    let s_omega_ab = &candidate_space.s_ab - &sbi_ij_ja;
+    //  Keep only candidates with projected norm larger than some tolerance. Norms close to zero
+    //  indicate linear dependence and therefore are discarded.
+    let keep: Vec<usize> = (0..candidate_space.candidates.len()).filter(|&a| s_omega_ab[(a, a)] > metric_tol).collect();
+    if keep.is_empty() {return None;}
+    // Keep only surviving candidates.
+    let filtered_candidates = keep.iter().map(|&i| candidate_space.candidates[i].clone()).collect();
+    // Filter matrices to only have surviving candidates elements.
+    let h_ai = candidate_space.h_ai.select(Axis(0), &keep);
+    let s_ai = candidate_space.s_ai.select(Axis(0), &keep);
+    let s_ia = s_ai.t().to_owned();
+    let s_ab_omega = s_omega_ab.select(Axis(0), &keep).select(Axis(1), &keep);
+
+    Some(FilteredCandidateSpaceMatrixElems {candidates: filtered_candidates, h_ai, s_ai, s_ia, s_ab_omega})
+}
+
+/// Build current-current, candidate-current, and candidate-candidate Fock matrix elements.
+/// # Arguments:
+///     `ao`: AoData, AO integrals and other system data.
+///     `selected_space`: [SCFState], current selected nonorthogonal determinant space.
+///     `filtered_space`: &FilteredCandidateSpaceMatrixElems, projected and filtered candidate-space
+///     matrix elements.
+///     `fa`: &Array2<f64>, alpha-spin generalised Fock matrix.
+///     `fb`: &Array2<f64>, beta-spin generalised Fock matrix.
+///     `noci_reference_basis`: [SCFState], vector of only the reference determinants.
+///     `wicks`: Option<&WicksShared>, optional shared Wick's intermediates.
+///     `input`: Input, user-defined input options.
+///     `tol`: f64, tolerance for whether a number is considered zero.
+/// # Returns:
+///     `FockMatrixElems`, current-current, candidate-current, and candidate-candidate Fock matrix
+///     elements.
+fn build_focks(ao: &AoData, selected_space: &[SCFState], filtered_space: &FilteredCandidateSpaceMatrixElems, fa: &Array2<f64>, fb: &Array2<f64>,
+               noci_reference_basis: &[SCFState], wicks: Option<&WicksShared>, input: &Input, tol: f64) -> FockMatrixElems {
+    // Current-current Fock.
+    let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, &fa, &fb, noci_reference_basis, 
+                                   wicks.as_ref().map(|ws| ws.view()), tol, true, input);
+    // Candidate-current Fock.
+    let (f_ai, _) = build_noci_fock(ao, &filtered_space.candidates, selected_space, fa, fb, noci_reference_basis, 
+                                   wicks.as_ref().map(|ws| ws.view()), tol, false, input);
+    let f_ia = f_ai.t().to_owned();
+    // Candidate-candidate Fock.
+    let (f_ab, _) = build_noci_fock(ao, &filtered_space.candidates, &filtered_space.candidates, fa, fb, 
+                                   noci_reference_basis, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
+    FockMatrixElems {f_ii, f_ai, f_ia, f_ab}
+}
+
+/// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
+/// # Arguments:
+///     `ecurrent`: f64, current NOCI energy.
+///     `coeffs`: Array1<f64>, current-space ground-state eigenvector.
+///     `hcurrent`: Array2<f64>, Hamiltonian matrix in the current space.
+///     `scurrent`: Array2<f64>, overlap matrix in the current space.
+///     `candidates`: Vec<SCFState>, candidate determinants associated with the current iteration.
+/// # Returns:
+///     `SNOCIState`, SNOCI state with empty selected determinants, empty candidate scores, and
+///     zero EPT2 correction.
+fn empty_state(ecurrent: f64, coeffs: Array1<f64>, hcurrent: Array2<f64>, scurrent: Array2<f64>, candidates: Vec<SCFState>) -> SNOCIState {
+    SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates, selected: Vec::new(), candidate_scores: Vec::new(), ept2: 0.0}
+}
+
+/// Build the projected Omega-space Fock operator and coupling vector.
+/// # Arguments:
+///     `filtered_space`: &FilteredCandidateSpaceMatrixElems, projected and filtered candidate-space
+///     matrix elements.
+///     `focks`: FockMatrixElems, current-current, candidate-current, and candidate-candidate Fock
+///     matrix elements.
+///     `hcurrent`: &Array2<f64>, Hamiltonian matrix in the current selected space.
+///     `coeffs`: &Array1<f64>, current-space ground-state eigenvector.
+///     `s_ij_inv`: &Array2<f64>, inverse metric in the current selected space.
+/// # Returns:
+///     `(Array2<f64>, Array1<f64>)`, projected Omega-space Fock matrix and coupling vector.
+fn build_omega_fock(filtered_space: &FilteredCandidateSpaceMatrixElems, focks: FockMatrixElems, hcurrent: &Array2<f64>, 
+                    coeffs: &Array1<f64>, s_ij_inv: &Array2<f64>) -> (Array2<f64>, Array1<f64>) {
+    let f_ai_proj = focks.f_ai.dot(&s_ij_inv.dot(&filtered_space.s_ia));
+    let f_ia_proj = filtered_space.s_ai.dot(&s_ij_inv.dot(&focks.f_ia));
+    let f_ii_proj = filtered_space.s_ai.dot(&s_ij_inv.dot(&focks.f_ii.dot(&s_ij_inv.dot(&filtered_space.s_ia))));
+    let f_ab_omega = &focks.f_ab - &f_ai_proj - &f_ia_proj + &f_ii_proj;
+    let h_proj = filtered_space.s_ai.dot(&s_ij_inv.dot(hcurrent));
+    let v_omega = (&filtered_space.h_ai - &h_proj).dot(coeffs);
+    (f_ab_omega, v_omega)
+}
+
+/// Select the highest-scoring candidates above the selection threshold.
+/// # Arguments:
+///     `candidates`: [SCFState], filtered candidate determinants.
+///     `candidate_scores`: [f64], candidate importance scores.
+///     `sigma`: f64, selection threshold.
+///     `max_add`: usize, maximum number of candidates to add.
+/// # Returns:
+///     `Vec<SCFState>`, selected candidates sorted by decreasing score.
+fn select_candidates(candidates: &[SCFState], candidate_scores: &[f64], sigma: f64, max_add: usize,) -> Vec<SCFState> {
+    let mut ranked: Vec<(SCFState, f64)> = candidates.iter().cloned().zip(candidate_scores.iter().copied()).filter(|(_, score)| *score > sigma).collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    ranked.into_iter().take(max_add).map(|(state, _)| state).collect()
+}
+
+/// Print the SNOCI iteration table header.
+/// # Arguments:
+///     None.
+/// # Returns:
+///     `()`, prints the SNOCI iteration header to standard output.
+fn print_snoci_header() {
+    println!("{}", "=".repeat(100));
+    println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+             "iter", "NCurr", "NCand", "NCand (F)", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)");
+}
+
+/// Print a single SNOCI iteration summary line.
+/// # Arguments:
+///     `it`: usize, SNOCI iteration index.
+///     `n_current`: usize, number of determinants in the current selected space.
+///     `n_generated`: usize, number of generated candidates before filtering.
+///     `e0`: f64, RHF reference energy used to define the correlation energy.
+///     `state`: &SNOCIState, SNOCI state for the current iteration.
+///     `gmres`: &GmresResult, GMRES solve information for the current iteration.
+/// # Returns:
+///     `()`, prints the SNOCI iteration summary to standard output.
+fn print_snoci_iteration(it: usize, n_current: usize, n_generated: usize, e0: f64, state: &SNOCIState, gmres: &GmresResult) {
+    println!("{:>6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+             it, n_current, n_generated, state.candidates.len(), state.selected.len(), state.ecurrent, state.ecurrent - e0,
+             state.ept2, state.ecurrent + state.ept2, gmres.residual_rms, gmres.iterations);
 }
 
 /// Perform selected NOCI with selection from single and double excitations of current space.
@@ -323,72 +380,68 @@ fn generalised_davidson(m: &Array2<f64>, s: &Array2<f64>, input: &Input, tol: f6
 ///     `input`: Input, user-defined input options.
 ///     `tol`: f64, tolerance for whether a number is zero.
 ///     `wicks`: WicksShared, mutable Wick's intermediates as we need to update Fock intermediates.
-pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, mut wicks: Option<&mut WicksShared>) -> (SNOCIState, SNOCIStepTimings) {
-
+/// # Returns:
+///     `(SNOCIState, SNOCIStepTimings)`, final SNOCI state from the last completed iteration and
+///     timings for each major component of the SNOCI step.
+pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, 
+                  tol: f64, mut wicks: Option<&mut WicksShared>) -> (SNOCIState, SNOCIStepTimings) {
+    // Unwrap SNOCI options and initialise timings, selected_space array, and the final state. 
+    let opts = input.snoci.as_ref().expect("snoci_step called without input.snoci.");
     let mut timings = SNOCIStepTimings::default();
-    let opts = input.snoci.as_ref().unwrap();
-    let mut current_space = current_space.to_vec();
+    let mut selected_space = current_space.to_vec();
     let mut final_state: Option<SNOCIState> = None;
 
-    // RHF energy from which to define correlation.
+    // We define correlation from the RHF energy.
     let e0 = noci_reference_basis[0].e;
-    // Print table header.
-    println!("{}", "=".repeat(100));
-    println!("{:^6} {:^10} {:^11} {:^11} {:^16} {:^16} {:^16} {:^16}", "iter", "# Current", "# Candidate", "# Selected", "E", "Ecorr", "EPT2", "E + EPT2");
+    print_snoci_header();
 
     for it in 0..opts.max_iter {
         // Solve NOCI GEVP in the current selected space.
         let t0 = Instant::now();
-        let (hcurrent, scurrent, _) = build_noci_hs(ao, input, &current_space, &current_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), true);
-        timings.current_hs += t0.elapsed();
+        let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(ao, &selected_space, noci_reference_basis, input, wicks.as_deref(), tol);
+        timings.current_space += t0.elapsed();
         
+        // Generate single and double excitations of the current space as potential candidates.
         let t0 = Instant::now();
-        let (evals, c) = general_evp_real(&hcurrent, &scurrent, true, tol);
-        let ecurrent = evals[0];
-        let coeffs = c.column(0).to_owned();
-        timings.current_gevp += t0.elapsed();
-        
-        // Generate single and double excitations of the current space.
-        let t0 = Instant::now();
-        let include_current = false;
-        let candidates = generate_excited_basis(&current_space, input, include_current);
+        // False flag ensures that the current selected space is not returned alongside the
+        // potential excited candidates.
+        let candidates = generate_excited_basis(&selected_space, input, false);
         timings.generate_candidates += t0.elapsed();
 
         // If the candidates list is empty we have nothing more to do. 
-        if candidates.is_empty() {
-            return (SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates, selected: Vec::new(), candidate_scores: Vec::new(),
-                               channel_denoms: Vec::new(), channel_pt2: Vec::new(), ept2: 0.0}, timings);
-        }
+        if candidates.is_empty() {return (empty_state(ecurrent, coeffs, hcurrent, scurrent, candidates), timings);}
 
-        // Build candidate-candidate and candidate-current matrices. We use incides i, j to refer to
+        // Build candidate-candidate and candidate-current matrices. Note that we use incides i, j to refer to
         // the current state space, and a, b (or \alpha and \beta) to refer to the candidate space.
         let t0 = Instant::now();
-        let symmetric = true;
-        let (sab, _) = build_noci_s(ao, input, &candidates, &candidates, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), symmetric);
-        let symmetric = false;
-        let (hai, sai, _) = build_noci_hs(ao, input, &candidates, &current_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), symmetric);
-        let sia = sai.t().to_owned();
+        let candidate_space = build_candidate_space(ao, &selected_space, &candidates, noci_reference_basis, wicks.as_deref(), tol, input);
         timings.candidate_hs += t0.elapsed();
 
-        // Find psuedoinvserse S^{ij}.
+        // Find psuedoinvserse S^{ij}. This is used to define the projector onto the current
+        // selected space as:
+        //  \hat P = \sum_{i,j \in \mathcal{V}_N^{(k)}} |\Psi_i \rangle S^{ij} \langle \Psi_j |.
         let t0 = Instant::now();
         let x = loewdin_x_real(&scurrent, true, tol);
-        let sij_inv = x.dot(&x);
-        timings.psuedoinvserse += t0.elapsed();
-
-        // \hat P | \Phi_\alpha \rangle = \sum_{i, j} | \Psi_i \rangle S^{ij} \langle \Psi_j |
-        // \Psi_\alpha \rangle = \sum_{i, j} | \Psi_i \rangle S^{ij} S_{j \alpha}. In order to form
-        // matrices we left project with \langle \Phi_\beta | such that we get \langle \Phi_\beta |
-        // \hat P | \Phi_\alpha \rangle = S_{\beta i} S^{ij} S_{j \alpha}.
+        let s_ij_inv = x.dot(&x);
+        timings.pseudoinverse += t0.elapsed();
+        
+        // To avoid redundancy we filter out the potential candidates and remove directions already
+        // present in the current space. The projector used is:
+        //  \hat Q = \hat I - \hat P,
+        //  where \hat P is as defined above.
         let t0 = Instant::now();
-        let sbi_ij_ja = sai.dot(&sij_inv.dot(&sia));
-        // \hat Q = \hat I - \hat P. We label S with \hat Q applied with \Omega.
-        let s_omega_ab = &sab - &sbi_ij_ja;
+        let filtered_candidate_space = filter_candidate_space(candidate_space, &s_ij_inv, opts.gmres.metric_tol); 
         timings.s_omega += t0.elapsed();
+        
+        // If the resulting filtered candidate space is empty return.
+        let filtered_candidate_space = match filtered_candidate_space {
+            Some(filtered) => filtered,
+            None => return (empty_state(ecurrent, coeffs, hcurrent, scurrent, candidates), timings),
+        };
 
-        // Get multireference NOCI density and form generalised Fock matrix.
+        // Get multireference NOCI density and form the generalised Fock matrix.
         let t0 = Instant::now();
-        let (da, db) = noci_density(ao, &current_space, &coeffs, tol);
+        let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
         let (fa, fb) = form_fock_matrices(&ao.h, &ao.eri_coul, &da, &db);
         timings.generalised_fock += t0.elapsed();
 
@@ -401,62 +454,33 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
 
         // Calculate current-current, candidate-current and candidate-candidate Fock matrix elements.
         let t0 = Instant::now();
-        let (fii, _) = build_noci_fock(ao, &current_space, &current_space, &fa, &fb, noci_reference_basis, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
-        let (fai, _) = build_noci_fock(ao, &candidates, &current_space, &fa, &fb, noci_reference_basis, wicks.as_ref().map(|ws| ws.view()), tol, false, input);
-        let fia = fai.t().to_owned();
-        let (fab, _) = build_noci_fock(ao, &candidates, &candidates, &fa, &fb, noci_reference_basis, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
-        timings.candidate_f += t0.elapsed();
+        let focks = build_focks(ao, &selected_space, &filtered_candidate_space, &fa, &fb, noci_reference_basis, wicks.as_deref(), input, tol);
+        timings.candidate_fock += t0.elapsed();
 
-        // \Omega space Fock. 
-        // \hat H_0$ as $\hat H_0 = \hat M \hat F \hat M + \hat Q_{\text{state}} \hat F \hat Q_{\text{state}}.
+        // Find the projected space Fock operator and coupling vector of the linear system to solve.
         let t0 = Instant::now();
-        let f_omega_ab = &fab - &fai.dot(&sij_inv.dot(&sia)) - &sai.dot(&sij_inv.dot(&fia)) + &sai.dot(&sij_inv.dot(&fii.dot(&sij_inv.dot(&sia))));
-
-        let v_omega = (&hai - &sai.dot(&sij_inv.dot(&hcurrent))).dot(&coeffs);
+        let (f_ab_omega, v_omega) = build_omega_fock(&filtered_candidate_space, focks, &hcurrent, &coeffs, &s_ij_inv); 
         timings.f_omega += t0.elapsed();
-
+        
+        // Set-up linear system and pass to GMRES to solve for amplitude vector A_\alpha^{(k)}
         let t0 = Instant::now();
-        let m_omega_ab = &f_omega_ab - &(s_omega_ab.mapv(|x| ecurrent * x));
-        let (delta, z) = generalised_davidson(&m_omega_ab, &s_omega_ab, input, tol);
-        let v_bar = z.t().dot(&v_omega);
-        timings.davidson += t0.elapsed();
-
-        // Channel contributions and EPT2.
+        let m_omega_ab = &f_ab_omega - &(filtered_candidate_space.s_ab_omega.mapv(|x| ecurrent * x));
+        let rhs = v_omega.mapv(|x| -x);
+        let a = gmres(&m_omega_ab, &rhs, opts.gmres.max_iter, opts.gmres.res_tol);
+        timings.gmres += t0.elapsed();
+        
+        // NOCIPT2 energy is simply \sum_\alpha A_\alpha^{(k)} V_\alpha^{(k)}.
+        let ept2 = a.x.dot(&v_omega);
+        // Score candidates with metric |A_\alpha^{(k)} V_\alpha^{(k)}|
+        let candidate_scores: Vec<f64> = a.x.iter().zip(v_omega.iter()).map(|(&a, &v)| (a * v).abs()).collect();
+        
+        // Select top candidates to add to current space.
         let t0 = Instant::now();
-        let mut channel_denoms = Vec::with_capacity(delta.len());
-        let mut channel_pt2 = Vec::with_capacity(delta.len());
-        for a in 0..delta.len() {
-            let da = delta[a];
-            let va = v_bar[a];
-            channel_denoms.push(da);
-            channel_pt2.push(if da.abs() > tol {-(va * va) / da} else {0.0});
-        }
-        let ept2: f64 = channel_pt2.iter().sum();
-        timings.channel_ept2 += t0.elapsed();
-
-        // Candidate scoring.
-        let t0 = Instant::now();
-        let mut candidate_scores = vec![0.0; candidates.len()];
-        for alpha in 0..candidates.len() {
-            let mut score = 0.0;
-            for a in 0..channel_pt2.len() {
-                score += channel_pt2[a].abs() * z[(alpha, a)].powi(2);
-            }
-            candidate_scores[alpha] = score;
-        }
-
-        let opts = input.snoci.as_ref().unwrap();
-
-        let mut ranked: Vec<(SCFState, f64)> = candidates.iter().cloned().zip(candidate_scores.iter().copied()).filter(|(_, score)| *score > opts.sigma).collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        ranked.truncate(opts.max_add);
-        let selected: Vec<SCFState> = ranked.into_iter().map(|(state, _)| state).collect();
+        let selected = select_candidates(&filtered_candidate_space.candidates, &candidate_scores, opts.sigma, opts.max_add);
         timings.select += t0.elapsed();
-
-        println!("{:<6} {:>10} {:>11} {:>11} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
-                it, current_space.len(), candidates.len(), selected.len(), ecurrent, ecurrent - e0, ept2, ecurrent + ept2);
-
-        let state = SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates, selected, candidate_scores, channel_denoms, channel_pt2, ept2};
+        
+        let state = SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates: filtered_candidate_space.candidates, selected, candidate_scores, ept2};
+        print_snoci_iteration(it, selected_space.len(), candidates.len(), e0, &state, &a);
 
         // Convergence or stopping.
         if state.selected.is_empty() {
@@ -468,7 +492,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             return (state, timings);
         }
 
-        current_space.extend(state.selected.iter().cloned());
+        selected_space.extend(state.selected.iter().cloned());
         final_state = Some(state);
     }
     println!("SNOCI stopped: Maximum iteration was reached ({}).", opts.max_iter);

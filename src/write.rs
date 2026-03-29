@@ -8,7 +8,7 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2};
 
 use crate::AoData;
-use crate::input::{Input, StateType, Propagator, ExcitationGen, Spin};
+use crate::input::{Input, StateType, ExcitationGen, Spin};
 
 /// Print input options at the top of output.
 /// # Arguments:
@@ -95,18 +95,15 @@ pub fn print_input(input: &Input) {
     println!("SINGLES: {}", input.excit.singles);
     println!("DOUBLES: {}", input.excit.doubles);
     println!();
-
+    
     println!("PROP");
-    println!("DT: {}", input.prop.dt);
-    println!("MAX_STEPS: {}", input.prop.max_steps);
-    let propagator = match input.prop.propagator {
-        Propagator::Unshifted => "unshifted",
-        Propagator::Shifted => "shifted",
-        Propagator::DoublyShifted => "doubly-shifted",
-        Propagator::DifferenceDoublyShiftedU1 => "difference-doubly-shifted-u1",
-        Propagator::DifferenceDoublyShiftedU2 => "difference-doubly-shifted-u2",
-    };
-    println!("PROPAGATOR: {}", propagator);
+    if let Some(prop) = input.prop.as_ref() {
+        println!("DT: {}", prop.dt);
+        println!("MAX_STEPS: {}", prop.max_steps);
+        println!("PROPAGATOR: {}", prop.propagator.as_str());
+    } else {
+        println!("NONE");
+    }
     println!();
 
     println!("DET");

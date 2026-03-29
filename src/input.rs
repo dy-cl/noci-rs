@@ -1,8 +1,8 @@
 use std::fs;
+use std::str::FromStr;
 
 use rlua::{Lua, Value, Table};
 
-// Choice of propagator.
 pub enum Propagator {
     Unshifted,
     Shifted,
@@ -11,21 +11,130 @@ pub enum Propagator {
     DifferenceDoublyShiftedU2,
 }
 
-// Choice of excitation generator.
+impl Propagator {
+    /// Return propagator as input string.
+    /// # Returns:
+    ///     `&'static str`, string representation used in input parsing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unshifted => "unshifted",
+            Self::Shifted => "shifted",
+            Self::DoublyShifted => "doubly-shifted",
+            Self::DifferenceDoublyShiftedU1 => "difference-doubly-shifted-u1",
+            Self::DifferenceDoublyShiftedU2 => "difference-doubly-shifted-u2",
+        }
+    }
+}
+
+impl FromStr for Propagator {
+    type Err = String;
+    
+    /// Parse propagator type from input string.
+    /// # Arguments:
+    ///     `s`: &str,  string specifying the propagator type.
+    /// # Returns:
+    ///     `Result<Self,  Self::Err>`, parsed propagator  if  valid string,  otherwise error
+    ///     message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "unshifted" => Ok(Self::Unshifted),
+            "shifted" => Ok(Self::Shifted),
+            "doubly-shifted" => Ok(Self::DoublyShifted),
+            "difference-doubly-shifted-u1" => Ok(Self::DifferenceDoublyShiftedU1),
+            "difference-doubly-shifted-u2" => Ok(Self::DifferenceDoublyShiftedU2),
+            _ => Err(format!("invalid propagator: {s}")),
+        }
+    }
+}
+
+impl Default for Propagator {
+    /// Return default propagator.
+    /// # Returns:
+    ///     `Self`, default propagator choice.
+    fn default() -> Self {
+        Self::Unshifted
+    }
+}
+
 pub enum ExcitationGen {
     Uniform,
     HeatBath,
     ApproximateHeatBath,
 }
 
-// Electron spin for excitation input.
+impl FromStr for ExcitationGen {
+    type Err = String;
+
+    /// Parse excitation generator from input string.
+    /// # Arguments:
+    ///     `s`: &str, string specifying the excitation generator.
+    /// # Returns:
+    ///     `Result<Self, Self::Err>`, parsed excitation generator if valid string, otherwise error message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "uniform" => Ok(Self::Uniform),
+            "heat-bath" => Ok(Self::HeatBath),
+            "approximate-heat-bath" => Ok(Self::ApproximateHeatBath),
+            _ => Err(format!("invalid excitation generator: {s}")),
+        }
+    }
+}
+
+impl Default for ExcitationGen {
+    /// Return default excitation generator.
+    /// # Returns:
+    ///     `Self`, default excitation generator choice.
+    fn default() -> Self {
+        Self::Uniform
+    }
+}
+
 pub enum Spin {
     Alpha, 
     Beta,
     Both,
 }
 
-// Storage for mol info.
+impl Spin {
+    /// Return excitation spin as input string.
+    /// # Returns:
+    ///     `&'static str`, string representation used in input parsing.
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Beta => "beta",
+            Self::Both => "both",
+        }
+    }
+}
+
+impl FromStr for Spin {
+    type Err = String;
+
+    /// Parse excitation spin from input string.
+    /// # Arguments:
+    ///     `s`: &str, string specifying the excitation spin.
+    /// # Returns:
+    ///     `Result<Self, Self::Err>`, parsed spin if valid string, otherwise error message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "alpha" => Ok(Self::Alpha),
+            "beta" => Ok(Self::Beta),
+            "both" => Ok(Self::Both),
+            _ => Err(format!("invalid excitation spin: {s}")),
+        }
+    }
+}
+
+impl Default for Spin {
+    /// Return default excitation spin.
+    /// # Returns:
+    ///     `Self`, default excitation spin choice.
+    fn default() -> Self {
+        Self::Both
+    }
+}
+
 pub struct MolOptions {
     pub basis: String,
     pub unit: String,
@@ -33,7 +142,35 @@ pub struct MolOptions {
     pub geoms: Vec<Vec<String>>,
 }
 
-// Storage for SCF info.
+impl Default for MolOptions {
+    /// Return default molecular options.
+    /// # Returns:
+    ///     `Self`, molecular options with placeholder empty geometry data.
+    fn default() -> Self {
+        Self {
+            basis: String::new(),
+            unit: "Ang".to_string(),
+            r_list: Vec::new(),
+            geoms: Vec::new(),
+        }
+    }
+}
+
+pub struct DiisOptions {
+    pub space: usize,
+}
+
+impl Default for DiisOptions {
+    /// Return default DIIS options.
+    /// # Returns:
+    ///     `Self`, DIIS options with default subspace size.
+    fn default() -> Self {
+        Self {
+            space: 8,
+        }
+    }
+}
+
 pub struct SCFInfo {
     pub max_cycle: i32,
     pub e_tol: f64,
@@ -41,26 +178,73 @@ pub struct SCFInfo {
     pub do_fci: bool,
 }
 
-// Storage for excitation data.
+impl Default for SCFInfo {
+    /// Return default SCF options.
+    /// # Returns:
+    ///     `Self`, SCF options with standard convergence and DIIS settings.
+    fn default() -> Self {
+        Self {
+            max_cycle: 10_000,
+            e_tol: 1e-12,
+            diis: DiisOptions::default(),
+            do_fci: false,
+        }
+    }
+}
+
 pub struct SCFExcitation {
     pub spin: Spin, 
     pub occ: i32, 
     pub vir: i32,
 }
 
-// Storage for spin biasing specifications.
+impl Default for SCFExcitation {
+    /// Return default SCF excitation.
+    /// # Returns:
+    ///     `Self`, excitation with no excitation.
+    fn default() -> Self {
+        Self {
+            spin: Spin::default(),
+            occ: 0,
+            vir: 0,
+        }
+    }
+}
+
 pub struct SpinBias {
     pub pattern: Vec<i8>,
     pub pol: f64
 }
 
-// Storage for spatial biasing specifications.
+impl Default for SpinBias {
+    /// Return default spin bias options.
+    /// # Returns:
+    ///     `Self`, spin bias with empty pattern and zero polarization.
+    fn default() -> Self {
+        Self {
+            pattern: Vec::new(),
+            pol: 0.0,
+        }
+    }
+}
+
 pub struct SpatialBias {
     pub pattern: Vec<i8>,
     pub pol: f64,
 }
 
-// Storage for basis state recipes.
+impl Default for SpatialBias {
+    /// Return default spatial bias options.
+    /// # Returns:
+    ///     `Self`, spatial bias with empty pattern and zero polarization.
+    fn default() -> Self {
+        Self {
+            pattern: Vec::new(),
+            pol: 0.0,
+        }
+    }
+}
+
 pub struct StateRecipe {
     pub label: String, 
     pub spin_bias: Option<SpinBias>,
@@ -69,32 +253,77 @@ pub struct StateRecipe {
     pub noci: bool,
 }
 
-// Storage for DIIS options.
-pub struct DiisOptions {
-    pub space: usize,
+impl Default for StateRecipe {
+    /// Return default state recipe.
+    /// # Returns:
+    ///     `Self`, state recipe with empty label and no bias or excitation. We assume that a state
+    ///     is desired to be used within NOCI by default.
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            spin_bias: None,
+            spatial_bias: None,
+            scfexcitation: None,
+            noci: true,
+        }
+    }
 }
 
-// Storage for NOCI excitation options.
 pub struct ExcitationOptions {
     pub singles: bool,
     pub doubles: bool,
 }
 
-// Storage for NOCI propagation options.
+impl Default for ExcitationOptions {
+    /// Return default NOCI excitation options.
+    /// # Returns:
+    ///     `Self`, excitation options with singles and doubles enabled.
+    fn default() -> Self {
+        Self {
+            singles: true,
+            doubles: true,
+        }
+    }
+}
+
 pub struct PropagationOptions {
     pub dt: f64,
     pub max_steps: usize,
     pub propagator: Propagator,
 }
 
-// Storage for deterministic propagation options. 
+impl Default for PropagationOptions {
+    /// Return default propagation options.
+    /// # Returns:
+    ///     `Self`, propagation options with default timestep, step count, and propagator.
+    fn default() -> Self {
+        Self {
+            dt: 1e-4,
+            max_steps: 5000000,
+            propagator: Propagator::default(),
+        }
+    }
+}
+
 pub struct DeterministicOptions {
     pub dynamic_shift: bool,
     pub dynamic_shift_alpha: f64,
     pub e_tol: f64,
 }
 
-// Storage for QMC propagation options.
+impl Default for DeterministicOptions {
+    /// Return default deterministic propagation options.
+    /// # Returns:
+    ///     `Self`, deterministic propagation options with dynamic shift disabled.
+    fn default() -> Self {
+        Self {
+            dynamic_shift: true,
+            dynamic_shift_alpha: 0.1,
+            e_tol: 1e-10,
+        }
+    }
+}
+
 pub struct QMCOptions {
     pub initial_population: i64,
     pub target_population: i64,
@@ -104,7 +333,22 @@ pub struct QMCOptions {
     pub seed: Option<u64>,
 }
 
-// Storage for output options.
+impl Default for QMCOptions {
+    /// Return default QMC propagation options.
+    /// # Returns:
+    ///     `Self`, QMC propagation options with default population and shift settings.
+    fn default() -> Self {
+        Self {
+            initial_population: 100,
+            target_population: 100000,
+            shift_damping: 5e-4,
+            shift_update_freq: 1,
+            excitation_gen: ExcitationGen::default(),
+            seed: None,
+        }
+    }
+}
+
 pub struct WriteOptions {
     pub verbose: bool,
     pub write_deterministic_coeffs: bool,
@@ -114,13 +358,39 @@ pub struct WriteOptions {
     pub write_dir: String,
 }
 
-// Storage for Wick's options.
+impl Default for WriteOptions {
+    /// Return default output options.
+    /// # Returns:
+    ///     `Self`, output options with all optional writes disabled.
+    fn default() -> Self {
+        Self {
+            verbose: true,
+            write_deterministic_coeffs: false,
+            write_orbitals: false,
+            write_excitation_hist: false,
+            write_matrices: false,
+            write_dir: "outputs/".to_string(),
+        }
+    }
+}
+
 pub struct WicksOptions {
     pub compare: bool,
     pub enabled: bool,
 }
 
-// Storage for SCF metadynamics options.
+impl Default for WicksOptions {
+    /// Return default Wick's theorem options.
+    /// # Returns:
+    ///     `Self`, Wick's options with comparison disabled.
+    fn default() -> Self {
+        Self {
+            compare: false,
+            enabled: true,
+        }
+    }
+}
+
 pub struct Metadynamics {
     pub nstates_rhf: usize,
     pub nstates_uhf: usize,
@@ -134,32 +404,84 @@ pub struct Metadynamics {
     pub max_attempts: usize,
 }
 
-// Storage for state options. 
+impl Default for Metadynamics {
+    /// Return default metadynamics options.
+    /// # Returns:
+    ///     `Self`, metadynamics options with no requested states and empty labels and patterns.
+    fn default() -> Self {
+        Self {
+            nstates_rhf: 0,
+            nstates_uhf: 0,
+            spinpol: 0.0,
+            spatialpol: 0.0,
+            lambda: 0.0,
+            labels_rhf: Vec::new(),
+            labels_uhf: Vec::new(),
+            spatial_patterns_rhf: Vec::new(),
+            spin_patterns_uhf: Vec::new(),
+            max_attempts: 100,
+        }
+    }
+}
+
 pub enum StateType {
     Mom(Vec<StateRecipe>),
     Metadynamics(Metadynamics),
 }
 
-// Storage for Davidson diagonalisation in SNOCI options.
-pub struct DavidsonOptions {
-    pub nroots: usize,
-    pub max_subspace: usize,
-    pub max_iter: usize,
-    pub restart_dim: usize,
-    pub res_tol: f64,
+impl Default for StateType {
+    /// Return default state specification.
+    /// # Returns:
+    ///     `Self`, default empty MOM state list.
+    fn default() -> Self {
+        Self::Mom(Vec::new())
+    }
 }
 
-// Storage for SNOCI options. 
+pub struct GMRESOptions {
+    pub max_iter: usize,      
+    pub res_tol: f64, 
+    pub metric_tol: f64,
+}
+
+impl Default for GMRESOptions {
+    /// Return default GMRES options.
+    /// # Returns:
+    ///     `Self`, GMRES options with default iteration limit and residual tolerance.
+    fn default() -> Self {
+        Self {
+            max_iter: 100,
+            res_tol: 1e-8,
+            metric_tol: 1e-8,
+        }
+    }
+}
+
 pub struct SNOCIOptions {
     pub sigma: f64,
     pub tol: f64,
     pub max_iter: usize,
     pub max_add: usize,
     pub max_dim: usize,
-    pub davidson: DavidsonOptions
+    pub gmres: GMRESOptions,
 }
 
-// Storage for Input file parameters.
+impl Default for SNOCIOptions {
+    /// Return default SNOCI options.
+    /// # Returns:
+    ///     `Self`, SNOCI options with default selection and GMRES parameters.
+    fn default() -> Self {
+        Self {
+            sigma: 1e-6,
+            tol: 1e-8,
+            max_iter: 100,
+            max_add: 1,
+            max_dim: 100,
+            gmres: GMRESOptions::default(),
+        }
+    }
+}
+
 pub struct Input {
     pub mol: MolOptions,
     pub scf: SCFInfo,
@@ -169,43 +491,111 @@ pub struct Input {
     pub qmc: Option<QMCOptions>,
     pub snoci: Option<SNOCIOptions>,
     pub excit: ExcitationOptions,
-    pub prop: PropagationOptions,
+    pub prop: Option<PropagationOptions>,
     pub wicks: WicksOptions,
 }
 
+impl Input {
+    /// Return immutable reference to propagation options. Will panic if propagation options are
+    /// missing when doing QMC or deterministic propagation.
+    /// # Returns:
+    ///     `&PropagationOptions`, immutable reference to propagation options.
+    pub fn prop_ref(&self) -> &PropagationOptions {
+        self.prop.as_ref().unwrap_or_else(|| {
+            panic!("Propagation options are required when running deterministic or QMC propagation")
+        })
+    }
+
+    /// Return mutable reference to propagation options. Will panic if propagation options are
+    /// missing when doing QMC or deterministic propagation.
+    /// # Returns:
+    ///     `&mut PropagationOptions`, mutable reference to propagation options.
+    pub fn prop_mut(&mut self) -> &mut PropagationOptions {
+        self.prop.as_mut().unwrap_or_else(|| {
+            panic!("Propagation options are required when running deterministic or QMC propagation")
+        })
+    }
+}
+
+impl Default for Input {
+    /// Return default input options.
+    /// # Returns:
+    ///     `Self`, input options with placeholder mol and states data and default settings elsewhere.
+    fn default() -> Self {
+        Self {
+            mol: MolOptions::default(),
+            scf: SCFInfo::default(),
+            write: WriteOptions::default(),
+            states: StateType::default(),
+            det: None,
+            qmc: None,
+            snoci: None,
+            excit: ExcitationOptions::default(),
+            prop: None,
+            wicks: WicksOptions::default(),
+        }
+    }
+}
+
+/// Read integer pattern entries taking values in {-1, 0, 1}.
+/// # Arguments:
+///     `pat_tbl`: Table, Lua table containing the pattern entries.
+/// # Returns:
+///     `Vec<i8>`, parsed pattern entries.
+fn read_pattern(pat_tbl: Table) -> Vec<i8> {
+    pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {
+        -1 => -1,
+        0 => 0,
+        1 => 1,
+        _ => {
+            eprintln!("pattern entries must be -1, 0, or 1");
+            std::process::exit(1);
+        }
+    }).collect()
+}
+
+/// Read basis state recipe from Lua table.
+/// # Arguments:
+///     `t`: Table, Lua table containing the state recipe specification.
+/// # Returns:
+///     `StateRecipe`, parsed state recipe with optional spin bias, spatial bias, and SCF excitation
+///     data.
 fn read_state_recipe(t: Table) -> StateRecipe {
-    let label: String = t.get("label").unwrap();
-    let noci: bool = t.get("noci").unwrap_or(true);
-    
-    let spin_bias = t.get::<_, Option<rlua::Table>>("spin_bias").unwrap_or(None)
-                    .map(|sb| {
-                        let pol: f64 = sb.get("pol").unwrap();
-                        let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
-                        let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
-                            _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
-                                  std::process::exit(1);}
-                        }).collect();
-    SpinBias {pattern, pol}});
-    let spatial_bias = t.get::<_, Option<rlua::Table>>("spatial_bias").unwrap_or(None)
-                    .map(|sb| {
-                        let pol: f64 = sb.get("pol").unwrap();
-                        let pat_tbl: rlua::Table = sb.get("pattern").unwrap();
-                        let pattern: Vec<i8> = pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {1 => 1, 0 => 0, -1 => -1, 
-                            _ => {println!("spin_bias.pattern entries must be -1, 0, or 1");
-                                  std::process::exit(1);}
-                        }).collect();
-    SpatialBias {pattern, pol}}); 
-    let scfexcitation = t.get::<_, Option<rlua::Table>>("excit").unwrap_or(None)
-                     .map(|ex| {
-                        let s: String = ex.get("spin").unwrap();
-                        let spin = match s.as_str() {
-                            "alpha" => Spin::Alpha,
-                            "beta" => Spin::Beta,
-                            "both" => Spin::Both,
-                            _ => { eprintln!("Excitation spin must be 'alpha', 'beta', or 'both'"); std::process::exit(1);}
-                        };
-    SCFExcitation {spin, occ: ex.get("occ").unwrap(), vir: ex.get("vir").unwrap()}});
-    StateRecipe {label, spin_bias, spatial_bias, scfexcitation, noci}
+    let defaults = StateRecipe::default();
+    let label: String = t.get("label").unwrap_or(defaults.label);
+    let noci: bool = t.get("noci").unwrap_or(defaults.noci);
+
+    let spin_bias = t.get::<_, Option<Table>>("spin_bias").unwrap_or(None).map(|sb| {
+        let defaults = SpinBias::default();
+        let pol: f64 = sb.get("pol").unwrap_or(defaults.pol);
+        let pat_tbl: Table = sb.get("pattern").unwrap();
+        let pattern = read_pattern(pat_tbl);
+        SpinBias { pattern, pol }
+    });
+
+    let spatial_bias = t.get::<_, Option<Table>>("spatial_bias").unwrap_or(None).map(|sb| {
+        let defaults = SpatialBias::default();
+        let pol: f64 = sb.get("pol").unwrap_or(defaults.pol);
+        let pat_tbl: Table = sb.get("pattern").unwrap();
+        let pattern = read_pattern(pat_tbl);
+        SpatialBias { pattern, pol }
+    });
+
+    let scfexcitation = t.get::<_, Option<Table>>("excit").unwrap_or(None).map(|ex| {
+        let defaults = SCFExcitation::default();
+        let s: String = ex.get("spin").unwrap_or_else(|_| defaults.spin.as_str().to_string());
+        let spin: Spin = s.parse().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        });
+        SCFExcitation {
+            spin,
+            occ: ex.get("occ").unwrap_or(defaults.occ),
+            vir: ex.get("vir").unwrap_or(defaults.vir),
+        }
+    });
+
+    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci }
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -221,17 +611,25 @@ pub fn load_input(path: &str) -> Input {
     let globals = ctx.globals();
 
     // Non-optional table headers.
-    let mol_tbl: rlua::Table = globals.get("mol").unwrap();
-    let scf_tbl: rlua::Table = globals.get("scf").unwrap();
-    let write_tbl: rlua::Table = globals.get("write").unwrap();
-    let state_tbl: rlua::Table = globals.get("states").unwrap();
-    let excit_tbl: Table = globals.get("excit").unwrap();
-    let prop_tbl: Table = globals.get("prop").unwrap();
-    let wicks_tbl: Table = globals.get("wicks").unwrap();
+    let mol_tbl: Table = globals.get("mol").unwrap_or_else(|_| {
+        println!("Missing required table 'mol'");
+        std::process::exit(1);
+    });
+    let state_tbl: Table = globals.get("states").unwrap_or_else(|_| {
+        println!("Missing required table 'states'");
+        std::process::exit(1);
+    });
 
-    // Optional items.
-    let mom_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("mom").unwrap();
-    let meta_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("metadynamics").unwrap();
+    // Optional table headers.
+    let scf_tbl: Option<Table> = globals.get::<_, Option<Table>>("scf").unwrap_or(None);
+    let write_tbl: Option<Table> = globals.get::<_, Option<Table>>("write").unwrap_or(None);
+    let excit_tbl: Option<Table> = globals.get::<_, Option<Table>>("excit").unwrap_or(None);
+    let prop_tbl: Option<Table> = globals.get::<_, Option<Table>>("prop").unwrap_or(None);
+    let wicks_tbl: Option<Table> = globals.get::<_, Option<Table>>("wicks").unwrap_or(None);
+
+    // Optional subtables within states.
+    let mom_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("mom").unwrap_or(None);
+    let meta_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("metadynamics").unwrap_or(None);
 
     // Mol table.
     let basis: String = mol_tbl.get("basis").unwrap();
@@ -275,22 +673,41 @@ pub fn load_input(path: &str) -> Input {
     let mol = MolOptions {basis, unit, r_list, geoms};
 
     // SCF table.
-    let max_cycle: i32 = scf_tbl.get("max_cycle").unwrap();
-    let e_tol: f64 = scf_tbl.get("e_tol").unwrap();
-    let diis: rlua::Table = scf_tbl.get("diis").unwrap();
-    let space: usize = diis.get("space").unwrap();
-    let diis = DiisOptions {space};
-    let do_fci: bool = scf_tbl.get("do_fci").unwrap();
-    let scf = SCFInfo {max_cycle, e_tol, diis, do_fci};
+    let scf = if let Some(scf_tbl) = scf_tbl {
+        let defaults = SCFInfo::default();
+        let diis_defaults = DiisOptions::default();
+        let diis_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("diis").unwrap_or(None);
+        let diis = if let Some(diis_tbl) = diis_tbl {
+            DiisOptions {
+                space: diis_tbl.get("space").unwrap_or(diis_defaults.space),
+            }
+        } else {
+            diis_defaults
+        };
+        SCFInfo {
+            max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
+            e_tol: scf_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+            diis,
+            do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),
+        }
+    } else {
+        SCFInfo::default()
+    };
 
     // Write table.
-    let verbose: bool = write_tbl.get("verbose").unwrap();
-    let write_deterministic_coeffs: bool = write_tbl.get("write_deterministic_coeffs").unwrap();
-    let write_excitation_hist: bool = write_tbl.get("write_excitation_hist").unwrap();
-    let write_dir: String = write_tbl.get("write_dir").unwrap();
-    let write_matrices: bool = write_tbl.get("write_matrices").unwrap();
-    let write_orbitals: bool = write_tbl.get("write_orbitals").unwrap();
-    let write = WriteOptions {verbose, write_deterministic_coeffs, write_excitation_hist, write_matrices, write_dir, write_orbitals};
+    let write = if let Some(write_tbl) = write_tbl {
+        let defaults = WriteOptions::default();
+        WriteOptions {
+            verbose: write_tbl.get("verbose").unwrap_or(defaults.verbose),
+            write_deterministic_coeffs: write_tbl.get("write_deterministic_coeffs").unwrap_or(defaults.write_deterministic_coeffs),
+            write_orbitals: write_tbl.get("write_orbitals").unwrap_or(defaults.write_orbitals),
+            write_excitation_hist: write_tbl.get("write_excitation_hist").unwrap_or(defaults.write_excitation_hist),
+            write_matrices: write_tbl.get("write_matrices").unwrap_or(defaults.write_matrices),
+            write_dir: write_tbl.get("write_dir").unwrap_or(defaults.write_dir),
+        }
+    } else {
+        WriteOptions::default()
+    };
 
     // States tables (MOM or metadynamics).
     let states: StateType = match (mom_tbl, meta_tbl) {
@@ -304,96 +721,122 @@ pub fn load_input(path: &str) -> Input {
             StateType::Mom(recipes)
         }
         (None, Some(meta_tbl)) => {
-            let nstates_rhf: usize = meta_tbl.get("nstates_rhf").unwrap();
-            let nstates_uhf: usize = meta_tbl.get("nstates_uhf").unwrap();
-            let spinpol: f64 = meta_tbl.get("spinpol").unwrap();
-            let spatialpol: f64 = meta_tbl.get("spatialpol").unwrap();
-            let lambda: f64 = meta_tbl.get("lambda").unwrap();
+            let defaults = Metadynamics::default();
+            let nstates_rhf: usize = meta_tbl.get("nstates_rhf").unwrap_or(defaults.nstates_rhf);
+            let nstates_uhf: usize = meta_tbl.get("nstates_uhf").unwrap_or(defaults.nstates_uhf);
+            let spinpol: f64 = meta_tbl.get("spinpol").unwrap_or(defaults.spinpol);
+            let spatialpol: f64 = meta_tbl.get("spatialpol").unwrap_or(defaults.spatialpol);
+            let lambda: f64 = meta_tbl.get("lambda").unwrap_or(defaults.lambda);
+            let max_attempts: usize = meta_tbl.get("max_attempts").unwrap_or(defaults.max_attempts);
+
             let labels_rhf = (1..=nstates_rhf).map(|k| format!("RHF M {}", k)).collect::<Vec<_>>();
             let labels_uhf = (1..=nstates_uhf).map(|k| {
                 let pair = k.div_ceil(2);
-                let ab = if (k % 2) == 1 {"A"} else {"B"};
+                let ab = if (k % 2) == 1 { "A" } else { "B" };
                 format!("UHF M {} {}", pair, ab)
             }).collect::<Vec<_>>();
             let spatial_patterns_rhf = vec![None; nstates_rhf];
             let spin_patterns_uhf = vec![None; nstates_uhf];
-            let max_attempts: usize = meta_tbl.get("max_attempts").unwrap();
-            StateType::Metadynamics(Metadynamics {nstates_rhf, nstates_uhf, spinpol, spatialpol, lambda, labels_rhf, labels_uhf,
+
+            StateType::Metadynamics(Metadynamics {nstates_rhf,  nstates_uhf, spinpol, spatialpol,  lambda, labels_rhf, labels_uhf,
                                                   spatial_patterns_rhf, spin_patterns_uhf, max_attempts})
         }
         (None, None) => {eprintln!("Must use either MOM or SCF metadynamics to locate SCF solutions"); std::process::exit(1);}
     };
 
     // Deterministic table.
-    let det: Option<DeterministicOptions> = globals.get::<_, Option<rlua::Table>>("det").unwrap().map(|det_tbl| {
-                let dynamic_shift: bool = det_tbl.get("dynamic_shift").unwrap();
-        let dynamic_shift_alpha: f64 = det_tbl.get("dynamic_shift_alpha").unwrap();
-        let e_tol: f64 = det_tbl.get("e_tol").unwrap();
-        DeterministicOptions {dynamic_shift, dynamic_shift_alpha, e_tol}
+    let det: Option<DeterministicOptions> = globals.get::<_, Option<Table>>("det").unwrap().map(|det_tbl| {
+    let defaults = DeterministicOptions::default();
+        DeterministicOptions {
+            dynamic_shift: det_tbl.get("dynamic_shift").unwrap_or(defaults.dynamic_shift),
+            dynamic_shift_alpha: det_tbl.get("dynamic_shift_alpha").unwrap_or(defaults.dynamic_shift_alpha),
+            e_tol: det_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+        }
     });
 
     // QMC table.
-    let qmc: Option<QMCOptions> = globals.get::<_, Option<rlua::Table>>("qmc").unwrap().map(|qmc_tbl| {
-        let initial_population: i64 = qmc_tbl.get("initial_population").unwrap();
-        let target_population: i64 = qmc_tbl.get("target_population").unwrap();
-        let shift_damping: f64 = qmc_tbl.get("shift_damping").unwrap();
-        let shift_update_freq: usize = qmc_tbl.get("shift_update_freq").unwrap();
-        let excitation_gen_str: String = qmc_tbl.get("excitation_gen").unwrap();
-        let excitation_gen = match excitation_gen_str.as_str() {
-            "uniform" => ExcitationGen::Uniform,
-            "heat-bath" => ExcitationGen::HeatBath,
-            "approximate-heat-bath" => ExcitationGen::ApproximateHeatBath,
-            _ => {eprintln!("Excitation generator must be 'uniform', 'heat-bath' or 'approximate-heat-bath'."); std::process::exit(1);},
-        };
-        let seed: Option<u64>  = qmc_tbl.get("seed").unwrap_or(None);
-        QMCOptions {initial_population, target_population, shift_damping, shift_update_freq, excitation_gen, seed}
+    let qmc: Option<QMCOptions> = globals.get::<_, Option<Table>>("qmc").unwrap().map(|qmc_tbl| {
+        let defaults = QMCOptions::default();
+        let excitation_gen_str: String = qmc_tbl.get("excitation_gen").unwrap_or_else(|_| match defaults.excitation_gen {
+            ExcitationGen::Uniform => "uniform".to_string(),
+            ExcitationGen::HeatBath => "heat-bath".to_string(),
+            ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
+        });
+        let excitation_gen: ExcitationGen = excitation_gen_str.parse().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        });
+        QMCOptions {
+            initial_population: qmc_tbl.get("initial_population").unwrap_or(defaults.initial_population),
+            target_population: qmc_tbl.get("target_population").unwrap_or(defaults.target_population),
+            shift_damping: qmc_tbl.get("shift_damping").unwrap_or(defaults.shift_damping),
+            shift_update_freq: qmc_tbl.get("shift_update_freq").unwrap_or(defaults.shift_update_freq),
+            excitation_gen,
+            seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
+        }
     });
 
     // SNOCI table.
-    let snoci: Option<SNOCIOptions> =  globals.get::<_, Option<rlua::Table>>("snoci").unwrap().map(|snoci_tbl| {
-        let sigma: f64 = snoci_tbl.get("sigma").unwrap();
-        let tol: f64 = snoci_tbl.get("tol").unwrap();
-        let max_iter: usize = snoci_tbl.get("max_iter").unwrap();
-        let max_add: usize = snoci_tbl.get("max_add").unwrap();
-        let max_dim: usize = snoci_tbl.get("max_dim").unwrap();
-        let davidson_tbl: rlua::Table = snoci_tbl.get("davidson").unwrap();
-        let davidson = DavidsonOptions {
-            nroots: davidson_tbl.get("nroots").unwrap(),
-            max_subspace: davidson_tbl.get("max_subspace").unwrap(),
-            max_iter: davidson_tbl.get("max_iter").unwrap(),
-            restart_dim: davidson_tbl.get("restart_dim").unwrap(),
-            res_tol: davidson_tbl.get("res_tol").unwrap(),
+    let snoci: Option<SNOCIOptions> = globals.get::<_, Option<Table>>("snoci").unwrap().map(|snoci_tbl| {
+        let defaults = SNOCIOptions::default();
+        let gmres_defaults = GMRESOptions::default();
+        let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
+        let gmres = if let Some(gmres_tbl) = gmres_tbl {
+            GMRESOptions {
+                max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
+                res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
+                metric_tol: gmres_tbl.get("metric_tol").unwrap_or(gmres_defaults.metric_tol),
+            }
+        } else {
+            gmres_defaults
         };
-        SNOCIOptions {sigma, tol, max_iter, max_add, max_dim, davidson}
+        SNOCIOptions {
+            sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
+            tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
+            max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
+            max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
+            max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
+            gmres,
+        }
     });
 
-    // Excitation table. 
-    let singles = excit_tbl.get("singles").unwrap();
-    let doubles = excit_tbl.get("doubles").unwrap();
-    let excit = ExcitationOptions {singles, doubles};
+    // Excitation table.
+    let excit = if let Some(excit_tbl) = excit_tbl {
+        let defaults = ExcitationOptions::default();
+        ExcitationOptions {
+            singles: excit_tbl.get("singles").unwrap_or(defaults.singles),
+            doubles: excit_tbl.get("doubles").unwrap_or(defaults.doubles),
+        }
+    } else {
+        ExcitationOptions::default()
+    };
 
     // Propagation table.
-    let dt = prop_tbl.get("dt").unwrap();
-    let max_steps = prop_tbl.get("max_steps").unwrap();
-    let propagator_str: String = prop_tbl.get("propagator").unwrap();
-    let propagator = match propagator_str.as_str() {
-            "unshifted" => Propagator::Unshifted,
-            "shifted" => Propagator::Shifted,
-            "doubly-shifted" => Propagator::DoublyShifted,
-            "difference-doubly-shifted-u1" => Propagator::DifferenceDoublyShiftedU1,
-            "difference-doubly-shifted-u2" => Propagator::DifferenceDoublyShiftedU2,
-            _ => {
-                eprintln!("Propagator must be 'unshifted', 'shifted', 'doubly-shifted', 'difference-doubly-shifted-u1', 'difference-doubly-shifted-u2."); 
-                std::process::exit(1);
-            }
-    };
-    let prop = PropagationOptions {dt, max_steps, propagator};
-    
-    // Wick's table.
-    let compare = wicks_tbl.get("compare").unwrap();
-    let enabled = wicks_tbl.get("enabled").unwrap();
-    let wicks = WicksOptions {compare, enabled};
+    let prop: Option<PropagationOptions> = prop_tbl.map(|prop_tbl| {
+        let defaults = PropagationOptions::default();
 
+        let propagator_str: String = prop_tbl.get("propagator").unwrap_or_else(|_| defaults.propagator.as_str().to_string());
+        let propagator: Propagator = propagator_str.parse().unwrap_or_else(|msg| {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        });
+        PropagationOptions {
+            dt: prop_tbl.get("dt").unwrap_or(defaults.dt),
+            max_steps: prop_tbl.get("max_steps").unwrap_or(defaults.max_steps),
+            propagator,
+        }
+    });
+
+    // Wick's table.
+    let wicks = if let Some(wicks_tbl) = wicks_tbl {
+        let defaults = WicksOptions::default();
+        WicksOptions {
+            compare: wicks_tbl.get("compare").unwrap_or(defaults.compare),
+            enabled: wicks_tbl.get("enabled").unwrap_or(defaults.enabled),
+        }
+    } else {
+        WicksOptions::default()
+    };
     Input {mol, scf, write, states, det, qmc, snoci, excit, prop, wicks}
 }
 

@@ -386,7 +386,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFSta
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
         let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-        let k = coupling(hlg, slg, es_s, es, &input.prop.propagator);
+        let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
 
         sumlg += k.abs();
         cumulatives.push(sumlg);
@@ -417,7 +417,7 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f6
     if lambda >= gamma {lambda += 1;}
 
     let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-    let k = coupling(hlg, slg, es_s, es, &input.prop.propagator);
+    let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
     (pgen, k, lambda) 
@@ -448,7 +448,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es:
         let mut lambda = rng.gen_range(0..(ndets - 1));
         if lambda >= gamma {lambda += 1;}
         let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, noci_reference_basis, wicks, scratch);
-        let k = coupling(hlg, slg, es_s, es, &input.prop.propagator);
+        let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
     }
@@ -526,7 +526,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         };
 
         // Calculate spawning probability.
-        let pspawn = input.prop.dt * k.abs() / pgen;
+        let pspawn = input.prop_ref().dt * k.abs() / pgen;
 
         // Store excitation sample if requested.
         if input.write.write_excitation_hist {outsamples.push(pspawn);}
@@ -572,12 +572,12 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, noci_reference_basis, wicks, scratch);
 
     // Death probability.
-    let pdeath = match input.prop.propagator {
-        Propagator::Unshifted => input.prop.dt * (hgg - sgg * es_s),
-        Propagator::Shifted => input.prop.dt * (hgg - sgg * es_s - es_s),
-        Propagator::DoublyShifted => input.prop.dt * (hgg - sgg * es_s - es),
-        Propagator::DifferenceDoublyShiftedU1 => input.prop.dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
-        Propagator::DifferenceDoublyShiftedU2 => input.prop.dt * (hgg - sgg * es_s - (es - es_s)),
+    let pdeath = match input.prop_ref().propagator {
+        Propagator::Unshifted => input.prop_ref().dt * (hgg - sgg * es_s),
+        Propagator::Shifted => input.prop_ref().dt * (hgg - sgg * es_s - es_s),
+        Propagator::DoublyShifted => input.prop_ref().dt * (hgg - sgg * es_s - es),
+        Propagator::DifferenceDoublyShiftedU1 => input.prop_ref().dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
+        Propagator::DifferenceDoublyShiftedU2 => input.prop_ref().dt * (hgg - sgg * es_s - (es - es_s)),
     };
     let p = pdeath.abs();
 
@@ -730,10 +730,6 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     let start = (ndets * irank) / nranks;
     let end = (ndets * (irank + 1)) / nranks;
 
-    // Unwrap QMC propagation specific options
-    let qmc = input.qmc.as_ref().unwrap();
-    let ndets = basis.len();
-
     let iref = 0;
     // Serial Wick's scratch.
     let mut scratch = WickScratch::new();
@@ -756,8 +752,12 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     // If the number of references is 1 then the unshifted propagator is correct.
     if ref_indices.len() == 1 {
         if irank == 0 {println!("Number of references is 1. Setting propagator to unshifted.....");}
-        input.prop.propagator = Propagator::Unshifted;
+        input.prop_mut().propagator = Propagator::Unshifted;
     }
+
+    // Unwrap QMC propagation specific options
+    let qmc = input.qmc.as_ref().unwrap();
+    let ndets = basis.len();
 
     // Initialise walker populations based on total initial population and c0
     let t0 = Instant::now(); 
@@ -819,7 +819,7 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     // Per MPI rank send buffers.
     let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
 
-    for it in 0..input.prop.max_steps {
+    for it in 0..input.prop_ref().max_steps {
         // Function to initialise individual thread states.
         let initialise = || -> ThreadState {
             let tid = rayon::current_thread_index().unwrap_or(0) as u64;
@@ -938,11 +938,11 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
         }
         // Update shift once total populations have exceeded target population.
         if reached_c && (it + 1) % qmc.shift_update_freq == 0 {
-            *es -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwc as f64 / nwprevc as f64).ln();
+            *es -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (nwc as f64 / nwprevc as f64).ln();
             nwprevc = nwc;
         }
         if reached_sc && (it + 1) % qmc.shift_update_freq == 0 {
-            es_s -= (qmc.shift_damping / (input.prop.dt * (qmc.shift_update_freq as f64))) * (nwsc / nwprevsc).ln();
+            es_s -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (nwsc / nwprevsc).ln();
             nwprevsc = nwsc;
         }
         

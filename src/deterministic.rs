@@ -189,7 +189,7 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
         let sc0n = s.dot(&c0_null);
         let hc0n = h.dot(&c0_null);
         println!("Action of S and H on initial null vector: ||Scn|| = {}, ||Hcn|| = {}.", sc0n.norm(), hc0n.norm());
-        let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.prop.dt, &input.prop.propagator);
+        let proj_propagator = ProjPropagator::calculate_projected_propagator(h, s, &p, es, input.prop_ref().dt, &input.prop_ref().propagator);
         println!("With initial shift: {}, ||Unn|| = {}, ||Urr|| = {}, ||Urn|| = {}, ||Unr|| = {}.",
                  es, &proj_propagator.unn.norm(), &proj_propagator.urr.norm(), &proj_propagator.urn.norm(), &proj_propagator.unr.norm());
         let nnull = proj_propagator.unn.nrows();
@@ -214,12 +214,12 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
     println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
             0, e_prev, 0, es, c0_1norm, den);
 
-    for it in 0..input.prop.max_steps {
+    for it in 0..input.prop_ref().max_steps {
 
         // Select propagator.
-        let mut c_new_norm = match input.prop.propagator {
-            Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.prop.dt),
-            Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.prop.dt),
+        let mut c_new_norm = match input.prop_ref().propagator {
+            Propagator::Shifted => propagate_step_shifted(h, s, &c_norm, es, input.prop_ref().dt),
+            Propagator::Unshifted => propagate_step_unshifted(h, s, &c_norm, es, input.prop_ref().dt),
             Propagator::DoublyShifted => unimplemented!(),
             Propagator::DifferenceDoublyShiftedU1 => unimplemented!(),
             Propagator::DifferenceDoublyShiftedU2 => unimplemented!(),
