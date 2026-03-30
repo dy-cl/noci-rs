@@ -1,7 +1,7 @@
 // noci.rs
 use std::time::{Duration, Instant};
 use std::ptr::NonNull;
-use std::fs::{self, OpenOptions};
+use std::fs::{File, self, OpenOptions};
 use std::path::{PathBuf};
 
 use ndarray::{Array1, Array2, Array4, Axis};
@@ -514,54 +514,68 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
         crate::input::WicksStorage::Disk => {
             let cache_dir = PathBuf::from(input.wicks.cachedir.clone().unwrap_or_else(|| ".".to_string()));
             fs::create_dir_all(&cache_dir).unwrap();
-
+            
             let slab_path = cache_dir.join("wicks.bin");
             let meta_path = cache_dir.join("wicks.meta");
 
-            if world.rank() == 0 {println!("Building Wick's intermediates and writing disk cache: {:?}", cache_dir);}
+            // Only use shared memory machinery here to obtain a node-local rank and barrier
+            // rather than to allocate memory.
+            let shared = Sharedffi::allocate(world, 1);
+            let shared_rank = shared.shared_rank;
 
-            let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&slab_path).unwrap();
-            file.set_len(nbytes as u64).unwrap();
+            if shared_rank == 0 {
+                println!("Building Wick's intermediates and writing disk cache on world rank {}: {:?}", world.rank(), cache_dir);
 
-            let mut mmap = unsafe {MmapOptions::new().len(nbytes).map_mut(&file).unwrap()};
-            let ptr = mmap.as_mut_ptr() as *mut f64;
-            let tensor: &mut [f64] = unsafe {std::slice::from_raw_parts_mut(ptr, tensor_len)};
-            tensor.fill(f64::NAN);
+                let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&slab_path).unwrap();
+                file.set_len(nbytes as u64).unwrap();
 
-            let mut meta = vec![PairMeta::default(); nref * nref];
+                let mut mmap = unsafe {MmapOptions::new().len(nbytes).map_mut(&file).unwrap()};
+                let ptr = mmap.as_mut_ptr() as *mut f64;
+                let tensor: &mut [f64] = unsafe {std::slice::from_raw_parts_mut(ptr, tensor_len)};
+                tensor.fill(f64::NAN);
 
-            for i in 0..nref {
-                let ri = &noci_reference_basis[i];
-                for (j, rj) in noci_reference_basis.iter().enumerate() {
-                    println!("Building intermediates for reference pair: {}, {}", i, j);
+                let mut meta = vec![PairMeta::default(); nref * nref];
 
-                    let aa = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
-                    let bb = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
-                    let ab = DiffSpinBuild::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
+                for i in 0..nref {
+                    let ri = &noci_reference_basis[i];
+                    for (j, rj) in noci_reference_basis.iter().enumerate() {
+                        println!("Building intermediates for reference pair: {}, {} on world rank {}", i, j, world.rank());
 
-                    let idx = i * nref + j;
+                        let aa = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, &rj.oa, &ri.oa, tol);
+                        let bb = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, &rj.ob, &ri.ob, tol);
+                        let ab = DiffSpinBuild::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, &rj.oa, &rj.ob, &ri.oa, &ri.ob, tol);
 
-                    meta[idx].aa = SameSpinMeta {tilde_s_prod: aa.tilde_s_prod, phase: aa.phase, m: aa.m, nmo: aa.nmo,
-                                                 f0h: aa.f0h, f0f: aa.f0f, v0: aa.v0};
-                    meta[idx].bb = SameSpinMeta {tilde_s_prod: bb.tilde_s_prod, phase: bb.phase, m: bb.m, nmo: bb.nmo,
-                                                 f0h: bb.f0h, f0f: bb.f0f, v0: bb.v0};
-                    meta[idx].ab = DiffSpinMeta {nmo: ab.vab[0][0][0].nrows() / 2, vab0: ab.vab0, vba0: ab.vba0};
+                        let idx = i * nref + j;
 
-                    write_same_spin(tensor, &offset[idx].aa, &aa);
-                    write_same_spin(tensor, &offset[idx].bb, &bb);
-                    write_diff_spin(tensor, &offset[idx].ab, &ab);
+                        meta[idx].aa = SameSpinMeta {tilde_s_prod: aa.tilde_s_prod, phase: aa.phase, m: aa.m, nmo: aa.nmo,
+                                                     f0h: aa.f0h, f0f: aa.f0f, v0: aa.v0};
+                        meta[idx].bb = SameSpinMeta {tilde_s_prod: bb.tilde_s_prod, phase: bb.phase, m: bb.m, nmo: bb.nmo,
+                                                     f0h: bb.f0h, f0f: bb.f0f, v0: bb.v0};
+                        meta[idx].ab = DiffSpinMeta {nmo: ab.vab[0][0][0].nrows() / 2, vab0: ab.vab0, vba0: ab.vba0};
+
+                        write_same_spin(tensor, &offset[idx].aa, &aa);
+                        write_same_spin(tensor, &offset[idx].bb, &bb);
+                        write_diff_spin(tensor, &offset[idx].ab, &ab);
+                    }
                 }
+
+                mmap.flush().unwrap();
+
+                let disk_meta = WicksDiskMeta {version: 1, nref, slab_len: tensor_len, off: offset.clone(), meta: meta.clone(),};
+                std::fs::write(&meta_path, bincode::serialize(&disk_meta).unwrap()).unwrap();
             }
 
-            mmap.flush().unwrap();
+            shared.barrier();
 
-            let disk_meta = WicksDiskMeta {version: 1, nref, slab_len: tensor_len, off: offset.clone(), meta: meta.clone(),};
-            std::fs::write(&meta_path, bincode::serialize(&disk_meta).unwrap()).unwrap();
+            let disk_meta: WicksDiskMeta = bincode::deserialize(&std::fs::read(&meta_path).unwrap()).unwrap();
+            let file = File::open(&slab_path).unwrap();
+            let mmap = unsafe { MmapOptions::new().map(&file).unwrap() };
+            let ptr = mmap.as_ptr() as *mut f64;
 
             let slab = NonNull::new(ptr).expect("Should not be null.");
-            let view = WicksView {slab, slab_len: tensor_len, nref, off: offset, meta,};
+            let view = WicksView {slab, slab_len: disk_meta.slab_len, nref: disk_meta.nref, off: disk_meta.off, meta: disk_meta.meta,};
 
-            WicksShared {backing: WicksBacking::MmapCow(mmap), view}
+            WicksShared {backing: WicksBacking::Mmap(mmap), view}
         }
     }
 }
