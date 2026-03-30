@@ -562,7 +562,7 @@ fn excitation_label(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[
         ))
     }
     if !beta_holes.is_empty() {
-        label.push(format!("alpha {} -> {}", 
+        label.push(format!("beta {} -> {}", 
                 beta_holes.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),  
                 beta_parts.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
         ))
