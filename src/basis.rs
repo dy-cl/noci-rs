@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use itertools::Itertools;
 use ndarray::{Array1, Array2};
 use rand::{SeedableRng};
 use rand::rngs::StdRng;
@@ -544,8 +545,68 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
     out
 }
 
+/// Construct a label describing an excitation in alpha and/or beta spin.
+/// # Arguments 
+/// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
+/// - `alpha_parts`: Virtual alpha orbital indices into which electrons are placed.
+/// - `beta_holes`: Occupied beta orbital indices from which electrons are removed.
+/// - `beta_parts`: Virtual beta orbital indices into which electrons are placed.
+/// # Returns
+/// - `String`: Label describing the excitation pattern.
+fn excitation_label(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[usize], beta_parts: &[usize]) -> String {
+    let mut label = Vec::new();
+    if !alpha_holes.is_empty() {
+        label.push(format!("alpha {} -> {}", 
+                alpha_holes.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),  
+                alpha_parts.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+        ))
+    }
+    if !beta_holes.is_empty() {
+        label.push(format!("beta {} -> {}", 
+                beta_holes.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),  
+                beta_parts.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+        ))
+    }
+    format!("({})", label.join("; "))
+}
+
+/// Construct an excitation object from alpha and beta hole/particle lists.
+/// # Arguments 
+/// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
+/// - `alpha_parts`: Virtual alpha orbital indices into which electrons are placed.
+/// - `beta_holes`: Occupied beta orbital indices from which electrons are removed.
+/// - `beta_parts`: Virtual beta orbital indices into which electrons are placed.
+/// # Returns
+/// - `Excitation`: Excitation object containing the specified alpha and beta spin excitations.
+fn build_excitation(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[usize], beta_parts: &[usize]) -> Excitation {
+    Excitation {
+        alpha: ExcitationSpin {
+            holes: alpha_holes.to_vec(),
+            parts: alpha_parts.to_vec(),
+        },
+        beta: ExcitationSpin {
+            holes: beta_holes.to_vec(),
+            parts: beta_parts.to_vec(),
+        },
+    }
+}
+
+/// Apply a spin-specific excitation to an occupation vector.
+/// # Arguments 
+/// - `occ`: Occupation vector to be modified.
+/// - `holes`: Occupied orbital indices from which electrons are removed.
+/// - `parts`: Virtual orbital indices into which electrons are placed.
+/// # Returns
+/// - `Array1<f64>`: New occupation vector with the requested excitation applied.
+fn apply_excitation(occ: &Array1<f64>, holes: &[usize], parts: &[usize]) -> Array1<f64> {
+    let mut out = occ.clone();
+    for &i in holes {out[i] = 0.0;}
+    for &a in parts {out[a] = 1.0;}
+    out
+}
+
 /// Generate a requested amount of all possible excitations on top of the given reference NOCI
-/// basis. Currently not a very generalised implementation to higher levels of excitation. 
+/// basis.  
 /// # Arguments
 /// - `refs`: Array of reference states for which excitations are generated.
 /// - `input`: Contains user inputted options. 
@@ -553,152 +614,40 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
 /// # Returns
 /// - `Vec<SCFState>`: Generated excited basis, optionally including the reference states.
 pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bool) -> Vec<SCFState> {
-    let mut out: Vec<SCFState> = Vec::new();
-    for r in refs.iter() {
+    let mut out = Vec::new();
 
+    let mut orders = input.excit.orders.clone();
+    orders.sort_unstable();
+    orders.dedup();
+
+    for r in refs {
         let parent = r.parent;
 
-        // Include reference states in basis if requested.
         if include_refs {
             let mut rcopy = r.clone();
             rcopy.parent = parent;
             out.push(rcopy);
         }
 
-        // If no excitations requested for this ref, continue
-        if !(input.excit.singles || input.excit.doubles) {
-            continue;
-        }
-
         let spin_occ = get_spin_occupation(r);
 
-        // Single excitations 
-        if input.excit.singles {
-            // Single excitations spin alpha 
-            for &i in &spin_occ.occ_alpha {
-                for &a in &spin_occ.virt_alpha {
-                    let mut oa_ex = r.oa.clone();
-                    let ob_ex = r.ob.clone();
-                    oa_ex[i] = 0.0;
-                    oa_ex[a] = 1.0;
-                    let label = format!("(alpha {} -> {})", i, a);
-                    let excitation = Excitation {
-                        alpha: ExcitationSpin {holes: vec![i], parts: vec![a]}, 
-                        beta:  ExcitationSpin {holes: vec![], parts: vec![]}
-                    };
-                    let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
-                    out.push(exstate);
-                }
-            }
+        for &k in &orders {
+            for k_alpha in 0..=k {
+                let k_beta = k - k_alpha;
 
-            // Single excitations spin beta
-            for &i in &spin_occ.occ_beta {
-                for &a in &spin_occ.virt_beta {
-                    let oa_ex = r.oa.clone();
-                    let mut ob_ex = r.ob.clone();
-                    ob_ex[i] = 0.0;
-                    ob_ex[a] = 1.0;
-                    let label = format!("(beta {} -> {})", i, a);
-                    let excitation = Excitation {
-                        alpha: ExcitationSpin {holes: vec![], parts: vec![]}, 
-                        beta:  ExcitationSpin {holes: vec![i], parts: vec![a]}
-                    };
-                    let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
-                    out.push(exstate);
-                }
-            }
-        }
-        
-        // Double excitations
-        if input.excit.doubles {
-            // Double excitations spin alpha spin alpha 
-            let occ_a = &spin_occ.occ_alpha;
-            let virt_a = &spin_occ.virt_alpha;
+                for alpha_holes in spin_occ.occ_alpha.iter().copied().combinations(k_alpha) {
+                    for alpha_parts in spin_occ.virt_alpha.iter().copied().combinations(k_alpha) {
+                        for beta_holes in spin_occ.occ_beta.iter().copied().combinations(k_beta) {
+                            for beta_parts in spin_occ.virt_beta.iter().copied().combinations(k_beta) {
+                                let oa_ex = apply_excitation(&r.oa, &alpha_holes, &alpha_parts);
+                                let ob_ex = apply_excitation(&r.ob, &beta_holes, &beta_parts);
 
-            for oi in 0..occ_a.len() {
-                for oj in (oi + 1)..occ_a.len() {
-                    let i = occ_a[oi];
-                    let j = occ_a[oj];
+                                let label = excitation_label(&alpha_holes, &alpha_parts, &beta_holes, &beta_parts);
+                                let excitation = build_excitation(&alpha_holes, &alpha_parts, &beta_holes, &beta_parts);
 
-                    for va in 0..virt_a.len() {
-                        for vb in (va + 1)..virt_a.len() {
-                            let a = virt_a[va];
-                            let b = virt_a[vb];
-
-                            let mut oa_ex = r.oa.clone();
-                            let ob_ex = r.ob.clone();
-
-                            oa_ex[i] = 0.0;
-                            oa_ex[j] = 0.0;
-                            oa_ex[a] = 1.0;
-                            oa_ex[b] = 1.0;
-
-                            let label = format!("(alpha, alpha {} {} -> {} {})", i, j, a, b);
-                            let excitation = Excitation {
-                                alpha: ExcitationSpin {holes: vec![i, j], parts: vec![a, b]}, 
-                                beta:  ExcitationSpin {holes: vec![], parts: vec![]}
-                            };
-                            let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
-                            out.push(exstate);
-                        }
-                    }
-                }
-            }
-
-            // Double excitations spin beta spin beta
-            let occ_b = &spin_occ.occ_beta;
-            let virt_b = &spin_occ.virt_beta;
-
-            for oi in 0..occ_b.len() {
-                for oj in (oi + 1)..occ_b.len() {
-                    let i = occ_b[oi];
-                    let j = occ_b[oj];
-
-                    for va in 0..virt_b.len() {
-                        for vb in (va + 1)..virt_b.len() {
-                            let a = virt_b[va];
-                            let b = virt_b[vb];
-
-                            let oa_ex = r.oa.clone();
-                            let mut ob_ex = r.ob.clone();
-
-                            ob_ex[i] = 0.0;
-                            ob_ex[j] = 0.0;
-                            ob_ex[a] = 1.0;
-                            ob_ex[b] = 1.0;
-
-                            let label = format!("(beta, beta {} {} -> {} {})", i, j, a, b);
-                            let excitation = Excitation {
-                                alpha: ExcitationSpin {holes: vec![], parts: vec![]}, 
-                                beta: ExcitationSpin {holes: vec![i, j], parts: vec![a, b]}
-                            };
-                            let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
-                            out.push(exstate);
-                        }
-                    }
-                }
-            }
-
-            // Double excitations spin alpha spin beta 
-            for &i_a in &spin_occ.occ_alpha {
-                for &a_a in &spin_occ.virt_alpha {
-                    for &i_b in &spin_occ.occ_beta {
-                        for &a_b in &spin_occ.virt_beta {
-                            let mut oa_ex = r.oa.clone();
-                            let mut ob_ex = r.ob.clone();
-
-                            oa_ex[i_a] = 0.0;
-                            oa_ex[a_a] = 1.0;
-                            ob_ex[i_b] = 0.0;
-                            ob_ex[a_b] = 1.0;
-
-                            let label = format!("(alpha, beta {} -> {}, {} -> {})", i_a, a_a, i_b, a_b);
-                            let excitation = Excitation {
-                                alpha: ExcitationSpin {holes: vec![i_a], parts: vec![a_a]}, 
-                                beta: ExcitationSpin {holes: vec![i_b], parts: vec![a_b]}
-                            };
-                            let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
-                            out.push(exstate);
+                                let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
+                                out.push(exstate);
+                            }
                         }
                     }
                 }

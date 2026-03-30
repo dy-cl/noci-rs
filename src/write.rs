@@ -94,8 +94,7 @@ pub fn print_input(input: &Input) {
     println!();
 
     println!("EXCIT");
-    println!("SINGLES: {}", input.excit.singles);
-    println!("DOUBLES: {}", input.excit.doubles);
+    println!("LEVEL (ORDER): {:?}", input.excit.orders);
     println!();
     
     println!("PROP");
