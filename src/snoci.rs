@@ -81,13 +81,13 @@ pub struct SNOCIStepTimings {
 
 /// Solve a linear system using (currently) unrestarted GMRES.
 /// # Arguments:
-/// `m`: `&Array2<f64>`, matrix defining the linear system Mx = b.
-/// `b`: `&Array1<f64>`, right-hand side vector.
-/// `max_iter`: `usize`, maximum number of GMRES iterations.
-/// `tol`: `f64`, residual RMS convergence tolerance.
+/// - `m`: Matrix defining the linear system Mx = b.
+/// - `b`: Right-hand side vector.
+/// - `max_iter`: Maximum number of GMRES iterations.
+/// - `tol`: Residual RMS convergence tolerance.
 /// # Returns:
-/// `GmresResult`, approximate solution vector together with final residual RMS, number of
-/// iterations performed, and convergence flag.
+/// - `GmresResult`: Approximate solution vector together with final residual RMS, number of
+///   iterations performed, and convergence flag.
 fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresResult {
     let n = b.len();
     // Initial guess as all zeros.
@@ -195,15 +195,15 @@ fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresRe
 /// Build Hamiltonian and overlap matrix elements for the current space and solve the resulting
 /// generalised eigenvalue problem.
 /// # Arguments:
-/// `ao`: `AoData`, AO integrals and other system data.
-/// `current_space`: `[SCFState]`, current selected nonorthogonal determinant space.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `input`: `Input`, user-defined input options.
-/// `wicks`: `Option<&WicksShared>`, optional shared Wick's intermediates.
-/// `tol`: `f64`, tolerance for whether a number is considered zero.
+/// - `ao`: AO integrals and other system data.
+/// - `current_space`: Current selected nonorthogonal determinant space.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `input`: User-defined input options.
+/// - `wicks`: Optional shared Wick's intermediates.
+/// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns:
-/// `(Array2<f64>, Array2<f64>, f64, Array1<f64>)`, Hamiltonian matrix in the current space,
-/// overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
+/// - `(Array2<f64>, Array2<f64>, f64, Array1<f64>)`: Hamiltonian matrix in the current space,
+///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
 fn solve_current_space(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, 
                        wicks: Option<&WicksShared>, tol: f64)  -> (Array2<f64>, Array2<f64>, f64, Array1<f64>)  {
         // Get Hamiltonian and overlap matrix elements for the current space.
@@ -218,15 +218,15 @@ fn solve_current_space(ao: &AoData, current_space: &[SCFState], noci_reference_b
 
 /// Build candidate-candidate and candidate-current overlap and Hamiltonian matrix elements.
 /// # Arguments:
-/// `ao`: `AoData`, AO integrals and other system data.
-/// `selected_space`: `[SCFState]`, current selected nonorthogonal determinant space.
-/// `candidates`: `[SCFState]`, candidate determinants generated from the selected space.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `wicks`: `Option<&WicksShared>`, optional shared Wick's intermediates.
-/// `tol`: `f64`, tolerance for whether a number is considered zero.
-/// `input`: `Input`, user-defined input options.
+/// - `ao`: AO integrals and other system data.
+/// - `selected_space`: Current selected nonorthogonal determinant space.
+/// - `candidates`: Candidate determinants generated from the selected space.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `wicks`: Optional shared Wick's intermediates.
+/// - `tol`: Tolerance for whether a number is considered zero.
+/// - `input`: User-defined input options.
 /// # Returns:
-/// `CandidateSpaceMatrixElems`, candidate-space overlap and Hamiltonian matrix elements.
+/// - `CandidateSpaceMatrixElems`: Candidate-space overlap and Hamiltonian matrix elements.
 fn build_candidate_space(ao: &AoData, selected_space: &[SCFState], candidates: &[SCFState], noci_reference_basis: &[SCFState],
                             wicks: Option<&WicksShared>, tol: f64, input: &Input) -> CandidateSpaceMatrixElems {
     // Candidate-candidate overlap.
@@ -238,12 +238,12 @@ fn build_candidate_space(ao: &AoData, selected_space: &[SCFState], candidates: &
 
 /// Project the candidate space out of the current selected space and remove linearly dependent candidates.
 /// # Arguments:
-/// `candidate_space`: `CandidateSpaceMatrixElems`, candidate-space overlap and Hamiltonian matrix elements.
-/// `s_ij_inv`: `&Array2<f64>`, inverse metric in the current space.
-/// `metric_tol`: `f64`, threshold below which projected candidate norms are discarded.
+/// - `candidate_space`: Candidate-space overlap and Hamiltonian matrix elements.
+/// - `s_ij_inv`: Inverse metric in the current space.
+/// - `metric_tol`: Threshold below which projected candidate norms are discarded.
 /// # Returns:
-/// `Option<FilteredCandidateSpaceMatrixElems>`, projected and filtered candidate-space matrix
-/// elements if any candidates survive, otherwise `None`.
+/// - `Option<FilteredCandidateSpaceMatrixElems>`: Projected and filtered candidate-space matrix
+///   elements if any candidates survive, otherwise `None`.
 fn filter_candidate_space(candidate_space: CandidateSpaceMatrixElems, s_ij_inv: &Array2<f64>, metric_tol:  f64) -> Option<FilteredCandidateSpaceMatrixElems> {
     // Projection of candidate-space metric into current space S_{ai} S^{ij} S_{jb}.
     let sbi_ij_ja = candidate_space.s_ai.dot(&s_ij_inv.dot(&candidate_space.s_ai.t()));
@@ -267,23 +267,23 @@ fn filter_candidate_space(candidate_space: CandidateSpaceMatrixElems, s_ij_inv: 
 
 /// Build current-current, candidate-current, and candidate-candidate Fock matrix elements.
 /// # Arguments:
-/// `ao`: `AoData`, AO integrals and other system data.
-/// `selected_space`: `[SCFState]`, current selected nonorthogonal determinant space.
-/// `filtered_space`: `&FilteredCandidateSpaceMatrixElems`, projected and filtered candidate-space
-/// matrix elements.
-/// `fa`: `&Array2<f64>`, alpha-spin generalised Fock matrix.
-/// `fb`: `&Array2<f64>`, beta-spin generalised Fock matrix.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `wicks`: `Option<&WicksShared>`, optional shared Wick's intermediates.
-/// `input`: `Input`, user-defined input options.
-/// `tol`: `f64`, tolerance for whether a number is considered zero.
+/// - `ao`: AO integrals and other system data.
+/// - `selected_space`: Current selected nonorthogonal determinant space.
+/// - `filtered_space`: Projected and filtered candidate-space
+///   matrix elements.
+/// - `fa`: Alpha-spin generalised Fock matrix.
+/// - `fb`: Beta-spin generalised Fock matrix.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `wicks`: Optional shared Wick's intermediates.
+/// - `input`: User-defined input options.
+/// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns:
-/// `FockMatrixElems`, current-current, candidate-current, and candidate-candidate Fock matrix
-/// elements.
+/// - `FockMatrixElems`: Current-current, candidate-current, and candidate-candidate Fock matrix
+///   elements.
 fn build_focks(ao: &AoData, selected_space: &[SCFState], filtered_space: &FilteredCandidateSpaceMatrixElems, fa: &Array2<f64>, fb: &Array2<f64>,
                noci_reference_basis: &[SCFState], wicks: Option<&WicksShared>, input: &Input, tol: f64) -> FockMatrixElems {
     // Current-current Fock.
-    let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, &fa, &fb, noci_reference_basis, 
+    let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, fa, fb, noci_reference_basis, 
                                    wicks.as_ref().map(|ws| ws.view()), tol, true, input);
     // Candidate-current Fock.
     let (f_ai, _) = build_noci_fock(ao, &filtered_space.candidates, selected_space, fa, fb, noci_reference_basis, 
@@ -297,29 +297,29 @@ fn build_focks(ao: &AoData, selected_space: &[SCFState], filtered_space: &Filter
 
 /// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
 /// # Arguments:
-/// `ecurrent`: `f64`, current NOCI energy.
-/// `coeffs`: `Array1<f64>`, current-space ground-state eigenvector.
-/// `hcurrent`: `Array2<f64>`, Hamiltonian matrix in the current space.
-/// `scurrent`: `Array2<f64>`, overlap matrix in the current space.
-/// `candidates`: `Vec<SCFState>`, candidate determinants associated with the current iteration.
+/// - `ecurrent`: Current NOCI energy.
+/// - `coeffs`: Current-space ground-state eigenvector.
+/// - `hcurrent`: Hamiltonian matrix in the current space.
+/// - `scurrent`: Overlap matrix in the current space.
+/// - `candidates`: Candidate determinants associated with the current iteration.
 /// # Returns:
-/// `SNOCIState`, SNOCI state with empty selected determinants, empty candidate scores, and
-/// zero EPT2 correction.
+/// - `SNOCIState`: SNOCI state with empty selected determinants, empty candidate scores, and
+///   zero EPT2 correction.
 fn empty_state(ecurrent: f64, coeffs: Array1<f64>, hcurrent: Array2<f64>, scurrent: Array2<f64>, candidates: Vec<SCFState>) -> SNOCIState {
     SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates, selected: Vec::new(), candidate_scores: Vec::new(), ept2: 0.0}
 }
 
 /// Build the projected Omega-space Fock operator and coupling vector.
 /// # Arguments:
-/// `filtered_space`: `&FilteredCandidateSpaceMatrixElems`, projected and filtered candidate-space
-/// matrix elements.
-/// `focks`: `FockMatrixElems`, current-current, candidate-current, and candidate-candidate Fock
-/// matrix elements.
-/// `hcurrent`: `&Array2<f64>`, Hamiltonian matrix in the current selected space.
-/// `coeffs`: `&Array1<f64>`, current-space ground-state eigenvector.
-/// `s_ij_inv`: `&Array2<f64>`, inverse metric in the current selected space.
+/// - `filtered_space`: Projected and filtered candidate-space
+///   matrix elements.
+/// - `focks`: Current-current, candidate-current, and candidate-candidate Fock
+///   matrix elements.
+/// - `hcurrent`: Hamiltonian matrix in the current selected space.
+/// - `coeffs`: Current-space ground-state eigenvector.
+/// - `s_ij_inv`: Inverse metric in the current selected space.
 /// # Returns:
-/// `(Array2<f64>, Array1<f64>)`, projected Omega-space Fock matrix and coupling vector.
+/// - `(Array2<f64>, Array1<f64>)`: Projected Omega-space Fock matrix and coupling vector.
 fn build_omega_fock(filtered_space: &FilteredCandidateSpaceMatrixElems, focks: FockMatrixElems, hcurrent: &Array2<f64>, 
                     coeffs: &Array1<f64>, s_ij_inv: &Array2<f64>) -> (Array2<f64>, Array1<f64>) {
     let f_ai_proj = focks.f_ai.dot(&s_ij_inv.dot(&filtered_space.s_ia));
@@ -333,12 +333,12 @@ fn build_omega_fock(filtered_space: &FilteredCandidateSpaceMatrixElems, focks: F
 
 /// Select the highest-scoring candidates above the selection threshold.
 /// # Arguments:
-/// `candidates`: `[SCFState]`, filtered candidate determinants.
-/// `candidate_scores`: `[f64]`, candidate importance scores.
-/// `sigma`: `f64`, selection threshold.
-/// `max_add`: `usize`, maximum number of candidates to add.
+/// - `candidates`: Filtered candidate determinants.
+/// - `candidate_scores`: Candidate importance scores.
+/// - `sigma`: Selection threshold.
+/// - `max_add`: Maximum number of candidates to add.
 /// # Returns:
-/// `Vec<SCFState>`, selected candidates sorted by decreasing score.
+/// - `Vec<SCFState>`: Selected candidates sorted by decreasing score.
 fn select_candidates(candidates: &[SCFState], candidate_scores: &[f64], sigma: f64, max_add: usize,) -> Vec<SCFState> {
     let mut ranked: Vec<(SCFState, f64)> = candidates.iter().cloned().zip(candidate_scores.iter().copied()).filter(|(_, score)| *score > sigma).collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -349,7 +349,7 @@ fn select_candidates(candidates: &[SCFState], candidate_scores: &[f64], sigma: f
 /// # Arguments:
 /// None.
 /// # Returns:
-/// `()`, prints the SNOCI iteration header to standard output.
+/// - `()`: Prints the SNOCI iteration header to standard output.
 fn print_snoci_header() {
     println!("{}", "=".repeat(100));
     println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
@@ -358,14 +358,14 @@ fn print_snoci_header() {
 
 /// Print a single SNOCI iteration summary line.
 /// # Arguments:
-/// `it`: `usize`, SNOCI iteration index.
-/// `n_current`: `usize`, number of determinants in the current selected space.
-/// `n_generated`: `usize`, number of generated candidates before filtering.
-/// `e0`: `f64`, RHF reference energy used to define the correlation energy.
-/// `state`: `&SNOCIState`, SNOCI state for the current iteration.
-/// `gmres`: `&GmresResult`, GMRES solve information for the current iteration.
+/// - `it`: SNOCI iteration index.
+/// - `n_current`: Number of determinants in the current selected space.
+/// - `n_generated`: Number of generated candidates before filtering.
+/// - `e0`: RHF reference energy used to define the correlation energy.
+/// - `state`: SNOCI state for the current iteration.
+/// - `gmres`: GMRES solve information for the current iteration.
 /// # Returns:
-/// `()`, prints the SNOCI iteration summary to standard output.
+/// - `()`: Prints the SNOCI iteration summary to standard output.
 fn print_snoci_iteration(it: usize, n_current: usize, n_generated: usize, e0: f64, state: &SNOCIState, gmres: &GmresResult) {
     println!("{:>6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
              it, n_current, n_generated, state.candidates.len(), state.selected.len(), state.ecurrent, state.ecurrent - e0,
@@ -374,15 +374,15 @@ fn print_snoci_iteration(it: usize, n_current: usize, n_generated: usize, e0: f6
 
 /// Perform selected NOCI with selection from single and double excitations of current space.
 /// # Arguments:
-/// `ao`: `AoData`, contains AO integrals and other system data.
-/// `current_space`: `[SCFState]`, current selected nonorthogonal determinant space.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `input`: `Input`, user-defined input options.
-/// `tol`: `f64`, tolerance for whether a number is zero.
-/// `wicks`: `WicksShared`, mutable Wick's intermediates as we need to update Fock intermediates.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `current_space`: Current selected nonorthogonal determinant space.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `input`: User-defined input options.
+/// - `tol`: Tolerance for whether a number is zero.
+/// - `wicks`: Mutable Wick's intermediates as we need to update Fock intermediates.
 /// # Returns:
-/// `(SNOCIState, SNOCIStepTimings)`, final SNOCI state from the last completed iteration and
-/// timings for each major component of the SNOCI step.
+/// - `(SNOCIState, SNOCIStepTimings)`: Final SNOCI state from the last completed iteration and
+///   timings for each major component of the SNOCI step.
 pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, 
                   tol: f64, mut wicks: Option<&mut WicksShared>) -> (SNOCIState, SNOCIStepTimings) {
     // Unwrap SNOCI options and initialise timings, selected_space array, and the final state. 

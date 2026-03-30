@@ -45,9 +45,9 @@ pub struct Walkers {
 impl Walkers {
     /// Construct empty walker object for n determinants.
     /// # Arguments: 
-    /// `n`: `usize`, number of determinants. 
+    /// - `n`: Number of determinants. 
     /// # Returns
-    /// `Walkers`, empty walker storage for `n` determinants.
+    /// - `Walkers`: Empty walker storage for `n` determinants.
     pub fn new(n: usize) -> Self {
         Self {
             pop: vec![0; n],
@@ -58,30 +58,30 @@ impl Walkers {
     
     /// Return the current population of determinant i.
     /// # Arguments: 
-    /// `self`: `Walkers`, object containing information about current walkers.
-    /// `i`: `usize`, determinant index of choice.
+    /// - `self`: Object containing information about current walkers.
+    /// - `i`: Determinant index of choice.
     /// # Returns
-    /// `i64`, current signed walker population on determinant `i`.
+    /// - `i64`: Current signed walker population on determinant `i`.
     pub fn get(&self, i: usize) -> i64 {
         self.pop[i]
     }
     
     /// Return a list of occupied determinant indices.
     /// # Arguments:
-    /// `self`: `Walkers`, object containing information about current walkers.
+    /// - `self`: Object containing information about current walkers.
     /// # Returns
-    /// `&[usize]`, slice of occupied determinant indices.
+    /// - `&[usize]`: Slice of occupied determinant indices.
     pub fn occ(&self) -> &[usize] {
         &self.occ
     }
 
     /// Add dn (change in population) to determinant i, modifying pop, occ and pos as required
     /// # Arguments:
-    /// `self`: `Walkers`, object containing information about current walkers.
-    /// `i`: `usize`, determinant index of choice. 
-    /// `dn`: `i64`, change in population of determinant i.
+    /// - `self`: Object containing information about current walkers.
+    /// - `i`: Determinant index of choice. 
+    /// - `dn`: Change in population of determinant i.
     /// # Returns
-    /// `()`, updates the walker storage in place.
+    /// - `()`: Updates the walker storage in place.
     pub fn add(&mut self, i: usize, dn: i64) {
         // No changes to be made.
         if dn == 0 {return;}
@@ -128,9 +128,9 @@ impl Walkers {
 
     /// Compute the total walker population 1-norm.
     /// # Arguments:
-    /// `self`: `Walkers`, object containing information about current walkers.
+    /// - `self`: Object containing information about current walkers.
     /// # Returns
-    /// `i64`, total walker population 1-norm.
+    /// - `i64`: Total walker population 1-norm.
     pub fn norm(&self) -> i64 {
         self.occ.iter().map(|&i| self.pop[i].abs()).sum()
     }
@@ -177,11 +177,11 @@ pub struct ExcitationHist {
 impl ExcitationHist {
     /// Constructor for ExcitationHist object. Creates ExcitationHist with chosen parameters.
     /// # Arguments:
-    /// `logmin`: `f64`, minimum histogram value on a logarithmic scale. 
-    /// `logmax`: `f64`, maximum histogram value on a logarithmic scale.
-    /// `nbins`: `usize`, number of histogram bins.
+    /// - `logmin`: Minimum histogram value on a logarithmic scale. 
+    /// - `logmax`: Maximum histogram value on a logarithmic scale.
+    /// - `nbins`: Number of histogram bins.
     /// # Returns
-    /// `ExcitationHist`, empty histogram with the requested parameters.
+    /// - `ExcitationHist`: Empty histogram with the requested parameters.
     pub fn new(logmin: f64, logmax: f64, nbins: usize) -> Self {
         Self {logmin, logmax, noverflow_low: 0, noverflow_high: 0, counts: vec![0u64; nbins], nbins, ntotal: 0}
     }
@@ -189,9 +189,9 @@ impl ExcitationHist {
     /// Add a computed spawning probability to the histogram.
     /// # Arguments: 
     /// `self`: ExcitationHist.
-    /// `pspawn`: `f64`, spawning probability as defined in population dynamics routines.
+    /// - `pspawn`: Spawning probability as defined in population dynamics routines.
     /// # Returns
-    /// `()`, updates the histogram in place.
+    /// - `()`: Updates the histogram in place.
     pub fn add(&mut self, pspawn: f64) {
         self.ntotal += 1;
 
@@ -212,18 +212,18 @@ impl ExcitationHist {
 
 /// Find matrix element S_{ij} from Wick's or naive path.
 /// # Arguments:
-/// `ao`: `AoData`, contains AO integrals and other system data.
-/// `basis`: `Vec<SCFState>`, vector of all SCF states in the basis.
-/// `i`: `usize`, index of state i. 
-/// `j`: `usize`, index of state j.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `input`: `Input`, user specified input options.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data.
+/// - `basis`: Vector of all SCF states in the basis.
+/// - `i`: Index of state i. 
+/// - `j`: Index of state j.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `f64`, overlap matrix element S_{ij}.
+/// - `f64`: Overlap matrix element S_{ij}.
 fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, 
           scratch: &mut WickScratch) -> f64 {
     // Get the sorted pair of indices 
@@ -239,18 +239,18 @@ fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: 
 
 /// Find matrix elements H_{ij} and S_{ij} from Wick's or naive path. 
 /// # Arguments:
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, vector of all SCF states in the basis.
-/// `i`: `usize`, index of state i. 
-/// `j`: `usize`, index of state j.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `input`: `Input`, user specified input options.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: Vector of all SCF states in the basis.
+/// - `i`: Index of state i. 
+/// - `j`: Index of state j.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `(f64, f64)`, Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
+/// - `(f64, f64)`: Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
 fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, 
            scratch: &mut WickScratch) -> (f64, f64) {
     // Get the sorted pair of indices 
@@ -267,11 +267,11 @@ fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input:
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
 /// Note that the actual populations stored in mc.walkers are not yet changed here.
 /// # Arguments:
-/// `mc`: `MCState`, contains information about the current Monte Carlo state.
-/// `i`: `usize`, index of determinant i to be updated.
-/// `dn`: `i64`, population change on determinant i. 
+/// - `mc`: Contains information about the current Monte Carlo state.
+/// - `i`: Index of determinant i to be updated.
+/// - `dn`: Population change on determinant i. 
 /// # Returns
-/// `()`, updates the accumulated population changes in place.
+/// - `()`: Updates the accumulated population changes in place.
 fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
     if dn == 0 {return;}
     // If current delta for this determinant is zero this function being called is its first
@@ -286,9 +286,9 @@ fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
 /// Apply accumulated population changes from the mc.delta vector to the actual populations stored
 /// in mc.walkers.
 /// # Arguments:
-/// `mc`: `MCState`, contains information about the current Monte Carlo state.
+/// - `mc`: Contains information about the current Monte Carlo state.
 /// # Returns
-/// `Vec<PopulationUpdate>`, list of applied population updates for this iteration.
+/// - `Vec<PopulationUpdate>`: List of applied population updates for this iteration.
 fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
     let mut applied = Vec::with_capacity(mc.changed.len());
     // Consider only changed determinants.
@@ -312,17 +312,17 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 /// `c0`: `Vec<f64>`: Initial determinant coefficient vector.
 /// `init_pop`: Number of walkers to start with.
 /// `n`: Number of determinants.
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `iref`: `usize`, index of the first reference determinant.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `input`: `Input`, user specified input options.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `iref`: Index of the first reference determinant.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `Walkers`, initial walker population.
+/// - `Walkers`: Initial walker population.
 pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis: &[SCFState], iref: usize, tol: f64,
                          input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> Walkers {
     let mut w = Walkers::new(n);
@@ -368,13 +368,13 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis
 
 /// Compute the off-diagonal coupling between determinants depending on which propagator is used.
 /// # Arguments:
-/// `hlg`: `f64`, matrix element H_{\Lambda\Gamma}
-/// `slg`: `f64`, matrix element S_{\Lambda\Gamma}
-/// `es_s`: `f64`, E_s^S(\tau) shift energy.
-/// `es`: `f64`, E_s(\tau) shift energy.
-/// `prop`: `Propagator`, chosen propagator.
+/// - `hlg`: Matrix element H_{\Lambda\Gamma}
+/// - `slg`: Matrix element S_{\Lambda\Gamma}
+/// - `es_s`: E_s^S(\tau) shift energy.
+/// - `es`: E_s(\tau) shift energy.
+/// - `prop`: Chosen propagator.
 /// # Returns
-/// `f64`, off-diagonal coupling used by the propagator.
+/// - `f64`: Off-diagonal coupling used by the propagator.
 fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
     match prop {
         Propagator::Unshifted => hlg - es_s * slg,
@@ -391,19 +391,19 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
 /// \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|, the Lambda index corresponding to each
 /// cumulative sum, and the couplings H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}.
 /// # Arguments:
-/// `gamma`: `usize`, parent determinant index.
-/// `es_s`: `f64`, E_s^S(\tau) shift energy.
-/// `es`: `f64`, E_s(\tau) shift energy.
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `input`: `Input`, user specified input options.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `gamma`: Parent determinant index.
+/// - `es_s`: E_s^S(\tau) shift energy.
+/// - `es`: E_s(\tau) shift energy.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `input`: User specified input options.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `HeatBath`, precomputed heat-bath excitation generation data for determinant `gamma`.
+/// - `HeatBath`: Precomputed heat-bath excitation generation data for determinant `gamma`.
 fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFState], input: &Input, tol: f64, 
                   noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> HeatBath {
     let ndets = basis.len();
@@ -436,20 +436,20 @@ fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFSta
 /// Propose a determinant for spawning using a uniform excitation scheme, and calculate the probability 
 /// P_{\text{gen}} that it was chosen.
 /// # Arguments:
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `gamma`: `usize`, index of determinant being spawned from.
-/// `es_s`: `f64`, E_s^S(\tau) shift energy.
-/// `es`: `f64`, E_s(\tau) shift energy.
-/// `input`: `Input`, user specified input options.
-/// `rng`: `SmallRng`, random number generator.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `gamma`: Index of determinant being spawned from.
+/// - `es_s`: E_s^S(\tau) shift energy.
+/// - `es`: E_s(\tau) shift energy.
+/// - `input`: User specified input options.
+/// - `rng`: Random number generator.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `(f64, f64, usize)`, generation probability, coupling, and selected determinant index.
+/// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
 fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, tol: f64,
                 noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
     let ndets = basis.len();
@@ -470,21 +470,21 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f6
 /// approximate version, this means it is very very slow and should really only be used for benchmarking other 
 /// excitation schemes.
 /// # Arguments:
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `gamma`: `usize`, index of determinant being spawned from.
-/// `es_s`: `f64`, E_s^S(\tau) shift energy.
-/// `es`: `f64`, E_s(\tau) shift energy.
-/// `input`: `Input`, user specified input options.
-/// `rng`: `SmallRng`, random number generator.
-/// `hb`: `HeatBath`, precomputed heat-bath excitation generation data.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `gamma`: Index of determinant being spawned from.
+/// - `es_s`: E_s^S(\tau) shift energy.
+/// - `es`: E_s(\tau) shift energy.
+/// - `input`: User specified input options.
+/// - `rng`: Random number generator.
+/// - `hb`: Precomputed heat-bath excitation generation data.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `(f64, f64, usize)`, generation probability, coupling, and selected determinant index.
+/// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
 fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, hb: &HeatBath, tol: f64,
                    noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
 
@@ -536,26 +536,26 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es:
 /// if P_{\text{spawn}} > 1 then we spawn floor(P_{\text{spawn}}) extra children and a final child with 
 /// probability P_{\text{spawn}} - floor(P_{\text{spawn}}).
 /// # Arguments
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `gamma`: `usize`, index of determinant \Gamma. 
-/// `ngamma`: `i64`, walker population on determinant \Gamma.
-/// `es_s`: `f64`, overlap-transformed shift energy.
-/// `es`: `f64`, non-overlap transformed shift energy.
-/// `input`: `Input`, user specified input options.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `gamma`: Index of determinant \Gamma. 
+/// - `ngamma`: Walker population on determinant \Gamma.
+/// - `es_s`: Overlap-transformed shift energy.
+/// - `es`: Non-overlap transformed shift energy.
+/// - `input`: User specified input options.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `irank`: `usize`, number of current rank.
-/// `nranks`: `usize`, total number of ranks.
-/// `rng`: `SmallRng`, random number generator.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
-/// `outlocal`: `Vec<(usize`, i64)>, locally owned population updates.
-/// `outremote`: `Vec<PopulationUpdate>`, remotely owned population updates.
-/// `outsamples`: `Vec<f64>`, collected spawning probability samples.
+/// - `irank`: Number of current rank.
+/// - `nranks`: Total number of ranks.
+/// - `rng`: Random number generator.
+/// - `scratch`: Scratch space for Wick's quantities.
+/// - `outlocal`: I64)>, locally owned population updates.
+/// - `outremote`: Remotely owned population updates.
+/// - `outsamples`: Collected spawning probability samples.
 /// # Returns
-/// `()`, appends spawning updates to the provided output buffers.
+/// - `()`: Appends spawning updates to the provided output buffers.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, es: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState],
             wicks: Option<&WicksView>, irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch, outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, 
             outsamples: &mut Vec<f64>) {
@@ -611,22 +611,22 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 /// if P_{\text{death}} < 0 a walker is cloned with probability |P_{\text{death}}|. 
 /// If P_{\text{death}} = 0, nothing will happen.  
 /// # Arguments
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `gamma`: `usize`, index of determinant \Gamma. 
-/// `ngamma`: `i64`, walker population on determinant \Gamma.
-/// `es`: `f64`, non-overlap transformed shift energy.
-/// `es_s`: `f64`, overlap-transformed shift energy.
-/// `input`: `Input`, user specified input options.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants. 
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `gamma`: Index of determinant \Gamma. 
+/// - `ngamma`: Walker population on determinant \Gamma.
+/// - `es`: Non-overlap transformed shift energy.
+/// - `es_s`: Overlap-transformed shift energy.
+/// - `input`: User specified input options.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `noci_reference_basis`: Only the reference basis determinants. 
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `rng`: `SmallRng`, random number generator.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
-/// `out`: `Vec<(usize`, i64)>, output population updates.
+/// - `rng`: Random number generator.
+/// - `scratch`: Scratch space for Wick's quantities.
+/// - `out`: I64)>, output population updates.
 /// # Returns
-/// `()`, appends death/cloning updates to `out`.
+/// - `()`: Appends death/cloning updates to `out`.
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, tol: f64, noci_reference_basis: &[SCFState], 
                  wicks: Option<&WicksView>, rng: &mut SmallRng, scratch: &mut WickScratch, out: &mut Vec<(usize, i64)>) {
     
@@ -663,18 +663,18 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
 
 /// Calculate projected energy as \frac{\sum_{H_{\Gamma, \text{Reference}}} N_{\Gamma}}{\sum_{S_{\Gamma, \text{Reference}}} N_{\Gamma}}.
 /// # Arguments
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `walkers`: `Walkers`, object containing information about current walkers.
-/// `iref`: `usize`, index of determinant we are projecting onto.
-/// `world`: `Communicator`, MPI communicator object (MPI_COMM_WORLD).
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `input`: `Input`, user specified input options.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `walkers`: Object containing information about current walkers.
+/// - `iref`: Index of determinant we are projecting onto.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
 /// # Returns
-/// `f64`, projected energy.
+/// - `f64`: Projected energy.
 fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, world: &impl Communicator, tol: f64,
                     input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> f64 {
     
@@ -698,20 +698,20 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 
 /// Initialise the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}. 
 /// # Arguments:
-/// `start`: `usize`, first determinant index owned by this rank.
-/// `end`: `usize`, final determinant index owned by this rank.
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `walkers`: `Walkers`, object containing information about current walkers.
-/// `world`: `Communicator`, MPI communicator object (MPI_COMM_WORLD).
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `input`: `Input`, user specified input options.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `start`: First determinant index owned by this rank.
+/// - `end`: Final determinant index owned by this rank.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `walkers`: Object containing information about current walkers.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
-/// `scratch`: `WickScratch`, scratch space for Wick's quantities.
+/// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// `Vec<f64>`, local portion of the overlap-transformed population vector p_{\Gamma}.
+/// - `Vec<f64>`: Local portion of the overlap-transformed population vector p_{\Gamma}.
 fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, world: &impl Communicator, tol: f64, 
           input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>, scratch: &mut WickScratch) -> Vec<f64> {
 
@@ -736,19 +736,19 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
 
 /// Update the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
 /// # Arguments:
-/// `start`: `usize`, first determinant index owned by this rank.
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `world`: `Communicator`, MPI communicator object (MPI_COMM_WORLD). 
-/// `plocal`: `[f64]`, vector p_{\Gamma} on this rank.
-/// `dlocal`: `[PopulationUpdate]`, local determinant population updates.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `input`: `Input`, user specified input options.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `start`: First determinant index owned by this rank.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
+/// - `plocal`: Vector p_{\Gamma} on this rank.
+/// - `dlocal`: Local determinant population updates.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
 /// # Returns
-/// `()`, updates `plocal` in place.
+/// - `()`: Updates `plocal` in place.
 fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64,
             input: &Input, noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) {
 
@@ -772,20 +772,20 @@ fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communic
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
 /// # Arguments: 
-/// `c0`: `Vec<f64>`, initial determinant coefficient vector to be translated into walker
+/// - `c0`: Initial determinant coefficient vector to be translated into walker
 /// populations.
-/// `ao`: `AoData`, contains AO integrals and other system data. 
-/// `basis`: `Vec<SCFState>`, list of the full NOCI-QMC basis.
-/// `es`: `f64`, initial shift energy.
-/// `input`: `Input`, user specified input options.
-/// `ref_indices`: `[usize]`, indices of the reference determinants embedded in the full space.
-/// `world`: `Communicator`, MPI communicator object (MPI_COMM_WORLD).
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `noci_reference_basis`: `[SCFState]`, only the reference basis determinants.
-/// `wicks`: `Option<&WicksView>`, intermediates required for evaluating matrix
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `es`: Initial shift energy.
+/// - `input`: User specified input options.
+/// - `ref_indices`: Indices of the reference determinants embedded in the full space.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `noci_reference_basis`: Only the reference basis determinants.
+/// - `wicks`: Intermediates required for evaluating matrix
 /// elements using the extended non-orthogonal Wick's theorem.
 /// # Returns
-/// `(f64, Option<ExcitationHist>, StochStepTimings)`, projected energy estimate, optional
+/// - `(f64, Option<ExcitationHist>, StochStepTimings)`: Projected energy estimate, optional
 /// excitation histogram, and stochastic propagation timings.
 pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64, 
             noci_reference_basis: &[SCFState], wicks: Option<&WicksView>) -> (f64, Option<ExcitationHist>, StochStepTimings) {

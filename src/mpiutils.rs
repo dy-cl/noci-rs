@@ -27,10 +27,10 @@ pub struct Sharedffi {
 impl Sharedffi {
      /// Allocate remote memory access region.
     /// # Arguments:
-    /// `world`: Communicator, MPI Communicator object.
-    /// `nbytes`: usize, size of allocation.
+    /// - `world`: MPI Communicator object.
+    /// - `nbytes`: Size of allocation.
     /// # Returns
-    /// `Sharedffi`, shared-memory allocation metadata and pointer to the shared segment.
+    /// - `Sharedffi`: Shared-memory allocation metadata and pointer to the shared segment.
     pub fn allocate(world: &impl Communicator, nbytes: usize) -> Self {
         // Calling MPI API in C so needs to be unsafe.
         unsafe {
@@ -72,9 +72,9 @@ impl Sharedffi {
     
     /// Synchronise ranks on the same node.
     /// # Arguments:
-    /// `self`: Sharedffi, shared remote memory access data.
+    /// - `self`: Shared remote memory access data.
     /// # Returns
-    /// `()`, blocks until all ranks in the shared-memory communicator reach the barrier.
+    /// - `()`: Blocks until all ranks in the shared-memory communicator reach the barrier.
     pub fn barrier(&self) {
         unsafe {mpi::ffi::MPI_Barrier(self.shared_comm);}
     }
@@ -83,9 +83,9 @@ impl Sharedffi {
 impl Drop for Sharedffi {
     /// Free the shared memory segment when Sharedffi goes out of scope.
     /// # Arguments: 
-    /// `self`: Sharedffi, shared remote memory access data.
+    /// - `self`: Shared remote memory access data.
     /// # Returns
-    /// `()`, frees the MPI window and shared-memory communicator.
+    /// - `()`: Frees the MPI window and shared-memory communicator.
     fn drop(&mut self) {
         unsafe {
             let mut w = self.win;
@@ -100,12 +100,12 @@ impl Drop for Sharedffi {
 /// Broadcast a serialisable value of arbitrary (provided it is serialisable) type T from rank 0 to
 /// all MPI ranks.
 /// # Arguments:
-/// `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-/// `value`: If rank 0 this is the value to broadcast. Any other rank recieves value from 0.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
+/// - `value`: If rank 0 this is the value to broadcast. Any other rank recieves value from 0.
 /// # Returns
-/// `()`, updates `value` in place on non-root ranks.
+/// - `()`: Updates `value` in place on non-root ranks.
 /// # Type Parameters:
-/// `T`: Type of value being broadcast.
+/// - `T`: Type of value being broadcast.
 pub fn broadcast<T>(world: &impl Communicator, value: &mut T)
 where
     // Function can broadcast any type provided that it can be converted to bytes and consequently
@@ -149,10 +149,10 @@ where
 
 /// Given a determinant index return which MPI rank owns it.
 /// # Arguments 
-/// `det`: usize, determinant index.
-/// `nranks`: usize, number of MPI ranks.
+/// - `det`: Determinant index.
+/// - `nranks`: Number of MPI ranks.
 /// # Returns
-/// `usize`, MPI rank that owns the determinant.
+/// - `usize`: MPI rank that owns the determinant.
 pub fn owner(det: usize, nranks: usize) -> usize {
     det % nranks
 }
@@ -162,11 +162,11 @@ pub fn owner(det: usize, nranks: usize) -> usize {
 /// full vector of ndets for each thread, and initialising population just to remove it but it is
 /// simple to do for now.
 /// # Arguments
-/// `w`: Walkers, contains information about determinant populations, indices, and occupations.
-/// `irank`: usize, rank of current thread.
-/// `nranks`: usize, total number of threads.
+/// - `w`: Contains information about determinant populations, indices, and occupations.
+/// - `irank`: Rank of current thread.
+/// - `nranks`: Total number of threads.
 /// # Returns
-/// `Walkers`, walker population restricted to determinants owned by the current rank.
+/// - `Walkers`: Walker population restricted to determinants owned by the current rank.
 pub fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
     let occ = w.occ().to_vec();
     for i in occ {
@@ -182,10 +182,10 @@ pub fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
 /// must communicate this change. Each rank sends a `Vec<PopulationUpdate>` to every other ranking
 /// containing the required population changes.
 /// # Arguments:
-/// `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-/// `send`: `[Vec<PopulationUpdate>]`, per destination send buffers.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
+/// - `send`: Per destination send buffers.
 /// # Returns
-/// `Vec<PopulationUpdate>`, contiguous list of population updates received by this rank.
+/// - `Vec<PopulationUpdate>`: Contiguous list of population updates received by this rank.
 pub fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<PopulationUpdate>]) -> Vec<PopulationUpdate> {
     let nranks = world.size() as usize;
 
@@ -226,10 +226,10 @@ pub fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<Populati
 /// PopulationUpdate struct which strictly is for population changes (hence dn) rather than totals.
 /// But it works for this routine so there is no reason to define another struct.
 /// # Arguments:
-/// `world`: Communicator, MPI communicator object (MPI_COMM_WORLD). 
-/// `local`: [PopulationUpdate], determinant populations and indices on this rank.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
+/// - `local`: Determinant populations and indices on this rank.
 /// # Returns
-/// `Vec<PopulationUpdate>`, gathered determinant populations from all ranks.
+/// - `Vec<PopulationUpdate>`: Gathered determinant populations from all ranks.
 pub fn gather_all_walkers(world: &impl Communicator, local: &[PopulationUpdate]) -> Vec<PopulationUpdate> {
     let nranks = world.size() as usize;
     

@@ -24,15 +24,15 @@ trait ScatterValue: Sized {
     type Output;
     /// Construct zero initialised output. 
     /// # Arguments:
-    /// `nl`: `usize`, length of determinant set 1.
-    /// `nr`: `usize`, length of determinant set 2.
+    /// - `nl`: Length of determinant set 1.
+    /// - `nr`: Length of determinant set 2.
     fn zeros(nl: usize, nr: usize) -> Self::Output;
     /// Write a value into the output at indices i, j.
     /// # Arguments:
-    /// `out`: `Self::Output`, output container to write into.
-    /// `i`: `usize`, row index.
-    /// `j`: `usize`, column index.
-    /// `val`: `Self`, determinant-pair value to scatter.
+    /// - `out`: Output container to write into.
+    /// - `i`: Row index.
+    /// - `j`: Column index.
+    /// - `val`: Determinant-pair value to scatter.
     fn write(out: &mut Self::Output, i: usize, j: usize, val: Self);
 }
 
@@ -40,17 +40,17 @@ impl ScatterValue for f64 {
     type Output = Array2<f64>;
     /// Construct zero initialised output. 
     /// # Arguments:
-    /// `nl`: `usize`, length of determinant set 1.
-    /// `nr`: `usize`, length of determinant set 2.
+    /// - `nl`: Length of determinant set 1.
+    /// - `nr`: Length of determinant set 2.
     fn zeros(nl: usize, nr: usize) -> Self::Output {
         Array2::<f64>::zeros((nl, nr))
     }
     /// Write scalar value into matrix position (i, j).
     /// # Arguments:
-    /// `out`: `Array2<f64>`, output matrix.
-    /// `i`: `usize`, row index.
-    /// `j`: `usize`, column index.
-    /// `val`: `f64`, matrix element value.
+    /// - `out`: Output matrix.
+    /// - `i`: Row index.
+    /// - `j`: Column index.
+    /// - `val`: Matrix element value.
     fn write(out: &mut Self::Output, i: usize, j: usize, val: Self) {
         out[(i, j)] = val;
     }
@@ -61,18 +61,18 @@ impl ScatterValue for (f64, f64) {
 
     /// Construct zero initialised output. 
     /// # Arguments:
-    /// `nl`: `usize`, length of determinant set 1.
-    /// `nr`: `usize`, length of determinant set 2.
+    /// - `nl`: Length of determinant set 1.
+    /// - `nr`: Length of determinant set 2.
     fn zeros(nl: usize, nr: usize) -> Self::Output {
         (Array2::<f64>::zeros((nl, nr)), Array2::<f64>::zeros((nl, nr)))
     }
 
     /// Write scalar value into matrix position (i, j) in both matrices.
     /// # Arguments:
-    /// `out`: `(Array2<f64>`, `Array2<f64>`), output matrices.
-    /// `i`: `usize`, row index.
-    /// `j`: `usize`, column index.
-    /// `val`: `(f64`, f64), matrix element values.
+    /// - `out`: `Array2<f64>`), output matrices.
+    /// - `i`: Row index.
+    /// - `j`: Column index.
+    /// - `val`: F64), matrix element values.
     fn write(out: &mut Self::Output, i: usize, j: usize, val: Self) {
         out.0[(i, j)] = val.0;
         out.1[(i, j)] = val.1;
@@ -96,10 +96,10 @@ pub struct Pair {
 /// Given an MO coefficient matrix and a corresponding occupancy vector, return the occupied only
 /// coefficient matrix.
 /// # Arguments:
-/// `c`: `Array2`, MO coefficient matrix.
-/// `occ`: `Array1`, occupancy vector.
+/// - `c`: MO coefficient matrix.
+/// - `occ`: Occupancy vector.
 /// # Returns:
-/// `Array2<f64>`, occupied-only MO coefficient matrix.
+/// - `Array2<f64>`: Occupied-only MO coefficient matrix.
 pub fn occ_coeffs(c: &Array2<f64>, occ: &Array1<f64>) -> Array2<f64> {
     // occ is length nmo; treat >0.5 as occupied
     let occ_idx: Vec<usize> = occ.iter().enumerate().filter_map(|(i, &x)| if x > 0.5 {Some(i)} else {None}).collect();
@@ -116,11 +116,11 @@ pub fn occ_coeffs(c: &Array2<f64>, occ: &Array1<f64>) -> Array2<f64> {
 /// Calculate the reduced occupied MO overlap scalar of {}^{\Lambda\Gamma} \tilde{S} as the product of
 /// all non-zero singular values of the SVD'd {}^{\Lambda\Gamma} \tilde{S}.
 /// # Arguments
-/// `tilde_s`: `Array1`, vector of singular values, the diagonal of {}^{\Lambda\Gamma} \tilde{S}. 
-/// `tol`: `f64`, tolerance up to which a number is considered zero. 
+/// - `tilde_s`: Vector of singular values, the diagonal of {}^{\Lambda\Gamma} \tilde{S}. 
+/// - `tol`: Tolerance up to which a number is considered zero. 
 /// # Returns:
-/// `(f64, Vec<usize>)`, product of non-zero singular values and indices
-/// of singular values treated as zero.
+/// - `(f64, Vec<usize>)`: Product of non-zero singular values and indices
+///   of singular values treated as zero.
 fn calculate_s_red(tilde_s: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
     let mut prod = 1.0f64;
     let mut zeros = Vec::new();
@@ -142,14 +142,14 @@ fn calculate_s_red(tilde_s: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
 /// {}^\Gamma \tilde{C}, and the quantities required for the generalised
 /// Slater-Condon rules are constructed.
 /// # Arguments:
-/// `l_c_occ`: `Array2`, occupied MO coefficient matrix {}^\Lambda C.
-/// `g_c_occ`: `Array2`, occupied MO coefficient matrix {}^\Gamma C.
-/// `s_munu`: `Array2`, AO overlap matrix.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
+/// - `l_c_occ`: Occupied MO coefficient matrix {}^\Lambda C.
+/// - `g_c_occ`: Occupied MO coefficient matrix {}^\Gamma C.
+/// - `s_munu`: AO overlap matrix.
+/// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
-/// `Pair`, overlap-related intermediates for this determinant pair,
-/// including the overlap, reduced overlap, zero singular-value indices,
-/// rotated occupied coefficients, optional co-densities, and phase.
+/// - `Pair`: Overlap-related intermediates for this determinant pair,
+///   including the overlap, reduced overlap, zero singular-value indices,
+///   rotated occupied coefficients, optional co-densities, and phase.
 fn build_s_pair(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f64>, tol: f64) -> Pair {
 
     // Occupied MO overlap.
@@ -197,11 +197,11 @@ fn build_s_pair(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f6
 /// co-density matrix where {}^{\Lambda} \tilde{C}_i^\mu and {}^{\Gamma}\tilde{C}_i^\nu* are the 
 /// rotated MO coefficients of determinant \Lambda and \Gamma respectively.
 /// # Arguments 
-/// `l_tilde_c_occ`: `Array2`, U rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
-/// `g_tilde_c_occ`: `Array2`, V rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
-/// `i`: `usize`, MO index.
+/// - `l_tilde_c_occ`: U rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
+/// - `g_tilde_c_occ`: V rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
+/// - `i`: MO index.
 /// # Returns:
-/// `Array2<f64>`, co-density matrix for occupied orbital index `i`.
+/// - `Array2<f64>`: Co-density matrix for occupied orbital index `i`.
 fn calculate_codensity_p_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array2<f64>, i: usize) -> Array2<f64> {
     let nso = l_tilde_c_occ.nrows();
     let mut munu_p_i = Array2::<f64>::zeros((nso, nso));
@@ -218,12 +218,12 @@ fn calculate_codensity_p_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array
 /// and {}^{\Lambda}\tilde{C}_i^\mu and {}^{\Gamma}\tilde{C}_i^\nu are the occupied rotated MO coefficients of state 
 /// \Gamma and \Lambda respectively.
 /// # Arguments:
-/// `l_tilde_c_occ`: `Array2`, U rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
-/// `g_tilde_c_occ`: `Array2`, V rotated occupied MO coefficients for pair of states \Lambda, \Gamma.
-/// `s_vals`: `Array1`, singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
-/// `tol`: `f64`, tolerance up to which a number is considered zero. 
+/// - `l_tilde_c_occ`: U rotated occupied MO coefficients for pair of states \Lambda, \Gamma. 
+/// - `g_tilde_c_occ`: V rotated occupied MO coefficients for pair of states \Lambda, \Gamma.
+/// - `s_vals`: Singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
+/// - `tol`: Tolerance up to which a number is considered zero. 
 /// # Returns:
-/// `Array2<f64>`, weighted co-density matrix.
+/// - `Array2<f64>`: Weighted co-density matrix.
 fn calculate_codensity_w_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array2<f64>, tilde_s: &Array1<f64>, tol: f64) -> Array2<f64> {
     let mut l_tilde_c_occ_scaled = l_tilde_c_occ.to_owned();
     
@@ -237,10 +237,10 @@ fn calculate_codensity_w_pair(l_tilde_c_occ: &Array2<f64>, g_tilde_c_occ: &Array
 
 /// Calculate pair density {}^{\Lambda\Gamma} \rho_{ij} using the generalised Slater-Condon rules.
 /// # Arguments:
-/// `pair`: `Pair struct`, contains data concerning a pair of determinants.
-/// `nao`: `usize`, number of AOs.
+/// - `pair`: Contains data concerning a pair of determinants.
+/// - `nao`: Number of AOs.
 /// # Returns:
-/// `Array2<f64>`, AO-basis pair density matrix for the determinant pair.
+/// - `Array2<f64>`: AO-basis pair density matrix for the determinant pair.
 fn pair_density(pair: &Pair, nao: usize) -> Array2<f64> {
     match pair.zeros.len() {
         0 => pair.w.as_ref().unwrap().mapv(|x| x * pair.s_red * pair.phase),
@@ -251,12 +251,12 @@ fn pair_density(pair: &Pair, nao: usize) -> Array2<f64> {
 
 /// Calculate the alpha and beta density matrices of a multireference NOCI state.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data.
-/// `states`: `[SCFState]`, determinant basis of the NOCI wavefunction.
-/// `c`: `Array1`, coefficients of the NOCI wavefunction.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `states`: Determinant basis of the NOCI wavefunction.
+/// - `c`: Coefficients of the NOCI wavefunction.
+/// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
-/// `(Array2<f64>, Array2<f64>)`, the alpha and beta AO density matrices.
+/// - `(Array2<f64>, Array2<f64>)`: The alpha and beta AO density matrices.
 pub fn noci_density(ao: &AoData, states: &[SCFState], c: &Array1<f64>, tol: f64,) -> (Array2<f64>, Array2<f64>) {
     let nao = ao.h.nrows();
     let nst = states.len();
@@ -296,10 +296,10 @@ pub fn noci_density(ao: &AoData, states: &[SCFState], c: &Array1<f64>, tol: f64,
 /// Calculate one body matrix elements using the generalised 
 /// Slater-Condon rules for a pair of determinants \Lambda and \Gamma. 
 /// # Arguments:
-/// `o`: `Array2`, operator to obtain matrix elements of.
-/// `pair`: `Pair struct`, contains data concerning a pair of determinants.
+/// - `o`: Operator to obtain matrix elements of.
+/// - `pair`: Contains data concerning a pair of determinants.
 /// # Returns:
-/// `f64`, one-electron matrix element for the determinant pair.
+/// - `f64`: One-electron matrix element for the determinant pair.
 fn one_electron(o: &Array2<f64>, pair: &Pair) -> f64 {
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w.
@@ -315,10 +315,10 @@ fn one_electron(o: &Array2<f64>, pair: &Pair) -> f64 {
 /// using the generalised Slater-Condon rules for a pair of determinants
 /// \Lambda and \Gamma.
 /// # Arguments:
-/// `o`: `Array4`, antisymmetrised two-electron operator tensor.
-/// `pair`: `Pair struct`, contains data concerning a pair of determinants.
+/// - `o`: Antisymmetrised two-electron operator tensor.
+/// - `pair`: Contains data concerning a pair of determinants.
 /// # Returns:
-/// `f64`, same-spin two-electron matrix element.
+/// - `f64`: Same-spin two-electron matrix element.
 fn two_electron_same(o: &Array4<f64>, pair: &Pair) -> f64 {
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
@@ -336,11 +336,11 @@ fn two_electron_same(o: &Array4<f64>, pair: &Pair) -> f64 {
 /// using the generalised Slater-Condon rules for a pair of determinants
 /// \Lambda and \Gamma.
 /// # Arguments:
-/// `o`: `Array4`, Coulomb two-electron operator tensor.
-/// `pa`: `Pair struct`, alpha-spin pair data.
-/// `pb`: `Pair struct`, beta-spin pair data.
+/// - `o`: Coulomb two-electron operator tensor.
+/// - `pa`: Alpha-spin pair data.
+/// - `pb`: Beta-spin pair data.
 /// # Returns:
-/// `f64`, opposite-spin two-electron matrix element.
+/// - `f64`: Opposite-spin two-electron matrix element.
 fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
     match (pa.zeros.len(), pb.zeros.len()) {
         // With no zeros (s_i != 0 for all i) for both spins we use munu_w on both sides.
@@ -359,11 +359,11 @@ fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
 /// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
 /// generalised Slater-Condon rules.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data. 
-/// `ldet`: `SCFState`, state \Lambda.
-/// `gdet`: `SCFState`, state \Gamma.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
 /// # Returns:
-/// `f64`, overlap matrix element between `ldet` and `gdet`.
+/// - `f64`: Overlap matrix element between `ldet` and `gdet`.
 pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
 
     // Per spin occupid coefficients.
@@ -382,13 +382,13 @@ pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol
 /// Calculate the Fock matrix element between determinants \Lambda and \Gamma using 
 /// generalised Slater-Condon rules.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data. 
-/// `ldet`: `SCFState`, state \Lambda.
-/// `gdet`: `SCFState`, state \Gamma.
-/// `fa`: `Array2`, NOCI Fock matrix spin alpha.
-/// `fb`: `Array2`, NOCI Fock matrix spin beta.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
+/// - `fa`: NOCI Fock matrix spin alpha.
+/// - `fb`: NOCI Fock matrix spin beta.
 /// # Returns:
-/// `f64`, Fock matrix element between `ldet` and `gdet`.
+/// - `f64`: Fock matrix element between `ldet` and `gdet`.
 pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
 
     // Per spin occupid coefficients.
@@ -406,11 +406,11 @@ pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, l
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
 /// using generalised Slater-Condon rules.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data. 
-/// `ldet`: `SCFState`, state \Lambda.
-/// `gdet`: `SCFState`, state \Gamma.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
 /// # Returns:
-/// `(f64, f64)`, Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
+/// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
 
     // Per spin occupid coefficients.
@@ -444,12 +444,12 @@ pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, to
 
 /// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node).
 /// # Arguments:
-/// `world`: `Communicator`, MPI communicator object.
-/// `ao`: `AoData struct`, contains AO integrals and other system data. 
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `tol`: `f64`, tolerance for a number being zero.
+/// - `world`: MPI communicator object.
+/// - `ao`: Contains AO integrals and other system data. 
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `tol`: Tolerance for a number being zero.
 /// # Returns:
-/// `WicksShared`, shared-memory storage and view for precomputed Wick's intermediates.
+/// - `WicksShared`: Shared-memory storage and view for precomputed Wick's intermediates.
 pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference_basis: &[SCFState], tol: f64) -> WicksShared {
 
     let nref = noci_reference_basis.len();
@@ -507,12 +507,12 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
 /// Update the Wick's intermediates required for fast Fock matrix element evaluation, as these
 /// intermediates change per iteration of SNOCI.
 /// # Arguments:
-/// `fa`: `Array2`, Fock matrix spin alpha.
-/// `fb`: `Array2`, Fock matrix spin beta. 
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `wicks`: `WicksShared`, shared memory Wick's intermediates storage.
+/// - `fa`: Fock matrix spin alpha.
+/// - `fb`: Fock matrix spin beta. 
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `wicks`: Shared memory Wick's intermediates storage.
 /// # Returns:
-/// `()`, updates the stored Fock-related Wick's intermediates in `wicks` in place.
+/// - `()`: Updates the stored Fock-related Wick's intermediates in `wicks` in place.
 pub fn update_wicks_fock(fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basis: &[SCFState], wicks: &mut WicksShared) {
     let nref = noci_reference_basis.len();
 
@@ -567,14 +567,14 @@ pub fn update_wicks_fock(fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basi
 /// Calculate the overlap matrix element between determinants \Lambda and \Gamma
 /// using extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `ldet`: `SCFState`, state \Lambda.
-/// `gdet`: `SCFState`, state \Gamma.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `wicks`: `WicksView`, precomputed Wick's intermediates.
-/// `scratch`: `WickScratch`, scratch space for Wick's calculations.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `wicks`: Precomputed Wick's intermediates.
+/// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// `f64`, overlap matrix element.
+/// - `f64`: Overlap matrix element.
 pub fn calculate_s_pair_wicks(noci_reference_basis: &[SCFState], ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
     let lp = ldet.parent;
     let gp = gdet.parent;
@@ -604,14 +604,14 @@ pub fn calculate_s_pair_wicks(noci_reference_basis: &[SCFState], ldet: &SCFState
 /// Calculate the Fock matrix element between determinants \Lambda and \Gamma
 /// using extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `ldet`: `SCFState`, state \Lambda.
-/// `gdet`: `SCFState`, state \Gamma.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `wicks`: `WicksView`, precomputed Wick's intermediates.
-/// `scratch`: `WickScratch`, scratch space for Wick's calculations.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `wicks`: Precomputed Wick's intermediates.
+/// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// `f64`, Fock matrix element between the determinant pair.
+/// - `f64`: Fock matrix element between the determinant pair.
 pub fn calculate_f_pair_wicks(noci_reference_basis: &[SCFState], ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch,) -> f64 {
     let lp = ldet.parent;
     let gp = gdet.parent;
@@ -645,15 +645,15 @@ pub fn calculate_f_pair_wicks(noci_reference_basis: &[SCFState], ldet: &SCFState
 /// Calculate both the Hamiltonian and overlap matrix elements between
 /// determinants \Lambda and \Gamma using extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `ldet`: `SCFState`, state \Lambda.
-/// `gdet`: `SCFState`, state \Gamma.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `wicks`: `WicksView`, precomputed Wick's intermediates.
-/// `scratch`: `WickScratch`, scratch space for Wick's calculations.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `wicks`: Precomputed Wick's intermediates.
+/// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// `(f64, f64)`, Hamiltonian and overlap matrix elements for the pair.
+/// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
 pub fn calculate_hs_pair_wicks(ao: &AoData, noci_reference_basis: &[SCFState], ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> (f64, f64) {
 
     let lp = ldet.parent;
@@ -699,17 +699,17 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, noci_reference_basis: &[SCFState], l
 /// which computes `T` for the pair. The closure may evaluate, for example,
 /// Hamiltonian, overlap, or Fock matrix elements.
 /// # Arguments:
-/// `left`: `[SCFState]`, first set of determinants.
-/// `right`: `[SCFState]`, second set of determinants.
-/// `input`: `Input`, user specified input options.
-/// `symmetric`: `bool`, whether only the upper triangle should be evaluated.
-/// `o`: closure for determinant-pair evaluation.
+/// - `left`: First set of determinants.
+/// - `right`: Second set of determinants.
+/// - `input`: User specified input options.
+/// - `symmetric`: Whether only the upper triangle should be evaluated.
+/// - `o`: closure for determinant-pair evaluation.
 /// # Returns:
-/// `(Vec<(usize, usize, T)>, Duration)`, evaluated matrix elements with
-/// their indices and the wall time for the evaluation.
+/// - `(Vec<(usize, usize, T)>, Duration)`: Evaluated matrix elements with
+///   their indices and the wall time for the evaluation.
 /// # Type Parameters:
-/// `O`: `closure type implementing `Fn(&SCFState`, &SCFState, Option<&mut WickScratch>) -> T` and `Sync`.
-/// `T`: `determinant-pair value type`, required to be `Send`.
+/// - `O`: &SCFState, Option<&mut WickScratch>) -> T` and `Sync`.
+/// - `T`: Required to be `Send`.
 fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input: &Input, symmetric: bool, o: O) -> (Vec<(usize, usize, T)>, Duration)
     where T: Send, O: Fn(&SCFState, &SCFState, Option<&mut WickScratch>) -> T + Sync {
 
@@ -733,14 +733,14 @@ fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input
 
 /// Scatter matrix elements into 2D Array.
 /// # Arguments:
-/// `vals`: `Vec<(usize`, usize, T)>, matrix elements and indices.
-/// `nl`: `usize`, length of determinant set 1.
-/// `nr`: `usize`, length of determinant set 2.
-/// `symmetric`: `bool`, whether symmetry should be used to fill the lower triangle.
+/// - `vals`: Usize, T)>, matrix elements and indices.
+/// - `nl`: Length of determinant set 1.
+/// - `nr`: Length of determinant set 2.
+/// - `symmetric`: Whether symmetry should be used to fill the lower triangle.
 /// # Returns:
-/// `T::Output`, scattered dense matrix or matrix pair.
+/// - `T::Output`: Scattered dense matrix or matrix pair.
 /// # Type Parameters:
-/// `T`: `matrix element value type to scatter. Can be `f64` or `(f64`, f64)`.
+/// - `T`: F64)`.
 fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize, symmetric: bool) -> T::Output 
     where T: ScatterValue + Copy {
     let mut out = T::zeros(nl, nr);
@@ -756,18 +756,19 @@ fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize
 /// Construct the full NOCI Fock matrix using either the generalised
 /// Slater-Condon rules or extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data.
-/// `left`: `[SCFState]`, first set of determinants.
-/// `right`: `[SCFState]`, second set of determinants.
-/// `fa`: `Array2`, NOCI Fock matrix spin alpha.
-/// `fb`: `Array2`, NOCI Fock matrix spin beta.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `wicks`: `Option<&WicksView>`, optional precomputed Wick's intermediates.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `symmetric`: `bool`, whether the matrix is symmetric.
-/// `input`: `Input`, user specified input options.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `left`: First set of determinants.
+/// - `right`: Second set of determinants.
+/// - `fa`: NOCI Fock matrix spin alpha.
+/// - `fb`: NOCI Fock matrix spin beta.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `wicks`: Optional precomputed Wick's intermediates.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `symmetric`: Whether the matrix is symmetric.
+/// - `input`: User specified input options.
 /// # Returns:
-/// `(Array2<f64>, Duration)`, the NOCI Fock matrix and the matrix-build time.
+/// - `Array2<f64>`: NOCI Fock matrix.
+/// - `Duration`: Matrix-build time.
 pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basis: &[SCFState], 
                        wicks: Option<&WicksView>, tol: f64, symmetric: bool, input: &Input) -> (Array2<f64>, Duration) {
     let nl = left.len();
@@ -789,16 +790,16 @@ pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &
 /// Form the full overlap matrix using either the generalised Slater-Condon
 /// rules or extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data.
-/// `input`: `Input`, user input specifications.
-/// `left`: `[SCFState]`, first set of determinants.
-/// `right`: `[SCFState]`, second set of determinants.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `wicks`: `Option<&WicksView>`, optional precomputed Wick's intermediates.
-/// `symmetric`: `bool`, whether the matrix is symmetric.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: User input specifications.
+/// - `left`: First set of determinants.
+/// - `right`: Second set of determinants.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `wicks`: Optional precomputed Wick's intermediates.
+/// - `symmetric`: Whether the matrix is symmetric.
 /// # Returns:
-/// `(Array2<f64>, Duration)`, the overlap matrix and the matrix-build time.
+/// - `(Array2<f64>, Duration)`: The overlap matrix and the matrix-build time.
 pub fn build_noci_s(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&WicksView>, symmetric: bool) 
                      -> (Array2<f64>, Duration) {
 
@@ -821,17 +822,17 @@ pub fn build_noci_s(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFS
 /// Form the full Hamiltonian and overlap matrices using either the
 /// generalised Slater-Condon rules or extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data.
-/// `input`: `Input`, user input specifications.
-/// `left`: `[SCFState]`, first set of determinants.
-/// `right`: `[SCFState]`, second set of determinants.
-/// `noci_reference_basis`: `[SCFState]`, vector of only the reference determinants.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `wicks`: `Option<&WicksView>`, optional precomputed Wick's intermediates.
-/// `symmetric`: `bool`, whether the matrices are symmetric.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: User input specifications.
+/// - `left`: First set of determinants.
+/// - `right`: Second set of determinants.
+/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `wicks`: Optional precomputed Wick's intermediates.
+/// - `symmetric`: Whether the matrices are symmetric.
 /// # Returns:
-/// `(Array2<f64>, Array2<f64>, Duration)`, the Hamiltonian matrix, overlap matrix,
-/// and matrix-build time.
+/// - `(Array2<f64>, Array2<f64>, Duration)`: The Hamiltonian matrix, overlap matrix,
+///   and matrix-build time.
 pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], noci_reference_basis: &[SCFState], tol: f64, wicks: Option<&WicksView>, symmetric: bool) 
                      -> (Array2<f64>, Array2<f64>, Duration) {
 
@@ -878,14 +879,14 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
 /// Calculate the NOCI ground-state energy by solving the generalised
 /// eigenvalue problem for the NOCI Hamiltonian and overlap matrices.
 /// # Arguments:
-/// `ao`: `AoData struct`, contains AO integrals and other system data.
-/// `input`: `Input`, user input specifications.
-/// `scfstates`: `[SCFState]`, vector of all SCF states used in the NOCI basis.
-/// `tol`: `f64`, tolerance up to which a number is considered zero.
-/// `wicks`: `Option<&WicksView>`, optional precomputed Wick's intermediates.
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: User input specifications.
+/// - `scfstates`: Vector of all SCF states used in the NOCI basis.
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns:
-/// `(f64, Array1<f64>, Duration)`, the lowest NOCI eigenvalue, its coefficient
-/// vector in the NOCI basis, and the time spent building the Hamiltonian/overlap matrices.
+/// - `(f64, Array1<f64>, Duration)`: The lowest NOCI eigenvalue, its coefficient
+///   vector in the NOCI basis, and the time spent building the Hamiltonian/overlap matrices.
 pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
     let (h, s, d_hs) = build_noci_hs(ao, input, scfstates, scfstates, scfstates, tol, wicks, true);
     

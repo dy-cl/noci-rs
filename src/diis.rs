@@ -17,9 +17,9 @@ impl Diis {
     /// Constructor for DIIS object, initialises object with DIIS space m. 
     /// History of Fock and error matrices are initialised as vectors with length m.
     /// # Arguments
-    /// `m`: usize, size of the DIIS space.
+    /// - `m`: Size of the DIIS space.
     /// # Returns
-    /// `Diis`, empty DIIS storage with capacity for `m` previous iterations.
+    /// - `Diis`: Empty DIIS storage with capacity for `m` previous iterations.
     pub fn new(m: usize) -> Self {
         Self {
             m, 
@@ -33,11 +33,11 @@ impl Diis {
     /// Calculate the orthonormalised DIIS error. R = F^s D^s S - S D^s F^s, then 
     /// R' = X^T R X where X = S^{-1/2}.
     /// # Arguments:
-    /// `f`: Array2, spin specific Fock matrix. 
-    /// `d`: Array2, spin specific density matrix. 
-    /// `s`: Array2, AO overlap matrix.
+    /// - `f`: Spin specific Fock matrix. 
+    /// - `d`: Spin specific density matrix. 
+    /// - `s`: AO overlap matrix.
     /// # Returns
-    /// `Array2<f64>`, orthonormalised DIIS error matrix.
+    /// - `Array2<f64>`: Orthonormalised DIIS error matrix.
     fn build_error(f: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array2<f64> {
         let r = f.dot(d).dot(s) - s.dot(d).dot(f);
         let x = loewdin_x_real(s, false, 1e-12);
@@ -46,13 +46,13 @@ impl Diis {
     
     /// Add Fock matrices and DIIS error matrices from current SCF cycle to history.
     /// # Arguments:
-    /// `fa`: Array2, spin a Fock matrix.
-    /// `fb`: Array2, spin b Fock matrix.
-    /// `da`: Array2, spin a density matrix.
-    /// `db`: Array2, spin b density matrix.
-    /// `s`: Array2, AO overlap matrix.
+    /// - `fa`: Spin a Fock matrix.
+    /// - `fb`: Spin b Fock matrix.
+    /// - `da`: Spin a density matrix.
+    /// - `db`: Spin b density matrix.
+    /// - `s`: AO overlap matrix.
     /// # Returns
-    /// `()`, updates the stored Fock and error history in place.
+    /// - `()`: Updates the stored Fock and error history in place.
     pub fn push(&mut self, fa: &Array2<f64>, fb: &Array2<f64>, da: &Array2<f64>, 
                 db: &Array2<f64>, s: &Array2<f64>) {
         let r_prime_a = Self::build_error(fa, da, s); // R'^a = X^T R^a X. 
@@ -74,10 +74,10 @@ impl Diis {
     
     /// Calculate squared norm of most recent error pair. ||E^a|| + ||E^b||. 
     /// # Arguments:
-    /// `self`: Diis struct, contains DIIS data. 
+    /// - `self`: Contains DIIS data. 
     /// # Returns
-    /// `Option<f64>`, squared norm of the most recent alpha and beta error matrices, or `None`
-    /// if no error history is stored.
+    /// - `Option<f64>`: Squared norm of the most recent alpha and beta error matrices, or `None`
+    ///   if no error history is stored.
     pub fn last_error_norm2(&self) -> Option<f64> {
         let m = self.e_hist_a.len();
         // If our subspace size is currently zero we cannot calculate an error.
@@ -92,10 +92,10 @@ impl Diis {
     /// Use past Fock matrices and solutions to augmented linear system to extrapolate. 
     /// Calculates the extrapolated DIIS Fock matrix F_{DIIS}^s = \sum_i^m c_i F_i^s.
     /// # Arguments
-    /// `self`: Diis struct, contains DIIS data.
+    /// - `self`: Contains DIIS data.
     /// # Returns
-    /// `Option<(Array2<f64>, Array2<f64>)>`, extrapolated alpha and beta DIIS Fock matrices,
-    /// or `None` if insufficient or ill-conditioned history prevents extrapolation.
+    /// - `Option<(Array2<f64>, Array2<f64>)>`: Extrapolated alpha and beta DIIS Fock matrices,
+    ///   or `None` if insufficient or ill-conditioned history prevents extrapolation.
     pub fn extrapolate_fock(&self) -> Option<(Array2<f64>, Array2<f64>)> {
         let m = self.e_hist_a.len();
 
