@@ -270,18 +270,16 @@ impl Default for StateRecipe {
 }
 
 pub struct ExcitationOptions {
-    pub singles: bool,
-    pub doubles: bool,
+    pub orders: Vec<usize>, 
 }
 
-impl Default for ExcitationOptions {
+impl ExcitationOptions {
     /// Return default NOCI excitation options.
     /// # Returns:
     /// - `Self`: Excitation options with singles and doubles enabled.
     fn default() -> Self {
         Self {
-            singles: true,
-            doubles: true,
+            orders: [1, 2].to_vec(),
         }
     }
 }
@@ -813,8 +811,7 @@ pub fn load_input(path: &str) -> Input {
     let excit = if let Some(excit_tbl) = excit_tbl {
         let defaults = ExcitationOptions::default();
         ExcitationOptions {
-            singles: excit_tbl.get("singles").unwrap_or(defaults.singles),
-            doubles: excit_tbl.get("doubles").unwrap_or(defaults.doubles),
+            orders: excit_tbl.get("orders").unwrap_or(defaults.orders),
         }
     } else {
         ExcitationOptions::default()
