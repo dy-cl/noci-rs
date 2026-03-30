@@ -352,8 +352,8 @@ fn select_candidates(candidates: &[SCFState], candidate_scores: &[f64], sigma: f
 /// - `()`: Prints the SNOCI iteration header to standard output.
 fn print_snoci_header() {
     println!("{}", "=".repeat(100));
-    println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-             "iter", "NCurr", "NCand", "NCand (F)", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)");
+    println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+             "iter", "NCurr", "NCand", "NCand (F)", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)", "Converged (GMRES)");
 }
 
 /// Print a single SNOCI iteration summary line.
@@ -367,9 +367,9 @@ fn print_snoci_header() {
 /// # Returns:
 /// - `()`: Prints the SNOCI iteration summary to standard output.
 fn print_snoci_iteration(it: usize, n_current: usize, n_generated: usize, e0: f64, state: &SNOCIState, gmres: &GmresResult) {
-    println!("{:>6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+    println!("{:>6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
              it, n_current, n_generated, state.candidates.len(), state.selected.len(), state.ecurrent, state.ecurrent - e0,
-             state.ept2, state.ecurrent + state.ept2, gmres.residual_rms, gmres.iterations);
+             state.ept2, state.ecurrent + state.ept2, gmres.residual_rms, gmres.iterations, gmres.converged);
 }
 
 /// Perform selected NOCI with selection from single and double excitations of current space.

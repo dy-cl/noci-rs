@@ -16,6 +16,7 @@ num-complex = {version = "0.4"}
 hdf5 = {version = "0.8.1", default-features = false}
 bincode = {version = "1"}
 rand_distr = {version = "0.4"}
+memmap2 = "0.9.10" 
 
 [profile.release]
 opt-level = 3

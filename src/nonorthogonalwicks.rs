@@ -1,10 +1,12 @@
 // nonorthogonalwicks.rs 
 use std::ptr::NonNull;
+use std::fs::{File, OpenOptions};
 
 use ndarray::{Array1, Array2, ArrayView2, Array4, ArrayView4, Axis, s};
 use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 
 use crate::{ExcitationSpin};
 
@@ -12,10 +14,16 @@ use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x_real, minor, adjugate
 use crate::mpiutils::Sharedffi;
 use crate::noci::occ_coeffs;
 
+pub enum WicksBacking {
+    Shared(WicksRma),
+    Mmap(Mmap),
+    MmapCow(MmapMut),
+}
+
 // Storage in which we split the Wicks data into the shared remote memory access (RMA) and a view 
 // for reading said data.
 pub struct WicksShared {
-    pub rma: WicksRma,   
+    pub backing: WicksBacking,
     pub view: WicksView, 
 }
 
@@ -43,9 +51,24 @@ impl WicksShared {
     /// # Returns
     /// - `&mut [f64]`: Mutable slice over the full shared tensor slab.
     pub fn slab_mut(&mut self) -> &mut [f64] {
-        let ptr = self.rma.base_ptr as *mut f64;
+        let ptr = self.base_mut_ptr();
         let len = self.view.slab_len;
         unsafe {std::slice::from_raw_parts_mut(ptr, len)}
+    }
+    
+    /// Return a mutable pointer to the start of the contiguous tensor storage.
+    /// # Arguments:
+    /// - `self`: View and backing storage for Wick's intermediates.
+    /// # Returns
+    /// - `*mut f64`: Mutable pointer to the start of the tensor slab.
+    /// # Panics
+    /// - Panics if the backing storage is read-only.
+    fn base_mut_ptr(&mut self) -> *mut f64 {
+        match &mut self.backing {
+            WicksBacking::Shared(rma) => rma.base_ptr as *mut f64,
+            WicksBacking::Mmap(_) => panic!("Wick slab is read-only"),
+            WicksBacking::MmapCow(map) => map.as_mut_ptr() as *mut f64,
+        }
     }
 }
 
@@ -54,6 +77,15 @@ pub struct WicksRma {
     pub shared: Sharedffi, 
     pub base_ptr: *mut u8, 
     pub nbytes: usize,     
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WicksDiskMeta {
+    pub version: u32,
+    pub nref: usize,
+    pub slab_len: usize,
+    pub off: Vec<PairOffset>,
+    pub meta: Vec<PairMeta>,
 }
 
 // Storage for data which allows the Wicks objects to be viewed.
@@ -489,6 +521,58 @@ pub fn write2(slab: &mut [f64], off: usize, a: &ndarray::Array2<f64>) {
 fn write4(slab: &mut [f64], off: usize, a: &ndarray::Array4<f64>) {
     let src = a.as_slice().expect("Array4 must be contiguous");
     slab[off..off + src.len()].copy_from_slice(src);
+}
+
+/// Create a file-backed mutable memory map for the contiguous Wick's tensor slab and
+/// write the associated metadata to disk.
+/// # Arguments:
+/// - `slab_path`: Path to the raw file storing the contiguous tensor slab.
+/// - `meta_path`: Path to the file storing serialised Wick's metadata.
+/// - `nref`: Number of reference determinants.
+/// - `off`: Per-pair offset table into the contiguous tensor slab.
+/// - `meta`: Per-pair metadata stored outside the tensor slab.
+/// - `slab_len`: Total slab length in units of `f64`.
+/// # Returns
+/// - `std::io::Result<WicksShared>`: File-backed Wick's storage and view over the mapped slab.
+pub fn create_wicks_mmap(slab_path: &std::path::Path, meta_path: &std::path::Path, nref: usize, off: Vec<PairOffset>, 
+                         meta: Vec<PairMeta>, slab_len: usize,) -> std::io::Result<WicksShared> {
+    let nbytes = slab_len * std::mem::size_of::<f64>();
+    let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(slab_path)?;
+    file.set_len(nbytes as u64)?;
+
+    let mut mmap = unsafe {MmapOptions::new().len(nbytes).map_mut(&file)?};
+
+    let ptr = mmap.as_mut_ptr() as *mut f64;
+    let slab = unsafe { std::slice::from_raw_parts_mut(ptr, slab_len) };
+    slab.fill(0.0);
+
+    mmap.flush()?;
+
+    let disk_meta = WicksDiskMeta {version: 1, nref, slab_len, off, meta};
+    std::fs::write(meta_path, bincode::serialize(&disk_meta).unwrap())?;
+
+    let view = WicksView {slab: NonNull::new(ptr).unwrap(), slab_len, nref, off: disk_meta.off.clone(), meta: disk_meta.meta.clone(),};
+
+    Ok(WicksShared {backing: WicksBacking::MmapCow(mmap), view})
+}
+
+/// Load a file-backed read-only memory map for a previously written Wick's tensor slab
+/// together with its serialised metadata.
+/// # Arguments:
+/// - `slab_path`: Path to the raw file storing the contiguous tensor slab.
+/// - `meta_path`: Path to the file storing serialised Wick's metadata.
+/// # Returns
+/// - `std::io::Result<WicksShared>`: File-backed Wick's storage and view over the mapped slab.
+pub fn load_wicks_mmap(slab_path: &std::path::Path, meta_path: &std::path::Path) -> std::io::Result<WicksShared> {
+    let disk_meta: WicksDiskMeta = bincode::deserialize(&std::fs::read(meta_path)?).unwrap();
+    let file = File::open(slab_path)?;
+    let mmap = unsafe { MmapOptions::new().map(&file)? };
+
+    let ptr = mmap.as_ptr() as *mut f64;
+
+    let view = WicksView {slab: NonNull::new(ptr).unwrap(), slab_len: disk_meta.slab_len, nref: disk_meta.nref, off: disk_meta.off, meta: disk_meta.meta,};
+
+    Ok(WicksShared {backing: WicksBacking::Mmap(mmap), view})
 }
 
 /// Write 2D slice of 4D J or IIab tensors into provided output scratch. The given slice is t[r, c, i, j]  

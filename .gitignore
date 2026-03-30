@@ -2,6 +2,7 @@ target/
 inputs/
 outputs/
 plotting/
+wickscache/
 data.h5
 Cargo.lock
 .cargo

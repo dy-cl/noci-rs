@@ -374,9 +374,16 @@ impl Default for WriteOptions {
     }
 }
 
+pub enum WicksStorage {
+    RAM,
+    Disk,
+}
+
 pub struct WicksOptions {
     pub compare: bool,
     pub enabled: bool,
+    pub storage: WicksStorage,
+    pub cachedir: Option<String>,
 }
 
 impl Default for WicksOptions {
@@ -387,6 +394,8 @@ impl Default for WicksOptions {
         Self {
             compare: false,
             enabled: true,
+            storage: WicksStorage::RAM,
+            cachedir: Some(".".to_string()),
         }
     }
 }
@@ -830,9 +839,19 @@ pub fn load_input(path: &str) -> Input {
     // Wick's table.
     let wicks = if let Some(wicks_tbl) = wicks_tbl {
         let defaults = WicksOptions::default();
+        let storage = match wicks_tbl.get::<_, Option<String>>("storage").unwrap() {
+            Some(s) => match s.to_lowercase().as_str() {
+                "ram" => WicksStorage::RAM,
+                "disk" => WicksStorage::Disk,
+                other => panic!("Unknown wicks.storage value: {other}. Use 'ram' or 'disk'."),
+            },
+            None => defaults.storage,
+        };
         WicksOptions {
             compare: wicks_tbl.get("compare").unwrap_or(defaults.compare),
             enabled: wicks_tbl.get("enabled").unwrap_or(defaults.enabled),
+            storage,
+            cachedir: wicks_tbl.get("cachedir").unwrap_or(defaults.cachedir),
         }
     } else {
         WicksOptions::default()

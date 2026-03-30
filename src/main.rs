@@ -163,7 +163,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
             println!("{}", "=".repeat(100));
             println!("Precomputing Wick's intermediates....");
         }
-        wicks_shared = Some(build_wicks_shared(world, &ao, &noci_reference_basis, tol));
+        wicks_shared = Some(build_wicks_shared(world, &ao, &noci_reference_basis, tol, input));
     };
     let d_wi = t_wi.elapsed();
     timings.wicks_intermediates = d_wi;
