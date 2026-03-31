@@ -1,7 +1,8 @@
 //snoci.rs
 use std::time::{Instant, Duration};
+use std::collections::HashSet;
 
-use ndarray::{Array1, Array2, Axis};
+use ndarray::{Array1, Array2, Axis, concatenate};
 
 use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared};
@@ -29,28 +30,152 @@ struct GmresResult {
     pub converged: bool,
 }
 
-struct CandidateSpaceMatrixElems {
-    // List of all candidate states.
+struct ProjectedCandidateSpaceElems {
+    // Current pool candidates.
     candidates: Vec<SCFState>,
-    // Candidate-candidate space overlap.
-    s_ab: Array2<f64>,
-    // Candidate-current space Hamiltonian.
-    h_ai: Array2<f64>,
-    // Candidate-current space overlap.
+    // Candidate-candidate overlap projected into complement of current selected space. This is
+    // given by S_{ab}^{\Omega} = S_{ab} - S_{ai} S^{ij} S_{jb}.
+    s_ab_omega: Array2<f64>,
+    // Non-projected candidate-current overlap for current pool.
     s_ai: Array2<f64>,
+    // Transpose of s_ai.
+    s_ia: Array2<f64>,
 }
 
-struct FilteredCandidateSpaceMatrixElems {
-    // List of all filtered candidate states.
+struct CandidatePool {
+    // Current pool candidates.
     candidates: Vec<SCFState>,
-    // Filtered candidate-candidate space after projecting out current space directions.
-    s_ab_omega: Array2<f64>,
-    // Filtered candidate-candidate space Hamiltonian.
-    h_ai: Array2<f64>,
-    // Filtered candidate-candidate space overlap.
-    s_ai: Array2<f64>,
-    // Filtered candidate-candidate space overlap transposed.
-    s_ia: Array2<f64>,
+    // Candidate-candidate overlap.
+    s_ab: Array2<f64>,
+    // Candidate-current overlap.
+    s_ai: Array2<f64>, 
+}
+
+impl CandidatePool {
+    /// Construct the initial candidate pool of determinants from the current selected space.
+    /// # Arguments
+    /// - `ao`: AO integrals and other system data.
+    /// - `selected_space`: Current selected nonorthogonal determinant space.
+    /// - `noci_reference_basis`: Vector of only the reference determinants.
+    /// - `input`: User-defined input options.
+    /// - `wicks`: Optional shared Wick's intermediates.
+    /// - `tol`: Tolerance for whether a number is considered zero.
+    /// # Returns
+    /// - `CandidatePool`: Initial candidate pool containing all generated candidates together
+    ///   with candidate-candidate and candidate-current overlap matrices.
+    fn new(ao: &AoData, selected_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, wicks: Option<&WicksShared>, tol: f64) -> Self {
+        let candidates = generate_excited_basis(selected_space, input, false);
+        if candidates.is_empty() {
+            return Self {
+                candidates,
+                s_ab: Array2::zeros((0, 0)),
+                s_ai: Array2::zeros((0, selected_space.len())),
+            };
+        }
+
+        let (s_ab, _) = build_noci_s(ao, input, &candidates, &candidates, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), true);
+        let (s_ai, _) = build_noci_s(ao, input, &candidates, selected_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false);
+
+        Self {candidates, s_ab, s_ai}
+    }
+
+    /// Remove any candidates from the pool that have just been selected.
+    /// # Arguments
+    /// - `selected`: Newly selected determinants that should no longer remain in the pool.
+    /// # Returns
+    /// - `()`: Updates the candidate pool in place.
+    fn remove_selected(&mut self, selected: &[SCFState]) {
+        let selected_keys: HashSet<&str> = selected.iter().map(|st| st.label.as_str()).collect();
+        let keep: Vec<usize> = self.candidates.iter().enumerate().filter_map(|(i, st)| (!selected_keys.contains(st.label.as_str())).then_some(i)).collect();
+        self.candidates = keep.iter().map(|&i| self.candidates[i].clone()).collect();
+        self.s_ab = self.s_ab.select(Axis(0), &keep).select(Axis(1), &keep);
+        self.s_ai = self.s_ai.select(Axis(0), &keep);
+    }
+
+    /// Remove candidates whose projected norm in the complement of the current selected space is
+    /// numerically zero. Such candidates have directions almost entirely accounted for by the
+    /// current selected space and would simply add null directions if included.
+    /// # Arguments
+    /// - `s_ij_inv`: Inverse metric in the current selected space.
+    /// - `metric_tol`: Threshold below which projected candidate norms are discarded.
+    /// # Returns
+    /// - `()`: Updates the candidate pool in place.
+    fn filter_candidates(&mut self, s_ij_inv: &Array2<f64>, metric_tol: f64) {
+        if self.candidates.is_empty() {return;}
+        
+        // T_{aj} = S_{ai} S^{ij}.
+        let t = self.s_ai.dot(s_ij_inv);
+        // S_{ab, \Omega} = S_{ab} - S_{ai} S^{ij} S_{jb}.
+        let s_omega_diag = self.s_ab.diag().to_owned() - (&t * &self.s_ai).sum_axis(Axis(1));
+
+        let keep: Vec<usize> = s_omega_diag.iter().enumerate().filter_map(|(a, &d)| (d > metric_tol).then_some(a)).collect();
+        if keep.len() == self.candidates.len() {return;}
+
+        self.candidates = keep.iter().map(|&i| self.candidates[i].clone()).collect();
+        self.s_ab = self.s_ab.select(Axis(0), &keep).select(Axis(1), &keep);
+        self.s_ai = self.s_ai.select(Axis(0), &keep);
+    }
+
+    /// Update the candidate pool and overlap matrices once the selected space has grown.
+    /// # Arguments
+    /// - `ao`: AO integrals and other system data.
+    /// - `selected_space`: Updated selected nonorthogonal determinant space.
+    /// - `newly_selected`: Determinants added on the most recent SNOCI iteration.
+    /// - `noci_reference_basis`: Vector of only the reference determinants.
+    /// - `input`: User-defined input options.
+    /// - `wicks`: Optional shared Wick's intermediates.
+    /// - `tol`: Tolerance for whether a number is considered zero.
+    /// # Returns
+    /// - `()`: Updates the pool in place by removing newly selected states, extending the
+    ///   candidate-current overlap block, and appending overlaps for genuinely new candidates.
+    fn update(&mut self, ao: &AoData, selected_space: &[SCFState], newly_selected: &[SCFState], noci_reference_basis: &[SCFState],
+              input: &Input, wicks: Option<&WicksShared>, tol: f64) {
+        // If nothing was selected there is nothing to be done.
+        if newly_selected.is_empty() {return;}
+        // Remove new selections from the candidate pool.
+        self.remove_selected(newly_selected);
+        
+        // Find candidate-newlyselected overlap and append to existing overlap. 
+        if !self.candidates.is_empty() {
+            let (s_aj, _) = build_noci_s(ao, input, &self.candidates, newly_selected, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false);
+            self.s_ai = concatenate(Axis(1), &[self.s_ai.view(), s_aj.view()]).unwrap();
+        }
+        
+        // Generate the candidates corresponding to excitations of the newly selected determinants.
+        let mut new_candidates = generate_excited_basis(newly_selected, input, false);
+        let existing: HashSet<&str> = selected_space.iter().chain(self.candidates.iter()).map(|st| st.label.as_str()).collect();
+        new_candidates.retain(|st| !existing.contains(st.label.as_str()));
+        if new_candidates.is_empty() {return;}
+        
+        // Generate candidate-candidate overlap for new candidates only.
+        let (s_bb, _) = build_noci_s(ao, input, &new_candidates, &new_candidates, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), true);
+        // Get candidate-candidate overlap between new candidates and old candidate pool.
+        let s_ba = if self.candidates.is_empty() {
+            Array2::<f64>::zeros((new_candidates.len(), 0))
+        } else {
+            build_noci_s(ao, input, &new_candidates, &self.candidates, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false).0
+        };
+        // Candidate-current overlap between new candidates and current selected space.
+        let (s_bi, _) = build_noci_s(ao, input, &new_candidates, selected_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false);
+    
+        // Assemble the full new candidate-candidate overlap matrix.
+        if self.candidates.is_empty() {
+            self.s_ab = s_bb;
+            self.s_ai = s_bi;
+            self.candidates.extend(new_candidates);
+            return;
+        }
+
+        self.s_ab = {
+            let top = concatenate(Axis(1), &[self.s_ab.view(), s_ba.t().view()]).unwrap();
+            let bot = concatenate(Axis(1), &[s_ba.view(), s_bb.view()]).unwrap();
+            concatenate(Axis(0), &[top.view(), bot.view()]).unwrap()
+        };
+
+        // Assemble full new candidate-current overlap matrix.
+        self.s_ai = concatenate(Axis(0), &[self.s_ai.view(), s_bi.view()]).unwrap();
+        self.candidates.extend(new_candidates);
+    }
 }
 
 struct FockMatrixElems {
@@ -67,8 +192,9 @@ struct FockMatrixElems {
 #[derive(Default)]
 pub struct SNOCIStepTimings {
     pub current_space: Duration,
-    pub generate_candidates: Duration,
-    pub candidate_hs: Duration,
+    pub initial_candidate_generation: Duration,
+    pub pool_overlap_update: Duration,
+    pub candidate_h_ai: Duration,
     pub pseudoinverse: Duration,
     pub s_omega: Duration,
     pub generalised_fock: Duration,
@@ -216,61 +342,31 @@ fn solve_current_space(ao: &AoData, current_space: &[SCFState], noci_reference_b
         (hcurrent, scurrent, ecurrent, coeffs)
 }
 
-/// Build candidate-candidate and candidate-current overlap and Hamiltonian matrix elements.
+/// Project the current pool of candidates into complement of current selected space. Which is:
+/// |\Omega_\alpha^{(k)}\rangle = \hat Q^{(k)} |\Phi_\alpha^{(k)} \rangle, where the operator \hat
+/// Q is \hat Q = \hat I - \hat P^{(k)}. In projecting the candidate space, we need only form S_{ab}^{\Omega}.
 /// # Arguments:
-/// - `ao`: AO integrals and other system data.
-/// - `selected_space`: Current selected nonorthogonal determinant space.
-/// - `candidates`: Candidate determinants generated from the selected space.
-/// - `noci_reference_basis`: Vector of only the reference determinants.
-/// - `wicks`: Optional shared Wick's intermediates.
-/// - `tol`: Tolerance for whether a number is considered zero.
-/// - `input`: User-defined input options.
+/// - `pool`: Candidate pool containing candidate-candidate and candidate-current overlaps.
+/// - `s_ij_inv`: Inverse metric in the current selected space.
 /// # Returns:
-/// - `CandidateSpaceMatrixElems`: Candidate-space overlap and Hamiltonian matrix elements.
-fn build_candidate_space(ao: &AoData, selected_space: &[SCFState], candidates: &[SCFState], noci_reference_basis: &[SCFState],
-                            wicks: Option<&WicksShared>, tol: f64, input: &Input) -> CandidateSpaceMatrixElems {
-    // Candidate-candidate overlap.
-    let (s_ab, _) = build_noci_s(ao, input, candidates, candidates, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), true);
-    // Candidate-current Hamiltonian and overlap.
-    let (h_ai, s_ai, _) = build_noci_hs(ao, input, candidates, selected_space, noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false);
-    CandidateSpaceMatrixElems {candidates: candidates.to_vec(), s_ab, h_ai, s_ai}
-}
-
-/// Project the candidate space out of the current selected space and remove linearly dependent candidates.
-/// # Arguments:
-/// - `candidate_space`: Candidate-space overlap and Hamiltonian matrix elements.
-/// - `s_ij_inv`: Inverse metric in the current space.
-/// - `metric_tol`: Threshold below which projected candidate norms are discarded.
-/// # Returns:
-/// - `Option<FilteredCandidateSpaceMatrixElems>`: Projected and filtered candidate-space matrix
-///   elements if any candidates survive, otherwise `None`.
-fn filter_candidate_space(candidate_space: CandidateSpaceMatrixElems, s_ij_inv: &Array2<f64>, metric_tol:  f64) -> Option<FilteredCandidateSpaceMatrixElems> {
-    // Projection of candidate-space metric into current space S_{ai} S^{ij} S_{jb}.
-    let sbi_ij_ja = candidate_space.s_ai.dot(&s_ij_inv.dot(&candidate_space.s_ai.t()));
-    // Projected candidate-space metric S_{\Omega, ab} =  S_{ab} - S_{ai} S^{ij} S_{jb}. Components
-    // that lie in current space are projected out.
-    let s_omega_ab = &candidate_space.s_ab - &sbi_ij_ja;
-    //  Keep only candidates with projected norm larger than some tolerance. Norms close to zero
-    //  indicate linear dependence and therefore are discarded.
-    let keep: Vec<usize> = (0..candidate_space.candidates.len()).filter(|&a| s_omega_ab[(a, a)] > metric_tol).collect();
-    if keep.is_empty() {return None;}
-    // Keep only surviving candidates.
-    let filtered_candidates = keep.iter().map(|&i| candidate_space.candidates[i].clone()).collect();
-    // Filter matrices to only have surviving candidates elements.
-    let h_ai = candidate_space.h_ai.select(Axis(0), &keep);
-    let s_ai = candidate_space.s_ai.select(Axis(0), &keep);
+/// - `ProjectedCandidateSpaceElems`: Candidate-space matrices projected into the complement
+///   of the current selected space.
+fn project_candidate_space(pool: &CandidatePool, s_ij_inv: &Array2<f64>) -> ProjectedCandidateSpaceElems {
+    let s_ai = pool.s_ai.clone();
     let s_ia = s_ai.t().to_owned();
-    let s_ab_omega = s_omega_ab.select(Axis(0), &keep).select(Axis(1), &keep);
+    // T_{aj} = S_{ai} S^{ij}.
+    let t = s_ai.dot(s_ij_inv);
+    // S_{ab, \Omega} = S_{ab} - S_{ai} S^{ij} S_{jb}.
+    let s_ab_omega = &pool.s_ab - &t.dot(&s_ia);
 
-    Some(FilteredCandidateSpaceMatrixElems {candidates: filtered_candidates, h_ai, s_ai, s_ia, s_ab_omega})
+    ProjectedCandidateSpaceElems {candidates: pool.candidates.clone(), s_ab_omega, s_ai, s_ia}
 }
 
 /// Build current-current, candidate-current, and candidate-candidate Fock matrix elements.
 /// # Arguments:
 /// - `ao`: AO integrals and other system data.
 /// - `selected_space`: Current selected nonorthogonal determinant space.
-/// - `filtered_space`: Projected and filtered candidate-space
-///   matrix elements.
+/// - `projected_space`: Projected candidate-space matrix elements.
 /// - `fa`: Alpha-spin generalised Fock matrix.
 /// - `fb`: Beta-spin generalised Fock matrix.
 /// - `noci_reference_basis`: Vector of only the reference determinants.
@@ -280,17 +376,17 @@ fn filter_candidate_space(candidate_space: CandidateSpaceMatrixElems, s_ij_inv: 
 /// # Returns:
 /// - `FockMatrixElems`: Current-current, candidate-current, and candidate-candidate Fock matrix
 ///   elements.
-fn build_focks(ao: &AoData, selected_space: &[SCFState], filtered_space: &FilteredCandidateSpaceMatrixElems, fa: &Array2<f64>, fb: &Array2<f64>,
+fn build_focks(ao: &AoData, selected_space: &[SCFState], projected_space: &ProjectedCandidateSpaceElems, fa: &Array2<f64>, fb: &Array2<f64>,
                noci_reference_basis: &[SCFState], wicks: Option<&WicksShared>, input: &Input, tol: f64) -> FockMatrixElems {
     // Current-current Fock.
     let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, fa, fb, noci_reference_basis, 
                                    wicks.as_ref().map(|ws| ws.view()), tol, true, input);
     // Candidate-current Fock.
-    let (f_ai, _) = build_noci_fock(ao, &filtered_space.candidates, selected_space, fa, fb, noci_reference_basis, 
+    let (f_ai, _) = build_noci_fock(ao, &projected_space.candidates, selected_space, fa, fb, noci_reference_basis, 
                                    wicks.as_ref().map(|ws| ws.view()), tol, false, input);
     let f_ia = f_ai.t().to_owned();
     // Candidate-candidate Fock.
-    let (f_ab, _) = build_noci_fock(ao, &filtered_space.candidates, &filtered_space.candidates, fa, fb, 
+    let (f_ab, _) = build_noci_fock(ao, &projected_space.candidates, &projected_space.candidates, fa, fb, 
                                    noci_reference_basis, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
     FockMatrixElems {f_ii, f_ai, f_ia, f_ab}
 }
@@ -311,8 +407,7 @@ fn empty_state(ecurrent: f64, coeffs: Array1<f64>, hcurrent: Array2<f64>, scurre
 
 /// Build the projected Omega-space Fock operator and coupling vector.
 /// # Arguments:
-/// - `filtered_space`: Projected and filtered candidate-space
-///   matrix elements.
+/// - `projected_space`: Projected candidate-space matrix elements.
 /// - `focks`: Current-current, candidate-current, and candidate-candidate Fock
 ///   matrix elements.
 /// - `hcurrent`: Hamiltonian matrix in the current selected space.
@@ -320,20 +415,25 @@ fn empty_state(ecurrent: f64, coeffs: Array1<f64>, hcurrent: Array2<f64>, scurre
 /// - `s_ij_inv`: Inverse metric in the current selected space.
 /// # Returns:
 /// - `(Array2<f64>, Array1<f64>)`: Projected Omega-space Fock matrix and coupling vector.
-fn build_omega_fock(filtered_space: &FilteredCandidateSpaceMatrixElems, focks: FockMatrixElems, hcurrent: &Array2<f64>, 
-                    coeffs: &Array1<f64>, s_ij_inv: &Array2<f64>) -> (Array2<f64>, Array1<f64>) {
-    let f_ai_proj = focks.f_ai.dot(&s_ij_inv.dot(&filtered_space.s_ia));
-    let f_ia_proj = filtered_space.s_ai.dot(&s_ij_inv.dot(&focks.f_ia));
-    let f_ii_proj = filtered_space.s_ai.dot(&s_ij_inv.dot(&focks.f_ii.dot(&s_ij_inv.dot(&filtered_space.s_ia))));
+fn build_omega_fock(projected_space: &ProjectedCandidateSpaceElems, focks: FockMatrixElems, hcurrent: &Array2<f64>, 
+                    coeffs: &Array1<f64>, s_ij_inv: &Array2<f64>, h_ai: &Array2<f64>) -> (Array2<f64>, Array1<f64>) {
+    // F_{ai} S^{ij} S_{jb}.
+    let f_ai_proj = focks.f_ai.dot(&s_ij_inv.dot(&projected_space.s_ia));
+    // S_{ai} S^{ij} F_{jb}.
+    let f_ia_proj = projected_space.s_ai.dot(&s_ij_inv.dot(&focks.f_ia));
+    // S_{ai} S^{ij} F_{jk} S^{kl} S_{lb}.
+    let f_ii_proj = projected_space.s_ai.dot(&s_ij_inv.dot(&focks.f_ii.dot(&s_ij_inv.dot(&projected_space.s_ia))));
+    // Projected candidate space Fock.
     let f_ab_omega = &focks.f_ab - &f_ai_proj - &f_ia_proj + &f_ii_proj;
-    let h_proj = filtered_space.s_ai.dot(&s_ij_inv.dot(hcurrent));
-    let v_omega = (&filtered_space.h_ai - &h_proj).dot(coeffs);
+    // Projected candidate-current Hamiltonian.
+    let h_ai_omega = projected_space.s_ai.dot(&s_ij_inv.dot(hcurrent));
+    let v_omega = (h_ai - &h_ai_omega).dot(coeffs);
     (f_ab_omega, v_omega)
 }
 
 /// Select the highest-scoring candidates above the selection threshold.
 /// # Arguments:
-/// - `candidates`: Filtered candidate determinants.
+/// - `candidates`: Candidate determinants currently present in the projected pool.
 /// - `candidate_scores`: Candidate importance scores.
 /// - `sigma`: Selection threshold.
 /// - `max_add`: Maximum number of candidates to add.
@@ -353,22 +453,24 @@ fn select_candidates(candidates: &[SCFState], candidate_scores: &[f64], sigma: f
 fn print_snoci_header() {
     println!("{}", "=".repeat(100));
     println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-             "iter", "NCurr", "NCand", "NCand (F)", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)", "Converged (GMRES)");
+             "iter", "NCurr", "NCand (R)", "NCand", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)", "Converged (GMRES)");
 }
 
 /// Print a single SNOCI iteration summary line.
 /// # Arguments:
 /// - `it`: SNOCI iteration index.
 /// - `n_current`: Number of determinants in the current selected space.
-/// - `n_generated`: Number of generated candidates before filtering.
+/// - `npool_pre`: Candidate-pool size before projected-norm filter.
+/// - `npool_post`: Candidate-pool size after projected-norm filter.
 /// - `e0`: RHF reference energy used to define the correlation energy.
 /// - `state`: SNOCI state for the current iteration.
 /// - `gmres`: GMRES solve information for the current iteration.
 /// # Returns:
 /// - `()`: Prints the SNOCI iteration summary to standard output.
-fn print_snoci_iteration(it: usize, n_current: usize, n_generated: usize, e0: f64, state: &SNOCIState, gmres: &GmresResult) {
+fn print_snoci_iteration(it: usize, n_current: usize, e0: f64, state: &SNOCIState, gmres: &GmresResult,
+                         npool_pre: usize, npool_post: usize) {
     println!("{:>6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-             it, n_current, n_generated, state.candidates.len(), state.selected.len(), state.ecurrent, state.ecurrent - e0,
+             it, n_current, npool_pre, npool_post, state.selected.len(), state.ecurrent, state.ecurrent - e0,
              state.ept2, state.ecurrent + state.ept2, gmres.residual_rms, gmres.iterations, gmres.converged);
 }
 
@@ -390,6 +492,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
     let mut timings = SNOCIStepTimings::default();
     let mut selected_space = current_space.to_vec();
     let mut final_state: Option<SNOCIState> = None;
+    let mut candidate_pool: Option<CandidatePool> = None;
 
     // We define correlation from the RHF energy.
     let e0 = noci_reference_basis[0].e;
@@ -400,23 +503,14 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         let t0 = Instant::now();
         let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(ao, &selected_space, noci_reference_basis, input, wicks.as_deref(), tol);
         timings.current_space += t0.elapsed();
-        
-        // Generate single and double excitations of the current space as potential candidates.
-        let t0 = Instant::now();
-        // False flag ensures that the current selected space is not returned alongside the
-        // potential excited candidates.
-        let candidates = generate_excited_basis(&selected_space, input, false);
-        timings.generate_candidates += t0.elapsed();
 
-        // If the candidates list is empty we have nothing more to do. 
-        if candidates.is_empty() {return (empty_state(ecurrent, coeffs, hcurrent, scurrent, candidates), timings);}
-
-        // Build candidate-candidate and candidate-current matrices. Note that we use incides i, j to refer to
-        // the current state space, and a, b (or \alpha and \beta) to refer to the candidate space.
-        let t0 = Instant::now();
-        let candidate_space = build_candidate_space(ao, &selected_space, &candidates, noci_reference_basis, wicks.as_deref(), tol, input);
-        timings.candidate_hs += t0.elapsed();
-
+        // Build the candidate pool once, then reuse it.
+        if candidate_pool.is_none() {
+            let t0 = Instant::now();
+            candidate_pool = Some(CandidatePool::new(ao, &selected_space, noci_reference_basis, input, wicks.as_deref(), tol));
+            timings.initial_candidate_generation += t0.elapsed();
+        }
+          
         // Find psuedoinvserse S^{ij}. This is used to define the projector onto the current
         // selected space as:
         //  \hat P = \sum_{i,j \in \mathcal{V}_N^{(k)}} |\Psi_i \rangle S^{ij} \langle \Psi_j |.
@@ -424,20 +518,37 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         let x = loewdin_x_real(&scurrent, true, tol);
         let s_ij_inv = x.dot(&x);
         timings.pseudoinverse += t0.elapsed();
-        
-        // To avoid redundancy we filter out the potential candidates and remove directions already
-        // present in the current space. The projector used is:
-        //  \hat Q = \hat I - \hat P,
+   
+        let npool_pre = candidate_pool.as_ref().unwrap().candidates.len();
+        if let Some(pool) = candidate_pool.as_mut() {
+            let t0 = Instant::now();
+            // Remove pool candidates whose projected norm
+            //     S_{aa}^{\Omega} = S_{aa} - S_{ai} S^{ij} S_{ja}
+            // falls below the metric threshold. These candidates have directions already described
+            // ny the current space and would only add linear dependence.
+            pool.filter_candidates(&s_ij_inv, opts.gmres.metric_tol);
+            timings.s_omega += t0.elapsed();
+        }
+        let pool = candidate_pool.as_ref().unwrap();
+        let npool_post = pool.candidates.len();
+
+        // No candidates left in the pool.
+        if pool.candidates.is_empty() {
+            return (empty_state(ecurrent, coeffs, hcurrent, scurrent, Vec::new()), timings);
+        }
+
         //  where \hat P is as defined above.
+        // Project the current candidate pool out of the selected space to form the Omega-space
+        // overlap used in the linear problem.
         let t0 = Instant::now();
-        let filtered_candidate_space = filter_candidate_space(candidate_space, &s_ij_inv, opts.gmres.metric_tol); 
+        let projected_candidate_space = project_candidate_space(pool, &s_ij_inv); 
         timings.s_omega += t0.elapsed();
         
-        // If the resulting filtered candidate space is empty return.
-        let filtered_candidate_space = match filtered_candidate_space {
-            Some(filtered) => filtered,
-            None => return (empty_state(ecurrent, coeffs, hcurrent, scurrent, candidates), timings),
-        };
+        // Build candidate-current Hamiltonian only for surviving candidates.
+        let t0 = Instant::now();
+        let (h_ai, _, _) = build_noci_hs(ao, input, &projected_candidate_space.candidates, &selected_space, 
+                                         noci_reference_basis, tol, wicks.as_ref().map(|ws| ws.view()), false);
+        timings.candidate_h_ai += t0.elapsed();
 
         // Get multireference NOCI density and form the generalised Fock matrix.
         let t0 = Instant::now();
@@ -454,17 +565,17 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
 
         // Calculate current-current, candidate-current and candidate-candidate Fock matrix elements.
         let t0 = Instant::now();
-        let focks = build_focks(ao, &selected_space, &filtered_candidate_space, &fa, &fb, noci_reference_basis, wicks.as_deref(), input, tol);
+        let focks = build_focks(ao, &selected_space, &projected_candidate_space, &fa, &fb, noci_reference_basis, wicks.as_deref(), input, tol);
         timings.candidate_fock += t0.elapsed();
 
         // Find the projected space Fock operator and coupling vector of the linear system to solve.
         let t0 = Instant::now();
-        let (f_ab_omega, v_omega) = build_omega_fock(&filtered_candidate_space, focks, &hcurrent, &coeffs, &s_ij_inv); 
+        let (f_ab_omega, v_omega) = build_omega_fock(&projected_candidate_space, focks, &hcurrent, &coeffs, &s_ij_inv, &h_ai); 
         timings.f_omega += t0.elapsed();
         
         // Set-up linear system and pass to GMRES to solve for amplitude vector A_\alpha^{(k)}
         let t0 = Instant::now();
-        let m_omega_ab = &f_ab_omega - &(filtered_candidate_space.s_ab_omega.mapv(|x| ecurrent * x));
+        let m_omega_ab = &f_ab_omega - &(projected_candidate_space.s_ab_omega.mapv(|x| ecurrent * x));
         let rhs = v_omega.mapv(|x| -x);
         let a = gmres(&m_omega_ab, &rhs, opts.gmres.max_iter, opts.gmres.res_tol);
         timings.gmres += t0.elapsed();
@@ -476,11 +587,11 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         
         // Select top candidates to add to current space.
         let t0 = Instant::now();
-        let selected = select_candidates(&filtered_candidate_space.candidates, &candidate_scores, opts.sigma, opts.max_add);
+        let selected = select_candidates(&projected_candidate_space.candidates, &candidate_scores, opts.sigma, opts.max_add);
         timings.select += t0.elapsed();
         
-        let state = SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates: filtered_candidate_space.candidates, selected, candidate_scores, ept2};
-        print_snoci_iteration(it, selected_space.len(), candidates.len(), e0, &state, &a);
+        let state = SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates: projected_candidate_space.candidates, selected, candidate_scores, ept2};
+        print_snoci_iteration(it, selected_space.len(), e0, &state, &a, npool_pre, npool_post);
 
         // Convergence or stopping.
         if state.selected.is_empty() {
@@ -492,7 +603,13 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             return (state, timings);
         }
 
+        // Extend selected space and update the pool.
         selected_space.extend(state.selected.iter().cloned());
+        if let Some(pool) = candidate_pool.as_mut() {
+            let t0 = Instant::now();
+            pool.update(ao, &selected_space, &state.selected, noci_reference_basis, input, wicks.as_deref(), tol);
+            timings.pool_overlap_update += t0.elapsed();
+        }
         final_state = Some(state);
     }
     println!("SNOCI stopped: Maximum iteration was reached ({}).", opts.max_iter);
