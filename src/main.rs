@@ -532,8 +532,9 @@ fn print_report(res: &Results, input: &Input) {
     if input.snoci.is_some() {
         println!("Total SNOCI time: {:?}", res.timings.snoci_total);
         println!(r"  Current space H, S and GEVP: {:?}", res.timings.snoci_step.current_space);
-        println!(r"  Candidate generation: {:?}", res.timings.snoci_step.generate_candidates);
-        println!(r"  Candidate space H & S: {:?}", res.timings.snoci_step.candidate_hs);
+        println!(r"  Initial canididate pool generation: {:?}", res.timings.snoci_step.initial_candidate_generation);
+        println!(r"  Update candidate pool overlaps: {:?}", res.timings.snoci_step.pool_overlap_update);
+        println!(r"  Filtered Candidate-current space H: {:?}", res.timings.snoci_step.candidate_h_ai);
         println!(r"  Pseudoinverse: {:?}", res.timings.snoci_step.pseudoinverse);
         println!(r"  Build Omega space S: {:?}", res.timings.snoci_step.s_omega);
         println!(r"  Generalised Fock build: {:?}", res.timings.snoci_step.generalised_fock);
