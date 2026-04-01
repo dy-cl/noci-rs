@@ -1,8 +1,8 @@
 
 # noci-rs
-
 `noci-rs` is a Rust implementation of non-orthogonal configuration interaction (NOCI) and stochastic NOCI (NOCI-QMC) for molecular systems where a non-orthogonal determinant basis is advantageous.
 
+[![tests](https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml/badge.svg)](https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml)
 ## Features
 
 - **Non-Orthogonal Configuration Interaction (NOCI)**
