@@ -3,17 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 use noci_rs::AoData;
 use noci_rs::input::{Input, load_input};
 use noci_rs::read::read_integrals;
-
-#[derive(Deserialize)]
-pub struct Expected {
-    pub scf_energies: Option<Vec<f64>>,
-    pub reference_noci_energy: Option<f64>,
-}
 
 /// Return name of a directory containing a test fixture.
 /// # Arguments:
@@ -29,13 +23,13 @@ pub fn fixture_dir(name: &str) -> PathBuf {
 /// - `name`: Name of the fixture.
 /// # Returns
 /// - `(Input, AoData, Expected)`: Parsed input, generated AO data, and expected energies.
-pub fn load_test(name: &str) -> (Input, AoData, Expected) {
+pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
     let dir = fixture_dir(name);
     let input = load_input(dir.join("input.lua").to_str().unwrap());
     generate_data_h5(&dir, &input);
     let input = load_input(dir.join("input.lua").to_str().unwrap());
     let ao = read_integrals(dir.join("data.h5").to_str().unwrap());
-    let expected: Expected = serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
+    let expected: T = serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, ao, expected)
 }
 
