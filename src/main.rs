@@ -102,7 +102,7 @@ fn main() {
     if irank == 0 {println!("\n Total wall time: {:?}", t_total.elapsed());}
 }
 
-// Wrapper fuction to call each required or requested type of calculation. Ordering is: 1)
+/// Wrapper fuction to call each required or requested type of calculation. Ordering is: 1)
 /// Generate integrals in PySCF, run SCF for requested states, run the reference NOCI calculation,
 /// and finally run the deterministic propagation NOCI-QMC calculation.
 /// # Arguments:

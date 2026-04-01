@@ -19,6 +19,9 @@ rand_distr = {version = "0.4"}
 memmap2 = {version = "0.9.10"} 
 itertools = {version = "0.13"}
 
+[dev-dependencies]
+serial_test = {version = "3"}
+
 [profile.release]
 opt-level = 3
 debug = false
@@ -31,10 +34,19 @@ incremental = false
 codegen-units = 1
 rpath = false
 
+[profile.dev]
+opt-level = 0
+debug = true
+strip = false
+debug-assertions = true
+overflow-checks = true
+lto = 'fat'
+panic = 'abort'
+incremental = false
+codegen-units = 1
+rpath = false
+
 [profile.profiling]
 inherits = "release"
 debug = 1    
 strip = "none"     
-lto = "fat"        
-codegen-units = 1  
-panic = "abort"    
