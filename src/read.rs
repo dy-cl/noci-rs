@@ -35,7 +35,11 @@ pub fn read_integrals(path: &str) -> AoData {
     let ds = f.dataset("aolabels").unwrap();
     let arr = ds.read_1d::<VarLenUnicode>().unwrap();       
     let labels: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
-    let e_fci: Option<f64> = f.dataset("E_fci").ok().and_then(|ds| ds.read_scalar::<f64>().ok());  
+    let e_fci: Option<f64> = if f.link_exists("E_fci") {
+        Some(f.dataset("E_fci").unwrap().read_scalar::<f64>().unwrap())
+    } else {
+        None
+    };
 
     AoData {s, h, eri_coul, eri_asym, enuc, n, nelec, dm, labels, e_fci}
 }
