@@ -60,10 +60,14 @@ pub struct ExcitationSpin {
 pub struct SCFState {
     // Energy of SCF state in Ha, scalar.
     pub e: f64,  
-    // MO occupancy vector for spin a orbitals, (nao,).
-    pub oa: Array1<f64>, 
-    // MO occupancies for spin b orbitals (nao,).
-    pub ob: Array1<f64>, 
+    // MO occupancy vector for spin a orbitals, (nao,) as bitstring.
+    pub oa: u128, 
+    // MO occupancies for spin b orbitals (nao,) as bitstring.
+    pub ob: u128, 
+    // Fermionic phase relative to parent for spin a electrons.
+    pub pha: f64,
+    // Fermionic phase relative to parent for spin n electrons.
+    pub phb: f64,
     // MO coefficients for spin a electrons, (nao, nao).
     pub ca: Arc<Array2<f64>>,  
     // MO coefficients for spin b electrons, (nao, nao).
@@ -80,4 +84,4 @@ pub struct SCFState {
     pub parent: usize,
     // Excitation relative to parent if excited for QMC basis.
     pub excitation: Excitation,
-  }
+}
