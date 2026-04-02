@@ -100,6 +100,17 @@ fn mo_occupancies(c: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array1<f
     diag.mapv(|x| if x > 0.5 { 1.0 } else { 0.0 })
 }
 
+/// Convert an MO occupation vector to a bitstring.
+/// # Arguments:
+/// - idx: MO occupation vectors
+/// # Returns:
+/// - u128: Bitstring.
+fn occvec_to_bits(idx: &[usize]) -> u128 {
+    let mut bits = 0u128;
+    for &i in idx {bits |= 1u128 << i;}
+    bits
+}
+
 /// Select Aufbau indices given eigenvalues and number of occupancies. 
 /// # Arguments 
 /// `e`: MO energies. 
@@ -156,9 +167,9 @@ fn metadynamics_bias(da: &Array2<f64>, db: &Array2<f64>, ao: &AoData, biases: &[
 
     // Create temporary SCFState object with only the densities present such that we can reuse the
     // electron distance function.
-    let tmpscf = SCFState {e: 0.0, oa: Array1::zeros(nbf), ob: Array1::zeros(nbf), ca: Arc::new(Array2::zeros((nbf, nbf))), cb: Arc::new(Array2::zeros((nbf, nbf))), 
-                           da: Arc::new(da.clone()), db: Arc::new(db.clone()), label: String::new(), noci_basis: false, parent: 0, excitation: Excitation {alpha: ExcitationSpin 
-                           {holes: vec![], parts: vec![] }, beta: ExcitationSpin { holes: vec![], parts: vec![]}}};
+    let tmpscf = SCFState {e: 0.0, oa: 0u128, ob: 0u128, pha: 1.0, phb: 1.0, ca: Arc::new(Array2::zeros((nbf, nbf))), cb: Arc::new(Array2::zeros((nbf, nbf))), 
+                           da: Arc::new(da.clone()), db: Arc::new(db.clone()), label: String::new(), noci_basis: false, parent: 0, 
+                           excitation: Excitation {alpha: ExcitationSpin {holes: vec![], parts: vec![] }, beta: ExcitationSpin { holes: vec![], parts: vec![]}}};
 
     for bias in biases {
         // d_{0\Lambda}^2 = N - Tr({}^0 D S {}^\Lambda D S).
@@ -326,10 +337,6 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         let db_new = cb_occ.dot(&cb_occ.t());
         let (fa_new, fb_new) = form_fock_matrices(h, eri, &da_new, &db_new);
         let e_new = scf_energy(&da_new, &db_new, &fa_new, &fb_new, h, enuc);
-
-        // Calculate current occupancies from density matrices and MO coefficients.
-        let oa = mo_occupancies(&ca, &da_new, s);
-        let ob = mo_occupancies(&cb, &db_new, s);
         
         // Calculate DIIS error term and dE for convergence testing. 
         // If no error can be calculated  (i.e., DIIS subspace is 1) or DIIS is off, set to large number.
@@ -346,21 +353,17 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         }
         
         if d_e < input.scf.e_tol {
-            // Allow for excited determinants to point at this data without copying it in memory.
-            let ca = Arc::new(ca);
-            let cb = Arc::new(cb);
-            let da = Arc::new(da_new);
-            let db = Arc::new(db_new);
-
             // Print MO occupancies.
+            let oaprint = mo_occupancies(&ca, &da_new, s);
             println!("{}", "-".repeat(100));
-            let mut mosa: Vec<(f64, usize, bool)> = (0..ea.len()).map(|i| (ea[i], i, oa[i] > 0.5)).collect();
+            let mut mosa: Vec<(f64, usize, bool)> = (0..ea.len()).map(|i| (ea[i], i, oaprint[i] > 0.5)).collect();
             mosa.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             println!("Alpha MOs:");
             println!("{:^5} {:^5} {:^5}", "MO", "Occ", "E");
             for (e, i, occ) in mosa.iter() {println!("{:^5} {:^5.6} {:^5.6}", i, if *occ {1} else {0}, e);}
+            let obprint = mo_occupancies(&cb, &db_new, s);
             println!("{}", "-".repeat(100));
-            let mut mosb: Vec<(f64, usize, bool)> = (0..eb.len()).map(|i| (eb[i], i, ob[i] > 0.5)).collect();
+            let mut mosb: Vec<(f64, usize, bool)> = (0..eb.len()).map(|i| (eb[i], i, obprint[i] > 0.5)).collect();
             mosb.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             println!("Beta MOs:");
             println!("{:^5} {:^5} {:^5}", "MO", "Occ", "E");
@@ -372,6 +375,12 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
             print_array2(&ca);
             println!("Coefficients cb:");
             print_array2(&cb);
+
+            // Allow for excited determinants to point at this data without copying it in memory.
+            let ca = Arc::new(ca);
+            let cb = Arc::new(cb);
+            let da = Arc::new(da_new);
+            let db = Arc::new(db_new);
 
             // Print spin-contamination.
             let nas = (da.as_ref().dot(s)).diag().sum();
@@ -387,9 +396,13 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
                 let _ = fs::create_dir_all(&orbitalsdir);
                 let labelstr = label.replace([' ', ','], "_").replace(['(', ')'], "").replace('/', "_");
                 let fname = orbitalsdir.join(format!("{labelstr}orbitals.h5"));
-                write_orbitals(fname.to_str().unwrap(), ao, label, ca.as_ref(), cb.as_ref(), &ea, &eb, &oa, &ob, da.as_ref(), db.as_ref());
+                write_orbitals(fname.to_str().unwrap(), ao, label, ca.as_ref(), cb.as_ref(), &ea, &eb, &oaprint, &obprint, da.as_ref(), db.as_ref());
             }
             
+            // Form occupation bitstring.
+            let oa = occvec_to_bits(&idx_a);
+            let ob = occvec_to_bits(&idx_b);
+
             // SCF is only performed on reference states so the excitation here is empty. This is
             // distinct from scfexcitation in which we may use an excited SCF solution as part of
             // the reference states for QMC.
@@ -398,7 +411,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
                 beta:  ExcitationSpin {holes: vec![],  parts: vec![]}
             };
             
-            return Some(SCFState {e: e_new, oa, ob, ca, cb, da, db, label: label.to_string(), noci_basis, parent: i, excitation});
+            return Some(SCFState {e: e_new, oa, ob, pha: 1.0, phb: 1.0, ca, cb, da, db, label: label.to_string(), noci_basis, parent: i, excitation});
         }
         da = da_new; 
         db = db_new;
@@ -408,3 +421,5 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
     println!("SCF not converged.");
     None
 }
+
+

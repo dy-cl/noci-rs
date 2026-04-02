@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use itertools::Itertools;
-use ndarray::{Array1, Array2};
+use ndarray::{Array2};
 use rand::{SeedableRng};
 use rand::rngs::StdRng;
 
@@ -118,13 +118,13 @@ pub fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
 /// # Returns
 /// - `SpinOccupation`: Occupied and virtual orbital indices for alpha and beta spin.
 fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
-    //  For each entry in oa/ob find all indices p where o[p] > 0.5.
-    let occ_alpha: Vec<usize> = st.oa.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
-    let occ_beta: Vec<usize> = st.ob.iter().enumerate().filter_map(|(p, &occ)| if occ > 0.5 {Some(p)} else {None}).collect();
+    //  For each entry in oa/ob find all indices p where o[p] = 1.
+     let occ_alpha: Vec<usize> = (0..st.ca.ncols()).filter(|&p| ((st.oa >> p) & 1u128) == 1).collect();
+    let occ_beta: Vec<usize> = (0..st.cb.ncols()).filter(|&p| ((st.ob >> p) & 1u128) == 1).collect();
 
-    //  For each entry in oa/ob find all indices p where o[p] < 0.5.
-    let virt_alpha: Vec<usize> = st.oa.iter().enumerate().filter_map(|(p, &occ)| if occ <= 0.5 {Some(p)} else {None}).collect();
-    let virt_beta: Vec<usize> = st.ob.iter().enumerate().filter_map(|(p, &occ)| if occ <= 0.5 {Some(p)} else {None}).collect();
+    //  For each entry in oa/ob find all indices p where o[p] = 0.
+    let virt_alpha: Vec<usize> = (0..st.ca.ncols()).filter(|&p| ((st.oa >> p) & 1u128) == 0).collect();
+    let virt_beta: Vec<usize> = (0..st.cb.ncols()).filter(|&p| ((st.ob >> p) & 1u128) == 0).collect();
 
     SpinOccupation{occ_alpha, virt_alpha, occ_beta, virt_beta}
 }
@@ -140,10 +140,13 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
 /// - `excitation`: Excitation carried by the excited state.
 /// # Returns
 /// - `SCFState`: Excited state built from the reference state with modified occupancies.
-fn make_excited_state(reference: &SCFState, oa_ex: Array1<f64>, ob_ex: Array1<f64>, label_suffix: &str,
-                      parent: usize, excitation: Excitation) -> SCFState{
+fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str,
+                      parent: usize, excitation: Excitation) -> SCFState {
 
-    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), da: Arc::clone(&reference.da), 
+    let pha = excitation_phase(reference.oa, &excitation.alpha.holes, &excitation.alpha.parts);
+    let phb = excitation_phase(reference.ob, &excitation.beta.holes, &excitation.beta.parts);
+
+    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, pha, phb, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), da: Arc::clone(&reference.da), 
               db: Arc::clone(&reference.db), label: format!("{} {}", reference.label, label_suffix), noci_basis: false, parent, excitation}
 }
 
@@ -165,6 +168,47 @@ fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
             atoms.contains(&a)
         // Return the AO indices i.
         }).map(|(i, _)| i).collect()
+}
+
+/// Calculate fermionic sign associated with applying a set of creation and annhilation operators
+/// to a determinant described by a bitstring.
+/// # Arguments:
+/// - `occ`: Occupancy bitstring.
+/// - `holes`: Annhilation operators indices.
+/// - `parts`: Creation operator indices.
+/// # Returns
+/// - `f64`: Fermionic phase factor.
+pub fn excitation_phase(mut occ: u128, holes: &[usize], parts: &[usize]) -> f64 {
+
+    /// Calculate how many occupied orbitals are below index p.
+    /// # Arguments:
+    /// - `bits`: Occupancy bitstring.
+    /// - `p`: A given orbital index.
+    /// # Returns
+    /// - `u32`: Number of occupied orbitals below index `p`.
+    fn below(bits: u128, p: usize) -> u32 {
+        if p == 0 { return 0; }
+        (bits & ((1u128 << p) - 1)).count_ones()
+    }
+
+    let mut ph = 1.0;
+    
+    // Remove annhilations in descending order and accumulate phase.
+    let mut hs = holes.to_vec();
+    hs.sort_unstable_by(|a,b| b.cmp(a));    
+    for &i in &hs {
+        if (below(occ, i) & 1) == 1 {ph = -ph;}
+        occ &= !(1u128 << i);
+    }
+    
+    // Add creations in ascending order and accumulate phase.
+    let mut ps = parts.to_vec();
+    ps.sort_unstable();                     
+    for &a in &ps {
+        if (below(occ, a) & 1) == 1 { ph = -ph; }
+        occ |= 1u128 << a;
+    }
+    ph
 }
 
 /// Generate the SCF states using the maximum orbital overlap procedure.
@@ -598,10 +642,10 @@ fn build_excitation(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[
 /// - `parts`: Virtual orbital indices into which electrons are placed.
 /// # Returns
 /// - `Array1<f64>`: New occupation vector with the requested excitation applied.
-fn apply_excitation(occ: &Array1<f64>, holes: &[usize], parts: &[usize]) -> Array1<f64> {
-    let mut out = occ.clone();
-    for &i in holes {out[i] = 0.0;}
-    for &a in parts {out[a] = 1.0;}
+fn apply_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
+    let mut out = occ;
+    for &i in holes {out &= !(1u128 << i);}
+    for &a in parts {out |= 1u128 << a;}
     out
 }
 
@@ -639,8 +683,8 @@ pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bo
                     for alpha_parts in spin_occ.virt_alpha.iter().copied().combinations(k_alpha) {
                         for beta_holes in spin_occ.occ_beta.iter().copied().combinations(k_beta) {
                             for beta_parts in spin_occ.virt_beta.iter().copied().combinations(k_beta) {
-                                let oa_ex = apply_excitation(&r.oa, &alpha_holes, &alpha_parts);
-                                let ob_ex = apply_excitation(&r.ob, &beta_holes, &beta_parts);
+                                let oa_ex = apply_excitation(r.oa, &alpha_holes, &alpha_parts);
+                                let ob_ex = apply_excitation(r.ob, &beta_holes, &beta_parts);
 
                                 let label = excitation_label(&alpha_holes, &alpha_parts, &beta_holes, &beta_parts);
                                 let excitation = build_excitation(&alpha_holes, &alpha_parts, &beta_holes, &beta_parts);

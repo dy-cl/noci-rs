@@ -867,7 +867,7 @@ impl SameSpinBuild {
     /// - `tol`: Tolerance for whether a number is considered zero.
     /// # Returns
     /// - `SameSpinBuild`: Precomputed same-spin Wick's intermediates for the reference pair.
-    pub fn new(eri: &Array4<f64>, h_munu: &Array2<f64>, s_munu: &Array2<f64>, g_c: &Array2<f64>, l_c: &Array2<f64>, go: &Array1<f64>, lo: &Array1<f64>, tol: f64) -> Self {
+    pub fn new(eri: &Array4<f64>, h_munu: &Array2<f64>, s_munu: &Array2<f64>, g_c: &Array2<f64>, l_c: &Array2<f64>, go: u128, lo: u128, tol: f64) -> Self {
         let nmo = g_c.ncols();
         let nbas = l_c.nrows();
 
@@ -1292,7 +1292,7 @@ impl DiffSpinBuild {
     /// # Returns
     /// - `DiffSpinBuild`: Precomputed different-spin Wick's intermediates for the reference pair.
     pub fn new(eri: &Array4<f64>, s_munu: &Array2<f64>, g_ca: &Array2<f64>, g_cb: &Array2<f64>, l_ca: &Array2<f64>, l_cb: &Array2<f64>, 
-           goa: &Array1<f64>, gob: &Array1<f64>, loa: &Array1<f64>, lob: &Array1<f64>, tol: f64) -> Self {
+           goa: u128, gob: u128, loa: u128, lob: u128, tol: f64) -> Self {
         let nmo = g_ca.ncols();
 
         let l_ca_occ = occ_coeffs(l_ca, loa);

@@ -1,7 +1,7 @@
 // utils.rs
 use rand::{Rng};
 use rand::rngs::StdRng;
-use ndarray::{Array1, Array2, Array4};
+use ndarray::{Array2, Array4};
 
 /// Print a 2D array as a matrix.
 /// # Arguments
@@ -97,61 +97,6 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
     println!("Number of states for 99.9% of ||c||^2 = {}", k[1]);
     println!("Number of states for 99.99% of||c||^2 = {}", k[2]);
     println!("Number of states for 99.999% of ||c||^2 = {}", k[3]);
-}
-
-/// Convert an occupation vector into a bitstring.
-/// # Arguments:
-/// - `occ`: Occupancy vector.
-/// - `tol`: Tolerance for a occupancy element being almost 1.
-/// # Returns
-/// - `u64`: Occupancy bitstring.
-pub fn occvec_to_bits(occ: &Array1<f64>, tol: f64) -> u64 {
-    let mut bits = 0u64;
-    for (i, &x) in occ.iter().enumerate() {
-        if x > 1.0 - tol {bits |= 1u64 << i;}
-    }
-    bits
-}
-
-/// Calculate fermionic sign associated with applying a set of creation and annhilation operators
-/// to a determinant described by a bitstring.
-/// # Arguments:
-/// - `occ`: Occupancy bitstring.
-/// - `holes`: Annhilation operators indices.
-/// - `parts`: Creation operator indices.
-/// # Returns
-/// - `f64`: Fermionic phase factor.
-pub fn excitation_phase(mut occ: u64, holes: &[usize], parts: &[usize]) -> f64 {
-
-    /// Calculate how many occupied orbitals are below index p.
-    /// # Arguments:
-    /// - `bits`: Occupancy bitstring.
-    /// - `p`: A given orbital index.
-    /// # Returns
-    /// - `u32`: Number of occupied orbitals below index `p`.
-    fn below(bits: u64, p: usize) -> u32 {
-        if p == 0 { return 0; }
-        (bits & ((1u64 << p) - 1)).count_ones()
-    }
-
-    let mut ph = 1.0;
-    
-    // Remove annhilations in descending order and accumulate phase.
-    let mut hs = holes.to_vec();
-    hs.sort_unstable_by(|a,b| b.cmp(a));    
-    for &i in &hs {
-        if (below(occ, i) & 1) == 1 {ph = -ph;}
-        occ &= !(1u64 << i);
-    }
-    
-    // Add creations in ascending order and accumulate phase.
-    let mut ps = parts.to_vec();
-    ps.sort_unstable();                     
-    for &a in &ps {
-        if (below(occ, a) & 1) == 1 { ph = -ph; }
-        occ |= 1u64 << a;
-    }
-    ph
 }
 
 /// Generate a random atomwise pattern with entries in {-1, 0, 1}.

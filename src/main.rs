@@ -315,7 +315,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Call matrix element routines.
     let symmetric = true;
-    let (h, s, d_hs) = build_noci_hs(ao, input, &basis, &basis, noci_reference_basis, tol, wicks, symmetric);
+    let (h, s, d_hs) = build_noci_hs(ao, input, &basis, &basis, tol, wicks, symmetric);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.
@@ -446,7 +446,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let (e, local_hist, step_timings) = qmc_step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, noci_reference_basis, wicks);
+    let (e, local_hist, step_timings) = qmc_step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, wicks);
     let d_prop = t_prop.elapsed();
 
     // Write excitation histogram to a file. This should currently only be used if doing a single 
