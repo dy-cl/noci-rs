@@ -40,7 +40,7 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let basis = generate_excited_basis(&noci_reference_basis, &input, include_refs);
 
     let symmetric = true;
-    let (h, s, _d_hs) = build_noci_hs(&ao, &input, &basis, &basis, &noci_reference_basis, 1e-12, None, symmetric,);
+    let (h, s, _d_hs) = build_noci_hs(&ao, &input, &basis, &basis, 1e-12, None, symmetric,);
 
     let n = basis.len();
     let mut c0qmc = Array1::<f64>::zeros(n);
