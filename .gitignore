@@ -5,6 +5,7 @@ plotting/
 wickscache/
 tests/fixtures/**/data.h5
 .cargo/
+scaling*
 data.h5
 Cargo.lock
 
