@@ -1,7 +1,7 @@
 /// maths.rs
-use std::cell::RefCell;
+use std::{cell::RefCell};
 
-use ndarray::{Array1, Array2, ArrayView2, Array4, Axis, s};
+use ndarray::{Array1, Array2, ArrayView2, Array4, Axis};
 use ndarray_linalg::{SVD, Eigh, UPLO, Determinant, FactorizeInto, InverseInto};
 use rayon::prelude::*;
 
@@ -272,9 +272,9 @@ pub fn einsum_ba_abcd_cd_real(g: &Array2<f64>, t: &Array4<f64>, h: &Array2<f64>)
 /// # Returns
 /// - `f64`: Determinant of the matrix.
 #[inline(always)]
-fn det2(a: &Array2<f64>) -> f64 {
-    let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
-    let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
+fn det2(a: &[f64]) -> f64 {
+    let a00 = a[0]; let a01 = a[1];
+    let a10 = a[2]; let a11 = a[3];
     a00 * a11 - a01 * a10
 }
 
@@ -297,10 +297,11 @@ fn det2scalar(a00: f64, a01: f64, a10: f64, a11: f64) -> f64 {
 /// # Returns
 /// - `f64`: Determinant of the matrix.
 #[inline(always)]
-fn det3(a: &Array2<f64>) -> f64 {
-    let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
-    let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
-    let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
+fn det3(a: &[f64]) -> f64 {
+    let a00 = a[0]; let a01 = a[1]; let a02 = a[2];
+    let a10 = a[3]; let a11 = a[4]; let a12 = a[5];
+    let a20 = a[6]; let a21 = a[7]; let a22 = a[8];
+
     a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
 }
 
@@ -328,39 +329,39 @@ fn det3scalar(a00: f64, a01: f64, a02: f64, a10: f64, a11: f64, a12: f64, a20: f
 /// # Returns
 /// - `f64`: Determinant of the matrix.
 #[inline(always)]
-fn det4(a: &Array2<f64>) -> f64 {
+fn det4(a: &[f64]) -> f64 {
     let m00 = {
-        let a11 = a[(1, 1)]; let a12 = a[(1, 2)]; let a13 = a[(1, 3)];
-        let a21 = a[(2, 1)]; let a22 = a[(2, 2)]; let a23 = a[(2, 3)];
-        let a31 = a[(3, 1)]; let a32 = a[(3, 2)]; let a33 = a[(3, 3)];
+        let a11 = a[5];  let a12 = a[6];  let a13 = a[7];
+        let a21 = a[9];  let a22 = a[10]; let a23 = a[11];
+        let a31 = a[13]; let a32 = a[14]; let a33 = a[15];
         a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31)
     };
 
     let m01 = {
-        let a10 = a[(1, 0)]; let a12 = a[(1, 2)]; let a13 = a[(1, 3)];
-        let a20 = a[(2, 0)]; let a22 = a[(2, 2)]; let a23 = a[(2, 3)];
-        let a30 = a[(3, 0)]; let a32 = a[(3, 2)]; let a33 = a[(3, 3)];
+        let a10 = a[4];  let a12 = a[6];  let a13 = a[7];
+        let a20 = a[8];  let a22 = a[10]; let a23 = a[11];
+        let a30 = a[12]; let a32 = a[14]; let a33 = a[15];
         a10 * (a22 * a33 - a23 * a32) - a12 * (a20 * a33 - a23 * a30) + a13 * (a20 * a32 - a22 * a30)
     };
 
     let m02 = {
-        let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a13 = a[(1, 3)];
-        let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a23 = a[(2, 3)];
-        let a30 = a[(3, 0)]; let a31 = a[(3, 1)]; let a33 = a[(3, 3)];
+        let a10 = a[4];  let a11 = a[5];  let a13 = a[7];
+        let a20 = a[8];  let a21 = a[9];  let a23 = a[11];
+        let a30 = a[12]; let a31 = a[13]; let a33 = a[15];
         a10 * (a21 * a33 - a23 * a31) - a11 * (a20 * a33 - a23 * a30) + a13 * (a20 * a31 - a21 * a30)
     };
 
     let m03 = {
-        let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
-        let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
-        let a30 = a[(3, 0)]; let a31 = a[(3, 1)]; let a32 = a[(3, 2)];
+        let a10 = a[4];  let a11 = a[5];  let a12 = a[6];
+        let a20 = a[8];  let a21 = a[9];  let a22 = a[10];
+        let a30 = a[12]; let a31 = a[13]; let a32 = a[14];
         a10 * (a21 * a32 - a22 * a31) - a11 * (a20 * a32 - a22 * a30) + a12 * (a20 * a31 - a21 * a30)
     };
 
-    let a00 = a[(0, 0)];
-    let a01 = a[(0, 1)];
-    let a02 = a[(0, 2)];
-    let a03 = a[(0, 3)];
+    let a00 = a[0];
+    let a01 = a[1];
+    let a02 = a[2];
+    let a03 = a[3];
 
     a00 * m00 - a01 * m01 + a02 * m02 - a03 * m03
 }
@@ -372,9 +373,9 @@ fn det4(a: &Array2<f64>) -> f64 {
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
-    adjt[(0, 0)] = 1.0;
-    Some(a[(0, 0)])
+fn adjt1(adjt: &mut [f64], a: &[f64]) -> Option<f64> {
+    adjt[0] = 1.0;
+    Some(a[0])
 }
 
 /// Calculate determinant of 2 by 2 matrix `a` and write its adjugate transpose into `adjt`.
@@ -384,17 +385,17 @@ fn adjt1(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
-    let a00 = a[(0, 0)]; let a01 = a[(0, 1)];
-    let a10 = a[(1, 0)]; let a11 = a[(1, 1)];
+fn adjt2(adjt: &mut [f64], a: &[f64]) -> Option<f64> {
+    let a00 = a[0]; let a01 = a[1];
+    let a10 = a[2]; let a11 = a[3];
 
     let det = det2scalar(a00, a01, a10, a11);
     if !det.is_finite() {return None;}
 
-    adjt[(0, 0)] =  a11;
-    adjt[(0, 1)] = -a10;
-    adjt[(1, 0)] = -a01;
-    adjt[(1, 1)] =  a00;
+    adjt[0] =  a11;
+    adjt[1] = -a10;
+    adjt[2] = -a01;
+    adjt[3] =  a00;
 
     Some(det)
 }
@@ -406,10 +407,10 @@ fn adjt2(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
-    let a00 = a[(0, 0)]; let a01 = a[(0, 1)]; let a02 = a[(0, 2)];
-    let a10 = a[(1, 0)]; let a11 = a[(1, 1)]; let a12 = a[(1, 2)];
-    let a20 = a[(2, 0)]; let a21 = a[(2, 1)]; let a22 = a[(2, 2)];
+fn adjt3(adjt: &mut [f64], a: &[f64]) -> Option<f64> {
+    let a00 = a[0]; let a01 = a[1]; let a02 = a[2];
+    let a10 = a[3]; let a11 = a[4]; let a12 = a[5];
+    let a20 = a[6]; let a21 = a[7]; let a22 = a[8];
 
     let det = det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22);
     if !det.is_finite() {return None;}
@@ -426,9 +427,9 @@ fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
     let c21 = -det2scalar(a00, a02, a10, a12);
     let c22 =  det2scalar(a00, a01, a10, a11);
 
-    adjt[(0, 0)] = c00; adjt[(0, 1)] = c01; adjt[(0, 2)] = c02;
-    adjt[(1, 0)] = c10; adjt[(1, 1)] = c11; adjt[(1, 2)] = c12;
-    adjt[(2, 0)] = c20; adjt[(2, 1)] = c21; adjt[(2, 2)] = c22;
+    adjt[0] = c00; adjt[1] = c01; adjt[2] = c02;
+    adjt[3] = c10; adjt[4] = c11; adjt[5] = c12;
+    adjt[6] = c20; adjt[7] = c21; adjt[8] = c22;
 
     Some(det)
 }
@@ -440,7 +441,7 @@ fn adjt3(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
+fn adjt4(adjt: &mut [f64], a: &[f64]) -> Option<f64> {
     let det = det4(a);
     if !det.is_finite() {return None;}
 
@@ -463,13 +464,19 @@ fn adjt4(adjt: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
                 ci += 1;
             }
 
-            let m00 = a[(r[0], c[0])]; let m01 = a[(r[0], c[1])]; let m02 = a[(r[0], c[2])];
-            let m10 = a[(r[1], c[0])]; let m11 = a[(r[1], c[1])]; let m12 = a[(r[1], c[2])];
-            let m20 = a[(r[2], c[0])]; let m21 = a[(r[2], c[1])]; let m22 = a[(r[2], c[2])];
+            let m00 = a[r[0] * 4 + c[0]];
+            let m01 = a[r[0] * 4 + c[1]];
+            let m02 = a[r[0] * 4 + c[2]];
+            let m10 = a[r[1] * 4 + c[0]];
+            let m11 = a[r[1] * 4 + c[1]];
+            let m12 = a[r[1] * 4 + c[2]];
+            let m20 = a[r[2] * 4 + c[0]];
+            let m21 = a[r[2] * 4 + c[1]];
+            let m22 = a[r[2] * 4 + c[2]];
 
             let minordet = det3scalar(m00, m01, m02, m10, m11, m12, m20, m21, m22);
             let sign = if ((i + j) & 1) == 0 {1.0} else {-1.0};
-            adjt[(i, j)] = sign * minordet;
+            adjt[i * 4 + j] = sign * minordet;
         }
     }
     Some(det)
@@ -572,6 +579,7 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 /// elements in the upper half.
 /// # Arguments:
 /// - `d`: Matrix to write into.
+/// - `l`: Excitation rank.
 /// - `x`: X matrix elements.
 /// - `y`: Y matrix elements.
 /// - `rows`: Row indices of X or Y.
@@ -579,13 +587,7 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 /// # Returns
 /// - `()`: Writes the contraction determinant into `d`.
 #[inline(always)]
-pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize]) {
-    let l = rows.len();
-    let ncols = d.ncols();
-    // `d` is contiguous so we write into the flat buffer with row major index as d[(i, j)] ==
-    // buf[i * ncols + j].
-    let buf = d.as_slice_mut().unwrap();
-    
+pub fn build_d(d: &mut [f64], l: usize, x: &ArrayView2<f64>, y: &ArrayView2<f64>, rows: &[usize], cols: &[usize]) {
     // 2D views for X and Y are stored as base + r * strides[0] + c * strides[1] for an element at
     // (r, c) where base is the pointer to the start of the slab.
     let xstr = x.strides();
@@ -601,20 +603,20 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
 
             let xr = r * xstr[0];
             let yr = r * ystr[0];
-            let incols = i * ncols;
+            let base = i * l;
 
             // Lower triange of matrix including diagonal gets X.
             // X[r, c] is at base + r * xstride[0] + c * xstride[1].
             for j in 0..=i {
                 let c = *cols.get_unchecked(j) as isize;
-                *buf.get_unchecked_mut(incols + j) = *xptr.offset(xr + c * xstr[1]);
+                d[base + j] = *xptr.offset(xr + c * xstr[1]);
             }
             
             // Upper triangle gets Y.
             // Y[r, c] is at based + r * ystride[0] + c * ystride[1].
             for j in (i + 1)..l {
                 let c = *cols.get_unchecked(j) as isize;
-                *buf.get_unchecked_mut(incols + j) = *yptr.offset(yr + c * ystr[1]);
+                d[base + j] = *yptr.offset(yr + c * ystr[1]);
             }
         }
     }
@@ -627,23 +629,18 @@ pub fn build_d(d: &mut Array2<f64>, x: &ArrayView2<f64>, y: &ArrayView2<f64>, ro
 /// - `det0`: Base matrix.
 /// - `det1`: Mixing matrix.
 /// - `bits`: Bitstring.
+/// - `l`: Excitation rank.
 /// # Returns
 /// - `()`: Writes the mixed matrix into `d`.
 #[inline(always)]
-pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, bits: u64) {
-    let ncols = det0.ncols();
-    let out = d.as_slice_mut().unwrap();
-    let a0 = det0.as_slice().unwrap();
-    let a1 = det1.as_slice().unwrap();
-
+pub fn mix_columns(d: &mut [f64], det0: &[f64], det1: &[f64], l: usize, bits: u64) {
     unsafe {
-        for r in 0..ncols {
-            let base = r * ncols;
-            for c in 0..ncols {
+        for r in 0..l {
+            let base = r * l;
+            for c in 0..l {
+                let k = base + c;
                 let use1 = ((bits >> c) & 1) != 0;
-                *out.get_unchecked_mut(base + c) =
-                    if use1 {*a1.get_unchecked(base + c)}
-                    else    {*a0.get_unchecked(base + c)};
+                *d.get_unchecked_mut(k) = if use1 {*det1.get_unchecked(k)} else {*det0.get_unchecked(base + c)};
             }
         }
     }
@@ -659,8 +656,7 @@ pub fn mix_columns(d: &mut Array2<f64>, det0: &Array2<f64>, det1: &Array2<f64>, 
 /// # Returns
 /// - `()`: Writes the minor into `out`.
 #[inline(always)]
-pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
-    let n = m.nrows();
+pub fn minor(out: &mut [f64], m: &[f64], n: usize, r_rm: usize, c_rm: usize) {
     if n == 0 {return;}
     let mut ii = 0usize;
     for i in 0..n {
@@ -668,7 +664,7 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
         let mut jj = 0usize;
         for j in 0..n {
             if j == c_rm {continue;}
-            out[(ii, jj)] = m[(i, j)];
+            out[ii * (n - 1) + jj] = m[i * n + j];
             jj += 1;
         }
         ii += 1;
@@ -683,16 +679,21 @@ pub fn minor(out: &mut Array2<f64>, m: &Array2<f64>, r_rm: usize, c_rm: usize) {
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-pub fn det(a: &Array2<f64>) -> Option<f64> {
-    let n = a.nrows();
-    if n != a.ncols() {return None;}
-    if n == 0 {return Some(1.0);}
-    if n == 1 {return Some(a[(0, 0)]);}
+pub fn det(a: &[f64], n: usize) -> Option<f64> {
+    if a.len() != n * n {return None;}
 
-    let det = match n {2 => det2(a), 3 => det3(a), 4 => det4(a), _ => unreachable!()};
+    let det = match n {
+        0 => 1.0,
+        1 => a[0],
+        2 => det2(a),
+        3 => det3(a),
+        4 => det4(a),
+        _ => unreachable!()
+    };
     if det.is_finite() {return Some(det);}
-
-    let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
+    
+    let av = ArrayView2::from_shape((n, n), a).ok()?;
+    let (u_opt, s, vt_opt) = av.svd(true, true).ok()?;
     let u = u_opt?;
     let vt = vt_opt?;
 
@@ -703,12 +704,12 @@ pub fn det(a: &Array2<f64>) -> Option<f64> {
     for &si in s.iter() {
         det *= si;
     }
-
     Some(det)
 }
 
 /// For determinants where explicit calculation is unwieldy (greater than 4 by 4) we use LU solve
-/// to calculate determinant and adjugate transpose.
+/// to calculate determinant and adjugate transpose. This still allocates and it'd really be better
+/// if it did not.
 /// # Arguments:
 /// - `adjt`: Preallocated output scratch space.
 /// - `lu`: Preallocated scratch space for LU solve.
@@ -717,29 +718,21 @@ pub fn det(a: &Array2<f64>) -> Option<f64> {
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> Option<f64> {
+pub fn adjtlu(adjt: &mut [f64], lu: &mut [f64], a: &[f64], n: usize) -> Option<f64> {
+    let nn = n * n;
+    lu[..nn].copy_from_slice(&a[..nn]);
 
-    let n = a.nrows();
-
-    // Copy A into top left of the lu scratch.
-    let mut m = std::mem::take(lu);
-    m.slice_mut(s![0..n, 0..n]).assign(&a.slice(s![0..n, 0..n]));
-    // Calculate LU factorisation in place (PA = LU).
+    let m = Array2::from_shape_vec((n, n), lu[..nn].to_vec()).ok()?;
     let f = m.factorize_into().ok()?;
-    
     let det = f.det().ok()?;
-    
-    // Compute inverse in place.
-    let inv = f.inv_into().ok()?; 
-    // adjt(A)^T = det(A) * (A^{-1})^T.
+    let inv = f.inv_into().ok()?;
+
+    let invs = inv.as_slice()?;
     for r in 0..n {
         for c in 0..n {
-            adjt[(r, c)] = det * inv[(c, r)];
+            adjt[r * n + c] = det * invs[c * n + r];
         }
     }
-    
-    // Put scratch back to LMAX x LMAX.
-    *lu = inv;
 
     Some(det)
 }
@@ -754,18 +747,20 @@ pub fn adjtlu(adjt: &mut Array2<f64>, lu: &mut Array2<f64>, a: &Array2<f64>) -> 
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
-    let n = a.nrows();
+pub fn adjtsvd(adjt: &mut [f64], invs: &mut [f64], a: &[f64], n: usize, thresh: f64) -> Option<f64> {
+    let nn = n * n;
+    if adjt.len() < nn || invs.len() < n || a.len() < nn {
+        return None;
+    }
 
-    adjt.fill(0.0);
-    invs.fill(0.0);
-    
-    // A = U \tilde{S} V^T.
-    let (u_opt, s, vt_opt) = a.svd(true, true).ok()?;
+    adjt[..nn].fill(0.0);
+    invs[..n].fill(0.0);
+
+    let av = ArrayView2::from_shape((n, n), a).ok()?;
+    let (u_opt, s, vt_opt) = av.svd(true, true).ok()?;
     let u = u_opt?;
     let vt = vt_opt?;
-    
-    // det(A) = det(U) * det(V^T) * \prod s_i.
+
     let det_u = u.det().ok()?;
     let det_vt = vt.det().ok()?;
     let mut red_det = det_u * det_vt;
@@ -773,8 +768,7 @@ pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, 
 
     let mut nzero = 0usize;
     let mut zerok = 0usize;
-    
-    // Count near-zero singular values.
+
     for i in 0..n {
         let si = s[i];
         det *= si;
@@ -782,38 +776,37 @@ pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, 
             red_det *= si;
             invs[i] = 1.0 / si;
         } else {
-            // Treat as zero.
             nzero += 1;
             zerok = i;
         }
     }
-    
-    // If we have no zeros we have adj(A)^T = det(A) * U * (1 / \tilde{S}) * V^T
+
     if nzero == 0 {
         for i in 0..n {
             for r in 0..n {
                 let ur = u[(r, i)];
                 let scale = invs[i] * ur;
                 for c in 0..n {
-                    adjt[(r, c)] += scale * vt[(i, c)];
+                    adjt[r * n + c] += scale * vt[(i, c)];
                 }
             }
         }
-        *adjt *= det;
-    // If we have 1 zero adj(A)^T = reduced det(A) * U_k * V_k^T where k is the zero. 
+        for x in &mut adjt[..nn] {
+            *x *= det;
+        }
     } else if nzero == 1 {
         let k = zerok;
         for r in 0..n {
             let ur = u[(r, k)];
             let scale = red_det * ur;
             for c in 0..n {
-                adjt[(r, c)] = scale * vt[(k, c)];
+                adjt[r * n + c] = scale * vt[(k, c)];
             }
         }
-    // For more than 1 zero adj(A)^T = 0.
     } else {
         return Some(det);
     }
+
     Some(det)
 }
 
@@ -829,16 +822,14 @@ pub fn adjtsvd(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, a: &Array2<f64>, 
 /// # Returns
 /// - `Option<f64>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-pub fn adjugate_transpose(adjt: &mut Array2<f64>, invs: &mut Array1<f64>, lu: &mut Array2<f64>, a: &Array2<f64>, thresh: f64) -> Option<f64> {
-    let n = a.nrows();
-
+pub fn adjugate_transpose(adjt: &mut [f64], invs: &mut [f64], lu: &mut [f64], a: &[f64], n: usize, thresh: f64) -> Option<f64> {
     match n {
         0 => {Some(1.0)}
         1 => adjt1(adjt, a),
         2 => adjt2(adjt, a),
         3 => adjt3(adjt, a),
         4 => adjt4(adjt, a),
-        5 | 6 => {if let Some(det) = adjtlu(adjt, lu, a) {Some(det)} else {adjtsvd(adjt, invs, a, thresh)}}
+        5 | 6 => {if let Some(det) = adjtlu(adjt, lu, a, n) {Some(det)} else {adjtsvd(adjt, invs, a, n, thresh)}}
         // Code currently only does upto doubles so LMAX + 2 = 6.
         _ => unreachable!() 
     }
