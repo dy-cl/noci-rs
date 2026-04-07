@@ -738,7 +738,7 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, to
     prepare_same(&w.bb, ex_lb, ex_gb, scratch);
     let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
     let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
-    let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb,scratch, tol);
+    let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, scratch, tol);
 
     let h2ab = lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
 
