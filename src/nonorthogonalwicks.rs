@@ -153,6 +153,16 @@ impl WicksView {
     pub fn view4(&self, off_f64: usize, n: usize) -> ArrayView4<'_, f64> {
         unsafe {ArrayView4::from_shape_ptr((n, n, n, n), self.slab_ptr().add(off_f64))}
     }
+
+    #[inline(always)]
+    pub fn slice2(&self, off_f64: usize, n: usize) -> &[f64] {
+        unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off_f64), n * n) }
+    }
+
+    #[inline(always)]
+    pub fn slice4(&self, off_f64: usize, n: usize) -> &[f64] {
+        unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off_f64), n * n * n * n) }
+    }
     
     /// Return a view for precomputed intermediates for a given lp, gp. Lifetime elision '_ ensures 
     /// that the ArrayView4 may not outlive the borrow of self (WicksView) which in turn is only valid 
@@ -258,6 +268,50 @@ impl<'a> SameSpinView<'a> {
     pub fn j(&self, slot: usize) -> ArrayView4<'_, f64> {
         self.w.view4(self.off.j[slot], self.n())
     }
+
+    /// Get a slice of the transpoed Hamiltonian `F[mi][mj]` tensor.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi, mj`: Zero distribution selectors.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the transpoed Hamiltonian `F[mi][mj]` matrix data.
+    #[inline(always)]
+    pub fn fh_t_slice(&self, mi: usize, mj: usize) -> &'a [f64] {
+        self.w.slice2(self.off.fh[mi][mj], self.n())
+    }
+
+    /// Get a slice of the transpoed Fock `F[mi][mj]` tensor.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi, mj`: Zero distribution selectors.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the transpoed Fock `F[mi][mj]` matrix data.
+    #[inline(always)]
+    pub fn ff_t_slice(&self, mi: usize, mj: usize) -> &'a [f64] {
+        self.w.slice2(self.off.ff[mi][mj], self.n())
+    }
+
+    /// Get a slice of the transpoed `V[mi][mj][mk]` tensor.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi, mj, mk`: Zero distribution selectors.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the transpoed `V[mi][mj][mk]` matrix data.
+    #[inline(always)]
+    pub fn v_t_slice(&self, mi: usize, mj: usize, mk: usize) -> &'a [f64] {
+        self.w.slice2(self.off.v[mi][mj][mk], self.n())
+    }
+
+    /// Get a slice of the `J[slot]` tensor.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `slot`: Compressed storage slot for the requested J tensor.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the requested J tensor data.
+    #[inline(always)]
+    pub fn j_slice(&self, slot: usize) -> &'a [f64] {
+        self.w.slice4(self.off.j[slot], self.n())
+    }
 }
 
 // Read only view of diff-spin Wick's intermediates. Lifetime parameter 'a ensures that 
@@ -307,6 +361,39 @@ impl<'a> DiffSpinView<'a> {
     /// - `ArrayView4<'a, f64>`: View of the `IIab[ma0][maj][mb0][mbj]` tensor.
     pub fn iiab(&self, ma0: usize, maj: usize, mb0: usize, mbj: usize) -> ArrayView4<'a, f64> {
         self.w.view4(self.off.iiab[ma0][maj][mb0][mbj], self.n())
+    }
+
+    /// Get a slice of the transpoed `Vab[ma0][mb0][mak]` tensor.
+    /// # Arguments:
+    /// - `self`: View to diff-spin Wick's intermediates.
+    /// - `ma0, mb0, mak`: Zero distribution selectors.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the transpoed `Vab[ma0][mb0][mak]` matrix data.
+    #[inline(always)]
+    pub fn vab_t_slice(&self, ma0: usize, mb0: usize, mak: usize) -> &'a [f64] {
+        self.w.slice2(self.off.vab[ma0][mb0][mak], self.n())
+    }
+
+    /// Get a slice of the transpoed `Vba[mb0][ma0][mbk]` tensor.
+    /// # Arguments:
+    /// - `self`: View to diff-spin Wick's intermediates.
+    /// - `mb0, ma0, mbk`: Zero distribution selectors.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the transpoed `Vba[mb0][ma0][mbk]` matrix data.
+    #[inline(always)]
+    pub fn vba_t_slice(&self, mb0: usize, ma0: usize, mbk: usize) -> &'a [f64] {
+        self.w.slice2(self.off.vba[mb0][ma0][mbk], self.n())
+    }
+
+    /// Get a slice of the `IIab[ma0][maj][mb0][mbj]` tensor.
+    /// # Arguments:
+    /// - `self`: View to diff-spin Wick's intermediates.
+    /// - `ma0, maj, mb0, mbj`: Zero distribution selectors.
+    /// # Returns
+    /// - `&'a [f64]`: Slice of the `IIab[ma0][maj][mb0][mbj]` tensor data.
+    #[inline(always)]
+    pub fn iiab_slice(&self, ma0: usize, maj: usize, mb0: usize, mbj: usize) -> &'a [f64] {
+        self.w.slice4(self.off.iiab[ma0][maj][mb0][mbj], self.n())
     }
 }
 
@@ -437,19 +524,6 @@ enum OneBody {H1, Fock}
 #[inline(always)]
 fn one_body_scalar(w: &SameSpinView<'_>, ob: OneBody, mi: usize) -> f64 {
     match ob {OneBody::H1 => w.f0h[mi], OneBody::Fock => w.f0f[mi]}
-}
-
-/// Read the first-order one-body matrix block for the chosen branch pair.
-/// # Arguments:
-/// - `w`: Same-spin Wick's view.
-/// - `ob`: Selects Hamiltonian or Fock intermediates.
-/// - `mi`: Branch selector associated with the one-body operator contraction.
-/// - `mj`: Branch selector associated with the chosen determinant column.
-/// # Returns
-/// - `ArrayView2<'a, f64>`: Borrowed view of the requested one-body block.
-#[inline(always)]
-fn one_body_block<'a>(w: &'a SameSpinView<'a>, ob: OneBody, mi: usize, mj: usize,) -> ArrayView2<'a, f64> {
-    match ob {OneBody::H1 => w.fh_t(mi, mj), OneBody::Fock => w.ff_t(mi, mj)}
 }
 
 pub type Label = (Side, Type, usize);
@@ -612,6 +686,17 @@ fn idx(ncols: usize, r: usize, c: usize) -> usize {
     r * ncols + c
 }
 
+/// Convert 4D indices into a flat row-major index for an `n` x `n` x `n` x n` tensor.
+/// # Arguments:
+/// - `n`: Dimension of each tensor axis.
+/// - `a`, `b`, `c`, `d`: Tensor indices.
+/// # Returns
+/// - `usize`: Flat row-major index corresponding to `(a, b, c, d)`.
+#[inline(always)]
+fn idx4(n: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
+    (((a * n + b) * n + c) * n) + d
+}
+
 /// Create a file-backed mutable memory map for the contiguous Wick's tensor slab and
 /// write the associated metadata to disk.
 /// # Arguments:
@@ -664,106 +749,6 @@ pub fn load_wicks_mmap(slab_path: &std::path::Path, meta_path: &std::path::Path)
     Ok(WicksShared {backing: WicksBacking::Mmap(mmap), view})
 }
 
-/// Write 2D slice of 4D J or IIab tensors into provided output scratch. The given slice is
-/// `t[i, j, r, c]` where `i, j` are fixed indices and `r, c` are rows and columns.
-/// # Arguments:
-/// - `out`: Preallocated output scratch.
-/// - `l`: Excitation rank.
-/// - `t`: View of a 4D tensor.
-/// - `rows`: Length excitation-rank map from row labels to tensor index.
-/// - `cols`: Length excitation-rank map from col labels to tensor index.
-/// - `i_fixed`: Fixed tensor index for the `i` dimension.
-/// - `j_fixed`: Fixed tensor index for the `j` dimension.
-/// # Returns
-/// - `()`: Writes the requested 2D slice into `out`.
-fn slice4ijrc(out: &mut [f64], l: usize, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
-    // 4D tensor `t` is stored as
-    // base + a * strides[0] + b * strides[1] + c * strides[2] + d * strides[3]
-    // for element at t[a, b, c, d], where base is the start of this memory in the slab.
-    let strides = t.strides();
-    let base = t.as_ptr();
-
-    unsafe {
-        // For the fixed indices i, j we know that any t[i, j, r, c] can be found as
-        // base + i * strides[0] + j * strides[1] + r * strides[2] + c * strides[3].
-        let fixed = (i_fixed as isize) * strides[0] + (j_fixed as isize) * strides[1];
-
-        // Iterate over rows of output.
-        for r in 0..l {
-            // Output row r is given by tensor row rr = rows[r].
-            let rr = *rows.get_unchecked(r) as isize;
-            let row_base = r * l;
-
-            // Base offset for current output row is t[i, j, rr, 0] or
-            // base + i * strides[0] + j * strides[1] + rr * strides[2] + 0, which is
-            // equivalent to fixed + rr * strides[2].
-            let off = fixed + rr * strides[2];
-
-            // Iterate over columns of output.
-            for c in 0..l {
-                // Output col c is given by tensor col cc = cols[c].
-                let cc = *cols.get_unchecked(c) as isize;
-
-                // Element t[i, j, rr, cc] is
-                // base + i * strides[0] + j * strides[1] + rr * strides[2] + cc * strides[3]
-                // or off + cc * strides[3]. Write into output buffer as row-major.
-                *out.get_unchecked_mut(row_base + c) = *base.offset(off + cc * strides[3]);
-            }
-        }
-    }
-}
-
-/// Write 2D slice of 4D J or IIab tensors into provided output scratch. The given slice is
-/// `t[r, c, i, j]` where `r, c` are rows and columns and `i, j` are fixed indices.
-/// # Arguments:
-/// - `out`: Preallocated output scratch.
-/// - `l`: Excitation rank.
-/// - `t`: View of a 4D tensor.
-/// - `rows`: Length excitation-rank map from row labels to tensor index.
-/// - `cols`: Length excitation-rank map from col labels to tensor index.
-/// - `i_fixed`: Fixed tensor index for the `i` dimension.
-/// - `j_fixed`: Fixed tensor index for the `j` dimension.
-/// # Returns
-/// - `()`: Writes the requested 2D slice into `out`.
-fn slice4rcij(out: &mut [f64], l: usize, t: &ArrayView4<f64>, rows: &[usize], cols: &[usize], i_fixed: usize, j_fixed: usize) {
-    // 4D tensor `t` is stored as
-    // base + a * strides[0] + b * strides[1] + c * strides[2] + d * strides[3]
-    // for element at t[a, b, c, d], where base is the start of this memory in the slab.
-    let strides = t.strides();
-    let base = t.as_ptr();
-
-    unsafe {
-        // For the fixed indices i, j we know that any t[r, c, i, j] can be found as
-        // base + r * strides[0] + c * strides[1] + i * strides[2] + j * strides[3].
-        let fixed = (i_fixed as isize) * strides[2] + (j_fixed as isize) * strides[3];
-
-        // Iterate over rows of output.
-        for r in 0..l {
-            // Output row r is given by tensor row rr = rows[r].
-            let rr = *rows.get_unchecked(r) as isize;
-            let row_base = r * l;
-
-            // Base offset for current output row is t[rr, 0, i, j] or
-            // base + rr * strides[0] + 0 + i * strides[2] + j * strides[3], which is
-            // equivalent to rr * strides[0] + fixed.
-            let off = rr * strides[0] + fixed;
-
-            // Iterate over columns of output.
-            for c in 0..l {
-                // Output col c is given by tensor col cc = cols[c].
-                let cc = *cols.get_unchecked(c) as isize;
-
-                // Element t[rr, cc, i, j] is
-                // base + rr * strides[0] + cc * strides[1] + i * strides[2] + j * strides[3]
-                // or off + cc * strides[1]. Write into output buffer as row-major.
-                *out.get_unchecked_mut(row_base + c) = *base.offset(off + cc * strides[1]);
-            }
-        }
-    }
-}
-
-/// Map selectors (mi, mj, mk, ml) to the compressed storage slot for J and
-/// whether the requested tensor should be read with swapped indices.
 /// # Arguments:
 /// - `mi, mj, mk, ml`: Zero distribution selectors.
 /// # Returns
@@ -788,6 +773,72 @@ fn jslot(mi: usize, mj: usize, mk: usize, ml: usize,) -> (usize, bool) {
         (1, 1, 1, 1) => (9, false),
         _ => unreachable!(),
     }
+}
+
+/// Read one entry from the required minor-column of same-spin `J`.
+/// # Arguments:
+/// - `jsl`: Flat row-major storage of `J`.
+/// - `n`: Tensor dimension.
+/// - `rows`: Full contraction-determinant row labels.
+/// - `cols`: Full contraction-determinant column labels.
+/// - `i_rm`: Removed row index in the full `l x l` slice.
+/// - `j_rm`: Removed column index in the full `l x l` slice.
+/// - `r_minor`: Row index in the `(l - 1) x (l - 1)` minor.
+/// - `k_minor`: Column index in the `(l - 1) x (l - 1)` minor.
+/// - `i_fixed`: Fixed tensor index for the packed first axis.
+/// - `j_fixed`: Fixed tensor index for the packed second axis.
+/// - `swap`: Whether to use the swapped logical access.
+/// # Returns
+/// - `f64`: Requested entry of the minor-column.
+#[inline(always)]
+fn j_replacement(jsl: &[f64], n: usize, rows: &[usize], cols: &[usize], i_rm: usize, j_rm: usize, r_minor: usize, k_minor: usize, i_fixed: usize, j_fixed: usize, swap: bool) -> f64 {
+    let r_full = minor_to_full(r_minor, i_rm);
+    let k_full = minor_to_full(k_minor, j_rm);
+
+    let rr = rows[r_full];
+    let cc = cols[k_full];
+
+    if !swap {
+        jsl[idx4(n, i_fixed, j_fixed, rr, cc)]
+    } else {
+        jsl[idx4(n, rr, cc, i_fixed, j_fixed)]
+    }
+}
+
+/// Read one entry from the required replacement column of different-spin `IIab`.
+/// # Arguments:
+/// - `iisl`: Flat row-major storage of `IIab`.
+/// - `n`: Tensor dimension.
+/// - `rows`: Full contraction-determinant row labels.
+/// - `cols`: Full contraction-determinant column labels.
+/// - `r_full`: Row index in the full determinant column being corrected.
+/// - `k_full`: Column index in the full determinant column being corrected.
+/// - `i_fixed`: First fixed tensor index.
+/// - `j_fixed`: Second fixed tensor index.
+/// - `ijrc`: Whether to read the tensor as `t[i, j, r, c]` instead of `t[r, c, i, j]`.
+/// # Returns
+/// - `f64`: Requested entry of the replacement column.
+#[inline(always)]
+fn ii_replacement(iisl: &[f64], n: usize, rows: &[usize], cols: &[usize], r_full: usize, k_full: usize, i_fixed: usize, j_fixed: usize, ijrc: bool) -> f64 {
+    let rr = rows[r_full];
+    let cc = cols[k_full];
+
+    if ijrc {
+        iisl[idx4(n, i_fixed, j_fixed, rr, cc)]
+    } else {
+        iisl[idx4(n, rr, cc, i_fixed, j_fixed)]
+    }
+}
+
+/// Map an index in a minor matrix back to the corresponding index in the full matrix.
+/// # Arguments:
+/// - `midx`: Index in the minor.
+/// - `removed`: Removed row or column index in the full matrix.
+/// # Returns
+/// - `usize`: Corresponding index in the full matrix.
+#[inline(always)]
+fn minor_to_full(midx: usize, removed: usize) -> usize {
+    if midx < removed {midx} else {midx + 1}
 }
 
 #[derive(Default)]
@@ -1980,18 +2031,30 @@ fn lg_one_body(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
     if w.m > l + 1 {
         return 0.0;
     }
+
     let mut acc = 0.0;
+    let n = w.n();
 
     get_det_adjt_same(w, l, 1, scratch, tol, |bits, scratch, det_det| {
         let mi = bit(bits, 0);
         let mut contrib = det_det * one_body_scalar(w, ob, mi);
 
+        let f0 = match ob {
+            OneBody::H1 => w.fh_t_slice(mi, 0),
+            OneBody::Fock => w.ff_t_slice(mi, 0),
+        };
+        let f1 = match ob {
+            OneBody::H1 => w.fh_t_slice(mi, 1),
+            OneBody::Fock => w.ff_t_slice(mi, 1),
+        };
+
         for b in 0..l {
             let mj = bit(bits, b + 1);
             let cb = scratch.cols[b];
-            let f = one_body_block(w, ob, mi, mj);
+            let fsl = if mj == 0 {f0} else {f1};
+            let base = cb * n;
 
-            let corr = column_replacement_correction(l, scratch.det_mix.as_slice(), scratch.adjt_det.as_slice(), b, |r| f[(cb, scratch.rows[r])]);
+            let corr = column_replacement_correction(l, scratch.det_mix.as_slice(), scratch.adjt_det.as_slice(), b, |r| fsl[base + scratch.rows[r]]);
             contrib -= det_det + corr;
         }
         acc += contrib;
@@ -2023,12 +2086,17 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 
         let mut contrib = w.v0[m1 + m2] * det_det;
 
+        let n = w.n();
+        let v0 = w.v_t_slice(m1, m2, 0);
+        let v1 = w.v_t_slice(m1, m2, 1);
+
         for k in 0..l {
             let mk = bit(bits, k + 2);
-            let v_t = w.v_t(m1, m2, mk);
             let ck = scratch.cols[k];
+            let vsl = if mk == 0 {v0} else {v1};
+            let base = ck * n;
 
-            let corr = column_replacement_correction(l, scratch.det_mix.as_slice(), scratch.adjt_det.as_slice(), k, |r| v_t[(ck, scratch.rows[r])],);
+            let corr = column_replacement_correction(l, scratch.det_mix.as_slice(), scratch.adjt_det.as_slice(), k, |r| vsl[base + scratch.rows[r]]);
             contrib -= 2.0 * (det_det + corr);
         }
 
@@ -2046,16 +2114,14 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
                         let k_full = if k2 < j {k2} else {k2 + 1};
                         let mk = bit(bits, k_full + 2);
                         let (slot, swap) = jslot(m1, m2, mk, mj);
-                        let j4 = w.j(slot);
 
-                        if !swap {
-                            slice4ijrc(scratch.jslice_full.as_mut_slice(), l, &j4, scratch.rows.as_slice(), scratch.cols.as_slice(), ri_fixed, cj_fixed);
-                        } else {
-                            slice4rcij(scratch.jslice_full.as_mut_slice(), l, &j4, scratch.rows.as_slice(), scratch.cols.as_slice(), ri_fixed, cj_fixed);
-                        }
+                        let jsl = w.j_slice(slot);
+                        let n = w.n();
 
-                        minor(scratch.jslice2.as_mut_slice(), scratch.jslice_full.as_slice(), l, i, j);
-                        let corr = column_replacement_correction(lm1, det_minor, cof_minor, k2, |r| scratch.jslice2.as_slice()[idx(lm1, r, k2)]);
+                        let corr = column_replacement_correction(lm1, det_minor, cof_minor, k2, |r| {
+                            j_replacement(jsl, n, scratch.rows.as_slice(), scratch.cols.as_slice(), i, j, r, k2, ri_fixed, cj_fixed, swap)
+                        });
+
                         contrib += phase * (det_det2 + corr);
                         }
                     },
@@ -2103,19 +2169,31 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
         let mb0 = bit(bits_b, 0);
         let mut contrib = w.ab.vab0[ma0][mb0] * det_deta * det_detb;
 
+        let na = w.ab.n();
+        let vab0 = w.ab.vab_t_slice(ma0, mb0, 0);
+        let vab1 = w.ab.vab_t_slice(ma0, mb0, 1);
+
         for k in 0..la {
             let mak = bit(bits_a, k + 1);
-            let v_t = w.ab.vab_t(ma0, mb0, mak);
             let ck = scratch.cols_a[k];
-            let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| v_t[(ck, scratch.rows_a[r])]);
+            let vsl = if mak == 0 {vab0} else {vab1};
+            let base = ck * na;
+
+            let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| vsl[base + scratch.rows_a[r]]);
             contrib -= (det_deta + corr) * det_detb;
         }
 
+        let nb = w.ab.n();
+        let vba0 = w.ab.vba_t_slice(mb0, ma0, 0);
+        let vba1 = w.ab.vba_t_slice(mb0, ma0, 1);
+
         for k in 0..lb {
             let mbk = bit(bits_b, k + 1);
-            let v_t = w.ab.vba_t(mb0, ma0, mbk);
             let ck = scratch.cols_b[k];
-            let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| v_t[(ck, scratch.rows_b[r])]);
+            let vsl = if mbk == 0 {vba0} else {vba1};
+            let base = ck * nb;
+
+            let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| vsl[base + scratch.rows_b[r]]);
             contrib -= (det_detb + corr) * det_deta;
         }
 
@@ -2126,9 +2204,12 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
                 for k in 0..lb {
                     let mbk = bit(bits_b, k + 1);
-                    let iib = w.ab.iiab(ma0, ma1, mb0, mbk);
-                    slice4ijrc(scratch.iisliceb.as_mut_slice(), lb, &iib, scratch.rows_b.as_slice(), scratch.cols_b.as_slice(), ra, ca);
-                    let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| scratch.iisliceb.as_slice()[idx(lb, r, k)]);
+                    let iisl = w.ab.iiab_slice(ma0, ma1, mb0, mbk);
+                    let n = w.ab.n();
+
+                    let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| {
+                        ii_replacement(iisl, n, scratch.rows_b.as_slice(), scratch.cols_b.as_slice(), r, k, ra, ca, true)
+                    });
                     contrib += 0.5 * cofa * (det_detb + corr);
                 }
             }
@@ -2141,9 +2222,12 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
                 for k in 0..la {
                     let mak = bit(bits_a, k + 1);
-                    let iia = w.ab.iiab(ma0, mak, mb0, mb1);
-                    slice4rcij(scratch.iislicea.as_mut_slice(), la, &iia, scratch.rows_a.as_slice(), scratch.cols_a.as_slice(), rb, cb);
-                    let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| scratch.iislicea.as_slice()[idx(la, r, k)]);
+                    let iisl = w.ab.iiab_slice(ma0, mak, mb0, mb1);
+                    let n = w.ab.n();
+
+                    let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| {
+                        ii_replacement(iisl, n, scratch.rows_a.as_slice(), scratch.cols_a.as_slice(), r, k, rb, cb, false)
+                    });
                     contrib += 0.5 * cofb * (det_deta + corr);
                 }
             }
