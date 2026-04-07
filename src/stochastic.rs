@@ -885,11 +885,19 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     // Per MPI rank send buffers.
     let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
 
+    // Find maximum possible allocations for Wick's scratch allocation size.
+    let maxex_a = basis.iter().map(|st| st.excitation.alpha.holes.len()).max().unwrap_or(0);
+    let maxex_b = basis.iter().map(|st| st.excitation.beta.holes.len()).max().unwrap_or(0);
+    let maxsame = 2 * maxex_a.max(maxex_b);
+    let maxla = 2 * maxex_a;
+    let maxlb = 2 * maxex_b;
+
     for it in 0..input.prop_ref().max_steps {
         // Function to initialise individual thread states.
         let initialise = || -> ThreadState {
             let tid = rayon::current_thread_index().unwrap_or(0) as u64;
-            (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))), WickScratch::new())
+            (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))), 
+             WickScratch::with_sizes(maxsame, maxla, maxlb))
         };
 
         // Function to call spawning and death/cloning routines and accumulate population updates.
@@ -1026,10 +1034,11 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
                        it + 1, eproj, eproj - basis[0].e, es_corr, es_s_corr, nwc as f64, nrefc as f64, nwsc, nrefsc);}
     }
 
-    let timings = StochStepTimings {initialse_walkers: d_initialise_walkers, spawn_death_collect: Duration::from_secs_f64(d_spawn_death_collect), acc_pack: Duration::from_secs_f64(d_acc_pack), 
-                                    mpi_exchange_updates: Duration::from_secs_f64(d_mpi_exchange_updates), unpack_acc_recieved: Duration::from_secs_f64(d_unpack_acc_recieved), 
-                                    apply_delta: Duration::from_secs_f64(d_apply_delta), update_p: Duration::from_secs_f64(d_update_p), 
-                                    calc_populations: Duration::from_secs_f64(d_calc_populations), eproj: Duration::from_secs_f64(d_eproj)};
+    let timings = StochStepTimings {initialse_walkers: d_initialise_walkers, spawn_death_collect: Duration::from_secs_f64(d_spawn_death_collect), 
+                                    acc_pack: Duration::from_secs_f64(d_acc_pack),  mpi_exchange_updates: Duration::from_secs_f64(d_mpi_exchange_updates), 
+                                    unpack_acc_recieved: Duration::from_secs_f64(d_unpack_acc_recieved), apply_delta: Duration::from_secs_f64(d_apply_delta), 
+                                    update_p: Duration::from_secs_f64(d_update_p), calc_populations: Duration::from_secs_f64(d_calc_populations), 
+                                    eproj: Duration::from_secs_f64(d_eproj)};
 
     (eproj, mc.excitation_hist, timings)
 }
