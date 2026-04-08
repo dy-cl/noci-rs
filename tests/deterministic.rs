@@ -7,7 +7,7 @@ use ndarray::Array1;
 
 use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
 use noci_rs::deterministic::{projected_energy, propagate};
-use noci_rs::noci::{build_noci_hs, calculate_noci_energy};
+use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_mo_cache};
 
 #[derive(Deserialize)]
 struct ExpectedDeterministic {
@@ -33,14 +33,15 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     for (i, st) in noci_reference_basis.iter_mut().enumerate() {
         st.parent = i;
     }
+    let mocache = build_mo_cache(&ao, &noci_reference_basis);
 
-    let (e_ref, c0, _dt_hs_ref) = calculate_noci_energy(&ao, &input, &noci_reference_basis, 1e-12, None);
+    let (e_ref, c0, _dt_hs_ref) = calculate_noci_energy(&ao, &input, &noci_reference_basis, 1e-12, &mocache, None);
 
     let include_refs = true;
     let basis = generate_excited_basis(&noci_reference_basis, &input, include_refs);
 
     let symmetric = true;
-    let (h, s, _d_hs) = build_noci_hs(&ao, &input, &basis, &basis, 1e-12, None, symmetric,);
+    let (h, s, _d_hs) = build_noci_hs(&ao, &input, &basis, &basis, 1e-12, &mocache, None, symmetric);
 
     let n = basis.len();
     let mut c0qmc = Array1::<f64>::zeros(n);

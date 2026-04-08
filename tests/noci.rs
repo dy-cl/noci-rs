@@ -4,7 +4,7 @@ use common::{assert_close, load_test};
 use serde::Deserialize;
 use serial_test::serial;
 
-use noci_rs::noci::{calculate_noci_energy};
+use noci_rs::noci::{calculate_noci_energy, build_mo_cache};
 use noci_rs::basis::{generate_reference_noci_basis};
 
 #[derive(Deserialize)]
@@ -29,8 +29,9 @@ fn run_reference_noci_fixture(fixture: &str) -> (Vec<f64>, f64) {
     for (i, st) in basis.iter_mut().enumerate() {
         st.parent = i;
     }
-
-    let (e_ref, _coeffs, _dt_hs) = calculate_noci_energy(&ao, &input, &basis, 1e-12, None);
+    
+    let mocache = build_mo_cache(&ao, &basis);
+    let (e_ref, _coeffs, _dt_hs) = calculate_noci_energy(&ao, &input, &basis, 1e-12, &mocache, None);
 
     (scf_energies, e_ref)
 }

@@ -11,7 +11,7 @@ use mpi::topology::Communicator;
 use memmap2::MmapOptions;
 
 use crate::{AoData, SCFState};
-use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WickScratch, WicksRma, WicksShared, WicksView, WicksBacking, WicksDiskMeta};
+use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WickScratchSpin, WicksRma, WicksShared, WicksView, WicksBacking, WicksDiskMeta};
 use crate::mpiutils::Sharedffi;
 use crate::input::Input;
 
@@ -435,7 +435,7 @@ fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `f64`: Overlap matrix element between `ldet` and `gdet`.
-pub fn calculate_s_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, wicks: Option<&WicksView>, scratch: Option<&mut WickScratch>) -> f64 {
+pub fn calculate_s_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, wicks: Option<&WicksView>, scratch: Option<&mut WickScratchSpin>) -> f64 {
     if ldet.parent == gdet.parent {
         overlap::calculate_s_pair_orthogonal(ldet, gdet)
     } else if input.wicks.enabled {
@@ -448,7 +448,7 @@ pub fn calculate_s_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64,
 mod overlap {
     use crate::{AoData, SCFState};
     use crate::noci::{occ_coeffs, build_s_pair};
-    use crate::nonorthogonalwicks::{WicksView, WickScratch, prepare_same, lg_overlap};
+    use crate::nonorthogonalwicks::{WicksView, WickScratchSpin, prepare_same, lg_overlap};
     
     /// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
     /// standard Slater-Condon rules.
@@ -498,7 +498,7 @@ mod overlap {
     /// - `scratch`: Scratch space for Wick's calculations.
     /// # Returns:
     /// - `f64`: Overlap matrix element.
-    pub fn calculate_s_pair_wicks(ldet: &SCFState, gdet: &SCFState, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
+    pub fn calculate_s_pair_wicks(ldet: &SCFState, gdet: &SCFState, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
         let lp = ldet.parent;
         let gp = gdet.parent;
 
@@ -512,10 +512,10 @@ mod overlap {
         let pha = ldet.pha * gdet.pha;
         let phb = ldet.phb * gdet.phb;
 
-        prepare_same(&w.aa, ex_la, ex_ga, scratch);
-        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
-        prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
+        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
         sa * sb
     }
 }
@@ -538,7 +538,7 @@ mod overlap {
 /// # Returns:
 /// - `f64`: Fock matrix element between `ldet` and `gdet`.
 pub fn calculate_f_pair(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, 
-                        fock_mocache: &[FockMOCache], wicks: Option<&WicksView>, scratch: Option<&mut WickScratch>) -> f64 {
+                        fock_mocache: &[FockMOCache], wicks: Option<&WicksView>, scratch: Option<&mut WickScratchSpin>) -> f64 {
     if ldet.parent == gdet.parent {
         fock::calculate_f_pair_orthogonal(&fock_mocache[ldet.parent], ldet, gdet)
     } else if input.wicks.enabled {
@@ -552,7 +552,7 @@ mod fock {
     use ndarray::Array2;
     use crate::{AoData, SCFState};
     use crate::noci::{FockMOCache, occ_coeffs, build_s_pair, one_electron};
-    use crate::nonorthogonalwicks::{WicksView, WickScratch, prepare_same, lg_overlap, lg_f};
+    use crate::nonorthogonalwicks::{WicksView, WickScratchSpin, prepare_same, lg_overlap, lg_f};
 
     /// Calculate the Fock matrix element between determinants \Lambda and \Gamma using
     /// standard Slater-Condon rules.
@@ -632,7 +632,7 @@ mod fock {
     /// - `scratch`: Scratch space for Wick's calculations.
     /// # Returns:
     /// - `f64`: Fock matrix element between the determinant pair.
-    pub fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
+    pub fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
         let lp = ldet.parent;
         let gp = gdet.parent;
 
@@ -646,15 +646,25 @@ mod fock {
         let pha = ldet.pha * gdet.pha;
         let phb = ldet.phb * gdet.phb;
 
-        prepare_same(&w.aa, ex_la, ex_ga, scratch);
-        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
-        let f1a = lg_f(&w.aa, ex_la, ex_ga, scratch, tol);
+        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
-        prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
-        let f1b = lg_f(&w.bb, ex_lb, ex_gb, scratch, tol);
+        if sa == 0.0 && sb == 0.0 {
+            return 0.0;
+        }
 
-        pha * f1a * sb + phb * f1b * sa
+        let mut f = 0.0;
+        if sb != 0.0 {
+            let f1a = lg_f(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+            f += pha * f1a * sb;
+        }
+        if sa != 0.0 {
+            let f1b = lg_f(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+            f += phb * f1b * sa;
+        }
+        f
     }
 }
 
@@ -675,7 +685,7 @@ mod fock {
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 pub fn calculate_hs_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, mocache: &[MOCache], 
-                         wicks: Option<&WicksView>, scratch: Option<&mut WickScratch>) -> (f64, f64) {
+                         wicks: Option<&WicksView>, scratch: Option<&mut WickScratchSpin>) -> (f64, f64) {
     if ldet.parent == gdet.parent {
         hs::calculate_hs_pair_orthogonal(ao, &mocache[ldet.parent], ldet, gdet)
     } else if input.wicks.enabled {
@@ -689,7 +699,7 @@ mod hs {
     use crate::{AoData, SCFState};
     use crate::noci::overlap::calculate_s_pair_orthogonal;
     use crate::noci::{MOCache, occ_coeffs, build_s_pair, one_electron, two_electron_same, two_electron_diff};
-    use crate::nonorthogonalwicks::{WicksView, WickScratch, prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
+    use crate::nonorthogonalwicks::{WicksView, WickScratchSpin, prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
 
     /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma using
     /// standard Slater-Condon rules.
@@ -703,18 +713,15 @@ mod hs {
     pub fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
         let phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
 
-        // Occupation differences.
         let xa = ldet.oa ^ gdet.oa;
         let xb = ldet.ob ^ gdet.ob;
 
         let ra = (xa.count_ones() as usize) / 2;
         let rb = (xb.count_ones() as usize) / 2;
 
-        // Orthogonal overlap.
         let s = calculate_s_pair_orthogonal(ldet, gdet);
-        
-        // Excitations differing by more than 2 are zero.
-        if ra + rb > 2 {
+
+        if ra > 2 || rb > 2 || ra + rb > 2 {
             return (0.0, s);
         }
 
@@ -759,6 +766,7 @@ mod hs {
             }
         }
 
+        // Diagonal
         if ra == 0 && rb == 0 {
             let mut h = ao.enuc;
 
@@ -818,6 +826,7 @@ mod hs {
             return (phase * h, s);
         }
 
+        // Single alpha excitation
         if ra == 1 && rb == 0 {
             let i = holesa[0];
             let a = partsa[0];
@@ -828,7 +837,7 @@ mod hs {
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_aa_asym[(a, i, j, j)];
+                h += cache.eri_aa_asym[(a, j, i, j)];
             }
 
             let mut bits = ldet.ob & gdet.ob;
@@ -841,6 +850,7 @@ mod hs {
             return (phase * h, s);
         }
 
+        // Single beta excitation
         if ra == 0 && rb == 1 {
             let i = holesb[0];
             let a = partsb[0];
@@ -851,7 +861,7 @@ mod hs {
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_bb_asym[(a, i, j, j)];
+                h += cache.eri_bb_asym[(a, j, i, j)];
             }
 
             let mut bits = ldet.oa & gdet.oa;
@@ -864,22 +874,25 @@ mod hs {
             return (phase * h, s);
         }
 
+        // Double alpha excitation
         if ra == 2 && rb == 0 {
             let i = holesa[0];
             let j = holesa[1];
             let a = partsa[0];
             let b = partsa[1];
-            return (phase * cache.eri_aa_asym[(a, i, b, j)], s);
+            return (phase * cache.eri_aa_asym[(a, b, i, j)], s);
         }
 
+        // Double beta excitation
         if ra == 0 && rb == 2 {
             let i = holesb[0];
             let j = holesb[1];
             let a = partsb[0];
             let b = partsb[1];
-            return (phase * cache.eri_bb_asym[(a, i, b, j)], s);
+            return (phase * cache.eri_bb_asym[(a, b, i, j)], s);
         }
 
+        // One alpha and one beta excitation
         if ra == 1 && rb == 1 {
             let i = holesa[0];
             let j = holesb[0];
@@ -940,13 +953,11 @@ mod hs {
     /// - `scratch`: Scratch space for Wick's calculations.
     /// # Returns:
     /// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
-    pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> (f64, f64) {
-
+    pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> (f64, f64) {
         let lp = ldet.parent;
         let gp = gdet.parent;
 
-        let w = &wicks.pair(lp, gp);
-
+        let w = wicks.pair(lp, gp);
         let ex_la = &ldet.excitation.alpha;
         let ex_ga = &gdet.excitation.alpha;
         let ex_lb = &ldet.excitation.beta;
@@ -955,22 +966,21 @@ mod hs {
         let pha = ldet.pha * gdet.pha;
         let phb = ldet.phb * gdet.phb;
 
-        prepare_same(&w.aa, ex_la, ex_ga, scratch);
-        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
-        let h1a = lg_h1(&w.aa, ex_la, ex_ga, scratch, tol);
-        let h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, scratch, tol);
+        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        let h1a = lg_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+        let h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
 
-        prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
-        let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
-        let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, scratch, tol);
+        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        let h1b = lg_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+        let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
 
-        let h2ab = lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
+        let h2ab = lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, &mut scratch.diff, tol);
 
         let s = sa * sb;
         let h1 = pha * h1a * sb + phb * h1b * sa;
         let h2 = (0.5 * pha * sb * h2aa) + (0.5 * phb * sa * h2bb) + (pha * phb * h2ab);
-        
         let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
 
         (hnuc + h1 + h2, s)
@@ -1185,10 +1195,10 @@ pub fn update_wicks_fock(fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basi
 /// - `(Vec<(usize, usize, T)>, Duration)`: Evaluated matrix elements with
 ///   their indices and the wall time for the evaluation.
 /// # Type Parameters:
-/// - `O`: &SCFState, Option<&mut WickScratch>) -> T` and `Sync`.
+/// - `O`: &SCFState, Option<&mut WickScratchSpin>) -> T` and `Sync`.
 /// - `T`: Required to be `Send`.
 fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input: &Input, symmetric: bool, o: O) -> (Vec<(usize, usize, T)>, Duration)
-    where T: Send, O: Fn(&SCFState, &SCFState, Option<&mut WickScratch>) -> T + Sync {
+    where T: Send, O: Fn(&SCFState, &SCFState, Option<&mut WickScratchSpin>) -> T + Sync {
 
     let nl = left.len();
     let nr = right.len();
@@ -1199,7 +1209,7 @@ fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input
     
     let t0 = Instant::now();
     let vals = if input.wicks.enabled {
-        pairs.par_iter().map_init(WickScratch::new, |scratch, &(i, j)| {(i, j, o(&left[i], &right[j], Some(scratch)))}).collect()
+        pairs.par_iter().map_init(WickScratchSpin::new, |scratch, &(i, j)| {(i, j, o(&left[i], &right[j], Some(scratch)))}).collect()
     } else {
          pairs.par_iter().map(|&(i, j)| (i, j, o(&left[i], &right[j], None))).collect()
     };
@@ -1334,7 +1344,6 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
     if input.write.write_matrices {
         write_hs_matrices(&input.write.write_dir, &h, &s);
     }
-
     (h, s, dt)
 }
 
