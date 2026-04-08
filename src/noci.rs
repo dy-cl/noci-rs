@@ -16,10 +16,12 @@ use crate::mpiutils::Sharedffi;
 use crate::input::Input;
 
 use crate::utils::{print_array2};
-use crate::nonorthogonalwicks::{lg_overlap, lg_h1, lg_f, lg_h2_same, lg_h2_diff, write2, write_same_spin, write_diff_spin, assign_offsets, prepare_same};
-use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_cd_real, general_evp_real};
+use crate::nonorthogonalwicks::{write2, write_same_spin, write_diff_spin, assign_offsets};
+use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_cd_real, general_evp_real, eri_ao2mo};
 use crate::mpiutils::{broadcast};
 use crate::write::write_hs_matrices;
+
+pub(crate) use hs::{calculate_hs_pair_naive, calculate_hs_pair_wicks};
 
 // Trait which defines how returned determinant-pair quatity should be scattered into matrices.
 // Used such that we can have generic scatter functions which return 1 or 2 matrices.
@@ -82,6 +84,26 @@ impl ScatterValue for (f64, f64) {
     }
 }
 
+pub struct MOCache {
+    /// One-electron Hamiltonian in parent alpha MO basis.
+    pub ha: Array2<f64>,
+    /// One-electron Hamiltonian in parent beta MO basis.
+    pub hb: Array2<f64>,
+    /// Antisymmetrised same-spin ERIs in parent alpha MO basis.
+    pub eri_aa_asym: Array4<f64>,
+    /// Antisymmetrised same-spin ERIs in parent beta MO basis.
+    pub eri_bb_asym: Array4<f64>,
+    /// Coulomb different-spin ERIs in parent alpha/beta MO basis.
+    pub eri_ab_coul: Array4<f64>,
+}
+
+pub struct FockMOCache {
+    /// Spin-alpha Fock matrix in the parent alpha MO basis.
+    pub fa: Array2<f64>,
+    /// Spin-beta Fock matrix in the parent beta MO basis.
+    pub fb: Array2<f64>,
+}
+
 // Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
 pub struct Pair {
     pub s: f64,
@@ -94,6 +116,47 @@ pub struct Pair {
     pub p_i: Option<Array2<f64>>,
     pub p_j: Option<Array2<f64>>,
     pub phase: f64,
+}
+
+/// Build MO-basis caches for all reference determinants.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
+/// - `parents`: Reference NOCI determinants (parents of excited determinants).
+/// # Returns:
+/// - `Vec<MOCache>`: MO-basis integrals for each parent.
+pub fn build_mo_cache(ao: &AoData, parents: &[SCFState]) -> Vec<MOCache> {
+    parents.iter().map(|st| {
+        let ca = st.ca.as_ref();
+        let cb = st.cb.as_ref();
+
+        let ha = st.ca.t().dot(&ao.h).dot(ca);
+        let hb = st.cb.t().dot(&ao.h).dot(cb);
+
+        let eri_aa_asym = eri_ao2mo(&ao.eri_asym, &st.ca, &st.ca, &st.ca, &st.ca).as_standard_layout().to_owned();
+        let eri_bb_asym = eri_ao2mo(&ao.eri_asym, &st.cb, &st.cb, &st.cb, &st.cb).as_standard_layout().to_owned();
+        let eri_ab_coul = eri_ao2mo(&ao.eri_coul, &st.ca, &st.ca, &st.cb, &st.cb).as_standard_layout().to_owned();
+
+        MOCache {ha, hb, eri_aa_asym, eri_bb_asym, eri_ab_coul}
+    }).collect()
+}
+
+/// Build MO-basis Fock caches for all reference determinants.
+/// # Arguments:
+/// - `fa`: Spin-alpha Fock matrix in the AO basis.
+/// - `fb`: Spin-beta Fock matrix in the AO basis.
+/// - `parents`: Reference NOCI determinants (parents of excited determinants).
+/// # Returns:
+/// - `Vec<FockMOCache>`: MO basis Fock matrices for each parent.
+pub fn build_fock_mo_cache(fa: &Array2<f64>, fb: &Array2<f64>, parents: &[SCFState]) -> Vec<FockMOCache> {
+    parents.iter().map(|st| {
+        let ca = st.ca.as_ref();
+        let cb = st.cb.as_ref();
+
+        let fa_mo = ca.t().dot(fa).dot(ca);
+        let fb_mo = cb.t().dot(fb).dot(cb);
+
+        FockMOCache {fa: fa_mo, fb: fb_mo}
+    }).collect()
 }
 
 /// Given an MO coefficient matrix and a corresponding occupancy vector, return the occupied only
@@ -358,90 +421,560 @@ fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
     }
 }
 
-/// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
-/// generalised Slater-Condon rules.
+/// Wrapper function which dispatches to matrix element evaluation routines depending on user input
+/// and properties of the determinant pair involved. If the determinant pair have the same parents
+/// we may use the standard Slater-Condon rules, if not we can either use generalised Slater-Condon
+/// rules or extended non-orthogonal Wick's theorem to evaluate the matrix element.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data. 
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
+/// - `tol`: Tolerance for a number being zero.
+/// - `input`: User defined input options.
+/// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
+/// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `f64`: Overlap matrix element between `ldet` and `gdet`.
-pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
-
-    // Per spin occupid coefficients.
-    let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-    let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-    let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-    let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
-
-    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
-    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
-
-    // Overlap matrix element for this pair. 
-    pa.s * pb.s
+pub fn calculate_s_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, wicks: Option<&WicksView>, scratch: Option<&mut WickScratch>) -> f64 {
+    if ldet.parent == gdet.parent {
+        overlap::calculate_s_pair_orthogonal(ldet, gdet)
+    } else if input.wicks.enabled {
+        overlap::calculate_s_pair_wicks(ldet, gdet, wicks.unwrap(), scratch.unwrap())
+    } else {
+        overlap::calculate_s_pair_naive(ao, ldet, gdet, tol)
+    }
 }
 
-/// Calculate the Fock matrix element between determinants \Lambda and \Gamma using 
-/// generalised Slater-Condon rules.
+mod overlap {
+    use crate::{AoData, SCFState};
+    use crate::noci::{occ_coeffs, build_s_pair};
+    use crate::nonorthogonalwicks::{WicksView, WickScratch, prepare_same, lg_overlap};
+    
+    /// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
+    /// standard Slater-Condon rules.
+    /// # Arguments:
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// # Returns:
+    /// - `f64`: Overlap matrix element between `ldet` and `gdet`.
+    pub fn calculate_s_pair_orthogonal(ldet: &SCFState, gdet: &SCFState) -> f64 {
+        if ldet.oa == gdet.oa && ldet.ob == gdet.ob {
+            (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb)
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate the overlap matrix element between determinants \Lambda and \Gamma using 
+    /// generalised Slater-Condon rules.
+    /// # Arguments:
+    /// - `ao`: Contains AO integrals and other system data. 
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// - `tol`: Tolerance for a number being zero. 
+    /// # Returns:
+    /// - `f64`: Overlap matrix element between `ldet` and `gdet`.
+    pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
+
+        // Per spin occupid coefficients.
+        let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
+        let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
+        let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
+        let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+
+        let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+        let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+
+        // Overlap matrix element for this pair. 
+        pa.s * pb.s
+    }
+    
+    /// Calculate the overlap matrix element between determinants \Lambda and \Gamma
+    /// using extended non-orthogonal Wick's theorem.
+    /// # Arguments:
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
+    /// - `scratch`: Scratch space for Wick's calculations.
+    /// # Returns:
+    /// - `f64`: Overlap matrix element.
+    pub fn calculate_s_pair_wicks(ldet: &SCFState, gdet: &SCFState, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
+        let lp = ldet.parent;
+        let gp = gdet.parent;
+
+        let w = &wicks.pair(lp, gp);
+
+        let ex_la = &ldet.excitation.alpha;
+        let ex_ga = &gdet.excitation.alpha;
+        let ex_lb = &ldet.excitation.beta;
+        let ex_gb = &gdet.excitation.beta;
+
+        let pha = ldet.pha * gdet.pha;
+        let phb = ldet.phb * gdet.phb;
+
+        prepare_same(&w.aa, ex_la, ex_ga, scratch);
+        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
+        prepare_same(&w.bb, ex_lb, ex_gb, scratch);
+        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
+        sa * sb
+    }
+}
+
+/// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on user
+/// input and properties of the determinant pair involved. If the determinant pair have the same
+/// parents we may use the standard Slater-Condon rules, if not we can either use generalised
+/// Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate the matrix element.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
+/// - `fa`: Spin-alpha Fock matrix.
+/// - `fb`: Spin-beta Fock matrix.
+/// - `ao`: Contains AO integrals and other system data.
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
-/// - `fa`: NOCI Fock matrix spin alpha.
-/// - `fb`: NOCI Fock matrix spin beta.
+/// - `tol`: Tolerance for a number being zero.
+/// - `input`: User defined input options.
+/// - `fock_mocache`: MO-basis Fock integral caches.
+/// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
+/// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `f64`: Fock matrix element between `ldet` and `gdet`.
-pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
-
-    // Per spin occupid coefficients.
-    let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-    let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-    let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-    let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
-
-    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
-    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
-
-    pb.s * one_electron(fa, &pa) + pa.s * one_electron(fb, &pb)
+pub fn calculate_f_pair(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, 
+                        fock_mocache: &[FockMOCache], wicks: Option<&WicksView>, scratch: Option<&mut WickScratch>) -> f64 {
+    if ldet.parent == gdet.parent {
+        fock::calculate_f_pair_orthogonal(&fock_mocache[ldet.parent], ldet, gdet)
+    } else if input.wicks.enabled {
+        fock::calculate_f_pair_wicks(ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
+    } else {
+        fock::calculate_f_pair_naive(fa, fb, ao, ldet, gdet, tol)
+    }
 }
 
-/// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
-/// using generalised Slater-Condon rules.
+mod fock {
+    use ndarray::Array2;
+    use crate::{AoData, SCFState};
+    use crate::noci::{FockMOCache, occ_coeffs, build_s_pair, one_electron};
+    use crate::nonorthogonalwicks::{WicksView, WickScratch, prepare_same, lg_overlap, lg_f};
+
+    /// Calculate the Fock matrix element between determinants \Lambda and \Gamma using
+    /// standard Slater-Condon rules.
+    /// # Arguments:
+    /// - `cache`: MO-basis Fock cache for the shared parent determinant.
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// # Returns:
+    /// - `f64`: Fock matrix element between `ldet` and `gdet`.
+    pub fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFState) -> f64 {
+        let xa = ldet.oa ^ gdet.oa;
+        let xb = ldet.ob ^ gdet.ob;
+
+        let na = xa.count_ones() as usize;
+        let nb = xb.count_ones() as usize;
+
+        let phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+
+        if na == 0 && nb == 0 {
+            let mut f = 0.0;
+
+            for p in 0..128 {
+                if ((gdet.oa >> p) & 1) == 1 {
+                    f += cache.fa[(p, p)];
+                }
+                if ((gdet.ob >> p) & 1) == 1 {
+                    f += cache.fb[(p, p)];
+                }
+            }
+            return f;
+        }
+
+        if na == 2 && nb == 0 {
+            let hole = (gdet.oa & xa).trailing_zeros() as usize;
+            let part = (ldet.oa & xa).trailing_zeros() as usize;
+            return phase * cache.fa[(part, hole)];
+        }
+        if na == 0 && nb == 2 {
+            let hole = (gdet.ob & xb).trailing_zeros() as usize;
+            let part = (ldet.ob & xb).trailing_zeros() as usize;
+            return phase * cache.fb[(part, hole)];
+        }
+        0.0
+    }
+
+    /// Calculate the Fock matrix element between determinants \Lambda and \Gamma using 
+    /// generalised Slater-Condon rules.
+    /// # Arguments:
+    /// - `ao`: Contains AO integrals and other system data. 
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// - `fa`: NOCI Fock matrix spin alpha.
+    /// - `fb`: NOCI Fock matrix spin beta.
+    /// # Returns:
+    /// - `f64`: Fock matrix element between `ldet` and `gdet`.
+    pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
+
+        // Per spin occupid coefficients.
+        let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
+        let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
+        let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
+        let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+
+        let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+        let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+
+        pb.s * one_electron(fa, &pa) + pa.s * one_electron(fb, &pb)
+    }
+
+    /// Calculate the Fock matrix element between determinants \Lambda and \Gamma
+    /// using extended non-orthogonal Wick's theorem.
+    /// # Arguments:
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// - `tol`: Tolerance up to which a number is considered zero.
+    /// - `wicks`: Precomputed Wick's intermediates.
+    /// - `scratch`: Scratch space for Wick's calculations.
+    /// # Returns:
+    /// - `f64`: Fock matrix element between the determinant pair.
+    pub fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
+        let lp = ldet.parent;
+        let gp = gdet.parent;
+
+        let w = &wicks.pair(lp, gp);
+
+        let ex_la = &ldet.excitation.alpha;
+        let ex_ga = &gdet.excitation.alpha;
+        let ex_lb = &ldet.excitation.beta;
+        let ex_gb = &gdet.excitation.beta;
+
+        let pha = ldet.pha * gdet.pha;
+        let phb = ldet.phb * gdet.phb;
+
+        prepare_same(&w.aa, ex_la, ex_ga, scratch);
+        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
+        let f1a = lg_f(&w.aa, ex_la, ex_ga, scratch, tol);
+
+        prepare_same(&w.bb, ex_lb, ex_gb, scratch);
+        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
+        let f1b = lg_f(&w.bb, ex_lb, ex_gb, scratch, tol);
+
+        pha * f1a * sb + phb * f1b * sa
+    }
+}
+
+/// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
+/// depending on user input and properties of the determinant pair involved. If the determinant
+/// pair have the same parents we may use the standard Slater-Condon rules, if not we can either
+/// use generalised Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate the
+/// matrix element.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
+/// - `ao`: Contains AO integrals and other system data.
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
+/// - `tol`: Tolerance for a number being zero.
+/// - `input`: User defined input options.
+/// - `mocache`: MO-basis one and two-electron integral caches.
+/// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
+/// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
-pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
+pub fn calculate_hs_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, input: &Input, mocache: &[MOCache], 
+                         wicks: Option<&WicksView>, scratch: Option<&mut WickScratch>) -> (f64, f64) {
+    if ldet.parent == gdet.parent {
+        hs::calculate_hs_pair_orthogonal(ao, &mocache[ldet.parent], ldet, gdet)
+    } else if input.wicks.enabled {
+        hs::calculate_hs_pair_wicks(ao, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
+    } else {
+        hs::calculate_hs_pair_naive(ao, ldet, gdet, tol)
+    }
+}
 
-    // Per spin occupid coefficients.
-    let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-    let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-    let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-    let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+mod hs {
+    use crate::{AoData, SCFState};
+    use crate::noci::overlap::calculate_s_pair_orthogonal;
+    use crate::noci::{MOCache, occ_coeffs, build_s_pair, one_electron, two_electron_same, two_electron_diff};
+    use crate::nonorthogonalwicks::{WicksView, WickScratch, prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
 
-    let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
-    let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+    /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma using
+    /// standard Slater-Condon rules.
+    /// # Arguments:
+    /// - `ao`: Contains AO integrals and other system data.
+    /// - `cache`: MO-basis one and two-electron integral cache for the shared parent determinant.
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// # Returns:
+    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
+    pub fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
+        let phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
 
-    // Overlap matrix element for this pair. 
-    let s = pa.s * pb.s;
-    
-    let hnuc = match (pa.zeros.len(), pb.zeros.len()) {
-        (0, 0) => ao.enuc * s,
-        _ => 0.0,
-    };
+        // Occupation differences.
+        let xa = ldet.oa ^ gdet.oa;
+        let xb = ldet.ob ^ gdet.ob;
 
-    let h1a = one_electron(&ao.h, &pa);
-    let h1b = one_electron(&ao.h, &pb);
-    let h1 = pb.s * h1a + pa.s * h1b;
+        let ra = (xa.count_ones() as usize) / 2;
+        let rb = (xb.count_ones() as usize) / 2;
 
-    let h2aa = pb.s * two_electron_same(&ao.eri_asym, &pa); 
-    let h2bb = pa.s * two_electron_same(&ao.eri_asym, &pb); 
-    let h2ab = two_electron_diff(&ao.eri_coul, &pa, &pb);
-    let h2 = h2aa + h2bb + h2ab;
+        // Orthogonal overlap.
+        let s = calculate_s_pair_orthogonal(ldet, gdet);
+        
+        // Excitations differing by more than 2 are zero.
+        if ra + rb > 2 {
+            return (0.0, s);
+        }
 
-    (hnuc + h1 + h2, s)
+        let mut holesa = [0usize; 2];
+        let mut partsa = [0usize; 2];
+        let mut holesb = [0usize; 2];
+        let mut partsb = [0usize; 2];
+
+        if ra > 0 {
+            let mut bits = gdet.oa & !ldet.oa;
+            let mut k = 0;
+            while bits != 0 {
+                holesa[k] = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                k += 1;
+            }
+
+            let mut bits = ldet.oa & !gdet.oa;
+            let mut k = 0;
+            while bits != 0 {
+                partsa[k] = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                k += 1;
+            }
+        }
+
+        if rb > 0 {
+            let mut bits = gdet.ob & !ldet.ob;
+            let mut k = 0;
+            while bits != 0 {
+                holesb[k] = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                k += 1;
+            }
+
+            let mut bits = ldet.ob & !gdet.ob;
+            let mut k = 0;
+            while bits != 0 {
+                partsb[k] = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                k += 1;
+            }
+        }
+
+        if ra == 0 && rb == 0 {
+            let mut h = ao.enuc;
+
+            let mut bits = ldet.oa;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                h += cache.ha[(i, i)];
+            }
+
+            let mut bits = ldet.ob;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                h += cache.hb[(i, i)];
+            }
+
+            let mut bits_i = ldet.oa;
+            while bits_i != 0 {
+                let i = bits_i.trailing_zeros() as usize;
+                bits_i &= bits_i - 1;
+
+                let mut bits_j = ldet.oa;
+                while bits_j != 0 {
+                    let j = bits_j.trailing_zeros() as usize;
+                    bits_j &= bits_j - 1;
+                    h += 0.5 * cache.eri_aa_asym[(i, i, j, j)];
+                }
+            }
+
+            let mut bits_i = ldet.ob;
+            while bits_i != 0 {
+                let i = bits_i.trailing_zeros() as usize;
+                bits_i &= bits_i - 1;
+
+                let mut bits_j = ldet.ob;
+                while bits_j != 0 {
+                    let j = bits_j.trailing_zeros() as usize;
+                    bits_j &= bits_j - 1;
+                    h += 0.5 * cache.eri_bb_asym[(i, i, j, j)];
+                }
+            }
+
+            let mut bits_i = ldet.oa;
+            while bits_i != 0 {
+                let i = bits_i.trailing_zeros() as usize;
+                bits_i &= bits_i - 1;
+
+                let mut bits_j = ldet.ob;
+                while bits_j != 0 {
+                    let j = bits_j.trailing_zeros() as usize;
+                    bits_j &= bits_j - 1;
+                    h += cache.eri_ab_coul[(i, i, j, j)];
+                }
+            }
+
+            return (phase * h, s);
+        }
+
+        if ra == 1 && rb == 0 {
+            let i = holesa[0];
+            let a = partsa[0];
+
+            let mut h = cache.ha[(a, i)];
+
+            let mut bits = ldet.oa & gdet.oa;
+            while bits != 0 {
+                let j = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                h += cache.eri_aa_asym[(a, i, j, j)];
+            }
+
+            let mut bits = ldet.ob & gdet.ob;
+            while bits != 0 {
+                let j = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                h += cache.eri_ab_coul[(a, i, j, j)];
+            }
+
+            return (phase * h, s);
+        }
+
+        if ra == 0 && rb == 1 {
+            let i = holesb[0];
+            let a = partsb[0];
+
+            let mut h = cache.hb[(a, i)];
+
+            let mut bits = ldet.ob & gdet.ob;
+            while bits != 0 {
+                let j = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                h += cache.eri_bb_asym[(a, i, j, j)];
+            }
+
+            let mut bits = ldet.oa & gdet.oa;
+            while bits != 0 {
+                let j = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                h += cache.eri_ab_coul[(j, j, a, i)];
+            }
+
+            return (phase * h, s);
+        }
+
+        if ra == 2 && rb == 0 {
+            let i = holesa[0];
+            let j = holesa[1];
+            let a = partsa[0];
+            let b = partsa[1];
+            return (phase * cache.eri_aa_asym[(a, i, b, j)], s);
+        }
+
+        if ra == 0 && rb == 2 {
+            let i = holesb[0];
+            let j = holesb[1];
+            let a = partsb[0];
+            let b = partsb[1];
+            return (phase * cache.eri_bb_asym[(a, i, b, j)], s);
+        }
+
+        if ra == 1 && rb == 1 {
+            let i = holesa[0];
+            let j = holesb[0];
+            let a = partsa[0];
+            let b = partsb[0];
+            return (phase * cache.eri_ab_coul[(a, i, b, j)], s);
+        }
+        (0.0, s)
+    }
+        
+    /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
+    /// using generalised Slater-Condon rules.
+    /// # Arguments:
+    /// - `ao`: Contains AO integrals and other system data. 
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// # Returns:
+    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
+    pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
+
+        // Per spin occupid coefficients.
+        let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
+        let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
+        let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
+        let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+
+        let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
+        let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
+
+        // Overlap matrix element for this pair. 
+        let s = pa.s * pb.s;
+        
+        let hnuc = match (pa.zeros.len(), pb.zeros.len()) {
+            (0, 0) => ao.enuc * s,
+            _ => 0.0,
+        };
+
+        let h1a = one_electron(&ao.h, &pa);
+        let h1b = one_electron(&ao.h, &pb);
+        let h1 = pb.s * h1a + pa.s * h1b;
+
+        let h2aa = pb.s * two_electron_same(&ao.eri_asym, &pa); 
+        let h2bb = pa.s * two_electron_same(&ao.eri_asym, &pb); 
+        let h2ab = two_electron_diff(&ao.eri_coul, &pa, &pb);
+        let h2 = h2aa + h2bb + h2ab;
+
+        (hnuc + h1 + h2, s)
+    }
+
+    /// Calculate both the Hamiltonian and overlap matrix elements between
+    /// determinants \Lambda and \Gamma using extended non-orthogonal Wick's theorem.
+    /// # Arguments:
+    /// - `ao`: Contains AO integrals and other system data.
+    /// - `ldet`: State \Lambda.
+    /// - `gdet`: State \Gamma.
+    /// - `tol`: Tolerance up to which a number is considered zero.
+    /// - `wicks`: Precomputed Wick's intermediates.
+    /// - `scratch`: Scratch space for Wick's calculations.
+    /// # Returns:
+    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
+    pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> (f64, f64) {
+
+        let lp = ldet.parent;
+        let gp = gdet.parent;
+
+        let w = &wicks.pair(lp, gp);
+
+        let ex_la = &ldet.excitation.alpha;
+        let ex_ga = &gdet.excitation.alpha;
+        let ex_lb = &ldet.excitation.beta;
+        let ex_gb = &gdet.excitation.beta;
+
+        let pha = ldet.pha * gdet.pha;
+        let phb = ldet.phb * gdet.phb;
+
+        prepare_same(&w.aa, ex_la, ex_ga, scratch);
+        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
+        let h1a = lg_h1(&w.aa, ex_la, ex_ga, scratch, tol);
+        let h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, scratch, tol);
+
+        prepare_same(&w.bb, ex_lb, ex_gb, scratch);
+        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
+        let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
+        let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, scratch, tol);
+
+        let h2ab = lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
+
+        let s = sa * sb;
+        let h1 = pha * h1a * sb + phb * h1b * sa;
+        let h2 = (0.5 * pha * sb * h2aa) + (0.5 * phb * sa * h2bb) + (pha * phb * h2ab);
+        
+        let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
+
+        (hnuc + h1 + h2, s)
+    }
 }
 
 /// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node). 
@@ -639,118 +1172,6 @@ pub fn update_wicks_fock(fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basi
     }
 }
 
-/// Calculate the overlap matrix element between determinants \Lambda and \Gamma
-/// using extended non-orthogonal Wick's theorem.
-/// # Arguments:
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
-/// - `wicks`: Precomputed Wick's intermediates.
-/// - `scratch`: Scratch space for Wick's calculations.
-/// # Returns:
-/// - `f64`: Overlap matrix element.
-pub fn calculate_s_pair_wicks(ldet: &SCFState, gdet: &SCFState, wicks: &WicksView, scratch: &mut WickScratch) -> f64 {
-    let lp = ldet.parent;
-    let gp = gdet.parent;
-
-    let w = &wicks.pair(lp, gp);
-
-    let ex_la = &ldet.excitation.alpha;
-    let ex_ga = &gdet.excitation.alpha;
-    let ex_lb = &ldet.excitation.beta;
-    let ex_gb = &gdet.excitation.beta;
-
-    let pha = ldet.pha * gdet.pha;
-    let phb = ldet.phb * gdet.phb;
-
-    prepare_same(&w.aa, ex_la, ex_ga, scratch);
-    let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
-    prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-    let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
-    sa * sb
-}
-
-/// Calculate the Fock matrix element between determinants \Lambda and \Gamma
-/// using extended non-orthogonal Wick's theorem.
-/// # Arguments:
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Precomputed Wick's intermediates.
-/// - `scratch`: Scratch space for Wick's calculations.
-/// # Returns:
-/// - `f64`: Fock matrix element between the determinant pair.
-pub fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch,) -> f64 {
-    let lp = ldet.parent;
-    let gp = gdet.parent;
-
-    let w = &wicks.pair(lp, gp);
-
-    let ex_la = &ldet.excitation.alpha;
-    let ex_ga = &gdet.excitation.alpha;
-    let ex_lb = &ldet.excitation.beta;
-    let ex_gb = &gdet.excitation.beta;
-
-    let pha = ldet.pha * gdet.pha;
-    let phb = ldet.phb * gdet.phb;
-
-    prepare_same(&w.aa, ex_la, ex_ga, scratch);
-    let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
-    let f1a = lg_f(&w.aa, ex_la, ex_ga, scratch, tol);
-
-    prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-    let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
-    let f1b = lg_f(&w.bb, ex_lb, ex_gb, scratch, tol);
-
-    pha * f1a * sb + phb * f1b * sa
-}
-
-/// Calculate both the Hamiltonian and overlap matrix elements between
-/// determinants \Lambda and \Gamma using extended non-orthogonal Wick's theorem.
-/// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Precomputed Wick's intermediates.
-/// - `scratch`: Scratch space for Wick's calculations.
-/// # Returns:
-/// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
-pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratch) -> (f64, f64) {
-
-    let lp = ldet.parent;
-    let gp = gdet.parent;
-
-    let w = &wicks.pair(lp, gp);
-
-    let ex_la = &ldet.excitation.alpha;
-    let ex_ga = &gdet.excitation.alpha;
-    let ex_lb = &ldet.excitation.beta;
-    let ex_gb = &gdet.excitation.beta;
-
-    let pha = ldet.pha * gdet.pha;
-    let phb = ldet.phb * gdet.phb;
-
-    prepare_same(&w.aa, ex_la, ex_ga, scratch);
-    let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, scratch);
-    let h1a = lg_h1(&w.aa, ex_la, ex_ga, scratch, tol);
-    let h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, scratch, tol);
-
-    prepare_same(&w.bb, ex_lb, ex_gb, scratch);
-    let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, scratch);
-    let h1b = lg_h1(&w.bb, ex_lb, ex_gb, scratch, tol);
-    let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, scratch, tol);
-
-    let h2ab = lg_h2_diff(w, ex_la, ex_ga, ex_lb, ex_gb, scratch, tol);
-
-    let s = sa * sb;
-    let h1 = pha * h1a * sb + phb * h1b * sa;
-    let h2 = (0.5 * pha * sb * h2aa) + (0.5 * phb * sa * h2bb) + (pha * phb * h2ab);
-    
-    let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
-
-    (hnuc + h1 + h2, s)
-}
-
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
 /// which computes `T` for the pair. The closure may evaluate, for example,
 /// Hamiltonian, overlap, or Fock matrix elements.
@@ -817,6 +1238,7 @@ fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize
 /// - `right`: Second set of determinants.
 /// - `fa`: NOCI Fock matrix spin alpha.
 /// - `fb`: NOCI Fock matrix spin beta.
+/// - `fock_mocache`: MO-basis Fock integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `symmetric`: Whether the matrix is symmetric.
@@ -824,19 +1246,15 @@ fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize
 /// # Returns:
 /// - `Array2<f64>`: NOCI Fock matrix.
 /// - `Duration`: Matrix-build time.
-pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &Array2<f64>, fb: &Array2<f64>, 
+pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &Array2<f64>, fb: &Array2<f64>, fock_mocache: &[FockMOCache], 
                        wicks: Option<&WicksView>, tol: f64, symmetric: bool, input: &Input) -> (Array2<f64>, Duration) {
     let nl = left.len();
     let nr = right.len();
 
     let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
 
-     let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-        if input.wicks.enabled {
-            calculate_f_pair_wicks(ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
-        } else {
-            calculate_f_pair_naive(fa, fb, ao, ldet, gdet, tol)
-        }
+    let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
+        calculate_f_pair(fa, fb, ao, ldet, gdet, tol, input, fock_mocache, wicks, scratch)
     });
     let f = scatter_matrix_elements(vals, nl, nr, symmetric);
     (f, dt)
@@ -856,18 +1274,13 @@ pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &
 /// - `(Array2<f64>, Duration)`: The overlap matrix and the matrix-build time.
 pub fn build_noci_s(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], tol: f64, wicks: Option<&WicksView>, symmetric: bool) 
                      -> (Array2<f64>, Duration) {
-
     let nl = left.len();
     let nr = right.len();
 
     let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
 
     let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-        if input.wicks.enabled {
-            calculate_s_pair_wicks(ldet, gdet, wicks.unwrap(), scratch.unwrap())
-        } else {
-            calculate_s_pair_naive(ao, ldet, gdet, tol)
-        }
+        calculate_s_pair(ao, ldet, gdet, tol, input, wicks, scratch)
     });
     let s = scatter_matrix_elements(vals, nl, nr, symmetric);
     (s, dt)
@@ -880,14 +1293,14 @@ pub fn build_noci_s(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFS
 /// - `input`: User input specifications.
 /// - `left`: First set of determinants.
 /// - `right`: Second set of determinants.
-/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// - `symmetric`: Whether the matrices are symmetric.
 /// # Returns:
 /// - `(Array2<f64>, Array2<f64>, Duration)`: The Hamiltonian matrix, overlap matrix,
 ///   and matrix-build time.
-pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], tol: f64, 
+pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], tol: f64, mocache: &[MOCache], 
                      wicks: Option<&WicksView>, symmetric: bool)  -> (Array2<f64>, Array2<f64>, Duration) {
     let nl = left.len();
     let nr = right.len();
@@ -913,11 +1326,7 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
     }
 
     let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-        if input.wicks.enabled {
-            calculate_hs_pair_wicks(ao, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
-        } else {
-            calculate_hs_pair_naive(ao, ldet, gdet, tol)
-        }
+        calculate_hs_pair(ao, ldet, gdet, tol, input, mocache, wicks, scratch)
     });
 
     let (h, s) = scatter_matrix_elements(vals, nl, nr, symmetric);
@@ -936,12 +1345,13 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
 /// - `input`: User input specifications.
 /// - `scfstates`: Vector of all SCF states used in the NOCI basis.
 /// - `tol`: Tolerance up to which a number is considered zero.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns:
 /// - `(f64, Array1<f64>, Duration)`: The lowest NOCI eigenvalue, its coefficient
 ///   vector in the NOCI basis, and the time spent building the Hamiltonian/overlap matrices.
-pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
-    let (h, s, d_hs) = build_noci_hs(ao, input, scfstates, scfstates, tol, wicks, true);
+pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, mocache: &[MOCache], wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
+    let (h, s, d_hs) = build_noci_hs(ao, input, scfstates, scfstates, tol, mocache, wicks, true);
     
     println!("{}", "=".repeat(100));
     println!("NOCI-reference Hamiltonian:");

@@ -6,9 +6,10 @@ use ndarray::{Array1, Array2, Axis, concatenate};
 
 use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared};
+use crate::noci::{MOCache, FockMOCache};
 
 use crate::basis::generate_excited_basis;
-use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, noci_density, update_wicks_fock};
+use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, noci_density, build_fock_mo_cache, update_wicks_fock};
 use crate::maths::{general_evp_real, loewdin_x_real, parallel_matvec_real};
 use crate::scf::form_fock_matrices;
 
@@ -194,6 +195,7 @@ pub struct SNOCIStepTimings {
     pub candidate_h_ai: Duration,
     pub pseudoinverse: Duration,
     pub s_omega: Duration,
+    pub fock_mos: Duration,
     pub generalised_fock: Duration,
     pub update_wicks: Duration,
     pub candidate_fock: Duration,
@@ -322,14 +324,15 @@ fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresRe
 /// - `current_space`: Current selected nonorthogonal determinant space.
 /// - `input`: User-defined input options.
 /// - `wicks`: Optional shared Wick's intermediates.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns:
 /// - `(Array2<f64>, Array2<f64>, f64, Array1<f64>)`: Hamiltonian matrix in the current space,
 ///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
 fn solve_current_space(ao: &AoData, current_space: &[SCFState], input: &Input, 
-                       wicks: Option<&WicksShared>, tol: f64)  -> (Array2<f64>, Array2<f64>, f64, Array1<f64>)  {
+                       wicks: Option<&WicksShared>, mocache: &[MOCache], tol: f64)  -> (Array2<f64>, Array2<f64>, f64, Array1<f64>)  {
         // Get Hamiltonian and overlap matrix elements for the current space.
-        let (hcurrent, scurrent, _) = build_noci_hs(ao, input, current_space, current_space, tol, wicks.as_ref().map(|ws| ws.view()), true);
+        let (hcurrent, scurrent, _) = build_noci_hs(ao, input, current_space, current_space, tol, mocache, wicks.as_ref().map(|ws| ws.view()), true);
         // Solve current space GEVP.
         let (evals, c) = general_evp_real(&hcurrent, &scurrent, true, tol);
         // Extract lowest eigenvalue and eigenvector.
@@ -367,20 +370,21 @@ fn project_candidate_space(pool: &CandidatePool, s_ij_inv: &Array2<f64>) -> Proj
 /// - `fb`: Beta-spin generalised Fock matrix.
 /// - `noci_reference_basis`: Vector of only the reference determinants.
 /// - `wicks`: Optional shared Wick's intermediates.
+/// - `fock_mocache`: MO-basis Fock integral caches.
 /// - `input`: User-defined input options.
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns:
 /// - `FockMatrixElems`: Current-current, candidate-current, and candidate-candidate Fock matrix
 ///   elements.
 fn build_focks(ao: &AoData, selected_space: &[SCFState], projected_space: &ProjectedCandidateSpaceElems, fa: &Array2<f64>, 
-               fb: &Array2<f64>, wicks: Option<&WicksShared>, input: &Input, tol: f64) -> FockMatrixElems {
+               fb: &Array2<f64>, wicks: Option<&WicksShared>, fock_mocache: &[FockMOCache], input: &Input, tol: f64) -> FockMatrixElems {
     // Current-current Fock.
-    let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, fa, fb, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
+    let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, fa, fb, fock_mocache, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
     // Candidate-current Fock.
-    let (f_ai, _) = build_noci_fock(ao, &projected_space.candidates, selected_space, fa, fb, wicks.as_ref().map(|ws| ws.view()), tol, false, input);
+    let (f_ai, _) = build_noci_fock(ao, &projected_space.candidates, selected_space, fa, fb, fock_mocache, wicks.as_ref().map(|ws| ws.view()), tol, false, input);
     let f_ia = f_ai.t().to_owned();
     // Candidate-candidate Fock.
-    let (f_ab, _) = build_noci_fock(ao, &projected_space.candidates, &projected_space.candidates, fa, fb, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
+    let (f_ab, _) = build_noci_fock(ao, &projected_space.candidates, &projected_space.candidates, fa, fb, fock_mocache, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
     FockMatrixElems {f_ii, f_ai, f_ia, f_ab}
 }
 
@@ -475,11 +479,12 @@ fn print_snoci_iteration(it: usize, n_current: usize, e0: f64, state: &SNOCIStat
 /// - `input`: User-defined input options.
 /// - `tol`: Tolerance for whether a number is zero.
 /// - `wicks`: Mutable Wick's intermediates as we need to update Fock intermediates.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns:
 /// - `(SNOCIState, SNOCIStepTimings)`: Final SNOCI state from the last completed iteration and
 ///   timings for each major component of the SNOCI step.
 pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, 
-                  tol: f64, mut wicks: Option<&mut WicksShared>) -> (SNOCIState, SNOCIStepTimings) {
+                  mocache: &[MOCache], tol: f64, mut wicks: Option<&mut WicksShared>) -> (SNOCIState, SNOCIStepTimings) {
     // Unwrap SNOCI options and initialise timings, selected_space array, and the final state. 
     let opts = input.snoci.as_ref().expect("snoci_step called without input.snoci.");
     let mut timings = SNOCIStepTimings::default();
@@ -494,7 +499,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
     for it in 0..opts.max_iter {
         // Solve NOCI GEVP in the current selected space.
         let t0 = Instant::now();
-        let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(ao, &selected_space, input, wicks.as_deref(), tol);
+        let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(ao, &selected_space, input, wicks.as_deref(), mocache, tol);
         timings.current_space += t0.elapsed();
 
         // Build the candidate pool once, then reuse it.
@@ -540,7 +545,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         // Build candidate-current Hamiltonian only for surviving candidates.
         let t0 = Instant::now();
         let (h_ai, _, _) = build_noci_hs(ao, input, &projected_candidate_space.candidates, &selected_space, 
-                                         tol, wicks.as_ref().map(|ws| ws.view()), false);
+                                         tol, mocache, wicks.as_ref().map(|ws| ws.view()), false);
         timings.candidate_h_ai += t0.elapsed();
 
         // Get multireference NOCI density and form the generalised Fock matrix.
@@ -548,6 +553,10 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
         let (fa, fb) = form_fock_matrices(&ao.h, &ao.eri_coul, &da, &db);
         timings.generalised_fock += t0.elapsed();
+        
+        let t0 = Instant::now();
+        let fock_mocache = build_fock_mo_cache(&fa, &fb, noci_reference_basis);
+        timings.fock_mos += t0.elapsed();
 
         // Update Wick's intermediates for Fock matrix element calculation if using. 
         let t0 = Instant::now();
@@ -558,7 +567,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
 
         // Calculate current-current, candidate-current and candidate-candidate Fock matrix elements.
         let t0 = Instant::now();
-        let focks = build_focks(ao, &selected_space, &projected_candidate_space, &fa, &fb, wicks.as_deref(), input, tol);
+        let focks = build_focks(ao, &selected_space, &projected_candidate_space, &fa, &fb, wicks.as_deref(), &fock_mocache, input, tol);
         timings.candidate_fock += t0.elapsed();
 
         // Find the projected space Fock operator and coupling vector of the linear system to solve.
