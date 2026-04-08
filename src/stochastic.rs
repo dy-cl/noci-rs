@@ -578,6 +578,9 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         let frac = pspawn - (m as f64);
         let extra = if rng.gen_range(0.0..1.0) < frac {1} else {0};
         let nchildren = m + extra;
+        if nchildren == 0 {
+            continue;
+        }
 
         let sign: i64 = if k > 0.0 {1} else {-1};
         let child_sign: i64 = -sign * parent_sign;
@@ -630,6 +633,9 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
         Propagator::DifferenceDoublyShiftedU1 => input.prop_ref().dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
         Propagator::DifferenceDoublyShiftedU2 => input.prop_ref().dt * (hgg - sgg * es_s - (es - es_s)),
     };
+    if pdeath == 0.0 {
+        return;
+    }
     let p = pdeath.abs();
 
     // Sign of parent walkers on state Gamma determines which way round death and cloning occur.
@@ -639,7 +645,6 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     let m = p.floor() as i64;
     let frac = p - (m as f64);
    
-    if pdeath == 0.0 {return;}
     // Rather than iterate over all walkers we can sample binominal distribution.
     let extra = if frac > 0.0 {Binomial::new(n as u64, frac).unwrap().sample(rng) as i64} else {0};
     let nevents = n * m + extra;
