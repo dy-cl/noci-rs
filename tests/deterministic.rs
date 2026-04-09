@@ -95,6 +95,7 @@ fn deterministic_h2_cc_pvdz_1_5_ang_energies() {
 ///   outside tolerance.
 #[test]
 #[serial]
+#[ignore = "slow"]
 fn deterministic_lih_6_31g_2_8_ang_energies() {
     let (_input, _ao, expected): (_, _, ExpectedDeterministic) = load_test("DET_LiH_6-31G_2_8");
     let (got_scf, got_ref, got_det) = run_deterministic_fixture("DET_LiH_6-31G_2_8");

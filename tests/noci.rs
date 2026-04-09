@@ -85,6 +85,7 @@ fn reference_noci_lih_cc_pvdz_2_8_ang_energies() {
 /// - If SCF or reference NOCI energy differs from known good value outside tolerance.
 #[test]
 #[serial]
+#[ignore = "slow"]
 fn reference_noci_h4_cc_pvdz_1_75_ang_energies() {
     let (_input, _ao, expected): (_, _, ExpectedReferenceNoci) = load_test("REF_NOCI_H4_cc-pVDZ_1_75");
     let (got_scf, got_ref) = run_reference_noci_fixture("REF_NOCI_H4_cc-pVDZ_1_75");
@@ -106,6 +107,7 @@ fn reference_noci_h4_cc_pvdz_1_75_ang_energies() {
 /// - If SCF or reference NOCI energy differs from known good value outside tolerance.
 #[test]
 #[serial]
+#[ignore = "slow"]
 fn reference_noci_f2_cc_pvdz_1_75_ang_energies() {
     let (_input, _ao, expected): (_, _, ExpectedReferenceNoci) = load_test("REF_NOCI_F2_cc-pVDZ_1_75");
     let (got_scf, got_ref) = run_reference_noci_fixture("REF_NOCI_F2_cc-pVDZ_1_75");

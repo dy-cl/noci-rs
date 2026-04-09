@@ -11,7 +11,8 @@ use mpi::topology::Communicator;
 use memmap2::MmapOptions;
 
 use crate::{AoData, SCFState};
-use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WickScratchSpin, WicksRma, WicksShared, WicksView, WicksBacking, WicksDiskMeta};
+use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WickScratchSpin, WicksRma, WicksShared, 
+           WicksView, WicksBacking, WicksDiskMeta};
 use crate::mpiutils::Sharedffi;
 use crate::input::Input;
 
@@ -551,6 +552,7 @@ pub fn calculate_f_pair(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &
 mod fock {
     use ndarray::Array2;
     use crate::{AoData, SCFState};
+    use crate::basis::excitation_phase;
     use crate::noci::{FockMOCache, occ_coeffs, build_s_pair, one_electron};
     use crate::nonorthogonalwicks::{WicksView, WickScratchSpin, prepare_same, lg_overlap, lg_f};
 
@@ -569,8 +571,6 @@ mod fock {
         let na = xa.count_ones() as usize;
         let nb = xb.count_ones() as usize;
 
-        let phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
-
         if na == 0 && nb == 0 {
             let mut f = 0.0;
 
@@ -588,13 +588,17 @@ mod fock {
         if na == 2 && nb == 0 {
             let hole = (gdet.oa & xa).trailing_zeros() as usize;
             let part = (ldet.oa & xa).trailing_zeros() as usize;
+            let phase = excitation_phase(gdet.oa, &[hole], &[part]);
             return phase * cache.fa[(part, hole)];
         }
+
         if na == 0 && nb == 2 {
             let hole = (gdet.ob & xb).trailing_zeros() as usize;
             let part = (ldet.ob & xb).trailing_zeros() as usize;
+            let phase = excitation_phase(gdet.ob, &[hole], &[part]);
             return phase * cache.fb[(part, hole)];
         }
+
         0.0
     }
 
@@ -697,6 +701,7 @@ pub fn calculate_hs_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64
 
 mod hs {
     use crate::{AoData, SCFState};
+    use crate::basis::excitation_phase;
     use crate::noci::overlap::calculate_s_pair_orthogonal;
     use crate::noci::{MOCache, occ_coeffs, build_s_pair, one_electron, two_electron_same, two_electron_diff};
     use crate::nonorthogonalwicks::{WicksView, WickScratchSpin, prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
@@ -711,8 +716,6 @@ mod hs {
     /// # Returns:
     /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
     pub fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
-        let phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
-
         let xa = ldet.oa ^ gdet.oa;
         let xb = ldet.ob ^ gdet.ob;
 
@@ -766,7 +769,8 @@ mod hs {
             }
         }
 
-        // Diagonal
+        let phase = excitation_phase(gdet.oa, &holesa[..ra], &partsa[..ra]) * excitation_phase(gdet.ob, &holesb[..rb], &partsb[..rb]);
+
         if ra == 0 && rb == 0 {
             let mut h = ao.enuc;
 
@@ -823,10 +827,9 @@ mod hs {
                 }
             }
 
-            return (phase * h, s);
+            return (h, s);
         }
 
-        // Single alpha excitation
         if ra == 1 && rb == 0 {
             let i = holesa[0];
             let a = partsa[0];
@@ -837,20 +840,19 @@ mod hs {
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_aa_asym[(a, j, i, j)];
+                h += cache.eri_aa_asym[(j, j, a, i)];
             }
 
             let mut bits = ldet.ob & gdet.ob;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_ab_coul[(a, i, j, j)];
+                h += cache.eri_ab_coul[(i, a, j, j)];
             }
 
             return (phase * h, s);
         }
 
-        // Single beta excitation
         if ra == 0 && rb == 1 {
             let i = holesb[0];
             let a = partsb[0];
@@ -861,7 +863,7 @@ mod hs {
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_bb_asym[(a, j, i, j)];
+                h += cache.eri_bb_asym[(j, j, a, i)];
             }
 
             let mut bits = ldet.oa & gdet.oa;
@@ -874,35 +876,33 @@ mod hs {
             return (phase * h, s);
         }
 
-        // Double alpha excitation
         if ra == 2 && rb == 0 {
             let i = holesa[0];
             let j = holesa[1];
             let a = partsa[0];
             let b = partsa[1];
-            return (phase * cache.eri_aa_asym[(a, b, i, j)], s);
+            return (phase * cache.eri_aa_asym[(i, a, b, j)], s);
         }
 
-        // Double beta excitation
         if ra == 0 && rb == 2 {
             let i = holesb[0];
             let j = holesb[1];
             let a = partsb[0];
             let b = partsb[1];
-            return (phase * cache.eri_bb_asym[(a, b, i, j)], s);
+            return (phase * cache.eri_bb_asym[(i, a, b, j)], s);
         }
 
-        // One alpha and one beta excitation
         if ra == 1 && rb == 1 {
             let i = holesa[0];
             let j = holesb[0];
             let a = partsa[0];
             let b = partsb[0];
-            return (phase * cache.eri_ab_coul[(a, i, b, j)], s);
+            return (phase * cache.eri_ab_coul[(i, a, b, j)], s);
         }
+
         (0.0, s)
     }
-        
+
     /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma 
     /// using generalised Slater-Condon rules.
     /// # Arguments:
