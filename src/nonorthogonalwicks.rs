@@ -177,9 +177,11 @@ impl WicksView {
         let idx = self.idx(lp, gp);
 
         let aa = SameSpinView {nmo: self.meta[idx].aa.nmo, m: self.meta[idx].aa.m, tilde_s_prod: self.meta[idx].aa.tilde_s_prod, 
-                               phase: self.meta[idx].aa.phase, f0f: self.meta[idx].aa.f0f, f0h: self.meta[idx].aa.f0h, v0: self.meta[idx].aa.v0, w: self, off: self.off[idx].aa};
+                               phase: self.meta[idx].aa.phase, f0f: self.meta[idx].aa.f0f, f0h: self.meta[idx].aa.f0h, v0: self.meta[idx].aa.v0, 
+                               w: self, off: self.off[idx].aa};
         let bb = SameSpinView {nmo: self.meta[idx].bb.nmo, m: self.meta[idx].bb.m, tilde_s_prod: self.meta[idx].bb.tilde_s_prod, 
-                               phase: self.meta[idx].bb.phase, f0f: self.meta[idx].bb.f0f, f0h: self.meta[idx].bb.f0h, v0: self.meta[idx].bb.v0, w: self, off: self.off[idx].bb};
+                               phase: self.meta[idx].bb.phase, f0f: self.meta[idx].bb.f0f, f0h: self.meta[idx].bb.f0h, v0: self.meta[idx].bb.v0, 
+                               w: self, off: self.off[idx].bb};
         let ab = DiffSpinView {nmo: self.meta[idx].ab.nmo, vab0: self.meta[idx].ab.vab0, vba0: self.meta[idx].ab.vba0, w: self, off: self.off[idx].ab};
 
         WicksPairView {aa, bb, ab}
@@ -1211,12 +1213,6 @@ impl SameSpinBuild {
             jkao[mi] = &j - &k;
         }
         
-        //if maxabs(&mao[0]) > 1e5 || maxabs(&mao[1]) > 1e5 {println!("WARNING: HUGE M")};
-        //println!("tilde_s_occ: {:.3e}, tilde_s_prod: {:.3e}", tilde_s_occ, tilde_s_prod);
-        //println!("M0 max: {:.3e}, frob: {:.3e} | M1 max: {:.3e}, frob: {:.3e}", maxabs(&mao[0]), frob(&mao[0]), maxabs(&mao[1]), frob(&mao[1]));
-        //println!("(J-K)0 max: {:.3e}, frob: {:.3e} | (J-K)1 max: {:.3e}, frob: {:.3e}", maxabs(&jkao[0]), frob(&jkao[0]), maxabs(&jkao[1]), frob(&jkao[1]));
-        //println!();
-
         // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
         // intermediates required for one electron Hamiltonian matrix elements.
         let (f0_0h, f00h) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
@@ -1620,20 +1616,6 @@ impl DiffSpinBuild {
         let ja = [SameSpinBuild::build_j_coulomb(eri, ma[0]), SameSpinBuild::build_j_coulomb(eri, ma[1])];
         let jb = [SameSpinBuild::build_j_coulomb(eri, mb[0]), SameSpinBuild::build_j_coulomb(eri, mb[1])];
 
-        //let tilde_sa_prod = tilde_sa_occ.iter().filter(|&&x| x.abs() > tol).product::<f64>();
-        //let tilde_sb_prod = tilde_sb_occ.iter().filter(|&&x| x.abs() > tol).product::<f64>();
-        //if maxabs(ma[0]) > 1e5 || maxabs(ma[1]) > 1e5 {println!("WARNING: HUGE MA")};
-        //println!("tilde_sa_occ: {:.3e}, tilde_sa_prod: {:.3e}", tilde_sa_occ, tilde_sa_prod);
-        //println!("M0a max: {:.3e}, frob: {:.3e} | M1a max: {:.3e}, frob: {:.3e}", maxabs(ma[0]), frob(ma[0]), maxabs(ma[1]), frob(ma[1]));
-        //println!("J0a max: {:.3e}, frob: {:.3e} | J1a max: {:.3e}, frob: {:.3e}", maxabs(&ja[0]), frob(&ja[0]), maxabs(&ja[1]), frob(&ja[1]));
-        //println!();
-
-        //if maxabs(mb[0]) > 1e5 || maxabs(mb[1]) > 1e5 {println!("WARNING: HUGE MB")};
-        //println!("tilde_sb_occ: {:.3e}, tilde_sb_prod: {:.3e}", tilde_sb_occ, tilde_sb_prod);
-        //println!("M0b max: {:.3e}, frob: {:.3e} | M1b max: {:.3e}, frob: {:.3e}", maxabs(&mb[0]), frob(&mb[0]), maxabs(&mb[1]), frob(&mb[1]));
-        //println!("J0b max: {:.3e}, frob: {:.3e} | J1b max: {:.3e}, frob: {:.3e}", maxabs(&jb[0]), frob(&jb[0]), maxabs(&jb[1]), frob(&jb[1]));
-        //println!();
-
         // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}. 
         // This can be rewritten (and thus calculated) as V_{ab, 0}^{m_i, m_j} = \sum_{pr} (J_{\mu\nu}^{m_i}) {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
         // This is directly analogous to {}^{\Lambda\Gamma} V_0^{m_i, m_j} in the same spin case
@@ -1849,16 +1831,17 @@ fn get_det_adjt_same(w: &SameSpinView<'_>, l: usize, pbits: usize, scratch: &mut
 /// # Returns
 /// - `()`: Calls `f` only for nonsingular mixed determinants.
 #[inline(always)]
-fn get_det_adjt_diff(w: &WicksPairView<'_>, la: usize, lb: usize, scratch: &mut WickScratch, tol: f64, mut f: impl FnMut(u64, u64, &mut WickScratch, f64, f64)) {
+fn get_det_adjt_diff(w: &WicksPairView<'_>, la: usize, lb: usize, scratch: &mut WickScratch, deta0: &[f64], deta1: &[f64], 
+                     detb0: &[f64], detb1: &[f64], tol: f64, mut f: impl FnMut(u64, u64, &mut WickScratch, f64, f64)) {
     for_each_m_combination(la + 1, w.aa.m, |bits_a| {
         let inda = bits_a >> 1;
-        mix_columns(scratch.deta_mix.as_mut_slice(), scratch.deta0.as_slice(), scratch.deta1.as_slice(), la, inda,);
+        mix_columns(scratch.deta_mix.as_mut_slice(), deta0, deta1, la, inda,);
 
         if let Some(det_a) = adjugate_transpose(scratch.adjt_deta.as_mut_slice(), scratch.invsla.as_mut_slice(), scratch.lua.as_mut_slice(), scratch.deta_mix.as_slice(), la, tol) {
             for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
 
                 let indb = bits_b >> 1;
-                mix_columns(scratch.detb_mix.as_mut_slice(), scratch.detb0.as_slice(), scratch.detb1.as_slice(), lb, indb);
+                mix_columns(scratch.detb_mix.as_mut_slice(), detb0, detb1, lb, indb);
 
                 if let Some(det_b) = adjugate_transpose(scratch.adjt_detb.as_mut_slice(), scratch.invslb.as_mut_slice(), scratch.lub.as_mut_slice(), scratch.detb_mix.as_slice(), lb, tol) {
                     f(bits_a, bits_b, scratch, det_a, det_b);
@@ -2022,9 +2005,6 @@ pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 /// - `f64`: Overlap matrix element.
 pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) -> f64 {
     let l = l_ex.holes.len() + g_ex.holes.len();
-    if w.m > l {
-        return 0.0;
-    }
 
     if w.m == 0 {
         return w.phase * w.tilde_s_prod * det(scratch.det0.as_slice(), l).unwrap_or(0.0);
@@ -2085,9 +2065,6 @@ pub fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scra
 #[inline(always)]
 fn lg_one_body(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody,) -> f64 {
     let l = l_ex.holes.len() + g_ex.holes.len();
-    if w.m > l + 1 {
-        return 0.0;
-    }
 
     let mut acc = 0.0;
     let n = w.n();
@@ -2132,9 +2109,6 @@ fn lg_one_body(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
 #[inline(always)]
 pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
     let l = l_ex.holes.len() + g_ex.holes.len();
-    if w.m > l + 2 {
-        return 0.0;
-    }
     let mut acc = 0.0;
 
     get_det_adjt_same(w, l, 2, scratch, tol, |bits, scratch, det_det| {
@@ -2203,25 +2177,26 @@ pub fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
 /// # Returns
 /// - `f64`: Different-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
+                  diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
     let la = l_ex_a.holes.len() + g_ex_a.holes.len();
     let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
 
-    if w.aa.m > la + 1 {return 0.0;}
-    if w.bb.m > lb + 1 {return 0.0;}
-    scratch.ensure_diff(la, lb);
+    diff.ensure_diff(la, lb);
 
-    construct_determinant_indices(l_ex_a, g_ex_a, w.aa.nmo, &mut scratch.rows_a, &mut scratch.cols_a);
-    construct_determinant_indices(l_ex_b, g_ex_b, w.bb.nmo, &mut scratch.rows_b, &mut scratch.cols_b);
+    let rows_a = &a.rows[..la];
+    let cols_a = &a.cols[..la];
+    let deta0  = &a.det0.as_slice()[..la * la];
+    let deta1  = &a.det1.as_slice()[..la * la];
 
-    build_d(scratch.deta0.as_mut_slice(), la, &w.aa.x(0), &w.aa.y(0), &scratch.rows_a, &scratch.cols_a);
-    build_d(scratch.deta1.as_mut_slice(), la, &w.aa.x(1), &w.aa.y(1), &scratch.rows_a, &scratch.cols_a);
-    build_d(scratch.detb0.as_mut_slice(), lb, &w.bb.x(0), &w.bb.y(0), &scratch.rows_b, &scratch.cols_b);
-    build_d(scratch.detb1.as_mut_slice(), lb, &w.bb.x(1), &w.bb.y(1), &scratch.rows_b, &scratch.cols_b);
+    let rows_b = &b.rows[..lb];
+    let cols_b = &b.cols[..lb];
+    let detb0  = &b.det0.as_slice()[..lb * lb];
+    let detb1  = &b.det1.as_slice()[..lb * lb];
 
     let mut acc = 0.0;
 
-    get_det_adjt_diff(w, la, lb, scratch, tol, |bits_a, bits_b, scratch, det_deta, det_detb| {
+    get_det_adjt_diff(w, la, lb, diff, deta0, deta1, detb0, detb1, tol, |bits_a, bits_b, scratch, det_deta, det_detb| {
         let ma0 = bit(bits_a, 0);
         let mb0 = bit(bits_b, 0);
         let mut contrib = w.ab.vab0[ma0][mb0] * det_deta * det_detb;
@@ -2232,11 +2207,11 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
         for k in 0..la {
             let mak = bit(bits_a, k + 1);
-            let ck = scratch.cols_a[k];
+            let ck = cols_a[k];
             let vsl = if mak == 0 {vab0} else {vab1};
             let base = ck * na;
 
-            let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| vsl[base + scratch.rows_a[r]]);
+            let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| vsl[base + rows_a[r]]);
             contrib -= (det_deta + corr) * det_detb;
         }
 
@@ -2246,16 +2221,16 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
 
         for k in 0..lb {
             let mbk = bit(bits_b, k + 1);
-            let ck = scratch.cols_b[k];
+            let ck = cols_b[k];
             let vsl = if mbk == 0 {vba0} else {vba1};
             let base = ck * nb;
 
-            let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| vsl[base + scratch.rows_b[r]]);
+            let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| vsl[base + rows_b[r]]);
             contrib -= (det_detb + corr) * det_deta;
         }
 
-        for (i, &ra) in scratch.rows_a.iter().enumerate() {
-            for (j, &ca) in scratch.cols_a.iter().enumerate() {
+        for (i, &ra) in rows_a.iter().enumerate() {
+            for (j, &ca) in cols_a.iter().enumerate() {
                 let cofa = scratch.adjt_deta.as_slice()[idx(la, i, j)];
                 let ma1 = bit(bits_a, j + 1);
 
@@ -2265,15 +2240,15 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                     let n = w.ab.n();
 
                     let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| {
-                        ii_replacement(iisl, n, scratch.rows_b.as_slice(), scratch.cols_b.as_slice(), r, k, ra, ca, true)
+                        ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true)
                     });
                     contrib += 0.5 * cofa * (det_detb + corr);
                 }
             }
         }
 
-        for (i, &rb) in scratch.rows_b.iter().enumerate() {
-            for (j, &cb) in scratch.cols_b.iter().enumerate() {
+        for (i, &rb) in rows_b.iter().enumerate() {
+            for (j, &cb) in cols_b.iter().enumerate() {
                 let cofb = scratch.adjt_detb.as_slice()[idx(lb, i, j)];
                 let mb1 = bit(bits_b, j + 1);
 
@@ -2283,7 +2258,7 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                     let n = w.ab.n();
 
                     let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| {
-                        ii_replacement(iisl, n, scratch.rows_a.as_slice(), scratch.cols_a.as_slice(), r, k, rb, cb, false)
+                        ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false)
                     });
                     contrib += 0.5 * cofb * (det_deta + corr);
                 }

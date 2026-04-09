@@ -963,25 +963,67 @@ mod hs {
         let ex_lb = &ldet.excitation.beta;
         let ex_gb = &gdet.excitation.beta;
 
+        let la = ex_la.holes.len() + ex_ga.holes.len();
+        let lb = ex_lb.holes.len() + ex_gb.holes.len();
+
+        let dosa = w.aa.m <= la;
+        let doh1a = w.aa.m <= la + 1;
+        let doh2aa = w.aa.m <= la + 2;
+        let dosb = w.bb.m <= lb;
+        let doh1b = w.bb.m <= lb + 1;
+        let doh2bb = w.bb.m <= lb + 2;
+        let doh2ab = (w.aa.m <= la + 1) && (w.bb.m <= lb + 1);
+
+        let mut sa = 0.0;
+        let mut h1a = 0.0;
+        let mut h2aa = 0.0;
         let pha = ldet.pha * gdet.pha;
+
+        if dosa || doh1a || doh2aa {
+            prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+            if dosa {
+                sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+            }
+            if doh1a {
+                h1a = lg_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+            }
+            if doh2aa {
+                h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+            }
+        }
+
+        let mut sb = 0.0;
+        let mut h1b = 0.0;
+        let mut h2bb = 0.0;
         let phb = ldet.phb * gdet.phb;
 
-        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        let h1a = lg_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
-        let h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+        if dosb || doh1b || doh2bb {
+            prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
-        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        let h1b = lg_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
-        let h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+            if dosb {
+                sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+            }
+            if doh1b {
+                h1b = lg_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+            }
+            if doh2bb {
+                h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+            }
+        }
 
-        let h2ab = lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, &mut scratch.diff, tol);
+        let mut h2ab = 0.0;
+        if doh2ab {
+            h2ab = lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, &mut scratch.diff, &scratch.aa, &scratch.bb, tol);
+        }
 
         let s = sa * sb;
+        let mut hnuc = 0.0;
+        if dosa && dosb && w.aa.m == 0 && w.bb.m == 0 {
+            hnuc = ao.enuc * s
+        }
+
         let h1 = pha * h1a * sb + phb * h1b * sa;
         let h2 = (0.5 * pha * sb * h2aa) + (0.5 * phb * sa * h2bb) + (pha * phb * h2ab);
-        let hnuc = if w.aa.m == 0 && w.bb.m == 0 {ao.enuc * s} else {0.0};
 
         (hnuc + h1 + h2, s)
     }
