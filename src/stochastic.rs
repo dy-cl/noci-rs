@@ -13,9 +13,10 @@ use rand_distr::{Binomial, Distribution};
 use crate::AoData;
 use crate::SCFState;
 use crate::input::{Input, Propagator, ExcitationGen};
-use crate::nonorthogonalwicks::{WicksView, WickScratch};
+use crate::nonorthogonalwicks::{WicksView, WickScratchSpin};
+use crate::noci::MOCache;
 
-use crate::noci::{calculate_s_pair_naive, calculate_hs_pair_naive, calculate_s_pair_wicks, calculate_hs_pair_wicks};
+use crate::noci::{calculate_s_pair, calculate_hs_pair};
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
 
 // Storage for stochastic propagation timings.
@@ -146,6 +147,12 @@ pub struct MCState {
     pub excitation_hist: Option<ExcitationHist> // Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
 }
 
+struct ProjectedEnergyUpdate {
+    iref: usize,
+    num: f64,
+    den: f64,
+}
+
 // Storage for population update communication across ranks. Is also used for computation of
 // \tilde{N}_w. In this case we interpret dn as the total population.
 #[repr(C)]
@@ -219,21 +226,15 @@ impl ExcitationHist {
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `input`: User specified input options.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `f64`: Overlap matrix element S_{ij}.
 fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, wicks: Option<&WicksView>, 
-          scratch: &mut WickScratch) -> f64 {
+          scratch: &mut WickScratchSpin) -> f64 {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
-
-    if input.wicks.enabled {
-        let w = wicks.unwrap();
-        calculate_s_pair_wicks(&basis[a], &basis[b], w, scratch)
-    } else {
-        calculate_s_pair_naive(ao, &basis[a], &basis[b], tol)
-    }
+    calculate_s_pair(ao, &basis[a], &basis[b], tol, input, wicks, Some(scratch))
 }
 
 /// Find matrix elements H_{ij} and S_{ij} from Wick's or naive path. 
@@ -245,21 +246,16 @@ fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: 
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `input`: User specified input options.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
 fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, wicks: Option<&WicksView>, 
-           scratch: &mut WickScratch) -> (f64, f64) {
+           mocache: &[MOCache], scratch: &mut WickScratchSpin) -> (f64, f64) {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
-
-    if input.wicks.enabled {
-        let w = wicks.unwrap();
-        calculate_hs_pair_wicks(ao, &basis[a], &basis[b], tol, w, scratch)
-    } else {
-        calculate_hs_pair_naive(ao, &basis[a], &basis[b], tol)
-    }
+    calculate_hs_pair(ao, &basis[a], &basis[b], tol, input, mocache, wicks, Some(scratch))
 }
 
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
@@ -288,6 +284,7 @@ fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
 /// # Returns
 /// - `Vec<PopulationUpdate>`: List of applied population updates for this iteration.
 fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
+    if mc.changed.is_empty() {return Vec::new();}
     let mut applied = Vec::with_capacity(mc.changed.len());
     // Consider only changed determinants.
     for &i in &mc.changed {
@@ -321,7 +318,7 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 /// # Returns
 /// - `Walkers`: Initial walker population.
 pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis: &[SCFState], iref: usize, tol: f64,
-                         input: &Input, wicks: Option<&WicksView>, scratch: &mut WickScratch) -> Walkers {
+                         input: &Input, wicks: Option<&WicksView>, scratch: &mut WickScratchSpin) -> Walkers {
     let mut w = Walkers::new(n);
 
     // Ill-conditioning threshold.
@@ -397,12 +394,13 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `noci_reference_basis`: Only the reference basis determinants.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `HeatBath`: Precomputed heat-bath excitation generation data for determinant `gamma`.
 fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFState], input: &Input, tol: f64, 
-                  wicks: Option<&WicksView>, scratch: &mut WickScratch) -> HeatBath {
+                  wicks: Option<&WicksView>, scratch: &mut WickScratchSpin, mocache: &[MOCache]) -> HeatBath {
     let ndets = basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
     let mut sumlg = 0.0_f64;
@@ -419,7 +417,7 @@ fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFSta
 
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
-        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, scratch);
+        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, mocache, scratch);
         let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
 
         sumlg += k.abs();
@@ -442,19 +440,20 @@ fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFSta
 /// - `rng`: Random number generator.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
 fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, tol: f64,
-                wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
+                wicks: Option<&WicksView>, scratch: &mut WickScratchSpin, mocache: &[MOCache]) -> (f64, f64, usize) {
     let ndets = basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
     // more than the Gamma index we map it back into the full index set.
     let mut lambda = rng.gen_range(0..(ndets - 1));
     if lambda >= gamma {lambda += 1;}
 
-    let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, scratch);
+    let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, mocache, scratch);
     let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
@@ -476,12 +475,13 @@ fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f6
 /// - `hb`: Precomputed heat-bath excitation generation data.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
 fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, hb: &HeatBath, tol: f64,
-                   wicks: Option<&WicksView>, scratch: &mut WickScratch) -> (f64, f64, usize) {
+                   wicks: Option<&WicksView>, scratch: &mut WickScratchSpin, mocache: &[MOCache]) -> (f64, f64, usize) {
 
     let ndets = basis.len();
 
@@ -490,7 +490,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es:
     if hb.sumlg == 0.0 {
         let mut lambda = rng.gen_range(0..(ndets - 1));
         if lambda >= gamma {lambda += 1;}
-        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, scratch);
+        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, mocache, scratch);
         let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
@@ -541,7 +541,8 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es:
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `noci_reference_basis`: Only the reference basis determinants.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `irank`: Number of current rank.
 /// - `nranks`: Total number of ranks.
 /// - `rng`: Random number generator.
@@ -552,7 +553,7 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es:
 /// # Returns
 /// - `()`: Appends spawning updates to the provided output buffers.
 fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, es: f64, input: &Input, tol: f64, wicks: Option<&WicksView>, 
-            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratch, outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, 
+            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratchSpin, mocache: &[MOCache], outlocal: &mut Vec<(usize, i64)>, outremote: &mut Vec<PopulationUpdate>, 
             outsamples: &mut Vec<f64>) {
 
     let parent_sign: i64 = if ngamma > 0 {1} else {-1};
@@ -560,7 +561,7 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 
     // Precompute per determinant heat-bath excitation generation quantities.
     let mut hb: Option<HeatBath> = None;
-    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, es, ao, basis, input, tol, wicks, scratch));}
+    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, es, ao, basis, input, tol, wicks, scratch, mocache));}
 
     // Iterate over all walkers on state Gamma.
     for _ in 0..nwalkers {
@@ -568,8 +569,8 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
         // generation scheme.
         let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
-            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, es, input, rng, tol, wicks, scratch),
-            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, es, input, rng, hb.as_ref().unwrap(), tol, wicks, scratch),
+            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, es, input, rng, tol, wicks, scratch, mocache),
+            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, es, input, rng, hb.as_ref().unwrap(), tol, wicks, scratch, mocache),
             ExcitationGen::ApproximateHeatBath => unimplemented!(),
         };
 
@@ -584,6 +585,9 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         let frac = pspawn - (m as f64);
         let extra = if rng.gen_range(0.0..1.0) < frac {1} else {0};
         let nchildren = m + extra;
+        if nchildren == 0 {
+            continue;
+        }
 
         let sign: i64 = if k > 0.0 {1} else {-1};
         let child_sign: i64 = -sign * parent_sign;
@@ -591,11 +595,15 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
         
         // Apply spawwning population updates locally if the determinant to be updated is owned by
         // current thread, otherwise add the population update message to the send buffer.
-        let destination = owner(lambda, nranks);
-        if destination == irank {
+        if nranks == 1 {
             outlocal.push((lambda, dn));
         } else {
-            outremote.push(PopulationUpdate {det: lambda as u64, dn});
+            let destination = owner(lambda, nranks);
+            if destination == irank {
+                outlocal.push((lambda, dn));
+            } else {
+                outremote.push(PopulationUpdate {det: lambda as u64, dn});
+            }
         }
     }
 }
@@ -615,17 +623,18 @@ fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f6
 /// - `input`: User specified input options.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `rng`: Random number generator.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `out`: I64)>, output population updates.
 /// # Returns
 /// - `()`: Appends death/cloning updates to `out`.
 fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, tol: f64, 
-                 wicks: Option<&WicksView>, rng: &mut SmallRng, scratch: &mut WickScratch, out: &mut Vec<(usize, i64)>) {
+                 wicks: Option<&WicksView>, mocache: &[MOCache], rng: &mut SmallRng, scratch: &mut WickScratchSpin, out: &mut Vec<(usize, i64)>) {
     
     // Calculate matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma}.
-    let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, wicks, scratch);
+    let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, wicks, mocache, scratch);
 
     // Death probability.
     let pdeath = match input.prop_ref().propagator {
@@ -635,6 +644,9 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
         Propagator::DifferenceDoublyShiftedU1 => input.prop_ref().dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
         Propagator::DifferenceDoublyShiftedU2 => input.prop_ref().dt * (hgg - sgg * es_s - (es - es_s)),
     };
+    if pdeath == 0.0 {
+        return;
+    }
     let p = pdeath.abs();
 
     // Sign of parent walkers on state Gamma determines which way round death and cloning occur.
@@ -644,7 +656,6 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     let m = p.floor() as i64;
     let frac = p - (m as f64);
    
-    if pdeath == 0.0 {return;}
     // Rather than iterate over all walkers we can sample binominal distribution.
     let extra = if frac > 0.0 {Binomial::new(n as u64, frac).unwrap().sample(rng) as i64} else {0};
     let nevents = n * m + extra;
@@ -655,38 +666,75 @@ fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es:
     out.push((gamma, dn * nevents));
 }
 
-/// Calculate projected energy as \frac{\sum_{H_{\Gamma, \text{Reference}}} N_{\Gamma}}{\sum_{S_{\Gamma, \text{Reference}}} N_{\Gamma}}.
-/// # Arguments
-/// - `ao`: Contains AO integrals and other system data. 
+/// Initialise the running projected-energy state
+/// \frac{\sum_{\Gamma} N_{\Gamma} H_{\Gamma,\mathrm{ref}}}{\sum_{\Gamma} N_{\Gamma} S_{\Gamma,\mathrm{ref}}}
+/// by performing the full initial sweep over the occupied determinant space.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
 /// - `basis`: List of the full NOCI-QMC basis.
 /// - `walkers`: Object containing information about current walkers.
-/// - `iref`: Index of determinant we are projecting onto.
+/// - `iref`: Index of the determinant onto which the energy is projected.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `input`: User specified input options.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
-/// - `f64`: Projected energy.
-fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, world: &impl Communicator, tol: f64,
-                    input: &Input, wicks: Option<&WicksView>) -> f64 {
-    
-    // Calculate projected energy per Rayon thread.
-    let (num, den) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratch::new()), |(mut num, mut den, mut scratch), &gamma| {
+/// - `ProjectedEnergyUpdate`: Initial projected-energy numerator and denominator.
+fn init_projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, world: &impl Communicator, tol: f64, input: &Input,
+                               wicks: Option<&WicksView>, mocache: &[MOCache]) -> ProjectedEnergyUpdate {
+    let (num_local, den_local) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut num, mut den, mut scratch), &gamma| {
         let ngamma = walkers.get(gamma) as f64;
-        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, wicks, &mut scratch);
+        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, wicks, mocache, &mut scratch);
         num += ngamma * hgr;
         den += ngamma * sgr;
         (num, den, scratch)
     }).map(|(num, den, _)| (num, den)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
 
-    // Reduce contributions from each thread to get full projected energy across MPI ranks.
-    let mut numglobal = 0.0;
-    let mut denglobal = 0.0;
-    world.all_reduce_into(&num, &mut numglobal, SystemOperation::sum());
-    world.all_reduce_into(&den, &mut denglobal, SystemOperation::sum());
+    let mut num = 0.0;
+    let mut den = 0.0;
+    world.all_reduce_into(&num_local, &mut num, SystemOperation::sum());
+    world.all_reduce_into(&den_local, &mut den, SystemOperation::sum());
 
-    numglobal / denglobal
+    ProjectedEnergyUpdate {iref, num, den}
+}
+
+/// Incrementally update the running projected-energy state using the net walker
+/// population changes applied in the current iteration.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
+/// - `basis`: List of the full NOCI-QMC basis.
+/// - `d`: Net population changes applied in the current iteration.
+/// - `pe`: Running projected-energy state to update in place.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `tol`: Tolerance up to which a number is considered zero.
+/// - `input`: User specified input options.
+/// - `wicks`: Intermediates required for evaluating matrix
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
+/// # Returns
+/// - `()`: Updates `pe` in place.
+fn update_projected_energy(ao: &AoData, basis: &[SCFState], d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, world: &impl Communicator, tol: f64,
+                                 input: &Input, wicks: Option<&WicksView>, mocache: &[MOCache]) {
+    let iref = pe.iref;
+
+    let (dnum_local, dden_local) = d.par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut dnum, mut dden, mut scratch), up| {
+        let gamma = up.det as usize;
+        let dn = up.dn as f64;
+        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, wicks, mocache, &mut scratch);
+        dnum += dn * hgr;
+        dden += dn * sgr;
+        (dnum, dden, scratch)
+    }).map(|(dnum, dden, _)| (dnum, dden)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
+
+    let mut dnum = 0.0;
+    let mut dden = 0.0;
+    world.all_reduce_into(&dnum_local, &mut dnum, SystemOperation::sum());
+    world.all_reduce_into(&dden_local, &mut dden, SystemOperation::sum());
+
+    pe.num += dnum;
+    pe.den += dden;
 }
 
 /// Initialise the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}. 
@@ -700,12 +748,12 @@ fn projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: us
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `input`: User specified input options.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `Vec<f64>`: Local portion of the overlap-transformed population vector p_{\Gamma}.
 fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, world: &impl Communicator, tol: f64, 
-          input: &Input, wicks: Option<&WicksView>, scratch: &mut WickScratch) -> Vec<f64> {
+          input: &Input, wicks: Option<&WicksView>, scratch: &mut WickScratchSpin) -> Vec<f64> {
 
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
@@ -737,34 +785,30 @@ fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &W
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `input`: User specified input options.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
 /// # Returns
 /// - `()`: Updates `plocal` in place.
 fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64,
             input: &Input, wicks: Option<&WicksView>) {
 
     let dglobal = gather_all_walkers(world, dlocal);
-    
-    //\Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}. 
-    plocal.par_iter_mut().enumerate().for_each_init(WickScratch::new, |scratch, (idx, pgamma)| {
-        let gamma = start + idx;
-        let mut dp = 0.0;
 
-            for entry in &dglobal {
-                // Here we use dn to mean population change.
-                let omega = entry.det as usize;
-                let scale = entry.dn as f64;
-                let sgo = find_s(ao, basis, gamma, omega, tol, input, wicks, scratch);
-                dp += scale * sgo;
-            }
-            *pgamma += dp;
+    // \Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
+    plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
+        let gamma = start + k;
+        let mut dp = 0.0;
+        for update in &dglobal {
+            let omega = update.det as usize;
+            dp += find_s(ao, basis, gamma, omega, tol, input, wicks, scratch) * update.dn as f64;
+        }
+        *pgamma += dp;
     });
 }
 
 /// Propagate according to the stochastic update equations for max_steps iterations.
 /// # Arguments: 
 /// - `c0`: Initial determinant coefficient vector to be translated into walker
-/// populations.
+///   populations.
 /// - `ao`: Contains AO integrals and other system data. 
 /// - `basis`: List of the full NOCI-QMC basis.
 /// - `es`: Initial shift energy.
@@ -773,12 +817,13 @@ fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communic
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Intermediates required for evaluating matrix
-/// elements using the extended non-orthogonal Wick's theorem.
+///   elements using the extended non-orthogonal Wick's theorem.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
 /// - `(f64, Option<ExcitationHist>, StochStepTimings)`: Projected energy estimate, optional
-/// excitation histogram, and stochastic propagation timings.
+///   excitation histogram, and stochastic propagation timings.
 pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64, 
-                wicks: Option<&WicksView>) -> (f64, Option<ExcitationHist>, StochStepTimings) {
+                wicks: Option<&WicksView>, mocache: &[MOCache]) -> (f64, Option<ExcitationHist>, StochStepTimings) {
     
     // Timings.
     let mut d_spawn_death_collect = 0.0f64;
@@ -798,17 +843,17 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
 
     let iref = 0;
     // Serial Wick's scratch.
-    let mut scratch = WickScratch::new();
-    println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratch>() as f64 / (1024.0 * 1024.0));
+    let mut scratch = WickScratchSpin::new();
+    println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0));
     
-     // Accumulated updates per Rayon thread. Local contains anything that happens on a
+    // Accumulated updates per Rayon thread. Local contains anything that happens on a
     // determinant under the control of the current thread, and remote anything that applies to
     // another thread's determinant.
     type LocalUpdates = Vec<(usize, i64)>;
     type RemoteUpdates = Vec<PopulationUpdate>;
     type Samples = Vec<f64>;
 
-    type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratch);
+    type ThreadState = (LocalUpdates, RemoteUpdates, Samples, SmallRng, WickScratchSpin);
     println!("Size of per thread state (MiB): {}", std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0));
 
     // Construct reference index mask.
@@ -850,7 +895,8 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     let mut mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), rng, pg, excitation_hist};
 
     // Project onto determinant with index zero (this is usually the first RHF reference).
-    let eproj = projected_energy(ao, basis, &mc.walkers, iref, world, tol, input, wicks);
+    let mut pe = init_projected_energy(ao, basis, &mc.walkers, iref, world, tol, input, wicks, mocache);
+    let eproj = pe.num / pe.den;
 
     // Initialise overlap-transformed shift E_s^S. This is distinct from es (E_s) in that E_s is
     // the shift updated using N_w, whilst E_s^S is updated using \tilde{N}_w.
@@ -891,13 +937,20 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     let maxsame = 2 * maxex_a.max(maxex_b);
     let maxla = 2 * maxex_a;
     let maxlb = 2 * maxex_b;
+    
+    // Initialise early exit cache for printing iteration line.
+    let mut eprojcur = pe.num / pe.den;
+    let mut nwccur = qmc.initial_population;
+    let mut nrefccur = nrefprevc;
+    let mut nwsccur = nwprevsc;
+    let mut nrefsccur = nrefprevsc;
 
     for it in 0..input.prop_ref().max_steps {
         // Function to initialise individual thread states.
         let initialise = || -> ThreadState {
             let tid = rayon::current_thread_index().unwrap_or(0) as u64;
             (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))), 
-             WickScratch::with_sizes(maxsame, maxla, maxlb))
+             WickScratchSpin::with_sizes(maxsame, maxla, maxlb))
         };
 
         // Function to call spawning and death/cloning routines and accumulate population updates.
@@ -906,9 +959,9 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
             if ngamma == 0 {return (loc, rem, samp, rng, scratch);}
 
             // Death and cloning is entirely local.
-            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, wicks, &mut rng, &mut scratch, &mut loc);
+            death_cloning(ao, basis, gamma, ngamma, *es, es_s, input, tol, wicks, mocache, &mut rng, &mut scratch, &mut loc);
             // Spawning need not be local.
-            spawning(ao, basis, gamma, ngamma, es_s, *es, input, tol, wicks, irank, nranks, &mut rng, &mut scratch, &mut loc, &mut rem, &mut samp);
+            spawning(ao, basis, gamma, ngamma, es_s, *es, input, tol, wicks, irank, nranks, &mut rng, &mut scratch, mocache, &mut loc, &mut rem, &mut samp);
 
             (loc, rem, samp, rng, scratch)
         };
@@ -928,7 +981,7 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
         // what is reduced into by the threads.
         let t0 = Instant::now();
         let (local, remote, samples, _, _): ThreadState = occ.par_iter().fold(initialise, propagate)
-                                            .reduce(|| (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(0), WickScratch::new()), merge);
+                                            .reduce(|| (Vec::new(), Vec::new(), Vec::new(), SmallRng::seed_from_u64(0), WickScratchSpin::new()), merge);
         d_spawn_death_collect += t0.elapsed().as_secs_f64();
 
         let t0 = Instant::now();
@@ -965,7 +1018,14 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
                 add_delta(&mut mc, update.det as usize, update.dn);
             }
             d_unpack_acc_recieved += t0.elapsed().as_secs_f64();
-        }        
+        }       
+
+        // Early exit if there is no updates.
+        if mc.changed.is_empty() {
+            if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+                           it + 1, eprojcur, eprojcur - basis[0].e, es_corr, es_s_corr, nwccur as f64, nrefccur as f64, nwsccur, nrefsccur);}
+            continue;
+        }
 
         // Apply any local and recieved deltas. Annhilation is fully local process here.  
         // The change in population is also stored to update overlap-transformed walker population.
@@ -1001,6 +1061,12 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
         world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
         d_calc_populations += t0.elapsed().as_secs_f64();
 
+        // Cache populations for early exit printing.
+        nwccur = nwc;
+        nrefccur = nrefc;
+        nwsccur = nwsc;
+        nrefsccur = nrefsc;
+
         // Activate overlap-transformed and non-overlap transformed shifts.
         if !reached_c && (nwc > qmc.target_population) {
             reached_c = true;
@@ -1020,10 +1086,11 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
             nwprevsc = nwsc;
         }
         
-        // Update energy. 
+        // Update energy.
         let t0 = Instant::now();
-        let iref = 0;
-        let eproj = projected_energy(ao, basis, &mc.walkers, iref, world, tol, input, wicks);
+        update_projected_energy(ao, basis, &d, &mut pe, world, tol, input, wicks, mocache);
+        let eproj = pe.num / pe.den;
+        eprojcur = eproj;
         d_eproj += t0.elapsed().as_secs_f64();
 
         es_corr = if reached_c {*es - e0} else {0.0};
@@ -1040,5 +1107,5 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
                                     update_p: Duration::from_secs_f64(d_update_p), calc_populations: Duration::from_secs_f64(d_calc_populations), 
                                     eproj: Duration::from_secs_f64(d_eproj)};
 
-    (eproj, mc.excitation_hist, timings)
+    (eprojcur, mc.excitation_hist, timings)
 }

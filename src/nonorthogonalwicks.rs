@@ -930,8 +930,65 @@ impl Vec2 {
     }
 }
 
-// Storage for preallocated Wick's data terms such that we do not have to reallocate all of these
-// everytime a matrix element evaluation routine is called.
+#[derive(Default)]
+pub struct WickScratchSpin {
+    pub aa: WickScratch,
+    pub bb: WickScratch,
+    pub diff: WickScratch,
+}
+
+impl WickScratchSpin {
+    /// Construct empty split scratch storage for Wick's quantities.
+    /// # Arguments:
+    /// # Returns
+    /// - `WickScratchSpin`: Default-initialised split scratch storage.
+    #[inline]
+    pub fn new() -> Self {Self::default()}
+
+    /// Pre-allocate split Wick scratch buffers to the largest sizes needed for
+    /// the current calculation in order to reduce repeated allocations.
+    /// # Arguments:
+    /// - `maxsame`: Maximum total excitation rank required for same-spin terms.
+    /// - `maxla`: Maximum total alpha-spin excitation rank required for different-spin terms.
+    /// - `maxlb`: Maximum total beta-spin excitation rank required for different-spin terms.
+    /// # Returns
+    /// - `WickScratchSpin`: Split scratch storage with the requested capacities reserved.
+    #[inline]
+    pub fn with_sizes(maxsame: usize, maxla: usize, maxlb: usize) -> Self {
+        Self {
+            aa: WickScratch::with_sizes(maxsame, 0, 0),
+            bb: WickScratch::with_sizes(maxsame, 0, 0),
+            diff: WickScratch::with_sizes(0, maxla, maxlb),
+        }
+    }
+    
+    
+    /// Ensure that both same-spin scratch blocks are sized for excitation rank `l`.
+    /// # Arguments:
+    /// - `self`: Split scratch storage for Wick's quantities.
+    /// - `l`: Maximum same-spin excitation rank required.
+    /// # Returns
+    /// - `()`: Resizes both same-spin scratch blocks in place.
+    #[inline(always)]
+    pub fn ensure_same(&mut self, l: usize) {
+        self.aa.ensure_same(l);
+        self.bb.ensure_same(l);
+    }
+    
+    /// Ensure that the different-spin scratch block is sized for excitation ranks
+    /// `la` and `lb`.
+    /// # Arguments:
+    /// - `self`: Split scratch storage for Wick's quantities.
+    /// - `la`: Maximum total alpha-spin excitation rank required.
+    /// - `lb`: Maximum total beta-spin excitation rank required.
+    /// # Returns
+    /// - `()`: Resizes the different-spin scratch block in place.
+    #[inline(always)]
+    pub fn ensure_diff(&mut self, la: usize, lb: usize) {
+        self.diff.ensure_diff(la, lb);
+    }
+}
+
 #[derive(Default)]
 pub struct WickScratch {
     pub rows: Vec<usize>,

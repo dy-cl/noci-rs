@@ -178,37 +178,40 @@ fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
 /// - `parts`: Creation operator indices.
 /// # Returns
 /// - `f64`: Fermionic phase factor.
+#[inline(always)]
 pub fn excitation_phase(mut occ: u128, holes: &[usize], parts: &[usize]) -> f64 {
 
-    /// Calculate how many occupied orbitals are below index p.
+    /// Determine whether the number of occupied orbitals below orbital index `p`
+    /// is odd.
     /// # Arguments:
     /// - `bits`: Occupancy bitstring.
-    /// - `p`: A given orbital index.
-    /// # Returns
-    /// - `u32`: Number of occupied orbitals below index `p`.
-    fn below(bits: u128, p: usize) -> u32 {
-        if p == 0 { return 0; }
-        (bits & ((1u128 << p) - 1)).count_ones()
+    /// - `p`: Orbital index.
+    /// # Returns:
+    /// - `bool`: `true` if the number of occupied orbitals with index less than
+    ///   `p` is odd, otherwise `false`. 
+    #[inline(always)]
+    fn below(bits: u128, p: usize) -> bool {
+        if p == 0 {
+            false
+        } else {
+            ((bits & ((1u128 << p) - 1)).count_ones() & 1) != 0
+        }
     }
 
-    let mut ph = 1.0;
-    
-    // Remove annhilations in descending order and accumulate phase.
-    let mut hs = holes.to_vec();
-    hs.sort_unstable_by(|a,b| b.cmp(a));    
-    for &i in &hs {
-        if (below(occ, i) & 1) == 1 {ph = -ph;}
+    let mut odd = false;
+
+    for &i in holes.iter().rev() {
+        odd ^= below(occ, i);
         occ &= !(1u128 << i);
     }
-    
-    // Add creations in ascending order and accumulate phase.
-    let mut ps = parts.to_vec();
-    ps.sort_unstable();                     
-    for &a in &ps {
-        if (below(occ, a) & 1) == 1 { ph = -ph; }
-        occ |= 1u128 << a;
+
+    for (k, &a) in parts.iter().enumerate() {
+        odd ^= below(occ, a);
+        if k + 1 != parts.len() {
+            occ |= 1u128 << a;
+        }
     }
-    ph
+    if odd {-1.0} else {1.0}
 }
 
 /// Generate the SCF states using the maximum orbital overlap procedure.

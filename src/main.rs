@@ -15,12 +15,13 @@ use noci_rs::AoData;
 use noci_rs::SCFState;
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
 use noci_rs::stochastic::StochStepTimings;
+use noci_rs::noci::{MOCache};
 use noci_rs::snoci::SNOCIStepTimings;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
 use noci_rs::basis::{generate_reference_noci_basis, generate_excited_basis};
-use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_wicks_shared};
+use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_wicks_shared, build_mo_cache};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{qmc_step};
 use noci_rs::snoci::{snoci_step};
@@ -152,7 +153,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     world.barrier();
     broadcast(world, &mut states);
     broadcast(world, &mut noci_reference_basis);
-    
+
     // Construct intermediates for extended non-orthogonal Wick's theorem if using. The actual
     // computation happens on only world rank 0 (with rayon). If multiple shared memory regions are 
     // used multiple copies of the intermediates will be computed.
@@ -168,10 +169,15 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     let d_wi = t_wi.elapsed();
     timings.wicks_intermediates = d_wi;
 
+    // Transform all references used in NOCI basis to MO basis. This allows for evaluation of
+    // matrix elements using standard Slater-Condon rules if the determinant pair share a parent.
+    println!("Constructing reference NOCI MO basis....");
+    let mocache = build_mo_cache(&ao, &noci_reference_basis);
+
     // Reference NOCI, deterministic propagation and selected NOCI (SNOCI) occur only on rank 0 (with Rayon).
     if irank == 0 {
         let wicks_view = wicks_shared.as_ref().map(|ws| ws.view());
-        let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, wicks_view);
+        let (refb, e_ref, c0v, d_tot, d_hs_ref) = run_reference_noci(&ao, input, &states, tol, &mocache, wicks_view);
         noci_reference_basis = refb;
         e_noci_ref = e_ref;
         c0 = c0v;
@@ -179,7 +185,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         timings.noci_ref_hs = d_hs_ref;
 
         if input.det.is_some() {
-            let (e_det, d_tot, d_basis, d_hs, d_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0, tol, wicks_view);
+            let (e_det, d_tot, d_basis, d_hs, d_prop) = run_qmc_deterministic_noci(&ao, input, &states, &noci_reference_basis, &c0, &mocache, tol, wicks_view);
             e_noci_qmc_det = Some(e_det);
             timings.qmc_det_total = d_tot;
             timings.qmc_det_basis = d_basis;
@@ -188,7 +194,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         }
 
         if input.snoci.is_some() {
-            let (e_snoci_res, d_tot, d_step) = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut());
+            let (e_snoci_res, d_tot, d_step) = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut(), &mocache);
             e_snoci = Some(e_snoci_res);
             timings.snoci_total = d_tot;
             timings.snoci_step = d_step;
@@ -199,11 +205,11 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     broadcast(world, &mut noci_reference_basis);
     broadcast(world, &mut c0);
     broadcast(world, &mut e_noci_ref);
-    
+
     // Run stochastic NOCI-QMC calculation across all MPI ranks.
     if input.qmc.is_some() {
         let wicks_view = wicks_shared.as_ref().map(|ws| ws.view());
-        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop, step_timings) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks_view);
+        let (e_qmc, d_qmc_stoch_total, d_qmc_stoch_basis, d_qmc_stoch_prop, step_timings) = run_qmc_stochastic_noci(&ao, input, &noci_reference_basis, &c0, world, tol, wicks_view, &mocache);
         e_noci_qmc_stoch = Some(e_qmc);
         timings.qmc_stoch_total = d_qmc_stoch_total;
         timings.qmc_stoch_basis = d_qmc_stoch_basis;
@@ -264,11 +270,12 @@ fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> (Vec<SCF
 /// - `input`: User input specifications.
 /// - `states`: Converged SCF states.
 /// - `tol`: Tolerance up to which a number is considered zero.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns
 /// - `(Vec<SCFState>, f64, Vec<f64>, Duration, Duration)`: Reference NOCI basis, reference NOCI
 ///   energy, reference NOCI coefficients, total reference NOCI wall time, and matrix-build wall time.
-fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, wicks: Option<&WicksView>) 
+fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, mocache: &[MOCache], wicks: Option<&WicksView>) 
                       -> (Vec<SCFState>, f64, Vec<f64>, Duration, Duration) {
     let t_noci = Instant::now();
     
@@ -278,7 +285,7 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64,
         st.parent = i;
     }
     // Call matrix element and diagonalisation routines.
-    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, input, &noci_reference_basis, tol, wicks);
+    let (e_noci_ref, c0, d_h_ref) = calculate_noci_energy(ao, input, &noci_reference_basis, tol, mocache, wicks);
 
     (noci_reference_basis, e_noci_ref, c0.to_vec(), t_noci.elapsed(), d_h_ref)
 }
@@ -292,12 +299,13 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64,
 ///   to be in the NOCI basis.
 /// - `c0`: Initial coefficient vector of basis states.
 /// - `tol`: Tolerance up to which a number is considered zero.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns
 /// - `(f64, Duration, Duration, Duration, Duration)`: Propagated energy, total wall time, basis
 ///   generation wall time, Hamiltonian/overlap build wall time, and propagation wall time.
-fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], tol: f64, 
-                              wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, Duration) {
+fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], mocache: &[MOCache], 
+                              tol: f64, wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, Duration) {
     let t_total = Instant::now();
 
     println!("{}", "=".repeat(100));
@@ -315,7 +323,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Call matrix element routines.
     let symmetric = true;
-    let (h, s, d_hs) = build_noci_hs(ao, input, &basis, &basis, tol, wicks, symmetric);
+    let (h, s, d_hs) = build_noci_hs(ao, input, &basis, &basis, tol, mocache, wicks, symmetric);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.
@@ -404,11 +412,12 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Optional precomputed Wick's intermediates.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
 /// - `(f64, Duration, Duration, Duration, StochStepTimings)`: Stochastic energy estimate, total
 ///   wall time, basis generation wall time, propagation wall time, and per-step timings.
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64, 
-                               wicks: Option<&WicksView>) -> (f64, Duration, Duration, Duration, StochStepTimings) {
+                               wicks: Option<&WicksView>, mocache: &[MOCache]) -> (f64, Duration, Duration, Duration, StochStepTimings) {
 
     let t_total = Instant::now();
     let irank = world.rank();
@@ -446,7 +455,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let (e, local_hist, step_timings) = qmc_step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, wicks);
+    let (e, local_hist, step_timings) = qmc_step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, wicks, mocache);
     let d_prop = t_prop.elapsed();
 
     // Write excitation histogram to a file. This should currently only be used if doing a single 
@@ -478,14 +487,16 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 /// - `input`: User input specifications.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Optional shared-memory Wick's intermediates storage.
+/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
 /// - `(f64, Duration, SNOCIStepTimings)`: Current SNOCI energy, total SNOCI wall time, and
 ///   timings for the SNOCI step components.
-pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, wicks: Option<&mut WicksShared>) -> (f64, Duration, SNOCIStepTimings) {
+pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64, 
+                 wicks: Option<&mut WicksShared>, mocache: &[MOCache]) -> (f64, Duration, SNOCIStepTimings) {
     let t0 = Instant::now(); 
     let current_space = initial_space.to_vec();
    
-    let (state, snoci_timings) = snoci_step(ao, &current_space, noci_reference_basis, input, tol, wicks);
+    let (state, snoci_timings) = snoci_step(ao, &current_space, noci_reference_basis, input, mocache, tol, wicks);
     let d_tot = t0.elapsed(); 
     (state.ecurrent, d_tot, snoci_timings)
 }
@@ -537,6 +548,7 @@ fn print_report(res: &Results, input: &Input) {
         println!(r"  Filtered Candidate-current space H: {:?}", res.timings.snoci_step.candidate_h_ai);
         println!(r"  Pseudoinverse: {:?}", res.timings.snoci_step.pseudoinverse);
         println!(r"  Build Omega space S: {:?}", res.timings.snoci_step.s_omega);
+        println!(r"  Fock MOs: {:?}", res.timings.snoci_step.fock_mos);
         println!(r"  Generalised Fock build: {:?}", res.timings.snoci_step.generalised_fock);
         println!(r"  Update Wick Fock intermediates: {:?}", res.timings.snoci_step.update_wicks);
         println!(r"  Candidate space Fock: {:?}", res.timings.snoci_step.candidate_fock);
