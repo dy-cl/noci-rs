@@ -1085,8 +1085,13 @@ impl WickScratch {
     pub fn ensure_same(&mut self, l: usize) {
         self.rows.clear();
         self.cols.clear();
-        self.rows.reserve(l);
-        self.cols.reserve(l);
+
+        if self.rows.capacity() < l {
+            self.rows.reserve_exact(l - self.rows.capacity());
+        }
+        if self.cols.capacity() < l {
+            self.cols.reserve_exact(l - self.cols.capacity());
+        }
 
         self.det0.ensure(l, l);
         self.det1.ensure(l, l);
@@ -1893,8 +1898,14 @@ fn construct_determinant_indices(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, n
 
     rows.clear();
     cols.clear();
-    rows.reserve(nl + ng);
-    cols.reserve(nl + ng);
+
+    let need = nl + ng;
+    if rows.capacity() < need {
+        rows.reserve_exact(need - rows.capacity());
+    }
+    if cols.capacity() < need {
+        cols.reserve_exact(need - cols.capacity());
+    }
 
     if nl == 0 && ng == 0 {
         return;

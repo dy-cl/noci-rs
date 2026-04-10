@@ -1021,9 +1021,14 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
         }       
 
         // Early exit if there is no updates.
-        if mc.changed.is_empty() {
-            if irank == 0 {println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-                           it + 1, eprojcur, eprojcur - basis[0].e, es_corr, es_s_corr, nwccur as f64, nrefccur as f64, nwsccur, nrefsccur);}
+        let changed: i32 = (!mc.changed.is_empty()) as i32;
+        let mut changedglobal: i32 = 0;
+        world.all_reduce_into(&changed, &mut changedglobal, SystemOperation::max());
+        if changedglobal == 0 {
+            if irank == 0 {
+                println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+                         it + 1, eprojcur, eprojcur - basis[0].e, es_corr, es_s_corr, nwccur as f64, nrefccur as f64, nwsccur, nrefsccur);
+            }
             continue;
         }
 
