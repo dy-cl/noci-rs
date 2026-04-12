@@ -1,4 +1,4 @@
-// qmc.rs
+// stochastic/qmc.rs
 use std::time::{Instant};
 use std::path::Path;
 

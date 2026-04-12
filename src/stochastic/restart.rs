@@ -1,4 +1,4 @@
-// restart.rs
+// stochastic/restart.rs
 use std::fs;
 use std::path::Path;
 
