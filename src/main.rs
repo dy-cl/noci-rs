@@ -14,7 +14,7 @@ use noci_rs::input::Input;
 use noci_rs::AoData;
 use noci_rs::SCFState;
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
-use noci_rs::stochastic::QMCTimings;
+use noci_rs::stochastic::{QMCTimings, QMCData};
 use noci_rs::noci::{MOCache};
 use noci_rs::snoci::SNOCIStepTimings;
 
@@ -455,7 +455,8 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let (e, local_hist, step_timings) = qmc_step(&c0qmc, ao, &basis, &mut es, input, &ref_indices, world, tol, wicks, mocache);
+    let data = QMCData {ao, basis: &basis, input, wicks, mocache, tol};
+    let (e, local_hist, step_timings) = qmc_step(&data, &c0qmc, &mut es, &ref_indices, world);
     let d_prop = t_prop.elapsed();
 
     // Write excitation histogram to a file. This should currently only be used if doing a single 

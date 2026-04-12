@@ -22,6 +22,7 @@ use crate::noci::{calculate_s_pair, calculate_hs_pair};
 use crate::mpiutils::{owner, local_walkers, communicate_spawn_updates, gather_all_walkers};
 use super::restart::{read_restart_hdf5, write_restart_hdf5};
 
+// Storage for QMC timings.
 #[derive(Default, Clone)]
 pub struct QMCTimings {
     pub initialise_walkers: f64,
@@ -33,6 +34,42 @@ pub struct QMCTimings {
     pub update_p: f64,
     pub calc_populations: f64,
     pub eproj: f64,
+}
+
+// Storage for immutable data required for stochastic propagation.
+pub struct QMCData<'a> {
+    pub ao: &'a AoData,
+    pub basis: &'a [SCFState],
+    pub input: &'a Input,
+    pub wicks: Option<&'a WicksView>,
+    pub mocache: &'a [MOCache],
+    pub tol: f64,
+}
+
+// Storage for rank-local data layouts and metadata.
+struct QMCRunInfo {
+    irank: usize,
+    nranks: usize,
+    ndets: usize,
+    start: usize,
+    end: usize,
+    iref: usize,
+    base_seed: u64,
+    rank_seed: u64,
+}
+
+// Storage for maximum size required for Wick's scratch.
+struct ScratchSize {
+    maxsame: usize,
+    maxla: usize,
+    maxlb: usize,
+}
+
+// Storage for Current shift values used during propagation.
+#[derive(Clone, Copy)]
+struct Shifts {
+    es: f64,
+    es_s: f64,
 }
 
 // Storage for walker information.
@@ -156,6 +193,7 @@ pub struct MCState {
 }
 
 // Storage for the Incrementally updated projected-energy.
+#[derive(Clone, Copy)]
 struct ProjectedEnergyUpdate {
     iref: usize,
     num: f64,
@@ -173,6 +211,20 @@ struct PopulationStats {
     nwsc: f64,
     // Overlap-transformed reference walker populations.
     nrefsc: f64,
+}
+
+impl PopulationStats {
+    /// Construct raw and overlap-transformed walker population container.
+    /// # Arguments:
+    /// - `nwc`: Total non-overlap transformed walker population.
+    /// - `nrefc`: Total non-overlap transformed reference walker population.
+    /// - `nwsc`: Total overlap-transformed walker population.
+    /// - `nrefsc`: Total overlap-transformed reference walker population.
+    /// # Returns
+    /// - `PopulationStats`: Walker population statistics.
+    fn new(nwc: i64, nrefc: i64, nwsc: f64, nrefsc: f64) -> Self {
+        Self {nwc, nrefc, nwsc, nrefsc}
+    }
 }
 
 /// Storage for QMC step bookkeeping data.
@@ -195,6 +247,52 @@ struct PropagationState {
     reached_c: bool,
     // Current projected-energy.
     eprojcur: f64,
+}
+
+impl PropagationState {
+    /// Construct propagation state from the Monte Carlo state, projected-energy,
+    /// shift, and population bookkeeping quantities.
+    /// # Arguments:
+    /// - `mc`: Monte Carlo state.
+    /// - `pe`: Incrementally updated projected-energy.
+    /// - `es_s`: Overlap transformed shift.
+    /// - `start_iter`: Iteration from which propagation begins.
+    /// - `reached_sc`: Has the overlap-transformed population reached the target.
+    /// - `reached_c`: Has the non-overlap-transformed population reached the target.
+    /// - `prev_pop`: Walker populations at the previous shift update.
+    /// # Returns
+    /// - `PropagationState`: Initialised propagation state.
+    fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+        let eprojcur = pe.num / pe.den;
+        Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_iter, reached_sc, reached_c, eprojcur}
+    }
+    
+    /// Construct propagation state for a run beginning from iteration zero.
+    /// # Arguments:
+    /// - `mc`: Monte Carlo state.
+    /// - `pe`: Incrementally updated projected-energy.
+    /// - `es_s`: Overlap transformed shift.
+    /// - `prev_pop`: Initial walker populations.
+    /// # Returns
+    /// - `PropagationState`: Propagation state for a stochastic run from iteration zero.
+    fn fresh(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, prev_pop: PopulationStats) -> Self {
+        Self::new(mc, pe, es_s, 0, false, false, prev_pop)
+    }
+    
+    /// Construct propagation state for a run resumed from a restart file.
+    /// # Arguments:
+    /// - `mc`: Monte Carlo state.
+    /// - `pe`: Incrementally updated projected-energy.
+    /// - `es_s`: Overlap transformed shift.
+    /// - `start_iter`: Iteration from which propagation resumes.
+    /// - `reached_sc`: Has the overlap-transformed population reached the target.
+    /// - `reached_c`: Has the non-overlap-transformed population reached the target.
+    /// - `prev_pop`: Walker populations stored at the previous shift update.
+    /// # Returns
+    /// - `PropagationState`: Propagation state for a restarted stochastic run.
+    fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+        Self::new(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
+    }
 }
 
 // Storage for results of a single propagation step.
@@ -221,6 +319,101 @@ struct ThreadPropagation {
     scratch: WickScratchSpin,
 }
 
+impl ThreadPropagation {
+    /// Perform the diagonal death and cloning step for a parent determinant.
+    /// # Arguments:
+    /// - `gamma`: Index of parent determinant `\Gamma`.
+    /// - `ngamma`: Walker population on determinant `\Gamma`.
+    /// - `shifts`: Current non-overlap and overlap-transformed shifts.
+    /// - `data`: Immutable stochastic propagation data.
+    /// # Returns
+    /// - `()`: Appends local death/cloning population updates to `self.local`.
+    fn death_cloning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &QMCData<'_>) {
+        let (hgg, sgg) = find_hs(data, gamma, gamma, &mut self.scratch);
+
+        let pdeath = match data.input.prop_ref().propagator {
+            Propagator::Unshifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s),
+            Propagator::Shifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es_s),
+            Propagator::DoublyShifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es),
+            Propagator::DifferenceDoublyShiftedU1 => data.input.prop_ref().dt * (hgg - sgg * 0.5 * (shifts.es_s + shifts.es) - (shifts.es - shifts.es_s)),
+            Propagator::DifferenceDoublyShiftedU2 => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - (shifts.es - shifts.es_s)),
+        };
+        if pdeath == 0.0 {
+            return;
+        }
+
+        let p = pdeath.abs();
+        let parent_sign = if ngamma > 0 {1} else {-1};
+        let n = ngamma.abs();
+        let m = p.floor() as i64;
+        let frac = p - (m as f64);
+        let extra = if frac > 0.0 {Binomial::new(n as u64, frac).unwrap().sample(&mut self.rng) as i64} else {0};
+        let nevents = n * m + extra;
+        if nevents == 0 {
+            return;
+        }
+
+        let dn = if pdeath > 0.0 {-parent_sign} else {parent_sign};
+        self.local.push((gamma, dn * nevents));
+    }
+    
+    /// Perform the off-diagonal spawning step for a parent determinant.
+    /// # Arguments:
+    /// - `gamma`: Index of parent determinant `\Gamma`.
+    /// - `ngamma`: Walker population on determinant `\Gamma`.
+    /// - `shifts`: Current non-overlap and overlap-transformed shifts.
+    /// - `data`: Immutable stochastic propagation data.
+    /// - `run`: Rank-local run metadata.
+    /// # Returns
+    /// - `()`: Appends local and remote spawning updates to `self.local` and `self.remote`,
+    ///   and excitation histogram samples to `self.samples`.
+    fn spawning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &QMCData<'_>, run: &QMCRunInfo) {
+        let parent_sign = if ngamma > 0 {1} else {-1};
+        let nwalkers = ngamma.unsigned_abs();
+
+        let mut hb: Option<HeatBath> = None;
+        if let ExcitationGen::HeatBath = data.input.qmc.as_ref().unwrap().excitation_gen {
+            hb = Some(init_heat_bath(gamma, shifts, data, &mut self.scratch));
+        }
+
+        for _ in 0..nwalkers {
+            let (pgen, k, lambda) = match data.input.qmc.as_ref().unwrap().excitation_gen {
+                ExcitationGen::Uniform => pgen_uniform(gamma, shifts, data, &mut self.rng, &mut self.scratch),
+                ExcitationGen::HeatBath => pgen_heat_bath(gamma, shifts, data, &mut self.rng, hb.as_ref().unwrap(), &mut self.scratch),
+                ExcitationGen::ApproximateHeatBath => unimplemented!(),
+            };
+
+            let pspawn = data.input.prop_ref().dt * k.abs() / pgen;
+            if data.input.write.write_excitation_hist {
+                self.samples.push(pspawn);
+            }
+
+            let m = pspawn.floor() as i64;
+            let frac = pspawn - (m as f64);
+            let extra = if self.rng.gen_range(0.0..1.0) < frac {1} else {0};
+            let nchildren = m + extra;
+            if nchildren == 0 {
+                continue;
+            }
+
+            let sign = if k > 0.0 {1} else {-1};
+            let child_sign = -sign * parent_sign;
+            let dn = child_sign * nchildren;
+
+            if run.nranks == 1 {
+                self.local.push((lambda, dn));
+            } else {
+                let destination = owner(lambda, run.nranks);
+                if destination == run.irank {
+                    self.local.push((lambda, dn));
+                } else {
+                    self.remote.push(PopulationUpdate {det: lambda as u64, dn});
+                }
+            }
+        }
+    }
+}
+
 // Storage for population update communication across ranks. Is also used for computation of
 // \tilde{N}_w. In this case we interpret dn as the total population.
 #[repr(C)]
@@ -238,7 +431,8 @@ pub struct HeatBath {
     pub ks: Vec<f64>,
 }
 
-// Storage for histogrammed data 
+// Storage for histogrammed data.
+#[derive(Clone)]
 pub struct ExcitationHist {
     pub logmin: f64,
     pub logmax: f64,
@@ -285,45 +479,32 @@ impl ExcitationHist {
     }
 }
 
-/// Find matrix element S_{ij} from Wick's or naive path.
+/// Find overlap matrix element S_{ij}.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `basis`: Vector of all SCF states in the basis.
-/// - `i`: Index of state i. 
-/// - `j`: Index of state j.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
+/// - `data`: Immutable stochastic propagation data.
+/// - `i`: Index of state `i`.
+/// - `j`: Index of state `j`.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// - `f64`: Overlap matrix element S_{ij}.
-fn find_s(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, wicks: Option<&WicksView>, 
-          scratch: &mut WickScratchSpin) -> f64 {
+/// - `f64`: Overlap matrix element `S_{ij}`.
+fn find_s(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> f64 {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
-    calculate_s_pair(ao, &basis[a], &basis[b], tol, input, wicks, Some(scratch))
+    calculate_s_pair(data.ao, &data.basis[a], &data.basis[b], data.tol, data.input, data.wicks, Some(scratch))
 }
 
-/// Find matrix elements H_{ij} and S_{ij} from Wick's or naive path. 
+/// Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: Vector of all SCF states in the basis.
-/// - `i`: Index of state i. 
-/// - `j`: Index of state j.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
+/// - `data`: Immutable stochastic propagation data.
+/// - `i`: Index of state `i`.
+/// - `j`: Index of state `j`.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// - `(f64, f64)`: Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
-fn find_hs(ao: &AoData, basis: &[SCFState], i: usize, j: usize, tol: f64, input: &Input, wicks: Option<&WicksView>, 
-           mocache: &[MOCache], scratch: &mut WickScratchSpin) -> (f64, f64) {
+/// - `(f64, f64)`: Hamiltonian and overlap matrix elements `H_{ij}` and `S_{ij}`.
+fn find_hs(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> (f64, f64) {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
-    calculate_hs_pair(ao, &basis[a], &basis[b], tol, input, mocache, wicks, Some(scratch))
+    calculate_hs_pair(data.ao, &data.basis[a], &data.basis[b], data.tol, data.input, data.mocache, data.wicks, Some(scratch))
 }
 
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
@@ -368,25 +549,19 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
     applied
 }
 
-/// For each entry in initial coefficient vector c0 calculate (c0_i / ||c||) * N_0 (initial population) 
-/// and assign this value  as the initial walker population on this determinant. Sign of population is given 
-/// by sign of c0_i.
+/// For each entry in initial coefficient vector c0 calculate `(c0_i / ||c||) * N_0` and assign
+/// this value as the initial walker population on determinant `i`. The sign of the population is
+/// given by the sign of `c0_i`.
 /// # Arguments:
-/// `c0`: `Vec<f64>`: Initial determinant coefficient vector.
-/// `init_pop`: Number of walkers to start with.
-/// `n`: Number of determinants.
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `iref`: Index of the first reference determinant.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
+/// - `c0`: Initial determinant coefficient vector.
+/// - `init_pop`: Number of walkers to start with.
+/// - `n`: Number of determinants.
+/// - `data`: Immutable stochastic propagation data.
+/// - `iref`: Index of the projected reference determinant.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `Walkers`: Initial walker population.
-pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis: &[SCFState], iref: usize, tol: f64,
-                         input: &Input, wicks: Option<&WicksView>, scratch: &mut WickScratchSpin) -> Walkers {
+fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &QMCData<'_>, iref: usize, scratch: &mut WickScratchSpin) -> Walkers {
     let mut w = Walkers::new(n);
 
     // Ill-conditioning threshold.
@@ -412,7 +587,7 @@ pub fn initialse_walkers(c0: &[f64], init_pop: i64, n: usize, ao: &AoData, basis
     for &gamma in w.occ() {
         let ngamma = w.get(gamma);
         // Calculate matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,\text{Reference}} 
-        let sgr = find_s(ao, basis, gamma, iref, tol, input, wicks, scratch);
+        let sgr = find_s(data, gamma, iref, scratch);
         den += (ngamma as f64) * sgr;
     }
 
@@ -447,29 +622,16 @@ fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
     }
 }
 
-/// Initialise per-determinant heat-bath excitation generation quantities such that they can be
-/// precomputed per-determinant rather than per walker. Calculates total weight
-/// \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}|, cumulative sums
-/// \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|, the Lambda index corresponding to each
-/// cumulative sum, and the couplings H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}.
+/// Initialise exact heat-bath excitation generation data for determinant `gamma`.
 /// # Arguments:
 /// - `gamma`: Parent determinant index.
-/// - `es_s`: E_s^S(\tau) shift energy.
-/// - `es`: E_s(\tau) shift energy.
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `input`: User specified input options.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `noci_reference_basis`: Only the reference basis determinants.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
+/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `data`: Immutable stochastic propagation data.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `HeatBath`: Precomputed heat-bath excitation generation data for determinant `gamma`.
-fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFState], input: &Input, tol: f64, 
-                  wicks: Option<&WicksView>, scratch: &mut WickScratchSpin, mocache: &[MOCache]) -> HeatBath {
-    let ndets = basis.len();
+fn init_heat_bath(gamma: usize, shifts: Shifts, data: &QMCData<'_>, scratch: &mut WickScratchSpin) -> HeatBath {
+    let ndets = data.basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
     let mut sumlg = 0.0_f64;
     // Cumulative sums A_n = \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|. 
@@ -485,8 +647,8 @@ fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFSta
 
     for lambda in 0..ndets {
         if lambda == gamma {continue;}
-        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, mocache, scratch);
-        let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
+        let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
+        let k = coupling(hlg, slg, shifts.es_s, shifts.es, &data.input.prop_ref().propagator);
 
         sumlg += k.abs();
         cumulatives.push(sumlg);
@@ -496,70 +658,48 @@ fn init_heat_bath(gamma: usize, es_s: f64, es: f64, ao: &AoData, basis: &[SCFSta
     HeatBath {sumlg, cumulatives, lambdas, ks}
 }
 
-/// Propose a determinant for spawning using a uniform excitation scheme, and calculate the probability 
-/// P_{\text{gen}} that it was chosen.
+/// Propose a determinant for spawning using a uniform excitation scheme.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
 /// - `gamma`: Index of determinant being spawned from.
-/// - `es_s`: E_s^S(\tau) shift energy.
-/// - `es`: E_s(\tau) shift energy.
-/// - `input`: User specified input options.
+/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `data`: Immutable stochastic propagation data.
 /// - `rng`: Random number generator.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
-fn pgen_uniform(ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, tol: f64,
-                wicks: Option<&WicksView>, scratch: &mut WickScratchSpin, mocache: &[MOCache]) -> (f64, f64, usize) {
-    let ndets = basis.len();
+fn pgen_uniform(gamma: usize, shifts: Shifts, data: &QMCData<'_>, rng: &mut SmallRng, scratch: &mut WickScratchSpin) -> (f64, f64, usize) {
+    let ndets = data.basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
     // more than the Gamma index we map it back into the full index set.
     let mut lambda = rng.gen_range(0..(ndets - 1));
     if lambda >= gamma {lambda += 1;}
 
-    let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, mocache, scratch);
-    let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
+    let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
+    let k = coupling(hlg, slg, shifts.es_s, shifts.es, &data.input.prop_ref().propagator);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
     (pgen, k, lambda) 
 }
 
-/// Propose a determinant for spawning using a heat-bath excitation scheme, and calculate the probability 
-/// P_{\text{gen}} that it was chosen. Warning: This implements the exact heat-bath excitation scheme rather than any 
-/// approximate version, this means it is very very slow and should really only be used for benchmarking other 
-/// excitation schemes.
+/// Propose a determinant for spawning using the exact heat-bath excitation scheme.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
 /// - `gamma`: Index of determinant being spawned from.
-/// - `es_s`: E_s^S(\tau) shift energy.
-/// - `es`: E_s(\tau) shift energy.
-/// - `input`: User specified input options.
+/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `data`: Immutable stochastic propagation data.
 /// - `rng`: Random number generator.
 /// - `hb`: Precomputed heat-bath excitation generation data.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
-fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es: f64, input: &Input, rng: &mut SmallRng, hb: &HeatBath, tol: f64,
-                   wicks: Option<&WicksView>, scratch: &mut WickScratchSpin, mocache: &[MOCache]) -> (f64, f64, usize) {
-
-    let ndets = basis.len();
-
+fn pgen_heat_bath(gamma: usize, shifts: Shifts, data: &QMCData<'_>, rng: &mut SmallRng, hb: &HeatBath, scratch: &mut WickScratchSpin) -> (f64, f64, usize) {
+    let ndets = data.basis.len();
     // If \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} (sumlg) 
     // is zero (unsure how likely this is) then fallback to uniform distribution.
     if hb.sumlg == 0.0 {
         let mut lambda = rng.gen_range(0..(ndets - 1));
         if lambda >= gamma {lambda += 1;}
-        let (hlg, slg) = find_hs(ao, basis, lambda, gamma, tol, input, wicks, mocache, scratch);
-        let k = coupling(hlg, slg, es_s, es, &input.prop_ref().propagator);
+        let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
+        let k = coupling(hlg, slg, shifts.es_s, shifts.es, &data.input.prop_ref().propagator);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
     }
@@ -591,170 +731,20 @@ fn pgen_heat_bath (ao: &AoData, basis: &[SCFState], gamma: usize, es_s: f64, es:
     (pgen, k, lambda)
 }
 
-/// Perform off-diagonal spawning (amplitude transfer) step by calculating:
-///     $P_{\text{Spawn}}(\Lambda|\Gamma) = \frac{\Delta\tau|H_{\Lambda\Gamma} - 
-///     E_sS_{\Lambda\Gamma}|}{P_{\text{gen}}(\Lambda|\Gamma)}$
-/// where if P_{\text{spawn}} > random float in [0, 1] we spawn a child walker onto determinant \Lambda 
-/// with the same sign of its parent if H_{\Lambda\Gamma} > 0 and -sign if H_{\Lambda\Gamma} < 0. Furthermore, 
-/// if P_{\text{spawn}} > 1 then we spawn floor(P_{\text{spawn}}) extra children and a final child with 
-/// probability P_{\text{spawn}} - floor(P_{\text{spawn}}).
-/// # Arguments
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `gamma`: Index of determinant \Gamma. 
-/// - `ngamma`: Walker population on determinant \Gamma.
-/// - `es_s`: Overlap-transformed shift energy.
-/// - `es`: Non-overlap transformed shift energy.
-/// - `input`: User specified input options.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `noci_reference_basis`: Only the reference basis determinants.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `irank`: Number of current rank.
-/// - `nranks`: Total number of ranks.
-/// - `rng`: Random number generator.
-/// - `scratch`: Scratch space for Wick's quantities.
-/// - `outlocal`: I64)>, locally owned population updates.
-/// - `outremote`: Remotely owned population updates.
-/// - `outsamples`: Collected spawning probability samples.
-/// # Returns
-/// - `()`: Appends spawning updates to the provided output buffers.
-fn spawning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es_s: f64, es: f64, input: &Input, tol: f64, wicks: Option<&WicksView>, 
-            irank: usize, nranks: usize, rng: &mut SmallRng, scratch: &mut WickScratchSpin, mocache: &[MOCache], outlocal: &mut Vec<(usize, i64)>, 
-            outremote: &mut Vec<PopulationUpdate>, outsamples: &mut Vec<f64>) {
-
-    let parent_sign: i64 = if ngamma > 0 {1} else {-1};
-    let nwalkers = ngamma.unsigned_abs();
-
-    // Precompute per determinant heat-bath excitation generation quantities.
-    let mut hb: Option<HeatBath> = None;
-    if let ExcitationGen::HeatBath = input.qmc.as_ref().unwrap().excitation_gen {hb = Some(init_heat_bath(gamma, es_s, es, ao, basis, input, tol, wicks, scratch, mocache));}
-
-    // Iterate over all walkers on state Gamma.
-    for _ in 0..nwalkers {
-        // Calculate generation probability, k = |H_{\Gamma\Lambda} - E_s^S(\tau)
-        // S_{\Gamma\Lambda}| and the selected determinant for spawning via the selected excitation
-        // generation scheme.
-        let (pgen, k, lambda) = match input.qmc.as_ref().unwrap().excitation_gen {
-            ExcitationGen::Uniform => pgen_uniform(ao, basis, gamma, es_s, es, input, rng, tol, wicks, scratch, mocache),
-            ExcitationGen::HeatBath => pgen_heat_bath(ao, basis, gamma, es_s, es, input, rng, hb.as_ref().unwrap(), tol, wicks, scratch, mocache),
-            ExcitationGen::ApproximateHeatBath => unimplemented!(),
-        };
-
-        // Calculate spawning probability.
-        let pspawn = input.prop_ref().dt * k.abs() / pgen;
-
-        // Store excitation sample if requested.
-        if input.write.write_excitation_hist {outsamples.push(pspawn);}
-
-        // Evaluate spawning outcomes
-        let m = pspawn.floor() as i64;
-        let frac = pspawn - (m as f64);
-        let extra = if rng.gen_range(0.0..1.0) < frac {1} else {0};
-        let nchildren = m + extra;
-        if nchildren == 0 {
-            continue;
-        }
-
-        let sign: i64 = if k > 0.0 {1} else {-1};
-        let child_sign: i64 = -sign * parent_sign;
-        let dn = child_sign * nchildren;
-        
-        // Apply spawwning population updates locally if the determinant to be updated is owned by
-        // current thread, otherwise add the population update message to the send buffer.
-        if nranks == 1 {
-            outlocal.push((lambda, dn));
-        } else {
-            let destination = owner(lambda, nranks);
-            if destination == irank {
-                outlocal.push((lambda, dn));
-            } else {
-                outremote.push(PopulationUpdate {det: lambda as u64, dn});
-            }
-        }
-    }
-}
-
-/// Perform diagonal death and cloning step by calculating:
-///     $P_{\text{Death}}(\Lambda) = \Delta\tau(H_{\Lambda\Lambda}- 2E_s)$,
-/// where which if P_{\text{death}} > 0 a walker dies with probability P_{\text{death}}, 
-/// if P_{\text{death}} < 0 a walker is cloned with probability |P_{\text{death}}|. 
-/// If P_{\text{death}} = 0, nothing will happen.  
-/// # Arguments
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `gamma`: Index of determinant \Gamma. 
-/// - `ngamma`: Walker population on determinant \Gamma.
-/// - `es`: Non-overlap transformed shift energy.
-/// - `es_s`: Overlap-transformed shift energy.
-/// - `input`: User specified input options.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `rng`: Random number generator.
-/// - `scratch`: Scratch space for Wick's quantities.
-/// - `out`: I64)>, output population updates.
-/// # Returns
-/// - `()`: Appends death/cloning updates to `out`.
-fn death_cloning(ao: &AoData, basis: &[SCFState], gamma: usize, ngamma: i64, es: f64,  es_s: f64, input: &Input, tol: f64, 
-                 wicks: Option<&WicksView>, mocache: &[MOCache], rng: &mut SmallRng, scratch: &mut WickScratchSpin, out: &mut Vec<(usize, i64)>) {
-    
-    // Calculate matrix elements H_{\Gamma\Gamma}, S_{\Gamma\Gamma}.
-    let (hgg, sgg) = find_hs(ao, basis, gamma, gamma, tol, input, wicks, mocache, scratch);
-
-    // Death probability.
-    let pdeath = match input.prop_ref().propagator {
-        Propagator::Unshifted => input.prop_ref().dt * (hgg - sgg * es_s),
-        Propagator::Shifted => input.prop_ref().dt * (hgg - sgg * es_s - es_s),
-        Propagator::DoublyShifted => input.prop_ref().dt * (hgg - sgg * es_s - es),
-        Propagator::DifferenceDoublyShiftedU1 => input.prop_ref().dt * (hgg - sgg * 0.5 * (es_s + es) - (es - es_s)),
-        Propagator::DifferenceDoublyShiftedU2 => input.prop_ref().dt * (hgg - sgg * es_s - (es - es_s)),
-    };
-    if pdeath == 0.0 {
-        return;
-    }
-    let p = pdeath.abs();
-
-    // Sign of parent walkers on state Gamma determines which way round death and cloning occur.
-    let parent_sign = if ngamma > 0 {1} else {-1};
-    
-    let n = ngamma.abs();
-    let m = p.floor() as i64;
-    let frac = p - (m as f64);
-   
-    // Rather than iterate over all walkers we can sample binominal distribution.
-    let extra = if frac > 0.0 {Binomial::new(n as u64, frac).unwrap().sample(rng) as i64} else {0};
-    let nevents = n * m + extra;
-    if nevents == 0 {return;}
-    
-    // Accumulate population change in delta.
-    let dn = if pdeath > 0.0 {-parent_sign} else {parent_sign};
-    out.push((gamma, dn * nevents));
-}
-
 /// Initialise the running projected-energy state
-/// \frac{\sum_{\Gamma} N_{\Gamma} H_{\Gamma,\mathrm{ref}}}{\sum_{\Gamma} N_{\Gamma} S_{\Gamma,\mathrm{ref}}}
+/// `\frac{\sum_{\Gamma} N_{\Gamma} H_{\Gamma,\mathrm{ref}}}{\sum_{\Gamma} N_{\Gamma} S_{\Gamma,\mathrm{ref}}}`
 /// by performing the full initial sweep over the occupied determinant space.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `walkers`: Object containing information about current walkers.
+/// - `walkers`: Object containing information about current walker distribution.
 /// - `iref`: Index of the determinant onto which the energy is projected.
+/// - `data`: Immutable stochastic propagation data.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
 /// - `ProjectedEnergyUpdate`: Initial projected-energy numerator and denominator.
-fn init_projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, iref: usize, world: &impl Communicator, tol: f64, input: &Input,
-                               wicks: Option<&WicksView>, mocache: &[MOCache]) -> ProjectedEnergyUpdate {
+fn init_projected_energy(walkers: &Walkers, iref: usize, data: &QMCData<'_>, world: &impl Communicator) -> ProjectedEnergyUpdate {
     let (num_local, den_local) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut num, mut den, mut scratch), &gamma| {
         let ngamma = walkers.get(gamma) as f64;
-        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, wicks, mocache, &mut scratch);
+        let (hgr, sgr) = find_hs(data, gamma, iref, &mut scratch);
         num += ngamma * hgr;
         den += ngamma * sgr;
         (num, den, scratch)
@@ -771,26 +761,19 @@ fn init_projected_energy(ao: &AoData, basis: &[SCFState], walkers: &Walkers, ire
 /// Incrementally update the running projected-energy state using the net walker
 /// population changes applied in the current iteration.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `basis`: List of the full NOCI-QMC basis.
 /// - `d`: Net population changes applied in the current iteration.
 /// - `pe`: Running projected-energy state to update in place.
+/// - `data`: Immutable stochastic propagation data.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
 /// - `()`: Updates `pe` in place.
-fn update_projected_energy(ao: &AoData, basis: &[SCFState], d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, world: &impl Communicator, tol: f64,
-                                 input: &Input, wicks: Option<&WicksView>, mocache: &[MOCache]) {
+fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &QMCData<'_>, world: &impl Communicator) {
     let iref = pe.iref;
 
     let (dnum_local, dden_local) = d.par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut dnum, mut dden, mut scratch), up| {
         let gamma = up.det as usize;
         let dn = up.dn as f64;
-        let (hgr, sgr) = find_hs(ao, basis, gamma, iref, tol, input, wicks, mocache, &mut scratch);
+        let (hgr, sgr) = find_hs(data, gamma, iref, &mut scratch);
         dnum += dn * hgr;
         dden += dn * sgr;
         (dnum, dden, scratch)
@@ -805,69 +788,54 @@ fn update_projected_energy(ao: &AoData, basis: &[SCFState], d: &[PopulationUpdat
     pe.den += dden;
 }
 
-/// Initialise the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}. 
+/// Initialise the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
 /// # Arguments:
-/// - `start`: First determinant index owned by this rank.
-/// - `end`: Final determinant index owned by this rank.
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `walkers`: Object containing information about current walkers.
+/// - `walkers`: Object containing information about current walker distribution.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// - `Vec<f64>`: Local portion of the overlap-transformed population vector p_{\Gamma}.
-fn init_p(start: usize, end: usize, ao: &AoData, basis: &[SCFState], walkers: &Walkers, world: &impl Communicator, tol: f64, 
-          input: &Input, wicks: Option<&WicksView>, scratch: &mut WickScratchSpin) -> Vec<f64> {
-
+/// - `Vec<f64>`: Local portion of the overlap-transformed population vector `p_{\Gamma}`.
+fn init_p(walkers: &Walkers, data: &QMCData<'_>, run: &QMCRunInfo, world: &impl Communicator, scratch: &mut WickScratchSpin) -> Vec<f64> {
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
 
-    let mut p = vec![0.0; end - start];
-    for gamma in start..end {
+    let mut p = vec![0.0; run.end - run.start];
+    for gamma in run.start..run.end {
         //p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
         let mut pgamma = 0.0;
         for entry in &global {
             // Here we use dn to mean total population.
             let nomega = entry.dn as f64;
             let omega = entry.det as usize;
-            let sgo = find_s(ao, basis, gamma, omega, tol, input, wicks, scratch);
+            let sgo = find_s(data, gamma, omega, scratch);
             pgamma += nomega * sgo;
         }
-        p[gamma - start] = pgamma
+        p[gamma - run.start] = pgamma
     }
     p
 }
 
-/// Update the vector p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
+/// Update the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
 /// # Arguments:
-/// - `start`: First determinant index owned by this rank.
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `basis`: List of the full NOCI-QMC basis.
-/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
-/// - `plocal`: Vector p_{\Gamma} on this rank.
+/// - `plocal`: Local portion of `p_{\Gamma}` on this rank.
 /// - `dlocal`: Local determinant population updates.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `input`: User specified input options.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `()`: Updates `plocal` in place.
-fn update_p(start: usize, ao: &AoData, basis: &[SCFState], world: &impl Communicator, plocal: &mut [f64], dlocal: &[PopulationUpdate], tol: f64,
-            input: &Input, wicks: Option<&WicksView>) {
-
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &QMCData<'_>, run: &QMCRunInfo, world: &impl Communicator) {
     let dglobal = gather_all_walkers(world, dlocal);
 
     // \Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
     plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
-        let gamma = start + k;
+        let gamma = run.start + k;
         let mut dp = 0.0;
         for update in &dglobal {
             let omega = update.det as usize;
-            dp += find_s(ao, basis, gamma, omega, tol, input, wicks, scratch) * update.dn as f64;
+            dp += find_s(data, gamma, omega, scratch) * update.dn as f64;
         }
         *pgamma += dp;
     });
@@ -890,108 +858,79 @@ fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
 }
 
 
-/// Initialise projected-energy, walker distribution, p_{\Gamma} vector and population totals
+/// Initialise projected-energy, walker distribution, `p_{\Gamma}` vector, and population totals
 /// across ranks. Initialisation occurs either from an initial coefficient vector `c0` or from a
 /// restart file.
 /// # Arguments:
 /// - `c0`: Initial determinant coefficient vector.
-/// - `ao`: Contains AO integrals and other system data.
-/// - `basis`: Full list of the NOCI-QMC basis.
 /// - `es`: Non-overlap transformed shift energy.
-/// - `input`: User specified input options.
-/// - `iref`: Index of the projected reference determinant.
-/// - `start`: First determinant index owned by this rank.
-/// - `end`: Final determinant index owned by this rank.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
 /// - `isref`: Boolean mask specifying which determinants are reference determinants.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `rank_seed`: Rank-specific random seed.
-/// - `ndets`: Total number of determinants in the basis.
-/// - `irank`: Rank of the current MPI process.
-/// - `nranks`: Total number of MPI ranks.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
-/// - `PropagationState`: Fully initialised NOCI-QMC state with required bookkeeping parameters.
-fn initialise_qmc_state(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, iref: usize, start: usize, end: usize,
-                        isref: &[bool], world: &impl Communicator, tol: f64, wicks: Option<&WicksView>, mocache: &[MOCache], rank_seed: u64,
-                        ndets: usize, irank: usize, nranks: usize, scratch: &mut WickScratchSpin) -> PropagationState {
+/// - `PropagationState`: Initialised NOCI-QMC state with required bookkeeping parameters.
+fn initialise_qmc_state(c0: &[f64], es: &mut f64, data: &QMCData<'_>, run: &QMCRunInfo, isref: &[bool], 
+                        world: &impl Communicator, scratch: &mut WickScratchSpin) -> PropagationState {
 
-    let qmc = input.qmc.as_ref().unwrap();
+    let qmc = data.input.qmc.as_ref().unwrap();
     // Use restart file if avaliable.
-    if let Some(path) = input.write.read_restart.as_deref() {
-        if irank == 0 {
+    if let Some(path) = data.input.write.read_restart.as_deref() {
+        if run.irank == 0 {
             println!("Reading restart from {path}");
         }
 
-        let rs = read_restart_hdf5(path, world, ndets).unwrap();
+        let rs = read_restart_hdf5(path, world, run.ndets).unwrap();
     
         // Read shifts and populations.
         *es = rs.es;
         let es_s = rs.es_s;
-        let reached_c = rs.nwprevc >= qmc.target_population;
-        let reached_sc = rs.nwprevsc >= qmc.target_population as f64;
 
         let mc = MCState {
             walkers: rs.walkers, 
-            delta: vec![0; ndets], 
+            delta: vec![0; run.ndets], 
             changed: Vec::new(), 
-            rng: SmallRng::seed_from_u64(rank_seed),
+            rng: SmallRng::seed_from_u64(run.rank_seed),
             pg: rs.pg, 
             excitation_hist: rs.excitation_hist
         };
         
         // Initialise projected-energy.
-        let pe = init_projected_energy(ao, basis, &mc.walkers, iref, world, tol, input, wicks, mocache);
-        let eprojcur = pe.num / pe.den;
-
-        let prev_pop = PopulationStats {
-            nwc: rs.nwprevc,
-            nrefc: rs.nrefprevc,
-            nwsc: rs.nwprevsc,
-            nrefsc: rs.nrefprevsc,
-        };
-
-        PropagationState {
-            mc,
-            pe,
-            es_s,
-            prev_pop,
-            cur_pop: prev_pop,
-            start_iter: rs.iter + 1,
-            reached_sc,
-            reached_c,
-            eprojcur,
-        }
+        let pe = init_projected_energy(&mc.walkers, run.iref, data, world);
+        
+        let reached_c = rs.nwprevc >= qmc.target_population;
+        let reached_sc = rs.nwprevsc >= qmc.target_population as f64;
+        let start_iter = rs.iter + 1;
+        let prev_pop = PopulationStats::new(rs.nwprevc, rs.nrefprevc, rs.nwprevsc, rs.nrefprevsc);
+        PropagationState::restart(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
     } else {
-        if irank == 0 {
+        if run.irank == 0 {
             println!("Initialising walkers.....");
         }
         
         // Initialise walker populations from initial coefficient vector.
-        let w = initialse_walkers(c0, qmc.initial_population, ndets, ao, basis, iref, tol, input, wicks, scratch);
-        let w = local_walkers(w, irank, nranks);
+        let w = initialise_walkers(c0, qmc.initial_population, run.ndets, data, run.iref, scratch);
+        let w = local_walkers(w, run.irank, run.nranks);
 
-        let excitation_hist = if input.write.write_excitation_hist {
+        let excitation_hist = if data.input.write.write_excitation_hist {
             Some(ExcitationHist::new(-60.0, 1e-12, 100))
         } else {
             None
         };
 
-        let pg = init_p(start, end, ao, basis, &w, world, tol, input, wicks, scratch);
-        let mc = MCState {walkers: w, delta: vec![0; ndets], changed: Vec::new(), rng: SmallRng::seed_from_u64(rank_seed), pg, excitation_hist};
+        let pg = init_p(&w, data, run, world, scratch);
+        let mc = MCState {walkers: w, delta: vec![0; run.ndets], changed: Vec::new(), rng: SmallRng::seed_from_u64(run.rank_seed), pg, excitation_hist};
         
         // Initialise projected-energy energy.
-        let pe = init_projected_energy(ao, basis, &mc.walkers, iref, world, tol, input, wicks, mocache);
+        let pe = init_projected_energy(&mc.walkers, run.iref, data, world);
         
         // Initialise overlap-transformed walker populations.
         let mut nwprevsc = 0.0;
         let nwprevsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
         world.all_reduce_into(&nwprevsc_local, &mut nwprevsc, SystemOperation::sum());
         let mut nrefprevsc = 0.0;
-        let nrefprevsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
+        let nrefprevsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
         world.all_reduce_into(&nrefprevsc_local, &mut nrefprevsc, SystemOperation::sum());
         
         // Initialise non-overlap-transformed walker populations.
@@ -1000,26 +939,8 @@ fn initialise_qmc_state(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f6
         let nrefprevc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
         world.all_reduce_into(&nrefprevc_local, &mut nrefprevc, SystemOperation::sum());
 
-        let eprojcur = pe.num / pe.den;
-
-        let prev_pop = PopulationStats {
-            nwc: nwprevc,
-            nrefc: nrefprevc,
-            nwsc: nwprevsc,
-            nrefsc: nrefprevsc,
-        };
-
-        PropagationState {
-            mc,
-            pe,
-            es_s: *es,
-            prev_pop,
-            cur_pop: prev_pop,
-            start_iter: 0,
-            reached_sc: false,
-            reached_c: false,
-            eprojcur,
-        }
+        let prev_pop = PopulationStats::new(nwprevc, nrefprevc, nwprevsc, nrefprevsc);
+        PropagationState::fresh(mc, pe, *es, prev_pop)
     }
 }
 
@@ -1027,29 +948,15 @@ fn initialise_qmc_state(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f6
 /// # Arguments:
 /// - `it`: Current iteration number.
 /// - `mc`: Contains the current Monte Carlo state.
-/// - `ao`: Contains AO integrals and other system data.
-/// - `basis`: Full list of SCF states in the NOCI-QMC basis.
-/// - `es`: Non-overlap transformed shift energy.
-/// - `es_s`: Overlap-transformed shift energy.
-/// - `input`: User specified input options.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `irank`: Rank of the current MPI process.
-/// - `nranks`: Total number of MPI ranks.
-/// - `rank_seed`: Rank-specific random seed.
-/// - `maxsame`: Maximum same-spin Wick scratch size.
-/// - `maxla`: Maximum alpha excitation scratch size.
-/// - `maxlb`: Maximum beta excitation scratch size.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
+/// - `scratchsize`: Maximum sizes required for per-thread Wick scratch space.
+/// - `shifts`: Current non-overlap and overlap-transformed shifts.
 /// - `timings`: Accumulated stochastic propagation timings.
 /// # Returns
-/// - `PropagationResult`: Local and remote population updates together with spawning
-///   probability samples.
-fn propagate_iteration(it: usize, mc: &MCState, ao: &AoData, basis: &[SCFState], es: f64, es_s: f64, input: &Input, tol: f64,
-                       wicks: Option<&WicksView>, mocache: &[MOCache], irank: usize, nranks: usize, rank_seed: u64,
-                       maxsame: usize, maxla: usize, maxlb: usize, timings: &mut QMCTimings) -> PropagationResult {
-
+/// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
+fn propagate_iteration(it: usize, mc: &MCState, data: &QMCData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, 
+                       shifts: Shifts, timings: &mut QMCTimings) -> PropagationResult {
 
     let initialise = || -> ThreadPropagation {
         let tid = rayon::current_thread_index().unwrap_or(0) as u64;
@@ -1057,8 +964,8 @@ fn propagate_iteration(it: usize, mc: &MCState, ao: &AoData, basis: &[SCFState],
             local: Vec::new(),
             remote: Vec::new(),
             samples: Vec::new(),
-            rng: SmallRng::seed_from_u64(rank_seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))),
-            scratch: WickScratchSpin::with_sizes(maxsame, maxla, maxlb),
+            rng: SmallRng::seed_from_u64(run.rank_seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))),
+            scratch: WickScratchSpin::with_sizes(scratchsize.maxsame, scratchsize.maxla, scratchsize.maxlb),
         }
     };
 
@@ -1068,9 +975,8 @@ fn propagate_iteration(it: usize, mc: &MCState, ao: &AoData, basis: &[SCFState],
             return acc;
         }
 
-        death_cloning(ao, basis, gamma, ngamma, es, es_s, input, tol, wicks, mocache, &mut acc.rng, &mut acc.scratch, &mut acc.local);
-        spawning(ao, basis, gamma, ngamma, es_s, es, input, tol, wicks, irank, nranks, &mut acc.rng, &mut acc.scratch, mocache, 
-                 &mut acc.local, &mut acc.remote, &mut acc.samples);
+        acc.death_cloning(gamma, ngamma, shifts, data);
+        acc.spawning(gamma, ngamma, shifts, data, run);
         acc
     };
 
@@ -1164,12 +1070,12 @@ fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop
 /// # Arguments:
 /// - `mc`: Contains the current Monte Carlo state.
 /// - `isref`: Boolean mask specifying which determinants are reference determinants.
-/// - `start`: First determinant index owned by this rank.
+/// - `run`: Rank-local run metadata.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `timings`: Accumulated stochastic propagation timings.
 /// # Returns
 /// - `PopulationStats`: Current total and reference populations in both representations.
-fn compute_populations(mc: &MCState, isref: &[bool], start: usize, world: &impl Communicator, timings: &mut QMCTimings) -> PopulationStats {
+fn compute_populations(mc: &MCState, isref: &[bool], run: &QMCRunInfo, world: &impl Communicator, timings: &mut QMCTimings) -> PopulationStats {
     let t0 = Instant::now();
 
     let nwclocal = mc.walkers.norm();
@@ -1184,7 +1090,7 @@ fn compute_populations(mc: &MCState, isref: &[bool], start: usize, world: &impl 
     let mut nwsc = 0.0;
     world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
 
-    let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[start + *k]).map(|(_, x)| x.abs()).sum();
+    let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
     let mut nrefsc = 0.0;
     world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
 
@@ -1194,7 +1100,7 @@ fn compute_populations(mc: &MCState, isref: &[bool], start: usize, world: &impl 
 }
 
 /// Cache the latest population statistics inside the propagation state for later
-/// printing and possible early exiting..
+/// printing and possible early exiting.
 /// # Arguments:
 /// - `state`: Propagation state containing QMC stats.
 /// - `stats`: Population statistics computed for the current iteration.
@@ -1229,12 +1135,12 @@ fn update_shifts(it: usize, stats: &PopulationStats, state: &mut PropagationStat
         state.prev_pop.nwsc = stats.nwsc;
     }
 
-    if state.reached_c && (it + 1) % qmc.shift_update_freq == 0 {
+    if state.reached_c && (it + 1).is_multiple_of(qmc.shift_update_freq) {
         *es -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (stats.nwc as f64 / state.prev_pop.nwc as f64).ln();
         state.prev_pop.nwc = stats.nwc;
     }
 
-    if state.reached_sc && (it + 1) % qmc.shift_update_freq == 0 {
+    if state.reached_sc && (it + 1).is_multiple_of(qmc.shift_update_freq) {
         state.es_s -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (stats.nwsc / state.prev_pop.nwsc).ln();
         state.prev_pop.nwsc = stats.nwsc;
     }
@@ -1264,7 +1170,7 @@ fn print_initial_row(irank: usize, state: &PropagationState, e0: f64) {
     if irank == 0 {
         println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
                  0, state.eprojcur, state.eprojcur - e0, 0.0, 0.0, state.prev_pop.nwc as f64, state.prev_pop.nrefc as f64, 
-                 state.prev_pop.nwc, state.prev_pop.nrefsc);
+                 state.prev_pop.nwsc, state.prev_pop.nrefsc);
     }
 }
 
@@ -1313,29 +1219,22 @@ fn print_row(irank: usize, iter: usize, state: &PropagationState, stats: &Popula
 /// stochastic propagation.
 /// # Arguments:
 /// - `it`: Current iteration number.
-/// - `base_seed`: Base random seed shared across all ranks.
-/// - `start`: First determinant index owned by this rank.
-/// - `end`: Final determinant index owned by this rank.
-/// - `ndets`: Total number of determinants in the basis.
-/// - `state`: Propagation state containing QMC stats.
-/// - `es`: Non-overlap transformed shift energy.
-/// - `input`: User specified input options.
+/// - `state`: Propagation state containing QMC bookkeeping data.
+/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `run`: Rank-local run metadata.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `timings`: Accumulated stochastic propagation timings.
-/// - `d_initialise_walkers`: Time spent initialising walkers or reading a restart.
-/// - `irank`: Rank of the current MPI process.
 /// # Returns
 /// - `Option<(f64, Option<ExcitationHist>, QMCTimings)>`: Final return values if a
 ///   stop was requested, otherwise `None`.
-fn check_stop(it: usize, base_seed: u64, start: usize, end: usize, ndets: usize, state: &mut PropagationState, es: f64,
-              world: &impl Communicator, timings: &QMCTimings, irank: usize)
-              -> Option<(f64, Option<ExcitationHist>, QMCTimings)> {
-    if (it + 1).is_multiple_of(10) {
+fn check_stop(it: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
+              world: &impl Communicator, timings: &QMCTimings) -> Option<(f64, Option<ExcitationHist>, QMCTimings)> {
+    if !(it + 1).is_multiple_of(10) {
         return None;
     }
 
     let mut stop = 0;
-    if irank == 0 && Path::new("STOP").exists() {
+    if run.irank == 0 && Path::new("STOP").exists() {
         stop = 1;
     }
     world.process_at_rank(0).broadcast_into(&mut stop);
@@ -1346,21 +1245,21 @@ fn check_stop(it: usize, base_seed: u64, start: usize, end: usize, ndets: usize,
 
     let rs = RestartState {
         iter: it,
-        es,
-        es_s: state.es_s,
+        es: shifts.es,
+        es_s: shifts.es_s,
         nwprevc: state.prev_pop.nwc,
         nrefprevc: state.prev_pop.nrefc,
         nwprevsc: state.prev_pop.nwsc,
         nrefprevsc: state.prev_pop.nrefsc,
-        walkers: std::mem::replace(&mut state.mc.walkers, Walkers::new(ndets)),
+        walkers: std::mem::replace(&mut state.mc.walkers, Walkers::new(run.ndets)),
         pg: std::mem::take(&mut state.mc.pg),
         excitation_hist: state.mc.excitation_hist.take(),
-        base_seed: Some(base_seed),
+        base_seed: Some(run.base_seed),
     };
 
-    write_restart_hdf5("RESTART.H5", world, &rs, start, end, ndets).unwrap();
+    write_restart_hdf5("RESTART.H5", world, &rs, run.start, run.end, run.ndets).unwrap();
 
-    if irank == 0 {
+    if run.irank == 0 {
         let _ = std::fs::remove_file("STOP");
         println!("STOP detected, Wrote RESTART.H5 and exiting");
     }
@@ -1373,54 +1272,44 @@ fn check_stop(it: usize, base_seed: u64, start: usize, end: usize, ndets: usize,
 /// death/cloning, annihilation, population, shift, and projected-energy updates, and
 /// optionally writes a restart file if a `STOP` file is detected.
 /// # Arguments:
-/// - `c0`: Initial determinant coefficient vector to be translated into walker
-///   populations.
-/// - `ao`: Contains AO integrals and other system data.
-/// - `basis`: Full list of the NOCI-QMC basis.
+/// - `data`: Immutable stochastic propagation data.
+/// - `c0`: Initial determinant coefficient vector to be translated into walker populations.
 /// - `es`: Non-overlap transformed shift energy.
-/// - `input`: User specified input options.
 /// - `ref_indices`: Indices of the reference determinants in the full basis.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Intermediates required for evaluating matrix
-///   elements using the extended non-orthogonal Wick's theorem.
-/// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
-/// - `(f64, Option<ExcitationHist>, StochStepTimings)`: Final projected energy estimate,
+/// - `(f64, Option<ExcitationHist>, QMCTimings)`: Final projected energy estimate,
 ///   optional excitation histogram, and timing breakdown for the stochastic propagation.
-pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input: &mut Input, ref_indices: &[usize], world: &impl Communicator, tol: f64,
-                wicks: Option<&WicksView>, mocache: &[MOCache]) -> (f64, Option<ExcitationHist>, QMCTimings) {
+pub fn qmc_step(data: &QMCData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>, QMCTimings) {
+    let qmc = data.input.qmc.as_ref().unwrap();
+
+    // Set up data for stochastic run.
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
-    let ndets = basis.len();
+    let ndets = data.basis.len();
     let start = (ndets * irank) / nranks;
     let end = (ndets * (irank + 1)) / nranks;
-    let iref = 0;
-    
     // Determine which of the determinant indices are reference states.
     let mut isref = vec![false; ndets];
     for &i in ref_indices {
         isref[i] = true;
     }
-    
-    // If we only have one reference state the unshifted propagator is the exact propagator in this
-    // orthogonal space, so warn the user and switch to this propagator.
-    if ref_indices.len() == 1 {
-        if irank == 0 {
-            println!("Number of references is 1. Setting propagator to unshifted.....");
-        }
-        input.prop_mut().propagator = Propagator::Unshifted;
-    }
 
-    let qmc = input.qmc.as_ref().unwrap();
     let base_seed = qmc.seed.unwrap_or_else(rand::random);
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
+
+    let run = QMCRunInfo {irank, nranks, ndets, start, end, iref: 0, base_seed, rank_seed};
+
+    let scratchsize = {
+        let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
+        ScratchSize {maxsame, maxla, maxlb}
+    };
 
     let mut timings = QMCTimings::default();
     let mut scratch = WickScratchSpin::new();
 
     let t0 = Instant::now();
-    let mut state = initialise_qmc_state(c0, ao, basis, es, input, iref, start, end, &isref, world, tol, wicks, mocache, rank_seed, ndets, irank, nranks, &mut scratch);
+    let mut state = initialise_qmc_state(c0, es, data, &run, &isref, world, &mut scratch);
     timings.initialise_walkers += t0.elapsed().as_secs_f64();
 
     println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0));
@@ -1428,17 +1317,17 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
     println!("Size of per thread state (MiB): {}", std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0));
 
     let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
-    let (maxsame, maxla, maxlb) = max_scratch_sizes(basis);
 
     print_header(irank);
-    print_initial_row(irank, &state, basis[0].e);
+    print_initial_row(irank, &state, data.basis[0].e);
 
-    for it in state.start_iter..input.prop_ref().max_steps {
-        let prop = propagate_iteration(it, &state.mc, ao, basis, *es, state.es_s, input, tol, wicks, mocache, irank, nranks, rank_seed, maxsame, maxla, maxlb, &mut timings);
+    for it in state.start_iter..data.input.prop_ref().max_steps {
+        let shifts = Shifts {es: *es, es_s: state.es_s};
+        let prop = propagate_iteration(it, &state.mc, data, &run, &scratchsize, shifts, &mut timings);
 
-        let changedglobal = accumulate_updates(&mut state.mc, &mut send, prop, input, world, nranks, &mut timings);
+        let changedglobal = accumulate_updates(&mut state.mc, &mut send, prop, data.input, world, nranks, &mut timings);
         if changedglobal == 0 {
-            print_cached_row(irank, it + 1, &state, basis[0].e, *es);
+            print_cached_row(irank, it + 1, &state, data.basis[0].e, *es);
             continue;
         }
         
@@ -1447,23 +1336,24 @@ pub fn qmc_step(c0: &[f64], ao: &AoData, basis: &[SCFState], es: &mut f64, input
         timings.apply_delta += t0.elapsed().as_secs_f64();
 
         let t0 = Instant::now();
-        update_p(start, ao, basis, world, &mut state.mc.pg, &d, tol, input, wicks);
+        update_p(&mut state.mc.pg, &d, data, &run, world);
         timings.update_p += t0.elapsed().as_secs_f64();
 
-        let stats = compute_populations(&state.mc, &isref, start, world, &mut timings);
+        let stats = compute_populations(&state.mc, &isref, &run, world, &mut timings);
         cache_population_stats(&mut state, &stats);
-        update_shifts(it, &stats, &mut state, es, input);
+        update_shifts(it, &stats, &mut state, es, data.input);
         
         let t0 = Instant::now();
-        update_projected_energy(ao, basis, &d, &mut state.pe, world, tol, input, wicks, mocache);
+        update_projected_energy(&d, &mut state.pe, data, world);
         state.eprojcur = state.pe.num / state.pe.den;
         timings.eproj += t0.elapsed().as_secs_f64();
-
-        if let Some(ret) = check_stop(it, base_seed, start, end, ndets, &mut state, *es, world, &timings, irank) {
+        
+        let stopshifts = Shifts {es: *es, es_s: state.es_s};
+        if let Some(ret) = check_stop(it, &mut state, stopshifts, &run, world, &timings) {
             return ret;
         }
 
-        print_row(irank, it + 1, &state, &stats, basis[0].e, *es);
+        print_row(irank, it + 1, &state, &stats, data.basis[0].e, *es);
     }
 
     (state.eprojcur, state.mc.excitation_hist, timings)
