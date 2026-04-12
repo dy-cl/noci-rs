@@ -354,6 +354,8 @@ pub struct WriteOptions {
     pub write_excitation_hist: bool,
     pub write_matrices: bool,
     pub write_dir: String,
+    pub write_restart: bool,
+    pub read_restart: Option<String>,
 }
 
 impl Default for WriteOptions {
@@ -368,6 +370,8 @@ impl Default for WriteOptions {
             write_excitation_hist: false,
             write_matrices: false,
             write_dir: "outputs/".to_string(),
+            write_restart: false,
+            read_restart: None,
         }
     }
 }
@@ -711,6 +715,8 @@ pub fn load_input(path: &str) -> Input {
             write_excitation_hist: write_tbl.get("write_excitation_hist").unwrap_or(defaults.write_excitation_hist),
             write_matrices: write_tbl.get("write_matrices").unwrap_or(defaults.write_matrices),
             write_dir: write_tbl.get("write_dir").unwrap_or(defaults.write_dir),
+            write_restart: write_tbl.get("write_restart").unwrap_or(defaults.write_restart),
+            read_restart: write_tbl.get("read_restart").unwrap_or(defaults.read_restart),
         }
     } else {
         WriteOptions::default()

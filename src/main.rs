@@ -14,7 +14,7 @@ use noci_rs::input::Input;
 use noci_rs::AoData;
 use noci_rs::SCFState;
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
-use noci_rs::stochastic::StochStepTimings;
+use noci_rs::stochastic::QMCTimings;
 use noci_rs::noci::{MOCache};
 use noci_rs::snoci::SNOCIStepTimings;
 
@@ -46,7 +46,7 @@ struct Timings {
     qmc_stoch_total: Duration,
     qmc_stoch_basis: Duration,
     qmc_stoch_prop: Duration,
-    qmc_stoch_step: StochStepTimings,
+    qmc_stoch_step: QMCTimings,
     // Select NOCI timings.
     snoci_total: Duration,
     snoci_step: SNOCIStepTimings,
@@ -417,7 +417,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 /// - `(f64, Duration, Duration, Duration, StochStepTimings)`: Stochastic energy estimate, total
 ///   wall time, basis generation wall time, propagation wall time, and per-step timings.
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64, 
-                               wicks: Option<&WicksView>, mocache: &[MOCache]) -> (f64, Duration, Duration, Duration, StochStepTimings) {
+                               wicks: Option<&WicksView>, mocache: &[MOCache]) -> (f64, Duration, Duration, Duration, QMCTimings) {
 
     let t_total = Instant::now();
     let irank = world.rank();
@@ -529,7 +529,7 @@ fn print_report(res: &Results, input: &Input) {
         println!("Total NOCI-QMC stochastic time: {:?}", res.timings.qmc_stoch_total);
         println!(r"  Basis generation:  {:?}", res.timings.qmc_stoch_basis);
         println!(r"  Stochastic propagation:  {:?}", res.timings.qmc_stoch_prop);
-        println!(r"     Walker initialisation: {:?}", res.timings.qmc_stoch_step.initialse_walkers);
+        println!(r"     Walker initialisation: {:?}", res.timings.qmc_stoch_step.initialise_walkers);
         println!(r"     Spawning, Death and Cloning: {:?}", res.timings.qmc_stoch_step.spawn_death_collect);
         println!(r"     Accumulate updates and pack MPI buffers: {:?}", res.timings.qmc_stoch_step.acc_pack);
         println!(r"     Exchange spawn updates MPI: {:?}", res.timings.qmc_stoch_step.mpi_exchange_updates);
