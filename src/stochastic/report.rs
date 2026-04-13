@@ -15,7 +15,7 @@ use super::state::{QMCRunInfo, PopulationStats, Shifts};
 /// - `irank`: Rank of the current MPI process.
 /// # Returns
 /// - `()`: Writes the table header to stdout on rank zero.
-pub(crate) fn print_header(irank: usize) {
+pub(in crate::stochastic) fn print_header(irank: usize) {
     if irank == 0 {
         println!("{}", "=".repeat(100));
         println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
@@ -30,7 +30,7 @@ pub(crate) fn print_header(irank: usize) {
 /// - `e0`: Energy of the first basis determinant.
 /// # Returns
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
-pub(crate) fn print_initial_row(irank: usize, state: &PropagationState, e0: f64) {
+pub(in crate::stochastic) fn print_initial_row(irank: usize, state: &PropagationState, e0: f64) {
     if irank == 0 {
         println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
                  0, state.eprojcur, state.eprojcur - e0, 0.0, 0.0, state.prev_pop.nwc as f64, state.prev_pop.nrefc as f64, 
@@ -48,7 +48,7 @@ pub(crate) fn print_initial_row(irank: usize, state: &PropagationState, e0: f64)
 /// - `es`: Non-overlap transformed shift energy.
 /// # Returns
 /// - `()`: Writes the cached iteration line to stdout on rank zero.
-pub(crate) fn print_cached_row(irank: usize, iter: usize, state: &PropagationState, e0: f64, es: f64) {
+pub(in crate::stochastic) fn print_cached_row(irank: usize, iter: usize, state: &PropagationState, e0: f64, es: f64) {
     let es_corr = if state.reached_c {es - e0} else {0.0};
     let es_s_corr = if state.reached_sc {state.es_s - e0} else {0.0};
 
@@ -69,7 +69,7 @@ pub(crate) fn print_cached_row(irank: usize, iter: usize, state: &PropagationSta
 /// - `es`: Non-overlap transformed shift energy.
 /// # Returns
 /// - `()`: Writes the current iteration line to stdout on rank zero.
-pub(crate) fn print_row(irank: usize, iter: usize, state: &PropagationState, stats: &PopulationStats, e0: f64, es: f64) {
+pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &PropagationState, stats: &PopulationStats, e0: f64, es: f64) {
     let es_corr = if state.reached_c {es - e0} else {0.0};
     let es_s_corr = if state.reached_sc {state.es_s - e0} else {0.0};
 
@@ -91,7 +91,7 @@ pub(crate) fn print_row(irank: usize, iter: usize, state: &PropagationState, sta
 /// # Returns
 /// - `Option<(f64, Option<ExcitationHist>, QMCTimings)>`: Final return values if a
 ///   stop was requested, otherwise `None`.
-pub(crate) fn check_stop(it: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
+pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
               world: &impl Communicator, timings: &QMCTimings) -> Option<(f64, Option<ExcitationHist>, QMCTimings)> {
     if !(it + 1).is_multiple_of(10) {
         return None;

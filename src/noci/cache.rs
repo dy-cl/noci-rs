@@ -1,29 +1,10 @@
 // noci/cache.rs
-use ndarray::{Array2, Array4};
+use ndarray::{Array2};
 
 use crate::{AoData, SCFState};
+use super::types::{MOCache, FockMOCache};
 
 use crate::maths::eri_ao2mo;
-
-pub struct MOCache {
-    /// One-electron Hamiltonian in parent alpha MO basis.
-    pub ha: Array2<f64>,
-    /// One-electron Hamiltonian in parent beta MO basis.
-    pub hb: Array2<f64>,
-    /// Antisymmetrised same-spin ERIs in parent alpha MO basis.
-    pub eri_aa_asym: Array4<f64>,
-    /// Antisymmetrised same-spin ERIs in parent beta MO basis.
-    pub eri_bb_asym: Array4<f64>,
-    /// Coulomb different-spin ERIs in parent alpha/beta MO basis.
-    pub eri_ab_coul: Array4<f64>,
-}
-
-pub struct FockMOCache {
-    /// Spin-alpha Fock matrix in the parent alpha MO basis.
-    pub fa: Array2<f64>,
-    /// Spin-beta Fock matrix in the parent beta MO basis.
-    pub fb: Array2<f64>,
-}
 
 /// Build MO-basis caches for all reference determinants.
 /// # Arguments:

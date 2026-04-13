@@ -4,9 +4,10 @@ use mpi::collective::SystemOperation;
 use mpi::traits::*;
 use rayon::prelude::*;
 
+use crate::noci::NOCIData;
 use crate::SCFState;
 use crate::nonorthogonalwicks::WickScratchSpin;
-use super::state::{QMCData, MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats};
+use super::state::{MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats};
 
 use crate::mpiutils::{gather_all_walkers, local_walkers};
 use super::propagate::{find_s, find_hs};
@@ -24,7 +25,7 @@ use super::restart::read_restart_hdf5;
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `Walkers`: Initial walker population.
-pub(crate) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &QMCData<'_>, iref: usize, scratch: &mut WickScratchSpin) -> Walkers {
+pub(in crate::stochastic) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &NOCIData<'_>, iref: usize, scratch: &mut WickScratchSpin) -> Walkers {
     let mut w = Walkers::new(n);
 
     // Ill-conditioning threshold.
@@ -76,7 +77,7 @@ pub(crate) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &QMC
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `ProjectedEnergyUpdate`: Initial projected-energy numerator and denominator.
-pub(crate) fn init_projected_energy(walkers: &Walkers, iref: usize, data: &QMCData<'_>, world: &impl Communicator) -> ProjectedEnergyUpdate {
+pub(in crate::stochastic) fn init_projected_energy(walkers: &Walkers, iref: usize, data: &NOCIData<'_>, world: &impl Communicator) -> ProjectedEnergyUpdate {
     let (num_local, den_local) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut num, mut den, mut scratch), &gamma| {
         let ngamma = walkers.get(gamma) as f64;
         let (hgr, sgr) = find_hs(data, gamma, iref, &mut scratch);
@@ -102,7 +103,7 @@ pub(crate) fn init_projected_energy(walkers: &Walkers, iref: usize, data: &QMCDa
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `Vec<f64>`: Local portion of the overlap-transformed population vector `p_{\Gamma}`.
-pub(crate) fn init_p(walkers: &Walkers, data: &QMCData<'_>, run: &QMCRunInfo, world: &impl Communicator, scratch: &mut WickScratchSpin) -> Vec<f64> {
+pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_>, run: &QMCRunInfo, world: &impl Communicator, scratch: &mut WickScratchSpin) -> Vec<f64> {
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local);
 
@@ -129,7 +130,7 @@ pub(crate) fn init_p(walkers: &Walkers, data: &QMCData<'_>, run: &QMCRunInfo, wo
 /// # Returns
 /// - `(usize, usize, usize)`: Maximum same-spin scratch size, alpha excitation size, and beta
 ///   excitation size.
-pub(crate) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
+pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
     let maxexa = basis.iter().map(|st| st.excitation.alpha.holes.len()).max().unwrap_or(0);
     let maxexb = basis.iter().map(|st| st.excitation.beta.holes.len()).max().unwrap_or(0);
     let maxsame = 2 * maxexa.max(maxexb);
@@ -151,8 +152,8 @@ pub(crate) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `PropagationState`: Initialised NOCI-QMC state with required bookkeeping parameters.
-pub(crate) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data: &QMCData<'_>, run: &QMCRunInfo, isref: &[bool], 
-                        world: &impl Communicator, scratch: &mut WickScratchSpin) -> PropagationState {
+pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data: &NOCIData<'_>, run: &QMCRunInfo, isref: &[bool], 
+                                                  world: &impl Communicator, scratch: &mut WickScratchSpin) -> PropagationState {
 
     let qmc = data.input.qmc.as_ref().unwrap();
     // Use restart file if avaliable.

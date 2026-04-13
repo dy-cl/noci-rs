@@ -21,67 +21,71 @@ use serde::{Serialize, Deserialize};
 use ndarray::{Array1, Array2, Array4};
 
 pub struct AoData {
-    // AO overlap matrix, (nao, nao).
+    /// AO overlap matrix, (nao, nao).
     pub s: Array2<f64>, 
-    // Core Hamiltonian matrix, (nao, nao).
+    /// Core Hamiltonian matrix, (nao, nao).
     pub h: Array2<f64>,
-    // Initial RHF ground state density matrix, (nao, nao). We can build spin biased and
-    // excited states from this ansatz.
+    /// Initial RHF ground state density matrix, (nao, nao). We can build spin biased and
+    /// excited states from this ansatz.
     pub dm: Array2<f64>, 
-    // Coulommb electron repulsion integrals (ERIs) stored as [a, c, b, d].
+    /// Coulommb electron repulsion integrals (ERIs) stored as [a, c, b, d].
     pub eri_coul: Array4<f64>,
-    // Antisymmetrised electron repulsion integrals (ERIs) in chemists notation stored as [a, c, b, d].
+    /// Antisymmetrised electron repulsion integrals (ERIs) in chemists notation stored as [a, c, b, d].
     pub eri_asym: Array4<f64>,
-    // Nuclear repulsion energy, scalar.
+    /// Nuclear repulsion energy, scalar.
     pub enuc: f64, 
-    // Number of AOs, scalar.
+    /// Number of AOs, scalar.
     pub n: usize, 
-    // Number of spin alpha and spin beta electrons, (2,).
+    /// Number of spin alpha and spin beta electrons, (2,).
     pub nelec: Array1<i64>, 
-    // AO label strings from PySCF e.g. "0 H 1s"
+    /// AO label strings from PySCF e.g. "0 H 1s"
     pub labels: Vec<String>,
-    // Optional FCI calculation energy from PySCF.
+    /// Optional FCI calculation energy from PySCF.
     pub e_fci: Option<f64>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Excitation {
+    /// Excitation information for spin alpha.
     alpha: ExcitationSpin,
+    /// Excitation information for spin beta.
     beta: ExcitationSpin,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ExcitationSpin {
+    /// List of previously occupied now unoccupied orbitals.
     pub holes: Vec<usize>,
+    /// List of previously unoccupied now occupied orbitals.
     pub parts: Vec<usize>
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SCFState {
-    // Energy of SCF state in Ha, scalar.
+    /// Energy of SCF state in Ha, scalar.
     pub e: f64,  
-    // MO occupancy vector for spin a orbitals, (nao,) as bitstring.
+    /// MO occupancy vector for spin a orbitals, (nao,) as bitstring.
     pub oa: u128, 
-    // MO occupancies for spin b orbitals (nao,) as bitstring.
+    /// MO occupancies for spin b orbitals (nao,) as bitstring.
     pub ob: u128, 
-    // Fermionic phase relative to parent for spin a electrons.
+    /// Fermionic phase relative to parent for spin a electrons.
     pub pha: f64,
-    // Fermionic phase relative to parent for spin n electrons.
+    /// Fermionic phase relative to parent for spin n electrons.
     pub phb: f64,
-    // MO coefficients for spin a electrons, (nao, nao).
+    /// MO coefficients for spin a electrons, (nao, nao).
     pub ca: Arc<Array2<f64>>,  
-    // MO coefficients for spin b electrons, (nao, nao).
+    /// MO coefficients for spin b electrons, (nao, nao).
     pub cb: Arc<Array2<f64>>,  
-    // SCF converged density matrix spin a. 
+    /// SCF converged density matrix spin a. 
     pub da: Arc<Array2<f64>>, 
-    // SCF converged density matrix spin b. 
+    /// SCF converged density matrix spin b. 
     pub db: Arc<Array2<f64>>,
-    // Label defined in user input.
+    /// Label defined in user input.
     pub label: String,
-    // Is this state used in the NOCI basis?
+    /// Is this state used in the NOCI basis?
     pub noci_basis: bool,
-    // Index of reference parent determinant if excited for QMC basis.
+    /// Index of reference parent determinant if excited for QMC basis.
     pub parent: usize,
-    // Excitation relative to parent if excited for QMC basis.
+    /// Excitation relative to parent if excited for QMC basis.
     pub excitation: Excitation,
 }

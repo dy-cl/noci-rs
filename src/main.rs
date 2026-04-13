@@ -14,8 +14,8 @@ use noci_rs::input::Input;
 use noci_rs::AoData;
 use noci_rs::SCFState;
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
-use noci_rs::stochastic::{QMCTimings, QMCData};
-use noci_rs::noci::{MOCache};
+use noci_rs::stochastic::QMCTimings;
+use noci_rs::noci::{NOCIData, MOCache};
 use noci_rs::snoci::SNOCIStepTimings;
 
 use noci_rs::input::load_input;
@@ -29,39 +29,60 @@ use noci_rs::utils::{wavefunction_sparsity};
 use noci_rs::mpiutils::{broadcast};
 use noci_rs::write::{print_input};
 
-// Timing storage for various segements of code.
+/// Timing storage for various segements of code.
 #[derive(Default)]
 struct Timings {
+    /// Time spent running the PySCF interface and integral generation.
     pyscf: Duration,
+    /// Time spent in SCF calculations.
     scf: Duration,
+    /// Total time spent in reference NOCI calculations.
     noci_ref_total: Duration,
+    /// Time spent building Hamiltonian and overlap matrices for reference NOCI.
     noci_ref_hs: Duration,
+    /// Time spent building Wick's theorem intermediates.
     wicks_intermediates: Duration,
-    // Deterministic timings.
+    /// Total time spent in deterministic NOCI-QMC calculations.
     qmc_det_total: Duration,
+    /// Time spent building the deterministic NOCI-QMC basis.
     qmc_det_basis: Duration,
+    /// Time spent building deterministic NOCI-QMC Hamiltonian and overlap matrices.
     qmc_det_hs: Duration,
+    /// Time spent propagating deterministic NOCI-QMC coefficients.
     qmc_det_prop: Duration,
-    // Stochastic timings. No timing for forming Hamiltonian as we do not do this in true QMC.
+    /// Total time spent in stochastic NOCI-QMC calculations.
     qmc_stoch_total: Duration,
+    /// Time spent building the stochastic NOCI-QMC basis.
     qmc_stoch_basis: Duration,
+    /// Time spent in the overall stochastic propagation stage.
     qmc_stoch_prop: Duration,
+    /// Detailed timings for the stochastic NOCI-QMC propagation step.
     qmc_stoch_step: QMCTimings,
-    // Select NOCI timings.
+    /// Total time spent in selected NOCI calculations.
     snoci_total: Duration,
+    /// Detailed timings for a selected NOCI step.
     snoci_step: SNOCIStepTimings,
 }
 
-// Printed results for a given geometry.
+/// Printed results for a given geometry.
 struct Results {
+    /// Geometry parameter for this calculation.
     r: f64,
+    /// SCF states generated for this geometry.
     states: Vec<SCFState>,
+    /// RHF energy at this geometry.
     e_rhf: f64,
+    /// Reference-space NOCI energy at this geometry.
     e_noci_ref: f64,
+    /// Deterministic NOCI-QMC energy if calculated.
     e_noci_qmc_det: Option<f64>,
+    /// Stochastic NOCI-QMC energy if calculated.
     e_noci_qmc_stoch: Option<f64>,
+    /// Selected NOCI energy if calculated.
     e_snoci: Option<f64>,
+    /// FCI energy if available.
     e_fci: Option<f64>,
+    /// Timings associated with this geometry.
     timings: Timings,
 }
 
@@ -323,7 +344,8 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
     
     // Call matrix element routines.
     let symmetric = true;
-    let (h, s, d_hs) = build_noci_hs(ao, input, &basis, &basis, tol, mocache, wicks, symmetric);
+    let data = NOCIData::new(ao, &basis, input, tol, wicks).withmocache(mocache);
+    let (h, s, d_hs) = build_noci_hs(&data, &basis, &basis, symmetric);
     println!("Finished calculating NOCI-QMC matrix elements.");
     
     // Choose initial shift.
@@ -455,7 +477,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
     // Perform the propagation.
     let t_prop = Instant::now();
-    let data = QMCData {ao, basis: &basis, input, wicks, mocache, tol};
+    let data = NOCIData::new(ao, &basis, input, tol, wicks).withmocache(mocache);
     let (e, local_hist, step_timings) = qmc_step(&data, &c0qmc, &mut es, &ref_indices, world);
     let d_prop = t_prop.elapsed();
 

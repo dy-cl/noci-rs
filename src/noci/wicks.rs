@@ -163,8 +163,7 @@ pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference
 pub fn update_wicks_fock(fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basis: &[SCFState], wicks: &mut WicksShared) {
     let nref = noci_reference_basis.len();
 
-    for i in 0..nref {
-        let ri = &noci_reference_basis[i];
+    for (i, ri) in noci_reference_basis.iter().enumerate().take(nref) {
         for j in 0..nref {
             let idx = i * nref + j;
 

@@ -6,7 +6,8 @@ mod excit;
 mod propagate;
 mod report;
 
-pub use propagate::qmc_step;
-pub use state::{ExcitationHist, QMCData, QMCTimings};
+pub use state::{ExcitationHist, QMCTimings};
 
 pub(crate) use state::{PopulationUpdate, Walkers};
+pub use propagate::qmc_step;
+

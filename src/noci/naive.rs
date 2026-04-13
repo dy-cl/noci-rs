@@ -4,19 +4,9 @@ use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
 
 use crate::{AoData, SCFState};
+use super::types::Pair;
 
 use crate::maths::{einsum_ba_ab_real, einsum_ba_abcd_cd_real};
-
-// Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
-pub(crate) struct Pair {
-    pub(crate) s: f64,
-    pub(crate) s_red: f64,
-    pub(crate) zeros: Vec<usize>,
-    pub(crate) w: Option<Array2<f64>>,
-    pub(crate) p_i: Option<Array2<f64>>,
-    pub(crate) p_j: Option<Array2<f64>>,
-    pub(crate) phase: f64,
-}
 
 /// Given an MO coefficient matrix and a corresponding occupancy vector, return the occupied only
 /// coefficient matrix.
@@ -74,7 +64,7 @@ fn calculate_s_red(tilde_s: &Array1<f64>, tol: f64) -> (f64, Vec<usize>) {
 /// - `Pair`: Overlap-related intermediates for this determinant pair,
 ///   including the overlap, reduced overlap, zero singular-value indices,
 ///   rotated occupied coefficients, optional co-densities, and phase.
-pub(crate) fn build_s_pair(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f64>, tol: f64) -> Pair {
+pub(in crate::noci) fn build_s_pair(l_c_occ: &Array2<f64>, g_c_occ: &Array2<f64>, s_munu: &Array2<f64>, tol: f64) -> Pair {
 
     // Occupied MO overlap.
     let s_ij = l_c_occ.t().dot(&s_munu.dot(g_c_occ));
@@ -224,7 +214,7 @@ pub fn noci_density(ao: &AoData, states: &[SCFState], c: &Array1<f64>, tol: f64,
 /// - `pair`: Contains data concerning a pair of determinants.
 /// # Returns:
 /// - `f64`: One-electron matrix element for the determinant pair.
-pub(crate) fn one_electron(o: &Array2<f64>, pair: &Pair) -> f64 {
+pub(in crate::noci) fn one_electron(o: &Array2<f64>, pair: &Pair) -> f64 {
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w.
         0 => pair.s_red * pair.phase * einsum_ba_ab_real(pair.w.as_ref().unwrap(), o),
@@ -243,7 +233,7 @@ pub(crate) fn one_electron(o: &Array2<f64>, pair: &Pair) -> f64 {
 /// - `pair`: Contains data concerning a pair of determinants.
 /// # Returns:
 /// - `f64`: Same-spin two-electron matrix element.
-pub(crate) fn two_electron_same(o: &Array4<f64>, pair: &Pair) -> f64 {
+pub(in crate::noci) fn two_electron_same(o: &Array4<f64>, pair: &Pair) -> f64 {
     match pair.zeros.len() {
         // With no zeros (s_i != 0 for all i) we use munu_w on both sides.
         0 => 0.5 * pair.s_red * pair.phase * einsum_ba_abcd_cd_real(pair.w.as_ref().unwrap(), o, pair.w.as_ref().unwrap()),
@@ -265,7 +255,7 @@ pub(crate) fn two_electron_same(o: &Array4<f64>, pair: &Pair) -> f64 {
 /// - `pb`: Beta-spin pair data.
 /// # Returns:
 /// - `f64`: Opposite-spin two-electron matrix element.
-pub(crate) fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
+pub(in crate::noci) fn two_electron_diff(o: &Array4<f64>, pa: &Pair, pb: &Pair) -> f64 {
     match (pa.zeros.len(), pb.zeros.len()) {
         // With no zeros (s_i != 0 for all i) for both spins we use munu_w on both sides.
         (0, 0) => (pa.s_red * pa.phase) * (pb.s_red * pb.phase) * einsum_ba_abcd_cd_real(pa.w.as_ref().unwrap(), o, pb.w.as_ref().unwrap()),

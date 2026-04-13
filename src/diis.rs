@@ -6,11 +6,16 @@ use crate::maths::loewdin_x_real;
 
 /// DIIS storage for SCF states. Stores Fock and error matrices for each spin.
 pub struct Diis {
-    m: usize, // Size of the DIIS subspace, number of past SCF iterations with stored history.
-    f_hist_a: Vec<Array2<f64>>, // History of Fock matrices spin a. 
-    f_hist_b: Vec<Array2<f64>>, // History of Fock matrices spin b
-    e_hist_a: Vec<Array2<f64>>, // History of error matrices spin a.
-    e_hist_b: Vec<Array2<f64>>, // History of error matrices spin b.
+    /// Size of the DIIS subspace, i.e. the number of past SCF iterations retained.
+    m: usize,
+    /// History of spin-alpha Fock matrices.
+    f_hist_a: Vec<Array2<f64>>,
+    /// History of spin-beta Fock matrices.
+    f_hist_b: Vec<Array2<f64>>,
+    /// History of spin-alpha error matrices.
+    e_hist_a: Vec<Array2<f64>>,
+    /// History of spin-beta error matrices.
+    e_hist_b: Vec<Array2<f64>>,
 }
 
 impl Diis {

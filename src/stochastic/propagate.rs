@@ -10,7 +10,8 @@ use rayon::prelude::*;
 
 use crate::input::{Input, Propagator};
 use crate::nonorthogonalwicks::WickScratchSpin;
-use super::state::{QMCData, MCState, PopulationUpdate, ExcitationHist, QMCTimings, ProjectedEnergyUpdate, PropagationState, 
+use crate::noci::{DetPair, NOCIData};
+use super::state::{MCState, PopulationUpdate, ExcitationHist, QMCTimings, ProjectedEnergyUpdate, PropagationState, 
                    QMCRunInfo, ScratchSize, Shifts, PropagationResult, ThreadPropagation, PopulationStats};
 
 use crate::noci::{calculate_s_pair, calculate_hs_pair};
@@ -26,10 +27,10 @@ use super::init::{initialise_qmc_state, max_scratch_sizes};
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `f64`: Overlap matrix element `S_{ij}`.
-pub(crate) fn find_s(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> f64 {
+pub(in crate::stochastic) fn find_s(data: &NOCIData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> f64 {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
-    calculate_s_pair(data.ao, &data.basis[a], &data.basis[b], data.tol, data.input, data.wicks, Some(scratch))
+    calculate_s_pair(data, DetPair::new(&data.basis[a], &data.basis[b]), Some(scratch))
 }
 
 /// Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
@@ -40,10 +41,10 @@ pub(crate) fn find_s(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickS
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements `H_{ij}` and `S_{ij}`.
-pub(crate) fn find_hs(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> (f64, f64) {
+pub(in crate::stochastic) fn find_hs(data: &NOCIData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> (f64, f64) {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
-    calculate_hs_pair(data.ao, &data.basis[a], &data.basis[b], data.tol, data.input, data.mocache, data.wicks, Some(scratch))
+    calculate_hs_pair(data, DetPair::new(&data.basis[a], &data.basis[b]), Some(scratch))
 }
 
 /// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
@@ -98,7 +99,7 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 /// - `prop`: Chosen propagator.
 /// # Returns
 /// - `f64`: Off-diagonal coupling used by the propagator.
-pub(crate) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
+pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
     match prop {
         Propagator::Unshifted => hlg - es_s * slg,
         Propagator::Shifted => hlg - es_s * slg,
@@ -117,7 +118,7 @@ pub(crate) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `()`: Updates `pe` in place.
-fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &QMCData<'_>, world: &impl Communicator) {
+fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &NOCIData<'_>, world: &impl Communicator) {
     let iref = pe.iref;
 
     let (dnum_local, dden_local) = d.par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut dnum, mut dden, mut scratch), up| {
@@ -148,7 +149,7 @@ fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdat
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `()`: Updates `plocal` in place.
-fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &QMCData<'_>, run: &QMCRunInfo, world: &impl Communicator) {
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, world: &impl Communicator) {
     let dglobal = gather_all_walkers(world, dlocal);
 
     // \Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
@@ -163,10 +164,6 @@ fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &QMCData<'_>,
     });
 }
 
-
-
-
-
 /// Perform spawning and death/cloning steps over the currently occupied determinants.
 /// # Arguments:
 /// - `it`: Current iteration number.
@@ -178,7 +175,7 @@ fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &QMCData<'_>,
 /// - `timings`: Accumulated stochastic propagation timings.
 /// # Returns
 /// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
-fn propagate_iteration(it: usize, mc: &MCState, data: &QMCData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, 
+fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, 
                        shifts: Shifts, timings: &mut QMCTimings) -> PropagationResult {
 
     let initialise = || -> ThreadPropagation {
@@ -382,7 +379,7 @@ fn update_shifts(it: usize, stats: &PopulationStats, state: &mut PropagationStat
 /// # Returns
 /// - `(f64, Option<ExcitationHist>, QMCTimings)`: Final projected energy estimate,
 ///   optional excitation histogram, and timing breakdown for the stochastic propagation.
-pub fn qmc_step(data: &QMCData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>, QMCTimings) {
+pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>, QMCTimings) {
     let qmc = data.input.qmc.as_ref().unwrap();
 
     // Set up data for stochastic run.

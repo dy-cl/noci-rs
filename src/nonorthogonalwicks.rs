@@ -20,10 +20,12 @@ pub enum WicksBacking {
     MmapCow(MmapMut),
 }
 
-// Storage in which we split the Wicks data into the shared remote memory access (RMA) and a view 
-// for reading said data.
+/// Storage in which we split the Wicks data into the shared remote memory access (RMA) and a view 
+/// for reading said data.
 pub struct WicksShared {
+    /// Backing storage for the contiguous Wick's tensor slab.
     pub backing: WicksBacking,
+    /// View of the tensor slab.
     pub view: WicksView, 
 }
 
@@ -72,34 +74,42 @@ impl WicksShared {
     }
 }
 
-// Storage for the RMA data of the Wick's objects.
+/// Storage for the RMA data of the Wick's objects.
 pub struct WicksRma {
-    pub shared: Sharedffi, 
-    pub base_ptr: *mut u8, 
-    pub nbytes: usize,     
+    /// Shared-memory allocation handle.
+    pub shared: Sharedffi,
+    /// Raw pointer to the beginning of the shared tensor slab.
+    pub base_ptr: *mut u8,
+    /// Total size of the shared allocation in bytes.
+    pub nbytes: usize,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct WicksDiskMeta {
+    /// On-disk metadata format version.
     pub version: u32,
+    /// Number of reference determinants.
     pub nref: usize,
+    /// Total slab length in units of f64.
     pub slab_len: usize,
+    /// Per-reference-pair offset tables into the contiguous slab.
     pub off: Vec<PairOffset>,
+    /// Per-reference-pair scalar metadata stored outside the slab.
     pub meta: Vec<PairMeta>,
 }
 
-// Storage for data which allows the Wicks objects to be viewed.
+/// Storage for data which allows the Wicks objects to be viewed.
 #[derive(Clone)]
 pub struct WicksView {
-    // Pointer to contiguous data which contains all intermediates.
+    /// Pointer to contiguous data which contains all intermediates.
     pub slab: NonNull<f64>, 
-    // Length of storage.
+    /// Length of storage.
     pub slab_len: usize,
-    // Number of reference determinants.
+    /// Number of reference determinants.
     pub nref: usize,
-    // Offset gives where in the storage each tensor for pair p begins.
+    /// Offset gives where in the storage each tensor for pair p begins.
     pub off: Vec<PairOffset>,
-    // Scalars that are cheap to store.
+    /// Scalars that are cheap to store.
     pub meta: Vec<PairMeta>,
 }
 
@@ -188,18 +198,26 @@ impl WicksView {
     }
 }
 
-// Read only view of same-spin Wick's intermediates. Lifetime parameter 'a ensures that 
-// the view cannot exist longer than the referenced WicksView object.
+// Read only view of same-spin Wick's intermediates.  
 #[derive(Clone, Copy)]
 pub struct SameSpinView<'a> {
+    /// Number of molecular orbitals for this spin block.
     pub nmo: usize,
+    /// Number of zero-overlap orbital pairs in the biorthogonal basis for this spin block.
     pub m: usize,
+    /// Product of the non-zero singular values, i.e. the reduced overlap for this spin block.
     pub tilde_s_prod: f64,
+    /// Overall phase associated with this same-spin block.
     pub phase: f64,
+    /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
     pub f0f: [f64; 2],
+    /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
     pub f0h: [f64; 2],
+    /// Zeroth-order two-body scalar contributions for the allowed branch combinations.
     pub v0: [f64; 3],
+    /// Parent view providing access to the contiguous tensor slab.
     w: &'a WicksView,
+    /// Offsets for all same-spin intermediates belonging to this reference pair.
     off: SameSpinOffset,
 }
 
@@ -316,14 +334,18 @@ impl<'a> SameSpinView<'a> {
     }
 }
 
-// Read only view of diff-spin Wick's intermediates. Lifetime parameter 'a ensures that 
-// the view cannot exist longer than the referenced WicksView object.
+/// Read only view of diff-spin Wick's intermediates. 
 #[derive(Clone, Copy)]
 pub struct DiffSpinView<'a> {
+    /// Number of molecular orbitals for this different-spin block.
     pub nmo: usize,
+    /// Zeroth-order mixed-spin Vab scalar contributions for the branch combinations.
     pub vab0: [[f64; 2]; 2],
+    /// Zeroth-order mixed-spin Vba scalar contributions for the branch combinations.
     pub vba0: [[f64; 2]; 2],
+    /// Parent view providing access to the contiguous tensor slab.
     w: &'a WicksView,
+    /// Offsets for all different-spin intermediates belonging to this reference pair.
     off: DiffSpinOffset,
 }
 
@@ -399,24 +421,34 @@ impl<'a> DiffSpinView<'a> {
     }
 }
 
-// Storage for views of each type of spin pairing.
+/// Storage for views of each type of spin pairing.
 #[derive(Clone, Copy)]
 pub struct WicksPairView<'a> {
+    /// Same-spin alpha-alpha intermediates for the reference pair.
     pub aa: SameSpinView<'a>,
+    /// Same-spin beta-beta intermediates for the reference pair.
     pub bb: SameSpinView<'a>,
+    /// Different-spin alpha-beta intermediates for the reference pair.
     pub ab: DiffSpinView<'a>,
 }
 
-// Storage for same-spin metadata and lightweight scalars that we can store outside the shared
-// memory region.
+/// Storage for same-spin metadata and lightweight scalars that we can store outside the shared
+/// memory region.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct SameSpinMeta {
+    /// Product of the non-zero singular values for this same-spin block.
     pub tilde_s_prod: f64,
+    /// Overall phase associated with this same-spin block.
     pub phase: f64,
+    /// Number of zero-overlap orbital pairs in the biorthogonal basis.
     pub m: usize,
+    /// Number of molecular orbitals for this same-spin block.
     pub nmo: usize,
+    /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
     pub f0f: [f64; 2],
+    /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
     pub f0h: [f64; 2],
+    /// Zeroth-order two-body scalar contributions for the allowed branch combinations.
     pub v0: [f64; 3],
 }
 
@@ -424,97 +456,145 @@ pub struct SameSpinMeta {
 // memory region.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct DiffSpinMeta {
+    /// Number of molecular orbitals for this different-spin block.
     pub nmo: usize,
+    /// Zeroth-order mixed-spin Vab scalar contributions for the branch combinations.
     pub vab0: [[f64; 2]; 2],
+    /// Zeroth-order mixed-spin Vba scalar contributions for the branch combinations.
     pub vba0: [[f64; 2]; 2],
 }
 
-// Storage for same-spin per reference-pair offset tables into the shared contiguous tensor storage. 
+/// Storage for same-spin per reference-pair offset tables into the shared contiguous tensor storage.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
 pub struct SameSpinOffset {
+    /// Offsets to the X[mi] contraction matrices.
     pub x: [usize; 2],
+    /// Offsets to the Y[mi] contraction matrices.
     pub y: [usize; 2],
+    /// Offsets to the transposed Hamiltonian one-body F[mi][mj] intermediates.
     pub fh: [[usize; 2]; 2],
+    /// Offsets to the transposed Fock one-body F[mi][mj] intermediates.
     pub ff: [[usize; 2]; 2],
+    /// Offsets to the transposed same-spin V[mi][mj][mk] intermediates.
     pub v: [[[usize; 2]; 2]; 2],
-    pub j: [usize; 10], // 10 / 16 4D tensors.
+    /// Offsets to the compressed same-spin J tensors.
+    pub j: [usize; 10],
 }
 
 // Storage for diff-spin per reference-pair offset tables into the shared contiguous tensor storage.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
 pub struct DiffSpinOffset {
+    /// Offsets to the transposed Vab[ma0][mb0][mak] intermediates.
     pub vab: [[[usize; 2]; 2]; 2],
+    /// Offsets to the transposed Vba[mb0][ma0][mbk] intermediates.
     pub vba: [[[usize; 2]; 2]; 2],
+    /// Offsets to the IIab[ma0][maj][mb0][mbj] tensors.
     pub iiab: [[[[usize; 2]; 2]; 2]; 2],
 }
 
-// Storage for all per reference-pair pair offset tables.
+/// Storage for all per reference-pair pair offset tables.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct PairOffset {
+    /// Same-spin alpha-alpha offset table.
     pub aa: SameSpinOffset,
+    /// Same-spin beta-beta offset table.
     pub bb: SameSpinOffset,
+    /// Different-spin alpha-beta offset table.
     pub ab: DiffSpinOffset,
 }
 
-// Storage for all pair metadata.
+/// Storage for all pair metadata.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct PairMeta {
+    /// Same-spin alpha-alpha metadata.
     pub aa: SameSpinMeta,
+    /// Same-spin beta-beta metadata.
     pub bb: SameSpinMeta,
+    /// Different-spin alpha-beta metadata.
     pub ab: DiffSpinMeta,
 }
 
-// Owning struct for the same-spin computed intermediates.
+/// Owning struct for the same-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SameSpinBuild {
-    pub x: [Array2<f64>; 2], // X[mi]
-    pub y: [Array2<f64>; 2], // Y[mi]
-
+    /// X[mi] contraction matrices for the two branch choices.
+    pub x: [Array2<f64>; 2],
+    /// Y[mi] contraction matrices for the two branch choices.
+    pub y: [Array2<f64>; 2],
+    /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
     pub f0f: [f64; 2],
+    /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
     pub f0h: [f64; 2],
-    pub fh: [[Array2<f64>; 2]; 2], // F[mi][mj] for one electron Hamiltonian.
-    pub ff: [[Array2<f64>; 2]; 2], // F[mi][mj] for Fock. 
-
-    pub v0: [f64; 3], // V0[mi][mj]
-    pub v: [[[Array2<f64>; 2]; 2]; 2], // V[mi][mj][mk]
-
-    pub j: [Array4<f64>; 10], // J[mi][mj][mk][ml], but only store 10 / 16.
-
+    /// Hamiltonian one-body F[mi][mj] intermediates.
+    pub fh: [[Array2<f64>; 2]; 2],
+    /// Fock one-body F[mi][mj] intermediates.
+    pub ff: [[Array2<f64>; 2]; 2],
+    /// Zeroth-order two-body scalar contributions for the allowed branch combinations.
+    pub v0: [f64; 3],
+    /// Same-spin V[mi][mj][mk] intermediates.
+    pub v: [[[Array2<f64>; 2]; 2]; 2],
+    /// Compressed same-spin J[mi][mj][mk][ml] tensors.
+    pub j: [Array4<f64>; 10],
+    /// Product of the non-zero singular values for this same-spin block.
     pub tilde_s_prod: f64,
+    /// Overall phase associated with this same-spin block.
     pub phase: f64,
+    /// Number of zero-overlap orbital pairs in the biorthogonal basis.
     pub m: usize,
+    /// Number of molecular orbitals for this same-spin block.
     pub nmo: usize,
 }
 
-// Owning struct for the diff-spin computed intermediates.
+/// Owning struct for the diff-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct DiffSpinBuild {
-    pub vab0: [[f64; 2]; 2], // vab0[ma0][mb0]
-    pub vab:  [[[Array2<f64>; 2]; 2]; 2], // vab[ma0][mb0][mak]
-
-    pub vba0: [[f64; 2]; 2], // vba0[mb0][ma0]
-    pub vba:  [[[Array2<f64>; 2]; 2]; 2], // vba[mb0][ma0][mbk]
-
-    pub iiab: [[[[Array4<f64>; 2]; 2]; 2]; 2], // iiab[ma0][mak][mb0][mbj]
+    /// Zeroth-order mixed-spin Vab scalar contributions.
+    pub vab0: [[f64; 2]; 2],
+    /// Mixed-spin Vab[ma0][mb0][mak] intermediates.
+    pub vab: [[[Array2<f64>; 2]; 2]; 2],
+    /// Zeroth-order mixed-spin Vba scalar contributions.
+    pub vba0: [[f64; 2]; 2],
+    /// Mixed-spin Vba[mb0][ma0][mbk] intermediates.
+    pub vba: [[[Array2<f64>; 2]; 2]; 2],
+    /// Mixed-spin IIab[ma0][mak][mb0][mbj] tensors.
+    pub iiab: [[[[Array4<f64>; 2]; 2]; 2]; 2],
 }
 
-// Owning struct for all computed intermediates.
+/// Owning struct for all computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct WicksReferencePairBuild {
+    /// Same-spin alpha-alpha intermediates for the reference pair.
     pub aa: SameSpinBuild,
+    /// Same-spin beta-beta intermediates for the reference pair.
     pub bb: SameSpinBuild,
+    /// Different-spin alpha-beta intermediates for the reference pair.
     pub ab: DiffSpinBuild,
 }
 
-// Whether a given orbital index belongs to the bra or ket.
+/// Whether a given orbital index belongs to the bra or ket.
 #[derive(Debug, PartialEq, Copy, Clone)]
-pub enum Side {Gamma, Lambda}
+pub enum Side {
+    /// Orbital index belongs to the ket state \Gamma.
+    Gamma,
+    /// Orbital index belongs to the bra state \Lambda.
+    Lambda,
+}
 
 #[derive(Debug, Copy, Clone)]
-pub enum Type {Hole, Part}
+pub enum Type {
+    /// Hole index in an excitation operator.
+    Hole,
+    /// Particle index in an excitation operator.
+    Part,
+}
 
 #[derive(Clone, Copy)]
-enum OneBody {H1, Fock}
+enum OneBody {
+    /// Select Hamiltonian one-body intermediates.
+    H1,
+    /// Select Fock one-body intermediates.
+    Fock,
+}
 
 /// Read the scalar zeroth-order one-body contribution for the chosen branch.
 /// # Arguments:
@@ -1700,8 +1780,10 @@ impl DiffSpinBuild {
             (0..2).flat_map(|mi| (0..2).flat_map(move |mj|
             (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
         )).collect();
+        
+        type IIabBlock = ((usize, usize, usize, usize), Array4<f64>);
 
-        let blocks: Vec<((usize, usize, usize, usize), Array4<f64>)> = combos.into_par_iter().map(|(ma0, maj, mb0, mbj)| {
+        let blocks: Vec<IIabBlock> = combos.into_par_iter().map(|(ma0, maj, mb0, mbj)| {
             let blk = eri_ao2mo(eri, cx_a[ma0], xc_a[maj], cx_b[mb0], xc_b[mbj]).as_standard_layout().to_owned();
             ((ma0, maj, mb0, mbj), blk)
         }).collect();
@@ -2216,9 +2298,8 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
         let vab0 = w.ab.vab_t_slice(ma0, mb0, 0);
         let vab1 = w.ab.vab_t_slice(ma0, mb0, 1);
 
-        for k in 0..la {
+        for (k, &ck) in cols_a.iter().enumerate().take(la) {
             let mak = bit(bits_a, k + 1);
-            let ck = cols_a[k];
             let vsl = if mak == 0 {vab0} else {vab1};
             let base = ck * na;
 
@@ -2230,9 +2311,8 @@ pub fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
         let vba0 = w.ab.vba_t_slice(mb0, ma0, 0);
         let vba1 = w.ab.vba_t_slice(mb0, ma0, 1);
 
-        for k in 0..lb {
+        for (k, &ck) in cols_b.iter().enumerate().take(lb) {
             let mbk = bit(bits_b, k + 1);
-            let ck = cols_b[k];
             let vsl = if mbk == 0 {vba0} else {vba1};
             let base = ck * nb;
 

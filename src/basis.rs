@@ -9,14 +9,18 @@ use rand::rngs::StdRng;
 
 use crate::{AoData, Excitation, ExcitationSpin, SCFState};
 use crate::input::{Input, StateType, StateRecipe, Metadynamics};
-use crate::utils::random_pattern;
 
+use crate::utils::random_pattern;
 use crate::scf::scf_cycle;
 
 pub struct SpinOccupation {
+    /// Indices of occupied alpha-spin orbitals.
     occ_alpha: Vec<usize>,
+    /// Indices of virtual alpha-spin orbitals.
     virt_alpha: Vec<usize>,
+    /// Indices of occupied beta-spin orbitals.
     occ_beta: Vec<usize>,
+    /// Indices of virtual beta-spin orbitals.
     virt_beta: Vec<usize>,
 }
 
@@ -376,7 +380,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
             let (da0, db0) = (da.clone(), db.clone());
 
             // Any spin-broken UHF state should have a spin-flipped degernerate counterpart, find both.
-            for j in 0..2 {
+            for (j, cand_slot) in cand.iter_mut().enumerate() {
 
                 let labelidx = base + j;
                 if labelidx >= meta.nstates_uhf {break;}
@@ -465,7 +469,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                     // All duplicates removed by this point. Since we have successfully found a new
                     // state, reset the attempts counter.
                     attempt = 0;
-                    cand[j] = Some(candidate);
+                    *cand_slot = Some(candidate);
                 }
             }
 

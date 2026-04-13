@@ -43,7 +43,7 @@ pub fn print_array4(t: &Array4<f64>) {
 /// indication of the sparsity of a wavefunction.  
 /// # Arguments 
 /// - `c`: Basis coefficient vector.
-/// `ref_indices`: indices of the reference states in the coefficient vector.
+///   `ref_indices`: indices of the reference states in the coefficient vector.
 /// # Returns
 /// - `()`: Prints wavefunction sparsity diagnostics to stdout.
 pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {

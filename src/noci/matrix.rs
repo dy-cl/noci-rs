@@ -7,75 +7,13 @@ use rayon::prelude::*;
 use crate::{AoData, SCFState};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
-use super::{MOCache, FockMOCache};
+use super::types::{MOCache, NOCIData, FockData, DetPair, ScatterValue};
 
 use crate::utils::print_array2;
 use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
 use crate::maths::general_evp_real;
 use crate::write::write_hs_matrices;
 use super::hs::compare_hs_pair_wicks_naive;
-
-
-// Trait which defines how returned determinant-pair quatity should be scattered into matrices.
-// Used such that we can have generic scatter functions which return 1 or 2 matrices.
-trait ScatterValue: Sized {
-    type Output;
-    /// Construct zero initialised output. 
-    /// # Arguments:
-    /// - `nl`: Length of determinant set 1.
-    /// - `nr`: Length of determinant set 2.
-    fn zeros(nl: usize, nr: usize) -> Self::Output;
-    /// Write a value into the output at indices i, j.
-    /// # Arguments:
-    /// - `out`: Output container to write into.
-    /// - `i`: Row index.
-    /// - `j`: Column index.
-    /// - `val`: Determinant-pair value to scatter.
-    fn write(out: &mut Self::Output, i: usize, j: usize, val: Self);
-}
-
-impl ScatterValue for f64 {
-    type Output = Array2<f64>;
-    /// Construct zero initialised output. 
-    /// # Arguments:
-    /// - `nl`: Length of determinant set 1.
-    /// - `nr`: Length of determinant set 2.
-    fn zeros(nl: usize, nr: usize) -> Self::Output {
-        Array2::<f64>::zeros((nl, nr))
-    }
-    /// Write scalar value into matrix position (i, j).
-    /// # Arguments:
-    /// - `out`: Output matrix.
-    /// - `i`: Row index.
-    /// - `j`: Column index.
-    /// - `val`: Matrix element value.
-    fn write(out: &mut Self::Output, i: usize, j: usize, val: Self) {
-        out[(i, j)] = val;
-    }
-}
-
-impl ScatterValue for (f64, f64) {
-    type Output = (Array2<f64>, Array2<f64>);
-
-    /// Construct zero initialised output. 
-    /// # Arguments:
-    /// - `nl`: Length of determinant set 1.
-    /// - `nr`: Length of determinant set 2.
-    fn zeros(nl: usize, nr: usize) -> Self::Output {
-        (Array2::<f64>::zeros((nl, nr)), Array2::<f64>::zeros((nl, nr)))
-    }
-
-    /// Write scalar value into matrix position (i, j) in both matrices.
-    /// # Arguments:
-    /// - `out`: `Array2<f64>`), output matrices.
-    /// - `i`: Row index.
-    /// - `j`: Column index.
-    /// - `val`: F64), matrix element values.
-    fn write(out: &mut Self::Output, i: usize, j: usize, val: Self) {
-        out.0[(i, j)] = val.0;
-        out.1[(i, j)] = val.1;
-    }
-}
 
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
 /// which computes `T` for the pair. The closure may evaluate, for example,
@@ -138,29 +76,21 @@ fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize
 /// Construct the full NOCI Fock matrix using either the generalised
 /// Slater-Condon rules or extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
+/// - `fock`: Fock-specific data required for Fock matrix-element evaluation.
 /// - `left`: First set of determinants.
 /// - `right`: Second set of determinants.
-/// - `fa`: NOCI Fock matrix spin alpha.
-/// - `fb`: NOCI Fock matrix spin beta.
-/// - `fock_mocache`: MO-basis Fock integral caches.
-/// - `wicks`: Optional precomputed Wick's intermediates.
-/// - `tol`: Tolerance up to which a number is considered zero.
 /// - `symmetric`: Whether the matrix is symmetric.
-/// - `input`: User specified input options.
 /// # Returns:
-/// - `Array2<f64>`: NOCI Fock matrix.
-/// - `Duration`: Matrix-build time.
-pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &Array2<f64>, fb: &Array2<f64>, fock_mocache: &[FockMOCache], 
-                       wicks: Option<&WicksView>, tol: f64, symmetric: bool, input: &Input) -> (Array2<f64>, Duration) {
+/// - `(Array2<f64>, Duration)`: NOCI Fock matrix and matrix-build time.
+pub(crate) fn build_noci_fock(data: &NOCIData<'_>, fock: &FockData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Duration) {
     let nl = left.len();
     let nr = right.len();
 
-    let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
-
-    let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-        calculate_f_pair(fa, fb, ao, ldet, gdet, tol, input, fock_mocache, wicks, scratch)
+    let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+        calculate_f_pair(data, fock, DetPair::new(ldet, gdet), scratch)
     });
+
     let f = scatter_matrix_elements(vals, nl, nr, symmetric);
     (f, dt)
 }
@@ -168,25 +98,20 @@ pub fn build_noci_fock(ao: &AoData, left: &[SCFState], right: &[SCFState], fa: &
 /// Form the full overlap matrix using either the generalised Slater-Condon
 /// rules or extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `input`: User input specifications.
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `left`: First set of determinants.
 /// - `right`: Second set of determinants.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Optional precomputed Wick's intermediates.
 /// - `symmetric`: Whether the matrix is symmetric.
 /// # Returns:
 /// - `(Array2<f64>, Duration)`: The overlap matrix and the matrix-build time.
-pub fn build_noci_s(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], tol: f64, wicks: Option<&WicksView>, symmetric: bool) 
-                     -> (Array2<f64>, Duration) {
+pub fn build_noci_s(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Duration) {
     let nl = left.len();
     let nr = right.len();
 
-    let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
-
-    let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-        calculate_s_pair(ao, ldet, gdet, tol, input, wicks, scratch)
+    let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+        calculate_s_pair(data, DetPair::new(ldet, gdet), scratch)
     });
+
     let s = scatter_matrix_elements(vals, nl, nr, symmetric);
     (s, dt)
 }
@@ -194,27 +119,20 @@ pub fn build_noci_s(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFS
 /// Form the full Hamiltonian and overlap matrices using either the
 /// generalised Slater-Condon rules or extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `input`: User input specifications.
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `left`: First set of determinants.
 /// - `right`: Second set of determinants.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `wicks`: Optional precomputed Wick's intermediates.
 /// - `symmetric`: Whether the matrices are symmetric.
 /// # Returns:
 /// - `(Array2<f64>, Array2<f64>, Duration)`: The Hamiltonian matrix, overlap matrix,
 ///   and matrix-build time.
-pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCFState], tol: f64, mocache: &[MOCache], 
-                     wicks: Option<&WicksView>, symmetric: bool)  -> (Array2<f64>, Array2<f64>, Duration) {
+pub fn build_noci_hs(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Array2<f64>, Duration) {
     let nl = left.len();
     let nr = right.len();
 
-    let wicks = if input.wicks.enabled || input.wicks.compare {Some(wicks.expect("Wick's requested but found wicks: None"))} else {None};
-
-    if input.wicks.compare {
-        let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-            compare_hs_pair_wicks_naive(ao, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
+    if data.input.wicks.compare {
+        let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+            compare_hs_pair_wicks_naive(data, DetPair::new(ldet, gdet), scratch.unwrap())
         });
 
         let mut td = 0.0;
@@ -228,14 +146,14 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
         return (h, s, dt);
     }
 
-    let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-        calculate_hs_pair(ao, ldet, gdet, tol, input, mocache, wicks, scratch)
+    let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+        calculate_hs_pair(data, DetPair::new(ldet, gdet), scratch)
     });
 
     let (h, s) = scatter_matrix_elements(vals, nl, nr, symmetric);
 
-    if input.write.write_matrices {
-        write_hs_matrices(&input.write.write_dir, &h, &s);
+    if data.input.write.write_matrices {
+        write_hs_matrices(&data.input.write.write_dir, &h, &s);
     }
     (h, s, dt)
 }
@@ -253,8 +171,9 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
 /// - `(f64, Array1<f64>, Duration)`: The lowest NOCI eigenvalue, its coefficient
 ///   vector in the NOCI basis, and the time spent building the Hamiltonian/overlap matrices.
 pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, mocache: &[MOCache], wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
-    let (h, s, d_hs) = build_noci_hs(ao, input, scfstates, scfstates, tol, mocache, wicks, true);
-    
+    let data = NOCIData::new(ao, scfstates, input, tol, wicks).withmocache(mocache);
+    let (h, s, d_hs) = build_noci_hs(&data, scfstates, scfstates, true);
+
     println!("{}", "=".repeat(100));
     println!("NOCI-reference Hamiltonian:");
     print_array2(&h);
@@ -266,7 +185,6 @@ pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState],
     let (evals, c) = general_evp_real(&h, &s, true, f64::EPSILON);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
 
-    // Assumes columns of c are energy ordered eigenvectors
-    let c0 = c.column(0).to_owned(); 
+    let c0 = c.column(0).to_owned();
     (evals[0], c0, d_hs)
 }

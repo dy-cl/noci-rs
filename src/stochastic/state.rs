@@ -4,66 +4,77 @@ use rand::Rng;
 use mpi::traits::*;
 use rand_distr::{Binomial, Distribution};
 
-use crate::{AoData, SCFState};
-use crate::nonorthogonalwicks::{WicksView, WickScratchSpin};
-use crate::noci::MOCache;
-use crate::input::{Input, Propagator, ExcitationGen};
+use crate::nonorthogonalwicks::{WickScratchSpin};
+use crate::input::{Propagator, ExcitationGen};
+use crate::noci::{NOCIData};
 
 use crate::mpiutils::owner;
 use super::propagate::{find_hs};
 use super::excit::{pgen_uniform, pgen_heat_bath, init_heat_bath};
 
-// Storage for QMC timings.
+/// Storage for QMC timings.
 #[derive(Default, Clone)]
 pub struct QMCTimings {
+    /// Time spent constructing the initial walker population and derived state.
     pub initialise_walkers: f64,
+    /// Time spent generating spawning and death/cloning events.
     pub spawn_death_collect: f64,
+    /// Time spent accumulating thread-local updates into rank-local buffers.
     pub acc_pack: f64,
+    /// Time spent exchanging population updates between MPI ranks.
     pub mpi_exchange_updates: f64,
+    /// Time spent unpacking received updates and adding them to the local delta.
     pub unpack_acc_recieved: f64,
+    /// Time spent applying the accumulated population delta to walkers.
     pub apply_delta: f64,
+    /// Time spent updating the overlap-transformed population vector p.
     pub update_p: f64,
+    /// Time spent computing current walker population statistics.
     pub calc_populations: f64,
+    /// Time spent updating the projected-energy estimator.
     pub eproj: f64,
 }
 
-// Storage for immutable data required for stochastic propagation.
-pub struct QMCData<'a> {
-    pub ao: &'a AoData,
-    pub basis: &'a [SCFState],
-    pub input: &'a Input,
-    pub wicks: Option<&'a WicksView>,
-    pub mocache: &'a [MOCache],
-    pub tol: f64,
+/// Storage for rank-local data layouts and metadata.
+pub(in crate::stochastic) struct QMCRunInfo {
+    /// MPI rank of the current process.
+    pub(in crate::stochastic) irank: usize,
+    /// Total number of MPI ranks in the run.
+    pub(in crate::stochastic) nranks: usize,
+    /// Total number of determinants in the stochastic basis.
+    pub(in crate::stochastic) ndets: usize,
+    /// First determinant index owned by this rank.
+    pub(in crate::stochastic) start: usize,
+    /// One-past-last determinant index owned by this rank.
+    pub(in crate::stochastic) end: usize,
+    /// Reference determinant index used in projected-energy estimates.
+    pub(in crate::stochastic) iref: usize,
+    /// User- or randomly-selected base seed for the full run.
+    pub(in crate::stochastic) base_seed: u64,
+    /// Rank-specific seed derived from the base seed.
+    pub(in crate::stochastic) rank_seed: u64,
 }
 
-// Storage for rank-local data layouts and metadata.
-pub(crate) struct QMCRunInfo {
-    pub irank: usize,
-    pub nranks: usize,
-    pub ndets: usize,
-    pub start: usize,
-    pub end: usize,
-    pub iref: usize,
-    pub base_seed: u64,
-    pub rank_seed: u64,
+/// Storage for maximum size required for Wick's scratch.
+pub(in crate::stochastic) struct ScratchSize {
+    /// Largest same-spin scratch dimension needed across the basis.
+    pub(in crate::stochastic) maxsame: usize,
+    /// Largest alpha-spin excitation scratch dimension needed across the basis.
+    pub(in crate::stochastic) maxla: usize,
+    /// Largest beta-spin excitation scratch dimension needed across the basis.
+    pub(in crate::stochastic) maxlb: usize,
 }
 
-// Storage for maximum size required for Wick's scratch.
-pub(crate) struct ScratchSize {
-    pub(crate) maxsame: usize,
-    pub(crate) maxla: usize,
-    pub(crate) maxlb: usize,
-}
-
-// Storage for Current shift values used during propagation.
+/// Storage for Current shift values used during propagation.
 #[derive(Clone, Copy)]
-pub(crate) struct Shifts {
-    pub es: f64,
-    pub es_s: f64,
+pub(in crate::stochastic) struct Shifts {
+    /// Current non-overlap-transformed shift.
+    pub(in crate::stochastic) es: f64,
+    /// Current overlap-transformed shift.
+    pub(in crate::stochastic) es_s: f64,
 }
 
-// Storage for walker information.
+/// Storage for walker information.
 pub(crate) struct Walkers {
     // Signed population vector length n determinants.
     pop: Vec<i64>,
@@ -167,39 +178,42 @@ impl Walkers {
     }
 }
 
-// Storage for Monte Carlo state. 
-pub struct MCState {
-    // Walker distribution.
-    pub walkers: Walkers,
-    // Changes to walker population of length n determinants.
-    pub delta: Vec<i64>,
-    // Indices for which delta[i] != 0, i.e., determinants with changed population.
-    pub changed: Vec<usize>,
-    // Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
-    pub pg: Vec<f64>,
-    // Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
-    pub excitation_hist: Option<ExcitationHist> 
+/// Storage for Monte Carlo state. 
+pub(in crate::stochastic) struct MCState {
+    /// Walker distribution.
+    pub(in crate::stochastic) walkers: Walkers,
+    /// Changes to walker population of length n determinants.
+    pub(in crate::stochastic) delta: Vec<i64>,
+    /// Indices for which delta[i] != 0, i.e., determinants with changed population.
+    pub(in crate::stochastic) changed: Vec<usize>,
+    /// Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
+    pub(in crate::stochastic) pg: Vec<f64>,
+    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
+    pub(in crate::stochastic) excitation_hist: Option<ExcitationHist> 
 }
 
-// Storage for the Incrementally updated projected-energy.
+/// Storage for the incrementally updated projected-energy.
 #[derive(Clone, Copy)]
-pub(crate) struct ProjectedEnergyUpdate {
-    pub(crate) iref: usize,
-    pub(crate) num: f64,
-    pub(crate) den: f64,
+pub(in crate::stochastic) struct ProjectedEnergyUpdate {
+    /// Reference determinant index used in the projection.
+    pub(in crate::stochastic) iref: usize,
+    /// Running numerator of the projected-energy estimator.
+    pub(in crate::stochastic) num: f64,
+    /// Running denominator of the projected-energy estimator.
+    pub(in crate::stochastic) den: f64,
 }
 
 /// Storage for current walker populations in both the raw and overlap-transformed sense.
 #[derive(Clone, Copy)]
-pub(crate) struct PopulationStats {
-    // Non-overlap transformed walker populations.
-    pub(crate) nwc: i64,
-    // Non-overlap transformed reference walker populations.
-    pub(crate) nrefc: i64,
-    // Overlap-transformed walker populations.
-    pub(crate) nwsc: f64,
-    // Overlap-transformed reference walker populations.
-    pub(crate) nrefsc: f64,
+pub(in crate::stochastic) struct PopulationStats {
+    /// Non-overlap transformed walker populations.
+    pub(in crate::stochastic) nwc: i64,
+    /// Non-overlap transformed reference walker populations.
+    pub(in crate::stochastic) nrefc: i64,
+    /// Overlap-transformed walker populations.
+    pub(in crate::stochastic) nwsc: f64,
+    /// Overlap-transformed reference walker populations.
+    pub(in crate::stochastic) nrefsc: f64,
 }
 
 impl PopulationStats {
@@ -211,31 +225,31 @@ impl PopulationStats {
     /// - `nrefsc`: Total overlap-transformed reference walker population.
     /// # Returns
     /// - `PopulationStats`: Walker population statistics.
-    pub(crate) fn new(nwc: i64, nrefc: i64, nwsc: f64, nrefsc: f64) -> Self {
+    pub(in crate::stochastic) fn new(nwc: i64, nrefc: i64, nwsc: f64, nrefsc: f64) -> Self {
         Self {nwc, nrefc, nwsc, nrefsc}
     }
 }
 
 /// Storage for QMC step bookkeeping data.
-pub(crate) struct PropagationState {
-    // Full Monte Carlo state.
-    pub(crate) mc: MCState,
-    // Incrementally updated projected-energy.
-    pub(crate) pe: ProjectedEnergyUpdate,
-    // Overlap transformed shift.
-    pub(crate) es_s: f64,
-    // Walker populations at previous shift update.
-    pub(crate) prev_pop: PopulationStats,
-    // Current walker populations.
-    pub(crate) cur_pop: PopulationStats,
-    // From where did iterations begin (was a restart file used?).
-    pub(crate) start_iter: usize,
-    // Has the overlap-transformed population reached the target.
-    pub(crate) reached_sc: bool,
-    // Has the non-overlap-transformed population reached the target.
-    pub(crate) reached_c: bool,
-    // Current projected-energy.
-    pub(crate) eprojcur: f64,
+pub(in crate::stochastic) struct PropagationState {
+    /// Full Monte Carlo state.
+    pub(in crate::stochastic) mc: MCState,
+    /// Incrementally updated projected-energy.
+    pub(in crate::stochastic) pe: ProjectedEnergyUpdate,
+    /// Overlap transformed shift.
+    pub(in crate::stochastic) es_s: f64,
+    /// Walker populations at previous shift update.
+    pub(in crate::stochastic) prev_pop: PopulationStats,
+    /// Current walker populations.
+    pub(in crate::stochastic) cur_pop: PopulationStats,
+    /// From where did iterations begin (was a restart file used?).
+    pub(in crate::stochastic) start_iter: usize,
+    /// Has the overlap-transformed population reached the target.
+    pub(in crate::stochastic) reached_sc: bool,
+    /// Has the non-overlap-transformed population reached the target.
+    pub(in crate::stochastic) reached_c: bool,
+    /// Current projected-energy.
+    pub(in crate::stochastic) eprojcur: f64,
 }
 
 impl PropagationState {
@@ -251,7 +265,7 @@ impl PropagationState {
     /// - `prev_pop`: Walker populations at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Initialised propagation state.
-    pub(crate) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
         let eprojcur = pe.num / pe.den;
         Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_iter, reached_sc, reached_c, eprojcur}
     }
@@ -264,7 +278,7 @@ impl PropagationState {
     /// - `prev_pop`: Initial walker populations.
     /// # Returns
     /// - `PropagationState`: Propagation state for a stochastic run from iteration zero.
-    pub(crate) fn fresh(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn fresh(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, prev_pop: PopulationStats) -> Self {
         Self::new(mc, pe, es_s, 0, false, false, prev_pop)
     }
     
@@ -279,33 +293,33 @@ impl PropagationState {
     /// - `prev_pop`: Walker populations stored at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Propagation state for a restarted stochastic run.
-    pub(crate) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
         Self::new(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
     }
 }
 
-// Storage for results of a single propagation step.
-pub(crate) struct PropagationResult {
-    // Population updates for determinants owned by current rank.
-    pub(crate) local: Vec<(usize, i64)>,
-    // Population updates for determinants owned by another rank.
-    pub(crate) remote: Vec<PopulationUpdate>,
-    // Excitation generation samples.
-    pub(crate) samples: Vec<f64>,
+/// Storage for results of a single propagation step.
+pub(in crate::stochastic) struct PropagationResult {
+    /// Population updates for determinants owned by current rank.
+    pub(in crate::stochastic) local: Vec<(usize, i64)>,
+    /// Population updates for determinants owned by another rank.
+    pub(in crate::stochastic) remote: Vec<PopulationUpdate>,
+    /// Excitation generation samples.
+    pub(in crate::stochastic) samples: Vec<f64>,
 }
 
-// Storage for per thread propagation quantities.
-pub(crate) struct ThreadPropagation {
-    // Population changes generated by this thread that belong to determinants owned by current MPI rank.
-    pub(crate) local: Vec<(usize, i64)>,
-    // Population changes generated by this thread that belong to determinants owned by another MPI rank.
-    pub(crate) remote: Vec<PopulationUpdate>,
-    // Excitation generation samples.
-    pub(crate) samples: Vec<f64>,
-    // Thread local RNG.
-    pub(crate) rng: SmallRng,
-    // Per thread scratch space for extended non-orthogonal Wick's theorem.
-    pub(crate) scratch: WickScratchSpin,
+/// Storage for per thread propagation quantities.
+pub(in crate::stochastic) struct ThreadPropagation {
+    /// Population changes generated by this thread that belong to determinants owned by current MPI rank.
+    pub(in crate::stochastic) local: Vec<(usize, i64)>,
+    /// Population changes generated by this thread that belong to determinants owned by another MPI rank.
+    pub(in crate::stochastic) remote: Vec<PopulationUpdate>,
+    /// Excitation generation samples.
+    pub(in crate::stochastic) samples: Vec<f64>,
+    /// Thread local RNG.
+    pub(in crate::stochastic) rng: SmallRng,
+    /// Per thread scratch space for extended non-orthogonal Wick's theorem.
+    pub(in crate::stochastic) scratch: WickScratchSpin,
 }
 
 impl ThreadPropagation {
@@ -317,7 +331,7 @@ impl ThreadPropagation {
     /// - `data`: Immutable stochastic propagation data.
     /// # Returns
     /// - `()`: Appends local death/cloning population updates to `self.local`.
-    pub(crate) fn death_cloning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &QMCData<'_>) {
+    pub(in crate::stochastic) fn death_cloning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_>) {
         let (hgg, sgg) = find_hs(data, gamma, gamma, &mut self.scratch);
 
         let pdeath = match data.input.prop_ref().propagator {
@@ -356,7 +370,7 @@ impl ThreadPropagation {
     /// # Returns
     /// - `()`: Appends local and remote spawning updates to `self.local` and `self.remote`,
     ///   and excitation histogram samples to `self.samples`.
-    pub(crate) fn spawning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &QMCData<'_>, run: &QMCRunInfo) {
+    pub(in crate::stochastic) fn spawning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_>, run: &QMCRunInfo) {
         let parent_sign = if ngamma > 0 {1} else {-1};
         let nwalkers = ngamma.unsigned_abs();
 
@@ -403,32 +417,45 @@ impl ThreadPropagation {
     }
 }
 
-// Storage for population update communication across ranks. Is also used for computation of
-// \tilde{N}_w. In this case we interpret dn as the total population.
+/// Storage for population update communication across ranks. Is also used for computation of
+/// \tilde{N}_w. In this case we interpret dn as the total population.
 #[repr(C)]
 #[derive(Copy, Clone, Equivalence)]
 pub(crate) struct PopulationUpdate {
+    /// Determinant index to which this population update applies.
     pub det: u64,
+    /// Signed population change on the determinant, or total population when used for \tilde{N}_w.
     pub dn: i64,
 }
 
-// Storage for heat-bath excitation related quantities 
-pub struct HeatBath {
-    pub(crate) sumlg: f64, 
-    pub(crate) cumulatives: Vec<f64>, 
-    pub(crate) lambdas: Vec<usize>, 
-    pub(crate) ks: Vec<f64>,
+/// Storage for heat-bath excitation related quantities.
+pub(in crate::stochastic) struct HeatBath {
+    /// Total absolute coupling weight over all allowed children.
+    pub(in crate::stochastic) sumlg: f64,
+    /// Cumulative absolute coupling weights used for inverse-CDF sampling.
+    pub(in crate::stochastic) cumulatives: Vec<f64>,
+    /// Child determinant indices corresponding to the cumulative weights.
+    pub(in crate::stochastic) lambdas: Vec<usize>,
+    /// Signed couplings associated with each child determinant.
+    pub(in crate::stochastic) ks: Vec<f64>,
 }
 
-// Storage for histogrammed data.
+/// Storage for histogrammed data.
 #[derive(Clone)]
 pub struct ExcitationHist {
+    /// Lower logarithmic bound of the histogram range.
     pub logmin: f64,
+    /// Upper logarithmic bound of the histogram range.
     pub logmax: f64,
+    /// Number of samples that fell below the histogram range.
     pub noverflow_low: u64,
+    /// Number of samples that fell above the histogram range.
     pub noverflow_high: u64,
+    /// Bin counts over the configured logarithmic range.
     pub counts: Vec<u64>,
+    /// Total number of bins in the histogram.
     pub nbins: usize,
+    /// Total number of samples processed by the histogram.
     pub ntotal: u64,
 }
 
@@ -440,7 +467,7 @@ impl ExcitationHist {
     /// - `nbins`: Number of histogram bins.
     /// # Returns
     /// - `ExcitationHist`: Empty histogram with the requested parameters.
-    pub(crate) fn new(logmin: f64, logmax: f64, nbins: usize) -> Self {
+    pub(in crate::stochastic) fn new(logmin: f64, logmax: f64, nbins: usize) -> Self {
         Self {logmin, logmax, noverflow_low: 0, noverflow_high: 0, counts: vec![0u64; nbins], nbins, ntotal: 0}
     }
     
@@ -450,7 +477,7 @@ impl ExcitationHist {
     /// - `pspawn`: Spawning probability as defined in population dynamics routines.
     /// # Returns
     /// - `()`: Updates the histogram in place.
-    pub(crate) fn add(&mut self, pspawn: f64) {
+    pub(in crate::stochastic) fn add(&mut self, pspawn: f64) {
         self.ntotal += 1;
 
         if !pspawn.is_finite() || pspawn <= 0.0 {self.noverflow_low += 1; return;}
