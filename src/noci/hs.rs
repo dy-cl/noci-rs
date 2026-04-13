@@ -5,9 +5,9 @@ use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
 
 use crate::basis::excitation_phase;
-use crate::noci::naive::{occ_coeffs, build_s_pair, one_electron, two_electron_same, two_electron_diff};
-use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
+use super::naive::{occ_coeffs, build_s_pair, one_electron, two_electron_same, two_electron_diff};
+use super::overlap::calculate_s_pair_orthogonal;
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
 /// depending on user input and properties of the determinant pair involved. If the determinant
@@ -36,6 +36,23 @@ pub fn calculate_hs_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64
     }
 }
 
+/// Compare naive and Wick's calculation of matrix elements to ensure consistency.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
+/// - `ldet`: State \Lambda.
+/// - `gdet`: State \Gamma.
+/// - `tol`: Tolerance for a number being zero.
+/// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
+/// - `scratch`: Scratch space for Wick's calculations.
+/// # Returns:
+/// - `((f64, f64), f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`, and
+///   the total discrepancy between the naive and Wick's path.
+pub(crate) fn compare_hs_pair_wicks_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> ((f64, f64), f64) {
+    let (hn, sn) = calculate_hs_pair_naive(ao, ldet, gdet, tol);
+    let (hw, sw) = calculate_hs_pair_wicks(ao, ldet, gdet, tol, wicks, scratch);
+    ((hw, sw), (hn - hw).abs() + (sn - sw).abs())
+}
+
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma using
 /// standard Slater-Condon rules.
 /// # Arguments:
@@ -45,7 +62,7 @@ pub fn calculate_hs_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64
 /// - `gdet`: State \Gamma.
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
-pub fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
+pub(crate) fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
     let xa = ldet.oa ^ gdet.oa;
     let xb = ldet.ob ^ gdet.ob;
 
@@ -241,7 +258,7 @@ pub fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFStat
 /// - `gdet`: State \Gamma.
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
-pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
+pub(crate) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
 
     // Per spin occupid coefficients.
     let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
@@ -283,7 +300,7 @@ pub fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, to
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
-pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> (f64, f64) {
+pub(crate) fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> (f64, f64) {
     let lp = ldet.parent;
     let gp = gdet.parent;
 
@@ -357,3 +374,4 @@ pub fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, to
 
     (hnuc + h1 + h2, s)
 }
+

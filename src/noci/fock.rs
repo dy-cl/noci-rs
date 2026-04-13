@@ -2,13 +2,13 @@
 use ndarray::{Array2};
 
 use crate::{AoData, SCFState};
-use crate::noci::cache::FockMOCache;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
+use super::cache::FockMOCache;
 
 use crate::basis::excitation_phase;
-use crate::noci::naive::{occ_coeffs, build_s_pair, one_electron};
 use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_f};
+use super::naive::{occ_coeffs, build_s_pair, one_electron};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on user
 /// input and properties of the determinant pair involved. If the determinant pair have the same
@@ -46,7 +46,7 @@ pub fn calculate_f_pair(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &
 /// - `gdet`: State \Gamma.
 /// # Returns:
 /// - `f64`: Fock matrix element between `ldet` and `gdet`.
-pub fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFState) -> f64 {
+pub(crate) fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFState) -> f64 {
     let xa = ldet.oa ^ gdet.oa;
     let xb = ldet.ob ^ gdet.ob;
 
@@ -94,7 +94,7 @@ pub fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &
 /// - `fb`: NOCI Fock matrix spin beta.
 /// # Returns:
 /// - `f64`: Fock matrix element between `ldet` and `gdet`.
-pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
+pub(crate) fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
 
     // Per spin occupid coefficients.
     let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
@@ -118,7 +118,7 @@ pub fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, l
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `f64`: Fock matrix element between the determinant pair.
-pub fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
+pub(crate) fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
     let lp = ldet.parent;
     let gp = gdet.parent;
 

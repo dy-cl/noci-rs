@@ -5,15 +5,16 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
 use crate::{AoData, SCFState};
-use crate::noci::{MOCache, FockMOCache};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
+use super::{MOCache, FockMOCache};
 
 use crate::utils::print_array2;
 use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
-use super::hs::{calculate_hs_pair_naive, calculate_hs_pair_wicks};
 use crate::maths::general_evp_real;
 use crate::write::write_hs_matrices;
+use super::hs::compare_hs_pair_wicks_naive;
+
 
 // Trait which defines how returned determinant-pair quatity should be scattered into matrices.
 // Used such that we can have generic scatter functions which return 1 or 2 matrices.
@@ -213,9 +214,7 @@ pub fn build_noci_hs(ao: &AoData, input: &Input, left: &[SCFState], right: &[SCF
 
     if input.wicks.compare {
         let (vals, dt) = calculate_matrix_elements(left, right, input, symmetric, |ldet, gdet, scratch| {
-            let (hn, sn) = calculate_hs_pair_naive(ao, ldet, gdet, tol);
-            let (hw, sw) = calculate_hs_pair_wicks(ao, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap());
-            ((hw, sw), (hn - hw).abs() + (sn - sw).abs())
+            compare_hs_pair_wicks_naive(ao, ldet, gdet, tol, wicks.unwrap(), scratch.unwrap())
         });
 
         let mut td = 0.0;

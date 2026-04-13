@@ -3,8 +3,8 @@ use crate::{AoData, SCFState};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
 
-use crate::noci::naive::{occ_coeffs, build_s_pair};
 use crate::nonorthogonalwicks::{prepare_same, lg_overlap};
+use super::naive::{occ_coeffs, build_s_pair};
 
 /// Wrapper function which dispatches to matrix element evaluation routines depending on user input
 /// and properties of the determinant pair involved. If the determinant pair have the same parents
@@ -37,7 +37,7 @@ pub fn calculate_s_pair(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64,
 /// - `gdet`: State \Gamma.
 /// # Returns:
 /// - `f64`: Overlap matrix element between `ldet` and `gdet`.
-pub fn calculate_s_pair_orthogonal(ldet: &SCFState, gdet: &SCFState) -> f64 {
+pub(crate) fn calculate_s_pair_orthogonal(ldet: &SCFState, gdet: &SCFState) -> f64 {
     if ldet.oa == gdet.oa && ldet.ob == gdet.ob {
         (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb)
     } else {
@@ -54,7 +54,7 @@ pub fn calculate_s_pair_orthogonal(ldet: &SCFState, gdet: &SCFState) -> f64 {
 /// - `tol`: Tolerance for a number being zero. 
 /// # Returns:
 /// - `f64`: Overlap matrix element between `ldet` and `gdet`.
-pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
+pub(crate) fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
 
     // Per spin occupid coefficients.
     let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
@@ -78,7 +78,7 @@ pub fn calculate_s_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `f64`: Overlap matrix element.
-pub fn calculate_s_pair_wicks(ldet: &SCFState, gdet: &SCFState, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
+pub(crate) fn calculate_s_pair_wicks(ldet: &SCFState, gdet: &SCFState, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
     let lp = ldet.parent;
     let gp = gdet.parent;
 
