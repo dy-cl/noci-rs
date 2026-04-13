@@ -10,9 +10,9 @@ mod types;
 
 pub use types::{MOCache, FockMOCache};
 pub use cache::{build_mo_cache, build_fock_mo_cache};
-pub use wicks::{build_wicks_shared, update_wicks_fock};
 pub use matrix::{build_noci_s, build_noci_hs, calculate_noci_energy};
 pub use naive::noci_density;
+pub use wicks::{update_wicks_fock, build_wicks_shared};
 pub(crate) use matrix::build_noci_fock;
 pub(crate) use overlap::calculate_s_pair;
 pub(crate) use fock::calculate_f_pair;
