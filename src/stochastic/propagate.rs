@@ -1,0 +1,462 @@
+// stochastic/propagate.rs
+use std::time::{Instant};
+
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+use mpi::topology::Communicator;
+use mpi::collective::SystemOperation;
+use mpi::traits::*;
+use rayon::prelude::*;
+
+use crate::input::{Input, Propagator};
+use crate::nonorthogonalwicks::WickScratchSpin;
+use super::state::{QMCData, MCState, PopulationUpdate, ExcitationHist, QMCTimings, ProjectedEnergyUpdate, PropagationState, 
+                   QMCRunInfo, ScratchSize, Shifts, PropagationResult, ThreadPropagation, PopulationStats};
+
+use crate::noci::{calculate_s_pair, calculate_hs_pair};
+use crate::mpiutils::{owner, communicate_spawn_updates, gather_all_walkers};
+use super::report::{print_row, print_header, print_cached_row, print_initial_row, check_stop};
+use super::init::{initialise_qmc_state, max_scratch_sizes};
+
+/// Find overlap matrix element S_{ij}.
+/// # Arguments:
+/// - `data`: Immutable stochastic propagation data.
+/// - `i`: Index of state `i`.
+/// - `j`: Index of state `j`.
+/// - `scratch`: Scratch space for Wick's quantities.
+/// # Returns
+/// - `f64`: Overlap matrix element `S_{ij}`.
+pub(crate) fn find_s(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> f64 {
+    // Get the sorted pair of indices 
+    let (a, b) = if i <= j {(i, j)} else {(j, i)};
+    calculate_s_pair(data.ao, &data.basis[a], &data.basis[b], data.tol, data.input, data.wicks, Some(scratch))
+}
+
+/// Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
+/// # Arguments:
+/// - `data`: Immutable stochastic propagation data.
+/// - `i`: Index of state `i`.
+/// - `j`: Index of state `j`.
+/// - `scratch`: Scratch space for Wick's quantities.
+/// # Returns
+/// - `(f64, f64)`: Hamiltonian and overlap matrix elements `H_{ij}` and `S_{ij}`.
+pub(crate) fn find_hs(data: &QMCData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> (f64, f64) {
+    // Get the sorted pair of indices 
+    let (a, b) = if i <= j {(i, j)} else {(j, i)};
+    calculate_hs_pair(data.ao, &data.basis[a], &data.basis[b], data.tol, data.input, data.mocache, data.wicks, Some(scratch))
+}
+
+/// Accumulate the population change dn for a determinant i into the per-iteration delta vector.
+/// Note that the actual populations stored in mc.walkers are not yet changed here.
+/// # Arguments:
+/// - `mc`: Contains information about the current Monte Carlo state.
+/// - `i`: Index of determinant i to be updated.
+/// - `dn`: Population change on determinant i. 
+/// # Returns
+/// - `()`: Updates the accumulated population changes in place.
+fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
+    if dn == 0 {return;}
+    // If current delta for this determinant is zero this function being called is its first
+    // modification for this iteration and so we record this fact in changed.
+    if mc.delta[i] == 0 {
+        mc.changed.push(i);
+    }
+    // Add the population change to delta.
+    mc.delta[i] += dn;
+}
+
+/// Apply accumulated population changes from the mc.delta vector to the actual populations stored
+/// in mc.walkers.
+/// # Arguments:
+/// - `mc`: Contains information about the current Monte Carlo state.
+/// # Returns
+/// - `Vec<PopulationUpdate>`: List of applied population updates for this iteration.
+fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
+    if mc.changed.is_empty() {return Vec::new();}
+    let mut applied = Vec::with_capacity(mc.changed.len());
+    // Consider only changed determinants.
+    for &i in &mc.changed {
+        // Total population change for this determinant for this iteration.
+        let dn = mc.delta[i];
+        // As we are applying the change we reset the delta.
+        mc.delta[i] = 0;
+        mc.walkers.add(i, dn);
+        applied.push(PopulationUpdate { det: i as u64, dn });
+    }
+    // Reset list of changed determinants.
+    mc.changed.clear();
+    applied
+}
+
+
+/// Compute the off-diagonal coupling between determinants depending on which propagator is used.
+/// # Arguments:
+/// - `hlg`: Matrix element H_{\Lambda\Gamma}
+/// - `slg`: Matrix element S_{\Lambda\Gamma}
+/// - `es_s`: E_s^S(\tau) shift energy.
+/// - `es`: E_s(\tau) shift energy.
+/// - `prop`: Chosen propagator.
+/// # Returns
+/// - `f64`: Off-diagonal coupling used by the propagator.
+pub(crate) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, prop: &Propagator) -> f64 {
+    match prop {
+        Propagator::Unshifted => hlg - es_s * slg,
+        Propagator::Shifted => hlg - es_s * slg,
+        Propagator::DoublyShifted => hlg - es_s * slg,
+        Propagator::DifferenceDoublyShiftedU1 => hlg - 0.5 * (es + es_s) * slg,
+        Propagator::DifferenceDoublyShiftedU2 => hlg - es_s * slg,
+    }
+}
+
+/// Incrementally update the running projected-energy state using the net walker
+/// population changes applied in the current iteration.
+/// # Arguments:
+/// - `d`: Net population changes applied in the current iteration.
+/// - `pe`: Running projected-energy state to update in place.
+/// - `data`: Immutable stochastic propagation data.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// # Returns
+/// - `()`: Updates `pe` in place.
+fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &QMCData<'_>, world: &impl Communicator) {
+    let iref = pe.iref;
+
+    let (dnum_local, dden_local) = d.par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut dnum, mut dden, mut scratch), up| {
+        let gamma = up.det as usize;
+        let dn = up.dn as f64;
+        let (hgr, sgr) = find_hs(data, gamma, iref, &mut scratch);
+        dnum += dn * hgr;
+        dden += dn * sgr;
+        (dnum, dden, scratch)
+    }).map(|(dnum, dden, _)| (dnum, dden)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
+
+    let mut dnum = 0.0;
+    let mut dden = 0.0;
+    world.all_reduce_into(&dnum_local, &mut dnum, SystemOperation::sum());
+    world.all_reduce_into(&dden_local, &mut dden, SystemOperation::sum());
+
+    pe.num += dnum;
+    pe.den += dden;
+}
+
+
+/// Update the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
+/// # Arguments:
+/// - `plocal`: Local portion of `p_{\Gamma}` on this rank.
+/// - `dlocal`: Local determinant population updates.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// # Returns
+/// - `()`: Updates `plocal` in place.
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &QMCData<'_>, run: &QMCRunInfo, world: &impl Communicator) {
+    let dglobal = gather_all_walkers(world, dlocal);
+
+    // \Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
+    plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
+        let gamma = run.start + k;
+        let mut dp = 0.0;
+        for update in &dglobal {
+            let omega = update.det as usize;
+            dp += find_s(data, gamma, omega, scratch) * update.dn as f64;
+        }
+        *pgamma += dp;
+    });
+}
+
+
+
+
+
+/// Perform spawning and death/cloning steps over the currently occupied determinants.
+/// # Arguments:
+/// - `it`: Current iteration number.
+/// - `mc`: Contains the current Monte Carlo state.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
+/// - `scratchsize`: Maximum sizes required for per-thread Wick scratch space.
+/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `timings`: Accumulated stochastic propagation timings.
+/// # Returns
+/// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
+fn propagate_iteration(it: usize, mc: &MCState, data: &QMCData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, 
+                       shifts: Shifts, timings: &mut QMCTimings) -> PropagationResult {
+
+    let initialise = || -> ThreadPropagation {
+        let tid = rayon::current_thread_index().unwrap_or(0) as u64;
+        ThreadPropagation{
+            local: Vec::new(),
+            remote: Vec::new(),
+            samples: Vec::new(),
+            rng: SmallRng::seed_from_u64(run.rank_seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15))),
+            scratch: WickScratchSpin::with_sizes(scratchsize.maxsame, scratchsize.maxla, scratchsize.maxlb),
+        }
+    };
+
+    let propagate = |mut acc: ThreadPropagation, &gamma: &usize| -> ThreadPropagation {
+        let ngamma = mc.walkers.get(gamma);
+        if ngamma == 0 {
+            return acc;
+        }
+
+        acc.death_cloning(gamma, ngamma, shifts, data);
+        acc.spawning(gamma, ngamma, shifts, data, run);
+        acc
+    };
+
+    let merge = |mut a: ThreadPropagation, mut b: ThreadPropagation| -> ThreadPropagation {
+        a.local.append(&mut b.local);
+        a.remote.append(&mut b.remote);
+        a.samples.append(&mut b.samples);
+        a
+    };
+
+    let t0 = Instant::now();
+    let acc = mc.walkers.occ().par_iter().fold(initialise, propagate).reduce(
+        || ThreadPropagation {
+            local: Vec::new(),
+            remote: Vec::new(),
+            samples: Vec::new(),
+            rng: SmallRng::seed_from_u64(0),
+            scratch: WickScratchSpin::new(),
+        },
+        merge,
+    );
+    timings.spawn_death_collect += t0.elapsed().as_secs_f64();
+
+    PropagationResult {
+        local: acc.local,
+        remote: acc.remote,
+        samples: acc.samples,
+    }
+}
+
+/// Accumulate thread-local updates into the global delta vector and exchange any remote
+/// updates across MPI ranks.
+/// # Arguments:
+/// - `mc`: Contains the current Monte Carlo state.
+/// - `send`: Per-rank MPI send buffers.
+/// - `prop`: Population updates generated in the spawning and death/cloning step.
+/// - `input`: User specified input options.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `nranks`: Total number of MPI ranks.
+/// - `timings`: Accumulated stochastic propagation timings.
+/// # Returns
+/// - `i32`: Global indicator for whether any population changes occurred on any rank.
+fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, input: &Input, world: &impl Communicator,
+                      nranks: usize, timings: &mut QMCTimings) -> i32 {
+    let t0 = Instant::now();
+
+    if nranks > 1 {
+        for buf in send.iter_mut() {
+            buf.clear();
+        }
+    }
+
+    for (det, dn) in prop.local {
+        add_delta(mc, det, dn);
+    }
+
+    if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {
+        for p in prop.samples {
+            hist.add(p);
+        }
+    }
+
+    if nranks > 1 {
+        for up in prop.remote {
+            let dest = owner(up.det as usize, nranks);
+            send[dest].push(up);
+        }
+    }
+
+    timings.acc_pack += t0.elapsed().as_secs_f64();
+
+    if nranks > 1 {
+        let t0 = Instant::now();
+        let received = communicate_spawn_updates(world, send);
+        timings.mpi_exchange_updates += t0.elapsed().as_secs_f64();
+
+        let t0 = Instant::now();
+        for update in received {
+            add_delta(mc, update.det as usize, update.dn);
+        }
+        timings.unpack_acc_recieved += t0.elapsed().as_secs_f64();
+    }
+
+    let changed = (!mc.changed.is_empty()) as i32;
+    let mut changedglobal = 0;
+    world.all_reduce_into(&changed, &mut changedglobal, SystemOperation::max());
+    changedglobal
+}
+
+/// Compute the current non-overlap transformed and overlap-transformed walker populations.
+/// # Arguments:
+/// - `mc`: Contains the current Monte Carlo state.
+/// - `isref`: Boolean mask specifying which determinants are reference determinants.
+/// - `run`: Rank-local run metadata.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `timings`: Accumulated stochastic propagation timings.
+/// # Returns
+/// - `PopulationStats`: Current total and reference populations in both representations.
+fn compute_populations(mc: &MCState, isref: &[bool], run: &QMCRunInfo, world: &impl Communicator, timings: &mut QMCTimings) -> PopulationStats {
+    let t0 = Instant::now();
+
+    let nwclocal = mc.walkers.norm();
+    let mut nwc = 0i64;
+    world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
+
+    let nrefc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
+    let mut nrefc = 0i64;
+    world.all_reduce_into(&nrefc_local, &mut nrefc, SystemOperation::sum());
+
+    let nwsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
+    let mut nwsc = 0.0;
+    world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
+
+    let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
+    let mut nrefsc = 0.0;
+    world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
+
+    timings.calc_populations += t0.elapsed().as_secs_f64();
+
+    PopulationStats {nwc, nrefc, nwsc, nrefsc}
+}
+
+/// Cache the latest population statistics inside the propagation state for later
+/// printing and possible early exiting.
+/// # Arguments:
+/// - `state`: Propagation state containing QMC stats.
+/// - `stats`: Population statistics computed for the current iteration.
+/// # Returns
+/// - `()`: Updates cached population values in `state` in place.
+fn cache_population_stats(state: &mut PropagationState, stats: &PopulationStats) {
+    state.cur_pop.nwc = stats.nwc;
+    state.cur_pop.nrefc = stats.nrefc;
+    state.cur_pop.nwsc = stats.nwsc;
+    state.cur_pop.nrefsc = stats.nrefsc;
+}
+
+/// Update the shift energies according to the current walker populations and shift.
+/// # Arguments:
+/// - `it`: Current iteration number.
+/// - `stats`: Population statistics computed for the current iteration.
+/// - `state`: Propagation state containing QMC stats.
+/// - `es`: Non-overlap transformed shift energy.
+/// - `input`: User specified input options.
+/// # Returns
+/// - `()`: Updates the shift energies and associated state variables in place.
+fn update_shifts(it: usize, stats: &PopulationStats, state: &mut PropagationState, es: &mut f64, input: &Input) {
+    let qmc = input.qmc.as_ref().unwrap();
+
+    if !state.reached_c && stats.nwc > qmc.target_population {
+        state.reached_c = true;
+        state.prev_pop.nwc = stats.nwc;
+    }
+
+    if !state.reached_sc && stats.nwsc > qmc.target_population as f64 {
+        state.reached_sc = true;
+        state.prev_pop.nwsc = stats.nwsc;
+    }
+
+    if state.reached_c && (it + 1).is_multiple_of(qmc.shift_update_freq) {
+        *es -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (stats.nwc as f64 / state.prev_pop.nwc as f64).ln();
+        state.prev_pop.nwc = stats.nwc;
+    }
+
+    if state.reached_sc && (it + 1).is_multiple_of(qmc.shift_update_freq) {
+        state.es_s -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (stats.nwsc / state.prev_pop.nwsc).ln();
+        state.prev_pop.nwsc = stats.nwsc;
+    }
+}
+
+/// Propagate according to the stochastic update equations for `max_steps` iterations.
+/// This routine initialises the NOCI-QMC state, performs the parallel spawning,
+/// death/cloning, annihilation, population, shift, and projected-energy updates, and
+/// optionally writes a restart file if a `STOP` file is detected.
+/// # Arguments:
+/// - `data`: Immutable stochastic propagation data.
+/// - `c0`: Initial determinant coefficient vector to be translated into walker populations.
+/// - `es`: Non-overlap transformed shift energy.
+/// - `ref_indices`: Indices of the reference determinants in the full basis.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// # Returns
+/// - `(f64, Option<ExcitationHist>, QMCTimings)`: Final projected energy estimate,
+///   optional excitation histogram, and timing breakdown for the stochastic propagation.
+pub fn qmc_step(data: &QMCData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>, QMCTimings) {
+    let qmc = data.input.qmc.as_ref().unwrap();
+
+    // Set up data for stochastic run.
+    let irank = world.rank() as usize;
+    let nranks = world.size() as usize;
+    let ndets = data.basis.len();
+    let start = (ndets * irank) / nranks;
+    let end = (ndets * (irank + 1)) / nranks;
+    // Determine which of the determinant indices are reference states.
+    let mut isref = vec![false; ndets];
+    for &i in ref_indices {
+        isref[i] = true;
+    }
+
+    let base_seed = qmc.seed.unwrap_or_else(rand::random);
+    let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
+
+    let run = QMCRunInfo {irank, nranks, ndets, start, end, iref: 0, base_seed, rank_seed};
+
+    let scratchsize = {
+        let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
+        ScratchSize {maxsame, maxla, maxlb}
+    };
+
+    let mut timings = QMCTimings::default();
+    let mut scratch = WickScratchSpin::new();
+
+    let t0 = Instant::now();
+    let mut state = initialise_qmc_state(c0, es, data, &run, &isref, world, &mut scratch);
+    timings.initialise_walkers += t0.elapsed().as_secs_f64();
+
+    println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0));
+    type ThreadState = (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>, SmallRng, WickScratchSpin);
+    println!("Size of per thread state (MiB): {}", std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0));
+
+    let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
+
+    print_header(irank);
+    print_initial_row(irank, &state, data.basis[0].e);
+
+    for it in state.start_iter..data.input.prop_ref().max_steps {
+        let shifts = Shifts {es: *es, es_s: state.es_s};
+        let prop = propagate_iteration(it, &state.mc, data, &run, &scratchsize, shifts, &mut timings);
+
+        let changedglobal = accumulate_updates(&mut state.mc, &mut send, prop, data.input, world, nranks, &mut timings);
+        if changedglobal == 0 {
+            print_cached_row(irank, it + 1, &state, data.basis[0].e, *es);
+            continue;
+        }
+        
+        let t0 = Instant::now();
+        let d = apply_delta(&mut state.mc);
+        timings.apply_delta += t0.elapsed().as_secs_f64();
+
+        let t0 = Instant::now();
+        update_p(&mut state.mc.pg, &d, data, &run, world);
+        timings.update_p += t0.elapsed().as_secs_f64();
+
+        let stats = compute_populations(&state.mc, &isref, &run, world, &mut timings);
+        cache_population_stats(&mut state, &stats);
+        update_shifts(it, &stats, &mut state, es, data.input);
+        
+        let t0 = Instant::now();
+        update_projected_energy(&d, &mut state.pe, data, world);
+        state.eprojcur = state.pe.num / state.pe.den;
+        timings.eproj += t0.elapsed().as_secs_f64();
+        
+        let stopshifts = Shifts {es: *es, es_s: state.es_s};
+        if let Some(ret) = check_stop(it, &mut state, stopshifts, &run, world, &timings) {
+            return ret;
+        }
+
+        print_row(irank, it + 1, &state, &stats, data.basis[0].e, *es);
+    }
+
+    (state.eprojcur, state.mc.excitation_hist, timings)
+}

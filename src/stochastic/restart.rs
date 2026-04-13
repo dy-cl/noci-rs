@@ -6,23 +6,23 @@ use hdf5::File;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use crate::stochastic::{ExcitationHist, Walkers};
+use super::state::{ExcitationHist, Walkers};
 
-pub struct RestartState {
-    pub iter: usize,
-    pub es: f64,
-    pub es_s: f64,
-    pub nwprevc: i64,
-    pub nrefprevc: i64,
-    pub nwprevsc: f64,
-    pub nrefprevsc: f64,
-    pub walkers: Walkers,
-    pub pg: Vec<f64>,
-    pub excitation_hist: Option<ExcitationHist>,
-    pub base_seed: Option<u64>,
+pub(crate) struct RestartState {
+    pub(crate) iter: usize,
+    pub(crate) es: f64,
+    pub(crate) es_s: f64,
+    pub(crate) nwprevc: i64,
+    pub(crate) nrefprevc: i64,
+    pub(crate) nwprevsc: f64,
+    pub(crate) nrefprevsc: f64,
+    pub(crate) walkers: Walkers,
+    pub(crate) pg: Vec<f64>,
+    pub(crate) excitation_hist: Option<ExcitationHist>,
+    pub(crate) base_seed: Option<u64>,
 }
 
-pub fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, start: usize, end: usize, ndets: usize) -> hdf5::Result<()> {
+pub(crate) fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, start: usize, end: usize, ndets: usize) -> hdf5::Result<()> {
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
 
@@ -84,7 +84,7 @@ pub fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &Restart
     Ok(())
 }
 
-pub fn read_restart_hdf5(path: &str, world: &impl Communicator, ndets: usize) -> hdf5::Result<RestartState> {
+pub(crate) fn read_restart_hdf5(path: &str, world: &impl Communicator, ndets: usize) -> hdf5::Result<RestartState> {
     let irank = world.rank() as usize;
     let file = File::open(path)?;
 

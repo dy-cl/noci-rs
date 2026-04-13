@@ -14,3 +14,5 @@ pub use hs::calculate_hs_pair;
 pub use wicks::{build_wicks_shared, update_wicks_fock};
 pub use matrix::{build_noci_s, build_noci_fock, build_noci_hs, calculate_noci_energy};
 pub use naive::noci_density;
+
+pub(crate) use naive::occ_coeffs;
