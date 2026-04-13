@@ -1,4 +1,4 @@
-// restart.rs
+// stochastic/restart.rs
 use std::fs;
 use std::path::Path;
 
@@ -6,23 +6,45 @@ use hdf5::File;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use crate::stochastic::{ExcitationHist, Walkers};
+use super::state::{ExcitationHist, Walkers};
 
-pub struct RestartState {
-    pub iter: usize,
-    pub es: f64,
-    pub es_s: f64,
-    pub nwprevc: i64,
-    pub nrefprevc: i64,
-    pub nwprevsc: f64,
-    pub nrefprevsc: f64,
-    pub walkers: Walkers,
-    pub pg: Vec<f64>,
-    pub excitation_hist: Option<ExcitationHist>,
-    pub base_seed: Option<u64>,
+/// Storage for all data required to resume a stochastic run.
+pub(in crate::stochastic) struct RestartState {
+    /// Iteration at which the restart file was written.
+    pub(in crate::stochastic) iter: usize,
+    /// Current non-overlap-transformed shift.
+    pub(in crate::stochastic) es: f64,
+    /// Current overlap-transformed shift.
+    pub(in crate::stochastic) es_s: f64,
+    /// Raw walker population stored at the previous shift update.
+    pub(in crate::stochastic) nwprevc: i64,
+    /// Raw reference walker population stored at the previous shift update.
+    pub(in crate::stochastic) nrefprevc: i64,
+    /// Overlap-transformed walker population stored at the previous shift update.
+    pub(in crate::stochastic) nwprevsc: f64,
+    /// Overlap-transformed reference walker population stored at the previous shift update.
+    pub(in crate::stochastic) nrefprevsc: f64,
+    /// Walker distribution at the moment the restart file was written.
+    pub(in crate::stochastic) walkers: Walkers,
+    /// Local portion of the overlap-transformed population vector p.
+    pub(in crate::stochastic) pg: Vec<f64>,
+    /// Optional excitation histogram accumulated so far.
+    pub(in crate::stochastic) excitation_hist: Option<ExcitationHist>,
+    /// Optional base RNG seed used to initialise the stochastic run.
+    pub(in crate::stochastic) base_seed: Option<u64>,
 }
 
-pub fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, start: usize, end: usize, ndets: usize) -> hdf5::Result<()> {
+/// Write a restart file containing the current stochastic propagation state.
+/// # Arguments:
+/// - `path`: Path of the HDF5 restart file to create or overwrite.
+/// - `world`: MPI communicator object.
+/// - `state`: Restart state to be written to disk.
+/// - `start`: First determinant index owned by the current rank.
+/// - `end`: One-past-last determinant index owned by the current rank.
+/// - `ndets`: Total number of determinants in the stochastic basis.
+/// # Returns
+/// - `hdf5::Result<()>`: `Ok(())` if the restart file was written successfully.
+pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, start: usize, end: usize, ndets: usize) -> hdf5::Result<()> {
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
 
@@ -84,7 +106,14 @@ pub fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &Restart
     Ok(())
 }
 
-pub fn read_restart_hdf5(path: &str, world: &impl Communicator, ndets: usize) -> hdf5::Result<RestartState> {
+/// Read a restart file and reconstruct the rank-local stochastic propagation state.
+/// # Arguments:
+/// - `path`: Path to the HDF5 restart file.
+/// - `world`: MPI communicator object.
+/// - `ndets`: Total number of determinants in the stochastic basis.
+/// # Returns
+/// - `hdf5::Result<RestartState>`: Restart state reconstructed for the current rank.
+pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communicator, ndets: usize) -> hdf5::Result<RestartState> {
     let irank = world.rank() as usize;
     let file = File::open(path)?;
 

@@ -6,7 +6,7 @@ use ndarray::{Array1, Array2, Axis, concatenate};
 
 use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared};
-use crate::noci::{MOCache, FockMOCache};
+use crate::noci::{MOCache, FockMOCache, NOCIData, FockData};
 
 use crate::basis::generate_excited_basis;
 use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, noci_density, build_fock_mo_cache, update_wicks_fock};
@@ -72,9 +72,12 @@ impl CandidatePool {
                 s_ai: Array2::zeros((0, selected_space.len())),
             };
         }
+        
+        let wview = wicks.as_ref().map(|ws| ws.view());
+        let data = NOCIData::new(ao, &candidates, input, tol, wview);
 
-        let (s_ab, _) = build_noci_s(ao, input, &candidates, &candidates, tol, wicks.as_ref().map(|ws| ws.view()), true);
-        let (s_ai, _) = build_noci_s(ao, input, &candidates, selected_space, tol, wicks.as_ref().map(|ws| ws.view()), false);
+        let (s_ab, _) = build_noci_s(&data, &candidates, &candidates, true);
+        let (s_ai, _) = build_noci_s(&data, &candidates, selected_space, false);
 
         Self {candidates, s_ab, s_ai}
     }
@@ -132,10 +135,13 @@ impl CandidatePool {
         if newly_selected.is_empty() {return;}
         // Remove new selections from the candidate pool.
         self.remove_selected(newly_selected);
+
+        let wview = wicks.as_ref().map(|ws| ws.view());
         
         // Find candidate-newlyselected overlap and append to existing overlap. 
         if !self.candidates.is_empty() {
-            let (s_aj, _) = build_noci_s(ao, input, &self.candidates, newly_selected, tol, wicks.as_ref().map(|ws| ws.view()), false);
+            let data_a = NOCIData::new(ao, &self.candidates, input, tol, wview);
+            let (s_aj, _) = build_noci_s(&data_a, &self.candidates, newly_selected, false);
             self.s_ai = concatenate(Axis(1), &[self.s_ai.view(), s_aj.view()]).unwrap();
         }
         
@@ -144,17 +150,21 @@ impl CandidatePool {
         let existing: HashSet<&str> = selected_space.iter().chain(self.candidates.iter()).map(|st| st.label.as_str()).collect();
         new_candidates.retain(|st| !existing.contains(st.label.as_str()));
         if new_candidates.is_empty() {return;}
+
+        let data_b = NOCIData::new(ao, &new_candidates, input, tol, wview);
         
         // Generate candidate-candidate overlap for new candidates only.
-        let (s_bb, _) = build_noci_s(ao, input, &new_candidates, &new_candidates, tol, wicks.as_ref().map(|ws| ws.view()), true);
+        let (s_bb, _) = build_noci_s(&data_b, &new_candidates, &new_candidates, true);  
+
         // Get candidate-candidate overlap between new candidates and old candidate pool.
         let s_ba = if self.candidates.is_empty() {
             Array2::<f64>::zeros((new_candidates.len(), 0))
         } else {
-            build_noci_s(ao, input, &new_candidates, &self.candidates, tol, wicks.as_ref().map(|ws| ws.view()), false).0
+            build_noci_s(&data_b, &new_candidates, &self.candidates, false).0
         };
+
         // Candidate-current overlap between new candidates and current selected space.
-        let (s_bi, _) = build_noci_s(ao, input, &new_candidates, selected_space, tol, wicks.as_ref().map(|ws| ws.view()), false);
+        let (s_bi, _) = build_noci_s(&data_b, &new_candidates, selected_space, false);
     
         // Assemble the full new candidate-candidate overlap matrix.
         if self.candidates.is_empty() {
@@ -331,14 +341,17 @@ fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresRe
 ///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
 fn solve_current_space(ao: &AoData, current_space: &[SCFState], input: &Input, 
                        wicks: Option<&WicksShared>, mocache: &[MOCache], tol: f64)  -> (Array2<f64>, Array2<f64>, f64, Array1<f64>)  {
-        // Get Hamiltonian and overlap matrix elements for the current space.
-        let (hcurrent, scurrent, _) = build_noci_hs(ao, input, current_space, current_space, tol, mocache, wicks.as_ref().map(|ws| ws.view()), true);
-        // Solve current space GEVP.
-        let (evals, c) = general_evp_real(&hcurrent, &scurrent, true, tol);
-        // Extract lowest eigenvalue and eigenvector.
-        let ecurrent = evals[0];
-        let coeffs = c.column(0).to_owned();
-        (hcurrent, scurrent, ecurrent, coeffs)
+    let wview = wicks.as_ref().map(|ws| ws.view());
+    let data = NOCIData::new(ao, current_space, input, tol, wview).withmocache(mocache);
+
+    // Get Hamiltonian and overlap matrix elements for the current space.
+    let (hcurrent, scurrent, _) = build_noci_hs(&data, current_space, current_space, true);
+    // Solve current space GEVP.
+    let (evals, c) = general_evp_real(&hcurrent, &scurrent, true, tol);
+    // Extract lowest eigenvalue and eigenvector.
+    let ecurrent = evals[0];
+    let coeffs = c.column(0).to_owned();
+    (hcurrent, scurrent, ecurrent, coeffs)
 }
 
 /// Project the current pool of candidates into complement of current selected space. Which is:
@@ -378,13 +391,17 @@ fn project_candidate_space(pool: &CandidatePool, s_ij_inv: &Array2<f64>) -> Proj
 ///   elements.
 fn build_focks(ao: &AoData, selected_space: &[SCFState], projected_space: &ProjectedCandidateSpaceElems, fa: &Array2<f64>, 
                fb: &Array2<f64>, wicks: Option<&WicksShared>, fock_mocache: &[FockMOCache], input: &Input, tol: f64) -> FockMatrixElems {
+    let wview = wicks.as_ref().map(|ws| ws.view());
+    let data = NOCIData::new(ao, selected_space, input, tol, wview);
+    let fock = FockData::new(fock_mocache, fa, fb);
+
     // Current-current Fock.
-    let (f_ii, _) = build_noci_fock(ao, selected_space, selected_space, fa, fb, fock_mocache, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
+    let (f_ii, _) = build_noci_fock(&data, &fock, selected_space, selected_space, true);
     // Candidate-current Fock.
-    let (f_ai, _) = build_noci_fock(ao, &projected_space.candidates, selected_space, fa, fb, fock_mocache, wicks.as_ref().map(|ws| ws.view()), tol, false, input);
+    let (f_ai, _) = build_noci_fock(&data, &fock, &projected_space.candidates, selected_space, false);
     let f_ia = f_ai.t().to_owned();
     // Candidate-candidate Fock.
-    let (f_ab, _) = build_noci_fock(ao, &projected_space.candidates, &projected_space.candidates, fa, fb, fock_mocache, wicks.as_ref().map(|ws| ws.view()), tol, true, input);
+    let (f_ab, _) = build_noci_fock(&data, &fock, &projected_space.candidates, &projected_space.candidates, true);
     FockMatrixElems {f_ii, f_ai, f_ia, f_ab}
 }
 
@@ -544,8 +561,9 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         
         // Build candidate-current Hamiltonian only for surviving candidates.
         let t0 = Instant::now();
-        let (h_ai, _, _) = build_noci_hs(ao, input, &projected_candidate_space.candidates, &selected_space, 
-                                         tol, mocache, wicks.as_ref().map(|ws| ws.view()), false);
+        let wview = wicks.as_ref().map(|ws| ws.view());
+        let data_proj = NOCIData::new(ao, &projected_candidate_space.candidates, input, tol, wview).withmocache(mocache);
+        let (h_ai, _, _) = build_noci_hs(&data_proj, &projected_candidate_space.candidates, &selected_space, false);
         timings.candidate_h_ai += t0.elapsed();
 
         // Get multireference NOCI density and form the generalised Fock matrix.

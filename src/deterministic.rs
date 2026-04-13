@@ -7,23 +7,35 @@ use crate::input::{Input, Propagator};
 use crate::maths::parallel_matvec_real;
 
 pub struct ProjPropagator {
+    /// Propagator block coupling the relevant subspace to itself.
     pub urr: Array2<f64>,
+    /// Propagator block coupling the null subspace to itself.
     pub unn: Array2<f64>,
+    /// Propagator block coupling the relevant subspace into the null subspace.
     pub unr: Array2<f64>,
+    /// Propagator block coupling the null subspace into the relevant subspace.
     pub urn: Array2<f64>,
 }
 
 pub struct Projectors {
+    /// Eigenvectors spanning the relevant subspace of the overlap matrix.
     ur: Array2<f64>,
+    /// Transpose of the relevant-subspace eigenvector matrix.
     ur_dag: Array2<f64>,
+    /// Eigenvectors spanning the null subspace of the overlap matrix.
     un: Array2<f64>,
+    /// Transpose of the null-subspace eigenvector matrix.
     un_dag: Array2<f64>,
 }
 
 pub struct Coefficients {
-    pub iter: usize, 
+    /// Iteration number at which these coefficients were recorded.
+    pub iter: usize,
+    /// Full coefficient vector in the complete NOCI-QMC basis.
     pub c_full: Array1<f64>,
+    /// Coefficient vector projected into the relevant subspace.
     pub c_relevant: Array1<f64>,
+    /// Coefficient vector projected into the null subspace.
     pub c_null: Array1<f64>,
 }
 

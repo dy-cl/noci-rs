@@ -167,7 +167,7 @@ pub fn owner(det: usize, nranks: usize) -> usize {
 /// - `nranks`: Total number of threads.
 /// # Returns
 /// - `Walkers`: Walker population restricted to determinants owned by the current rank.
-pub fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
+pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
     let occ = w.occ().to_vec();
     for i in occ {
         if owner(i, nranks) != irank {
@@ -186,7 +186,7 @@ pub fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
 /// - `send`: Per destination send buffers.
 /// # Returns
 /// - `Vec<PopulationUpdate>`: Contiguous list of population updates received by this rank.
-pub fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<PopulationUpdate>]) -> Vec<PopulationUpdate> {
+pub(crate) fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<PopulationUpdate>]) -> Vec<PopulationUpdate> {
     let nranks = world.size() as usize;
 
     // Assemble message to be communicated. 
@@ -230,7 +230,7 @@ pub fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<Populati
 /// - `local`: Determinant populations and indices on this rank.
 /// # Returns
 /// - `Vec<PopulationUpdate>`: Gathered determinant populations from all ranks.
-pub fn gather_all_walkers(world: &impl Communicator, local: &[PopulationUpdate]) -> Vec<PopulationUpdate> {
+pub(crate) fn gather_all_walkers(world: &impl Communicator, local: &[PopulationUpdate]) -> Vec<PopulationUpdate> {
     let nranks = world.size() as usize;
     
     // Calculate how many entries this rank will send, and recieve the count of how many entries
