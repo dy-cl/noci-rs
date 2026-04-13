@@ -5,6 +5,8 @@ use serial_test::serial;
 use serde::Deserialize;
 use ndarray::Array1;
 
+use noci_rs::noci::NOCIData;
+
 use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
 use noci_rs::deterministic::{projected_energy, propagate};
 use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_mo_cache};
@@ -41,7 +43,8 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let basis = generate_excited_basis(&noci_reference_basis, &input, include_refs);
 
     let symmetric = true;
-    let (h, s, _d_hs) = build_noci_hs(&ao, &input, &basis, &basis, 1e-12, &mocache, None, symmetric);
+    let data = NOCIData::new(&ao, &basis, &input, 1e-12, None).withmocache(&mocache);
+    let (h, s, _d_hs) = build_noci_hs(&data, &basis, &basis, symmetric);
 
     let n = basis.len();
     let mut c0qmc = Array1::<f64>::zeros(n);
