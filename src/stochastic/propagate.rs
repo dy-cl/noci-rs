@@ -314,9 +314,13 @@ fn compute_populations(mc: &MCState, isref: &[bool], run: &QMCRunInfo, world: &i
     let mut nrefsc = 0.0;
     world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
 
+    let noccdetslocal = mc.walkers.occ().len() as i64;
+    let mut noccdets = 0i64;
+    world.all_reduce_into(&noccdetslocal, &mut noccdets, SystemOperation::sum());
+
     timings.calc_populations += t0.elapsed().as_secs_f64();
 
-    PopulationStats {nwc, nrefc, nwsc, nrefsc}
+    PopulationStats {nwc, nrefc, nwsc, nrefsc, noccdets}
 }
 
 /// Cache the latest population statistics inside the propagation state for later
@@ -331,6 +335,7 @@ fn cache_population_stats(state: &mut PropagationState, stats: &PopulationStats)
     state.cur_pop.nrefc = stats.nrefc;
     state.cur_pop.nwsc = stats.nwsc;
     state.cur_pop.nrefsc = stats.nrefsc;
+    state.cur_pop.noccdets = stats.noccdets;
 }
 
 /// Update the shift energies according to the current walker populations and shift.

@@ -20,15 +20,16 @@ def parse() -> argparse.Namespace:
 def extract(path) -> pd.DataFrame:
     floatre = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
     pattern = (
-        r"^\s*(\d+)\s+"     # iter
-        + floatre + r"\s+"  # E (eproj)
+        r"^\s*(\d+)\s+"     # iter (int)
+        + floatre + r"\s+"  # E
         + floatre + r"\s+"  # Ecorr
         + floatre + r"\s+"  # Es
         + floatre + r"\s+"  # EsS
-        + floatre + r"\s+"  # Nw (||C||)
-        + floatre + r"\s+"  # Nref (||C||)
+        + floatre + r"\s+"  # Nw (||C||) 
+        + floatre + r"\s+"  # Nref (||C||) 
         + floatre + r"\s+"  # Nw (||SC||)
-        + floatre + r"\s*$" # Nref (||SC||)
+        + floatre + r"\s*" # Nref (||SC||)
+        + r"(\d+)\s*$"      # Nocc
     )
 
     rows = []
@@ -46,9 +47,11 @@ def extract(path) -> pd.DataFrame:
             nrefc = float(m.group(7))
             nwsc = float(m.group(8))
             nrefsc = float(m.group(9))
-            rows.append((it, eproj, ecorr, es, es_s, nwc, nrefc, nwsc, nrefsc))
+            nocc = float(m.group(10))
+            rows.append((it, eproj, ecorr, es, es_s, nwc, nrefc, nwsc, nrefsc, nocc))
 
-    df = pd.DataFrame(rows, columns = ["iter", "eproj", "ecorr", "es", "esS", "nwc", "nrefc", "nwsc", "nrefsc"])
+    df = pd.DataFrame(rows, columns = ["iter", "eproj", "ecorr", "es", "es_s", "nwc", "nrefc", "nwsc", "nrefsc", "nocc"])
+
     return df
 
 def blocking(xi) -> pd.DataFrame:
@@ -126,7 +129,7 @@ def main() -> None:
     df = extract(args.path)
 
     df = df[df["iter"] >= args.start]
-    cols = ["eproj", "ecorr", "es", "esS", "nwc", "nwsc", "nrefsc"]
+    cols = ["eproj", "ecorr", "es", "es_s", "nwc", "nwsc", "nrefsc", "nocc"]
 
     for col in cols:
         print(" ")

@@ -26,6 +26,8 @@ pub(in crate::stochastic) struct RestartState {
     pub(in crate::stochastic) nrefprevsc: f64,
     /// Walker distribution at the moment the restart file was written.
     pub(in crate::stochastic) walkers: Walkers,
+    // Number of occupied determinants at the moment the restart file was written.
+    pub(in crate::stochastic) noccdets: i64,
     /// Local portion of the overlap-transformed population vector p.
     pub(in crate::stochastic) pg: Vec<f64>,
     /// Optional excitation histogram accumulated so far.
@@ -66,6 +68,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communi
         meta.new_dataset_builder().with_data(&[state.nrefprevc]).create("nrefprevc")?;
         meta.new_dataset_builder().with_data(&[state.nwprevsc]).create("nwprevsc")?;
         meta.new_dataset_builder().with_data(&[state.nrefprevsc]).create("nrefprevsc")?;
+        meta.new_dataset_builder().with_data(&[state.noccdets]).create("noccdets")?;
         // If there was a user provided RNG seed reuse it.
         if let Some(seed) = state.base_seed {
             meta.new_dataset_builder().with_data(&[seed]).create("base_seed")?;
@@ -125,6 +128,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communic
     let nrefprevc = meta.dataset("nrefprevc")?.read_1d::<i64>()?[0];
     let nwprevsc = meta.dataset("nwprevsc")?.read_1d::<f64>()?[0];
     let nrefprevsc = meta.dataset("nrefprevsc")?.read_1d::<f64>()?[0];
+    let noccdets = meta.dataset("noccdets").map(|d| d.read_1d::<i64>().unwrap()[0]).unwrap_or(0);
     let base_seed = meta.dataset("base_seed").ok().map(|d| d.read_1d::<u64>().unwrap()[0]);
 
     let grp = file.group(&format!("rank_{irank:02}"))?;
@@ -151,5 +155,5 @@ pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communic
         None
     };
 
-    Ok(RestartState {iter, es, es_s, nwprevc, nrefprevc, nwprevsc, nrefprevsc, walkers, pg, excitation_hist, base_seed})
+    Ok(RestartState {iter, es, es_s, nwprevc, nrefprevc, nwprevsc, nrefprevsc, walkers, noccdets, pg, excitation_hist, base_seed})
 }

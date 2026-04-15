@@ -667,10 +667,6 @@ fn apply_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
 pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bool) -> Vec<SCFState> {
     let mut out = Vec::new();
 
-    let mut orders = input.excit.orders.clone();
-    orders.sort_unstable();
-    orders.dedup();
-
     for r in refs {
         let parent = r.parent;
 
@@ -681,6 +677,16 @@ pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bo
         }
 
         let spin_occ = get_spin_occupation(r);
+
+        let mut orders = if input.excit.all {
+            let max_order = (spin_occ.occ_alpha.len() + spin_occ.occ_beta.len()).min(spin_occ.virt_alpha.len() + spin_occ.virt_beta.len());
+            (1..=max_order).collect::<Vec<_>>()
+        } else {
+            input.excit.orders.clone()
+        };
+
+        orders.sort_unstable();
+        orders.dedup();
 
         for &k in &orders {
             for k_alpha in 0..=k {

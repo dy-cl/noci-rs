@@ -270,7 +270,8 @@ impl Default for StateRecipe {
 }
 
 pub struct ExcitationOptions {
-    pub orders: Vec<usize>, 
+    pub orders: Vec<usize>,
+    pub all: bool,
 }
 
 impl ExcitationOptions {
@@ -280,6 +281,7 @@ impl ExcitationOptions {
     fn default() -> Self {
         Self {
             orders: [1, 2].to_vec(),
+            all: false,
         }
     }
 }
@@ -816,8 +818,43 @@ pub fn load_input(path: &str) -> Input {
     // Excitation table.
     let excit = if let Some(excit_tbl) = excit_tbl {
         let defaults = ExcitationOptions::default();
+
+        let orders: Option<Vec<usize>> = match excit_tbl.get::<_, Value>("orders") {
+            Ok(Value::Nil) => None,
+            Ok(_) => Some(excit_tbl.get("orders").unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            })),
+            Err(msg) => {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
+        };
+
+        let all: bool = match excit_tbl.get::<_, Value>("all") {
+            Ok(Value::Nil) => defaults.all,
+            Ok(_) => excit_tbl.get("all").unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }),
+            Err(msg) => {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
+        };
+
+        if all && orders.is_some() {
+            eprintln!("Cannot specify both excit.orders and excit.all = true");
+            std::process::exit(1);
+        }
+
         ExcitationOptions {
-            orders: excit_tbl.get("orders").unwrap_or(defaults.orders),
+            orders: if all {
+                Vec::new()
+            } else {
+                orders.unwrap_or(defaults.orders)
+            },
+            all,
         }
     } else {
         ExcitationOptions::default()

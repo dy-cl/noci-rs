@@ -214,6 +214,8 @@ pub(in crate::stochastic) struct PopulationStats {
     pub(in crate::stochastic) nwsc: f64,
     /// Overlap-transformed reference walker populations.
     pub(in crate::stochastic) nrefsc: f64,
+    /// Number of determinants currently occupied.
+    pub (in crate::stochastic) noccdets: i64,
 }
 
 impl PopulationStats {
@@ -223,10 +225,11 @@ impl PopulationStats {
     /// - `nrefc`: Total non-overlap transformed reference walker population.
     /// - `nwsc`: Total overlap-transformed walker population.
     /// - `nrefsc`: Total overlap-transformed reference walker population.
+    /// - `noccdets`: Number of currently occupied determinants.
     /// # Returns
     /// - `PopulationStats`: Walker population statistics.
-    pub(in crate::stochastic) fn new(nwc: i64, nrefc: i64, nwsc: f64, nrefsc: f64) -> Self {
-        Self {nwc, nrefc, nwsc, nrefsc}
+    pub(in crate::stochastic) fn new(nwc: i64, nrefc: i64, nwsc: f64, nrefsc: f64, noccdets: i64) -> Self {
+        Self {nwc, nrefc, nwsc, nrefsc, noccdets}
     }
 }
 

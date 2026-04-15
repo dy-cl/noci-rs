@@ -18,8 +18,8 @@ use super::state::{QMCRunInfo, PopulationStats, Shifts};
 pub(in crate::stochastic) fn print_header(irank: usize) {
     if irank == 0 {
         println!("{}", "=".repeat(100));
-        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-                 "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nref (||C||)", "Nw (||SC||)", "Nref(||SC||)");
+        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+                 "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nref (||C||)", "Nw (||SC||)", "Nref (||SC||)", "Nocc");
     }
 }
 
@@ -32,9 +32,9 @@ pub(in crate::stochastic) fn print_header(irank: usize) {
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
 pub(in crate::stochastic) fn print_initial_row(irank: usize, state: &PropagationState, e0: f64) {
     if irank == 0 {
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
                  0, state.eprojcur, state.eprojcur - e0, 0.0, 0.0, state.prev_pop.nwc as f64, state.prev_pop.nrefc as f64, 
-                 state.prev_pop.nwsc, state.prev_pop.nrefsc);
+                 state.prev_pop.nwsc, state.prev_pop.nrefsc, state.prev_pop.noccdets);
     }
 }
 
@@ -53,9 +53,9 @@ pub(in crate::stochastic) fn print_cached_row(irank: usize, iter: usize, state: 
     let es_s_corr = if state.reached_sc {state.es_s - e0} else {0.0};
 
     if irank == 0 {
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
                  iter, state.eprojcur, state.eprojcur - e0, es_corr, es_s_corr, state.cur_pop.nwc as f64, 
-                 state.cur_pop.nrefc as f64, state.cur_pop.nwsc, state.cur_pop.nrefsc);
+                 state.cur_pop.nrefc as f64, state.cur_pop.nwsc, state.cur_pop.nrefsc, state.cur_pop.noccdets);
     }
 }
 
@@ -74,8 +74,9 @@ pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &Propag
     let es_s_corr = if state.reached_sc {state.es_s - e0} else {0.0};
 
     if irank == 0 {
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-                 iter, state.eprojcur, state.eprojcur - e0, es_corr, es_s_corr, stats.nwc as f64, stats.nrefc as f64, stats.nwsc, stats.nrefsc);
+        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+                 iter, state.eprojcur, state.eprojcur - e0, es_corr, es_s_corr, stats.nwc as f64, stats.nrefc as f64, 
+                 stats.nwsc, stats.nrefsc, stats.noccdets);
     }
 }
 
@@ -116,6 +117,7 @@ pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState,
         nwprevsc: state.prev_pop.nwsc,
         nrefprevsc: state.prev_pop.nrefsc,
         walkers: std::mem::replace(&mut state.mc.walkers, Walkers::new(run.ndets)),
+        noccdets: state.prev_pop.noccdets,
         pg: std::mem::take(&mut state.mc.pg),
         excitation_hist: state.mc.excitation_hist.take(),
         base_seed: Some(run.base_seed),

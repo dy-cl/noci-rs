@@ -182,7 +182,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data
         let reached_c = rs.nwprevc >= qmc.target_population;
         let reached_sc = rs.nwprevsc >= qmc.target_population as f64;
         let start_iter = rs.iter + 1;
-        let prev_pop = PopulationStats::new(rs.nwprevc, rs.nrefprevc, rs.nwprevsc, rs.nrefprevsc);
+        let prev_pop = PopulationStats::new(rs.nwprevc, rs.nrefprevc, rs.nwprevsc, rs.nrefprevsc, rs.noccdets);
         PropagationState::restart(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
     } else {
         if run.irank == 0 {
@@ -224,8 +224,13 @@ pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data
         let mut nrefprevc = 0i64;
         let nrefprevc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
         world.all_reduce_into(&nrefprevc_local, &mut nrefprevc, SystemOperation::sum());
+        
+        // Initialise number of occupied determinants.
+        let noccdets_local = mc.walkers.occ().len() as i64;
+        let mut noccdets = 0i64;
+        world.all_reduce_into(&noccdets_local, &mut noccdets, SystemOperation::sum());
 
-        let prev_pop = PopulationStats::new(nwprevc, nrefprevc, nwprevsc, nrefprevsc);
+        let prev_pop = PopulationStats::new(nwprevc, nrefprevc, nwprevsc, nrefprevsc, noccdets);
         PropagationState::fresh(mc, pe, *es, prev_pop)
     }
 }
