@@ -4,7 +4,7 @@ use std::path::Path;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use super::state::{PropagationState, Walkers, ExcitationHist, QMCTimings};
+use super::state::{PropagationState, Walkers, ExcitationHist};
 use super::restart::RestartState;
 
 use super::restart::write_restart_hdf5;
@@ -92,8 +92,7 @@ pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &Propag
 /// # Returns
 /// - `Option<(f64, Option<ExcitationHist>, QMCTimings)>`: Final return values if a
 ///   stop was requested, otherwise `None`.
-pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
-              world: &impl Communicator, timings: &QMCTimings) -> Option<(f64, Option<ExcitationHist>, QMCTimings)> {
+pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, world: &impl Communicator) -> Option<(f64, Option<ExcitationHist>)> {
     if !(it + 1).is_multiple_of(10) {
         return None;
     }
@@ -130,6 +129,6 @@ pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState,
         println!("STOP detected, Wrote RESTART.H5 and exiting");
     }
 
-    Some((state.eprojcur, rs.excitation_hist, timings.clone()))
+    Some((state.eprojcur, rs.excitation_hist))
 }
 

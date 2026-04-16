@@ -22,6 +22,10 @@ itertools = {version = "0.13"}
 [dev-dependencies]
 serial_test = {version = "3"}
 
+[features]
+default = []
+timings = []
+
 [profile.release]
 opt-level = 3
 debug = false

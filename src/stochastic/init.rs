@@ -7,6 +7,8 @@ use rayon::prelude::*;
 use crate::noci::NOCIData;
 use crate::SCFState;
 use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::time_call;
+use crate::timers::stochastic as stochastic_timers;
 use super::state::{MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats};
 
 use crate::mpiutils::{gather_all_walkers, local_walkers};
@@ -26,45 +28,47 @@ use super::restart::read_restart_hdf5;
 /// # Returns
 /// - `Walkers`: Initial walker population.
 pub(in crate::stochastic) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &NOCIData<'_>, iref: usize, scratch: &mut WickScratchSpin) -> Walkers {
-    let mut w = Walkers::new(n);
+    time_call!(stochastic_timers::add_initialise_walkers, {
+        let mut w = Walkers::new(n);
 
-    // Ill-conditioning threshold.
-    let threshold = 1e-6; 
+        // Ill-conditioning threshold.
+        let threshold = 1e-6; 
 
-    // Calculate 1-norm of initial coefficient vector.
-    let norm1: f64 = c0.iter().map(|x| x.abs()).sum::<f64>();
+        // Calculate 1-norm of initial coefficient vector.
+        let norm1: f64 = c0.iter().map(|x| x.abs()).sum::<f64>();
 
-    // Assign initial populations based on c0.
-    for (i, &ci) in c0.iter().enumerate() {
-        let ni = ((ci.abs() / norm1) * (init_pop as f64)).round() as i64;
-        // Decide sign when not zero.
-        if ni != 0 {
-            let sgn = if ci >= 0.0 {1} else {-1};
-            w.add(i, sgn * ni);
+        // Assign initial populations based on c0.
+        for (i, &ci) in c0.iter().enumerate() {
+            let ni = ((ci.abs() / norm1) * (init_pop as f64)).round() as i64;
+            // Decide sign when not zero.
+            if ni != 0 {
+                let sgn = if ci >= 0.0 {1} else {-1};
+                w.add(i, sgn * ni);
+            }
         }
-    }
-    
-    // Calculate projected energy denominator \Sum_{\Gamma} N_{\Gamma} S_{\Gamma, iref}. If this
-    // quantity is very small we have large amounts of overcompleteness and therefore
-    // ill-conditioning in the NOCI-QMC overlap matrix.
-    let mut den: f64 = 0.0; 
-    for &gamma in w.occ() {
-        let ngamma = w.get(gamma);
-        // Calculate matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,\text{Reference}} 
-        let sgr = find_s(data, gamma, iref, scratch);
-        den += (ngamma as f64) * sgr;
-    }
+        
+        // Calculate projected energy denominator \Sum_{\Gamma} N_{\Gamma} S_{\Gamma, iref}. If this
+        // quantity is very small we have large amounts of overcompleteness and therefore
+        // ill-conditioning in the NOCI-QMC overlap matrix.
+        let mut den: f64 = 0.0; 
+        for &gamma in w.occ() {
+            let ngamma = w.get(gamma);
+            // Calculate matrix element H_{\Gamma, \text{Reference}}, S_{\Gamma,\text{Reference}} 
+            let sgr = find_s(data, gamma, iref, scratch);
+            den += (ngamma as f64) * sgr;
+        }
 
-    // If the NOCI-QMC overlap matrix is very ill-conditioned starting with all walkers on the RHF
-    // reference rather than distributed according to c0 can prevent initial blow-ups in the
-    // projected energy.
-    if den.abs() < threshold {
-        println!("NOCI-QMC overlap very ill-conditioned. Starting from reference index 0 (Denominator: {})", den);
-        let mut w0 = Walkers::new(n);
-        w0.add(0, init_pop);
-        return w0;
-    }
-    w
+        // If the NOCI-QMC overlap matrix is very ill-conditioned starting with all walkers on the RHF
+        // reference rather than distributed according to c0 can prevent initial blow-ups in the
+        // projected energy.
+        if den.abs() < threshold {
+            println!("NOCI-QMC overlap very ill-conditioned. Starting from reference index 0 (Denominator: {})", den);
+            let mut w0 = Walkers::new(n);
+            w0.add(0, init_pop);
+            return w0;
+        }
+        w
+    })
 }
 
 /// Initialise the running projected-energy state

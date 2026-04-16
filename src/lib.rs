@@ -13,6 +13,7 @@ pub mod stochastic;
 pub mod snoci;
 pub mod mpiutils;
 pub mod nonorthogonalwicks;
+pub mod timers;
 
 use std::{sync::Arc};
 
