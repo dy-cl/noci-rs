@@ -1,5 +1,4 @@
 // timers/nonorthogonalwicks.rs
-
 use super::{with_totals, Counter};
 
 /// Timing counters for routines in the `nonorthogonalwicks` module.
@@ -7,20 +6,58 @@ use super::{with_totals, Counter};
 pub struct Totals {
     /// Total time spent in `prepare_same`.
     pub prepare_same: Counter,
+    /// Total time spent in `prepare_same_gen`.
+    pub prepare_same_gen: Counter,
+    /// Total time spent in `prepare_same_m0`.
+    pub prepare_same_m0: Counter,
     /// Total time spent in `get_det_adjt_same`.
     pub get_det_adjt_same: Counter,
     /// Total time spent in `get_det_adjt_diff`.
     pub get_det_adjt_diff: Counter,
-    /// Total time spent in `construct_determinant_indices`
+    /// Total time spent in `construct_determinant_indices`.
     pub construct_determinant_indices: Counter,
     /// Total time spent in `lg_overlap`.
     pub lg_overlap: Counter,
     /// Total time spent in `lg_h1`.
     pub lg_h1: Counter,
+    /// Total time spent in `lg_one_body_gen`.
+    pub lg_one_body_gen: Counter,
+    /// Total time spent in `lg_one_body_m0`.
+    pub lg_one_body_m0: Counter,
     /// Total time spent in `lg_h2_same`.
     pub lg_h2_same: Counter,
+    /// Total time spent in `lg_h2_same_gen`.
+    pub lg_h2_same_gen: Counter,
+    /// Total time spent in `lg_h2_same_m0`.
+    pub lg_h2_same_m0: Counter,
     /// Total time spent in `lg_h2_diff`.
     pub lg_h2_diff: Counter,
+    /// Total time spent in `lg_h2_diff_gen`.
+    pub lg_h2_diff_gen: Counter,
+    /// Total time spent in `lg_h2_diff_m0`.
+    pub lg_h2_diff_m0: Counter,
+    /// Total time spent in `prepare_same_m0_l1`.
+    pub prepare_same_m0_l1: Counter,
+    /// Total time spent in `prepare_same_m0_l2`.
+    pub prepare_same_m0_l2: Counter,
+    /// Total time spent in `lg_one_body_m0_gen`.
+    pub lg_one_body_m0_gen: Counter,
+    /// Total time spent in `lg_one_body_m0_l1`.
+    pub lg_one_body_m0_l1: Counter,
+    /// Total time spent in `lg_one_body_m0_l2`.
+    pub lg_one_body_m0_l2: Counter,
+    /// Total time spent in `lg_h2_same_m0_gen`.
+    pub lg_h2_same_m0_gen: Counter,
+    /// Total time spent in `lg_h2_same_m0_l1`.
+    pub lg_h2_same_m0_l1: Counter,
+    /// Total time spent in `lg_h2_same_m0_l2`.
+    pub lg_h2_same_m0_l2: Counter,
+    /// Total time spent in `lg_h2_diff_m0_gen`.
+    pub lg_h2_diff_m0_gen: Counter,
+    /// Total time spent in `lg_h2_diff_m0_11`.
+    pub lg_h2_diff_m0_11: Counter,
+    /// Total time spent in `lg_h2_diff_m0_22`.
+    pub lg_h2_diff_m0_22: Counter,
 }
 
 impl Totals {
@@ -32,13 +69,32 @@ impl Totals {
     #[inline(always)]
     pub fn merge_from(&mut self, other: &Totals) {
         self.prepare_same.merge_from(&other.prepare_same);
+        self.prepare_same_gen.merge_from(&other.prepare_same_gen);
+        self.prepare_same_m0.merge_from(&other.prepare_same_m0);
         self.get_det_adjt_same.merge_from(&other.get_det_adjt_same);
         self.get_det_adjt_diff.merge_from(&other.get_det_adjt_diff);
+        self.construct_determinant_indices.merge_from(&other.construct_determinant_indices);
         self.lg_overlap.merge_from(&other.lg_overlap);
         self.lg_h1.merge_from(&other.lg_h1);
+        self.lg_one_body_gen.merge_from(&other.lg_one_body_gen);
+        self.lg_one_body_m0.merge_from(&other.lg_one_body_m0);
         self.lg_h2_same.merge_from(&other.lg_h2_same);
+        self.lg_h2_same_gen.merge_from(&other.lg_h2_same_gen);
+        self.lg_h2_same_m0.merge_from(&other.lg_h2_same_m0);
         self.lg_h2_diff.merge_from(&other.lg_h2_diff);
-        self.construct_determinant_indices.merge_from(&other.construct_determinant_indices);
+        self.lg_h2_diff_gen.merge_from(&other.lg_h2_diff_gen);
+        self.lg_h2_diff_m0.merge_from(&other.lg_h2_diff_m0);
+        self.prepare_same_m0_l1.merge_from(&other.prepare_same_m0_l1);
+        self.prepare_same_m0_l2.merge_from(&other.prepare_same_m0_l2);
+        self.lg_one_body_m0_gen.merge_from(&other.lg_one_body_m0_gen);
+        self.lg_one_body_m0_l1.merge_from(&other.lg_one_body_m0_l1);
+        self.lg_one_body_m0_l2.merge_from(&other.lg_one_body_m0_l2);
+        self.lg_h2_same_m0_gen.merge_from(&other.lg_h2_same_m0_gen);
+        self.lg_h2_same_m0_l1.merge_from(&other.lg_h2_same_m0_l1);
+        self.lg_h2_same_m0_l2.merge_from(&other.lg_h2_same_m0_l2);
+        self.lg_h2_diff_m0_gen.merge_from(&other.lg_h2_diff_m0_gen);
+        self.lg_h2_diff_m0_11.merge_from(&other.lg_h2_diff_m0_11);
+        self.lg_h2_diff_m0_22.merge_from(&other.lg_h2_diff_m0_22);
     }
 }
 
@@ -50,6 +106,26 @@ impl Totals {
 #[inline(always)]
 pub fn add_prepare_same(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.prepare_same.add_ns(ns));
+}
+
+/// Add one timed call to the `prepare_same_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `prepare_same_gen` counter.
+#[inline(always)]
+pub fn add_prepare_same_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `prepare_same_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `prepare_same_m0` counter.
+#[inline(always)]
+pub fn add_prepare_same_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0.add_ns(ns));
 }
 
 /// Add one timed call to the `get_det_adjt_same` counter.
@@ -102,6 +178,26 @@ pub fn add_lg_h1(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h1.add_ns(ns));
 }
 
+/// Add one timed call to the `lg_one_body_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_one_body_gen` counter.
+#[inline(always)]
+pub fn add_lg_one_body_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_one_body_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_one_body_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_one_body_m0` counter.
+#[inline(always)]
+pub fn add_lg_one_body_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_one_body_m0.add_ns(ns));
+}
+
 /// Add one timed call to the `lg_h2_same` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same`.
@@ -112,6 +208,26 @@ pub fn add_lg_h2_same(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h2_same.add_ns(ns));
 }
 
+/// Add one timed call to the `lg_h2_same_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_gen` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_same_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_m0` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0.add_ns(ns));
+}
+
 /// Add one timed call to the `lg_h2_diff` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff`.
@@ -120,4 +236,134 @@ pub fn add_lg_h2_same(ns: u64) {
 #[inline(always)]
 pub fn add_lg_h2_diff(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h2_diff.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_gen` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0.add_ns(ns));
+}
+
+/// Add one timed call to the `prepare_same_m0_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `prepare_same_m0_l1` counter.
+#[inline(always)]
+pub fn add_prepare_same_m0_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l1.add_ns(ns));
+}
+
+/// Add one timed call to the `prepare_same_m0_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `prepare_same_m0_l2` counter.
+#[inline(always)]
+pub fn add_prepare_same_m0_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l2.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_one_body_m0_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_m0_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_one_body_m0_gen` counter.
+#[inline(always)]
+pub fn add_lg_one_body_m0_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_one_body_m0_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_one_body_m0_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_m0_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_one_body_m0_l1` counter.
+#[inline(always)]
+pub fn add_lg_one_body_m0_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_one_body_m0_l1.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_one_body_m0_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_m0_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_one_body_m0_l2` counter.
+#[inline(always)]
+pub fn add_lg_one_body_m0_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_one_body_m0_l2.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_same_m0_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_m0_gen` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_m0_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_same_m0_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_m0_l1` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_m0_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0_l1.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_same_m0_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_m0_l2` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_m0_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0_l2.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_gen` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0_11` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_11`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_11` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_11(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_11.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0_22` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_22`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_22` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_22(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_22.add_ns(ns));
 }
