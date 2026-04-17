@@ -58,6 +58,12 @@ pub struct Totals {
     pub lg_h2_diff_m0_11: Counter,
     /// Total time spent in `lg_h2_diff_m0_22`.
     pub lg_h2_diff_m0_22: Counter,
+    /// Total time spent in `lg_h2_same_m0_l3`.
+    pub lg_h2_same_m0_l3: Counter,
+    /// Total time spent in `lg_h2_diff_m0_13`.
+    pub lg_h2_diff_m0_13: Counter,
+    /// Total time spent in `lg_h2_diff_m0_31`.
+    pub lg_h2_diff_m0_31: Counter,
 }
 
 impl Totals {
@@ -95,6 +101,9 @@ impl Totals {
         self.lg_h2_diff_m0_gen.merge_from(&other.lg_h2_diff_m0_gen);
         self.lg_h2_diff_m0_11.merge_from(&other.lg_h2_diff_m0_11);
         self.lg_h2_diff_m0_22.merge_from(&other.lg_h2_diff_m0_22);
+        self.lg_h2_same_m0_l3.merge_from(&other.lg_h2_same_m0_l3);
+        self.lg_h2_diff_m0_13.merge_from(&other.lg_h2_diff_m0_13);
+        self.lg_h2_diff_m0_31.merge_from(&other.lg_h2_diff_m0_31);
     }
 }
 
@@ -366,4 +375,34 @@ pub fn add_lg_h2_diff_m0_11(ns: u64) {
 #[inline(always)]
 pub fn add_lg_h2_diff_m0_22(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_22.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_same_m0_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_m0_l3` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_m0_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0_l3.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0_13` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_13`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_13` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_13(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_13.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0_31` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_31`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_31` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_31(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_31.add_ns(ns));
 }

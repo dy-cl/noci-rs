@@ -4,7 +4,7 @@ use crate::maths::adjugate_transpose;
 use crate::time_call;
 use crate::timers::nonorthogonalwicks as wick_timers;
 use super::helpers::{bit, column_replacement_correction, get_det_adjt_same, j_replacement, jslot, minor_adjt};
-use super::super::layout::idx4;
+use super::super::layout::{idx, idx4};
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 
@@ -50,6 +50,7 @@ fn lg_h2_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin,
             0 => w.phase * w.tilde_s_prod * w.v0[0],
             1 => lg_h2_same_m0_l1(w, scratch),
             2 => lg_h2_same_m0_l2(w, scratch),
+            3 => lg_h2_same_m0_l3(w, scratch, tol),
             _ => lg_h2_same_m0_gen(w, l_ex, g_ex, scratch, tol),
         }
     })
@@ -109,13 +110,72 @@ fn lg_h2_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
         let det_c1 = a00 * v1 - v0 * a10;
 
         let jsl = w.j_slice(0);
-        let jterm =
-            jsl[idx4(n, r0, c0, r1, c1)]
-          - jsl[idx4(n, r0, c1, r1, c0)]
-          - jsl[idx4(n, r1, c0, r0, c1)]
-          + jsl[idx4(n, r1, c1, r0, c0)];
+        let jterm = jsl[idx4(n, r0, c0, r1, c1)] - jsl[idx4(n, r0, c1, r1, c0)] - jsl[idx4(n, r1, c0, r0, c1)] + jsl[idx4(n, r1, c1, r0, c0)];
 
         w.phase * w.tilde_s_prod * (w.v0[0] * det - 2.0 * (det_c0 + det_c1) + jterm)
+    })
+}
+
+/// Calculate the specialized `l = 3`, `m = 0` same-spin two-electron Hamiltonian matrix element.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space containing the prepared `l = 3` contraction determinant and indices.
+/// # Returns
+/// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 3`.
+#[inline(always)]
+fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f64 {
+    time_call!(wick_timers::add_lg_h2_same_m0_l3, {
+        let n = w.n();
+        let rows = scratch.rows.as_slice();
+        let cols = scratch.cols.as_slice();
+        let det0 = &scratch.det0.as_slice()[..9];
+
+        if let Some(det) = adjugate_transpose(scratch.adjt_det.as_mut_slice(), scratch.invs.as_mut_slice(), scratch.lu.as_mut_slice(), det0, 3, tol) {
+            let cof = scratch.adjt_det.as_slice();
+            let vsl = w.v_t_slice(0, 0, 0);
+
+            let r0 = rows[0];
+            let r1 = rows[1];
+            let r2 = rows[2];
+            let c0 = cols[0];
+            let c1 = cols[1];
+            let c2 = cols[2];
+
+            let vterm =
+                cof[idx(3, 0, 0)] * vsl[c0 * n + r0] + cof[idx(3, 1, 0)] * vsl[c0 * n + r1] + cof[idx(3, 2, 0)] * vsl[c0 * n + r2]
+              + cof[idx(3, 0, 1)] * vsl[c1 * n + r0] + cof[idx(3, 1, 1)] * vsl[c1 * n + r1] + cof[idx(3, 2, 1)] * vsl[c1 * n + r2]
+              + cof[idx(3, 0, 2)] * vsl[c2 * n + r0] + cof[idx(3, 1, 2)] * vsl[c2 * n + r1] + cof[idx(3, 2, 2)] * vsl[c2 * n + r2];
+
+            let jsl = w.j_slice(0);
+            let mut jterm = 0.0;
+
+            for i in 0..3 {
+                let (ra0, ra1) = match i {0 => (1, 2), 1 => (0, 2), 2 => (0, 1), _ => unreachable!()};
+                let ri = rows[i];
+
+                for j in 0..3 {
+                    let (cb0, cb1) = match j {0 => (1, 2), 1 => (0, 2), 2 => (0, 1), _ => unreachable!()};
+                    let cj = cols[j];
+                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+
+                    let m00 = det0[idx(3, ra0, cb0)];
+                    let m01 = det0[idx(3, ra0, cb1)];
+                    let m10 = det0[idx(3, ra1, cb0)];
+                    let m11 = det0[idx(3, ra1, cb1)];
+
+                    let j00 = jsl[idx4(n, ri, cj, rows[ra0], cols[cb0])];
+                    let j01 = jsl[idx4(n, ri, cj, rows[ra0], cols[cb1])];
+                    let j10 = jsl[idx4(n, ri, cj, rows[ra1], cols[cb0])];
+                    let j11 = jsl[idx4(n, ri, cj, rows[ra1], cols[cb1])];
+
+                    jterm += phase * (m11 * j00 - m10 * j01 - m01 * j10 + m00 * j11);
+                }
+            }
+
+            w.phase * w.tilde_s_prod * (w.v0[0] * det - 2.0 * vterm + jterm)
+        } else {
+            0.0
+        }
     })
 }
 

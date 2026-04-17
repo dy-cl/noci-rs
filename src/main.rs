@@ -557,7 +557,7 @@ fn print_report(res: &Results, input: &Input) {
     print_thread_counter("Hamiltonian and overlap via generalised Slater-Condon", res.timings.noci.calculate_hs_pair_naive, hs_wall, nthreads, 2);
     print_thread_counter("Hamiltonian and overlap via orthogonal Slater-Condon", res.timings.noci.calculate_hs_pair_orthogonal, hs_wall, nthreads, 2);
     println!();
-
+    
     println!("Shared nonorthogonal Wick timings");
     print_thread_counter("Prepare same-spin information", res.timings.nonorthogonalwicks.prepare_same, wick_wall, nthreads, 2);
     print_thread_counter("Prepare same-spin information (generic)", res.timings.nonorthogonalwicks.prepare_same_gen, wick_wall, nthreads, 5);
@@ -580,12 +580,15 @@ fn print_report(res: &Results, input: &Input) {
     print_thread_counter("Same-spin two-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_h2_same_m0_gen, wick_wall, nthreads, 8);
     print_thread_counter("Same-spin two-electron matrix elements (m = 0, l = 1)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l1, wick_wall, nthreads, 8);
     print_thread_counter("Same-spin two-electron matrix elements (m = 0, l = 2)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l2, wick_wall, nthreads, 8);
+    print_thread_counter("Same-spin two-electron matrix elements (m = 0, l = 3)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l3, wick_wall, nthreads, 8);
     print_thread_counter("Different-spin two-electron matrix elements", res.timings.nonorthogonalwicks.lg_h2_diff, wick_wall, nthreads, 2);
     print_thread_counter("Different-spin two-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_h2_diff_gen, wick_wall, nthreads, 5);
     print_thread_counter("Different-spin two-electron matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_h2_diff_m0, wick_wall, nthreads, 5);
     print_thread_counter("Different-spin two-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_gen, wick_wall, nthreads, 8);
     print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 1, lb = 1)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_11, wick_wall, nthreads, 8);
+    print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 1, lb = 3)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_13, wick_wall, nthreads, 8);
     print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 2, lb = 2)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_22, wick_wall, nthreads, 8);
+    print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 3, lb = 1)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_31, wick_wall, nthreads, 8);
     println!();
 
     println!("R: {}", res.r);

@@ -62,7 +62,9 @@ fn lg_h2_diff_m0(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitation
         match (la, lb) {
             (0, 0) => (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * w.ab.vab0[0][0],
             (1, 1) => lg_h2_diff_m0_11(w, a, b),
+            (1, 3) => lg_h2_diff_m0_13(w, diff, a, b, tol),
             (2, 2) => lg_h2_diff_m0_22(w, a, b),
+            (3, 1) => lg_h2_diff_m0_31(w, diff, a, b, tol),
             _ => lg_h2_diff_m0_gen(w, l_ex_a, g_ex_a, l_ex_b, g_ex_b, diff, a, b, tol),
         }
     })
@@ -99,6 +101,60 @@ fn lg_h2_diff_m0_11(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
             + iisl[idx4(n, ra, ca, rb, cb)];
 
         (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * term
+    })
+}
+
+/// Calculate the different-spin two-electron Hamiltonian matrix element for the specialized
+/// `(la, lb) = (1, 3)`, `m = 0` case.
+/// # Arguments:
+/// - `w`: Same-spin and different-spin Wick's reference pair intermediates with zero-overlap counts zero.
+/// - `a`: Prepared same-spin alpha scratch space with `la = 1`.
+/// - `b`: Prepared same-spin beta scratch space with `lb = 3`.
+/// # Returns
+/// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 3)`.
+#[inline(always)]
+fn lg_h2_diff_m0_13(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+    time_call!(wick_timers::add_lg_h2_diff_m0_13, {
+        diff.ensure_diff(1, 3);
+
+        let n = w.ab.n();
+        let ra = a.rows[0];
+        let ca = a.cols[0];
+        let deta = a.det0.as_slice()[0];
+
+        let rows_b = &b.rows[..3];
+        let cols_b = &b.cols[..3];
+        let detb0 = &b.det0.as_slice()[..9];
+
+        if let Some(detb) = adjugate_transpose(diff.adjt_detb.as_mut_slice(), diff.invslb.as_mut_slice(), diff.lub.as_mut_slice(), detb0, 3, tol) {
+            let cofb = diff.adjt_detb.as_slice();
+
+            let r0 = rows_b[0];
+            let r1 = rows_b[1];
+            let r2 = rows_b[2];
+            let c0 = cols_b[0];
+            let c1 = cols_b[1];
+            let c2 = cols_b[2];
+
+            let vab = w.ab.vab_t_slice(0, 0, 0);
+            let vba = w.ab.vba_t_slice(0, 0, 0);
+            let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+
+            let vba_term =
+                cofb[idx(3, 0, 0)] * vba[c0 * n + r0] + cofb[idx(3, 1, 0)] * vba[c0 * n + r1] + cofb[idx(3, 2, 0)] * vba[c0 * n + r2]
+              + cofb[idx(3, 0, 1)] * vba[c1 * n + r0] + cofb[idx(3, 1, 1)] * vba[c1 * n + r1] + cofb[idx(3, 2, 1)] * vba[c1 * n + r2]
+              + cofb[idx(3, 0, 2)] * vba[c2 * n + r0] + cofb[idx(3, 1, 2)] * vba[c2 * n + r1] + cofb[idx(3, 2, 2)] * vba[c2 * n + r2];
+
+            let ii_term =
+                cofb[idx(3, 0, 0)] * iisl[idx4(n, ra, ca, r0, c0)] + cofb[idx(3, 1, 0)] * iisl[idx4(n, ra, ca, r1, c0)] + cofb[idx(3, 2, 0)] * iisl[idx4(n, ra, ca, r2, c0)]
+              + cofb[idx(3, 0, 1)] * iisl[idx4(n, ra, ca, r0, c1)] + cofb[idx(3, 1, 1)] * iisl[idx4(n, ra, ca, r1, c1)] + cofb[idx(3, 2, 1)] * iisl[idx4(n, ra, ca, r2, c1)]
+              + cofb[idx(3, 0, 2)] * iisl[idx4(n, ra, ca, r0, c2)] + cofb[idx(3, 1, 2)] * iisl[idx4(n, ra, ca, r1, c2)] + cofb[idx(3, 2, 2)] * iisl[idx4(n, ra, ca, r2, c2)];
+
+            let contrib = w.ab.vab0[0][0] * deta * detb - vab[ca * n + ra] * detb - deta * vba_term + ii_term;
+            (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * contrib
+        } else {
+            0.0
+        }
     })
 }
 
@@ -203,6 +259,60 @@ fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
         }
 
         (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * contrib
+    })
+}
+
+/// Calculate the different-spin two-electron Hamiltonian matrix element for the specialized
+/// `(la, lb) = (3, 1)`, `m = 0` case.
+/// # Arguments:
+/// - `w`: Same-spin and different-spin Wick's reference pair intermediates with zero-overlap counts zero.
+/// - `a`: Prepared same-spin alpha scratch space with `la = 3`.
+/// - `b`: Prepared same-spin beta scratch space with `lb = 1`.
+/// # Returns
+/// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (3, 1)`.
+#[inline(always)]
+fn lg_h2_diff_m0_31(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+    time_call!(wick_timers::add_lg_h2_diff_m0_31, {
+        diff.ensure_diff(3, 1);
+
+        let n = w.ab.n();
+        let rb = b.rows[0];
+        let cb = b.cols[0];
+        let detb = b.det0.as_slice()[0];
+
+        let rows_a = &a.rows[..3];
+        let cols_a = &a.cols[..3];
+        let deta0 = &a.det0.as_slice()[..9];
+
+        if let Some(deta) = adjugate_transpose(diff.adjt_deta.as_mut_slice(), diff.invsla.as_mut_slice(), diff.lua.as_mut_slice(), deta0, 3, tol) {
+            let cofa = diff.adjt_deta.as_slice();
+
+            let r0 = rows_a[0];
+            let r1 = rows_a[1];
+            let r2 = rows_a[2];
+            let c0 = cols_a[0];
+            let c1 = cols_a[1];
+            let c2 = cols_a[2];
+
+            let vab = w.ab.vab_t_slice(0, 0, 0);
+            let vba = w.ab.vba_t_slice(0, 0, 0);
+            let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+
+            let vab_term =
+                cofa[idx(3, 0, 0)] * vab[c0 * n + r0] + cofa[idx(3, 1, 0)] * vab[c0 * n + r1] + cofa[idx(3, 2, 0)] * vab[c0 * n + r2]
+              + cofa[idx(3, 0, 1)] * vab[c1 * n + r0] + cofa[idx(3, 1, 1)] * vab[c1 * n + r1] + cofa[idx(3, 2, 1)] * vab[c1 * n + r2]
+              + cofa[idx(3, 0, 2)] * vab[c2 * n + r0] + cofa[idx(3, 1, 2)] * vab[c2 * n + r1] + cofa[idx(3, 2, 2)] * vab[c2 * n + r2];
+
+            let ii_term =
+                cofa[idx(3, 0, 0)] * iisl[idx4(n, r0, c0, rb, cb)] + cofa[idx(3, 1, 0)] * iisl[idx4(n, r1, c0, rb, cb)] + cofa[idx(3, 2, 0)] * iisl[idx4(n, r2, c0, rb, cb)]
+              + cofa[idx(3, 0, 1)] * iisl[idx4(n, r0, c1, rb, cb)] + cofa[idx(3, 1, 1)] * iisl[idx4(n, r1, c1, rb, cb)] + cofa[idx(3, 2, 1)] * iisl[idx4(n, r2, c1, rb, cb)]
+              + cofa[idx(3, 0, 2)] * iisl[idx4(n, r0, c2, rb, cb)] + cofa[idx(3, 1, 2)] * iisl[idx4(n, r1, c2, rb, cb)] + cofa[idx(3, 2, 2)] * iisl[idx4(n, r2, c2, rb, cb)];
+
+            let contrib = w.ab.vab0[0][0] * deta * detb - detb * vab_term - vba[cb * n + rb] * deta + ii_term;
+            (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * contrib
+        } else {
+            0.0
+        }
     })
 }
 
