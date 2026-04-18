@@ -11,11 +11,11 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::noci::{DetPair, NOCIData};
 use crate::time_call;
 use crate::timers::stochastic as stochastic_timers;
-use super::state::{MCState, PopulationUpdate, ExcitationHist, ProjectedEnergyUpdate, PropagationState, 
+use super::state::{MCState, PopulationUpdate, ExcitationHist, ProjectedEnergyUpdate, PropagationState, MPIScratch, 
                    QMCRunInfo, ScratchSize, Shifts, PropagationResult, ThreadPropagation, PopulationStats};
 
 use crate::noci::{calculate_s_pair, calculate_hs_pair};
-use crate::mpiutils::{owner, communicate_spawn_updates, gather_all_walkers};
+use crate::mpiutils::{owner, communicate_spawn_updates, gather_all_walkers, rank_range};
 use super::report::{print_row, print_header, print_cached_row, print_initial_row, check_stop};
 use super::init::{initialise_qmc_state, max_scratch_sizes};
 
@@ -76,21 +76,18 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
     time_call!(stochastic_timers::add_apply_delta, {
         if mc.changed.is_empty() {return Vec::new();}
         let mut applied = Vec::with_capacity(mc.changed.len());
-        // Consider only changed determinants.
+
         for &i in &mc.changed {
-            // Total population change for this determinant for this iteration.
             let dn = mc.delta[i];
-            // As we are applying the change we reset the delta.
             mc.delta[i] = 0;
             mc.walkers.add(i, dn);
-            applied.push(PopulationUpdate { det: i as u64, dn });
+            applied.push(PopulationUpdate {det: i as u64, dn});
         }
-        // Reset list of changed determinants.
+
         mc.changed.clear();
         applied
     })
 }
-
 
 /// Compute the off-diagonal coupling between determinants depending on which propagator is used.
 /// # Arguments:
@@ -143,27 +140,26 @@ fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdat
     })
 }
 
-
 /// Update the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
 /// # Arguments:
 /// - `plocal`: Local portion of `p_{\Gamma}` on this rank.
 /// - `dlocal`: Local determinant population updates.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local run metadata.
+/// - `mpi`: Reusable MPI scratch space.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `()`: Updates `plocal` in place.
-fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, world: &impl Communicator) {
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl Communicator) {
     time_call!(stochastic_timers::add_update_p, {
-        let dglobal = gather_all_walkers(world, dlocal);
+        let dglobal = gather_all_walkers(world, dlocal, mpi);
 
-        // \Delta p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} \Delta N_{\Omega}.
         plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
             let gamma = run.start + k;
             let mut dp = 0.0;
-            for update in &dglobal {
-                let omega = update.det as usize;
-                dp += find_s(data, gamma, omega, scratch) * update.dn as f64;
+            for up in dglobal {
+                let omega = up.det as usize;
+                dp += find_s(data, gamma, omega, scratch) * up.dn as f64;
             }
             *pgamma += dp;
         });
@@ -259,7 +255,7 @@ fn acc_pack_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: 
 
         if nranks > 1 {
             for up in prop.remote {
-                let dest = owner(up.det as usize, nranks);
+                let dest = owner(up.det as usize, mc.walkers.len(), nranks);
                 send[dest].push(up);
             }
         }
@@ -306,6 +302,10 @@ fn unpack_received_updates(mc: &mut MCState, received: Vec<PopulationUpdate>) {
 fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, input: &Input, world: &impl Communicator, nranks: usize) -> i32 {
     acc_pack_updates(mc, send, prop, input, nranks);
 
+    for buf in send.iter_mut() {
+        compress_updates(buf);
+    }
+
     if nranks > 1 {
         let received = exchange_updates(world, send);
         unpack_received_updates(mc, received);
@@ -315,6 +315,29 @@ fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop
     let mut changedglobal = 0;
     world.all_reduce_into(&changed, &mut changedglobal, SystemOperation::max());
     changedglobal
+}
+
+/// Sort and combine repeated remote population updates in place.
+/// # Arguments:
+/// - `updates`: Remote population updates for a single destination rank.
+/// # Returns
+/// - `()`: Compresses repeated determinant updates in place.
+fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
+    if updates.is_empty() {return;}
+    updates.sort_unstable_by_key(|up| up.det);
+
+    let mut out = 0usize;
+    for i in 0..updates.len() {
+        if out > 0 && updates[out - 1].det == updates[i].det {
+            updates[out - 1].dn += updates[i].dn;
+        } else {
+            updates[out] = updates[i];
+            out += 1;
+        }
+    }
+
+    updates.truncate(out);
+    updates.retain(|up| up.dn != 0);
 }
 
 /// Compute the current non-overlap transformed and overlap-transformed walker populations.
@@ -438,8 +461,9 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
     };
 
     let mut scratch = WickScratchSpin::new();
+    let mut mpiscratch = MPIScratch::new(run.nranks);
 
-    let mut state = initialise_qmc_state(c0, es, data, &run, &isref, world, &mut scratch);
+    let mut state = initialise_qmc_state(c0, es, data, &run, &isref, world, &mut scratch, &mut mpiscratch);
 
     println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0));
     type ThreadState = (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>, SmallRng, WickScratchSpin);
@@ -461,7 +485,7 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
         }
         
         let d = apply_delta(&mut state.mc);
-        update_p(&mut state.mc.pg, &d, data, &run, world);
+        update_p(&mut state.mc.pg, &d, data, &run, &mut mpiscratch, world);
 
         let stats = compute_populations(&state.mc, &isref, &run, world);
         cache_population_stats(&mut state, &stats);

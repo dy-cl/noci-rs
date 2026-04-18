@@ -8,6 +8,6 @@ mod report;
 
 pub use state::{ExcitationHist, QMCTimings};
 
-pub(crate) use state::{PopulationUpdate, Walkers};
+pub(crate) use state::{PopulationUpdate, Walkers, MPIScratch};
 pub use propagate::qmc_step;
 

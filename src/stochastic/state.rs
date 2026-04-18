@@ -176,6 +176,10 @@ impl Walkers {
     pub(crate) fn norm(&self) -> i64 {
         self.occ.iter().map(|&i| self.pop[i].abs()).sum()
     }
+
+    pub(crate) fn len(&self) -> usize {
+        self.pop.len() 
+    }
 }
 
 /// Storage for Monte Carlo state. 
@@ -188,7 +192,7 @@ pub(in crate::stochastic) struct MCState {
     pub(in crate::stochastic) changed: Vec<usize>,
     /// Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
     pub(in crate::stochastic) pg: Vec<f64>,
-    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
+    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics. 
     pub(in crate::stochastic) excitation_hist: Option<ExcitationHist> 
 }
 
@@ -409,7 +413,7 @@ impl ThreadPropagation {
             if run.nranks == 1 {
                 self.local.push((lambda, dn));
             } else {
-                let destination = owner(lambda, run.nranks);
+                let destination = owner(lambda, run.ndets, run.nranks);
                 if destination == run.irank {
                     self.local.push((lambda, dn));
                 } else {
@@ -498,3 +502,28 @@ impl ExcitationHist {
     }
 }
 
+/// Reusable MPI scratch for sparse walker-update collectives.
+#[derive(Default)]
+pub(crate) struct MPIScratch {
+    /// Number of sparse updates contributed by each rank.
+    pub(crate) gather_counts: Vec<i32>,
+    /// Displacements for gathered sparse updates.
+    pub(crate) gather_displs: Vec<i32>,
+    /// Reusable receive buffer for gathered sparse updates.
+    pub(crate) gather_recv: Vec<PopulationUpdate>,
+}
+
+impl MPIScratch {
+    /// Construct reusable MPI scratch buffers.
+    /// # Arguments:
+    /// - `nranks`: Number of MPI ranks.
+    /// # Returns
+    /// - `MPIScratch`: Scratch storage sized for the communicator.
+    pub(in crate::stochastic) fn new(nranks: usize) -> Self {
+        Self {
+            gather_counts: vec![0; nranks],
+            gather_displs: vec![0; nranks],
+            gather_recv: Vec::new(),
+        }
+    }
+}

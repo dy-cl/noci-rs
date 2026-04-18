@@ -9,7 +9,7 @@ use crate::SCFState;
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 use crate::timers::stochastic as stochastic_timers;
-use super::state::{MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats};
+use super::state::{MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats, MPIScratch};
 
 use crate::mpiutils::{gather_all_walkers, local_walkers};
 use super::propagate::{find_s, find_hs};
@@ -98,24 +98,26 @@ pub(in crate::stochastic) fn init_projected_energy(walkers: &Walkers, iref: usiz
     ProjectedEnergyUpdate {iref, num, den}
 }
 
-/// Initialise the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
+/// Initialise the local portion of `p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}`.
 /// # Arguments:
-/// - `walkers`: Object containing information about current walker distribution.
+/// - `walkers`: Rank-local walker populations.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local run metadata.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `scratch`: Scratch space for Wick's quantities.
+/// - `mpiscratch`: Reusable MPI scratch space.
 /// # Returns
 /// - `Vec<f64>`: Local portion of the overlap-transformed population vector `p_{\Gamma}`.
-pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_>, run: &QMCRunInfo, world: &impl Communicator, scratch: &mut WickScratchSpin) -> Vec<f64> {
+pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_>, run: &QMCRunInfo, world: &impl Communicator, 
+                                    scratch: &mut WickScratchSpin, mpiscratch: &mut MPIScratch) -> Vec<f64> {
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
-    let global = gather_all_walkers(world, &local);
+    let global = gather_all_walkers(world, &local, mpiscratch);
 
     let mut p = vec![0.0; run.end - run.start];
     for gamma in run.start..run.end {
         //p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
         let mut pgamma = 0.0;
-        for entry in &global {
+        for entry in global {
             // Here we use dn to mean total population.
             let nomega = entry.dn as f64;
             let omega = entry.det as usize;
@@ -154,10 +156,11 @@ pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, us
 /// - `isref`: Boolean mask specifying which determinants are reference determinants.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `scratch`: Scratch space for Wick's quantities.
+/// - `mpiscratch`: Reusable MPI scratch space.
 /// # Returns
 /// - `PropagationState`: Initialised NOCI-QMC state with required bookkeeping parameters.
 pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data: &NOCIData<'_>, run: &QMCRunInfo, isref: &[bool], 
-                                                  world: &impl Communicator, scratch: &mut WickScratchSpin) -> PropagationState {
+                                                  world: &impl Communicator, scratch: &mut WickScratchSpin, mpiscratch: &mut MPIScratch) -> PropagationState {
 
     let qmc = data.input.qmc.as_ref().unwrap();
     // Use restart file if avaliable.
@@ -176,7 +179,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data
             walkers: rs.walkers, 
             delta: vec![0; run.ndets], 
             changed: Vec::new(), 
-            pg: rs.pg, 
+            pg: rs.pg,
             excitation_hist: rs.excitation_hist
         };
         
@@ -203,12 +206,12 @@ pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data
             None
         };
 
-        let pg = init_p(&w, data, run, world, scratch);
+        let pg = init_p(&w, data, run, world, scratch, mpiscratch);
         let mc = MCState {
             walkers: w, 
             delta: vec![0; run.ndets], 
             changed: Vec::new(), 
-            pg, 
+            pg,
             excitation_hist
         };
         
