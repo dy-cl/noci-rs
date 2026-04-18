@@ -15,7 +15,7 @@ use super::state::{MCState, PopulationUpdate, ExcitationHist, ProjectedEnergyUpd
                    QMCRunInfo, ScratchSize, Shifts, PropagationResult, ThreadPropagation, PopulationStats};
 
 use crate::noci::{calculate_s_pair, calculate_hs_pair};
-use crate::mpiutils::{owner, communicate_spawn_updates, gather_all_walkers, rank_range};
+use crate::mpiutils::{owner, communicate_spawn_updates, gather_all_walkers};
 use super::report::{print_row, print_header, print_cached_row, print_initial_row, check_stop};
 use super::init::{initialise_qmc_state, max_scratch_sizes};
 
@@ -262,28 +262,29 @@ fn acc_pack_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: 
     })
 }
 
-/// Exchange packed remote population updates across MPI ranks.
+/// Exchange remote spawned walker updates between MPI ranks.
 /// # Arguments:
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `send`: Per-rank MPI send buffers.
+/// - `mpi`: Reusable MPI scratch space.
 /// # Returns
-/// - `Vec<PopulationUpdate>`: Population updates received from all other MPI ranks.
-fn exchange_updates(world: &impl Communicator, send: &mut [Vec<PopulationUpdate>]) -> Vec<PopulationUpdate> {
+/// - `&[PopulationUpdate]`: Walker updates received from remote ranks.
+fn exchange_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], mpi: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
     time_call!(stochastic_timers::add_exchange_updates, {
-        communicate_spawn_updates(world, send)
+        communicate_spawn_updates(world, send, mpi)
     })
 }
 
-/// Unpack received population updates and accumulate them into the global delta vector.
+/// Unpack received walker updates into the global delta vector.
 /// # Arguments:
-/// - `mc`: Contains the current Monte Carlo state.
-/// - `received`: Population updates received from remote MPI ranks.
+/// - `mc`: Contains information about the current Monte Carlo state.
+/// - `received`: Walker updates received from remote MPI ranks.
 /// # Returns
-/// - `()`: Adds all received updates into the local delta vector.
-fn unpack_received_updates(mc: &mut MCState, received: Vec<PopulationUpdate>) {
+/// - `()`: Adds received walker updates into `mc.delta`.
+fn unpack_received_updates(mc: &mut MCState, received: &[PopulationUpdate]) {
     time_call!(stochastic_timers::add_unpack_received_updates, {
-        for update in received {
-            add_delta(mc, update.det as usize, update.dn);
+        for up in received {
+            add_delta(mc, up.det as usize, up.dn);
         }
     })
 }
@@ -299,15 +300,22 @@ fn unpack_received_updates(mc: &mut MCState, received: Vec<PopulationUpdate>) {
 /// - `nranks`: Total number of MPI ranks.
 /// # Returns
 /// - `i32`: Global indicator for whether any population changes occurred on any rank.
-fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, input: &Input, world: &impl Communicator, nranks: usize) -> i32 {
-    acc_pack_updates(mc, send, prop, input, nranks);
-
+fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, 
+                      input: &Input, mpi: &mut MPIScratch, world: &impl Communicator, nranks: usize) -> i32 {
     for buf in send.iter_mut() {
-        compress_updates(buf);
+        buf.clear();
     }
 
+    acc_pack_updates(mc, send, prop, input, nranks);
+
     if nranks > 1 {
-        let received = exchange_updates(world, send);
+        for buf in send.iter_mut() {
+            if buf.len() > 1 {
+                compress_updates(buf);
+            }
+        }
+
+        let received = exchange_updates(world, send, mpi);
         unpack_received_updates(mc, received);
     }
 
@@ -477,8 +485,8 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
     for it in state.start_iter..data.input.prop_ref().max_steps {
         let shifts = Shifts {es: *es, es_s: state.es_s};
         let prop = propagate_iteration(it, &state.mc, data, &run, &scratchsize, shifts);
-
-        let changedglobal = accumulate_updates(&mut state.mc, &mut send, prop, data.input, world, nranks);
+        
+        let changedglobal = accumulate_updates(&mut state.mc, &mut send, prop, data.input, &mut mpiscratch, world, nranks);
         if changedglobal == 0 {
             print_cached_row(irank, it + 1, &state, data.basis[0].e, *es);
             continue;

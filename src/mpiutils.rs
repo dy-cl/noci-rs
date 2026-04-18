@@ -192,48 +192,40 @@ pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walk
     w
 }
 
-/// For any spawning procedure that spawns onto a determinant not owned by the originating rank, we
-/// must communicate this change. Each rank sends a `Vec<PopulationUpdate>` to every other ranking
-/// containing the required population changes.
+/// Communicate spawned walker updates between MPI ranks.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
-/// - `send`: Per destination send buffers.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `send`: Per-rank spawned walker updates to send.
+/// - `scratch`: Reusable MPI scratch space.
 /// # Returns
-/// - `Vec<PopulationUpdate>`: Contiguous list of population updates received by this rank.
-pub(crate) fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<PopulationUpdate>]) -> Vec<PopulationUpdate> {
+/// - `&[PopulationUpdate]`: Received spawned walker updates from all ranks.
+pub(crate) fn communicate_spawn_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
     let nranks = world.size() as usize;
 
-    // Assemble message to be communicated. 
-    // Number of messages this rank will send to rank i.
-    let mut send_counts = vec![0i32; nranks];
-    // Where inside send_contig do the messages for a given rank start.
-    let mut send_displacements = vec![0i32; nranks];
-    // Contiguous send buffer.
-    let mut send_contig: Vec<PopulationUpdate> = Vec::new();
+    scratch.send_contig.clear();
+    let mut nsend = 0usize;
     for i in 0..nranks {
-        send_displacements[i] = send_contig.len() as i32;
-        send_contig.extend_from_slice(&send[i]);
-        send_counts[i] = send[i].len() as i32;
+        scratch.send_counts[i] = send[i].len() as i32;
+        scratch.send_displs[i] = nsend as i32;
+        nsend += send[i].len();
+        scratch.send_contig.extend_from_slice(&send[i]);
     }
 
-    // Exchange send_counts to find out how many messages are to be recieved. 
-    // Once complete recv_counts contains number of messages rank i will send to the current rank.
-    let mut recv_counts = vec![0i32; nranks];
-    world.all_to_all_into(&send_counts[..], &mut recv_counts[..]);
+    world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
 
-    // Construct the recv_displacements and allocate buffer for messages to be recieved.
-    let mut recv_displacements = vec![0i32; nranks];
-    let total_recv: usize = recv_counts.iter().map(|&x| x as usize).sum();
-    for i in 1..nranks {
-        recv_displacements[i] = recv_displacements[i - 1] + recv_counts[i - 1];
+    let mut nrecv = 0usize;
+    for i in 0..nranks {
+        scratch.recv_displs[i] = nrecv as i32;
+        nrecv += scratch.recv_counts[i] as usize;
     }
-    let mut recv_contig = vec![PopulationUpdate {det: 0, dn: 0}; total_recv];
 
-    // Exchange messages.
-    let send_part = Partition::new(&send_contig[..], send_counts, send_displacements);
-    let mut recv_part = PartitionMut::new(&mut recv_contig[..], recv_counts, recv_displacements);
+    scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
+
+    let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displs[..]);
+    let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displs[..]);
     world.all_to_all_varcount_into(&send_part, &mut recv_part);
-    recv_contig
+
+    &scratch.recv_contig[..]
 }
 
 /// Gather variable-length walker updates from all ranks into a reusable receive buffer.
