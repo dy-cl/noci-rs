@@ -13,9 +13,17 @@ pub struct StepTotals {
     pub acc_pack_updates: Counter,
     /// Total time spent in `exchange_updates`.
     pub exchange_updates: Counter,
+    /// Total time spent in `communicate_spawn_updates`.
+    pub communicate_spawn_updates: Counter,
     /// Total time spent in `unpack_received_updates`.
     pub unpack_received_updates: Counter,
-    /// Total time spent in `compute_populations`
+    /// Total time spent in `gather_all_walkers`.
+    pub gather_all_walkers: Counter,
+    /// Total time spent in the all-reduce used for the changed-global flag.
+    pub changedglobal_allreduce: Counter,
+    /// Total time spent in population all-reduces.
+    pub population_allreduce: Counter,
+    /// Total time spent in `compute_populations`.
     pub compute_populations: Counter,
     /// Total time spent in `apply_delta`.
     pub apply_delta: Counter,
@@ -37,12 +45,29 @@ impl StepTotals {
         self.propagate_iteration.merge_from(&other.propagate_iteration);
         self.acc_pack_updates.merge_from(&other.acc_pack_updates);
         self.exchange_updates.merge_from(&other.exchange_updates);
+        self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
         self.unpack_received_updates.merge_from(&other.unpack_received_updates);
+        self.gather_all_walkers.merge_from(&other.gather_all_walkers);
+        self.changedglobal_allreduce.merge_from(&other.changedglobal_allreduce);
+        self.population_allreduce.merge_from(&other.population_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
         self.update_p.merge_from(&other.update_p);
         self.update_projected_energy.merge_from(&other.update_projected_energy);
     }
+}
+
+/// Timing counters for stochastic NOCI-QMC stages.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Totals {
+    /// Total time spent in `run_qmc_stochastic_noci`.
+    pub run_qmc_stochastic_noci: Counter,
+    /// Total time spent in `generate_excited_basis` during stochastic NOCI-QMC.
+    pub generate_excited_basis: Counter,
+    /// Total time spent in `qmc_step`.
+    pub qmc_step: Counter,
+    /// Timings for individual stochastic propagation substeps.
+    pub step: StepTotals,
 }
 
 impl Totals {
@@ -58,19 +83,6 @@ impl Totals {
         self.qmc_step.merge_from(&other.qmc_step);
         self.step.merge_from(&other.step);
     }
-}
-
-/// Timing counters for stochastic NOCI-QMC stages.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Totals {
-    /// Total time spent in `run_qmc_stochastic_noci`.
-    pub run_qmc_stochastic_noci: Counter,
-    /// Total time spent in `generate_excited_basis` during stochastic NOCI-QMC.
-    pub generate_excited_basis: Counter,
-    /// Total time spent in `qmc_step`.
-    pub qmc_step: Counter,
-    /// Timings for individual stochastic propagation substeps.
-    pub step: StepTotals,
 }
 
 /// Add one timed call to the `run_qmc_stochastic_noci` counter.
@@ -191,4 +203,44 @@ pub fn add_update_p(ns: u64) {
 #[inline(always)]
 pub fn add_update_projected_energy(ns: u64) {
     with_totals(|t| t.stochastic.step.update_projected_energy.add_ns(ns));
+}
+
+/// Add one timed call to the `communicate_spawn_updates` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `communicate_spawn_updates`.
+/// # Returns:
+/// - `()`: Updates the current thread local `communicate_spawn_updates` counter.
+#[inline(always)]
+pub fn add_communicate_spawn_updates(ns: u64) {
+    with_totals(|t| t.stochastic.step.communicate_spawn_updates.add_ns(ns));
+}
+
+/// Add one timed call to the `gather_all_walkers` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `gather_all_walkers`.
+/// # Returns:
+/// - `()`: Updates the current thread local `gather_all_walkers` counter.
+#[inline(always)]
+pub fn add_gather_all_walkers(ns: u64) {
+    with_totals(|t| t.stochastic.step.gather_all_walkers.add_ns(ns));
+}
+
+/// Add one timed call to the `changedglobal_allreduce` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the changed-global all-reduce.
+/// # Returns:
+/// - `()`: Updates the current thread local `changedglobal_allreduce` counter.
+#[inline(always)]
+pub fn add_changedglobal_allreduce(ns: u64) {
+    with_totals(|t| t.stochastic.step.changedglobal_allreduce.add_ns(ns));
+}
+
+/// Add one timed call to the `population_allreduce` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the population all-reduce.
+/// # Returns:
+/// - `()`: Updates the current thread local `population_allreduce` counter.
+#[inline(always)]
+pub fn add_population_allreduce(ns: u64) {
+    with_totals(|t| t.stochastic.step.population_allreduce.add_ns(ns));
 }

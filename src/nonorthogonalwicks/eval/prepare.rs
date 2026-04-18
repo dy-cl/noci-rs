@@ -2,7 +2,6 @@
 use crate::ExcitationSpin;
 use crate::maths::build_d;
 use crate::time_call;
-use crate::timers::nonorthogonalwicks as wick_timers;
 use super::helpers::construct_determinant_indices;
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
@@ -17,7 +16,7 @@ use super::super::view::SameSpinView;
 /// # Returns
 /// - `()`: Prepares the required same-spin scratch quantities in place.
 pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) {
-    time_call!(wick_timers::add_prepare_same, {
+    time_call!(crate::timers::nonorthogonalwicks::add_prepare_same, {
         if w.m == 0 {
             prepare_same_m0(w, l_ex, g_ex, scratch)
         }
@@ -39,7 +38,7 @@ pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 /// - `()`: Prepares the zero-overlap same-spin scratch quantities in place.
 #[inline(always)]
 fn prepare_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) {
-    time_call!(wick_timers::add_prepare_same_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);
 
@@ -66,7 +65,7 @@ fn prepare_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
 /// - `()`: Writes the one-by-one contraction determinant into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) {
-    time_call!(wick_timers::add_prepare_same_m0_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l1, {
         let x0 = w.x(0);
         let xstr = x0.strides();
         let xptr = x0.as_ptr();
@@ -86,7 +85,7 @@ fn prepare_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) {
 /// - `()`: Writes the two-by-two contraction determinant into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) {
-    time_call!(wick_timers::add_prepare_same_m0_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l2, {
         let x0 = w.x(0);
         let y0 = w.y(0);
         let xstr = x0.strides();
@@ -124,7 +123,7 @@ fn prepare_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) {
 /// # Returns
 /// - `()`: Prepares the generic same-spin scratch quantities in place.
 pub fn prepare_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) {
-    time_call!(wick_timers::add_prepare_same_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);
 

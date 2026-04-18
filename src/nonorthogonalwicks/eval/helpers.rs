@@ -2,7 +2,6 @@
 use crate::ExcitationSpin;
 use crate::maths::{adjugate_transpose, minor, mix_columns};
 use crate::time_call;
-use crate::timers::nonorthogonalwicks as wick_timers;
 use super::super::layout::{idx, idx4};
 use super::super::scratch::{Vec1, Vec2, WickScratch};
 use super::super::view::{SameSpinView, WicksPairView};
@@ -203,7 +202,7 @@ pub(super) fn mix_dets_same(w: &SameSpinView<'_>, l: usize, pbits: usize, scratc
 /// - `()`: Calls `f` only for nonsingular mixed determinants.
 #[inline(always)]
 pub(super) fn get_det_adjt_same(w: &SameSpinView<'_>, l: usize, pbits: usize, scratch: &mut WickScratch, tol: f64, mut f: impl FnMut(u64, &mut WickScratch, f64)) {
-    time_call!(wick_timers::add_get_det_adjt_same, {
+    time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_same, {
         mix_dets_same(w, l, pbits, scratch, |bits, scratch| {
             if let Some(det_det) = adjugate_transpose(scratch.adjt_det.as_mut_slice(), scratch.invs.as_mut_slice(), scratch.lu.as_mut_slice(), scratch.det_mix.as_slice(), l, tol) {
                 f(bits, scratch, det_det);
@@ -227,7 +226,7 @@ pub(super) fn get_det_adjt_same(w: &SameSpinView<'_>, l: usize, pbits: usize, sc
 #[inline(always)]
 pub(super) fn get_det_adjt_diff(w: &WicksPairView<'_>, la: usize, lb: usize, scratch: &mut WickScratch, deta0: &[f64], deta1: &[f64], 
                      detb0: &[f64], detb1: &[f64], tol: f64, mut f: impl FnMut(u64, u64, &mut WickScratch, f64, f64)) {
-    time_call!(wick_timers::add_get_det_adjt_diff, {
+    time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_diff, {
         for_each_m_combination(la + 1, w.aa.m, |bits_a| {
             let inda = bits_a >> 1;
             mix_columns(scratch.deta_mix.as_mut_slice(), deta0, deta1, la, inda);
@@ -284,7 +283,7 @@ pub(super) fn minor_adjt(full: &[f64], l: usize, i: usize, j: usize, minorb: &mu
 /// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(wick_timers::add_construct_determinant_indices, {
+    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices, {
         let nl = l_ex.holes.len();
         let ng = g_ex.holes.len();
 

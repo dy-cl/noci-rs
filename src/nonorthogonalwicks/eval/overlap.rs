@@ -2,7 +2,6 @@
 use crate::ExcitationSpin;
 use crate::maths::det;
 use crate::time_call;
-use crate::timers::nonorthogonalwicks as wick_timers;
 use super::helpers::mix_dets_same;
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
@@ -18,7 +17,7 @@ use super::super::view::SameSpinView;
 /// # Returns
 /// - `f64`: Overlap matrix element.
 pub fn lg_overlap(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) -> f64 {
-    time_call!(wick_timers::add_lg_overlap, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
         if w.m == 0 {

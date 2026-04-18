@@ -2,7 +2,6 @@
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
 use crate::time_call;
-use crate::timers::nonorthogonalwicks as wick_timers;
 use super::helpers::{bit, column_replacement_correction, get_det_adjt_same, j_replacement, jslot, minor_adjt};
 use super::super::layout::{idx, idx4};
 use super::super::scratch::WickScratch;
@@ -22,7 +21,7 @@ use super::super::view::SameSpinView;
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
 pub(crate) fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same, {
         if w.m == 0 {
             lg_h2_same_m0(w, l_ex, g_ex, scratch, tol)
         } else {
@@ -44,7 +43,7 @@ pub(crate) fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &Excitat
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element in the `m = 0` case.
 #[inline(always)]
 fn lg_h2_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         match l {
             0 => w.phase * w.tilde_s_prod * w.v0[0],
@@ -64,7 +63,7 @@ fn lg_h2_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin,
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 1`.
 #[inline(always)]
 fn lg_h2_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same_m0_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l1, {
         let n = w.n();
         let r0 = scratch.rows[0];
         let c0 = scratch.cols[0];
@@ -85,7 +84,7 @@ fn lg_h2_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 2`.
 #[inline(always)]
 fn lg_h2_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same_m0_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l2, {
         let n = w.n();
         let d = scratch.det0.as_slice();
         let a00 = d[0];
@@ -124,7 +123,7 @@ fn lg_h2_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 3`.
 #[inline(always)]
 fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same_m0_l3, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l3, {
         let n = w.n();
         let rows = scratch.rows.as_slice();
         let cols = scratch.cols.as_slice();
@@ -192,7 +191,7 @@ fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f6
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element for the general `m = 0` path.
 #[inline(always)]
 fn lg_h2_same_m0_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same_m0_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         let mut acc = 0.0;
         let n = w.n();
@@ -249,7 +248,7 @@ fn lg_h2_same_m0_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationS
 /// - `f64`: Same-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
 fn lg_h2_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_same_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         let mut acc = 0.0;
         let n = w.n();

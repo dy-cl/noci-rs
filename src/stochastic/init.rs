@@ -8,7 +8,6 @@ use crate::noci::NOCIData;
 use crate::SCFState;
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
-use crate::timers::stochastic as stochastic_timers;
 use super::state::{MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats, MPIScratch};
 
 use crate::mpiutils::{gather_all_walkers, local_walkers};
@@ -28,7 +27,7 @@ use super::restart::read_restart_hdf5;
 /// # Returns
 /// - `Walkers`: Initial walker population.
 pub(in crate::stochastic) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &NOCIData<'_>, iref: usize, scratch: &mut WickScratchSpin) -> Walkers {
-    time_call!(stochastic_timers::add_initialise_walkers, {
+    time_call!(crate::timers::stochastic::add_initialise_walkers, {
         let mut w = Walkers::new(n);
 
         // Ill-conditioning threshold.

@@ -7,7 +7,6 @@ use crate::basis::excitation_phase;
 use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
 use super::naive::{occ_coeffs, build_s_pair, one_electron, two_electron_same, two_electron_diff};
 use crate::time_call;
-use crate::timers::noci as noci_timers;
 use super::overlap::calculate_s_pair_orthogonal;
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
@@ -22,7 +21,7 @@ use super::overlap::calculate_s_pair_orthogonal;
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between the determinant pair.
 pub(crate) fn calculate_hs_pair(data: &NOCIData<'_>, pair: DetPair<'_>, scratch: Option<&mut WickScratchSpin>) -> (f64, f64) {
-    time_call!(noci_timers::add_calculate_hs_pair, {
+    time_call!(crate::timers::noci::add_calculate_hs_pair, {
         let ldet = pair.ldet;
         let gdet = pair.gdet;
 
@@ -64,7 +63,7 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive(data: &NOCIData<'_>, pair: De
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
-    time_call!(noci_timers::add_calculate_hs_pair_orthogonal, {
+    time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
         let xa = ldet.oa ^ gdet.oa;
         let xb = ldet.ob ^ gdet.ob;
 
@@ -261,7 +260,7 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
-    time_call!(noci_timers::add_calculate_hs_pair_naive, {
+    time_call!(crate::timers::noci::add_calculate_hs_pair_naive, {
         // Per spin occupid coefficients.
         let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
         let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
@@ -304,7 +303,7 @@ pub(in crate::noci) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gde
 /// # Returns:
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
 pub(in crate::noci) fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> (f64, f64) {
-    time_call!(noci_timers::add_calculate_hs_pair_wicks, {
+    time_call!(crate::timers::noci::add_calculate_hs_pair_wicks, {
         let lp = ldet.parent;
         let gp = gdet.parent;
 

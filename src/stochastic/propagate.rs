@@ -10,7 +10,6 @@ use crate::input::{Input, Propagator};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::noci::{DetPair, NOCIData};
 use crate::time_call;
-use crate::timers::stochastic as stochastic_timers;
 use super::state::{MCState, PopulationUpdate, ExcitationHist, ProjectedEnergyUpdate, PropagationState, MPIScratch, 
                    QMCRunInfo, ScratchSize, Shifts, PropagationResult, ThreadPropagation, PopulationStats};
 
@@ -73,7 +72,7 @@ fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
 /// # Returns
 /// - `Vec<PopulationUpdate>`: List of applied population updates for this iteration.
 fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
-    time_call!(stochastic_timers::add_apply_delta, {
+    time_call!(crate::timers::stochastic::add_apply_delta, {
         if mc.changed.is_empty() {return Vec::new();}
         let mut applied = Vec::with_capacity(mc.changed.len());
 
@@ -118,7 +117,7 @@ pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, pr
 /// # Returns
 /// - `()`: Updates `pe` in place.
 fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &NOCIData<'_>, world: &impl Communicator) {
-    time_call!(stochastic_timers::add_update_projected_energy, {
+    time_call!(crate::timers::stochastic::add_update_projected_energy, {
         let iref = pe.iref;
 
         let (dnum_local, dden_local) = d.par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut dnum, mut dden, mut scratch), up| {
@@ -151,7 +150,7 @@ fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdat
 /// # Returns
 /// - `()`: Updates `plocal` in place.
 fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl Communicator) {
-    time_call!(stochastic_timers::add_update_p, {
+    time_call!(crate::timers::stochastic::add_update_p, {
         let dglobal = gather_all_walkers(world, dlocal, mpi);
 
         plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
@@ -177,7 +176,7 @@ fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>
 /// # Returns
 /// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
 fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, shifts: Shifts) -> PropagationResult {
-    time_call!(stochastic_timers::add_propagate_iteration, {
+    time_call!(crate::timers::stochastic::add_propagate_iteration, {
 
         let initialise = || -> ThreadPropagation {
             let tid = rayon::current_thread_index().unwrap_or(0) as u64;
@@ -238,7 +237,7 @@ fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRu
 /// # Returns
 /// - `()`: Updates the local delta vector, optional excitation histogram, and MPI send buffers.
 fn acc_pack_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, input: &Input, nranks: usize) {
-    time_call!(stochastic_timers::add_acc_pack_updates, {
+    time_call!(crate::timers::stochastic::add_acc_pack_updates, {
         if nranks > 1 {
             for buf in send.iter_mut() {buf.clear();}
         }
@@ -270,7 +269,7 @@ fn acc_pack_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: 
 /// # Returns
 /// - `&[PopulationUpdate]`: Walker updates received from remote ranks.
 fn exchange_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], mpi: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
-    time_call!(stochastic_timers::add_exchange_updates, {
+    time_call!(crate::timers::stochastic::add_exchange_updates, {
         communicate_spawn_updates(world, send, mpi)
     })
 }
@@ -282,7 +281,7 @@ fn exchange_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>
 /// # Returns
 /// - `()`: Adds received walker updates into `mc.delta`.
 fn unpack_received_updates(mc: &mut MCState, received: &[PopulationUpdate]) {
-    time_call!(stochastic_timers::add_unpack_received_updates, {
+    time_call!(crate::timers::stochastic::add_unpack_received_updates, {
         for up in received {
             add_delta(mc, up.det as usize, up.dn);
         }
@@ -321,7 +320,9 @@ fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop
 
     let changed = (!mc.changed.is_empty()) as i32;
     let mut changedglobal = 0;
-    world.all_reduce_into(&changed, &mut changedglobal, SystemOperation::max());
+    time_call!(crate::timers::stochastic::add_changedglobal_allreduce, {
+        world.all_reduce_into(&changed, &mut changedglobal, SystemOperation::max());
+    });
     changedglobal
 }
 
@@ -357,27 +358,36 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
 /// # Returns
 /// - `PopulationStats`: Current total and reference populations in both representations.
 fn compute_populations(mc: &MCState, isref: &[bool], run: &QMCRunInfo, world: &impl Communicator) -> PopulationStats {
-    time_call!(stochastic_timers::add_compute_populations, {
-
+    time_call!(crate::timers::stochastic::add_compute_populations, {
         let nwclocal = mc.walkers.norm();
         let mut nwc = 0i64;
-        world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
+        time_call!(crate::timers::stochastic::add_population_allreduce, {
+            world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
+        });
 
         let nrefc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
         let mut nrefc = 0i64;
-        world.all_reduce_into(&nrefc_local, &mut nrefc, SystemOperation::sum());
+        time_call!(crate::timers::stochastic::add_population_allreduce, {
+            world.all_reduce_into(&nrefc_local, &mut nrefc, SystemOperation::sum());
+        });
 
         let nwsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
         let mut nwsc = 0.0;
-        world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
+        time_call!(crate::timers::stochastic::add_population_allreduce, {
+            world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
+        });
 
         let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
         let mut nrefsc = 0.0;
-        world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
+        time_call!(crate::timers::stochastic::add_population_allreduce, {
+            world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
+        });
 
         let noccdetslocal = mc.walkers.occ().len() as i64;
         let mut noccdets = 0i64;
-        world.all_reduce_into(&noccdetslocal, &mut noccdets, SystemOperation::sum());
+        time_call!(crate::timers::stochastic::add_population_allreduce, {
+            world.all_reduce_into(&noccdetslocal, &mut noccdets, SystemOperation::sum());
+        });
 
         PopulationStats {nwc, nrefc, nwsc, nrefsc, noccdets}
     })

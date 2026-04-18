@@ -16,10 +16,6 @@ use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
 use noci_rs::noci::{NOCIData, MOCache};
 use noci_rs::timers;
 use noci_rs::time_call;
-use noci_rs::timers::general as general_timers;
-use noci_rs::timers::deterministic as det_timers;
-use noci_rs::timers::stochastic as stoch_timers;
-use noci_rs::timers::snoci as snoci_timers;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
@@ -50,6 +46,8 @@ struct Results {
     e_snoci: Option<f64>,
     /// FCI energy if available.
     e_fci: Option<f64>,
+    /// Number of MPI ranks for printing.
+    nranks: usize,
     /// Timings associated with this geometry.
     timings: timers::Totals,
 }
@@ -147,7 +145,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     // Construct intermediates for extended non-orthogonal Wick's theorem if using. The actual
     // computation happens on only world rank 0 (with rayon). If multiple shared memory regions are 
     // used multiple copies of the intermediates will be computed.
-    let mut wicks_shared: Option<WicksShared> = time_call!(general_timers::add_build_wicks_shared, {
+    let mut wicks_shared: Option<WicksShared> = time_call!(crate::timers::general::add_build_wicks_shared, {
         if input.wicks.enabled || input.wicks.compare {
             if irank == 0 {
                 println!("{}", "=".repeat(100));
@@ -195,8 +193,8 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         e_noci_qmc_stoch = Some(e_qmc);
     }
 
-    let timings = noci_rs::timers::snapshot_all(); 
-    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_fci: ao.e_fci, timings, states: states.clone()}
+    let timings = noci_rs::timers::snapshot_all_mpi(world); 
+    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_fci: ao.e_fci, timings, nranks: world.size() as usize, states: states.clone()}
 }
 
 /// Call PySCF script to get the two electron integrals and core hamiltonian.
@@ -206,7 +204,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
 /// # Returns
 /// - `()`: Runs the PySCF interface and writes the generated integrals to disk.
 fn run_pyscf(atoms: &Atoms, input: &Input) {
-    time_call!(general_timers::add_run_pyscf, {
+    time_call!(crate::timers::general::add_run_pyscf, {
         let atomsj = serde_json::to_string(atoms).unwrap();
         
         // Call PySCF script via command line.
@@ -229,7 +227,7 @@ fn run_pyscf(atoms: &Atoms, input: &Input) {
 /// # Returns
 /// - `Vec<SCFState>`: Converged SCF states.
 fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> Vec<SCFState> {
-    time_call!(general_timers::add_run_scf, {
+    time_call!(crate::timers::general::add_run_scf, {
         if prev_states.is_empty() {
             generate_reference_noci_basis(ao, input, None)
         } else {
@@ -250,13 +248,13 @@ fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> Vec<SCFS
 /// # Returns
 /// - `(Vec<SCFState>, f64, Vec<f64>)`: Reference NOCI basis, reference NOCI energy, and reference NOCI coefficients.
 fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, mocache: &[MOCache], wicks: Option<&WicksView>) -> (Vec<SCFState>, f64, Vec<f64>) {
-    time_call!(general_timers::add_run_reference_noci, {
+    time_call!(crate::timers::general::add_run_reference_noci, {
         let mut noci_reference_basis: Vec<SCFState> = states.iter().filter(|s| s.noci_basis).cloned().collect();
         for (i, st) in noci_reference_basis.iter_mut().enumerate() {
             st.parent = i;
         }
 
-        let (e_noci_ref, c0, _) = time_call!(general_timers::add_calculate_noci_energy, {
+        let (e_noci_ref, c0, _) = time_call!(crate::timers::general::add_calculate_noci_energy, {
             calculate_noci_energy(ao, input, &noci_reference_basis, tol, mocache, wicks)
         });
 
@@ -279,12 +277,12 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64,
 /// - `f64`: Propagated energy.
 fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], mocache: &[MOCache],
                               tol: f64, wicks: Option<&WicksView>) -> f64 {
-    time_call!(det_timers::add_run_qmc_deterministic_noci, {
+    time_call!(crate::timers::deterministic::add_run_qmc_deterministic_noci, {
         println!("{}", "=".repeat(100));
         println!("Building NOCI-QMC basis....");
 
         let include_refs = true;
-        let basis = time_call!(det_timers::add_generate_excited_basis, {
+        let basis = time_call!(crate::timers::deterministic::add_generate_excited_basis, {
             generate_excited_basis(noci_reference_basis, input, include_refs)
         });
 
@@ -294,7 +292,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 
         let symmetric = true;
         let data = NOCIData::new(ao, &basis, input, tol, wicks).withmocache(mocache);
-        let (h, s, _) = time_call!(det_timers::add_build_noci_hs, {
+        let (h, s, _) = time_call!(crate::timers::deterministic::add_build_noci_hs, {
             build_noci_hs(&data, &basis, &basis, symmetric)
         });
         println!("Finished calculating NOCI-QMC matrix elements.");
@@ -319,7 +317,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 
         let mut coefficients = Vec::new();
 
-        let c = time_call!(det_timers::add_propagate, {
+        let c = time_call!(crate::timers::deterministic::add_propagate, {
             propagate(&h, &s, &c0qmc, es, &mut coefficients, input)
         });
 
@@ -376,7 +374,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 /// - `f64`: Stochastic energy estimate.
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64,
                                wicks: Option<&WicksView>, mocache: &[MOCache]) -> f64 {
-    time_call!(stoch_timers::add_run_qmc_stochastic_noci, {
+    time_call!(crate::timers::stochastic::add_run_qmc_stochastic_noci, {
         let irank = world.rank();
 
         if irank == 0 {
@@ -385,7 +383,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
         }
 
         let include_refs = true;
-        let basis = time_call!(stoch_timers::add_generate_excited_basis, {
+        let basis = time_call!(crate::timers::stochastic::add_generate_excited_basis, {
             generate_excited_basis(noci_reference_basis, input, include_refs)
         });
         let n = basis.len();
@@ -406,7 +404,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 
         let mut es = basis[0].e;
         let data = NOCIData::new(ao, &basis, input, tol, wicks).withmocache(mocache);
-        let (e, local_hist) = time_call!(stoch_timers::add_qmc_step, {
+        let (e, local_hist) = time_call!(crate::timers::stochastic::add_qmc_step, {
             qmc_step(&data, &c0qmc, &mut es, &ref_indices, world)
         });
 
@@ -441,7 +439,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 /// - `f64`: Current SNOCI energy.
 pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64,
                  wicks: Option<&mut WicksShared>, mocache: &[MOCache]) -> f64 {
-    time_call!(snoci_timers::add_run_snoci, {
+    time_call!(crate::timers::snoci::add_run_snoci, {
         let current_space = initial_space.to_vec();
         let state = snoci_step(ao, &current_space, noci_reference_basis, input, mocache, tol, wicks);
         state.ecurrent
@@ -495,7 +493,8 @@ fn print_report(res: &Results, input: &Input) {
     };
 
     println!("{}", "=".repeat(100));
-    println!("Number of Rayon threads: {}", nthreads);
+    println!("Number of MPI ranks: {}", res.nranks);
+    println!("Number of Rayon threads per rank: {}", nthreads);
     println!("Warning: Timing functions will impact performance and thread efficiency.");
     println!("Please interpret these timings as a distribution but not absolute.");
     println!("Timing overhead will be quite large relative to some of the smaller kernels.");
@@ -515,7 +514,7 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Deterministic propagation", res.timings.deterministic.propagate, 2);
         println!();
     }
-
+    
     if input.qmc.is_some() {
         print_counter("Total NOCI-QMC stochastic time", res.timings.stochastic.run_qmc_stochastic_noci, 0);
         print_counter("Basis generation", res.timings.stochastic.generate_excited_basis, 2);
@@ -523,11 +522,16 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Walker initialisation", res.timings.stochastic.step.initialise_walkers, 5);
         print_counter("Spawning, Death and Cloning", res.timings.stochastic.step.propagate_iteration, 5);
         print_counter("Accumulate updates and pack MPI buffers", res.timings.stochastic.step.acc_pack_updates, 5);
+        print_counter("Changed-global all-reduce", res.timings.stochastic.step.changedglobal_allreduce, 8);
         print_counter("Exchange spawn updates MPI", res.timings.stochastic.step.exchange_updates, 5);
+        print_counter("Communicate spawn updates MPI", res.timings.stochastic.step.communicate_spawn_updates, 8);
         print_counter("Unpack updates and accumulate", res.timings.stochastic.step.unpack_received_updates, 5);
         print_counter("Apply population updates", res.timings.stochastic.step.apply_delta, 5);
         print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
+        print_counter("Gather all walkers MPI", res.timings.stochastic.step.gather_all_walkers, 8);
         print_counter("Calculate projected energy", res.timings.stochastic.step.update_projected_energy, 5);
+        print_counter("Compute populations", res.timings.stochastic.step.compute_populations, 5);
+        print_counter("Population all-reduce", res.timings.stochastic.step.population_allreduce, 8);
         println!();
     }
 
