@@ -260,6 +260,11 @@ pub(crate) fn gather_all_walkers<'a>(world: &impl Communicator, send: &[Populati
             ntot += n as usize;
         }
 
+        if ntot == 0 {
+            scratch.gather_recv.clear();
+            return &scratch.gather_recv[..];
+        }
+
         scratch.gather_recv.resize(ntot, PopulationUpdate {det: 0, dn: 0});
         let mut recv = PartitionMut::new(&mut scratch.gather_recv[..], &scratch.gather_counts[..], &scratch.gather_displs[..]);
         world.all_gather_varcount_into(send, &mut recv);

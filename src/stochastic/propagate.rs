@@ -145,10 +145,11 @@ fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdat
 /// - `mpi`: Reusable MPI scratch space.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
-/// - `()`: Updates `plocal` in place.
-fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl Communicator) {
+/// - `bool`: `true` if any determinant populations changed globally in this iteration.
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl Communicator) -> bool {
     time_call!(crate::timers::stochastic::add_update_p, {
         let dglobal = gather_all_walkers(world, dlocal, mpi);
+        if dglobal.is_empty() {return false;}
 
         plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
             let gamma = run.start + k;
@@ -159,6 +160,7 @@ fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>
             }
             *pgamma += dp;
         });
+        true
     })
 }
 
@@ -295,9 +297,10 @@ fn unpack_received_updates(mc: &mut MCState, received: &[PopulationUpdate]) {
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// - `nranks`: Total number of MPI ranks.
 /// # Returns
-/// - `i32`: Global indicator for whether any population changes occurred on any rank.
+/// - `()`: Updates `mc.delta` in place.
 fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, 
-                      input: &Input, mpi: &mut MPIScratch, world: &impl Communicator, nranks: usize) -> i32 {
+                      input: &Input, mpi: &mut MPIScratch, world: &impl Communicator, nranks: usize) {
+    
     for buf in send.iter_mut() {
         buf.clear();
     }
@@ -314,13 +317,6 @@ fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop
         let received = exchange_updates(world, send, mpi);
         unpack_received_updates(mc, received);
     }
-
-    let changed = (!mc.changed.is_empty()) as i32;
-    let mut changedglobal = 0;
-    time_call!(crate::timers::stochastic::add_changedglobal_allreduce, {
-        world.all_reduce_into(&changed, &mut changedglobal, SystemOperation::max());
-    });
-    changedglobal
 }
 
 /// Sort and combine repeated remote population updates in place.
@@ -484,14 +480,14 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
         let shifts = Shifts {es: *es, es_s: state.es_s};
         let prop = propagate_iteration(it, &state.mc, data, &run, &scratchsize, shifts);
         
-        let changedglobal = accumulate_updates(&mut state.mc, &mut send, prop, data.input, &mut mpiscratch, world, nranks);
-        if changedglobal == 0 {
+        accumulate_updates(&mut state.mc, &mut send, prop, data.input, &mut mpiscratch, world, nranks);
+        let d = apply_delta(&mut state.mc);
+        
+        let changedglobal = update_p(&mut state.mc.pg, &d, data, &run, &mut mpiscratch, world);
+        if !changedglobal {
             print_cached_row(irank, it + 1, &state, data.basis[0].e, *es);
             continue;
         }
-        
-        let d = apply_delta(&mut state.mc);
-        update_p(&mut state.mc.pg, &d, data, &run, &mut mpiscratch, world);
 
         let stats = compute_populations(&state.mc, &isref, &run, world);
         cache_population_stats(&mut state, &stats);
