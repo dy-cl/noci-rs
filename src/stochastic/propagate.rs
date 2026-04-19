@@ -107,11 +107,10 @@ pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, pr
     }
 }
 
-/// Incrementally update the running projected-energy state using the net walker
-/// population changes applied in the current iteration.
+/// Incrementally update the projected-energy numerator and denominator.
 /// # Arguments:
-/// - `d`: Net population changes applied in the current iteration.
-/// - `pe`: Running projected-energy state to update in place.
+/// - `d`: Applied determinant population updates for this iteration.
+/// - `pe`: Current projected-energy accumulators.
 /// - `data`: Immutable stochastic propagation data.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
@@ -119,23 +118,21 @@ pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, pr
 fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &NOCIData<'_>, world: &impl Communicator) {
     time_call!(crate::timers::stochastic::add_update_projected_energy, {
         let iref = pe.iref;
-
-        let (dnum_local, dden_local) = d.par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut dnum, mut dden, mut scratch), up| {
+        
+        let (dnumlocal, ddenlocal) = d.par_iter().map_init(WickScratchSpin::new, |scratch, up| {
             let gamma = up.det as usize;
             let dn = up.dn as f64;
-            let (hgr, sgr) = find_hs(data, gamma, iref, &mut scratch);
-            dnum += dn * hgr;
-            dden += dn * sgr;
-            (dnum, dden, scratch)
-        }).map(|(dnum, dden, _)| (dnum, dden)).reduce(|| (0.0, 0.0), |(a_num, a_den), (b_num, b_den)| (a_num + b_num, a_den + b_den));
+            (dn * find_hs(data, iref, gamma, scratch).0, dn * find_s(data, iref, gamma, scratch))
+        }).reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
 
-        let mut dnum = 0.0;
-        let mut dden = 0.0;
-        world.all_reduce_into(&dnum_local, &mut dnum, SystemOperation::sum());
-        world.all_reduce_into(&dden_local, &mut dden, SystemOperation::sum());
+        let local = [dnumlocal, ddenlocal];
+        let mut global = [0.0_f64; 2];
+        time_call!(crate::timers::stochastic::add_population_allreduce, {
+            world.all_reduce_into(&local[..], &mut global[..], SystemOperation::sum());
+        });
 
-        pe.num += dnum;
-        pe.den += dden;
+        pe.num += global[0];
+        pe.den += global[1];
     })
 }
 
@@ -359,37 +356,28 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
 /// - `PopulationStats`: Current total and reference populations in both representations.
 fn compute_populations(mc: &MCState, isref: &[bool], run: &QMCRunInfo, world: &impl Communicator) -> PopulationStats {
     time_call!(crate::timers::stochastic::add_compute_populations, {
-        let nwclocal = mc.walkers.norm();
-        let mut nwc = 0i64;
+        let nrefclocal: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
+        let nrefsclocal: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
+
+        let intslocal = [mc.walkers.norm(), nrefclocal, mc.walkers.occ().len() as i64];
+        let mut intsglobal = [0_i64; 3];
         time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&nwclocal, &mut nwc, SystemOperation::sum());
+            world.all_reduce_into(&intslocal[..], &mut intsglobal[..], SystemOperation::sum());
         });
 
-        let nrefc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
-        let mut nrefc = 0i64;
+        let floatslocal = [mc.pg.iter().map(|x| x.abs()).sum::<f64>(), nrefsclocal];
+        let mut floatsglobal = [0.0_f64; 2];
         time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&nrefc_local, &mut nrefc, SystemOperation::sum());
+            world.all_reduce_into(&floatslocal[..], &mut floatsglobal[..], SystemOperation::sum());
         });
 
-        let nwsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
-        let mut nwsc = 0.0;
-        time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&nwsc_local, &mut nwsc, SystemOperation::sum());
-        });
-
-        let nrefsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
-        let mut nrefsc = 0.0;
-        time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&nrefsc_local, &mut nrefsc, SystemOperation::sum());
-        });
-
-        let noccdetslocal = mc.walkers.occ().len() as i64;
-        let mut noccdets = 0i64;
-        time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&noccdetslocal, &mut noccdets, SystemOperation::sum());
-        });
-
-        PopulationStats {nwc, nrefc, nwsc, nrefsc, noccdets}
+        PopulationStats {
+            nwc: intsglobal[0],
+            nrefc: intsglobal[1],
+            noccdets: intsglobal[2],
+            nwsc: floatsglobal[0],
+            nrefsc: floatsglobal[1],
+        }
     })
 }
 
