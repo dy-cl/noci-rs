@@ -4,6 +4,7 @@ use rand::SeedableRng;
 use mpi::topology::Communicator;
 use mpi::collective::SystemOperation;
 use mpi::traits::*;
+use mpi::datatype::PartitionMut;
 use rayon::prelude::*;
 
 use crate::input::{Input, Propagator};
@@ -14,7 +15,7 @@ use super::state::{MCState, PopulationUpdate, ExcitationHist, ProjectedEnergyUpd
                    QMCRunInfo, ScratchSize, Shifts, PropagationResult, ThreadPropagation, PopulationStats};
 
 use crate::noci::{calculate_s_pair, calculate_hs_pair};
-use crate::mpiutils::{owner, communicate_spawn_updates, gather_all_walkers};
+use crate::mpiutils::{owner, communicate_spawn_updates};
 use super::report::{print_row, print_header, print_cached_row, print_initial_row, check_stop};
 use super::init::{initialise_qmc_state, max_scratch_sizes};
 
@@ -122,6 +123,28 @@ fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'
     }).reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
 }
 
+/// Add the contribution from a sparse set of determinant updates to the local `p_{\Gamma}` block.
+/// # Arguments:
+/// - `plocal`: Local portion of `p_{\Gamma}` on this rank.
+/// - `updates`: Sparse determinant population updates to apply.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local run metadata.
+/// # Returns
+/// - `()`: Adds the contribution from `updates` into `plocal`.
+fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo) {
+    if updates.is_empty() {return;}
+
+    plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
+        let gamma = run.start + k;
+        let mut dp = 0.0;
+        for up in updates {
+            let omega = up.det as usize;
+            dp += find_s(data, gamma, omega, scratch) * up.dn as f64;
+        }
+        *pgamma += dp;
+    });
+}
+
 /// Update the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
 /// # Arguments:
 /// - `plocal`: Local portion of `p_{\Gamma}` on this rank.
@@ -132,20 +155,34 @@ fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `bool`: `true` if any determinant populations changed globally in this iteration.
-fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl Communicator) -> bool {
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl CommunicatorCollectives) -> bool {
     time_call!(crate::timers::stochastic::add_update_p, {
-        let dglobal = gather_all_walkers(world, dlocal, mpi);
-        if dglobal.is_empty() {return false;}
+        let nsend = dlocal.len() as i32;
+        world.all_gather_into(&nsend, &mut mpi.gather_counts[..]);
 
-        plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
-            let gamma = run.start + k;
-            let mut dp = 0.0;
-            for up in dglobal {
-                let omega = up.det as usize;
-                dp += find_s(data, gamma, omega, scratch) * up.dn as f64;
-            }
-            *pgamma += dp;
+        let mut ntot = 0usize;
+        for (i, &n) in mpi.gather_counts.iter().enumerate() {
+            mpi.gather_displs[i] = ntot as i32;
+            ntot += n as usize;
+        }
+
+        if ntot == 0 {return false;}
+
+        mpi.gather_recv.resize(ntot, PopulationUpdate {det: 0, dn: 0});
+
+        let locallow = mpi.gather_displs[run.irank] as usize;
+        let localhigh = locallow + mpi.gather_counts[run.irank] as usize;
+        
+        let mut recv = PartitionMut::new(&mut mpi.gather_recv[..], &mpi.gather_counts[..], &mpi.gather_displs[..]);
+        mpi::request::scope(|scope| {
+            let req = world.immediate_all_gather_varcount_into(scope, dlocal, &mut recv);
+
+            add_plocal(plocal, dlocal, data, run);
+            req.wait();
         });
+
+        add_plocal(plocal, &mpi.gather_recv[..locallow], data, run);
+        add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run);
         true
     })
 }
@@ -367,12 +404,13 @@ fn update_observables(mc: &MCState, d: &[PopulationUpdate], pe: &mut ProjectedEn
 
     let floatlocal = [dnumlocal, ddenlocal, popfloatslocal[0], popfloatslocal[1]];
     let mut floatglobal = [0.0_f64; 4];
-    time_call!(crate::timers::stochastic::add_population_allreduce, {
+
+    time_call!(crate::timers::stochastic::add_observables_allreduce, {
         world.all_reduce_into(&floatlocal[..], &mut floatglobal[..], SystemOperation::sum());
     });
 
     let mut intsglobal = [0_i64; 3];
-    time_call!(crate::timers::stochastic::add_population_allreduce, {
+    time_call!(crate::timers::stochastic::add_observables_allreduce, {
         world.all_reduce_into(&intslocal[..], &mut intsglobal[..], SystemOperation::sum());
     });
 

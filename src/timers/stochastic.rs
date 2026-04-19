@@ -19,8 +19,6 @@ pub struct StepTotals {
     pub unpack_received_updates: Counter,
     /// Total time spent in `gather_all_walkers`.
     pub gather_all_walkers: Counter,
-    /// Total time spent in population all-reduces.
-    pub population_allreduce: Counter,
     /// Total time spent in observable all-reduces.
     pub observables_allreduce: Counter,
     /// Total time spent in `compute_populations`.
@@ -48,7 +46,6 @@ impl StepTotals {
         self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
         self.unpack_received_updates.merge_from(&other.unpack_received_updates);
         self.gather_all_walkers.merge_from(&other.gather_all_walkers);
-        self.population_allreduce.merge_from(&other.population_allreduce);
         self.observables_allreduce.merge_from(&other.observables_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
@@ -223,16 +220,6 @@ pub fn add_communicate_spawn_updates(ns: u64) {
 #[inline(always)]
 pub fn add_gather_all_walkers(ns: u64) {
     with_totals(|t| t.stochastic.step.gather_all_walkers.add_ns(ns));
-}
-
-/// Add one timed call to the `population_allreduce` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to the population all-reduce.
-/// # Returns:
-/// - `()`: Updates the current thread local `population_allreduce` counter.
-#[inline(always)]
-pub fn add_population_allreduce(ns: u64) {
-    with_totals(|t| t.stochastic.step.population_allreduce.add_ns(ns));
 }
 
 /// Add one timed call to the `observables_allreduce` counter.
