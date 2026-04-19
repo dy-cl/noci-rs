@@ -522,7 +522,6 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Walker initialisation", res.timings.stochastic.step.initialise_walkers, 5);
         print_counter("Spawning, Death and Cloning", res.timings.stochastic.step.propagate_iteration, 5);
         print_counter("Accumulate updates and pack MPI buffers", res.timings.stochastic.step.acc_pack_updates, 5);
-        print_counter("Changed-global all-reduce", res.timings.stochastic.step.changedglobal_allreduce, 8);
         print_counter("Exchange spawn updates MPI", res.timings.stochastic.step.exchange_updates, 5);
         print_counter("Communicate spawn updates MPI", res.timings.stochastic.step.communicate_spawn_updates, 8);
         print_counter("Unpack updates and accumulate", res.timings.stochastic.step.unpack_received_updates, 5);
@@ -530,7 +529,7 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
         print_counter("Gather all walkers MPI", res.timings.stochastic.step.gather_all_walkers, 8);
         print_counter("Calculate projected energy", res.timings.stochastic.step.update_projected_energy, 5);
-        print_counter("Projected energy all-reduce", res.timings.stochastic.step.projected_energy_allreduce, 8);
+        print_counter("Observable all-reduce", res.timings.stochastic.step.observables_allreduce, 8);
         print_counter("Compute populations", res.timings.stochastic.step.compute_populations, 5);
         print_counter("Population all-reduce", res.timings.stochastic.step.population_allreduce, 8);
         println!();

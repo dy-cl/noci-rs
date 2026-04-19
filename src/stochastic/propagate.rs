@@ -107,33 +107,19 @@ pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, pr
     }
 }
 
-/// Incrementally update the projected-energy numerator and denominator.
+/// Compute the local projected-energy numerator and denominator increments.
 /// # Arguments:
 /// - `d`: Applied determinant population updates for this iteration.
-/// - `pe`: Current projected-energy accumulators.
+/// - `iref`: Reference determinant index.
 /// - `data`: Immutable stochastic propagation data.
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
-/// - `()`: Updates `pe` in place.
-fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, data: &NOCIData<'_>, world: &impl Communicator) {
-    time_call!(crate::timers::stochastic::add_update_projected_energy, {
-        let iref = pe.iref;
-        
-        let (dnumlocal, ddenlocal) = d.par_iter().map_init(WickScratchSpin::new, |scratch, up| {
-            let gamma = up.det as usize;
-            let dn = up.dn as f64;
-            (dn * find_hs(data, iref, gamma, scratch).0, dn * find_s(data, iref, gamma, scratch))
-        }).reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
-
-        let local = [dnumlocal, ddenlocal];
-        let mut global = [0.0_f64; 2];
-        time_call!(crate::timers::stochastic::add_projected_energy_allreduce, {
-            world.all_reduce_into(&local[..], &mut global[..], SystemOperation::sum());
-        });
-
-        pe.num += global[0];
-        pe.den += global[1];
-    })
+/// - `(f64, f64)`: Local projected-energy numerator and denominator increments.
+fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'_>) -> (f64, f64) {
+    d.par_iter().map_init(WickScratchSpin::new, |scratch, up| {
+        let gamma = up.det as usize;
+        let dn = up.dn as f64;
+        (dn * find_hs(data, iref, gamma, scratch).0, dn * find_s(data, iref, gamma, scratch))
+    }).reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
 }
 
 /// Update the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
@@ -342,39 +328,64 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
     updates.retain(|up| up.dn != 0);
 }
 
-/// Compute the current non-overlap transformed and overlap-transformed walker populations.
+/// Compute the local non-overlap and overlap-transformed population statistics.
 /// # Arguments:
 /// - `mc`: Contains the current Monte Carlo state.
 /// - `isref`: Boolean mask specifying which determinants are reference determinants.
 /// - `run`: Rank-local run metadata.
+/// # Returns
+/// - `([i64; 3], [f64; 2])`: Local integer and floating-point population statistics.
+fn population_local(mc: &MCState, isref: &[bool], run: &QMCRunInfo) -> ([i64; 3], [f64; 2]) {
+    let nrefclocal: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
+    let nrefsclocal: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
+
+    let intslocal = [mc.walkers.norm(), nrefclocal, mc.walkers.occ().len() as i64];
+    let floatslocal = [mc.pg.iter().map(|x| x.abs()).sum::<f64>(), nrefsclocal];
+    (intslocal, floatslocal)
+}
+
+/// Update projected-energy accumulators and compute current population statistics.
+/// # Arguments:
+/// - `mc`: Contains the current Monte Carlo state.
+/// - `d`: Applied determinant population updates for this iteration.
+/// - `pe`: Current projected-energy accumulators.
+/// - `isref`: Boolean mask specifying which determinants are reference determinants.
+/// - `run`: Rank-local run metadata.
+/// - `data`: Immutable stochastic propagation data.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `PopulationStats`: Current total and reference populations in both representations.
-fn compute_populations(mc: &MCState, isref: &[bool], run: &QMCRunInfo, world: &impl Communicator) -> PopulationStats {
-    time_call!(crate::timers::stochastic::add_compute_populations, {
-        let nrefclocal: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
-        let nrefsclocal: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
+fn update_observables(mc: &MCState, d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, isref: &[bool], 
+                      run: &QMCRunInfo, data: &NOCIData<'_>, world: &impl Communicator) -> PopulationStats {
+    let (dnumlocal, ddenlocal) = time_call!(crate::timers::stochastic::add_update_projected_energy, {
+        projected_energy_local(d, pe.iref, data)
+    });
 
-        let intslocal = [mc.walkers.norm(), nrefclocal, mc.walkers.occ().len() as i64];
-        let mut intsglobal = [0_i64; 3];
-        time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&intslocal[..], &mut intsglobal[..], SystemOperation::sum());
-        });
+    let (intslocal, popfloatslocal) = time_call!(crate::timers::stochastic::add_compute_populations, {
+        population_local(mc, isref, run)
+    });
 
-        let floatslocal = [mc.pg.iter().map(|x| x.abs()).sum::<f64>(), nrefsclocal];
-        let mut floatsglobal = [0.0_f64; 2];
-        time_call!(crate::timers::stochastic::add_population_allreduce, {
-            world.all_reduce_into(&floatslocal[..], &mut floatsglobal[..], SystemOperation::sum());
-        });
+    let floatlocal = [dnumlocal, ddenlocal, popfloatslocal[0], popfloatslocal[1]];
+    let mut floatglobal = [0.0_f64; 4];
+    time_call!(crate::timers::stochastic::add_population_allreduce, {
+        world.all_reduce_into(&floatlocal[..], &mut floatglobal[..], SystemOperation::sum());
+    });
 
-        PopulationStats {
-            nwc: intsglobal[0],
-            nrefc: intsglobal[1],
-            noccdets: intsglobal[2],
-            nwsc: floatsglobal[0],
-            nrefsc: floatsglobal[1],
-        }
-    })
+    let mut intsglobal = [0_i64; 3];
+    time_call!(crate::timers::stochastic::add_population_allreduce, {
+        world.all_reduce_into(&intslocal[..], &mut intsglobal[..], SystemOperation::sum());
+    });
+
+    pe.num += floatglobal[0];
+    pe.den += floatglobal[1];
+
+    PopulationStats {
+        nwc: intsglobal[0],
+        nrefc: intsglobal[1],
+        noccdets: intsglobal[2],
+        nwsc: floatglobal[2],
+        nrefsc: floatglobal[3],
+    }
 }
 
 /// Cache the latest population statistics inside the propagation state for later
@@ -488,12 +499,11 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
             print_cached_row(irank, it + 1, &state, data.basis[0].e, *es);
             continue;
         }
-
-        let stats = compute_populations(&state.mc, &isref, &run, world);
+        
+        let stats = update_observables(&state.mc, &d, &mut state.pe, &isref, &run, data, world);
         cache_population_stats(&mut state, &stats);
         update_shifts(it, &stats, &mut state, es, data.input);
         
-        update_projected_energy(&d, &mut state.pe, data, world);
         state.eprojcur = state.pe.num / state.pe.den;
         
         let stopshifts = Shifts {es: *es, es_s: state.es_s};

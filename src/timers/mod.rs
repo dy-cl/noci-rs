@@ -47,9 +47,8 @@ macro_rules! for_each_counter {
         $f!($tot.stochastic.step.update_projected_energy);
         $f!($tot.stochastic.step.communicate_spawn_updates);
         $f!($tot.stochastic.step.gather_all_walkers);
-        $f!($tot.stochastic.step.changedglobal_allreduce);
         $f!($tot.stochastic.step.population_allreduce);
-        $f!($tot.stochastic.step.projected_energy_allreduce);
+        $f!($tot.stochastic.step.observables_allreduce);
 
         $f!($tot.snoci.run_snoci);
         $f!($tot.snoci.snoci_step);

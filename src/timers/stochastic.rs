@@ -19,12 +19,10 @@ pub struct StepTotals {
     pub unpack_received_updates: Counter,
     /// Total time spent in `gather_all_walkers`.
     pub gather_all_walkers: Counter,
-    /// Total time spent in the all-reduce used for the changed-global flag.
-    pub changedglobal_allreduce: Counter,
     /// Total time spent in population all-reduces.
     pub population_allreduce: Counter,
-    /// Total time spent in projected energy all-reduces.
-    pub projected_energy_allreduce: Counter,
+    /// Total time spent in observable all-reduces.
+    pub observables_allreduce: Counter,
     /// Total time spent in `compute_populations`.
     pub compute_populations: Counter,
     /// Total time spent in `apply_delta`.
@@ -50,9 +48,8 @@ impl StepTotals {
         self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
         self.unpack_received_updates.merge_from(&other.unpack_received_updates);
         self.gather_all_walkers.merge_from(&other.gather_all_walkers);
-        self.changedglobal_allreduce.merge_from(&other.changedglobal_allreduce);
         self.population_allreduce.merge_from(&other.population_allreduce);
-        self.projected_energy_allreduce.merge_from(&other.projected_energy_allreduce);
+        self.observables_allreduce.merge_from(&other.observables_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
         self.update_p.merge_from(&other.update_p);
@@ -228,16 +225,6 @@ pub fn add_gather_all_walkers(ns: u64) {
     with_totals(|t| t.stochastic.step.gather_all_walkers.add_ns(ns));
 }
 
-/// Add one timed call to the `changedglobal_allreduce` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to the changed-global all-reduce.
-/// # Returns:
-/// - `()`: Updates the current thread local `changedglobal_allreduce` counter.
-#[inline(always)]
-pub fn add_changedglobal_allreduce(ns: u64) {
-    with_totals(|t| t.stochastic.step.changedglobal_allreduce.add_ns(ns));
-}
-
 /// Add one timed call to the `population_allreduce` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to the population all-reduce.
@@ -248,12 +235,12 @@ pub fn add_population_allreduce(ns: u64) {
     with_totals(|t| t.stochastic.step.population_allreduce.add_ns(ns));
 }
 
-/// Add one timed call to the `projected_energy_allreduce` counter.
+/// Add one timed call to the `observables_allreduce` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to the projected energy all-reduce.
 /// # Returns:
-/// - `()`: Updates the current thread local `projected_energy_allreduce` counter.
+/// - `()`: Updates the current thread local `observables_allreduce` counter.
 #[inline(always)]
-pub fn add_projected_energy_allreduce(ns: u64) {
-    with_totals(|t| t.stochastic.step.projected_energy_allreduce.add_ns(ns));
+pub fn add_observables_allreduce(ns: u64) {
+    with_totals(|t| t.stochastic.step.observables_allreduce.add_ns(ns));
 }
