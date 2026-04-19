@@ -3,7 +3,8 @@ use std::{ffi::c_void, ptr};
 
 use mpi::topology::{Communicator};
 use mpi::traits::*;
-use mpi::datatype::{Partition, PartitionMut};
+use mpi::point_to_point;
+use mpi::datatype::{PartitionMut};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::time_call;
@@ -202,31 +203,41 @@ pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walk
 /// - `&[PopulationUpdate]`: Received spawned walker updates from all ranks.
 pub(crate) fn communicate_spawn_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
     time_call!(crate::timers::stochastic::add_communicate_spawn_updates, {
-        let nranks = world.size() as usize;
+        let irank = world.rank() as usize;
 
-        scratch.send_contig.clear();
-        let mut nsend = 0usize;
-        for i in 0..nranks {
-            scratch.send_counts[i] = send[i].len() as i32;
-            scratch.send_displs[i] = nsend as i32;
-            nsend += send[i].len();
-            scratch.send_contig.extend_from_slice(&send[i]);
+        for (i, buf) in send.iter().enumerate() {
+            scratch.send_counts[i] = buf.len() as i32;
         }
 
         world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
 
-        let mut nrecv = 0usize;
-        for i in 0..nranks {
-            scratch.recv_displs[i] = nrecv as i32;
-            nrecv += scratch.recv_counts[i] as usize;
-        }
-
+        let nrecv: usize = scratch.recv_counts.iter().map(|&n| n as usize).sum();
+        scratch.recv_contig.clear();
         scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
 
-        let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displs[..]);
-        let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displs[..]);
-        world.all_to_all_varcount_into(&send_part, &mut recv_part);
+        let mut off = 0usize;
+        for (peer, buf) in send.iter().enumerate() {
+            if peer == irank {continue;}
 
+            let nsend = scratch.send_counts[peer] as usize;
+            let nrecv_peer = scratch.recv_counts[peer] as usize;
+            let proc = world.process_at_rank(peer as i32);
+
+            match (nsend, nrecv_peer) {
+                (0, 0) => {}
+                (_, 0) => {
+                    proc.send(&buf[..]);
+                }
+                (0, _) => {
+                    proc.receive_into(&mut scratch.recv_contig[off..off + nrecv_peer]);
+                    off += nrecv_peer;
+                }
+                (_, _) => {
+                    point_to_point::send_receive_into(&buf[..], &proc, &mut scratch.recv_contig[off..off + nrecv_peer], &proc);
+                    off += nrecv_peer;
+                }
+            }
+        }
         &scratch.recv_contig[..]
     })
 }

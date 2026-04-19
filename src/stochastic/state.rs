@@ -513,14 +513,8 @@ pub(crate) struct MPIScratch {
     pub(crate) gather_recv: Vec<PopulationUpdate>,
     /// Number of spawn updates sent to each rank.
     pub(crate) send_counts: Vec<i32>,
-    /// Displacements for packed spawn sends.
-    pub(crate) send_displs: Vec<i32>,
     /// Number of spawn updates received from each rank.
     pub(crate) recv_counts: Vec<i32>,
-    /// Displacements for packed spawn receives.
-    pub(crate) recv_displs: Vec<i32>,
-    /// Reusable contiguous send buffer for spawn exchange.
-    pub(crate) send_contig: Vec<PopulationUpdate>,
     /// Reusable contiguous receive buffer for spawn exchange.
     pub(crate) recv_contig: Vec<PopulationUpdate>,
 }
@@ -537,10 +531,7 @@ impl MPIScratch {
             gather_displs: vec![0; nranks],
             gather_recv: Vec::new(),
             send_counts: vec![0; nranks],
-            send_displs: vec![0; nranks],
             recv_counts: vec![0; nranks],
-            recv_displs: vec![0; nranks],
-            send_contig: Vec::new(),
             recv_contig: Vec::new(),
         }
     }

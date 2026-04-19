@@ -127,7 +127,7 @@ fn update_projected_energy(d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdat
 
         let local = [dnumlocal, ddenlocal];
         let mut global = [0.0_f64; 2];
-        time_call!(crate::timers::stochastic::add_population_allreduce, {
+        time_call!(crate::timers::stochastic::add_projected_energy_allreduce, {
             world.all_reduce_into(&local[..], &mut global[..], SystemOperation::sum());
         });
 

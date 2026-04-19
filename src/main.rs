@@ -530,6 +530,7 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
         print_counter("Gather all walkers MPI", res.timings.stochastic.step.gather_all_walkers, 8);
         print_counter("Calculate projected energy", res.timings.stochastic.step.update_projected_energy, 5);
+        print_counter("Projected energy all-reduce", res.timings.stochastic.step.projected_energy_allreduce, 8);
         print_counter("Compute populations", res.timings.stochastic.step.compute_populations, 5);
         print_counter("Population all-reduce", res.timings.stochastic.step.population_allreduce, 8);
         println!();

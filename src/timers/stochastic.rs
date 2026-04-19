@@ -23,6 +23,8 @@ pub struct StepTotals {
     pub changedglobal_allreduce: Counter,
     /// Total time spent in population all-reduces.
     pub population_allreduce: Counter,
+    /// Total time spent in projected energy all-reduces.
+    pub projected_energy_allreduce: Counter,
     /// Total time spent in `compute_populations`.
     pub compute_populations: Counter,
     /// Total time spent in `apply_delta`.
@@ -50,6 +52,7 @@ impl StepTotals {
         self.gather_all_walkers.merge_from(&other.gather_all_walkers);
         self.changedglobal_allreduce.merge_from(&other.changedglobal_allreduce);
         self.population_allreduce.merge_from(&other.population_allreduce);
+        self.projected_energy_allreduce.merge_from(&other.projected_energy_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
         self.update_p.merge_from(&other.update_p);
@@ -243,4 +246,14 @@ pub fn add_changedglobal_allreduce(ns: u64) {
 #[inline(always)]
 pub fn add_population_allreduce(ns: u64) {
     with_totals(|t| t.stochastic.step.population_allreduce.add_ns(ns));
+}
+
+/// Add one timed call to the `projected_energy_allreduce` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the projected energy all-reduce.
+/// # Returns:
+/// - `()`: Updates the current thread local `projected_energy_allreduce` counter.
+#[inline(always)]
+pub fn add_projected_energy_allreduce(ns: u64) {
+    with_totals(|t| t.stochastic.step.projected_energy_allreduce.add_ns(ns));
 }
