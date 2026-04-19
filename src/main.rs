@@ -527,7 +527,11 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Unpack updates and accumulate", res.timings.stochastic.step.unpack_received_updates, 5);
         print_counter("Apply population updates", res.timings.stochastic.step.apply_delta, 5);
         print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
-        print_counter("Gather all walkers MPI", res.timings.stochastic.step.gather_all_walkers, 8);
+        print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
+        print_counter("Update pG count gather", res.timings.stochastic.step.update_p_gather_counts, 8);
+        print_counter("Update pG local overlapping", res.timings.stochastic.step.update_p_local_overlap, 8);
+        print_counter("Update pG wait for remote updates", res.timings.stochastic.step.update_p_wait, 8);
+        print_counter("Update pG apply remote updates", res.timings.stochastic.step.update_p_apply, 8);
         print_counter("Calculate projected energy", res.timings.stochastic.step.update_projected_energy, 5);
         print_counter("Compute populations", res.timings.stochastic.step.compute_populations, 5);
         print_counter("Observables all-reduce", res.timings.stochastic.step.observables_allreduce, 8);

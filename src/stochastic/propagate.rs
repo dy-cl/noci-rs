@@ -158,7 +158,9 @@ fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<
 fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl CommunicatorCollectives) -> bool {
     time_call!(crate::timers::stochastic::add_update_p, {
         let nsend = dlocal.len() as i32;
-        world.all_gather_into(&nsend, &mut mpi.gather_counts[..]);
+        time_call!(crate::timers::stochastic::add_update_p_gather_counts, {
+            world.all_gather_into(&nsend, &mut mpi.gather_counts[..]);
+        });
 
         let mut ntot = 0usize;
         for (i, &n) in mpi.gather_counts.iter().enumerate() {
@@ -176,13 +178,20 @@ fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>
         let mut recv = PartitionMut::new(&mut mpi.gather_recv[..], &mpi.gather_counts[..], &mpi.gather_displs[..]);
         mpi::request::scope(|scope| {
             let req = world.immediate_all_gather_varcount_into(scope, dlocal, &mut recv);
+            
+            time_call!(crate::timers::stochastic::add_update_p_local_overlap, {
+                add_plocal(plocal, dlocal, data, run);
+            });
 
-            add_plocal(plocal, dlocal, data, run);
-            req.wait();
+            time_call!(crate::timers::stochastic::add_update_p_wait , {
+                req.wait();
+            })
         });
 
-        add_plocal(plocal, &mpi.gather_recv[..locallow], data, run);
-        add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run);
+        time_call!(crate::timers::stochastic::add_update_p_apply, {
+            add_plocal(plocal, &mpi.gather_recv[..locallow], data, run);
+            add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run);
+        });
         true
     })
 }

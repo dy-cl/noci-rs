@@ -27,6 +27,14 @@ pub struct StepTotals {
     pub apply_delta: Counter,
     /// Total time spent in `update_p`.
     pub update_p: Counter,
+    /// Total time spent in the count all-gather for `update_p`.
+    pub update_p_gather_counts: Counter,
+    /// Total time spent applying the local `update_p` contribution while communication is in flight.
+    pub update_p_local_overlap: Counter,
+    /// Total time spent waiting for remote `update_p` communication to complete.
+    pub update_p_wait: Counter,
+    /// Total time spent applying remote `update_p` contributions after communication completes.
+    pub update_p_apply: Counter,
     /// Total time spent in `update_projected_energy`.
     pub update_projected_energy: Counter,
 }
@@ -50,6 +58,10 @@ impl StepTotals {
         self.compute_populations.merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
         self.update_p.merge_from(&other.update_p);
+        self.update_p_gather_counts.merge_from(&other.update_p_gather_counts);
+        self.update_p_local_overlap.merge_from(&other.update_p_local_overlap);
+        self.update_p_wait.merge_from(&other.update_p_wait);
+        self.update_p_apply.merge_from(&other.update_p_apply);
         self.update_projected_energy.merge_from(&other.update_projected_energy);
     }
 }
@@ -230,4 +242,44 @@ pub fn add_gather_all_walkers(ns: u64) {
 #[inline(always)]
 pub fn add_observables_allreduce(ns: u64) {
     with_totals(|t| t.stochastic.step.observables_allreduce.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_gather_counts` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the `update_p` count all-gather.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_gather_counts` counter.
+#[inline(always)]
+pub fn add_update_p_gather_counts(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_gather_counts.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_local_overlap` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the local `update_p` overlap work.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_local_overlap` counter.
+#[inline(always)]
+pub fn add_update_p_local_overlap(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_local_overlap.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_wait` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds spent waiting for remote `update_p` communication.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_wait` counter.
+#[inline(always)]
+pub fn add_update_p_wait(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_wait.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_apply` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call applying remote `update_p` contributions.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_apply` counter.
+#[inline(always)]
+pub fn add_update_p_apply(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_apply.add_ns(ns));
 }

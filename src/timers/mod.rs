@@ -44,6 +44,10 @@ macro_rules! for_each_counter {
         $f!($tot.stochastic.step.compute_populations);
         $f!($tot.stochastic.step.apply_delta);
         $f!($tot.stochastic.step.update_p);
+        $f!($tot.stochastic.step.update_p_gather_counts);
+        $f!($tot.stochastic.step.update_p_local_overlap);
+        $f!($tot.stochastic.step.update_p_wait);
+        $f!($tot.stochastic.step.update_p_apply);
         $f!($tot.stochastic.step.update_projected_energy);
         $f!($tot.stochastic.step.communicate_spawn_updates);
         $f!($tot.stochastic.step.gather_all_walkers);
