@@ -133,8 +133,8 @@ pub(crate) fn communicate_spawn_updates<'a>(world: &impl CommunicatorCollectives
         }
 
         // Reuse one contiguous send buffer large enough for all remote updates.
-        scratch.send_contig.clear();
-        scratch.send_contig.resize(nsend, PopulationUpdate {det: 0, dn: 0});
+        scratch.recv_contig.clear();
+        scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
 
         let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displacements[..]);
         let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displacements[..]);
