@@ -1,5 +1,7 @@
 target/
-inputs/
+inputs/*
+!inputs/benchmarks/
+!inputs/benchmarks/**
 outputs/
 plotting/
 wickscache/
