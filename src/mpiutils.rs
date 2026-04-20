@@ -204,6 +204,7 @@ pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walk
 pub(crate) fn communicate_spawn_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
     time_call!(crate::timers::stochastic::add_communicate_spawn_updates, {
         let irank = world.rank() as usize;
+        let nranks = world.size() as usize;
 
         for (i, buf) in send.iter().enumerate() {
             scratch.send_counts[i] = buf.len() as i32;
@@ -215,29 +216,38 @@ pub(crate) fn communicate_spawn_updates<'a>(world: &impl Communicator, send: &[V
         scratch.recv_contig.clear();
         scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
 
-        let mut off = 0usize;
-        for (peer, buf) in send.iter().enumerate() {
-            if peer == irank {continue;}
+        mpi::request::scope(|scope| {
+            let mut recv_reqs = Vec::new();
+            let mut send_reqs = Vec::new();
 
-            let nsend = scratch.send_counts[peer] as usize;
-            let nrecv_peer = scratch.recv_counts[peer] as usize;
-            let proc = world.process_at_rank(peer as i32);
+            let mut rest = &mut scratch.recv_contig[..];
+            for peer in 0..nranks {
+                if peer == irank {continue;}
+                let n = scratch.recv_counts[peer] as usize;
+                if n == 0 {continue;}
 
-            match (nsend, nrecv_peer) {
-                (0, 0) => {}
-                (_, 0) => {
-                    proc.send(&buf[..]);
-                }
-                (0, _) => {
-                    proc.receive_into(&mut scratch.recv_contig[off..off + nrecv_peer]);
-                    off += nrecv_peer;
-                }
-                (_, _) => {
-                    point_to_point::send_receive_into(&buf[..], &proc, &mut scratch.recv_contig[off..off + nrecv_peer], &proc);
-                    off += nrecv_peer;
-                }
+                let (chunk, tail) = rest.split_at_mut(n);
+                rest = tail;
+
+                let proc = world.process_at_rank(peer as i32);
+                recv_reqs.push(proc.immediate_receive_into(scope, chunk));
             }
-        }
+
+            for (peer, buf) in send.iter().enumerate() {
+                if peer == irank || buf.is_empty() {continue;}
+
+                let proc = world.process_at_rank(peer as i32);
+                send_reqs.push(proc.immediate_send(scope, &buf[..]));
+            }
+
+            for req in recv_reqs {
+                req.wait();
+            }
+            for req in send_reqs {
+                req.wait();
+            }
+        });
+
         &scratch.recv_contig[..]
     })
 }
