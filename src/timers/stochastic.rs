@@ -13,8 +13,6 @@ pub struct StepTotals {
     pub acc_pack_updates: Counter,
     /// Total time spent in `communicate_spawn_updates`.
     pub communicate_spawn_updates: Counter,
-    /// Total time spent in `unpack_received_updates`.
-    pub unpack_received_updates: Counter,
     /// Total time spent in `gather_all_walkers`.
     pub gather_all_walkers: Counter,
     /// Total time spent in observable all-reduces.
@@ -49,7 +47,6 @@ impl StepTotals {
         self.propagate_iteration.merge_from(&other.propagate_iteration);
         self.acc_pack_updates.merge_from(&other.acc_pack_updates);
         self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
-        self.unpack_received_updates.merge_from(&other.unpack_received_updates);
         self.gather_all_walkers.merge_from(&other.gather_all_walkers);
         self.observables_allreduce.merge_from(&other.observables_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
@@ -149,16 +146,6 @@ pub fn add_propagate_iteration(ns: u64) {
 #[inline(always)]
 pub fn add_acc_pack_updates(ns: u64) {
     with_totals(|t| t.stochastic.step.acc_pack_updates.add_ns(ns));
-}
-
-/// Add one timed call to the `unpack_received_updates` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `unpack_received_updates`.
-/// # Returns:
-/// - `()`: Updates the current thread local `unpack_received_updates` counter.
-#[inline(always)]
-pub fn add_unpack_received_updates(ns: u64) {
-    with_totals(|t| t.stochastic.step.unpack_received_updates.add_ns(ns));
 }
 
 /// Add one timed call to the `compute_populations` counter.

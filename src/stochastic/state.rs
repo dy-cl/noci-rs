@@ -192,20 +192,6 @@ pub fn owner(det: usize, ndets: usize, nranks: usize) -> usize {
     det * nranks / ndets
 }
 
-/// Find range of determinants owned by a given MPI rank.
-/// # Arguments
-/// - `irank`: Current rank index.
-/// - `ndets`: Number of determinants.
-/// - `nranks`: Total number of ranks. 
-/// # Returns 
-/// - `(usize, usize)`: Start and end index of determinants owned by this rank.
-#[inline(always)]
-pub fn rank_range(irank: usize, ndets: usize, nranks: usize) -> (usize, usize) {
-    let start = ndets * irank / nranks;
-    let end = ndets * (irank + 1) / nranks;
-    (start, end)
-}
-
 /// Take initialised walker population as a full vector and remove population from the vector if a
 /// given index is not owned by the thread in question. This is obviously quite wasteful keeping a
 /// full vector of ndets for each thread, and initialising population just to remove it but it is

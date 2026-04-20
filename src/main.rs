@@ -523,7 +523,6 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Spawning, Death and Cloning", res.timings.stochastic.step.propagate_iteration, 5);
         print_counter("Accumulate updates and pack MPI buffers", res.timings.stochastic.step.acc_pack_updates, 5);
         print_counter("Communicate spawn updates MPI", res.timings.stochastic.step.communicate_spawn_updates, 5);
-        print_counter("Unpack updates and accumulate", res.timings.stochastic.step.unpack_received_updates, 5);
         print_counter("Apply population updates", res.timings.stochastic.step.apply_delta, 5);
         print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
         print_counter("Update pG count gather", res.timings.stochastic.step.update_p_gather_counts, 8);

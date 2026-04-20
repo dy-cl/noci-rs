@@ -326,21 +326,6 @@ fn acc_pack_updates(mc: &mut MCState, prop: PropagationResult, input: &Input, nd
     })
 }
 
-/// Unpack received walker updates into the global delta vector.
-/// # Arguments:
-/// - `mc`: Contains information about the current Monte Carlo state.
-/// - `received`: Walker updates received from remote MPI ranks.
-/// # Returns
-/// - `()`: Adds received walker updates into `mc.delta`.
-fn unpack_received_updates(mc: &mut MCState, received: &[PopulationUpdate]) {
-    // Apply each remotely recieved update.
-    time_call!(crate::timers::stochastic::add_unpack_received_updates, {
-        for up in received {
-            add_delta(mc, up.det as usize, up.dn);
-        }
-    })
-}
-
 /// Accumulate thread-local updates into the global delta vector and exchange any remote
 /// updates across MPI ranks.
 /// # Arguments:

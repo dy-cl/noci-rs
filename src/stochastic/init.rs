@@ -10,8 +10,8 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 use super::state::{MCState, Walkers, PopulationUpdate, ProjectedEnergyUpdate, PropagationState, QMCRunInfo, ExcitationHist, PopulationStats, MPIScratch};
 
-use crate::mpiutils::{gather_all_walkers, local_walkers};
-use super::propagate::{find_s, find_hs};
+use super::propagate::{find_s, find_hs, gather_all_walkers};
+use super::state::local_walkers;
 use super::restart::read_restart_hdf5;
 
 /// For each entry in initial coefficient vector c0 calculate `(c0_i / ||c||) * N_0` and assign

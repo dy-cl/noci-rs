@@ -3,11 +3,7 @@ use std::{ffi::c_void, ptr};
 
 use mpi::topology::{Communicator};
 use mpi::traits::*;
-use mpi::datatype::{Partition, PartitionMut};
 use serde::{Serialize, de::DeserializeOwned};
-
-use crate::time_call;
-use crate::stochastic::{Walkers, PopulationUpdate, MPIScratch};
 
 pub struct Sharedffi {
     // Communicator for ranks on the same node.

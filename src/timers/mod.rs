@@ -39,7 +39,6 @@ macro_rules! for_each_counter {
         $f!($tot.stochastic.step.initialise_walkers);
         $f!($tot.stochastic.step.propagate_iteration);
         $f!($tot.stochastic.step.acc_pack_updates);
-        $f!($tot.stochastic.step.unpack_received_updates);
         $f!($tot.stochastic.step.compute_populations);
         $f!($tot.stochastic.step.apply_delta);
         $f!($tot.stochastic.step.update_p);
