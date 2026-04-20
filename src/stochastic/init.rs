@@ -187,9 +187,9 @@ pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data
         
         let reached_c = rs.nwprevc >= qmc.target_population;
         let reached_sc = rs.nwprevsc >= qmc.target_population as f64;
-        let start_iter = rs.iter + 1;
+        let start_report = rs.report + 1;
         let prev_pop = PopulationStats::new(rs.nwprevc, rs.nrefprevc, rs.nwprevsc, rs.nrefprevsc, rs.noccdets);
-        PropagationState::restart(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
+        PropagationState::restart(mc, pe, es_s, start_report, reached_sc, reached_c, prev_pop)
     } else {
         if run.irank == 0 {
             println!("Initialising walkers.....");

@@ -250,7 +250,7 @@ pub(in crate::stochastic) struct PropagationState {
     /// Current walker populations.
     pub(in crate::stochastic) cur_pop: PopulationStats,
     /// From where did iterations begin (was a restart file used?).
-    pub(in crate::stochastic) start_iter: usize,
+    pub (in crate::stochastic) start_report: usize,
     /// Has the overlap-transformed population reached the target.
     pub(in crate::stochastic) reached_sc: bool,
     /// Has the non-overlap-transformed population reached the target.
@@ -266,15 +266,15 @@ impl PropagationState {
     /// - `mc`: Monte Carlo state.
     /// - `pe`: Incrementally updated projected-energy.
     /// - `es_s`: Overlap transformed shift.
-    /// - `start_iter`: Iteration from which propagation begins.
+    /// - `start_report`: Report from which propagation begins.
     /// - `reached_sc`: Has the overlap-transformed population reached the target.
     /// - `reached_c`: Has the non-overlap-transformed population reached the target.
     /// - `prev_pop`: Walker populations at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Initialised propagation state.
-    pub(in crate::stochastic) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_report: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
         let eprojcur = pe.num / pe.den;
-        Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_iter, reached_sc, reached_c, eprojcur}
+        Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_report, reached_sc, reached_c, eprojcur}
     }
     
     /// Construct propagation state for a run beginning from iteration zero.
@@ -294,14 +294,14 @@ impl PropagationState {
     /// - `mc`: Monte Carlo state.
     /// - `pe`: Incrementally updated projected-energy.
     /// - `es_s`: Overlap transformed shift.
-    /// - `start_iter`: Iteration from which propagation resumes.
+    /// - `start_report`: Report from which propagation resumes.
     /// - `reached_sc`: Has the overlap-transformed population reached the target.
     /// - `reached_c`: Has the non-overlap-transformed population reached the target.
     /// - `prev_pop`: Walker populations stored at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Propagation state for a restarted stochastic run.
-    pub(in crate::stochastic) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
-        Self::new(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
+    pub(in crate::stochastic) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_report: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+        Self::new(mc, pe, es_s, start_report, reached_sc, reached_c, prev_pop)
     }
 }
 

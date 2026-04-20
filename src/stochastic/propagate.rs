@@ -269,10 +269,6 @@ fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRu
 /// - `()`: Updates the local delta vector, optional excitation histogram, and MPI send buffers.
 fn acc_pack_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, input: &Input, nranks: usize) {
     time_call!(crate::timers::stochastic::add_acc_pack_updates, {
-        if nranks > 1 {
-            for buf in send.iter_mut() {buf.clear();}
-        }
-
         for (det, dn) in prop.local {
             add_delta(mc, det, dn);
         }
@@ -447,41 +443,37 @@ fn cache_population_stats(state: &mut PropagationState, stats: &PopulationStats)
 
 /// Update the shift energies according to the current walker populations and shift.
 /// # Arguments:
-/// - `it`: Current iteration number.
 /// - `stats`: Population statistics computed for the current iteration.
 /// - `state`: Propagation state containing QMC stats.
 /// - `es`: Non-overlap transformed shift energy.
 /// - `input`: User specified input options.
 /// # Returns
 /// - `()`: Updates the shift energies and associated state variables in place.
-fn update_shifts(it: usize, stats: &PopulationStats, state: &mut PropagationState, es: &mut f64, input: &Input) {
+fn update_shifts(stats: &PopulationStats, state: &mut PropagationState, es: &mut f64, input: &Input) {
     let qmc = input.qmc.as_ref().unwrap();
+    let dt_eff = input.prop_ref().dt * (qmc.ncycles as f64);
 
-    if !state.reached_c && stats.nwc > qmc.target_population {
+    if !state.reached_c && stats.nwc >= qmc.target_population {
         state.reached_c = true;
-        state.prev_pop.nwc = stats.nwc;
     }
-
-    if !state.reached_sc && stats.nwsc > qmc.target_population as f64 {
+    if !state.reached_sc && stats.nwsc >= qmc.target_population as f64 {
         state.reached_sc = true;
-        state.prev_pop.nwsc = stats.nwsc;
     }
 
-    if state.reached_c && (it + 1).is_multiple_of(qmc.shift_update_freq) {
-        *es -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (stats.nwc as f64 / state.prev_pop.nwc as f64).ln();
-        state.prev_pop.nwc = stats.nwc;
+    if state.reached_c {
+        *es -= (qmc.shift_damping / dt_eff) * (stats.nwc as f64 / state.prev_pop.nwc as f64).ln();
     }
 
-    if state.reached_sc && (it + 1).is_multiple_of(qmc.shift_update_freq) {
-        state.es_s -= (qmc.shift_damping / (input.prop_ref().dt * (qmc.shift_update_freq as f64))) * (stats.nwsc / state.prev_pop.nwsc).ln();
-        state.prev_pop.nwsc = stats.nwsc;
+    if state.reached_sc {
+        state.es_s -= (qmc.shift_damping / dt_eff) * (stats.nwsc / state.prev_pop.nwsc).ln();
     }
+
+    state.prev_pop = *stats;
 }
 
-/// Propagate according to the stochastic update equations for `max_steps` iterations.
-/// This routine initialises the NOCI-QMC state, performs the parallel spawning,
-/// death/cloning, annihilation, population, shift, and projected-energy updates, and
-/// optionally writes a restart file if a `STOP` file is detected.
+/// Propagate according to the stochastic update equations with a two-level loop. Iterations over
+/// over `nreports` outer report loops each containing `ncycles` Monte Carlo iterations. Updates of
+/// the `p_{\Gamma}` vector, projected energy, populations and shifts occur once report report loop.  
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `c0`: Initial determinant coefficient vector to be translated into walker populations.
@@ -493,68 +485,115 @@ fn update_shifts(it: usize, stats: &PopulationStats, state: &mut PropagationStat
 pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>) {
     let qmc = data.input.qmc.as_ref().unwrap();
 
-    // Set up data for stochastic run.
+    // Local MPI rank metadata.
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
     let ndets = data.basis.len();
     let start = (ndets * irank) / nranks;
     let end = (ndets * (irank + 1)) / nranks;
-    // Determine which of the determinant indices are reference states.
+
+    // Mark reference determinants for projected-energy calculations.
     let mut isref = vec![false; ndets];
     for &i in ref_indices {
         isref[i] = true;
     }
-
+    
+    // Each MPI rank gets a unique RNG seed.
     let base_seed = qmc.seed.unwrap_or_else(rand::random);
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
 
     let run = QMCRunInfo {irank, nranks, ndets, start, end, iref: 0, base_seed, rank_seed};
-
+    
+    // Precompute largest possible size needed for the non-orthogonal Wick's theorem scratch space.
     let scratchsize = {
         let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
         ScratchSize {maxsame, maxla, maxlb}
     };
 
+    // Thread local scratch for Wick's theorem and for MPI communicattion.
     let mut scratch = WickScratchSpin::new();
     let mut mpiscratch = MPIScratch::new(run.nranks);
-
+    
+    // Initialise walker populations, projected-energy accumulators and shifts.
     let mut state = initialise_qmc_state(c0, es, data, &run, &isref, world, &mut scratch, &mut mpiscratch);
-
-    println!("Size of Wick's Scratch (MiB): {}", std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0));
-    type ThreadState = (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>, SmallRng, WickScratchSpin);
-    println!("Size of per thread state (MiB): {}", std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0));
-
+    
+    if irank == 0 {
+        println!(
+            "Size of Wick's Scratch (MiB): {}", 
+            std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0)
+        );
+        type ThreadState = (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>, SmallRng, WickScratchSpin);
+        println!(
+            "Size of per thread state (MiB): {}", 
+            std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0)
+        );
+    }
+    
+    // Per destination send buffers for remote walker updates over MPI.
     let mut send: Vec<Vec<PopulationUpdate>> = (0..nranks).map(|_| Vec::new()).collect();
-
+    // Accumulate applied population changes over a report block.
+    let mut pendingd: Vec<PopulationUpdate> = Vec::new();
+    
     print_header(irank);
     print_initial_row(irank, &state, data.basis[0].e);
+    
+    // Outer loop over reports.
+    for report in state.start_report..qmc.nreports {
+        // Clear the determinant population changes vector for this report. 
+        pendingd.clear();
+        // Inner loop over cycles.
+        for cycle in 0..qmc.ncycles {
+            // Global iteration count.
+            let iter = report * qmc.ncycles + cycle;
+            
+            // Current shifts used for all cycles in this report.
+            let shifts = Shifts {es: *es, es_s: state.es_s};
+            
+            // Perform spawning, death, cloning and annhilation.
+            let prop = propagate_iteration(iter, &state.mc, data, &run, &scratchsize, shifts);
+            
+            // Accumulate local updates, assemble the remote updates and send with MPI.
+            accumulate_updates(&mut state.mc, &mut send, prop, data.input, &mut mpiscratch, world, nranks);
+            // Apply the changes in walker populations to each determinant.
+            let d = apply_delta(&mut state.mc);
+            // Store this cycles population changes.
+            pendingd.extend_from_slice(&d);
+        }
+        
+        // Last global iteration count for this report.
+        let end = (report + 1) * qmc.ncycles - 1;
 
-    for it in state.start_iter..data.input.prop_ref().max_steps {
-        let shifts = Shifts {es: *es, es_s: state.es_s};
-        let prop = propagate_iteration(it, &state.mc, data, &run, &scratchsize, shifts);
+        compress_updates(&mut pendingd);
+
+        // Update the vector `p_{\Gamma}`. 
+        let changedglobal = update_p(&mut state.mc.pg, &pendingd, data, &run, &mut mpiscratch, world);
         
-        accumulate_updates(&mut state.mc, &mut send, prop, data.input, &mut mpiscratch, world, nranks);
-        let d = apply_delta(&mut state.mc);
-        
-        let changedglobal = update_p(&mut state.mc.pg, &d, data, &run, &mut mpiscratch, world);
+        // If populations haven't changed we can end the report here early.
         if !changedglobal {
-            print_cached_row(irank, it + 1, &state, data.basis[0].e, *es);
+            let stopshifts = Shifts {es: *es, es_s: state.es_s};
+            if let Some(ret) = check_stop(report, &mut state, stopshifts, &run, world) {
+                return ret;
+            }
+            print_cached_row(irank, end + 1, &state, data.basis[0].e, *es);
             continue;
         }
         
-        let stats = update_observables(&state.mc, &d, &mut state.pe, &isref, &run, data, world);
+        // Update incremental projected-energy, populations and shifts.
+        let stats = update_observables(&state.mc, &pendingd, &mut state.pe, &isref, &run, data, world);
         cache_population_stats(&mut state, &stats);
-        update_shifts(it, &stats, &mut state, es, data.input);
+        update_shifts(&stats, &mut state, es, data.input);
         
+        // Calculate projected energy.
         state.eprojcur = state.pe.num / state.pe.den;
         
+        // Check if the calculation has been requested to stop.
         let stopshifts = Shifts {es: *es, es_s: state.es_s};
-        if let Some(ret) = check_stop(it, &mut state, stopshifts, &run, world) {
+        if let Some(ret) = check_stop(report, &mut state, stopshifts, &run, world) {
             return ret;
         }
 
-        print_row(irank, it + 1, &state, &stats, data.basis[0].e, *es);
+        print_row(irank, end + 1, &state, &stats, data.basis[0].e, *es);
     }
-
     (state.eprojcur, state.mc.excitation_hist)
 }
+
