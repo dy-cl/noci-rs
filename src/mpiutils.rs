@@ -3,8 +3,7 @@ use std::{ffi::c_void, ptr};
 
 use mpi::topology::{Communicator};
 use mpi::traits::*;
-use mpi::point_to_point;
-use mpi::datatype::{PartitionMut};
+use mpi::datatype::{Partition, PartitionMut};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::time_call;
@@ -206,47 +205,41 @@ pub(crate) fn communicate_spawn_updates<'a>(world: &impl Communicator, send: &[V
         let irank = world.rank() as usize;
         let nranks = world.size() as usize;
 
-        for (i, buf) in send.iter().enumerate() {
-            scratch.send_counts[i] = buf.len() as i32;
+        let mut nsend = 0usize;
+        for peer in 0..nranks {
+            let n = if peer == irank {0} else {send[peer].len() as i32};
+            scratch.send_counts[peer] = n;
+            scratch.send_displacements[peer] = nsend as i32;
+            nsend += n as usize;
         }
 
         world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
 
-        let nrecv: usize = scratch.recv_counts.iter().map(|&n| n as usize).sum();
+        let mut nrecv = 0usize;
+        for peer in 0..nranks {
+            scratch.recv_displacements[peer] = nrecv as i32;
+            nrecv += scratch.recv_counts[peer] as usize;
+        }
+
+        scratch.send_contig.clear();
+        scratch.send_contig.resize(nsend, PopulationUpdate {det: 0, dn: 0});
+
+        let mut off = 0usize;
+        for peer in 0..nranks {
+            if peer == irank {continue;}
+            let buf = &send[peer];
+            let n = buf.len();
+            if n == 0 {continue;}
+            scratch.send_contig[off..off + n].clone_from_slice(buf);
+            off += n;
+        }
+
         scratch.recv_contig.clear();
         scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
 
-        mpi::request::scope(|scope| {
-            let mut recv_reqs = Vec::new();
-            let mut send_reqs = Vec::new();
-
-            let mut rest = &mut scratch.recv_contig[..];
-            for peer in 0..nranks {
-                if peer == irank {continue;}
-                let n = scratch.recv_counts[peer] as usize;
-                if n == 0 {continue;}
-
-                let (chunk, tail) = rest.split_at_mut(n);
-                rest = tail;
-
-                let proc = world.process_at_rank(peer as i32);
-                recv_reqs.push(proc.immediate_receive_into(scope, chunk));
-            }
-
-            for (peer, buf) in send.iter().enumerate() {
-                if peer == irank || buf.is_empty() {continue;}
-
-                let proc = world.process_at_rank(peer as i32);
-                send_reqs.push(proc.immediate_send(scope, &buf[..]));
-            }
-
-            for req in recv_reqs {
-                req.wait();
-            }
-            for req in send_reqs {
-                req.wait();
-            }
-        });
+        let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displacements[..]);
+        let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displacements[..]);
+        world.all_to_all_varcount_into(&send_part, &mut recv_part);
 
         &scratch.recv_contig[..]
     })

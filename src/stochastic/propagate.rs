@@ -410,28 +410,23 @@ fn update_observables(mc: &MCState, d: &[PopulationUpdate], pe: &mut ProjectedEn
     let (intslocal, popfloatslocal) = time_call!(crate::timers::stochastic::add_compute_populations, {
         population_local(mc, isref, run)
     });
-
-    let floatlocal = [dnumlocal, ddenlocal, popfloatslocal[0], popfloatslocal[1]];
-    let mut floatglobal = [0.0_f64; 4];
+    
+    let obslocal = [dnumlocal, ddenlocal, popfloatslocal[0], popfloatslocal[1], intslocal[0] as f64, intslocal[1] as f64, intslocal[2] as f64];
+    let mut obsglobal = [0.0_f64; 7];
 
     time_call!(crate::timers::stochastic::add_observables_allreduce, {
-        world.all_reduce_into(&floatlocal[..], &mut floatglobal[..], SystemOperation::sum());
+        world.all_reduce_into(&obslocal[..], &mut obsglobal[..], SystemOperation::sum());
     });
 
-    let mut intsglobal = [0_i64; 3];
-    time_call!(crate::timers::stochastic::add_observables_allreduce, {
-        world.all_reduce_into(&intslocal[..], &mut intsglobal[..], SystemOperation::sum());
-    });
+    pe.num += obsglobal[0];
+    pe.den += obsglobal[1];
 
-    pe.num += floatglobal[0];
-    pe.den += floatglobal[1];
-
-    PopulationStats {
-        nwc: intsglobal[0],
-        nrefc: intsglobal[1],
-        noccdets: intsglobal[2],
-        nwsc: floatglobal[2],
-        nrefsc: floatglobal[3],
+     PopulationStats {
+        nwc: obsglobal[4] as i64,
+        nrefc: obsglobal[5] as i64,
+        noccdets: obsglobal[6] as i64,
+        nwsc: obsglobal[2],
+        nrefsc: obsglobal[3],
     }
 }
 
