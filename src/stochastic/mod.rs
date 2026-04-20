@@ -5,6 +5,7 @@ mod init;
 mod excit;
 mod propagate;
 mod report;
+mod mpi;
 
 pub use state::{ExcitationHist, QMCTimings};
 

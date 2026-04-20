@@ -8,7 +8,6 @@ use crate::nonorthogonalwicks::{WickScratchSpin};
 use crate::input::{Propagator, ExcitationGen};
 use crate::noci::{NOCIData};
 
-use crate::mpiutils::owner;
 use super::propagate::{find_hs};
 use super::excit::{pgen_uniform, pgen_heat_bath, init_heat_bath};
 
@@ -180,6 +179,52 @@ impl Walkers {
     pub(crate) fn len(&self) -> usize {
         self.pop.len() 
     }
+}
+
+/// Given a determinant index return which MPI rank owns it.
+/// # Arguments 
+/// - `det`: Determinant index.
+/// - `nranks`: Number of MPI ranks.
+/// # Returns
+/// - `usize`: MPI rank that owns the determinant.
+#[inline(always)]
+pub fn owner(det: usize, ndets: usize, nranks: usize) -> usize {
+    det * nranks / ndets
+}
+
+/// Find range of determinants owned by a given MPI rank.
+/// # Arguments
+/// - `irank`: Current rank index.
+/// - `ndets`: Number of determinants.
+/// - `nranks`: Total number of ranks. 
+/// # Returns 
+/// - `(usize, usize)`: Start and end index of determinants owned by this rank.
+#[inline(always)]
+pub fn rank_range(irank: usize, ndets: usize, nranks: usize) -> (usize, usize) {
+    let start = ndets * irank / nranks;
+    let end = ndets * (irank + 1) / nranks;
+    (start, end)
+}
+
+/// Take initialised walker population as a full vector and remove population from the vector if a
+/// given index is not owned by the thread in question. This is obviously quite wasteful keeping a
+/// full vector of ndets for each thread, and initialising population just to remove it but it is
+/// simple to do for now.
+/// # Arguments
+/// - `w`: Contains information about determinant populations, indices, and occupations.
+/// - `irank`: Rank of current thread.
+/// - `nranks`: Total number of threads.
+/// # Returns
+/// - `Walkers`: Walker population restricted to determinants owned by the current rank.
+pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
+    let occ = w.occ().to_vec();
+    for i in occ {
+        if owner(i, w.len(), nranks) != irank {
+            let ni = w.get(i);
+            w.add(i, -ni)
+        }
+    }
+    w
 }
 
 /// Storage for Monte Carlo state. 
@@ -523,6 +568,8 @@ pub(crate) struct MPIScratch {
     pub(crate) send_contig: Vec<PopulationUpdate>,
     /// Reusable contiguous receive buffer for spawn exchange.
     pub(crate) recv_contig: Vec<PopulationUpdate>,
+    /// Current write positions while packing `send_contig`.
+    pub(crate) send_write_pos: Vec<i32>,
 }
 
 impl MPIScratch {
@@ -542,6 +589,7 @@ impl MPIScratch {
             recv_displacements: vec![0; nranks],
             send_contig: Vec::new(),
             recv_contig: Vec::new(),
+            send_write_pos: vec![0; nranks],
         }
     }
 }
