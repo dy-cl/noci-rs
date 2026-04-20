@@ -194,53 +194,87 @@ pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walk
 }
 
 /// Communicate spawned walker updates between MPI ranks.
+/// Remote spawn updates are stored locally as one `Vec<PopulationUpdate>` per destination rank.
+/// This routine packs those per-destination buffers into one contiguous send buffer, exchanges the
+/// number of updates each rank will send/receive, then performs one `MPI_Alltoallv`-style exchange
+/// of the packed payloads.
 /// # Arguments:
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `send`: Per-rank spawned walker updates to send.
-/// - `scratch`: Reusable MPI scratch space.
+/// - `send`: Per-rank spawned walker updates to send. `send[p]` contains updates owned by rank `p`.
+/// - `scratch`: Reusable MPI scratch space for counts, displacements, and contiguous send/recv buffers.
 /// # Returns
-/// - `&[PopulationUpdate]`: Received spawned walker updates from all ranks.
-pub(crate) fn communicate_spawn_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
+/// - `&[PopulationUpdate]`: Flat buffer containing all spawned walker updates received from other ranks.
+pub(crate) fn communicate_spawn_updates<'a>(world: &impl CommunicatorCollectives, send: &[Vec<PopulationUpdate>], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
     time_call!(crate::timers::stochastic::add_communicate_spawn_updates, {
         let irank = world.rank() as usize;
         let nranks = world.size() as usize;
 
+        // Build the outgoing MPI metadata.
+        // `send_counts[peer]` is the number of updates this rank will send to rank `peer`.
+        // `send_displacements[peer]` is the starting offset of rank `peers`'s block inside the packed
+        // contiguous send buffer `send_contig`.
+        // `nsend` is the total number of remote updates this rank will send.
         let mut nsend = 0usize;
-        for peer in 0..nranks {
-            let n = if peer == irank {0} else {send[peer].len() as i32};
+        for (peer, buf) in send.iter().enumerate().take(nranks) {
+            let n = if peer == irank {0} else {buf.len() as i32};
             scratch.send_counts[peer] = n;
             scratch.send_displacements[peer] = nsend as i32;
             nsend += n as usize;
         }
 
+        // Fast-path, if no rank has any remote updates to send, there is no need
+        // to do the count exchange or the payload exchange this iteration.
+        let localany = if nsend > 0 {1i32} else {0i32};
+        let mut globalany = 0i32;
+        world.all_reduce_into(&localany, &mut globalany, mpi::collective::SystemOperation::sum());
+        if globalany == 0 {
+            scratch.recv_contig.clear();
+            return &scratch.recv_contig[..];
+        }
+
+        // Exchange only the per-rank message sizes.
+        // After this, `recv_counts[peer]` contains how many updates rank `peer` will send to the
+        // current rank.
         world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
 
+        // Build the incoming MPI metadata.
+        // `recv_displacements[peer]` is the starting offset of rank `peer`'s block inside the packed
+        // contiguous receive buffer `recv_contig`.
+        // `nrecv` is the total number of remote updates this rank will receive.
         let mut nrecv = 0usize;
         for peer in 0..nranks {
             scratch.recv_displacements[peer] = nrecv as i32;
             nrecv += scratch.recv_counts[peer] as usize;
         }
 
+        // Reuse one contiguous send buffer large enough for all remote updates.
         scratch.send_contig.clear();
         scratch.send_contig.resize(nsend, PopulationUpdate {det: 0, dn: 0});
 
+        // Put the per-destination update vectors into the contiguous send buffer in rank order.
         let mut off = 0usize;
-        for peer in 0..nranks {
-            if peer == irank {continue;}
-            let buf = &send[peer];
+        for (peer, buf) in send.iter().enumerate().take(nranks) {
+            if peer == irank || buf.is_empty() {continue;}
             let n = buf.len();
-            if n == 0 {continue;}
             scratch.send_contig[off..off + n].clone_from_slice(buf);
             off += n;
         }
 
+        // Reuse one contiguous receive buffer large enough for all incoming updates.
         scratch.recv_contig.clear();
         scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
 
+        // Combine the send/receive buffers together with their counts and displacements so MPI
+        // knows how much data belongs to each peer and where each peer's block begins.
         let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displacements[..]);
         let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displacements[..]);
+
+        // Perform the all-to-all variable-count exchange.
+        // Rank `peer` receives exactly `recv_counts[peer]` updates from source rank `peer`, stored starting
+        // at `recv_displacements[peer]` inside `recv_contig`.
         world.all_to_all_varcount_into(&send_part, &mut recv_part);
 
+        // Return the receive buffer for later accumulation.
         &scratch.recv_contig[..]
     })
 }
