@@ -10,8 +10,8 @@ use super::state::{ExcitationHist, Walkers};
 
 /// Storage for all data required to resume a stochastic run.
 pub(in crate::stochastic) struct RestartState {
-    /// Iteration at which the restart file was written.
-    pub(in crate::stochastic) iter: usize,
+    /// Report at which the restart file was written.
+    pub(in crate::stochastic) report: usize,
     /// Current non-overlap-transformed shift.
     pub(in crate::stochastic) es: f64,
     /// Current overlap-transformed shift.
@@ -59,7 +59,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communi
         let file = File::create(path)?;
         // Create and write metadata group.
         let meta = file.create_group("meta")?;
-        meta.new_dataset_builder().with_data(&[state.iter as u64]).create("iter")?;
+        meta.new_dataset_builder().with_data(&[state.report as u64]).create("report")?;
         meta.new_dataset_builder().with_data(&[ndets as u64]).create("ndets")?;
         meta.new_dataset_builder().with_data(&[nranks as u64]).create("nranks")?;
         meta.new_dataset_builder().with_data(&[state.es]).create("es")?;
@@ -121,7 +121,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communic
     let file = File::open(path)?;
 
     let meta = file.group("meta")?;
-    let iter = meta.dataset("iter")?.read_1d::<u64>()?[0] as usize;
+    let report = meta.dataset("report")?.read_1d::<u64>()?[0] as usize;
     let es = meta.dataset("es")?.read_1d::<f64>()?[0];
     let es_s = meta.dataset("es_s")?.read_1d::<f64>()?[0];
     let nwprevc = meta.dataset("nwprevc")?.read_1d::<i64>()?[0];
@@ -155,5 +155,5 @@ pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communic
         None
     };
 
-    Ok(RestartState {iter, es, es_s, nwprevc, nrefprevc, nwprevsc, nrefprevsc, walkers, noccdets, pg, excitation_hist, base_seed})
+    Ok(RestartState {report, es, es_s, nwprevc, nrefprevc, nwprevsc, nrefprevsc, walkers, noccdets, pg, excitation_hist, base_seed})
 }

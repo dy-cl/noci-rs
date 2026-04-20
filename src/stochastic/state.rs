@@ -176,6 +176,10 @@ impl Walkers {
     pub(crate) fn norm(&self) -> i64 {
         self.occ.iter().map(|&i| self.pop[i].abs()).sum()
     }
+
+    pub(crate) fn len(&self) -> usize {
+        self.pop.len() 
+    }
 }
 
 /// Storage for Monte Carlo state. 
@@ -188,7 +192,7 @@ pub(in crate::stochastic) struct MCState {
     pub(in crate::stochastic) changed: Vec<usize>,
     /// Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
     pub(in crate::stochastic) pg: Vec<f64>,
-    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
+    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics. 
     pub(in crate::stochastic) excitation_hist: Option<ExcitationHist> 
 }
 
@@ -246,7 +250,7 @@ pub(in crate::stochastic) struct PropagationState {
     /// Current walker populations.
     pub(in crate::stochastic) cur_pop: PopulationStats,
     /// From where did iterations begin (was a restart file used?).
-    pub(in crate::stochastic) start_iter: usize,
+    pub (in crate::stochastic) start_report: usize,
     /// Has the overlap-transformed population reached the target.
     pub(in crate::stochastic) reached_sc: bool,
     /// Has the non-overlap-transformed population reached the target.
@@ -262,15 +266,15 @@ impl PropagationState {
     /// - `mc`: Monte Carlo state.
     /// - `pe`: Incrementally updated projected-energy.
     /// - `es_s`: Overlap transformed shift.
-    /// - `start_iter`: Iteration from which propagation begins.
+    /// - `start_report`: Report from which propagation begins.
     /// - `reached_sc`: Has the overlap-transformed population reached the target.
     /// - `reached_c`: Has the non-overlap-transformed population reached the target.
     /// - `prev_pop`: Walker populations at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Initialised propagation state.
-    pub(in crate::stochastic) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_report: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
         let eprojcur = pe.num / pe.den;
-        Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_iter, reached_sc, reached_c, eprojcur}
+        Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_report, reached_sc, reached_c, eprojcur}
     }
     
     /// Construct propagation state for a run beginning from iteration zero.
@@ -290,14 +294,14 @@ impl PropagationState {
     /// - `mc`: Monte Carlo state.
     /// - `pe`: Incrementally updated projected-energy.
     /// - `es_s`: Overlap transformed shift.
-    /// - `start_iter`: Iteration from which propagation resumes.
+    /// - `start_report`: Report from which propagation resumes.
     /// - `reached_sc`: Has the overlap-transformed population reached the target.
     /// - `reached_c`: Has the non-overlap-transformed population reached the target.
     /// - `prev_pop`: Walker populations stored at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Propagation state for a restarted stochastic run.
-    pub(in crate::stochastic) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_iter: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
-        Self::new(mc, pe, es_s, start_iter, reached_sc, reached_c, prev_pop)
+    pub(in crate::stochastic) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_report: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+        Self::new(mc, pe, es_s, start_report, reached_sc, reached_c, prev_pop)
     }
 }
 
@@ -409,7 +413,7 @@ impl ThreadPropagation {
             if run.nranks == 1 {
                 self.local.push((lambda, dn));
             } else {
-                let destination = owner(lambda, run.nranks);
+                let destination = owner(lambda, run.ndets, run.nranks);
                 if destination == run.irank {
                     self.local.push((lambda, dn));
                 } else {
@@ -498,3 +502,46 @@ impl ExcitationHist {
     }
 }
 
+/// Reusable MPI scratch for walker-update collectives.
+#[derive(Default)]
+pub(crate) struct MPIScratch {
+    /// Number of sparse updates contributed by each rank for all-gather.
+    pub(crate) gather_counts: Vec<i32>,
+    /// Displacements for gathered sparse updates.
+    pub(crate) gather_displs: Vec<i32>,
+    /// Reusable receive buffer for gathered sparse updates.
+    pub(crate) gather_recv: Vec<PopulationUpdate>,
+    /// Number of spawn updates sent to each rank.
+    pub(crate) send_counts: Vec<i32>,
+    /// Displacements into the contiguous spawn-send buffer for each rank.
+    pub(crate) send_displacements: Vec<i32>,
+    /// Number of spawn updates received from each rank.
+    pub(crate) recv_counts: Vec<i32>,
+    /// Displacements into the contiguous spawn-receive buffer for each rank.
+    pub(crate) recv_displacements: Vec<i32>,
+    /// Reusable contiguous send buffer for spawn exchange.
+    pub(crate) send_contig: Vec<PopulationUpdate>,
+    /// Reusable contiguous receive buffer for spawn exchange.
+    pub(crate) recv_contig: Vec<PopulationUpdate>,
+}
+
+impl MPIScratch {
+    /// Construct reusable MPI scratch buffers.
+    /// # Arguments:
+    /// - `nranks`: Number of MPI ranks.
+    /// # Returns
+    /// - `MPIScratch`: Scratch storage sized for the communicator.
+    pub(in crate::stochastic) fn new(nranks: usize) -> Self {
+        Self {
+            gather_counts: vec![0; nranks],
+            gather_displs: vec![0; nranks],
+            gather_recv: Vec::new(),
+            send_counts: vec![0; nranks],
+            send_displacements: vec![0; nranks],
+            recv_counts: vec![0; nranks],
+            recv_displacements: vec![0; nranks],
+            send_contig: Vec::new(),
+            recv_contig: Vec::new(),
+        }
+    }
+}

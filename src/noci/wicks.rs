@@ -50,12 +50,15 @@ fn build_wicks_pair(ao: &AoData, ri: &SCFState, rj: &SCFState, tol: f64) -> (Sam
 pub fn build_wicks_shared(world: &impl Communicator, ao: &AoData, noci_reference_basis: &[SCFState], tol: f64, input: &Input) -> WicksShared {
     let nref = noci_reference_basis.len();
     let nmo  = noci_reference_basis[0].ca.ncols();
+    let irank = world.rank();
 
     let (offset, tensor_len) = assign_offsets(nref, nmo);
     let nbytes = tensor_len * std::mem::size_of::<f64>();
-
-    println!("Number of MOs: {}", ao.n);
-    println!("Estimated memory required for Wick's intermediates (MiB): {}", nbytes as f64 / (1024.0 * 1024.0));
+    
+    if irank == 0 {
+        println!("Number of MOs: {}", ao.n);
+        println!("Estimated memory required for Wick's intermediates (MiB): {}", nbytes as f64 / (1024.0 * 1024.0));
+    }
 
     match input.wicks.storage {
         crate::input::WicksStorage::RAM => {

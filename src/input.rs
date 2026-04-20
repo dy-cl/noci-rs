@@ -327,8 +327,9 @@ impl Default for DeterministicOptions {
 pub struct QMCOptions {
     pub initial_population: i64,
     pub target_population: i64,
-    pub shift_damping: f64, 
-    pub shift_update_freq: usize,
+    pub shift_damping: f64,
+    pub ncycles: usize,
+    pub nreports: usize,
     pub excitation_gen: ExcitationGen,
     pub seed: Option<u64>,
 }
@@ -342,7 +343,8 @@ impl Default for QMCOptions {
             initial_population: 100,
             target_population: 100000,
             shift_damping: 5e-4,
-            shift_update_freq: 1,
+            ncycles: 10,
+            nreports: 1000,
             excitation_gen: ExcitationGen::default(),
             seed: None,
         }
@@ -785,7 +787,8 @@ pub fn load_input(path: &str) -> Input {
             initial_population: qmc_tbl.get("initial_population").unwrap_or(defaults.initial_population),
             target_population: qmc_tbl.get("target_population").unwrap_or(defaults.target_population),
             shift_damping: qmc_tbl.get("shift_damping").unwrap_or(defaults.shift_damping),
-            shift_update_freq: qmc_tbl.get("shift_update_freq").unwrap_or(defaults.shift_update_freq),
+            ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
+            nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,
             seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
         }

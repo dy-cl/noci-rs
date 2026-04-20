@@ -7,7 +7,6 @@ use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared};
 use crate::noci::{MOCache, FockMOCache, NOCIData, FockData};
 use crate::time_call;
-use crate::timers::snoci as snoci_timers;
 
 use crate::basis::generate_excited_basis;
 use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, noci_density, build_fock_mo_cache, update_wicks_fock};
@@ -65,7 +64,7 @@ impl CandidatePool {
     /// - `CandidatePool`: Initial candidate pool containing all generated candidates together
     ///   with candidate-candidate and candidate-current overlap matrices.
     fn new(ao: &AoData, selected_space: &[SCFState], input: &Input, wicks: Option<&WicksShared>, tol: f64) -> Self {
-        time_call!(snoci_timers::add_candidate_pool_new, {
+        time_call!(crate::timers::snoci::add_candidate_pool_new, {
             let candidates = generate_excited_basis(selected_space, input, false);
             if candidates.is_empty() {
                 return Self {
@@ -107,7 +106,7 @@ impl CandidatePool {
     /// # Returns
     /// - `()`: Updates the candidate pool in place.
     fn filter_candidates(&mut self, s_ij_inv: &Array2<f64>, metric_tol: f64) {
-        time_call!(snoci_timers::add_candidate_pool_filter_candidates, {
+        time_call!(crate::timers::snoci::add_candidate_pool_filter_candidates, {
             if self.candidates.is_empty() {return;}
             
             // T_{aj} = S_{ai} S^{ij}.
@@ -136,7 +135,7 @@ impl CandidatePool {
     /// - `()`: Updates the pool in place by removing newly selected states, extending the
     ///   candidate-current overlap block, and appending overlaps for genuinely new candidates.
     fn update(&mut self, ao: &AoData, selected_space: &[SCFState], newly_selected: &[SCFState], input: &Input, wicks: Option<&WicksShared>, tol: f64) {
-        time_call!(snoci_timers::add_candidate_pool_update, {
+        time_call!(crate::timers::snoci::add_candidate_pool_update, {
             // If nothing was selected there is nothing to be done.
             if newly_selected.is_empty() {return;}
             // Remove new selections from the candidate pool.
@@ -214,7 +213,7 @@ struct FockMatrixElems {
 /// - `GmresResult`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.
 fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresResult {
-    time_call!(snoci_timers::add_gmres, {
+    time_call!(crate::timers::snoci::add_gmres, {
         let n = b.len();
         // Initial guess as all zeros.
         let mut x = Array1::<f64>::zeros(n);
@@ -333,7 +332,7 @@ fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize, tol: f64) -> GmresRe
 ///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
 fn solve_current_space(ao: &AoData, current_space: &[SCFState], input: &Input, wicks: Option<&WicksShared>, 
                        mocache: &[MOCache], tol: f64)  -> (Array2<f64>, Array2<f64>, f64, Array1<f64>)  {
-    time_call!(snoci_timers::add_solve_current_space, {
+    time_call!(crate::timers::snoci::add_solve_current_space, {
         let wview = wicks.as_ref().map(|ws| ws.view());
         let data = NOCIData::new(ao, current_space, input, tol, wview).withmocache(mocache);
 
@@ -358,7 +357,7 @@ fn solve_current_space(ao: &AoData, current_space: &[SCFState], input: &Input, w
 /// - `ProjectedCandidateSpaceElems`: Candidate-space matrices projected into the complement
 ///   of the current selected space.
 fn project_candidate_space(pool: &CandidatePool, s_ij_inv: &Array2<f64>) -> ProjectedCandidateSpaceElems {
-    time_call!(snoci_timers::add_project_candidate_space, {
+    time_call!(crate::timers::snoci::add_project_candidate_space, {
         let s_ai = pool.s_ai.clone();
         let s_ia = s_ai.t().to_owned();
         // T_{aj} = S_{ai} S^{ij}.

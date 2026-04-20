@@ -2,7 +2,6 @@
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
 use crate::time_call;
-use crate::timers::nonorthogonalwicks as wick_timers;
 use super::helpers::{bit, column_replacement_correction, get_det_adjt_same};
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
@@ -39,7 +38,7 @@ fn one_body_scalar(w: &SameSpinView<'_>, ob: OneBody, mi: usize) -> f64 {
 /// - `f64`: One-electron Hamiltonian matrix element.
 #[inline(always)]
 pub(crate) fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h1, {
         lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::H1)
     })
 }
@@ -96,7 +95,7 @@ fn lg_one_body(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
 /// - `f64`: One-body matrix element in the `m = 0` case.
 #[inline(always)]
 fn lg_one_body_m0(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody) -> f64 {
-    time_call!(wick_timers::add_lg_one_body_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         match l {
             0 => w.phase * w.tilde_s_prod * one_body_scalar(w, ob, 0),
@@ -116,7 +115,7 @@ fn lg_one_body_m0(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &Excitation
 /// - `f64`: One-body matrix element for `l = 1`.
 #[inline(always)]
 fn lg_one_body_m0_l1(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBody) -> f64 {
-    time_call!(wick_timers::add_lg_one_body_m0_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l1, {
         let n = w.n();
         let det0 = scratch.det0.as_slice();
         let det = det0[0];
@@ -138,7 +137,7 @@ fn lg_one_body_m0_l1(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBod
 /// - `f64`: One-body matrix element for `l = 2`.
 #[inline(always)]
 fn lg_one_body_m0_l2(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBody) -> f64 {
-    time_call!(wick_timers::add_lg_one_body_m0_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l2, {
         let n = w.n();
         let d = scratch.det0.as_slice();
         let a00 = d[0];
@@ -179,7 +178,7 @@ fn lg_one_body_m0_l2(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBod
 /// - `f64`: One-body matrix element for the general `m = 0` path.
 #[inline(always)]
 fn lg_one_body_m0_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody) -> f64 {
-    time_call!(wick_timers::add_lg_one_body_m0_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         let mut acc = 0.0;
         let n = w.n();
@@ -217,7 +216,7 @@ fn lg_one_body_m0_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &Excita
 /// - `f64`: One-body matrix element.
 #[inline(always)]
 fn lg_one_body_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody,) -> f64 {
-    time_call!(wick_timers::add_lg_one_body_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
         let mut acc = 0.0;

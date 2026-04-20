@@ -2,7 +2,6 @@
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
 use crate::time_call;
-use crate::timers::nonorthogonalwicks as wick_timers;
 use super::helpers::{bit, column_replacement_correction, get_det_adjt_diff, ii_replacement};
 use super::super::layout::{idx, idx4};
 use super::super::scratch::WickScratch;
@@ -27,7 +26,7 @@ use super::super::view::WicksPairView;
 #[inline(always)]
 pub(crate) fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
                   diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff, {
         if w.aa.m == 0 && w.bb.m == 0 {
             lg_h2_diff_m0(w, l_ex_a, g_ex_a, l_ex_b, g_ex_b, diff, a, b, tol)
         }
@@ -55,7 +54,7 @@ pub(crate) fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Ex
 #[inline(always)]
 fn lg_h2_diff_m0(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
                  diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
 
@@ -80,7 +79,7 @@ fn lg_h2_diff_m0(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitation
 /// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 1)`.
 #[inline(always)]
 fn lg_h2_diff_m0_11(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_m0_11, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_11, {
         let n = w.ab.n();
 
         let ra = a.rows[0];
@@ -114,7 +113,7 @@ fn lg_h2_diff_m0_11(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
 /// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 3)`.
 #[inline(always)]
 fn lg_h2_diff_m0_13(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_m0_13, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_13, {
         diff.ensure_diff(1, 3);
 
         let n = w.ab.n();
@@ -168,7 +167,7 @@ fn lg_h2_diff_m0_13(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, 
 /// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (2, 2)`.
 #[inline(always)]
 fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_m0_22, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_22, {
         let n = w.ab.n();
 
         let rows_a = &a.rows[..2];
@@ -272,7 +271,7 @@ fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
 /// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (3, 1)`.
 #[inline(always)]
 fn lg_h2_diff_m0_31(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_m0_31, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_31, {
         diff.ensure_diff(3, 1);
 
         let n = w.ab.n();
@@ -333,7 +332,7 @@ fn lg_h2_diff_m0_31(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, 
 #[inline(always)]
 fn lg_h2_diff_m0_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
                  diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_m0_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_gen, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
 
@@ -418,7 +417,7 @@ fn lg_h2_diff_m0_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excita
 #[inline(always)]
 fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
                   diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
-    time_call!(wick_timers::add_lg_h2_diff_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_gen, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
 

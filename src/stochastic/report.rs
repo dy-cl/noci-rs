@@ -83,7 +83,7 @@ pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &Propag
 /// Check for a `STOP` file, write a restart if required, and return early from the
 /// stochastic propagation.
 /// # Arguments:
-/// - `it`: Current iteration number.
+/// - `it`: Current report number.
 /// - `state`: Propagation state containing QMC bookkeeping data.
 /// - `shifts`: Current non-overlap and overlap-transformed shifts.
 /// - `run`: Rank-local run metadata.
@@ -92,11 +92,8 @@ pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &Propag
 /// # Returns
 /// - `Option<(f64, Option<ExcitationHist>, QMCTimings)>`: Final return values if a
 ///   stop was requested, otherwise `None`.
-pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, world: &impl Communicator) -> Option<(f64, Option<ExcitationHist>)> {
-    if !(it + 1).is_multiple_of(10) {
-        return None;
-    }
-
+pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
+                                        world: &impl Communicator) -> Option<(f64, Option<ExcitationHist>)> {
     let mut stop = 0;
     if run.irank == 0 && Path::new("STOP").exists() {
         stop = 1;
@@ -108,7 +105,7 @@ pub(in crate::stochastic) fn check_stop(it: usize, state: &mut PropagationState,
     }
 
     let rs = RestartState {
-        iter: it,
+        report,
         es: shifts.es,
         es_s: shifts.es_s,
         nwprevc: state.prev_pop.nwc,

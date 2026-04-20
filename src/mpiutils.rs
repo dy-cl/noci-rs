@@ -6,8 +6,8 @@ use mpi::traits::*;
 use mpi::datatype::{Partition, PartitionMut};
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::stochastic::Walkers;
-use crate::stochastic::PopulationUpdate;
+use crate::time_call;
+use crate::stochastic::{Walkers, PopulationUpdate, MPIScratch};
 
 pub struct Sharedffi {
     // Communicator for ranks on the same node.
@@ -153,8 +153,23 @@ where
 /// - `nranks`: Number of MPI ranks.
 /// # Returns
 /// - `usize`: MPI rank that owns the determinant.
-pub fn owner(det: usize, nranks: usize) -> usize {
-    det % nranks
+#[inline(always)]
+pub fn owner(det: usize, ndets: usize, nranks: usize) -> usize {
+    det * nranks / ndets
+}
+
+/// Find range of determinants owned by a given MPI rank.
+/// # Arguments
+/// - `irank`: Current rank index.
+/// - `ndets`: Number of determinants.
+/// - `nranks`: Total number of ranks. 
+/// # Returns 
+/// - `(usize, usize)`: Start and end index of determinants owned by this rank.
+#[inline(always)]
+pub fn rank_range(irank: usize, ndets: usize, nranks: usize) -> (usize, usize) {
+    let start = ndets * irank / nranks;
+    let end = ndets * (irank + 1) / nranks;
+    (start, end)
 }
 
 /// Take initialised walker population as a full vector and remove population from the vector if a
@@ -170,7 +185,7 @@ pub fn owner(det: usize, nranks: usize) -> usize {
 pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
     let occ = w.occ().to_vec();
     for i in occ {
-        if owner(i, nranks) != irank {
+        if owner(i, w.len(), nranks) != irank {
             let ni = w.get(i);
             w.add(i, -ni)
         }
@@ -178,78 +193,118 @@ pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walk
     w
 }
 
-/// For any spawning procedure that spawns onto a determinant not owned by the originating rank, we
-/// must communicate this change. Each rank sends a `Vec<PopulationUpdate>` to every other ranking
-/// containing the required population changes.
+/// Communicate spawned walker updates between MPI ranks.
+/// Remote spawn updates are stored locally as one `Vec<PopulationUpdate>` per destination rank.
+/// This routine packs those per-destination buffers into one contiguous send buffer, exchanges the
+/// number of updates each rank will send/receive, then performs one `MPI_Alltoallv`-style exchange
+/// of the packed payloads.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
-/// - `send`: Per destination send buffers.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `send`: Per-rank spawned walker updates to send. `send[p]` contains updates owned by rank `p`.
+/// - `scratch`: Reusable MPI scratch space for counts, displacements, and contiguous send/recv buffers.
 /// # Returns
-/// - `Vec<PopulationUpdate>`: Contiguous list of population updates received by this rank.
-pub(crate) fn communicate_spawn_updates(world: &impl Communicator, send: &[Vec<PopulationUpdate>]) -> Vec<PopulationUpdate> {
-    let nranks = world.size() as usize;
+/// - `&[PopulationUpdate]`: Flat buffer containing all spawned walker updates received from other ranks.
+pub(crate) fn communicate_spawn_updates<'a>(world: &impl CommunicatorCollectives, send: &[Vec<PopulationUpdate>], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
+    time_call!(crate::timers::stochastic::add_communicate_spawn_updates, {
+        let irank = world.rank() as usize;
+        let nranks = world.size() as usize;
 
-    // Assemble message to be communicated. 
-    // Number of messages this rank will send to rank i.
-    let mut send_counts = vec![0i32; nranks];
-    // Where inside send_contig do the messages for a given rank start.
-    let mut send_displacements = vec![0i32; nranks];
-    // Contiguous send buffer.
-    let mut send_contig: Vec<PopulationUpdate> = Vec::new();
-    for i in 0..nranks {
-        send_displacements[i] = send_contig.len() as i32;
-        send_contig.extend_from_slice(&send[i]);
-        send_counts[i] = send[i].len() as i32;
-    }
+        // Build the outgoing MPI metadata.
+        // `send_counts[peer]` is the number of updates this rank will send to rank `peer`.
+        // `send_displacements[peer]` is the starting offset of rank `peers`'s block inside the packed
+        // contiguous send buffer `send_contig`.
+        // `nsend` is the total number of remote updates this rank will send.
+        let mut nsend = 0usize;
+        for (peer, buf) in send.iter().enumerate().take(nranks) {
+            let n = if peer == irank {0} else {buf.len() as i32};
+            scratch.send_counts[peer] = n;
+            scratch.send_displacements[peer] = nsend as i32;
+            nsend += n as usize;
+        }
 
-    // Exchange send_counts to find out how many messages are to be recieved. 
-    // Once complete recv_counts contains number of messages rank i will send to the current rank.
-    let mut recv_counts = vec![0i32; nranks];
-    world.all_to_all_into(&send_counts[..], &mut recv_counts[..]);
+        // Fast-path, if no rank has any remote updates to send, there is no need
+        // to do the count exchange or the payload exchange this iteration.
+        let localany = if nsend > 0 {1i32} else {0i32};
+        let mut globalany = 0i32;
+        world.all_reduce_into(&localany, &mut globalany, mpi::collective::SystemOperation::sum());
+        if globalany == 0 {
+            scratch.recv_contig.clear();
+            return &scratch.recv_contig[..];
+        }
 
-    // Construct the recv_displacements and allocate buffer for messages to be recieved.
-    let mut recv_displacements = vec![0i32; nranks];
-    let total_recv: usize = recv_counts.iter().map(|&x| x as usize).sum();
-    for i in 1..nranks {
-        recv_displacements[i] = recv_displacements[i - 1] + recv_counts[i - 1];
-    }
-    let mut recv_contig = vec![PopulationUpdate {det: 0, dn: 0}; total_recv];
+        // Exchange only the per-rank message sizes.
+        // After this, `recv_counts[peer]` contains how many updates rank `peer` will send to the
+        // current rank.
+        world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
 
-    // Exchange messages.
-    let send_part = Partition::new(&send_contig[..], send_counts, send_displacements);
-    let mut recv_part = PartitionMut::new(&mut recv_contig[..], recv_counts, recv_displacements);
-    world.all_to_all_varcount_into(&send_part, &mut recv_part);
-    recv_contig
+        // Build the incoming MPI metadata.
+        // `recv_displacements[peer]` is the starting offset of rank `peer`'s block inside the packed
+        // contiguous receive buffer `recv_contig`.
+        // `nrecv` is the total number of remote updates this rank will receive.
+        let mut nrecv = 0usize;
+        for peer in 0..nranks {
+            scratch.recv_displacements[peer] = nrecv as i32;
+            nrecv += scratch.recv_counts[peer] as usize;
+        }
+
+        // Reuse one contiguous send buffer large enough for all remote updates.
+        scratch.send_contig.clear();
+        scratch.send_contig.resize(nsend, PopulationUpdate {det: 0, dn: 0});
+
+        // Put the per-destination update vectors into the contiguous send buffer in rank order.
+        let mut off = 0usize;
+        for (peer, buf) in send.iter().enumerate().take(nranks) {
+            if peer == irank || buf.is_empty() {continue;}
+            let n = buf.len();
+            scratch.send_contig[off..off + n].clone_from_slice(buf);
+            off += n;
+        }
+
+        // Reuse one contiguous receive buffer large enough for all incoming updates.
+        scratch.recv_contig.clear();
+        scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
+
+        // Combine the send/receive buffers together with their counts and displacements so MPI
+        // knows how much data belongs to each peer and where each peer's block begins.
+        let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displacements[..]);
+        let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displacements[..]);
+
+        // Perform the all-to-all variable-count exchange.
+        // Rank `peer` receives exactly `recv_counts[peer]` updates from source rank `peer`, stored starting
+        // at `recv_displacements[peer]` inside `recv_contig`.
+        world.all_to_all_varcount_into(&send_part, &mut recv_part);
+
+        // Return the receive buffer for later accumulation.
+        &scratch.recv_contig[..]
+    })
 }
 
-/// Gather walker populations from all ranks into a global list. Requires use of the
-/// PopulationUpdate struct which strictly is for population changes (hence dn) rather than totals.
-/// But it works for this routine so there is no reason to define another struct.
+/// Gather variable-length walker updates from all ranks into a reusable receive buffer.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD). 
-/// - `local`: Determinant populations and indices on this rank.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `send`: Local walker updates to gather.
+/// - `scratch`: Reusable MPI scratch space.
 /// # Returns
-/// - `Vec<PopulationUpdate>`: Gathered determinant populations from all ranks.
-pub(crate) fn gather_all_walkers(world: &impl Communicator, local: &[PopulationUpdate]) -> Vec<PopulationUpdate> {
-    let nranks = world.size() as usize;
-    
-    // Calculate how many entries this rank will send, and recieve the count of how many entries
-    // will be recieved from other ranks.
-    let send_count = local.len() as i32;
-    let mut recv_counts = vec![0i32; nranks];
-    world.all_gather_into(&send_count, &mut recv_counts[..]);
-    
-    // Find displacements for where each ranks recieved message will be placed.
-    let mut recv_displacements = vec![0i32; nranks];
-    for i in 1..nranks {
-        recv_displacements[i] = recv_displacements[i - 1] + recv_counts[i - 1]; 
-    }
-    // Get total number of entries to be recieved from all ranks and allocate buffer to hold.
-    let total_recv: usize = recv_counts.iter().map(|&c| c as usize).sum();
-    let mut recv_contig = vec![PopulationUpdate {det: 0, dn: 0}; total_recv];
-    
-    // Gather the local list from each rank and return the global list. 
-    let mut recv_part = PartitionMut::new(&mut recv_contig[..], recv_counts, recv_displacements);
-    world.all_gather_varcount_into(local, &mut recv_part);
-    recv_contig
+/// - `&[PopulationUpdate]`: Global gathered walker updates.
+pub(crate) fn gather_all_walkers<'a>(world: &impl Communicator, send: &[PopulationUpdate], scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
+    time_call!(crate::timers::stochastic::add_gather_all_walkers, {
+        let nsend = send.len() as i32;
+        world.all_gather_into(&nsend, &mut scratch.gather_counts[..]);
+
+        let mut ntot = 0usize;
+        for (i, &n) in scratch.gather_counts.iter().enumerate() {
+            scratch.gather_displs[i] = ntot as i32;
+            ntot += n as usize;
+        }
+
+        if ntot == 0 {
+            scratch.gather_recv.clear();
+            return &scratch.gather_recv[..];
+        }
+
+        scratch.gather_recv.resize(ntot, PopulationUpdate {det: 0, dn: 0});
+        let mut recv = PartitionMut::new(&mut scratch.gather_recv[..], &scratch.gather_counts[..], &scratch.gather_displs[..]);
+        world.all_gather_varcount_into(send, &mut recv);
+        &scratch.gather_recv[..]
+    })
 }

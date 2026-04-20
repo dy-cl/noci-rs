@@ -11,16 +11,28 @@ pub struct StepTotals {
     pub propagate_iteration: Counter,
     /// Total time spent in `acc_pack_updates`.
     pub acc_pack_updates: Counter,
-    /// Total time spent in `exchange_updates`.
-    pub exchange_updates: Counter,
+    /// Total time spent in `communicate_spawn_updates`.
+    pub communicate_spawn_updates: Counter,
     /// Total time spent in `unpack_received_updates`.
     pub unpack_received_updates: Counter,
-    /// Total time spent in `compute_populations`
+    /// Total time spent in `gather_all_walkers`.
+    pub gather_all_walkers: Counter,
+    /// Total time spent in observable all-reduces.
+    pub observables_allreduce: Counter,
+    /// Total time spent in `compute_populations`.
     pub compute_populations: Counter,
     /// Total time spent in `apply_delta`.
     pub apply_delta: Counter,
     /// Total time spent in `update_p`.
     pub update_p: Counter,
+    /// Total time spent in the count all-gather for `update_p`.
+    pub update_p_gather_counts: Counter,
+    /// Total time spent applying the local `update_p` contribution while communication is in flight.
+    pub update_p_local_overlap: Counter,
+    /// Total time spent waiting for remote `update_p` communication to complete.
+    pub update_p_wait: Counter,
+    /// Total time spent applying remote `update_p` contributions after communication completes.
+    pub update_p_apply: Counter,
     /// Total time spent in `update_projected_energy`.
     pub update_projected_energy: Counter,
 }
@@ -36,13 +48,32 @@ impl StepTotals {
         self.initialise_walkers.merge_from(&other.initialise_walkers);
         self.propagate_iteration.merge_from(&other.propagate_iteration);
         self.acc_pack_updates.merge_from(&other.acc_pack_updates);
-        self.exchange_updates.merge_from(&other.exchange_updates);
+        self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
         self.unpack_received_updates.merge_from(&other.unpack_received_updates);
+        self.gather_all_walkers.merge_from(&other.gather_all_walkers);
+        self.observables_allreduce.merge_from(&other.observables_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
         self.update_p.merge_from(&other.update_p);
+        self.update_p_gather_counts.merge_from(&other.update_p_gather_counts);
+        self.update_p_local_overlap.merge_from(&other.update_p_local_overlap);
+        self.update_p_wait.merge_from(&other.update_p_wait);
+        self.update_p_apply.merge_from(&other.update_p_apply);
         self.update_projected_energy.merge_from(&other.update_projected_energy);
     }
+}
+
+/// Timing counters for stochastic NOCI-QMC stages.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Totals {
+    /// Total time spent in `run_qmc_stochastic_noci`.
+    pub run_qmc_stochastic_noci: Counter,
+    /// Total time spent in `generate_excited_basis` during stochastic NOCI-QMC.
+    pub generate_excited_basis: Counter,
+    /// Total time spent in `qmc_step`.
+    pub qmc_step: Counter,
+    /// Timings for individual stochastic propagation substeps.
+    pub step: StepTotals,
 }
 
 impl Totals {
@@ -58,19 +89,6 @@ impl Totals {
         self.qmc_step.merge_from(&other.qmc_step);
         self.step.merge_from(&other.step);
     }
-}
-
-/// Timing counters for stochastic NOCI-QMC stages.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Totals {
-    /// Total time spent in `run_qmc_stochastic_noci`.
-    pub run_qmc_stochastic_noci: Counter,
-    /// Total time spent in `generate_excited_basis` during stochastic NOCI-QMC.
-    pub generate_excited_basis: Counter,
-    /// Total time spent in `qmc_step`.
-    pub qmc_step: Counter,
-    /// Timings for individual stochastic propagation substeps.
-    pub step: StepTotals,
 }
 
 /// Add one timed call to the `run_qmc_stochastic_noci` counter.
@@ -133,16 +151,6 @@ pub fn add_acc_pack_updates(ns: u64) {
     with_totals(|t| t.stochastic.step.acc_pack_updates.add_ns(ns));
 }
 
-/// Add one timed call to the `exchange_updates` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `exchange_updates`.
-/// # Returns:
-/// - `()`: Updates the current thread local `exchange_updates` counter.
-#[inline(always)]
-pub fn add_exchange_updates(ns: u64) {
-    with_totals(|t| t.stochastic.step.exchange_updates.add_ns(ns));
-}
-
 /// Add one timed call to the `unpack_received_updates` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `unpack_received_updates`.
@@ -191,4 +199,74 @@ pub fn add_update_p(ns: u64) {
 #[inline(always)]
 pub fn add_update_projected_energy(ns: u64) {
     with_totals(|t| t.stochastic.step.update_projected_energy.add_ns(ns));
+}
+
+/// Add one timed call to the `communicate_spawn_updates` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `communicate_spawn_updates`.
+/// # Returns:
+/// - `()`: Updates the current thread local `communicate_spawn_updates` counter.
+#[inline(always)]
+pub fn add_communicate_spawn_updates(ns: u64) {
+    with_totals(|t| t.stochastic.step.communicate_spawn_updates.add_ns(ns));
+}
+
+/// Add one timed call to the `gather_all_walkers` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `gather_all_walkers`.
+/// # Returns:
+/// - `()`: Updates the current thread local `gather_all_walkers` counter.
+#[inline(always)]
+pub fn add_gather_all_walkers(ns: u64) {
+    with_totals(|t| t.stochastic.step.gather_all_walkers.add_ns(ns));
+}
+
+/// Add one timed call to the `observables_allreduce` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the projected energy all-reduce.
+/// # Returns:
+/// - `()`: Updates the current thread local `observables_allreduce` counter.
+#[inline(always)]
+pub fn add_observables_allreduce(ns: u64) {
+    with_totals(|t| t.stochastic.step.observables_allreduce.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_gather_counts` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the `update_p` count all-gather.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_gather_counts` counter.
+#[inline(always)]
+pub fn add_update_p_gather_counts(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_gather_counts.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_local_overlap` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the local `update_p` overlap work.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_local_overlap` counter.
+#[inline(always)]
+pub fn add_update_p_local_overlap(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_local_overlap.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_wait` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds spent waiting for remote `update_p` communication.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_wait` counter.
+#[inline(always)]
+pub fn add_update_p_wait(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_wait.add_ns(ns));
+}
+
+/// Add one timed call to the `update_p_apply` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call applying remote `update_p` contributions.
+/// # Returns:
+/// - `()`: Updates the current thread local `update_p_apply` counter.
+#[inline(always)]
+pub fn add_update_p_apply(ns: u64) {
+    with_totals(|t| t.stochastic.step.update_p_apply.add_ns(ns));
 }

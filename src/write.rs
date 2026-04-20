@@ -127,8 +127,9 @@ pub fn print_input(input: &Input) {
             println!("ENABLED: true");
             println!("INITIAL_POPULATION: {}", q.initial_population);
             println!("TARGET_POPULATION: {}", q.target_population);
+            println!("NCYCLES: {}", q.ncycles);
+            println!("NREPORTS: {}", q.nreports);
             println!("SHIFT_DAMPING: {}", q.shift_damping);
-            println!("SHIFT_UPDATE_FREQ: {}", q.shift_update_freq);
             let excitation_gen = match q.excitation_gen {
                 ExcitationGen::Uniform => "uniform",
                 ExcitationGen::HeatBath => "heat-bath",
