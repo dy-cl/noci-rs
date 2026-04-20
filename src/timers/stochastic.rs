@@ -11,8 +11,6 @@ pub struct StepTotals {
     pub propagate_iteration: Counter,
     /// Total time spent in `acc_pack_updates`.
     pub acc_pack_updates: Counter,
-    /// Total time spent in `exchange_updates`.
-    pub exchange_updates: Counter,
     /// Total time spent in `communicate_spawn_updates`.
     pub communicate_spawn_updates: Counter,
     /// Total time spent in `unpack_received_updates`.
@@ -50,7 +48,6 @@ impl StepTotals {
         self.initialise_walkers.merge_from(&other.initialise_walkers);
         self.propagate_iteration.merge_from(&other.propagate_iteration);
         self.acc_pack_updates.merge_from(&other.acc_pack_updates);
-        self.exchange_updates.merge_from(&other.exchange_updates);
         self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
         self.unpack_received_updates.merge_from(&other.unpack_received_updates);
         self.gather_all_walkers.merge_from(&other.gather_all_walkers);
@@ -152,16 +149,6 @@ pub fn add_propagate_iteration(ns: u64) {
 #[inline(always)]
 pub fn add_acc_pack_updates(ns: u64) {
     with_totals(|t| t.stochastic.step.acc_pack_updates.add_ns(ns));
-}
-
-/// Add one timed call to the `exchange_updates` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `exchange_updates`.
-/// # Returns:
-/// - `()`: Updates the current thread local `exchange_updates` counter.
-#[inline(always)]
-pub fn add_exchange_updates(ns: u64) {
-    with_totals(|t| t.stochastic.step.exchange_updates.add_ns(ns));
 }
 
 /// Add one timed call to the `unpack_received_updates` counter.

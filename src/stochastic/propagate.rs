@@ -74,9 +74,12 @@ fn add_delta(mc: &mut MCState, i: usize, dn: i64) {
 /// - `Vec<PopulationUpdate>`: List of applied population updates for this iteration.
 fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
     time_call!(crate::timers::stochastic::add_apply_delta, {
+        // Fast exit path for no changes.
         if mc.changed.is_empty() {return Vec::new();}
-        let mut applied = Vec::with_capacity(mc.changed.len());
 
+        // Iterate over only determinants which have a changed population, read in the change
+        // (`delta`), zero the `delta` and apply it to the walker population.
+        let mut applied = Vec::with_capacity(mc.changed.len());
         for &i in &mc.changed {
             let dn = mc.delta[i];
             mc.delta[i] = 0;
@@ -116,6 +119,8 @@ pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, pr
 /// # Returns
 /// - `(f64, f64)`: Local projected-energy numerator and denominator increments.
 fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'_>) -> (f64, f64) {
+    // For each updated determinant `\Gamma` accumulate `dN_\Gamma H_{\text{ref}, \Gamma}` into the
+    // numerator and `dN_\Gamma S_{\text{ref}, \Gamma}` into the denominator. 
     d.par_iter().map_init(WickScratchSpin::new, |scratch, up| {
         let gamma = up.det as usize;
         let dn = up.dn as f64;
@@ -132,8 +137,11 @@ fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'
 /// # Returns
 /// - `()`: Adds the contribution from `updates` into `plocal`.
 fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo) {
+    // Fast exit.
     if updates.is_empty() {return;}
-
+    
+    // Parallel iteration over rank local elements of `p_\Gamma`, for each local owned determinant
+    // `\Gamma` we accumulate `\sum_\Omega S_{\Gamma, \Omega} dN_\Omega` over the updates.
     plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
         let gamma = run.start + k;
         let mut dp = 0.0;
@@ -157,37 +165,47 @@ fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<
 /// - `bool`: `true` if any determinant populations changed globally in this iteration.
 fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl CommunicatorCollectives) -> bool {
     time_call!(crate::timers::stochastic::add_update_p, {
+
+        // Gather number of updates that each rank will send to this rank.
         let nsend = dlocal.len() as i32;
         time_call!(crate::timers::stochastic::add_update_p_gather_counts, {
             world.all_gather_into(&nsend, &mut mpi.gather_counts[..]);
         });
-
+        
+        // Calculate displacements for the recieve buffer and the total number of updates across
+        // all ranks.
         let mut ntot = 0usize;
         for (i, &n) in mpi.gather_counts.iter().enumerate() {
             mpi.gather_displs[i] = ntot as i32;
             ntot += n as usize;
         }
-
         if ntot == 0 {return false;}
 
+        // Size recieve buffer to hold all updates from all ranks and calculate slice boundaries
+        // that correspond to this rank's own constribution in the gathered buffer. These will
+        // later be skipped during the apply step to avoid double counting.
         mpi.gather_recv.resize(ntot, PopulationUpdate {det: 0, dn: 0});
-
         let locallow = mpi.gather_displs[run.irank] as usize;
         let localhigh = locallow + mpi.gather_counts[run.irank] as usize;
         
         let mut recv = PartitionMut::new(&mut mpi.gather_recv[..], &mpi.gather_counts[..], &mpi.gather_displs[..]);
         mpi::request::scope(|scope| {
+            // Perform non-blocking all-gather such that the local computation can be overlapped.
             let req = world.immediate_all_gather_varcount_into(scope, dlocal, &mut recv);
             
+            // Apply this ranks own updates to `plocal` whilst the all-gather is occuring.
             time_call!(crate::timers::stochastic::add_update_p_local_overlap, {
                 add_plocal(plocal, dlocal, data, run);
             });
-
-            time_call!(crate::timers::stochastic::add_update_p_wait , {
+            
+            // Now we must wait for the all gather to finish before we read the remote updates.
+            time_call!(crate::timers::stochastic::add_update_p_wait, {
                 req.wait();
             })
         });
-
+        
+        // Apply remote updates from all other ranks to `plocal`. We avoid double counting by
+        // excluding the local slice.
         time_call!(crate::timers::stochastic::add_update_p_apply, {
             add_plocal(plocal, &mpi.gather_recv[..locallow], data, run);
             add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run);
@@ -208,7 +226,9 @@ fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>
 /// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
 fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, shifts: Shifts) -> PropagationResult {
     time_call!(crate::timers::stochastic::add_propagate_iteration, {
-
+        
+        // Closure to initialise per Rayon thread state. Each thread gets individual RNG seed and
+        // scratch space for non-orthogonal Wick's theorem calculations.
         let initialise = || -> ThreadPropagation {
             let tid = rayon::current_thread_index().unwrap_or(0) as u64;
             ThreadPropagation{
@@ -219,7 +239,9 @@ fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRu
                 scratch: WickScratchSpin::with_sizes(scratchsize.maxsame, scratchsize.maxla, scratchsize.maxlb),
             }
         };
-
+        
+        // Closure to carry out the spawning, death and cloning propagation steps. Exits early if a
+        // determinant has zero population. 
         let propagate = |mut acc: ThreadPropagation, &gamma: &usize| -> ThreadPropagation {
             let ngamma = mc.walkers.get(gamma);
             if ngamma == 0 {
@@ -230,14 +252,16 @@ fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRu
             acc.spawning(gamma, ngamma, shifts, data, run);
             acc
         };
-
+        
+        // Closure to combine two thread local accumulators by appending update vectors.
         let merge = |mut a: ThreadPropagation, mut b: ThreadPropagation| -> ThreadPropagation {
             a.local.append(&mut b.local);
             a.remote.append(&mut b.remote);
             a.samples.append(&mut b.samples);
             a
         };
-
+    
+        // Carry out the above closures via parallel fold over occupied determinants.
         let acc = mc.walkers.occ().par_iter().fold(initialise, propagate).reduce(
             || ThreadPropagation {
                 local: Vec::new(),
@@ -269,35 +293,25 @@ fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRu
 /// - `()`: Updates the local delta vector, optional excitation histogram, and MPI send buffers.
 fn acc_pack_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, input: &Input, nranks: usize) {
     time_call!(crate::timers::stochastic::add_acc_pack_updates, {
+        // Add the `delta` for local determinants.
         for (det, dn) in prop.local {
             add_delta(mc, det, dn);
         }
-
+        
+        // Optionally record excitation generation data.
         if input.write.write_excitation_hist && let Some(hist) = mc.excitation_hist.as_mut() {
             for p in prop.samples {
                 hist.add(p);
             }
         }
-
+        
+        // Put each remote update into the send buffer of its owning MPI rank.
         if nranks > 1 {
             for up in prop.remote {
                 let dest = owner(up.det as usize, mc.walkers.len(), nranks);
                 send[dest].push(up);
             }
         }
-    })
-}
-
-/// Exchange remote spawned walker updates between MPI ranks.
-/// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `send`: Per-rank MPI send buffers.
-/// - `mpi`: Reusable MPI scratch space.
-/// # Returns
-/// - `&[PopulationUpdate]`: Walker updates received from remote ranks.
-fn exchange_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>], mpi: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
-    time_call!(crate::timers::stochastic::add_exchange_updates, {
-        communicate_spawn_updates(world, send, mpi)
     })
 }
 
@@ -308,6 +322,7 @@ fn exchange_updates<'a>(world: &impl Communicator, send: &[Vec<PopulationUpdate>
 /// # Returns
 /// - `()`: Adds received walker updates into `mc.delta`.
 fn unpack_received_updates(mc: &mut MCState, received: &[PopulationUpdate]) {
+    // Apply each remotely recieved update.
     time_call!(crate::timers::stochastic::add_unpack_received_updates, {
         for up in received {
             add_delta(mc, up.det as usize, up.dn);
@@ -329,20 +344,24 @@ fn unpack_received_updates(mc: &mut MCState, received: &[PopulationUpdate]) {
 fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop: PropagationResult, 
                       input: &Input, mpi: &mut MPIScratch, world: &impl Communicator, nranks: usize) {
     
+    // Clear and reuse scratch buffer.
     for buf in send.iter_mut() {
         buf.clear();
     }
-
+    
+    // Sort updates into local and remote events based on determinant ownership.
     acc_pack_updates(mc, send, prop, input, nranks);
-
+    
+    // Compress send buffers before communication when using MPI to reduce message size.
     if nranks > 1 {
         for buf in send.iter_mut() {
             if buf.len() > 1 {
                 compress_updates(buf);
             }
         }
-
-        let received = exchange_updates(world, send, mpi);
+        
+        // Exchange compressed updates with all other ranks.
+        let received = communicate_spawn_updates(world, send, mpi);
         unpack_received_updates(mc, received);
     }
 }
@@ -353,9 +372,14 @@ fn accumulate_updates(mc: &mut MCState, send: &mut [Vec<PopulationUpdate>], prop
 /// # Returns
 /// - `()`: Compresses repeated determinant updates in place.
 fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
+    // Fast return.
     if updates.is_empty() {return;}
-    updates.sort_unstable_by_key(|up| up.det);
 
+    // Sort by determinant index so duplicate entries are consecutive.
+    updates.sort_unstable_by_key(|up| up.det);
+    
+    // For each element if the previous entry is the same determinant accumulate 
+    // its `dn` into that entry, otherwise write it as a new entry.
     let mut out = 0usize;
     for i in 0..updates.len() {
         if out > 0 && updates[out - 1].det == updates[i].det {
@@ -365,7 +389,8 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
             out += 1;
         }
     }
-
+    
+    // Remove empty and zero elements and return.
     updates.truncate(out);
     updates.retain(|up| up.dn != 0);
 }
@@ -378,9 +403,24 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
 /// # Returns
 /// - `([i64; 3], [f64; 2])`: Local integer and floating-point population statistics.
 fn population_local(mc: &MCState, isref: &[bool], run: &QMCRunInfo) -> ([i64; 3], [f64; 2]) {
-    let nrefclocal: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
-    let nrefsclocal: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
 
+    // Calculate non-overlap transformed population on the reference determinants.
+    // Iterates over occupied determinants keeping those flagged as a reference and summing their populations.
+    let nrefclocal: i64 = mc.walkers.occ().iter()
+        .filter(|&&det| isref[det])
+        .map(|&det| mc.walkers.get(det).abs())
+        .sum();
+    
+    // Calculate overlap transformed population on the reference determinants.
+    // `mc.pg` is the vector p_\Gamma = \sum_\Omega S_{\Gamma, \Omega} N_\Omega, so we can get this
+    // population by iterating over p_\Gamma and summing entries which are marked as corresponding
+    // to a reference determinant.
+    let nrefsclocal: f64 = mc.pg.iter().enumerate()
+        .filter(|(k, _)| isref[run.start + *k])
+        .map(|(_, x)| x.abs())
+        .sum();
+    
+    // Pack and return local quantities.
     let intslocal = [mc.walkers.norm(), nrefclocal, mc.walkers.occ().len() as i64];
     let floatslocal = [mc.pg.iter().map(|x| x.abs()).sum::<f64>(), nrefsclocal];
     (intslocal, floatslocal)
@@ -399,25 +439,28 @@ fn population_local(mc: &MCState, isref: &[bool], run: &QMCRunInfo) -> ([i64; 3]
 /// - `PopulationStats`: Current total and reference populations in both representations.
 fn update_observables(mc: &MCState, d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, isref: &[bool], 
                       run: &QMCRunInfo, data: &NOCIData<'_>, world: &impl Communicator) -> PopulationStats {
+    // Compute rank local number and denominator of the projected energy.
     let (dnumlocal, ddenlocal) = time_call!(crate::timers::stochastic::add_update_projected_energy, {
         projected_energy_local(d, pe.iref, data)
     });
-
+    // Compute rank local population data.
     let (intslocal, popfloatslocal) = time_call!(crate::timers::stochastic::add_compute_populations, {
         population_local(mc, isref, run)
     });
     
+    // Pack all seven of the rank local observables into an array for a single all reduce.
     let obslocal = [dnumlocal, ddenlocal, popfloatslocal[0], popfloatslocal[1], intslocal[0] as f64, intslocal[1] as f64, intslocal[2] as f64];
     let mut obsglobal = [0.0_f64; 7];
-
+    // Perform the all reduce.
     time_call!(crate::timers::stochastic::add_observables_allreduce, {
         world.all_reduce_into(&obslocal[..], &mut obsglobal[..], SystemOperation::sum());
     });
 
+    // Accumlate the changes in projected energy numerator and denominator.
     pe.num += obsglobal[0];
     pe.den += obsglobal[1];
 
-     PopulationStats {
+    PopulationStats {
         nwc: obsglobal[4] as i64,
         nrefc: obsglobal[5] as i64,
         noccdets: obsglobal[6] as i64,
@@ -451,21 +494,24 @@ fn cache_population_stats(state: &mut PropagationState, stats: &PopulationStats)
 /// - `()`: Updates the shift energies and associated state variables in place.
 fn update_shifts(stats: &PopulationStats, state: &mut PropagationState, es: &mut f64, input: &Input) {
     let qmc = input.qmc.as_ref().unwrap();
-    let dt_eff = input.prop_ref().dt * (qmc.ncycles as f64);
-
+    let dteff = input.prop_ref().dt * (qmc.ncycles as f64);
+    
+    // Once non-overlap transformed population reaches the target set flag.
     if !state.reached_c && stats.nwc >= qmc.target_population {
         state.reached_c = true;
     }
+    // Once overlap transformed population reaches the target set flag.
     if !state.reached_sc && stats.nwsc >= qmc.target_population as f64 {
         state.reached_sc = true;
     }
-
+    
+    // Update non-overlap transformed shift.
     if state.reached_c {
-        *es -= (qmc.shift_damping / dt_eff) * (stats.nwc as f64 / state.prev_pop.nwc as f64).ln();
+        *es -= (qmc.shift_damping / dteff) * (stats.nwc as f64 / state.prev_pop.nwc as f64).ln();
     }
-
+    // Update overlap transformed shift.
     if state.reached_sc {
-        state.es_s -= (qmc.shift_damping / dt_eff) * (stats.nwsc / state.prev_pop.nwsc).ln();
+        state.es_s -= (qmc.shift_damping / dteff) * (stats.nwsc / state.prev_pop.nwsc).ln();
     }
 
     state.prev_pop = *stats;
