@@ -48,6 +48,8 @@ macro_rules! for_each_counter {
         $f!($tot.stochastic.step.update_p_apply);
         $f!($tot.stochastic.step.update_projected_energy);
         $f!($tot.stochastic.step.communicate_spawn_updates);
+        $f!($tot.stochastic.step.comm_spawn_counts);
+        $f!($tot.stochastic.step.comm_spawn_payload);
         $f!($tot.stochastic.step.gather_all_walkers);
         $f!($tot.stochastic.step.observables_allreduce);
 
@@ -253,6 +255,30 @@ pub fn snapshot_all_mpi(world: &impl CommunicatorCollectives) -> Totals {
     world.all_reduce_into(&send[..], &mut recv[..], mpi::collective::SystemOperation::max());
 
     Totals::unpack(&recv)
+}
+
+/// Take a copy of the timing totals accumulated on the current thread and all Rayon worker
+/// threads on this rank, then gather the packed timing buffers from all MPI ranks.
+/// # Arguments:
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// # Returns:
+/// - `Vec<Totals>`: Per-rank timing totals, one entry per MPI rank, after summing all Rayon
+///   threads within each rank.
+pub fn snapshot_per_rank_mpi(world: &impl CommunicatorCollectives) -> Vec<Totals> {
+    let local = snapshot_all();
+
+    let mut send = Vec::with_capacity(Totals::flat_len());
+    local.pack(&mut send);
+
+    let nranks = world.size() as usize;
+    let flat_len = send.len();
+    let mut recv = vec![0_u64; nranks * flat_len];
+
+    world.all_gather_into(&send[..], &mut recv[..]);
+
+    recv.chunks_exact(flat_len)
+        .map(Totals::unpack)
+        .collect()
 }
 
 /// Borrow the current thread local timing totals mutably and apply a closure to them.

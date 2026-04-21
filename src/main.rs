@@ -48,8 +48,10 @@ struct Results {
     e_fci: Option<f64>,
     /// Number of MPI ranks for printing.
     nranks: usize,
-    /// Timings associated with this geometry.
+    /// Total timings associated with this geometry.
     timings: timers::Totals,
+    /// Per-rank timings associated with this geometry.
+    ranktimings: Vec<timers::Totals>,
 }
 
 type Atoms = Vec<String>;
@@ -193,8 +195,10 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         e_noci_qmc_stoch = Some(e_qmc);
     }
 
-    let timings = noci_rs::timers::snapshot_all_mpi(world); 
-    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_fci: ao.e_fci, timings, nranks: world.size() as usize, states: states.clone()}
+    let timings = noci_rs::timers::snapshot_all_mpi(world);
+    let ranktimings = noci_rs::timers::snapshot_per_rank_mpi(world);
+    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_fci: ao.e_fci, 
+             timings, ranktimings, nranks: world.size() as usize, states: states.clone()}
 }
 
 /// Call PySCF script to get the two electron integrals and core hamiltonian.
@@ -459,6 +463,21 @@ fn print_report(res: &Results, input: &Input) {
         println!("{}{}: {:?} [{} calls, avg {:?}/call]", " ".repeat(indent), lbl, c.duration(), c.calls, avg);
     }
 
+    fn print_counter_range(lbl: &str, counters: &[noci_rs::timers::Counter], indent: usize) {
+        let mint = counters.iter().map(|c| c.ns).min().unwrap_or(0);
+        let maxt = counters.iter().map(|c| c.ns).max().unwrap_or(0);
+        let sumt: u128 = counters.iter().map(|c| c.ns as u128).sum();
+        let meant = if counters.is_empty() {0} else {(sumt / counters.len() as u128) as u64};
+
+        let mincalls = counters.iter().map(|c| c.calls).min().unwrap_or(0);
+        let maxcalls = counters.iter().map(|c| c.calls).max().unwrap_or(0);
+        let sumcalls: u128 = counters.iter().map(|c| c.calls as u128).sum();
+        let meancalls = if counters.is_empty() {0} else {(sumcalls / counters.len() as u128) as u64};
+
+        println!("{}{}: min {:?}, mean {:?}, max {:?} [calls min {}, mean {}, max {}]"," ".repeat(indent),
+                 lbl, std::time::Duration::from_nanos(mint), std::time::Duration::from_nanos(meant), std::time::Duration::from_nanos(maxt), mincalls, meancalls, maxcalls);
+    }
+
     fn print_thread_counter(lbl: &str, c: noci_rs::timers::Counter, wall: noci_rs::timers::Counter, nthreads: usize, indent: usize) {
         let avg = if c.calls > 0 {std::time::Duration::from_nanos(c.ns / c.calls)} else {std::time::Duration::from_nanos(0)};
         let pad = " ".repeat(indent);
@@ -514,27 +533,29 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Deterministic propagation", res.timings.deterministic.propagate, 2);
         println!();
     }
-    
+
     if input.qmc.is_some() {
         print_counter("Total NOCI-QMC stochastic time", res.timings.stochastic.run_qmc_stochastic_noci, 0);
         print_counter("Basis generation", res.timings.stochastic.generate_excited_basis, 2);
         print_counter("Stochastic propagation", res.timings.stochastic.qmc_step, 2);
         print_counter("Walker initialisation", res.timings.stochastic.step.initialise_walkers, 5);
-        print_counter("Spawning, Death and Cloning", res.timings.stochastic.step.propagate_iteration, 5);
-        print_counter("Accumulate updates and pack MPI buffers", res.timings.stochastic.step.acc_pack_updates, 5);
-        print_counter("Communicate spawn updates MPI", res.timings.stochastic.step.communicate_spawn_updates, 5);
+        print_counter_range("Spawning, Death and Cloning", &res.ranktimings.iter().map(|t| t.stochastic.step.propagate_iteration).collect::<Vec<_>>(), 5);
+        print_counter_range("Accumulate updates and pack MPI buffers", &res.ranktimings.iter().map(|t| t.stochastic.step.acc_pack_updates).collect::<Vec<_>>(), 5);
+        print_counter_range("Communicate spawn updates MPI", &res.ranktimings.iter().map(|t| t.stochastic.step.communicate_spawn_updates).collect::<Vec<_>>(), 5);
+        print_counter_range("Spawn communication count exchange", &res.ranktimings.iter().map(|t| t.stochastic.step.comm_spawn_counts).collect::<Vec<_>>(), 8);
+        print_counter_range("Spawn communication payload exchange", &res.ranktimings.iter().map(|t| t.stochastic.step.comm_spawn_payload).collect::<Vec<_>>(), 8);
         print_counter("Apply population updates", res.timings.stochastic.step.apply_delta, 5);
-        print_counter("Update pG", res.timings.stochastic.step.update_p, 5);
-        print_counter("Update pG count gather", res.timings.stochastic.step.update_p_gather_counts, 8);
-        print_counter("Update pG local overlapping", res.timings.stochastic.step.update_p_local_overlap, 8);
-        print_counter("Update pG wait for remote updates", res.timings.stochastic.step.update_p_wait, 8);
-        print_counter("Update pG apply remote updates", res.timings.stochastic.step.update_p_apply, 8);
+        print_counter_range("Update pG", &res.ranktimings.iter().map(|t| t.stochastic.step.update_p).collect::<Vec<_>>(), 5);
+        print_counter_range("Update pG count gather", &res.ranktimings.iter().map(|t| t.stochastic.step.update_p_gather_counts).collect::<Vec<_>>(), 8);
+        print_counter_range("Update pG local overlapping", &res.ranktimings.iter().map(|t| t.stochastic.step.update_p_local_overlap).collect::<Vec<_>>(), 8);
+        print_counter_range("Update pG wait for remote updates", &res.ranktimings.iter().map(|t| t.stochastic.step.update_p_wait).collect::<Vec<_>>(), 8);
+        print_counter_range("Update pG apply remote updates", &res.ranktimings.iter().map(|t| t.stochastic.step.update_p_apply).collect::<Vec<_>>(), 8);
         print_counter("Calculate projected energy", res.timings.stochastic.step.update_projected_energy, 5);
         print_counter("Compute populations", res.timings.stochastic.step.compute_populations, 5);
-        print_counter("Observables all-reduce", res.timings.stochastic.step.observables_allreduce, 8);
+        print_counter_range("Observables all-reduce", &res.ranktimings.iter().map(|t| t.stochastic.step.observables_allreduce).collect::<Vec<_>>(), 5);
         println!();
     }
-
+    
     if input.snoci.is_some() {
         print_counter("Total SNOCI time", res.timings.snoci.run_snoci, 0);
         print_counter("Full SNOCI step", res.timings.snoci.snoci_step, 2);

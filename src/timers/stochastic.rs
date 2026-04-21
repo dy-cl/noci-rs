@@ -13,6 +13,10 @@ pub struct StepTotals {
     pub acc_pack_updates: Counter,
     /// Total time spent in `communicate_spawn_updates`.
     pub communicate_spawn_updates: Counter,
+    /// Total time spent exchanging spawn counts in `communicate_spawn_updates`
+    pub comm_spawn_counts: Counter,
+    /// Total time spent exchanging payload in `communicate_spawn_updates`
+    pub comm_spawn_payload: Counter,
     /// Total time spent in `gather_all_walkers`.
     pub gather_all_walkers: Counter,
     /// Total time spent in observable all-reduces.
@@ -47,6 +51,8 @@ impl StepTotals {
         self.propagate_iteration.merge_from(&other.propagate_iteration);
         self.acc_pack_updates.merge_from(&other.acc_pack_updates);
         self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
+        self.comm_spawn_counts.merge_from(&other.comm_spawn_counts);
+        self.comm_spawn_payload.merge_from(&other.comm_spawn_payload);
         self.gather_all_walkers.merge_from(&other.gather_all_walkers);
         self.observables_allreduce.merge_from(&other.observables_allreduce);
         self.compute_populations.merge_from(&other.compute_populations);
@@ -196,6 +202,28 @@ pub fn add_update_projected_energy(ns: u64) {
 #[inline(always)]
 pub fn add_communicate_spawn_updates(ns: u64) {
     with_totals(|t| t.stochastic.step.communicate_spawn_updates.add_ns(ns));
+}
+
+/// Add one timed call to the spawn-update count exchange counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the MPI count exchange
+///   inside `communicate_spawn_updates`.
+/// # Returns:
+/// - `()`: Updates the current thread-local `comm_spawn_counts` counter.
+#[inline(always)]
+pub fn add_comm_spawn_counts(ns: u64) {
+    with_totals(|t| t.stochastic.step.comm_spawn_counts.add_ns(ns));
+}
+
+/// Add one timed call to the spawn-update payload exchange counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to the MPI payload exchange
+///   inside `communicate_spawn_updates`.
+/// # Returns:
+/// - `()`: Updates the current thread-local `comm_spawn_payload` counter.
+#[inline(always)]
+pub fn add_comm_spawn_payload(ns: u64) {
+    with_totals(|t| t.stochastic.step.comm_spawn_payload.add_ns(ns));
 }
 
 /// Add one timed call to the `gather_all_walkers` counter.

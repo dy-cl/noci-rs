@@ -104,23 +104,14 @@ fn apply_delta(mc: &mut MCState) -> Vec<PopulationUpdate> {
 /// - `&[PopulationUpdate]`: Flat buffer containing all spawned walker updates received from other ranks.
 pub(crate) fn communicate_spawn_updates<'a>(world: &impl CommunicatorCollectives, scratch: &'a mut MPIScratch) -> &'a [PopulationUpdate] {
     time_call!(crate::timers::stochastic::add_communicate_spawn_updates, {
-        let nsend = scratch.send_contig.len();
         let nranks = world.size() as usize;
-
-        // Fast-path, if no rank has any remote updates to send, there is no need
-        // to do the count exchange or the payload exchange this iteration.
-        let localany = if nsend > 0 {1i32} else {0i32};
-        let mut globalany = 0i32;
-        world.all_reduce_into(&localany, &mut globalany, mpi::collective::SystemOperation::sum());
-        if globalany == 0 {
-            scratch.recv_contig.clear();
-            return &scratch.recv_contig[..];
-        }
 
         // Exchange only the per-rank message sizes.
         // After this, `recv_counts[peer]` contains how many updates rank `peer` will send to the
         // current rank.
-        world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
+        time_call!(crate::timers::stochastic::add_comm_spawn_counts, {
+            world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
+        });
 
         // Build the incoming MPI metadata.
         // `recv_displacements[peer]` is the starting offset of rank `peer`'s block inside the packed
@@ -132,13 +123,15 @@ pub(crate) fn communicate_spawn_updates<'a>(world: &impl CommunicatorCollectives
             nrecv += scratch.recv_counts[peer] as usize;
         }
 
-        // Reuse one contiguous send buffer large enough for all remote updates.
+        // Reuse one contiguous recieve buffer large enough for all remote updates.
         scratch.recv_contig.clear();
         scratch.recv_contig.resize(nrecv, PopulationUpdate {det: 0, dn: 0});
 
         let send_part = Partition::new(&scratch.send_contig[..], &scratch.send_counts[..], &scratch.send_displacements[..]);
         let mut recv_part = PartitionMut::new(&mut scratch.recv_contig[..], &scratch.recv_counts[..], &scratch.recv_displacements[..]);
-        world.all_to_all_varcount_into(&send_part, &mut recv_part);
+        time_call!(crate::timers::stochastic::add_comm_spawn_payload, {
+            world.all_to_all_varcount_into(&send_part, &mut recv_part);
+        });
 
         // Return the receive buffer for later accumulation.
         &scratch.recv_contig[..]
@@ -351,20 +344,12 @@ fn accumulate_updates(mc: &mut MCState, prop: PropagationResult, input: &Input, 
     }
 }
 
-/// Sort and combine repeated remote population updates in place.
+/// Combine repeated consecutive determinant updates in place.
 /// # Arguments:
 /// - `updates`: Remote population updates for a single destination rank.
 /// # Returns
 /// - `()`: Compresses repeated determinant updates in place.
 fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
-    // Fast return.
-    if updates.is_empty() {return;}
-
-    // Sort by determinant index so duplicate entries are consecutive.
-    updates.sort_unstable_by_key(|up| up.det);
-    
-    // For each element if the previous entry is the same determinant accumulate 
-    // its `dn` into that entry, otherwise write it as a new entry.
     let mut out = 0usize;
     for i in 0..updates.len() {
         if out > 0 && updates[out - 1].det == updates[i].det {
@@ -375,7 +360,6 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
         }
     }
     
-    // Remove empty and zero elements and return.
     updates.truncate(out);
     updates.retain(|up| up.dn != 0);
 }
@@ -389,33 +373,33 @@ fn compress_updates(updates: &mut Vec<PopulationUpdate>) {
 /// # Returns
 /// - `()`: Fills `send_counts`, `send_displacements`, and `send_contig` in `scratch`.
 fn pack_spawn_updates(remote: &[PopulationUpdate], ndets: usize, nranks: usize, scratch: &mut MPIScratch) {
-    // Count how many updates will be sent to each destination rank.
     for x in scratch.send_counts.iter_mut() {*x = 0;}
-    for up in remote {
+    for x in scratch.send_displacements.iter_mut() {*x = 0;}
+
+    // Copy remote updates into the reusable contiguous buffer.
+    scratch.send_contig.clear();
+    scratch.send_contig.extend(remote.iter().cloned());
+
+    // Sort by (destination rank, determinant) so duplicates for the same peer
+    // are adjacent and each peer still occupies one contiguous block.
+    scratch.send_contig.sort_unstable_by_key(|up| {
+        (owner(up.det as usize, ndets, nranks), up.det)
+    });
+
+    // Merge repeated updates to the same determinant.
+    compress_updates(&mut scratch.send_contig);
+
+    // Recount after compression.
+    for up in &scratch.send_contig {
         let peer = owner(up.det as usize, ndets, nranks);
         scratch.send_counts[peer] += 1;
     }
 
-    // Build the starting offset of each rank's block in the contiguous send buffer.
+    // Build displacements for the already-packed contiguous buffer.
     let mut nsend = 0usize;
     for peer in 0..nranks {
         scratch.send_displacements[peer] = nsend as i32;
         nsend += scratch.send_counts[peer] as usize;
-    }
-
-    // Reuse a contiguous send buffer large enough for all remote updates.
-    scratch.send_contig.clear();
-    scratch.send_contig.resize(nsend, PopulationUpdate {det: 0, dn: 0});
-
-    // Initialise the current write positions for each destination rank.
-    scratch.send_write_pos.clone_from(&scratch.send_displacements);
-
-    // Pack updates into `send_contig` so that each destination rank occupies one contiguous block.
-    for &up in remote {
-        let peer = owner(up.det as usize, ndets, nranks);
-        let pos = scratch.send_write_pos[peer] as usize;
-        scratch.send_contig[pos] = up;
-        scratch.send_write_pos[peer] += 1;
     }
 }
 
