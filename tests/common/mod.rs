@@ -39,7 +39,7 @@ pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
 /// - `input`: User input specifications for this fixture.
 fn generate_data_h5(dir: &std::path::Path, input: &Input) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let generate_py = root.join("generate.py");
+    let generate_py = root.join("scripts/generate.py");
     let atoms: Vec<String> = input.mol.geoms[0].clone();
     let atomsj = serde_json::to_string(&atoms).unwrap();
 
