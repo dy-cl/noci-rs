@@ -26,11 +26,11 @@ states = {
 
 prop = {
     dt = 1e-3,
-    max_steps = 5e6,
     propagator = "unshifted",
 }
 
 det = {
+    max_steps = 5e6,
     dynamic_shift = true,
     dynamic_shift_alpha = 0.1,
     e_tol = 1e-12,
