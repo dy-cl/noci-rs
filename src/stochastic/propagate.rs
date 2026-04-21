@@ -17,7 +17,7 @@ use super::state::{MCState, PopulationUpdate, ExcitationHist, ProjectedEnergyUpd
 use crate::noci::{calculate_s_pair, calculate_hs_pair};
 use super::report::{print_row, print_header, print_cached_row, print_initial_row, check_stop};
 use super::init::{initialise_qmc_state, max_scratch_sizes};
-use super::state::{owner};
+use super::state::{owner, owned};
 
 /// Find overlap matrix element S_{ij}.
 /// # Arguments:
@@ -226,7 +226,7 @@ fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<
     // Parallel iteration over rank local elements of `p_\Gamma`, for each local owned determinant
     // `\Gamma` we accumulate `\sum_\Omega S_{\Gamma, \Omega} dN_\Omega` over the updates.
     plocal.par_iter_mut().enumerate().for_each_init(WickScratchSpin::new, |scratch, (k, pgamma)| {
-        let gamma = run.start + k;
+        let gamma = run.owned[k];
         let mut dp = 0.0;
         for up in updates {
             let omega = up.det as usize;
@@ -507,7 +507,7 @@ fn population_local(mc: &MCState, isref: &[bool], run: &QMCRunInfo) -> ([i64; 3]
     // population by iterating over p_\Gamma and summing entries which are marked as corresponding
     // to a reference determinant.
     let nrefsclocal: f64 = mc.pg.iter().enumerate()
-        .filter(|(k, _)| isref[run.start + *k])
+        .filter(|(k, _)| isref[run.owned[*k]])
         .map(|(_, x)| x.abs())
         .sum();
     
@@ -626,8 +626,6 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
     let ndets = data.basis.len();
-    let start = (ndets * irank) / nranks;
-    let end = (ndets * (irank + 1)) / nranks;
 
     // Mark reference determinants for projected-energy calculations.
     let mut isref = vec![false; ndets];
@@ -638,8 +636,9 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
     // Each MPI rank gets a unique RNG seed.
     let base_seed = qmc.seed.unwrap_or_else(rand::random);
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
-
-    let run = QMCRunInfo {irank, nranks, ndets, start, end, iref: 0, base_seed, rank_seed};
+    
+    let owned = owned(irank, ndets, nranks);
+    let run = QMCRunInfo {irank, nranks, ndets, owned, iref: 0, base_seed, rank_seed};
     
     // Precompute largest possible size needed for the non-orthogonal Wick's theorem scratch space.
     let scratchsize = {

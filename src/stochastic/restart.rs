@@ -41,12 +41,10 @@ pub(in crate::stochastic) struct RestartState {
 /// - `path`: Path of the HDF5 restart file to create or overwrite.
 /// - `world`: MPI communicator object.
 /// - `state`: Restart state to be written to disk.
-/// - `start`: First determinant index owned by the current rank.
-/// - `end`: One-past-last determinant index owned by the current rank.
 /// - `ndets`: Total number of determinants in the stochastic basis.
 /// # Returns
 /// - `hdf5::Result<()>`: `Ok(())` if the restart file was written successfully.
-pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, start: usize, end: usize, ndets: usize) -> hdf5::Result<()> {
+pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, ndets: usize) -> hdf5::Result<()> {
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
 
@@ -83,9 +81,6 @@ pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communi
             let file = File::open_rw(path)?;
             // Create per MPI rank group for rank local data.
             let grp = file.create_group(&format!("rank_{irank:02}"))?;
-            // Store determinant range owned by a given rank
-            grp.new_dataset_builder().with_data(&[start as u64]).create("start")?;
-            grp.new_dataset_builder().with_data(&[end as u64]).create("end")?;
             // Store walker distribution.
             let occ: Vec<u64> = state.walkers.occ().iter().map(|&i| i as u64).collect();
             let pop: Vec<i64> = state.walkers.occ().iter().map(|&i| state.walkers.get(i)).collect();

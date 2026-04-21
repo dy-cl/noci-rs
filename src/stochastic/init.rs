@@ -112,8 +112,8 @@ pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_>, run:
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local, mpiscratch);
 
-    let mut p = vec![0.0; run.end - run.start];
-    for gamma in run.start..run.end {
+    let mut p = vec![0.0; run.owned.len()];
+    for (k, &gamma) in run.owned.iter().enumerate() {
         //p_{\Gamma} = \sum_\Omega S_{\Gamma, \Omega} N_{\Omega}.
         let mut pgamma = 0.0;
         for entry in global {
@@ -123,7 +123,7 @@ pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_>, run:
             let sgo = find_s(data, gamma, omega, scratch);
             pgamma += nomega * sgo;
         }
-        p[gamma - run.start] = pgamma
+        p[k] = pgamma
     }
     p
 }
@@ -222,13 +222,19 @@ pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data
         let nwprevsc_local: f64 = mc.pg.iter().map(|x| x.abs()).sum();
         world.all_reduce_into(&nwprevsc_local, &mut nwprevsc, SystemOperation::sum());
         let mut nrefprevsc = 0.0;
-        let nrefprevsc_local: f64 = mc.pg.iter().enumerate().filter(|(k, _)| isref[run.start + *k]).map(|(_, x)| x.abs()).sum();
+        let nrefprevsc_local: f64 = mc.pg.iter().enumerate()
+            .filter(|(k, _)| isref[run.owned[*k]])
+            .map(|(_, x)| x.abs())
+            .sum();
         world.all_reduce_into(&nrefprevsc_local, &mut nrefprevsc, SystemOperation::sum());
         
         // Initialise non-overlap-transformed walker populations.
         let nwprevc = qmc.initial_population;
         let mut nrefprevc = 0i64;
-        let nrefprevc_local: i64 = mc.walkers.occ().iter().filter(|&&det| isref[det]).map(|&det| mc.walkers.get(det).abs()).sum();
+        let nrefprevc_local: i64 = mc.walkers.occ().iter()
+            .filter(|&&det| isref[det])
+            .map(|&det| mc.walkers.get(det).abs())
+            .sum();
         world.all_reduce_into(&nrefprevc_local, &mut nrefprevc, SystemOperation::sum());
         
         // Initialise number of occupied determinants.
