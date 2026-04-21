@@ -16,6 +16,14 @@ pub struct Totals {
     pub get_det_adjt_diff: Counter,
     /// Total time spent in `construct_determinant_indices`.
     pub construct_determinant_indices: Counter,
+    /// Total time spent in `construct_determinant_indices_l1`.
+    pub construct_determinant_indices_l1: Counter,
+    /// Total time spent in `construct_determinant_indices_l2`.
+    pub construct_determinant_indices_l2: Counter,
+    /// Total time spent in `construct_determinant_indices_l3`.
+    pub construct_determinant_indices_l3: Counter,
+    /// Total time spent in `construct_determinant_indices_l4`.
+    pub construct_determinant_indices_l4: Counter,
     /// Total time spent in `lg_overlap`.
     pub lg_overlap: Counter,
     /// Total time spent in `lg_h1`.
@@ -40,6 +48,10 @@ pub struct Totals {
     pub prepare_same_m0_l1: Counter,
     /// Total time spent in `prepare_same_m0_l2`.
     pub prepare_same_m0_l2: Counter,
+    /// Total time spent in `prepare_same_m0_l3`.
+    pub prepare_same_m0_l3: Counter,
+    /// Total time spent in `prepare_same_m0_l4`.
+    pub prepare_same_m0_l4: Counter,
     /// Total time spent in `lg_one_body_m0_gen`.
     pub lg_one_body_m0_gen: Counter,
     /// Total time spent in `lg_one_body_m0_l1`.
@@ -80,6 +92,9 @@ impl Totals {
         self.get_det_adjt_same.merge_from(&other.get_det_adjt_same);
         self.get_det_adjt_diff.merge_from(&other.get_det_adjt_diff);
         self.construct_determinant_indices.merge_from(&other.construct_determinant_indices);
+        self.construct_determinant_indices_l1.merge_from(&other.construct_determinant_indices_l1);
+        self.construct_determinant_indices_l2.merge_from(&other.construct_determinant_indices_l2);
+        self.construct_determinant_indices_l3.merge_from(&other.construct_determinant_indices_l3);
         self.lg_overlap.merge_from(&other.lg_overlap);
         self.lg_h1.merge_from(&other.lg_h1);
         self.lg_one_body_gen.merge_from(&other.lg_one_body_gen);
@@ -92,6 +107,7 @@ impl Totals {
         self.lg_h2_diff_m0.merge_from(&other.lg_h2_diff_m0);
         self.prepare_same_m0_l1.merge_from(&other.prepare_same_m0_l1);
         self.prepare_same_m0_l2.merge_from(&other.prepare_same_m0_l2);
+        self.prepare_same_m0_l3.merge_from(&other.prepare_same_m0_l3);
         self.lg_one_body_m0_gen.merge_from(&other.lg_one_body_m0_gen);
         self.lg_one_body_m0_l1.merge_from(&other.lg_one_body_m0_l1);
         self.lg_one_body_m0_l2.merge_from(&other.lg_one_body_m0_l2);
@@ -165,6 +181,46 @@ pub fn add_get_det_adjt_diff(ns: u64) {
 #[inline(always)]
 pub fn add_construct_determinant_indices(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices.add_ns(ns));
+}
+
+/// Add one timed call to the `construct_determinant_indices_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `construct_determinant_indices_l1` counter.
+#[inline(always)]
+pub fn add_construct_determinant_indices_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l1.add_ns(ns));
+}
+
+/// Add one timed call to the `construct_determinant_indices_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `construct_determinant_indices_l2` counter.
+#[inline(always)]
+pub fn add_construct_determinant_indices_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l2.add_ns(ns));
+}
+
+/// Add one timed call to the `construct_determinant_indices_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `construct_determinant_indices_l3` counter.
+#[inline(always)]
+pub fn add_construct_determinant_indices_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l3.add_ns(ns));
+}
+
+/// Add one timed call to the `construct_determinant_indices_l4` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l4`.
+/// # Returns:
+/// - `()`: Updates the current thread local `construct_determinant_indices_l4` counter.
+#[inline(always)]
+pub fn add_construct_determinant_indices_l4(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l4.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap` counter.
@@ -285,6 +341,26 @@ pub fn add_prepare_same_m0_l1(ns: u64) {
 #[inline(always)]
 pub fn add_prepare_same_m0_l2(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l2.add_ns(ns));
+}
+
+/// Add one timed call to the `prepare_same_m0_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `prepare_same_m0_l3` counter.
+#[inline(always)]
+pub fn add_prepare_same_m0_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l3.add_ns(ns));
+}
+
+/// Add one timed call to the `prepare_same_m0_l4` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l4`.
+/// # Returns:
+/// - `()`: Updates the current thread local `prepare_same_m0_l4` counter.
+#[inline(always)]
+pub fn add_prepare_same_m0_l4(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l4.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_one_body_m0_gen` counter.

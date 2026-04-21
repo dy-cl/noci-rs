@@ -568,9 +568,15 @@ fn print_report(res: &Results, input: &Input) {
     print_thread_counter("Prepare same-spin information (m = 0)", res.timings.nonorthogonalwicks.prepare_same_m0, wick_wall, nthreads, 5);
     print_thread_counter("Prepare same-spin information (m = 0, l = 1)", res.timings.nonorthogonalwicks.prepare_same_m0_l1, wick_wall, nthreads, 8);
     print_thread_counter("Prepare same-spin information (m = 0, l = 2)", res.timings.nonorthogonalwicks.prepare_same_m0_l2, wick_wall, nthreads, 8);
+    print_thread_counter("Prepare same-spin information (m = 0, l = 3)", res.timings.nonorthogonalwicks.prepare_same_m0_l3, wick_wall, nthreads, 8);
+    print_thread_counter("Prepare same-spin information (m = 0, l = 4)", res.timings.nonorthogonalwicks.prepare_same_m0_l4, wick_wall, nthreads, 8);
     print_thread_counter("Same-spin mix determinants and adjugates", res.timings.nonorthogonalwicks.get_det_adjt_same, wick_wall, nthreads, 2);
     print_thread_counter("Different-spin mix determinants and adjugates", res.timings.nonorthogonalwicks.get_det_adjt_diff, wick_wall, nthreads, 2);
     print_thread_counter("Construct determinant indices", res.timings.nonorthogonalwicks.construct_determinant_indices, wick_wall, nthreads, 2);
+    print_thread_counter("Construct determinant indices (l = 1)", res.timings.nonorthogonalwicks.construct_determinant_indices_l1, wick_wall, nthreads, 5);
+    print_thread_counter("Construct determinant indices (l = 2)", res.timings.nonorthogonalwicks.construct_determinant_indices_l2, wick_wall, nthreads, 5);
+    print_thread_counter("Construct determinant indices (l = 3)", res.timings.nonorthogonalwicks.construct_determinant_indices_l3, wick_wall, nthreads, 5);
+    print_thread_counter("Construct determinant indices (l = 4)", res.timings.nonorthogonalwicks.construct_determinant_indices_l4, wick_wall, nthreads, 5);
     print_thread_counter("Overlap matrix elements", res.timings.nonorthogonalwicks.lg_overlap, wick_wall, nthreads, 2);
     print_thread_counter("One-electron matrix elements", res.timings.nonorthogonalwicks.lg_h1, wick_wall, nthreads, 2);
     print_thread_counter("One-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_one_body_gen, wick_wall, nthreads, 5);

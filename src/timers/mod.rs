@@ -79,6 +79,10 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.get_det_adjt_same);
         $f!($tot.nonorthogonalwicks.get_det_adjt_diff);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices);
+        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l1);
+        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l2);
+        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l3);
+        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l4);
         $f!($tot.nonorthogonalwicks.lg_overlap);
         $f!($tot.nonorthogonalwicks.lg_h1);
         $f!($tot.nonorthogonalwicks.lg_one_body_gen);
@@ -91,6 +95,8 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_l1);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_l2);
+        $f!($tot.nonorthogonalwicks.prepare_same_m0_l3);
+        $f!($tot.nonorthogonalwicks.prepare_same_m0_l4);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0_gen);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0_l1);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0_l2);
