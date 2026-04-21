@@ -8,7 +8,6 @@ use crate::nonorthogonalwicks::{WickScratchSpin};
 use crate::input::{Propagator, ExcitationGen};
 use crate::noci::{NOCIData};
 
-use crate::mpiutils::owner;
 use super::propagate::{find_hs};
 use super::excit::{pgen_uniform, pgen_heat_bath, init_heat_bath};
 
@@ -43,10 +42,8 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) nranks: usize,
     /// Total number of determinants in the stochastic basis.
     pub(in crate::stochastic) ndets: usize,
-    /// First determinant index owned by this rank.
-    pub(in crate::stochastic) start: usize,
-    /// One-past-last determinant index owned by this rank.
-    pub(in crate::stochastic) end: usize,
+     /// Global determinant indices owned by this rank.
+    pub(in crate::stochastic) owned: Vec<usize>,
     /// Reference determinant index used in projected-energy estimates.
     pub(in crate::stochastic) iref: usize,
     /// User- or randomly-selected base seed for the full run.
@@ -153,7 +150,7 @@ impl Walkers {
                 let last = self.occ.pop().unwrap_unchecked();
                 
                 // If the popped element is not i, then i was somewhere in the middle of occ and we
-                // must move the popped element (last) to position p where i used to be. The position of  
+                // lmust move the popped element (last) to position p where i used to be. The position of  
                 // last is then updated in the position vector. If the popped element is i then we do
                 // nothing as we have directly removed it by popping.
                 if last != i {
@@ -180,6 +177,63 @@ impl Walkers {
     pub(crate) fn len(&self) -> usize {
         self.pop.len() 
     }
+}
+
+/// Given a determinant index return which MPI rank owns it.
+/// # Arguments
+/// - `det`: Determinant index.
+/// - `ndets`: Number of determinants (unused, kept for interface compatibility).
+/// - `nranks`: Number of MPI ranks.
+/// # Returns
+/// - `usize`: MPI rank that owns the determinant.
+#[inline(always)]
+pub fn owner(det: usize, _ndets: usize, nranks: usize) -> usize {
+    let mut x = det as u64;
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51afd7ed558ccd);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xc4ceb9fe1a85ec53);
+    x ^= x >> 33;
+    (x as usize) % nranks
+}
+
+/// Build the list of determinants owned by this rank.
+/// # Arguments
+/// - `irank`: Current MPI rank.
+/// - `ndets`: Number of determinants.
+/// - `nranks`: Number of MPI ranks.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>)`: Owned determinant indices.
+pub fn owned(irank: usize, ndets: usize, nranks: usize) -> Vec<usize> {
+    let mut owned = Vec::new();
+
+    for det in 0..ndets {
+        if owner(det, ndets, nranks) == irank {
+            owned.push(det);
+        }
+    }
+    owned
+}
+
+/// Take initialised walker population as a full vector and remove population from the vector if a
+/// given index is not owned by the thread in question. This is obviously quite wasteful keeping a
+/// full vector of ndets for each thread, and initialising population just to remove it but it is
+/// simple to do for now.
+/// # Arguments
+/// - `w`: Contains information about determinant populations, indices, and occupations.
+/// - `irank`: Rank of current thread.
+/// - `nranks`: Total number of threads.
+/// # Returns
+/// - `Walkers`: Walker population restricted to determinants owned by the current rank.
+pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
+    let occ = w.occ().to_vec();
+    for i in occ {
+        if owner(i, w.len(), nranks) != irank {
+            let ni = w.get(i);
+            w.add(i, -ni)
+        }
+    }
+    w
 }
 
 /// Storage for Monte Carlo state. 
@@ -523,6 +577,8 @@ pub(crate) struct MPIScratch {
     pub(crate) send_contig: Vec<PopulationUpdate>,
     /// Reusable contiguous receive buffer for spawn exchange.
     pub(crate) recv_contig: Vec<PopulationUpdate>,
+    /// Current write positions while packing `send_contig`.
+    pub(crate) send_write_pos: Vec<i32>,
 }
 
 impl MPIScratch {
@@ -542,6 +598,7 @@ impl MPIScratch {
             recv_displacements: vec![0; nranks],
             send_contig: Vec::new(),
             recv_contig: Vec::new(),
+            send_write_pos: vec![0; nranks],
         }
     }
 }

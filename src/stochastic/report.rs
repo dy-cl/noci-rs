@@ -118,8 +118,8 @@ pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationSt
         excitation_hist: state.mc.excitation_hist.take(),
         base_seed: Some(run.base_seed),
     };
-
-    write_restart_hdf5("RESTART.H5", world, &rs, run.start, run.end, run.ndets).unwrap();
+    
+    write_restart_hdf5("RESTART.H5", world, &rs, run.ndets).unwrap();
 
     if run.irank == 0 {
         let _ = std::fs::remove_file("STOP");
