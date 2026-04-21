@@ -316,11 +316,27 @@ macro_rules! time_call {
     ($add:path, $body:block) => {{
         #[cfg(feature = "timings")]
         {
-            let __timings_t0 = std::time::Instant::now();
+            struct __TimeCallGuard {
+                t0: std::time::Instant,
+                add: fn(u64),
+            }
+
+            impl Drop for __TimeCallGuard {
+                fn drop(&mut self) {
+                    (self.add)(self.t0.elapsed().as_nanos() as u64);
+                }
+            }
+
+            let __timings_guard = __TimeCallGuard {
+                t0: std::time::Instant::now(),
+                add: $add,
+            };
+
             let __timings_ret = { $body };
-            $add(__timings_t0.elapsed().as_nanos() as u64);
+            std::mem::drop(__timings_guard);
             __timings_ret
         }
+
         #[cfg(not(feature = "timings"))]
         {
             $body
