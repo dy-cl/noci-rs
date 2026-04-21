@@ -288,7 +288,6 @@ impl ExcitationOptions {
 
 pub struct PropagationOptions {
     pub dt: f64,
-    pub max_steps: usize,
     pub propagator: Propagator,
 }
 
@@ -299,13 +298,13 @@ impl Default for PropagationOptions {
     fn default() -> Self {
         Self {
             dt: 1e-4,
-            max_steps: 5000000,
             propagator: Propagator::default(),
         }
     }
 }
 
 pub struct DeterministicOptions {
+    pub max_steps: usize,
     pub dynamic_shift: bool,
     pub dynamic_shift_alpha: f64,
     pub e_tol: f64,
@@ -317,6 +316,7 @@ impl Default for DeterministicOptions {
     /// - `Self`: Deterministic propagation options with dynamic shift disabled.
     fn default() -> Self {
         Self {
+            max_steps: 10000,
             dynamic_shift: true,
             dynamic_shift_alpha: 0.1,
             e_tol: 1e-10,
@@ -765,6 +765,7 @@ pub fn load_input(path: &str) -> Input {
     let det: Option<DeterministicOptions> = globals.get::<_, Option<Table>>("det").unwrap().map(|det_tbl| {
     let defaults = DeterministicOptions::default();
         DeterministicOptions {
+            max_steps: det_tbl.get("max_steps").unwrap_or(defaults.max_steps),
             dynamic_shift: det_tbl.get("dynamic_shift").unwrap_or(defaults.dynamic_shift),
             dynamic_shift_alpha: det_tbl.get("dynamic_shift_alpha").unwrap_or(defaults.dynamic_shift_alpha),
             e_tol: det_tbl.get("e_tol").unwrap_or(defaults.e_tol),
@@ -874,7 +875,6 @@ pub fn load_input(path: &str) -> Input {
         });
         PropagationOptions {
             dt: prop_tbl.get("dt").unwrap_or(defaults.dt),
-            max_steps: prop_tbl.get("max_steps").unwrap_or(defaults.max_steps),
             propagator,
         }
     });

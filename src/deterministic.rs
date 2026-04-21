@@ -242,7 +242,7 @@ pub fn propagate(h: &Array2<f64>, s: &Array2<f64>, c0: &Array1<f64>, mut es: f64
     println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}", 
             0, e_prev, 0, es, c0_1norm, den);
 
-    for it in 0..input.prop_ref().max_steps {
+    for it in 0..det.max_steps {
 
         // Select propagator.
         let mut c_new_norm = match input.prop_ref().propagator {

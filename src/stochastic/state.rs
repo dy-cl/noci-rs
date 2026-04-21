@@ -577,8 +577,6 @@ pub(crate) struct MPIScratch {
     pub(crate) send_contig: Vec<PopulationUpdate>,
     /// Reusable contiguous receive buffer for spawn exchange.
     pub(crate) recv_contig: Vec<PopulationUpdate>,
-    /// Current write positions while packing `send_contig`.
-    pub(crate) send_write_pos: Vec<i32>,
 }
 
 impl MPIScratch {
@@ -598,7 +596,6 @@ impl MPIScratch {
             recv_displacements: vec![0; nranks],
             send_contig: Vec::new(),
             recv_contig: Vec::new(),
-            send_write_pos: vec![0; nranks],
         }
     }
 }

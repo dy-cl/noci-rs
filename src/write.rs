@@ -100,7 +100,6 @@ pub fn print_input(input: &Input) {
     println!("PROP");
     if let Some(prop) = input.prop.as_ref() {
         println!("DT: {}", prop.dt);
-        println!("MAX_STEPS: {}", prop.max_steps);
         println!("PROPAGATOR: {}", prop.propagator.as_str());
     } else {
         println!("NONE");
@@ -111,6 +110,7 @@ pub fn print_input(input: &Input) {
     match &input.det {
         Some(d) => {
             println!("ENABLED: true");
+            println!("MAX_STEPS: {}", d.max_steps);
             println!("DYNAMIC_SHIFT: {}", d.dynamic_shift);
             println!("DYNAMIC_SHIFT_ALPHA: {}", d.dynamic_shift_alpha);
             println!("ETOL: {:}", d.e_tol);
