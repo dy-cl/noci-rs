@@ -212,7 +212,7 @@ fn run_pyscf(atoms: &Atoms, input: &Input) {
         let atomsj = serde_json::to_string(atoms).unwrap();
         
         // Call PySCF script via command line.
-        let status = Command::new("python3").arg("generate.py").arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.mol.basis)
+        let status = Command::new("python3").arg("scripts/generate.py").arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.mol.basis)
                                             .arg("--unit").arg(&input.mol.unit).arg("--out").arg("data.h5").arg("--fci")
                                             .arg(if input.scf.do_fci { "true" } else { "false" }).status().unwrap();
 

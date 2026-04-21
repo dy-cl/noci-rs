@@ -1,3 +1,5 @@
+# generate.py
+
 from pyscf import gto, scf, fci
 import numpy as np 
 import h5py

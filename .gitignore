@@ -3,7 +3,6 @@ inputs/*
 !inputs/benchmarks/
 !inputs/benchmarks/**
 outputs/
-plotting/
 wickscache/
 tests/fixtures/**/data.h5
 .cargo/
