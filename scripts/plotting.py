@@ -353,9 +353,9 @@ def plotNW(args):
     Plot walker populations against iteration.
     """
     df = readQMC(args.path)
-
-    _, iterEs = shiftChange(df["es"])
-    _, iterEsS = shiftChange(df["ess"])
+    
+    iterEs, _ = shiftChange(df["es"])
+    iterEsS, _ = shiftChange(df["ess"])
 
     setStyle()
     plt.figure()
@@ -374,9 +374,9 @@ def plotProjectedShift(args):
     Plot projected and shift energies against iteration.
     """
     df = readQMC(args.path)
-
-    _, iterEs = shiftChange(df["es"])
-    _, iterEsS = shiftChange(df["ess"])
+    
+    iterEs, _ = shiftChange(df["es"])
+    iterEsS, _ = shiftChange(df["ess"])
 
     setStyle()
     plt.figure()
