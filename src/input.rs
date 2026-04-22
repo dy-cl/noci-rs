@@ -358,7 +358,7 @@ pub struct WriteOptions {
     pub write_excitation_hist: bool,
     pub write_matrices: bool,
     pub write_dir: String,
-    pub write_restart: bool,
+    pub write_restart: Option<String>,
     pub read_restart: Option<String>,
 }
 
@@ -374,7 +374,7 @@ impl Default for WriteOptions {
             write_excitation_hist: false,
             write_matrices: false,
             write_dir: "outputs/".to_string(),
-            write_restart: false,
+            write_restart: None,
             read_restart: None,
         }
     }

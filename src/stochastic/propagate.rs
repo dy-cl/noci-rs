@@ -689,7 +689,7 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
         // If populations haven't changed we can end the report here early.
         if !changedglobal {
             let stopshifts = Shifts {es: *es, es_s: state.es_s};
-            if let Some(ret) = check_stop(report, &mut state, stopshifts, &run, world) {
+            if let Some(ret) = check_stop(report, &mut state, stopshifts, &run, world, data.input.write.write_restart.as_ref()) {
                 return ret;
             }
             print_cached_row(irank, end + 1, &state, data.basis[0].e, *es);
@@ -706,7 +706,7 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
         
         // Check if the calculation has been requested to stop.
         let stopshifts = Shifts {es: *es, es_s: state.es_s};
-        if let Some(ret) = check_stop(report, &mut state, stopshifts, &run, world) {
+        if let Some(ret) = check_stop(report, &mut state, stopshifts, &run, world, data.input.write.write_restart.as_ref()) {
             return ret;
         }
 

@@ -88,12 +88,11 @@ pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &Propag
 /// - `shifts`: Current non-overlap and overlap-transformed shifts.
 /// - `run`: Rank-local run metadata.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `timings`: Accumulated stochastic propagation timings.
+/// - `restart_path`: File path to write restart file to. 
 /// # Returns
-/// - `Option<(f64, Option<ExcitationHist>, QMCTimings)>`: Final return values if a
-///   stop was requested, otherwise `None`.
+/// - `Option<(f64, Option<ExcitationHist>)>`: Final return values if a stop was requested, otherwise `None`.
 pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
-                                        world: &impl Communicator) -> Option<(f64, Option<ExcitationHist>)> {
+                                        world: &impl Communicator, restart_path: Option<&String>) -> Option<(f64, Option<ExcitationHist>)> {
     let mut stop = 0;
     if run.irank == 0 && Path::new("STOP").exists() {
         stop = 1;
@@ -119,11 +118,12 @@ pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationSt
         base_seed: Some(run.base_seed),
     };
     
-    write_restart_hdf5("RESTART.H5", world, &rs, run.ndets).unwrap();
+    let restart_path = restart_path.map(|s| s.as_str()).unwrap_or("RESTART.H5");
+    write_restart_hdf5(restart_path, world, &rs, run.ndets).unwrap();
 
     if run.irank == 0 {
         let _ = std::fs::remove_file("STOP");
-        println!("STOP detected, Wrote RESTART.H5 and exiting");
+        println!("STOP detected, Wrote {restart_path} and exiting");
     }
 
     Some((state.eprojcur, rs.excitation_hist))
