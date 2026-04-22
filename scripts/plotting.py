@@ -11,14 +11,12 @@ import numpy as np
 import pandas as pd
 
 # Plotting parameters
-
 TICKFONTSIZE = 32
 LABELFONTSIZE = 42
 LINEWIDTH = 5
 MARKERSIZE = 10
 
 # All required regex goes here.
-
 ENERGYRREGEX = re.compile(r"^\s*R:\s*([+-]?\d+(?:\.\d+)?)", re.MULTILINE)
 ENERGYSTATEREGEX = re.compile(
     r"^\s*State\((?P<idx>[^)]+)\):\s*"
@@ -26,7 +24,6 @@ ENERGYSTATEREGEX = re.compile(
     r"E\s*[:=]\s*(?P<E>[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)",
     re.MULTILINE,
 )
-
 DETITERREGEX = re.compile(r"iter\s+(\d+)", re.IGNORECASE)
 DETRELEVANTHEADERREGEX = re.compile(r"^Relevant space coefficients")
 DETNULLHEADERREGEX = re.compile(r"^Null space coefficients")
@@ -35,44 +32,66 @@ DETCOEFFLINEREGEX = re.compile(
     r"^\s*(\d+)\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$"
 )
 
-QMCFLOATREGEX = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
-QMCLINEREGEX = re.compile(
-    r"^\s*(\d+)\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s+"
-    + QMCFLOATREGEX + r"\s*"
-    + r"(\d+)\s*$"
-)
+def findQMC(path: Path):
+    """
+    Find where QMC starts.
+    """
+    start = None
+    nrows = 0
+    inqmc = False
+
+    with open(path, "r") as f:
+        for lineno, line in enumerate(f):
+            if not inqmc:
+                if line.lstrip().startswith("iter"):
+                    start = lineno + 1
+                    inqmc = True
+                continue
+
+            if line.startswith("===="):
+                break
+
+            s = line.lstrip()
+            if not s:
+                continue
+            c = s[0]
+            if c.isdigit() or c == "-":
+                nrows += 1
+
+    if start is None:
+        raise ValueError("QMC table header not found")
+
+    return start, nrows
 
 def readQMC(path: Path) -> pd.DataFrame:
     """
-    Read in QMC lines from a NOCIQMC output file and create a pandas dataframe.
+    Read the QMC table from an output file.
     """
-    rows = []
-    with open(path, "r") as f:
-        for line in f:
-            m = QMCLINEREGEX.match(line)
-            if not m:
-                continue
-            rows.append((
-                int(m.group(1)),
-                float(m.group(2)),
-                float(m.group(3)),
-                float(m.group(4)),
-                float(m.group(5)),
-                float(m.group(6)),
-                float(m.group(7)),
-                float(m.group(8)),
-                float(m.group(9)),
-                int(m.group(10)),
-            ))
-    return pd.DataFrame(rows, columns = ["iter", "eproj", "ecorr", "es", "ess", "nwc", "nrefc", "nwsc", "nrefsc", "nocc"])
 
+    start, nrows = findQMC(path)
+    try:
+        df = pd.read_csv(
+            path,
+            sep = r"\s+",
+            header = None,
+            skiprows = start,
+            nrows = nrows,
+            names = ["iter", "eproj", "ecorr", "es", "ess", "nwc", "nrefc", "nwsc", "nrefsc", "nocc"],
+            engine = "c",
+        )
+    except Exception:
+        df = pd.read_csv(
+            path,
+            sep = r"\s+",
+            header = None,
+            skiprows = start,
+            nrows = nrows,
+            names = ["iter", "eproj", "ecorr", "es", "ess", "nwc", "nrefc", "nwsc", "nrefsc"],
+            engine = "c",
+        )
+        df["nocc"] = np.nan
+
+    return df
 
 def readDeterministicCoefficients(path: Path) -> pd.DataFrame:
     """
@@ -116,10 +135,12 @@ def shiftChange(series: pd.Series):
     """
     Find the first iteration where either of the shifts change. Or more generally any series.
     """
-    x0 = series.iloc[0]
-    mask = ~np.isclose(series.to_numpy(), x0)
+    arr = np.asarray(series)
+    x0 = arr[0]
+    mask = ~np.isclose(arr, x0)
     if mask.any():
-        return int(series.index[mask.argmax()]), int(series.iloc[mask.argmax()])
+        idx = int(mask.argmax())
+        return idx, arr[idx]
     return None, None
 
 def readEnergy(path: Path) -> pd.DataFrame:
@@ -368,7 +389,6 @@ def plotProjectedShift(args):
     plt.plot(df["iter"], df["ecorr"], label = r"$E_{\mathrm{Proj}}(\tau)$", linewidth = LINEWIDTH, color = "tab:green")
     formatAxes(xlabel = r"Iteration / $\tau$", ylabel = "Energy / Ha", legend = True, legendLoc = "lower right")
     finish(args)
-
 
 def plotShoulder(args):
     """
