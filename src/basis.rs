@@ -144,14 +144,11 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
 /// - `excitation`: Excitation carried by the excited state.
 /// # Returns
 /// - `SCFState`: Excited state built from the reference state with modified occupancies.
-fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str,
-                      parent: usize, excitation: Excitation) -> SCFState {
-
-    let pha = excitation_phase(reference.oa, &excitation.alpha.holes, &excitation.alpha.parts);
-    let phb = excitation_phase(reference.ob, &excitation.beta.holes, &excitation.beta.parts);
-
-    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, pha, phb, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), da: Arc::clone(&reference.da), 
-              db: Arc::clone(&reference.db), label: format!("{} {}", reference.label, label_suffix), noci_basis: false, parent, excitation}
+fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str, parent: usize, excitation: Excitation, parent_oa: u128, parent_ob: u128) -> SCFState {
+    let pha = excitation_phase(parent_oa, &excitation.alpha.holes, &excitation.alpha.parts);
+    let phb = excitation_phase(parent_ob, &excitation.beta.holes, &excitation.beta.parts);
+    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, pha, phb, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), da: Arc::clone(&reference.da), db: Arc::clone(&reference.db), 
+              label: format!("{} {}", reference.label, label_suffix), noci_basis: false, parent, excitation}
 }
 
 /// Given aolabels (which contains) information about which atom an AO belongs to, find the AO
@@ -656,6 +653,34 @@ fn apply_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
     out
 }
 
+/// Undo a spin-specific excitation from a child occupation bitstring.
+/// # Arguments
+/// - `occ`: Child occupation bitstring.
+/// - `holes`: Orbitals removed from the parent determinant.
+/// - `parts`: Orbitals added to the parent determinant.
+/// # Returns
+/// - `u128`: Reconstructed parent occupation bitstring.
+fn undo_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
+    let mut out = occ;
+    for &a in parts {out &= !(1u128 << a);}
+    for &i in holes {out |= 1u128 << i;}
+    out
+}
+
+/// Construct the excitation mapping one occupation bitstring to another.
+/// # Arguments
+/// - `parent`: Parent occupation bitstring.
+/// - `child`: Child occupation bitstring.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>)`: Hole and particle orbital indices.
+fn excitation_between(parent: u128, child: u128) -> (Vec<usize>, Vec<usize>) {
+    let holes_bits = parent & !child;
+    let parts_bits = child & !parent;
+    let holes = (0..128).filter(|&i| ((holes_bits >> i) & 1u128) == 1).collect();
+    let parts = (0..128).filter(|&i| ((parts_bits >> i) & 1u128) == 1).collect();
+    (holes, parts)
+}
+
 /// Generate a requested amount of all possible excitations on top of the given reference NOCI
 /// basis.  
 /// # Arguments
@@ -696,13 +721,25 @@ pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bo
                     for alpha_parts in spin_occ.virt_alpha.iter().copied().combinations(k_alpha) {
                         for beta_holes in spin_occ.occ_beta.iter().copied().combinations(k_beta) {
                             for beta_parts in spin_occ.virt_beta.iter().copied().combinations(k_beta) {
+                                
+                                // Apply excitation to supplied state `r`. In stochastic routines
+                                // this will always be a reference determinant, but in SNOCI this
+                                // may be an already excited determinant relative to its parent. 
                                 let oa_ex = apply_excitation(r.oa, &alpha_holes, &alpha_parts);
                                 let ob_ex = apply_excitation(r.ob, &beta_holes, &beta_parts);
 
-                                let label = excitation_label(&alpha_holes, &alpha_parts, &beta_holes, &beta_parts);
-                                let excitation = build_excitation(&alpha_holes, &alpha_parts, &beta_holes, &beta_parts);
+                                // Matrix element routines interpret the excitation phase relative
+                                // to the parent of `r`, so if `r` is already excited, we must undo
+                                // the excitation, and calculate the total excitation from the
+                                // parent of `r` to the new state.
+                                let parent_oa = undo_excitation(r.oa, &r.excitation.alpha.holes, &r.excitation.alpha.parts);
+                                let parent_ob = undo_excitation(r.ob, &r.excitation.beta.holes, &r.excitation.beta.parts);
+                                let (alpha_holes_total, alpha_parts_total) = excitation_between(parent_oa, oa_ex);
+                                let (beta_holes_total, beta_parts_total) = excitation_between(parent_ob, ob_ex);
 
-                                let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation);
+                                let label = excitation_label(&alpha_holes_total, &alpha_parts_total, &beta_holes_total, &beta_parts_total);
+                                let excitation = build_excitation(&alpha_holes_total, &alpha_parts_total, &beta_holes_total, &beta_parts_total);
+                                let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation, parent_oa, parent_ob);
                                 out.push(exstate);
                             }
                         }
