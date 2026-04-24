@@ -8,6 +8,7 @@ use crate::{AoData, SCFState};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
 use super::types::{MOCache, NOCIData, FockData, DetPair, ScatterValue};
+use crate::time_call;
 
 use crate::utils::print_array2;
 use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
@@ -84,15 +85,17 @@ fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize
 /// # Returns:
 /// - `(Array2<f64>, Duration)`: NOCI Fock matrix and matrix-build time.
 pub(crate) fn build_noci_fock(data: &NOCIData<'_>, fock: &FockData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Duration) {
-    let nl = left.len();
-    let nr = right.len();
+    time_call!(crate::timers::noci::add_build_full_fock, {
+        let nl = left.len();
+        let nr = right.len();
 
-    let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
-        calculate_f_pair(data, fock, DetPair::new(ldet, gdet), scratch)
-    });
+        let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+            calculate_f_pair(data, fock, DetPair::new(ldet, gdet), scratch)
+        });
 
-    let f = scatter_matrix_elements(vals, nl, nr, symmetric);
-    (f, dt)
+        let f = scatter_matrix_elements(vals, nl, nr, symmetric);
+        (f, dt)
+    })
 }
 
 /// Form the full overlap matrix using either the generalised Slater-Condon
@@ -105,15 +108,17 @@ pub(crate) fn build_noci_fock(data: &NOCIData<'_>, fock: &FockData<'_>, left: &[
 /// # Returns:
 /// - `(Array2<f64>, Duration)`: The overlap matrix and the matrix-build time.
 pub fn build_noci_s(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Duration) {
-    let nl = left.len();
-    let nr = right.len();
+    time_call!(crate::timers::noci::add_build_full_overlap, {
+        let nl = left.len();
+        let nr = right.len();
 
-    let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
-        calculate_s_pair(data, DetPair::new(ldet, gdet), scratch)
-    });
+        let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+            calculate_s_pair(data, DetPair::new(ldet, gdet), scratch)
+        });
 
-    let s = scatter_matrix_elements(vals, nl, nr, symmetric);
-    (s, dt)
+        let s = scatter_matrix_elements(vals, nl, nr, symmetric);
+        (s, dt)
+    })
 }
 
 /// Form the full Hamiltonian and overlap matrices using either the
@@ -127,35 +132,37 @@ pub fn build_noci_s(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], 
 /// - `(Array2<f64>, Array2<f64>, Duration)`: The Hamiltonian matrix, overlap matrix,
 ///   and matrix-build time.
 pub fn build_noci_hs(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Array2<f64>, Duration) {
-    let nl = left.len();
-    let nr = right.len();
+    time_call!(crate::timers::noci::add_build_full_hs, {
+        let nl = left.len();
+        let nr = right.len();
 
-    if data.input.wicks.compare {
+        if data.input.wicks.compare {
+            let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+                compare_hs_pair_wicks_naive(data, DetPair::new(ldet, gdet), scratch.unwrap())
+            });
+
+            let mut td = 0.0;
+            let mut hsvals = Vec::with_capacity(vals.len());
+            for (i, j, (hs, d)) in vals {
+                hsvals.push((i, j, hs));
+                td += d;
+            }
+            println!("Total naive–wicks discrepancy: {:.6e}", td);
+            let (h, s) = scatter_matrix_elements(hsvals, nl, nr, symmetric);
+            return (h, s, dt);
+        }
+
         let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
-            compare_hs_pair_wicks_naive(data, DetPair::new(ldet, gdet), scratch.unwrap())
+            calculate_hs_pair(data, DetPair::new(ldet, gdet), scratch)
         });
 
-        let mut td = 0.0;
-        let mut hsvals = Vec::with_capacity(vals.len());
-        for (i, j, (hs, d)) in vals {
-            hsvals.push((i, j, hs));
-            td += d;
+        let (h, s) = scatter_matrix_elements(vals, nl, nr, symmetric);
+
+        if data.input.write.write_matrices {
+            write_hs_matrices(&data.input.write.write_dir, &h, &s);
         }
-        println!("Total naive–wicks discrepancy: {:.6e}", td);
-        let (h, s) = scatter_matrix_elements(hsvals, nl, nr, symmetric);
-        return (h, s, dt);
-    }
-
-    let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
-        calculate_hs_pair(data, DetPair::new(ldet, gdet), scratch)
-    });
-
-    let (h, s) = scatter_matrix_elements(vals, nl, nr, symmetric);
-
-    if data.input.write.write_matrices {
-        write_hs_matrices(&data.input.write.write_dir, &h, &s);
-    }
-    (h, s, dt)
+        (h, s, dt)
+    })
 }
 
 /// Calculate the NOCI ground-state energy by solving the generalised

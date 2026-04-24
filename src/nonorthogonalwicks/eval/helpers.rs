@@ -282,8 +282,8 @@ pub(super) fn minor_adjt(full: &[f64], l: usize, i: usize, j: usize, minorb: &mu
 /// # Returns
 /// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices, {
+pub(super) fn construct_determinant_indices_gen(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
+    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen, {
         let nl = l_ex.holes.len();
         let ng = g_ex.holes.len();
 

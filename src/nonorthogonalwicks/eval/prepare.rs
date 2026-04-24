@@ -2,7 +2,7 @@
 use crate::ExcitationSpin;
 use crate::maths::build_d;
 use crate::time_call;
-use super::helpers::construct_determinant_indices;
+use super::helpers::construct_determinant_indices_gen;
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 
@@ -45,25 +45,26 @@ fn prepare_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
             0 => {
                 scratch.ensure_same(0);
                 scratch.rows.clear();
-                scratch.cols.clear();}
+                scratch.cols.clear();
+            }
             1 => {
                 scratch.ensure_same(1);
-                construct_determinant_indices_l1(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
                 prepare_same_m0_l1(w, scratch);
             }
             2 => {
                 scratch.ensure_same(2);
-                construct_determinant_indices_l2(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
                 prepare_same_m0_l2(w, scratch);
             }
             3 => {
                 scratch.ensure_same(3);
-                construct_determinant_indices_l3(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
                 prepare_same_m0_l3(w, scratch);
             }
             4 => {
                 scratch.ensure_same(4);
-                construct_determinant_indices_l4(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
                 prepare_same_m0_l4(w, scratch);
             }
             _ => {
@@ -263,6 +264,32 @@ pub fn prepare_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &Excitati
         let x1 = w.x(1);
         let y1 = w.y(1);
         build_d(scratch.det1.as_mut_slice(), l, &x1, &y1, scratch.rows.as_slice(), scratch.cols.as_slice());
+    })
+}
+
+/// Construct the row and column indices used for a same-spin contraction determinant.
+/// Dispatches to specialised small-rank kernels for `l = 1..4` and otherwise falls back to the
+/// generic determinant-index construction routine.
+/// # Arguments:
+/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
+/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
+/// - `nmo`: Number of molecular orbitals in a single determinant.
+/// - `rows`: Output row indices.
+/// - `cols`: Output column indices.
+/// # Returns
+/// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
+#[inline(always)]
+fn construct_determinant_indices(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
+    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices, {
+        let l = l_ex.holes.len() + g_ex.holes.len();
+
+        match l {
+            1 => construct_determinant_indices_l1(l_ex, g_ex, nmo, rows, cols),
+            2 => construct_determinant_indices_l2(l_ex, g_ex, nmo, rows, cols),
+            3 => construct_determinant_indices_l3(l_ex, g_ex, nmo, rows, cols),
+            4 => construct_determinant_indices_l4(l_ex, g_ex, nmo, rows, cols),
+            _ => construct_determinant_indices_gen(l_ex, g_ex, nmo, rows, cols),
+        }
     })
 }
 

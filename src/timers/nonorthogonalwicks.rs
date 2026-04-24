@@ -24,10 +24,14 @@ pub struct Totals {
     pub construct_determinant_indices_l3: Counter,
     /// Total time spent in `construct_determinant_indices_l4`.
     pub construct_determinant_indices_l4: Counter,
+    /// Total time spent in `construct_determinant_indices_gen`.
+    pub construct_determinant_indices_gen: Counter,
     /// Total time spent in `lg_overlap`.
     pub lg_overlap: Counter,
     /// Total time spent in `lg_h1`.
     pub lg_h1: Counter,
+    /// Total time spent in `lg_f`.
+    pub lg_f: Counter,
     /// Total time spent in `lg_one_body_gen`.
     pub lg_one_body_gen: Counter,
     /// Total time spent in `lg_one_body_m0`.
@@ -95,8 +99,10 @@ impl Totals {
         self.construct_determinant_indices_l1.merge_from(&other.construct_determinant_indices_l1);
         self.construct_determinant_indices_l2.merge_from(&other.construct_determinant_indices_l2);
         self.construct_determinant_indices_l3.merge_from(&other.construct_determinant_indices_l3);
+        self.construct_determinant_indices_gen.merge_from(&other.construct_determinant_indices_gen);
         self.lg_overlap.merge_from(&other.lg_overlap);
         self.lg_h1.merge_from(&other.lg_h1);
+        self.lg_f.merge_from(&other.lg_f);
         self.lg_one_body_gen.merge_from(&other.lg_one_body_gen);
         self.lg_one_body_m0.merge_from(&other.lg_one_body_m0);
         self.lg_h2_same.merge_from(&other.lg_h2_same);
@@ -223,6 +229,16 @@ pub fn add_construct_determinant_indices_l4(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l4.add_ns(ns));
 }
 
+/// Add one timed call to the `construct_determinant_indices_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `construct_determinant_indices_gen` counter.
+#[inline(always)]
+pub fn add_construct_determinant_indices_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_gen.add_ns(ns));
+}
+
 /// Add one timed call to the `lg_overlap` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap`.
@@ -241,6 +257,16 @@ pub fn add_lg_overlap(ns: u64) {
 #[inline(always)]
 pub fn add_lg_h1(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h1.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_f` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_f`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_f` counter.
+#[inline(always)]
+pub fn add_lg_f(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_f.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_one_body_gen` counter.

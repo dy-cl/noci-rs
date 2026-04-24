@@ -63,17 +63,25 @@ macro_rules! for_each_counter {
         $f!($tot.snoci.project_candidate_space);
         $f!($tot.snoci.build_candidate_h_ai);
         $f!($tot.snoci.build_generalised_fock);
-        $f!($tot.snoci.build_fock_mo_cache);
-        $f!($tot.snoci.update_wicks_fock);
-        $f!($tot.snoci.build_focks);
-        $f!($tot.snoci.build_omega_fock);
         $f!($tot.snoci.gmres);
-        $f!($tot.snoci.select_candidates);
-
+        
+        $f!($tot.noci.build_mo_cache);
+        $f!($tot.noci.build_fock_mo_cache);
+        $f!($tot.noci.calculate_s_pair);
+        $f!($tot.noci.calculate_s_pair_wicks);
+        $f!($tot.noci.calculate_s_pair_naive);
+        $f!($tot.noci.calculate_s_pair_orthogonal);
+        $f!($tot.noci.calculate_f_pair);
+        $f!($tot.noci.calculate_f_pair_wicks);
+        $f!($tot.noci.calculate_f_pair_naive);
+        $f!($tot.noci.calculate_f_pair_orthogonal);
         $f!($tot.noci.calculate_hs_pair);
         $f!($tot.noci.calculate_hs_pair_wicks);
         $f!($tot.noci.calculate_hs_pair_naive);
         $f!($tot.noci.calculate_hs_pair_orthogonal);
+        $f!($tot.noci.build_full_fock);
+        $f!($tot.noci.build_full_overlap);
+        $f!($tot.noci.build_full_hs);
 
         $f!($tot.nonorthogonalwicks.prepare_same);
         $f!($tot.nonorthogonalwicks.prepare_same_gen);
@@ -85,8 +93,10 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.construct_determinant_indices_l2);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices_l3);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices_l4);
+        $f!($tot.nonorthogonalwicks.construct_determinant_indices_gen);
         $f!($tot.nonorthogonalwicks.lg_overlap);
         $f!($tot.nonorthogonalwicks.lg_h1);
+        $f!($tot.nonorthogonalwicks.lg_f);
         $f!($tot.nonorthogonalwicks.lg_one_body_gen);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0);
         $f!($tot.nonorthogonalwicks.lg_h2_same);

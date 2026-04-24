@@ -54,8 +54,10 @@ pub(crate) fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 /// # Returns
 /// - `f64`: One-electron Fock matrix element.
 #[inline(always)]
-pub(crate) fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64,) -> f64 {
-    lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::Fock)
+pub(crate) fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_f, {
+        lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::Fock)
+    })
 }
 
 /// Calculate one-body matrix elements between two determinants |{}^\Lambda \Psi\rangle and

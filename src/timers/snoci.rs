@@ -25,18 +25,8 @@ pub struct Totals {
     pub build_candidate_h_ai: Counter,
     /// Total time spent building the generalised Fock matrices.
     pub build_generalised_fock: Counter,
-    /// Total time spent in `build_fock_mo_cache`.
-    pub build_fock_mo_cache: Counter,
-    /// Total time spent in `update_wicks_fock`.
-    pub update_wicks_fock: Counter,
-    /// Total time spent in `build_focks`.
-    pub build_focks: Counter,
-    /// Total time spent in `build_omega_fock`.
-    pub build_omega_fock: Counter,
     /// Total time spent in `gmres`.
     pub gmres: Counter,
-    /// Total time spent in `select_candidates`.
-    pub select_candidates: Counter,
 }
 
 impl Totals {
@@ -57,12 +47,7 @@ impl Totals {
         self.project_candidate_space.merge_from(&other.project_candidate_space);
         self.build_candidate_h_ai.merge_from(&other.build_candidate_h_ai);
         self.build_generalised_fock.merge_from(&other.build_generalised_fock);
-        self.build_fock_mo_cache.merge_from(&other.build_fock_mo_cache);
-        self.update_wicks_fock.merge_from(&other.update_wicks_fock);
-        self.build_focks.merge_from(&other.build_focks);
-        self.build_omega_fock.merge_from(&other.build_omega_fock);
         self.gmres.merge_from(&other.gmres);
-        self.select_candidates.merge_from(&other.select_candidates);
     }
 }
 
@@ -166,46 +151,6 @@ pub fn add_build_generalised_fock(ns: u64) {
     with_totals(|t| t.snoci.build_generalised_fock.add_ns(ns));
 }
 
-/// Add one timed call to the `build_fock_mo_cache` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_fock_mo_cache`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_fock_mo_cache` counter.
-#[inline(always)]
-pub fn add_build_fock_mo_cache(ns: u64) {
-    with_totals(|t| t.snoci.build_fock_mo_cache.add_ns(ns));
-}
-
-/// Add one timed call to the `update_wicks_fock` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `update_wicks_fock`.
-/// # Returns:
-/// - `()`: Updates the current thread local `update_wicks_fock` counter.
-#[inline(always)]
-pub fn add_update_wicks_fock(ns: u64) {
-    with_totals(|t| t.snoci.update_wicks_fock.add_ns(ns));
-}
-
-/// Add one timed call to the `build_focks` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_focks`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_focks` counter.
-#[inline(always)]
-pub fn add_build_focks(ns: u64) {
-    with_totals(|t| t.snoci.build_focks.add_ns(ns));
-}
-
-/// Add one timed call to the `build_omega_fock` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `build_omega_fock`.
-/// # Returns:
-/// - `()`: Updates the current thread local `build_omega_fock` counter.
-#[inline(always)]
-pub fn add_build_omega_fock(ns: u64) {
-    with_totals(|t| t.snoci.build_omega_fock.add_ns(ns));
-}
-
 /// Add one timed call to the `gmres` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `gmres`.
@@ -214,14 +159,4 @@ pub fn add_build_omega_fock(ns: u64) {
 #[inline(always)]
 pub fn add_gmres(ns: u64) {
     with_totals(|t| t.snoci.gmres.add_ns(ns));
-}
-
-/// Add one timed call to the `select_candidates` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `select_candidates`.
-/// # Returns:
-/// - `()`: Updates the current thread local `select_candidates` counter.
-#[inline(always)]
-pub fn add_select_candidates(ns: u64) {
-    with_totals(|t| t.snoci.select_candidates.add_ns(ns));
 }

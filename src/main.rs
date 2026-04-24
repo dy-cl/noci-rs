@@ -478,37 +478,39 @@ fn print_report(res: &Results, input: &Input) {
                  lbl, std::time::Duration::from_nanos(mint), std::time::Duration::from_nanos(meant), std::time::Duration::from_nanos(maxt), mincalls, meancalls, maxcalls);
     }
 
-    fn print_thread_counter(lbl: &str, c: noci_rs::timers::Counter, wall: noci_rs::timers::Counter, nthreads: usize, indent: usize) {
-        let avg = if c.calls > 0 {std::time::Duration::from_nanos(c.ns / c.calls)} else {std::time::Duration::from_nanos(0)};
-        let pad = " ".repeat(indent);
-        if wall.ns == 0 || nthreads == 0 {
-            println!("{}{}: {:?} [{} calls, avg {:?}/call, thread time]", pad, lbl, c.duration(), c.calls, avg);
-            return;
-        }
+    fn print_relative_counter(label: &str, counter: noci_rs::timers::Counter, parent: noci_rs::timers::Counter, indent: usize) {
+        let avg = if counter.calls > 0 {std::time::Duration::from_nanos(counter.ns / counter.calls)} else {std::time::Duration::from_nanos(0)};
+        let pct = if parent.ns > 0 {100.0 * counter.ns as f64 / parent.ns as f64} else {0.0};
 
-        let active = c.ns as f64 / wall.ns as f64;
-        let eff = 100.0 * active / nthreads as f64;
-        println!("{}{}: {:?} [{} calls, avg {:?}/call, thread time, avg active threads {:.2}/{}, efficiency {:.1}%]",
-                 pad, lbl, c.duration(), c.calls, avg, active, nthreads, eff);
+        println!("{}{}: {:?} [{} calls, avg {:?}/call, {:.2}%]", " ".repeat(indent), label, counter.duration(), counter.calls, avg, pct);
     }
 
     let nthreads = rayon::current_num_threads();
 
-    let hs_wall = noci_rs::timers::Counter {
-        ns: res.timings.general.calculate_noci_energy.ns
-          + res.timings.deterministic.build_noci_hs.ns
-          + res.timings.stochastic.step.propagate_iteration.ns
-          + res.timings.snoci.solve_current_space.ns
-          + res.timings.snoci.build_candidate_h_ai.ns,
-        calls: 0,
+    let s_pair_total = res.timings.noci.calculate_s_pair;
+    let f_pair_total = res.timings.noci.calculate_f_pair;
+    let hs_pair_total = res.timings.noci.calculate_hs_pair;
+    let one_body_operator_total = noci_rs::timers::Counter {
+        ns: res.timings.nonorthogonalwicks.lg_h1.ns
+          + res.timings.nonorthogonalwicks.lg_f.ns,
+        calls: res.timings.nonorthogonalwicks.lg_h1.calls
+             + res.timings.nonorthogonalwicks.lg_f.calls,
     };
 
-    let wick_wall = noci_rs::timers::Counter {
-        ns: hs_wall.ns
-          + res.timings.snoci.candidate_pool_new.ns
-          + res.timings.snoci.candidate_pool_update.ns
-          + res.timings.snoci.candidate_pool_filter_candidates.ns,
-        calls: 0,
+    let one_body_alg_total = noci_rs::timers::Counter {
+        ns: res.timings.nonorthogonalwicks.lg_one_body_gen.ns
+          + res.timings.nonorthogonalwicks.lg_one_body_m0.ns,
+        calls: res.timings.nonorthogonalwicks.lg_one_body_gen.calls
+             + res.timings.nonorthogonalwicks.lg_one_body_m0.calls,
+    };
+
+    let wick_total = noci_rs::timers::Counter {
+        ns: res.timings.noci.calculate_s_pair_wicks.ns
+          + res.timings.noci.calculate_f_pair_wicks.ns
+          + res.timings.noci.calculate_hs_pair_wicks.ns,
+        calls: res.timings.noci.calculate_s_pair_wicks.calls
+             + res.timings.noci.calculate_f_pair_wicks.calls
+             + res.timings.noci.calculate_hs_pair_wicks.calls,
     };
 
     println!("{}", "=".repeat(100));
@@ -567,59 +569,107 @@ fn print_report(res: &Results, input: &Input) {
         print_counter("Build Omega space S", res.timings.snoci.project_candidate_space, 2);
         print_counter("Candidate-current space H", res.timings.snoci.build_candidate_h_ai, 2);
         print_counter("Generalised Fock build", res.timings.snoci.build_generalised_fock, 2);
-        print_counter("Fock MOs", res.timings.snoci.build_fock_mo_cache, 2);
-        print_counter("Update Wick Fock intermediates", res.timings.snoci.update_wicks_fock, 2);
-        print_counter("Candidate space Fock", res.timings.snoci.build_focks, 2);
-        print_counter("Build Omega space F and V", res.timings.snoci.build_omega_fock, 2);
         print_counter("GMRES Solve", res.timings.snoci.gmres, 2);
-        print_counter("Candidate selection", res.timings.snoci.select_candidates, 2);
         println!();
     }
-    
-    println!("Shared matrix-element timings");
-    print_thread_counter("Hamiltonian and overlap dispatch", res.timings.noci.calculate_hs_pair, hs_wall, nthreads, 2);
-    print_thread_counter("Hamiltonian and overlap via Wick's theorem", res.timings.noci.calculate_hs_pair_wicks, hs_wall, nthreads, 2);
-    print_thread_counter("Hamiltonian and overlap via generalised Slater-Condon", res.timings.noci.calculate_hs_pair_naive, hs_wall, nthreads, 2);
-    print_thread_counter("Hamiltonian and overlap via orthogonal Slater-Condon", res.timings.noci.calculate_hs_pair_orthogonal, hs_wall, nthreads, 2);
+
+    println!("Shared full matrix build timings");
+    print_counter("Full Fock matrix build", res.timings.noci.build_full_fock, 2);
+    print_counter("Full overlap matrix build", res.timings.noci.build_full_overlap, 2);
+    print_counter("Full Hamiltonian and overlap matrix build", res.timings.noci.build_full_hs, 2);
     println!();
-    
+
+    println!("Shared overlap matrix-element timings");
+    print_counter("Overlap dispatch", res.timings.noci.calculate_s_pair, 2);
+    print_relative_counter("Overlap via Wick's theorem", res.timings.noci.calculate_s_pair_wicks, s_pair_total, 5);
+    print_relative_counter("Overlap via generalised Slater-Condon", res.timings.noci.calculate_s_pair_naive, s_pair_total, 5);
+    print_relative_counter("Overlap via orthogonal Slater-Condon", res.timings.noci.calculate_s_pair_orthogonal, s_pair_total, 5);
+    println!();
+
+    println!("Shared Fock matrix-element timings");
+    print_counter("Fock dispatch", res.timings.noci.calculate_f_pair, 2);
+    print_relative_counter("Fock via Wick's theorem", res.timings.noci.calculate_f_pair_wicks, f_pair_total, 5);
+    print_relative_counter("Fock via generalised Slater-Condon", res.timings.noci.calculate_f_pair_naive, f_pair_total, 5);
+    print_relative_counter("Fock via orthogonal Slater-Condon", res.timings.noci.calculate_f_pair_orthogonal, f_pair_total, 5);
+    println!();
+
+    println!("Shared Hamiltonian and overlap matrix-element timings");
+    print_counter("Hamiltonian and overlap dispatch", res.timings.noci.calculate_hs_pair, 2);
+    print_relative_counter("Hamiltonian and overlap via Wick's theorem", res.timings.noci.calculate_hs_pair_wicks, hs_pair_total, 5);
+    print_relative_counter("Hamiltonian and overlap via generalised Slater-Condon", res.timings.noci.calculate_hs_pair_naive, hs_pair_total, 5);
+    print_relative_counter("Hamiltonian and overlap via orthogonal Slater-Condon", res.timings.noci.calculate_hs_pair_orthogonal, hs_pair_total, 5);
+    println!();
+
+    println!("Shared NOCI MO cache timings");
+    print_counter("MO integral cache build", res.timings.noci.build_mo_cache, 2);
+    print_counter("Fock MO cache build", res.timings.noci.build_fock_mo_cache, 2);
+    println!();
+
     println!("Shared nonorthogonal Wick timings");
-    print_thread_counter("Prepare same-spin information", res.timings.nonorthogonalwicks.prepare_same, wick_wall, nthreads, 2);
-    print_thread_counter("Prepare same-spin information (generic)", res.timings.nonorthogonalwicks.prepare_same_gen, wick_wall, nthreads, 5);
-    print_thread_counter("Prepare same-spin information (m = 0)", res.timings.nonorthogonalwicks.prepare_same_m0, wick_wall, nthreads, 5);
-    print_thread_counter("Prepare same-spin information (m = 0, l = 1)", res.timings.nonorthogonalwicks.prepare_same_m0_l1, wick_wall, nthreads, 8);
-    print_thread_counter("Prepare same-spin information (m = 0, l = 2)", res.timings.nonorthogonalwicks.prepare_same_m0_l2, wick_wall, nthreads, 8);
-    print_thread_counter("Prepare same-spin information (m = 0, l = 3)", res.timings.nonorthogonalwicks.prepare_same_m0_l3, wick_wall, nthreads, 8);
-    print_thread_counter("Prepare same-spin information (m = 0, l = 4)", res.timings.nonorthogonalwicks.prepare_same_m0_l4, wick_wall, nthreads, 8);
-    print_thread_counter("Same-spin mix determinants and adjugates", res.timings.nonorthogonalwicks.get_det_adjt_same, wick_wall, nthreads, 2);
-    print_thread_counter("Different-spin mix determinants and adjugates", res.timings.nonorthogonalwicks.get_det_adjt_diff, wick_wall, nthreads, 2);
-    print_thread_counter("Construct determinant indices", res.timings.nonorthogonalwicks.construct_determinant_indices, wick_wall, nthreads, 2);
-    print_thread_counter("Construct determinant indices (l = 1)", res.timings.nonorthogonalwicks.construct_determinant_indices_l1, wick_wall, nthreads, 5);
-    print_thread_counter("Construct determinant indices (l = 2)", res.timings.nonorthogonalwicks.construct_determinant_indices_l2, wick_wall, nthreads, 5);
-    print_thread_counter("Construct determinant indices (l = 3)", res.timings.nonorthogonalwicks.construct_determinant_indices_l3, wick_wall, nthreads, 5);
-    print_thread_counter("Construct determinant indices (l = 4)", res.timings.nonorthogonalwicks.construct_determinant_indices_l4, wick_wall, nthreads, 5);
-    print_thread_counter("Overlap matrix elements", res.timings.nonorthogonalwicks.lg_overlap, wick_wall, nthreads, 2);
-    print_thread_counter("One-electron matrix elements", res.timings.nonorthogonalwicks.lg_h1, wick_wall, nthreads, 2);
-    print_thread_counter("One-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_one_body_gen, wick_wall, nthreads, 5);
-    print_thread_counter("One-electron matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_one_body_m0, wick_wall, nthreads, 5);
-    print_thread_counter("One-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_one_body_m0_gen, wick_wall, nthreads, 8);
-    print_thread_counter("One-electron matrix elements (m = 0, l = 1)", res.timings.nonorthogonalwicks.lg_one_body_m0_l1, wick_wall, nthreads, 8);
-    print_thread_counter("One-electron matrix elements (m = 0, l = 2)", res.timings.nonorthogonalwicks.lg_one_body_m0_l2, wick_wall, nthreads, 8);
-    print_thread_counter("Same-spin two-electron matrix elements", res.timings.nonorthogonalwicks.lg_h2_same, wick_wall, nthreads, 2);
-    print_thread_counter("Same-spin two-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_h2_same_gen, wick_wall, nthreads, 5);
-    print_thread_counter("Same-spin two-electron matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_h2_same_m0, wick_wall, nthreads, 5);
-    print_thread_counter("Same-spin two-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_h2_same_m0_gen, wick_wall, nthreads, 8);
-    print_thread_counter("Same-spin two-electron matrix elements (m = 0, l = 1)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l1, wick_wall, nthreads, 8);
-    print_thread_counter("Same-spin two-electron matrix elements (m = 0, l = 2)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l2, wick_wall, nthreads, 8);
-    print_thread_counter("Same-spin two-electron matrix elements (m = 0, l = 3)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l3, wick_wall, nthreads, 8);
-    print_thread_counter("Different-spin two-electron matrix elements", res.timings.nonorthogonalwicks.lg_h2_diff, wick_wall, nthreads, 2);
-    print_thread_counter("Different-spin two-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_h2_diff_gen, wick_wall, nthreads, 5);
-    print_thread_counter("Different-spin two-electron matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_h2_diff_m0, wick_wall, nthreads, 5);
-    print_thread_counter("Different-spin two-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_gen, wick_wall, nthreads, 8);
-    print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 1, lb = 1)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_11, wick_wall, nthreads, 8);
-    print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 1, lb = 3)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_13, wick_wall, nthreads, 8);
-    print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 2, lb = 2)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_22, wick_wall, nthreads, 8);
-    print_thread_counter("Different-spin two-electron matrix elements (m = 0, la = 3, lb = 1)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_31, wick_wall, nthreads, 8);
+
+    print_relative_counter("Prepare same-spin information", res.timings.nonorthogonalwicks.prepare_same, wick_total, 2);
+    print_relative_counter("Prepare same-spin information (generic)", res.timings.nonorthogonalwicks.prepare_same_gen, res.timings.nonorthogonalwicks.prepare_same, 5);
+    print_relative_counter("Prepare same-spin information (m = 0)", res.timings.nonorthogonalwicks.prepare_same_m0, res.timings.nonorthogonalwicks.prepare_same, 5);
+    print_relative_counter("Prepare same-spin determinant fill (m = 0, l = 1)", res.timings.nonorthogonalwicks.prepare_same_m0_l1, res.timings.nonorthogonalwicks.prepare_same_m0, 8);
+    print_relative_counter("Prepare same-spin determinant fill (m = 0, l = 2)", res.timings.nonorthogonalwicks.prepare_same_m0_l2, res.timings.nonorthogonalwicks.prepare_same_m0, 8);
+    print_relative_counter("Prepare same-spin determinant fill (m = 0, l = 3)", res.timings.nonorthogonalwicks.prepare_same_m0_l3, res.timings.nonorthogonalwicks.prepare_same_m0, 8);
+    print_relative_counter("Prepare same-spin determinant fill (m = 0, l = 4)", res.timings.nonorthogonalwicks.prepare_same_m0_l4, res.timings.nonorthogonalwicks.prepare_same_m0, 8);
+
+    print_relative_counter("Same-spin mix determinants and adjugates", res.timings.nonorthogonalwicks.get_det_adjt_same, wick_total, 2);
+    print_relative_counter("Different-spin mix determinants and adjugates", res.timings.nonorthogonalwicks.get_det_adjt_diff, wick_total, 2);
+
+    print_relative_counter("Construct determinant indices", res.timings.nonorthogonalwicks.construct_determinant_indices, wick_total, 2);
+    print_relative_counter("Construct determinant indices (generic)", res.timings.nonorthogonalwicks.construct_determinant_indices_gen, 
+                                                                      res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
+    print_relative_counter("Construct determinant indices (l = 1)", res.timings.nonorthogonalwicks.construct_determinant_indices_l1, 
+                                                                    res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
+    print_relative_counter("Construct determinant indices (l = 2)", res.timings.nonorthogonalwicks.construct_determinant_indices_l2, 
+                                                                    res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
+    print_relative_counter("Construct determinant indices (l = 3)", res.timings.nonorthogonalwicks.construct_determinant_indices_l3, 
+                                                                    res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
+    print_relative_counter("Construct determinant indices (l = 4)", res.timings.nonorthogonalwicks.construct_determinant_indices_l4, 
+                                                                    res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
+
+    print_relative_counter("Overlap matrix elements", res.timings.nonorthogonalwicks.lg_overlap, wick_total, 2);
+
+    println!("One-body operator timings");
+    print_relative_counter("One-body operator wrappers", one_body_operator_total, wick_total, 2);
+    print_relative_counter("Hamiltonian one-body matrix elements", res.timings.nonorthogonalwicks.lg_h1, one_body_operator_total, 5);
+    print_relative_counter("Fock one-body matrix elements", res.timings.nonorthogonalwicks.lg_f, one_body_operator_total, 5);
+    println!();
+
+    println!("One-body algorithmic timings");
+    print_relative_counter("One-body algorithmic paths", one_body_alg_total, wick_total, 2);
+    print_relative_counter("One-body matrix elements (generic)", res.timings.nonorthogonalwicks.lg_one_body_gen, one_body_alg_total, 5);
+    print_relative_counter("One-body matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_one_body_m0, one_body_alg_total, 5);
+    print_relative_counter("One-body matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_one_body_m0_gen, res.timings.nonorthogonalwicks.lg_one_body_m0, 8);
+    print_relative_counter("One-body matrix elements (m = 0, l = 1)", res.timings.nonorthogonalwicks.lg_one_body_m0_l1, res.timings.nonorthogonalwicks.lg_one_body_m0, 8);
+    print_relative_counter("One-body matrix elements (m = 0, l = 2)", res.timings.nonorthogonalwicks.lg_one_body_m0_l2, res.timings.nonorthogonalwicks.lg_one_body_m0, 8);
+    println!();
+
+    print_relative_counter("Same-spin two-electron matrix elements", res.timings.nonorthogonalwicks.lg_h2_same, wick_total, 2);
+    print_relative_counter("Same-spin two-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_h2_same_gen, res.timings.nonorthogonalwicks.lg_h2_same, 5);
+    print_relative_counter("Same-spin two-electron matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_h2_same_m0, res.timings.nonorthogonalwicks.lg_h2_same, 5);
+    print_relative_counter("Same-spin two-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_h2_same_m0_gen, res.timings.nonorthogonalwicks.lg_h2_same_m0, 8);
+    print_relative_counter("Same-spin two-electron matrix elements (m = 0, l = 1)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l1, res.timings.nonorthogonalwicks.lg_h2_same_m0, 8);
+    print_relative_counter("Same-spin two-electron matrix elements (m = 0, l = 2)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l2, res.timings.nonorthogonalwicks.lg_h2_same_m0, 8);
+    print_relative_counter("Same-spin two-electron matrix elements (m = 0, l = 3)", res.timings.nonorthogonalwicks.lg_h2_same_m0_l3, res.timings.nonorthogonalwicks.lg_h2_same_m0, 8);
+
+    print_relative_counter("Different-spin two-electron matrix elements", res.timings.nonorthogonalwicks.lg_h2_diff, wick_total, 2);
+    print_relative_counter("Different-spin two-electron matrix elements (generic)", res.timings.nonorthogonalwicks.lg_h2_diff_gen, 
+                                                                                    res.timings.nonorthogonalwicks.lg_h2_diff, 5);
+    print_relative_counter("Different-spin two-electron matrix elements (m = 0)", res.timings.nonorthogonalwicks.lg_h2_diff_m0, 
+                                                                                  res.timings.nonorthogonalwicks.lg_h2_diff, 5);
+    print_relative_counter("Different-spin two-electron matrix elements (m = 0, generic)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_gen, 
+                                                                                           res.timings.nonorthogonalwicks.lg_h2_diff_m0, 8);
+    print_relative_counter("Different-spin two-electron matrix elements (m = 0, la = 1, lb = 1)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_11, 
+                                                                                                  res.timings.nonorthogonalwicks.lg_h2_diff_m0, 8);
+    print_relative_counter("Different-spin two-electron matrix elements (m = 0, la = 1, lb = 3)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_13, 
+                                                                                                  res.timings.nonorthogonalwicks.lg_h2_diff_m0, 8);
+    print_relative_counter("Different-spin two-electron matrix elements (m = 0, la = 2, lb = 2)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_22, 
+                                                                                                  res.timings.nonorthogonalwicks.lg_h2_diff_m0, 8);
+    print_relative_counter("Different-spin two-electron matrix elements (m = 0, la = 3, lb = 1)", res.timings.nonorthogonalwicks.lg_h2_diff_m0_31, 
+                                                                                                  res.timings.nonorthogonalwicks.lg_h2_diff_m0, 8);
     println!();
 
     println!("R: {}", res.r);
