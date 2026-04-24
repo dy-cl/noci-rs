@@ -95,6 +95,17 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.construct_determinant_indices_l4);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices_gen);
         $f!($tot.nonorthogonalwicks.lg_overlap);
+        $f!($tot.nonorthogonalwicks.lg_overlap);
+        $f!($tot.nonorthogonalwicks.lg_overlap_m0);
+        $f!($tot.nonorthogonalwicks.lg_overlap_m0_l1);
+        $f!($tot.nonorthogonalwicks.lg_overlap_m0_l2);
+        $f!($tot.nonorthogonalwicks.lg_overlap_m0_l3);
+        $f!($tot.nonorthogonalwicks.lg_overlap_ml);
+        $f!($tot.nonorthogonalwicks.lg_overlap_ml_l1);
+        $f!($tot.nonorthogonalwicks.lg_overlap_ml_l2);
+        $f!($tot.nonorthogonalwicks.lg_overlap_ml_l3);
+        $f!($tot.nonorthogonalwicks.lg_overlap_gen);
+        $f!($tot.nonorthogonalwicks.lg_h1);
         $f!($tot.nonorthogonalwicks.lg_h1);
         $f!($tot.nonorthogonalwicks.lg_f);
         $f!($tot.nonorthogonalwicks.lg_one_body_gen);

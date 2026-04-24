@@ -28,6 +28,24 @@ pub struct Totals {
     pub construct_determinant_indices_gen: Counter,
     /// Total time spent in `lg_overlap`.
     pub lg_overlap: Counter,
+    /// Total time spent in `lg_overlap_m0`.
+    pub lg_overlap_m0: Counter,
+    /// Total time spent in `lg_overlap_m0_l1`.
+    pub lg_overlap_m0_l1: Counter,
+    /// Total time spent in `lg_overlap_m0_l2`.
+    pub lg_overlap_m0_l2: Counter,
+    /// Total time spent in `lg_overlap_m0_l3`.
+    pub lg_overlap_m0_l3: Counter,
+    /// Total time spent in `lg_overlap_ml`.
+    pub lg_overlap_ml: Counter,
+    /// Total time spent in `lg_overlap_ml_l1`.
+    pub lg_overlap_ml_l1: Counter,
+    /// Total time spent in `lg_overlap_ml_l2`.
+    pub lg_overlap_ml_l2: Counter,
+    /// Total time spent in `lg_overlap_ml_l3`.
+    pub lg_overlap_ml_l3: Counter,
+    /// Total time spent in `lg_overlap_gen`.
+    pub lg_overlap_gen: Counter,
     /// Total time spent in `lg_h1`.
     pub lg_h1: Counter,
     /// Total time spent in `lg_f`.
@@ -101,6 +119,15 @@ impl Totals {
         self.construct_determinant_indices_l3.merge_from(&other.construct_determinant_indices_l3);
         self.construct_determinant_indices_gen.merge_from(&other.construct_determinant_indices_gen);
         self.lg_overlap.merge_from(&other.lg_overlap);
+        self.lg_overlap_m0.merge_from(&other.lg_overlap_m0);
+        self.lg_overlap_m0_l1.merge_from(&other.lg_overlap_m0_l1);
+        self.lg_overlap_m0_l2.merge_from(&other.lg_overlap_m0_l2);
+        self.lg_overlap_m0_l3.merge_from(&other.lg_overlap_m0_l3);
+        self.lg_overlap_ml.merge_from(&other.lg_overlap_ml);
+        self.lg_overlap_ml_l1.merge_from(&other.lg_overlap_ml_l1);
+        self.lg_overlap_ml_l2.merge_from(&other.lg_overlap_ml_l2);
+        self.lg_overlap_ml_l3.merge_from(&other.lg_overlap_ml_l3);
+        self.lg_overlap_gen.merge_from(&other.lg_overlap_gen);
         self.lg_h1.merge_from(&other.lg_h1);
         self.lg_f.merge_from(&other.lg_f);
         self.lg_one_body_gen.merge_from(&other.lg_one_body_gen);
@@ -247,6 +274,96 @@ pub fn add_construct_determinant_indices_gen(ns: u64) {
 #[inline(always)]
 pub fn add_lg_overlap(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_overlap.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_overlap_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_m0` counter.
+#[inline(always)]
+pub fn add_lg_overlap_m0(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_m0_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_m0_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_m0_l1` counter.
+#[inline(always)]
+pub fn add_lg_overlap_m0_l1(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l1.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_m0_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_m0_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_m0_l2` counter.
+#[inline(always)]
+pub fn add_lg_overlap_m0_l2(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l2.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_m0_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_m0_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_m0_l3` counter.
+#[inline(always)]
+pub fn add_lg_overlap_m0_l3(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l3.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_ml` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_ml`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_ml` counter.
+#[inline(always)]
+pub fn add_lg_overlap_ml(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_ml_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_ml_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_ml_l1` counter.
+#[inline(always)]
+pub fn add_lg_overlap_ml_l1(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l1.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_ml_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_ml_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_ml_l2` counter.
+#[inline(always)]
+pub fn add_lg_overlap_ml_l2(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l2.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_ml_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_ml_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_ml_l3` counter.
+#[inline(always)]
+pub fn add_lg_overlap_ml_l3(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l3.add_ns(ns)); 
+}
+
+/// Add one timed call to the `lg_overlap_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_gen` counter.
+#[inline(always)]
+pub fn add_lg_overlap_gen(ns: u64) { 
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_gen.add_ns(ns)); 
 }
 
 /// Add one timed call to the `lg_h1` counter.
