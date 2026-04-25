@@ -25,7 +25,7 @@ pub struct SNOCIState {
 }
 
 /// Result of a GMRES linear solve.
-pub(in crate::snoci) struct GmresResult {
+pub(in crate::snoci) struct GMRES {
     /// Approximate solution vector.
     pub(in crate::snoci) x: Array1<f64>,
     /// Root-mean-square residual norm.
@@ -36,28 +36,22 @@ pub(in crate::snoci) struct GmresResult {
     pub(in crate::snoci) converged: bool,
 }
 
-/// Candidate-space quantities after projection out of the current selected space.
-pub(in crate::snoci) struct ProjectedCandidateSpaceElems {
-    /// Current pool candidates.
-    pub(in crate::snoci) candidates: Vec<SCFState>,
-    /// Candidate-candidate overlap projected into the complement of the selected space.
-    /// This is given by S_{ab}^{\Omega} = S_{ab} - S_{ai} S^{ij} S_{jb}.
-    pub(in crate::snoci) s_ab_omega: Array2<f64>,
-    /// Non-projected candidate-current overlap for the current pool.
+/// Candidate-space overlap blocks required for projection out of the current selected space.
+pub(in crate::snoci) struct SNOCIOverlaps {
+    /// Candidate-candidate overlap, S_ab.
+    pub(in crate::snoci) s_ab: Array2<f64>,
+    /// Candidate-current overlap, S_ai.
     pub(in crate::snoci) s_ai: Array2<f64>,
-    /// Transpose of `s_ai`.
+    /// Current-candidate overlap, S_ia.
     pub(in crate::snoci) s_ia: Array2<f64>,
 }
 
-/// Fock matrix elements between current and candidate spaces.
-pub(in crate::snoci) struct FockMatrixElems {
-    /// Current-current space Fock matrix.
+/// Fock matrix blocks required to build the SNOCI response problem.
+pub(in crate::snoci) struct SNOCIFocks {
+    /// Current-current Fock matrix, F_ij.
     pub(in crate::snoci) f_ii: Array2<f64>,
-    /// Candidate-current space Fock matrix.
+    /// Candidate-current Fock matrix, F_ai.
     pub(in crate::snoci) f_ai: Array2<f64>,
-    /// Current-candidate space Fock matrix.
+    /// Current-candidate Fock matrix, F_ia.
     pub(in crate::snoci) f_ia: Array2<f64>,
-    /// Candidate-candidate space Fock matrix.
-    pub(in crate::snoci) f_ab: Array2<f64>,
 }
-
