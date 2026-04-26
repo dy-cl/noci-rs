@@ -88,7 +88,7 @@ pub(in crate::snoci) fn gmres(m: &Array2<f64>, b: &Array1<f64>, max_iter: usize,
             kfinal = k + 1;
 
             let res_rms = g[k + 1].abs() / (n as f64).sqrt();
-            if res_rms < tol || h[(k + 1, k)].abs() <= tol {
+            if res_rms <= tol {
                 break;
             }
         }
@@ -211,10 +211,9 @@ pub(in crate::snoci) fn build_candidate_current_h(ao: &AoData, candidates: &[SCF
     })
 }
 
-/// Build the shifted candidate-candidate matrix `M`.
+/// Build the unprojected shifted candidate-candidate matrix `M`.
 /// # Arguments:
 /// - `ao`: AO integrals and other system data.
-/// - `selected_space`: Current selected nonorthogonal determinant space.
 /// - `candidates`: Candidate determinant space.
 /// - `overlaps`: Candidate overlap blocks.
 /// - `fa`: Alpha-spin generalised Fock matrix.
@@ -223,58 +222,74 @@ pub(in crate::snoci) fn build_candidate_current_h(ao: &AoData, candidates: &[SCF
 /// - `fock_mocache`: MO-basis Fock integral caches.
 /// - `input`: User-defined input options.
 /// - `tol`: Tolerance for whether a number is zero.
-/// - `ecurrent`: Current selected-space NOCI energy.
+/// - `ecurrent`: Current NOCI energy used for the shift.
 /// # Returns:
-/// - `Array2<f64>`: Shifted candidate-candidate matrix.
-pub(in crate::snoci) fn build_candidate_m(ao: &AoData, selected_space: &[SCFState], candidates: &[SCFState], overlaps: &SNOCIOverlaps, fa: &Array2<f64>, fb: &Array2<f64>,
-                                          wicks: Option<&WicksShared>, fock_mocache: &[FockMOCache], input: &Input, tol: f64, ecurrent: f64) -> Array2<f64> {
+/// - `Array2<f64>`: Unprojected shifted candidate-candidate matrix `F_ab - E_0 S_ab`.
+pub(in crate::snoci) fn build_candidate_m(ao: &AoData, candidates: &[SCFState], overlaps: &SNOCIOverlaps, fa: &Array2<f64>, fb: &Array2<f64>,
+                                          wicks: Option<&WicksShared>, fock_mocache: &[FockMOCache], input: &Input, tol: f64, 
+                                          ecurrent: f64) -> Array2<f64> {
     let wview = wicks.as_ref().map(|ws| ws.view());
-    let data = NOCIData::new(ao, selected_space, input, tol, wview);
+    let data = NOCIData::new(ao, candidates, input, tol, wview);
     let fock = FockData::new(fock_mocache, fa, fb);
 
-    let (mut m_ab, _) = build_noci_fock(&data, &fock, candidates, candidates, true);
-    m_ab.scaled_add(-ecurrent, &overlaps.s_ab);
-    m_ab
+    let (f_ab, _) = build_noci_fock(&data, &fock, candidates, candidates, true);
+    f_ab - overlaps.s_ab.mapv(|s| ecurrent * s)
 }
 
-/// Build the projected shifted candidate-candidate matrix `M` projected into `\Omega` space.
+/// Build the NOCI-PT2 state-projected shifted candidate-candidate matrix `M`.
+/// # Arguments:
+/// - `overlaps`: Candidate-current and candidate-candidate overlap blocks.
+/// - `focks`: Current-current and candidate-current Fock blocks.
+/// - `m_ab`: Unprojected shifted candidate-candidate matrix.
+/// - `coeffs`: Current NOCI eigenvector.
+/// - `ecurrent`: Current NOCI energy.
+/// # Returns:
+/// - `Array2<f64>`: State-projected shifted candidate-candidate matrix.
+pub(in crate::snoci) fn build_omega_m(overlaps: &SNOCIOverlaps, focks: SNOCIFocks, m_ab: Array2<f64>, coeffs: &Array1<f64>, ecurrent: f64) -> Array2<f64> {
+    let s_a0 = overlaps.s_ai.dot(coeffs);
+    let s_0a = overlaps.s_ia.t().dot(coeffs);
+
+    let f_a0 = focks.f_ai.dot(coeffs);
+    let f_0a = focks.f_ia.t().dot(coeffs);
+
+    let mut out = m_ab;
+    
+    // M_{ab}^\Omega = \langle \Omega_a | \hat F - E_0 | \Omega_b \rangle.
+    // | \Omega_a \rangle = | \Phi_a \rangle - | \Psi_0 \rangle \langle \Psi_0 | \Phi_a \rangle,
+    // where | \Psi_0 \rangle is the correct NOCI wavefunction. M_{ab}^\Omega is therefore
+    // M_{ab}^\Omega = (F_{ab} - E_0 S_{ab}) - F_{a0} S_{0b} - S_{a0} F_{0b} + S_{a0} (F_{00} + E_0) S_{0b}.
+    for a in 0..out.nrows() {
+        for b in 0..out.ncols() {
+            out[(a, b)] += -f_a0[a] * s_0a[b] - s_a0[a] * f_0a[b] + 2.0 * ecurrent * s_a0[a] * s_0a[b];
+        }
+    }
+    out
+}
+
+/// Build the unprojected candidate-current coupling vector `V`.
+/// # Arguments:
+/// - `h_ai`: Candidate-current Hamiltonian block.
+/// - `coeffs`: Current-space ground-state eigenvector.
+/// # Returns:
+/// - `Array1<f64>`: Unprojected candidate coupling vector.
+pub(in crate::snoci) fn build_candidate_v(h_ai: &Array2<f64>, coeffs: &Array1<f64>) -> Array1<f64> {
+    h_ai.dot(coeffs)
+}
+
+/// Build the NOCI-PT2 state-projected coupling vector `V`.
 /// # Arguments:
 /// - `overlaps`: Candidate overlap blocks.
-/// - `focks`: Current-current and candidate-current Fock blocks.
-/// - `m_ab`: Candidate-candidate shifted matrix.
-/// - `scurrent`: Overlap matrix in the current selected space.
-/// - `s_ij_inv`: Inverse metric in the current selected space.
+/// - `coeffs`: Current-space ground-state eigenvector.
+/// - `v_a`: Unprojected candidate coupling vector.
 /// - `ecurrent`: Current selected-space NOCI energy.
 /// # Returns:
-/// - `Array2<f64>`: Projected shifted Omega-space candidate-candidate matrix.
-pub(in crate::snoci) fn build_omega_candidate_m(overlaps: &SNOCIOverlaps, focks: SNOCIFocks, m_ab: Array2<f64>, scurrent: &Array2<f64>, 
-                                                s_ij_inv: &Array2<f64>, ecurrent: f64) -> Array2<f64> {
-    let s_inv_s_ia = s_ij_inv.dot(&overlaps.s_ia);
-    let s_ai_s_inv = overlaps.s_ai.dot(s_ij_inv);
-
-    let f_ai_proj = focks.f_ai.dot(&s_inv_s_ia);
-    let f_ia_proj = s_ai_s_inv.dot(&focks.f_ia);
-
-    let mut middle = focks.f_ii;
-    middle.scaled_add(ecurrent, scurrent);
-    let f_ii_proj = s_ai_s_inv.dot(&middle.dot(&s_inv_s_ia));
-
-    &m_ab - &f_ai_proj - &f_ia_proj + &f_ii_proj
-}
-
-/// Build the candidate-current coupling vector `V` projected into `\Omega` space.
-/// # Arguments:
-/// - `overlaps`: Candidate overlap blocks.
-/// - `hcurrent`: Hamiltonian matrix in the current selected space.
-/// - `coeffs`: Current-space ground-state eigenvector.
-/// - `s_ij_inv`: Inverse metric in the current selected space.
-/// - `h_ai`: Candidate-current Hamiltonian block.
-/// # Returns:
 /// - `Array1<f64>`: Omega-projected coupling vector.
-pub(in crate::snoci) fn build_omega_coupling_v(overlaps: &SNOCIOverlaps, hcurrent: &Array2<f64>, coeffs: &Array1<f64>, 
-                                               s_ij_inv: &Array2<f64>, h_ai: &Array2<f64>) -> Array1<f64> {
-    let h_ai_omega = overlaps.s_ai.dot(&s_ij_inv.dot(hcurrent));
-    (h_ai - &h_ai_omega).dot(coeffs)
+pub(in crate::snoci) fn build_omega_v(overlaps: &SNOCIOverlaps, coeffs: &Array1<f64>, v_a: Array1<f64>, ecurrent: f64) -> Array1<f64> {
+    // V_a = \langle \Omega_a | \hat H | \Psi_0 \rangle which when expanding as
+    // | \Omega_a \rangle = | \Phi_a \rangle - | \Psi_0 \rangle \langle \Psi_0 | \Phi_a \rangle, yields:
+    // V_a = \langle \Phi_a | \hat H | \Psi_0 \rangle - S_{a0} \langle \Psi_0 | \hat H | \Psi_0 \rangle.
+    let s_a0 = overlaps.s_ai.dot(coeffs);
+    v_a - s_a0.mapv(|x| ecurrent * x)
 }
 
 /// Select the highest-scoring candidates above the selection threshold.

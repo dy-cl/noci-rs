@@ -9,10 +9,9 @@ use super::{SNOCIState, CandidatePool, GMRES};
 use crate::time_call;
 
 use crate::noci::{noci_density, build_fock_mo_cache, update_wicks_fock};
-use crate::maths::loewdin_x_real;
 use crate::scf::form_fock_matrices;
 use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_candidate_m, 
-            build_omega_candidate_m, build_omega_coupling_v, select_candidates, build_candidate_current_h};
+            build_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h};
 
 /// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
 /// # Arguments:
@@ -87,7 +86,6 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
         let mut final_state: Option<SNOCIState> = None;
         let mut candidate_pool: Option<CandidatePool> = None;
 
-        let e0 = noci_reference_basis[0].e;
         print_snoci_header();
 
         for it in 0..opts.max_iter {
@@ -99,23 +97,17 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             }
             let pool = candidate_pool.as_mut().unwrap();
             
-            // Get the current space's pseudoinverse.
-            let s_ij_inv = time_call!(crate::timers::snoci::add_build_pseudoinverse, {
-                let x = loewdin_x_real(&scurrent, true, tol);
-                x.dot(&x)
-            });
-            
-            // Build the current-candidate overlap and Hamiltonian and the candidate-candidate overlap.
+            // Build the current-candidate overlap and candidate-candidate overlap.
             let mut overlaps = build_snoci_overlaps(ao, &pool.candidates, &selected_space, input, wicks.as_deref(), tol);
-            let h_ai = build_candidate_current_h(ao, &pool.candidates, &selected_space, input, wicks.as_deref(), mocache, tol);
             
             // Filter out any determinants in the candidate space in redundant directions.
             let npoolpre = pool.candidates.len();
-            pool.filter_candidates(&mut overlaps, &s_ij_inv, opts.gmres.metric_tol);
+            pool.filter_candidates(&mut overlaps, &coeffs, opts.gmres.metric_tol);
             let npoolpost = pool.candidates.len();
             if pool.candidates.is_empty() {
                 return empty_state(ecurrent, coeffs, hcurrent, scurrent, Vec::new());
             }
+            let h_ai = build_candidate_current_h(ao, &pool.candidates, &selected_space, input, wicks.as_deref(), mocache, tol);
            
             // Form multireference NOCI density and generalised AO Focks.
             let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
@@ -131,11 +123,13 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             
             // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
             let focks = build_snoci_focks(ao, &selected_space, &pool.candidates, &fa, &fb, wicks.as_deref(), &fock_mocache, input, tol);
-            let m_ab = build_candidate_m(ao, &selected_space, &pool.candidates, &overlaps, &fa, &fb, wicks.as_deref(), &fock_mocache, input, tol, ecurrent);
+            let e0 = coeffs.dot(&focks.f_ii.dot(&coeffs));
+            let m_ab = build_candidate_m(ao, &pool.candidates, &overlaps, &fa, &fb, wicks.as_deref(), &fock_mocache, input, tol, e0);
+            let v_a = build_candidate_v(&h_ai, &coeffs);
             
-            // Construct the projected `\Omega` space linear problem to solve. 
-            let m_omega_ab = build_omega_candidate_m(&overlaps, focks, m_ab, &scurrent, &s_ij_inv, ecurrent);
-            let v_omega = build_omega_coupling_v(&overlaps, &hcurrent, &coeffs, &s_ij_inv, &h_ai);
+            // Construct the projected `\Omega` space linear problem to solve.
+            let m_omega_ab = build_omega_m(&overlaps, focks, m_ab, &coeffs, e0);
+            let v_omega = build_omega_v(&overlaps, &coeffs, v_a, ecurrent);
             
             // Solve.
             let rhs = v_omega.mapv(|x| -x);
@@ -152,7 +146,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             let selected = select_candidates(&pool.candidates, &candidate_scores, opts.sigma, opts.max_add.min(remaining));
             let state = SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates: pool.candidates.clone(), selected, candidate_scores, ept2};
 
-            print_snoci_iteration(it, selected_space.len(), e0, &state, &a, npoolpre, npoolpost);
+            print_snoci_iteration(it, selected_space.len(), noci_reference_basis[0].e, &state, &a, npoolpre, npoolpost);
 
             if state.selected.is_empty() {
                 println!("SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).", it, opts.sigma);

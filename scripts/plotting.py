@@ -175,6 +175,10 @@ def createEnergyLabel(idx: str, rawLabel: str) -> str:
     """
     if idx.startswith("NOCI-qmc"):
         return "NOCIQMC"
+    if idx.startswith("NOCI-PT2"):
+        return "NOCI-PT2"
+    if idx.startswith("SNOCI"):
+        return "SNOCI"
     if idx.startswith("NOCI"):
         return "NOCI"
     if idx.startswith("FCI"):
@@ -272,8 +276,10 @@ def plotEnergy(args):
         g = df[df["label"] == lbl].sort_values("R")
         if not g.empty:
             ax.plot(g["R"], g["E"], label = display if display is not None else lbl, **kwargs)
-
+    
     plotLabel("NOCI", display = r"$|\Psi^{\mathrm{NOCI}}\rangle$", linewidth = LINEWIDTH, zorder = 10, color = "tab:green")
+    plotLabel("NOCI-PT2", display = r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$", linewidth = LINEWIDTH, linestyle = "-.", zorder = 15, color = "tab:purple")
+    plotLabel("SNOCI", display = r"$|\Psi^{\mathrm{SNOCI}}\rangle$", linewidth = LINEWIDTH, linestyle = ":", zorder = 16, color = "tab:cyan")
     plotLabel("NOCIQMC", display = r"$|\Psi^{\mathrm{NOCI\!-\!QMC}}\rangle$", linewidth = LINEWIDTH, linestyle = "--", zorder = 20, color = "tab:pink")
 
     gFCI = df[df["label"] == "FCI"].sort_values("R")

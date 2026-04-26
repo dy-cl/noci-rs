@@ -44,6 +44,8 @@ struct Results {
     e_noci_qmc_stoch: Option<f64>,
     /// Selected NOCI energy if calculated.
     e_snoci: Option<f64>,
+    /// NOCI-PT2 energy if calculated.
+    e_pt2: Option<f64>,
     /// FCI energy if available.
     e_fci: Option<f64>,
     /// Number of MPI ranks for printing.
@@ -120,10 +122,12 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     let mut states: Vec<SCFState> = Vec::new();
     let mut noci_reference_basis: Vec<SCFState> = Vec::new();
     let mut c0: Vec<f64> = Vec::new();
+
     let mut e_noci_ref: f64 = 0.0;
     let mut e_noci_qmc_det: Option<f64> = None;
     let mut e_noci_qmc_stoch: Option<f64> = None;
     let mut e_snoci: Option<f64> = None;
+    let mut e_pt2: Option<f64> = None;
     
     // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
     // for multithreading. SCF calculations are currently single threaded. 
@@ -176,8 +180,9 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         }
 
         if input.snoci.is_some() {
-            let e_snoci_res = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut(), &mocache);
+            let (e_snoci_res, e_pt2_res) = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut(), &mocache);
             e_snoci = Some(e_snoci_res);
+            e_pt2 = Some(e_pt2_res);
         }
     }
 
@@ -194,7 +199,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
     }
 
     let timings = noci_rs::timers::snapshot_all_mpi(world);
-    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_fci: ao.e_fci, 
+    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_pt2, e_fci: ao.e_fci, 
              timings, nranks: world.size() as usize, states: states.clone()}
 }
 
@@ -437,13 +442,13 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 /// - `wicks`: Optional shared-memory Wick's intermediates storage.
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// # Returns
-/// - `f64`: Current SNOCI energy.
+/// - `f64`: Current SNOCI and NOCI-PT2 energies.
 pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64,
-                 wicks: Option<&mut WicksShared>, mocache: &[MOCache]) -> f64 {
+                 wicks: Option<&mut WicksShared>, mocache: &[MOCache]) -> (f64, f64) {
     time_call!(crate::timers::snoci::add_run_snoci, {
         let current_space = initial_space.to_vec();
         let state = snoci_step(ao, &current_space, noci_reference_basis, input, mocache, tol, wicks);
-        state.ecurrent
+        (state.ecurrent, state.ept2)
     })
 }
 
@@ -626,7 +631,6 @@ fn print_report(res: &Results, input: &Input) {
     print_relative_counter("Prepare same-spin determinant fill (m = 0, l = 4)", 
         res.timings.nonorthogonalwicks.prepare_same_m0_l4, res.timings.nonorthogonalwicks.prepare_same_m0, 8);
 
-
     println!("{}", "-".repeat(100));
 
     print_relative_counter("Construct determinant indices", 
@@ -641,7 +645,6 @@ fn print_report(res: &Results, input: &Input) {
         res.timings.nonorthogonalwicks.construct_determinant_indices_l3, res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
     print_relative_counter("Construct determinant indices (l = 4)", 
         res.timings.nonorthogonalwicks.construct_determinant_indices_l4, res.timings.nonorthogonalwicks.construct_determinant_indices, 5);
-
 
     println!("{}", "-".repeat(100));
 
@@ -665,7 +668,6 @@ fn print_report(res: &Results, input: &Input) {
         res.timings.nonorthogonalwicks.lg_overlap_ml_l3, res.timings.nonorthogonalwicks.lg_overlap_ml, 8);
     print_relative_counter("Overlap matrix elements (generic)", 
         res.timings.nonorthogonalwicks.lg_overlap_gen, res.timings.nonorthogonalwicks.lg_overlap, 5);
-
 
     println!("{}", "-".repeat(100));
     
@@ -737,7 +739,12 @@ fn print_report(res: &Results, input: &Input) {
     println!("State(NOCI-reference): E: {}, [E - E(RHF)]: {}", res.e_noci_ref, res.e_noci_ref - res.e_rhf);
     if let Some(e_det) = res.e_noci_qmc_det {println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_det, e_det - res.e_rhf);}
     if res.e_noci_qmc_stoch.is_some() {println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");}
-    if let Some(e_snoci) = res.e_snoci {println!("State(SNOCI): E: {}, [E - E(RHF)]: {}", e_snoci, e_snoci - res.e_rhf);}
+    if let Some(e_snoci) = res.e_snoci {
+        println!("State(SNOCI): E: {}, [E - E(RHF)]: {}", e_snoci, e_snoci - res.e_rhf);
+    }
+    if let Some(e_pt2) = res.e_pt2 {
+        println!("State(NOCI-PT2): E: {}, [E - E(RHF)]: {}", e_pt2 + res.e_rhf, e_pt2 );
+    }
     if let Some(e_fci) = res.e_fci {println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);}
 
     println!("{}", "=".repeat(100));

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use ndarray::{Array2, Axis};
+use ndarray::{Array2, Array1};
 
 use crate::{input::Input, SCFState};
 use crate::basis::generate_excited_basis;
@@ -39,21 +39,23 @@ impl CandidatePool {
         self.candidates.retain(|st| !selected_keys.contains(st.label.as_str()));
     }
 
-    /// Remove candidates whose projected norm in the complement of the current selected space is
+    /// Remove candidates whose projected norm in the complement of the current NOCI state is
     /// numerically zero. Such candidates have directions almost entirely accounted for by the
-    /// current selected space and would only add null directions if included.
+    /// current NOCI wavefunction and would only add null directions if included.
     /// # Arguments
     /// - `overlaps`: Candidate overlap blocks to filter consistently with the candidate list.
-    /// - `s_ij_inv`: Inverse metric in the current selected space.
+    /// - `coeffs`: Current-space NOCI eigenvector.
     /// - `metric_tol`: Threshold below which projected candidate norms are discarded.
     /// # Returns
     /// - `()`: Updates the candidate pool and overlap blocks in place.
-    pub(in crate::snoci) fn filter_candidates(&mut self, overlaps: &mut SNOCIOverlaps, s_ij_inv: &Array2<f64>, metric_tol: f64) {
+    pub(in crate::snoci) fn filter_candidates(&mut self, overlaps: &mut SNOCIOverlaps, coeffs: &Array1<f64>, metric_tol: f64) {
         time_call!(crate::timers::snoci::add_candidate_pool_filter_candidates, {
             if self.candidates.is_empty() {return;}
 
-            let t = overlaps.s_ai.dot(s_ij_inv);
-            let s_omega_aa = overlaps.s_ab.diag().to_owned() - (&t * &overlaps.s_ai).sum_axis(Axis(1));
+            let s_a0 = overlaps.s_ai.dot(coeffs);
+            let s_0a = overlaps.s_ia.t().dot(coeffs);
+
+            let s_omega_aa = overlaps.s_ab.diag().to_owned() - (&s_a0 * &s_0a);
 
             let keep: Vec<usize> = s_omega_aa.iter()
                 .enumerate()
