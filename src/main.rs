@@ -742,8 +742,9 @@ fn print_report(res: &Results, input: &Input) {
     if let Some(e_snoci) = res.e_snoci {
         println!("State(SNOCI): E: {}, [E - E(RHF)]: {}", e_snoci, e_snoci - res.e_rhf);
     }
-    if let Some(e_pt2) = res.e_pt2 {
-        println!("State(NOCI-PT2): E: {}, [E - E(RHF)]: {}", e_pt2 + res.e_rhf, e_pt2 );
+    if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2) {
+        let e_noci_pt2 = e_snoci + ept2;
+        println!("State(NOCI-PT2): E: {}, [E - E(RHF)]: {}", e_noci_pt2, e_noci_pt2 - res.e_rhf);
     }
     if let Some(e_fci) = res.e_fci {println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);}
 
