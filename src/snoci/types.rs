@@ -3,6 +3,7 @@
 use ndarray::{Array1, Array2};
 
 use crate::SCFState;
+use crate::noci::{FockData, NOCIData};
 
 /// Storage for the result of a selected NOCI step.
 pub struct SNOCIState {
@@ -38,8 +39,6 @@ pub(in crate::snoci) struct GMRES {
 
 /// Candidate-space overlap blocks required for projection out of the current selected space.
 pub(in crate::snoci) struct SNOCIOverlaps {
-    /// Candidate-candidate overlap, S_ab.
-    pub(in crate::snoci) s_ab: Array2<f64>,
     /// Candidate-current overlap, S_ai.
     pub(in crate::snoci) s_ai: Array2<f64>,
     /// Current-candidate overlap, S_ia.
@@ -54,4 +53,31 @@ pub(in crate::snoci) struct SNOCIFocks {
     pub(in crate::snoci) f_ai: Array2<f64>,
     /// Current-candidate Fock matrix, F_ia.
     pub(in crate::snoci) f_ia: Array2<f64>,
+}
+
+/// Projector quantities required to remove the current selected-space NOCI state
+/// from the NOCI-PT2 first-order interacting space.
+pub(in crate::snoci) struct PT2Projection {
+    /// Zeroth-order NOCI generalised-Fock energy.
+    pub(in crate::snoci) e0: f64,
+    /// Candidate-reference overlap, S_a0.
+    pub(in crate::snoci) s_a0: Array1<f64>,
+    /// Reference-candidate overlap, S_0a.
+    pub(in crate::snoci) s_0a: Array1<f64>,
+    /// Candidate-reference Fock contraction, F_a0.
+    pub(in crate::snoci) f_a0: Array1<f64>,
+    /// Reference-candidate Fock contraction, F_0a.
+    pub(in crate::snoci) f_0a: Array1<f64>,
+}
+
+/// Matrix-free projected NOCI-PT2 operator.
+pub(in crate::snoci) struct PT2ProjectedOperator<'a, 'data, 'fock> {
+    /// Shared NOCI matrix-element data.
+    pub(in crate::snoci) data: &'a NOCIData<'data>,
+    /// Fock-specific matrix-element data.
+    pub(in crate::snoci) fock: &'a FockData<'fock>,
+    /// Candidate determinants defining the first-order interacting space.
+    pub(in crate::snoci) candidates: &'a [SCFState],
+    /// Precomputed projection quantities.
+    pub(in crate::snoci) projection: &'a PT2Projection,
 }

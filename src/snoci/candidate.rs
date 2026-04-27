@@ -2,13 +2,9 @@
 
 use std::collections::HashSet;
 
-use ndarray::{Array2, Array1};
-
 use crate::{input::Input, SCFState};
 use crate::basis::generate_excited_basis;
 use crate::time_call;
-
-use super::types::SNOCIOverlaps;
 
 pub(in crate::snoci) struct CandidatePool {
     /// Current pool candidates.
@@ -39,38 +35,6 @@ impl CandidatePool {
         self.candidates.retain(|st| !selected_keys.contains(st.label.as_str()));
     }
 
-    /// Remove candidates whose projected norm in the complement of the current NOCI state is
-    /// numerically zero. Such candidates have directions almost entirely accounted for by the
-    /// current NOCI wavefunction and would only add null directions if included.
-    /// # Arguments
-    /// - `overlaps`: Candidate overlap blocks to filter consistently with the candidate list.
-    /// - `coeffs`: Current-space NOCI eigenvector.
-    /// - `metric_tol`: Threshold below which projected candidate norms are discarded.
-    /// # Returns
-    /// - `()`: Updates the candidate pool and overlap blocks in place.
-    pub(in crate::snoci) fn filter_candidates(&mut self, overlaps: &mut SNOCIOverlaps, coeffs: &Array1<f64>, metric_tol: f64) {
-        time_call!(crate::timers::snoci::add_candidate_pool_filter_candidates, {
-            if self.candidates.is_empty() {return;}
-
-            let s_a0 = overlaps.s_ai.dot(coeffs);
-            let s_0a = overlaps.s_ia.t().dot(coeffs);
-
-            let s_omega_aa = overlaps.s_ab.diag().to_owned() - (&s_a0 * &s_0a);
-
-            let keep: Vec<usize> = s_omega_aa.iter()
-                .enumerate()
-                .filter_map(|(a, &d)| (d > metric_tol).then_some(a))
-                .collect();
-
-            if keep.len() == self.candidates.len() {return;}
-
-            self.candidates = keep.iter().map(|&i| self.candidates[i].clone()).collect();
-            overlaps.s_ab = compact_square(&overlaps.s_ab, &keep);
-            overlaps.s_ai = compact_rows(&overlaps.s_ai, &keep);
-            overlaps.s_ia = compact_cols(&overlaps.s_ia, &keep);
-        })
-    }
-
     /// Update the candidate pool once the selected space has grown.
     /// # Arguments
     /// - `selected_space`: Updated selected nonorthogonal determinant space.
@@ -97,47 +61,3 @@ impl CandidatePool {
     }
 }
 
-/// Return a square matrix containing only the selected rows and columns.
-/// # Arguments
-/// - `m`: Input square matrix.
-/// - `keep`: Row and column indices to retain, in the desired output order.
-/// # Returns
-/// - `Array2<f64>`: Compacted square matrix with shape `(keep.len(), keep.len())`.
-fn compact_square(m: &Array2<f64>, keep: &[usize]) -> Array2<f64> {
-    let n = keep.len();
-    let mut out = Array2::zeros((n, n));
-    for (ii, &i) in keep.iter().enumerate() {
-        for (jj, &j) in keep.iter().enumerate() {
-            out[(ii, jj)] = m[(i, j)];
-        }
-    }
-    out
-}
-
-/// Return a matrix containing only the selected rows.
-/// # Arguments
-/// - `m`: Input matrix.
-/// - `keep`: Row indices to retain, in the desired output order.
-/// # Returns
-/// - `Array2<f64>`: Compacted row-selected matrix with shape `(keep.len(), m.ncols())`.
-fn compact_rows(m: &Array2<f64>, keep: &[usize]) -> Array2<f64> {
-    let mut out = Array2::zeros((keep.len(), m.ncols()));
-    for (ii, &i) in keep.iter().enumerate() {
-        out.row_mut(ii).assign(&m.row(i));
-    }
-    out
-}
-
-/// Return a matrix containing only the selected columns.
-/// # Arguments
-/// - `m`: Input matrix.
-/// - `keep`: Column indices to retain, in the desired output order.
-/// # Returns
-/// - `Array2<f64>`: Compacted column-selected matrix with shape `(m.nrows(), keep.len())`.
-fn compact_cols(m: &Array2<f64>, keep: &[usize]) -> Array2<f64> {
-    let mut out = Array2::zeros((m.nrows(), keep.len()));
-    for (jj, &j) in keep.iter().enumerate() {
-        out.column_mut(jj).assign(&m.column(j));
-    }
-    out
-}

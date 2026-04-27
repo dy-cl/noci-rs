@@ -4,14 +4,14 @@ use ndarray::{Array1, Array2};
 
 use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::WicksShared;
-use crate::noci::{MOCache};
-use super::{SNOCIState, CandidatePool, GMRES};
+use crate::noci::{MOCache, NOCIData, FockData};
+use super::{SNOCIState, CandidatePool, GMRES, PT2ProjectedOperator};
 use crate::time_call;
 
 use crate::noci::{noci_density, build_fock_mo_cache, update_wicks_fock};
 use crate::scf::form_fock_matrices;
-use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_candidate_m, 
-            build_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h};
+use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_omega_m_diag, build_snoci_projection, 
+            apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h};
 
 /// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
 /// # Arguments:
@@ -35,7 +35,7 @@ fn empty_state(ecurrent: f64, coeffs: Array1<f64>, hcurrent: Array2<f64>, scurre
 fn print_snoci_header() {
     println!("{}", "=".repeat(100));
     println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-        "iter", "NCurr", "NCand (R)", "NCand", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)", "Converged (GMRES)");
+             "iter", "NCurr", "NCand (R)", "NCand", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)", "Converged (GMRES)");
 }
 
 /// Print a single SNOCI iteration summary line.
@@ -45,24 +45,14 @@ fn print_snoci_header() {
 /// - `e0`: RHF reference energy used to define the correlation energy.
 /// - `state`: SNOCI state for the current iteration.
 /// - `gmres`: GMRES solve information for the current iteration.
-/// - `npool_pre`: Candidate-pool size before projected-norm filter.
-/// - `npool_post`: Candidate-pool size after projected-norm filter.
+/// - `npoolpre`: Candidate-pool size before projected-norm filter.
+/// - `npoolpost`: Candidate-pool size after projected-norm filter.
 /// # Returns:
 /// - `()`: Prints the SNOCI iteration summary to standard output.
-fn print_snoci_iteration(it: usize, n_current: usize, e0: f64, state: &SNOCIState, gmres: &GMRES, npool_pre: usize, npool_post: usize) {
+fn print_snoci_iteration(it: usize, n_current: usize, e0: f64, state: &SNOCIState, gmres: &GMRES, npoolpre: usize, npoolpost: usize) {
     println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16} {:>16}",
-        it,
-        n_current,
-        npool_pre,
-        npool_post,
-        state.selected.len(),
-        state.ecurrent,
-        state.ecurrent - e0,
-        state.ept2,
-        state.ecurrent + state.ept2,
-        gmres.residual_rms,
-        gmres.iterations,
-        gmres.converged);
+             it, n_current, npoolpre, npoolpost, state.selected.len(), state.ecurrent, state.ecurrent - e0, state.ept2,
+             state.ecurrent + state.ept2, gmres.residual_rms, gmres.iterations, gmres.converged);
 }
 
 /// Perform selected NOCI with selection from excitations of the current space.
@@ -96,18 +86,21 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
                 candidate_pool = Some(CandidatePool::new(&selected_space, input));
             }
             let pool = candidate_pool.as_mut().unwrap();
-            
-            // Build the current-candidate overlap and candidate-candidate overlap.
-            let mut overlaps = build_snoci_overlaps(ao, &pool.candidates, &selected_space, input, wicks.as_deref(), tol);
+
+            let wview = wicks.as_ref().map(|ws| ws.view());
+            let candidate_data = NOCIData::new(ao, &pool.candidates, input, tol, wview).withmocache(mocache);
+
+            // Build the current-candidate overlap and its transpose.
+            let overlaps = build_snoci_overlaps(&candidate_data, &pool.candidates, &selected_space);
             
             // Filter out any determinants in the candidate space in redundant directions.
             let npoolpre = pool.candidates.len();
-            pool.filter_candidates(&mut overlaps, &coeffs, opts.gmres.metric_tol);
             let npoolpost = pool.candidates.len();
             if pool.candidates.is_empty() {
                 return empty_state(ecurrent, coeffs, hcurrent, scurrent, Vec::new());
             }
-            let h_ai = build_candidate_current_h(ao, &pool.candidates, &selected_space, input, wicks.as_deref(), mocache, tol);
+            
+            let h_ai = build_candidate_current_h(&candidate_data, &pool.candidates, &selected_space);
            
             // Form multireference NOCI density and generalised AO Focks.
             let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
@@ -120,20 +113,30 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             if input.wicks.enabled && let Some(ws) = wicks.as_deref_mut() {
                 update_wicks_fock(&fa, &fb, noci_reference_basis, ws);
             }
-            
+
             // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
-            let focks = build_snoci_focks(ao, &selected_space, &pool.candidates, &fa, &fb, wicks.as_deref(), &fock_mocache, input, tol);
+            let wview = wicks.as_ref().map(|ws| ws.view());
+            let candidate_data = NOCIData::new(ao, &pool.candidates, input, tol, wview).withmocache(mocache);
+            let current_data = NOCIData::new(ao, &selected_space, input, tol, wview).withmocache(mocache);
+            let fock = FockData::new(&fock_mocache, &fa, &fb);
+            let focks = build_snoci_focks(&current_data, &candidate_data, &fock, &selected_space, &pool.candidates); 
+
             let e0 = coeffs.dot(&focks.f_ii.dot(&coeffs));
-            let m_ab = build_candidate_m(ao, &pool.candidates, &overlaps, &fa, &fb, wicks.as_deref(), &fock_mocache, input, tol, e0);
+            let projection = build_snoci_projection(&overlaps, &focks, &coeffs, e0);
+
             let v_a = build_candidate_v(&h_ai, &coeffs);
+            let v_omega = build_omega_v(&overlaps.s_ai, &coeffs, v_a, ecurrent);
+
+            let op = PT2ProjectedOperator {data: &candidate_data, fock: &fock, candidates: &pool.candidates, projection: &projection};
             
-            // Construct the projected `\Omega` space linear problem to solve.
-            let m_omega_ab = build_omega_m(&overlaps, focks, m_ab, &coeffs, e0);
-            let v_omega = build_omega_v(&overlaps, &coeffs, v_a, ecurrent);
-            
-            // Solve.
+            let diag = build_omega_m_diag(&op);
             let rhs = v_omega.mapv(|x| -x);
-            let a = gmres(&m_omega_ab, &rhs, opts.gmres.max_iter, opts.gmres.res_tol);
+
+            let apply = |x: &Array1<f64>| -> Array1<f64> {
+                apply_omega_m(&op, x)
+            };
+
+            let a = gmres(apply, Some(&diag), &rhs, 200, opts.gmres.max_iter, opts.gmres.res_tol);
             
             // Evaluate NOCI-PT2 energies, score and select candidates.
             let ept2 = a.x.dot(&v_omega);

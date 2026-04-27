@@ -537,18 +537,34 @@ fn print_report(res: &Results, input: &Input) {
             res.timings.snoci.candidate_pool_new, 2);
         print_counter("Update candidate pool overlaps", 
             res.timings.snoci.candidate_pool_update, 2);
-        print_counter("Filter candidate pool", 
-            res.timings.snoci.candidate_pool_filter_candidates, 2);
-        print_counter("Pseudoinverse", 
-            res.timings.snoci.build_pseudoinverse, 2);
-        print_counter("Build Omega space S", 
-            res.timings.snoci.project_candidate_space, 2);
+
+        println!("{}", "-".repeat(100));
+
+        print_counter("Candidate-current overlaps", 
+            res.timings.snoci.build_snoci_overlaps, 2);
         print_counter("Candidate-current space H", 
             res.timings.snoci.build_candidate_h_ai, 2);
         print_counter("Generalised Fock build", 
             res.timings.snoci.build_generalised_fock, 2);
+        print_counter("Current-current and candidate-current Fock blocks", 
+            res.timings.snoci.build_snoci_focks, 2);
+        print_counter("PT2 projection contractions", 
+            res.timings.snoci.build_snoci_projection, 2);
+        print_counter("Candidate coupling vector", 
+            res.timings.snoci.build_candidate_v, 2);
+        print_counter("Projected coupling vector", 
+            res.timings.snoci.build_omega_v, 2);
+        print_counter("Build projected PT2 diagonal", 
+            res.timings.snoci.build_omega_m_diag, 2);
+
+        println!("{}", "-".repeat(100));
+
         print_counter("GMRES Solve", 
             res.timings.snoci.gmres, 2);
+        print_counter("Apply projected PT2 operator", 
+            res.timings.snoci.apply_omega_m, 4);
+        print_counter("Apply unprojected candidate M", 
+            res.timings.snoci.apply_candidate_m, 6);
 
         println!("{}", "-".repeat(100));
     }
