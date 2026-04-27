@@ -12,7 +12,7 @@ use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinB
 use crate::mpiutils::Sharedffi;
 use crate::input::Input;
 
-use crate::nonorthogonalwicks::{write2, write_same_spin, write_diff_spin, assign_offsets, create_wicks_mmap, load_wicks_mmap};
+use crate::nonorthogonalwicks::{write2t, write_same_spin, write_diff_spin, assign_offsets, create_wicks_mmap, load_wicks_mmap};
 use crate::mpiutils::{broadcast};
 
 /// Build all Wick's intermediates and metadata for one reference pair.
@@ -194,8 +194,8 @@ pub fn update_wicks_fock(fa: &Array2<f64>, fb: &Array2<f64>, noci_reference_basi
             let slab = wicks.slab_mut();
             for mi in 0..2 {
                 for mj in 0..2 {
-                    write2(slab, off_aa.ff[mi][mj], &ffa[mi][mj]);
-                    write2(slab, off_bb.ff[mi][mj], &ffb[mi][mj]);
+                    write2t(slab, off_aa.ff[mi][mj], &ffa[mi][mj]);
+                    write2t(slab, off_bb.ff[mi][mj], &ffb[mi][mj]);
                 }
             }
         }

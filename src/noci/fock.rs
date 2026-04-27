@@ -33,6 +33,24 @@ pub(crate) fn calculate_f_pair(data: &NOCIData<'_>, fock: &FockData<'_>, pair: D
     })
 }
 
+/// Compare naive and Wick's calculation of Fock matrix elements to ensure consistency.
+/// # Arguments:
+/// - `data`: Shared data required for NOCI matrix-element evaluation.
+/// - `fock`: Fock-specific data required for Fock matrix-element evaluation.
+/// - `pair`: Pair of determinants whose Fock matrix element is to be compared.
+/// - `scratch`: Scratch space for Wick's calculations.
+/// # Returns:
+/// - `(f64, f64)`: Wick's Fock matrix element, and the absolute discrepancy from the naive path.
+pub(in crate::noci) fn compare_f_pair_wicks_naive(data: &NOCIData<'_>, fock: &FockData<'_>, pair: DetPair<'_>, scratch: &mut WickScratchSpin) -> (f64, f64) {
+    let ldet = pair.ldet;
+    let gdet = pair.gdet;
+
+    let fnv = calculate_f_pair_naive(fock.fa, fock.fb, data.ao, ldet, gdet, data.tol);
+    let fw = calculate_f_pair_wicks(ldet, gdet, data.tol, data.wicks.unwrap(), scratch);
+
+    (fw, (fnv - fw).abs())
+}
+
 /// Calculate the Fock matrix element between determinants \Lambda and \Gamma using
 /// standard Slater-Condon rules.
 /// # Arguments:

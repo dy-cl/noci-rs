@@ -15,6 +15,7 @@ use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
 use crate::maths::general_evp_real;
 use crate::write::write_hs_matrices;
 use super::hs::compare_hs_pair_wicks_naive;
+use super::fock::compare_f_pair_wicks_naive;
 
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
 /// which computes `T` for the pair. The closure may evaluate, for example,
@@ -89,6 +90,22 @@ pub(crate) fn build_noci_fock(data: &NOCIData<'_>, fock: &FockData<'_>, left: &[
         let nl = left.len();
         let nr = right.len();
 
+        if data.input.wicks.compare {
+            let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
+                compare_f_pair_wicks_naive(data, fock, DetPair::new(ldet, gdet), scratch.unwrap())
+            });
+
+            let mut td = 0.0;
+            let mut fvals = Vec::with_capacity(vals.len());
+            for (i, j, (f, d)) in vals {
+                fvals.push((i, j, f));
+                td += d;
+            }
+            println!("Total naive–wicks discrepancy (Fock): {:.6e}", td);
+            let f = scatter_matrix_elements(fvals, nl, nr, symmetric);
+            return (f, dt);
+        }
+
         let (vals, dt) = calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
             calculate_f_pair(data, fock, DetPair::new(ldet, gdet), scratch)
         });
@@ -147,7 +164,7 @@ pub fn build_noci_hs(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState],
                 hsvals.push((i, j, hs));
                 td += d;
             }
-            println!("Total naive–wicks discrepancy: {:.6e}", td);
+            println!("Total naive–wicks discrepancy (Hamiltonian and overlap): {:.6e}", td);
             let (h, s) = scatter_matrix_elements(hsvals, nl, nr, symmetric);
             return (h, s, dt);
         }
