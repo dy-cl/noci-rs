@@ -1,4 +1,7 @@
 // snoci/solve.rs
+
+use std::time::Instant;
+
 use rayon::prelude::*;
 use ndarray::{Array1, Array2};
 
@@ -10,6 +13,41 @@ use crate::maths::{general_evp_real};
 use crate::time_call;
 
 use super::{GMRES, SNOCIOverlaps, SNOCIFocks, PT2ProjectedOperator, PT2Projection};
+
+/// Print the GMRES iteration table header.
+/// # Arguments:
+/// None.
+/// # Returns:
+/// - `()`: Prints the GMRES iteration header to standard output.
+fn print_gmres_header() {
+    println!("  {}", "-".repeat(98));
+    println!("  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}", "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s");
+}
+
+/// Print a single GMRES iteration summary line.
+/// # Arguments:
+/// - `restart_id`: GMRES restart cycle index.
+/// - `iter`: Total GMRES iteration index.
+/// - `residual_est`: Arnoldi/Givens residual estimate for the current Krylov solve.
+/// - `apply_secs`: Time spent applying the matrix-free operator on this iteration.
+/// - `elapsed_secs`: Total elapsed GMRES wall time.
+/// # Returns:
+/// - `()`: Prints the GMRES iteration summary to standard output.
+fn print_gmres_iteration(restart_id: usize, iter: usize, residual_est: f64, apply_secs: f64, elapsed_secs: f64) {
+    println!("  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}", restart_id, iter, residual_est, "-", apply_secs, elapsed_secs);
+}
+
+/// Print a single GMRES restart summary line using the true residual.
+/// # Arguments:
+/// - `restart_id`: GMRES restart cycle index.
+/// - `iter`: Total GMRES iteration index after the restart.
+/// - `residual_true`: True residual RMS after updating the solution.
+/// - `elapsed_secs`: Total elapsed GMRES wall time.
+/// # Returns:
+/// - `()`: Prints the GMRES restart summary to standard output.
+fn print_gmres_restart_summary(restart_id: usize, iter: usize, residual_true: f64, elapsed_secs: f64) {
+    println!("  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}", restart_id, iter, "-", residual_true, "-", elapsed_secs);
+}
 
 /// Solve a linear system using restarted GMRES with an operator callback.
 /// # Arguments:
@@ -25,8 +63,11 @@ use super::{GMRES, SNOCIOverlaps, SNOCIFocks, PT2ProjectedOperator, PT2Projectio
 pub(in crate::snoci) fn gmres<F>(apply: F, diag: Option<&Array1<f64>>, b: &Array1<f64>, restart: usize, max_iter: usize, tol: f64) -> GMRES
 where F: Fn(&Array1<f64>) -> Array1<f64> {
     time_call!(crate::timers::snoci::add_gmres, {
+        let gmres_start = Instant::now();
         let n = b.len();
         let mut x = Array1::<f64>::zeros(n);
+
+        print_gmres_header();
 
         if n == 0 {
             return GMRES {x, residual_rms: 0.0, iterations: 0, converged: true};
@@ -35,6 +76,7 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
         let restart = restart.max(1).min(n);
         let rms = (n as f64).sqrt();
         let small = 1e-14_f64;
+        let print_stride = 1usize;
 
         let dinv = diag.map(|d| {
             let dmax = d.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
@@ -58,11 +100,14 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
         let mut rtrue = true_residual(&x);
         let mut residual_rms = rtrue.dot(&rtrue).sqrt() / rms;
 
+        print_gmres_restart_summary(0, 0, residual_rms, gmres_start.elapsed().as_secs_f64());
+
         if residual_rms <= tol {
             return GMRES {x, residual_rms, iterations: 0, converged: true};
         }
 
         let mut total_iter = 0usize;
+        let mut restart_id = 0usize;
 
         while total_iter < max_iter {
             let z = apply_prec(&rtrue);
@@ -70,6 +115,7 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
 
             if beta <= small {
                 residual_rms = rtrue.dot(&rtrue).sqrt() / rms;
+                print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
                 return GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= tol};
             }
 
@@ -86,7 +132,9 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
             let mut kfinal = 0usize;
 
             for k in 0..inner_max {
+                let t_apply = Instant::now();
                 let aq = apply(&q[k]);
+                let apply_secs = t_apply.elapsed().as_secs_f64();
                 let mut w = apply_prec(&aq);
 
                 for j in 0..=k {
@@ -125,8 +173,11 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
 
                 kfinal = k + 1;
 
-                if g[k + 1].abs() / rms <= tol {
-                    break;
+                let residual_est = g[k + 1].abs() / rms;
+                let iter = total_iter + k + 1;
+
+                if k == 0 || iter.is_multiple_of(print_stride) || residual_est <= tol {
+                    print_gmres_iteration(restart_id, iter, residual_est, apply_secs, gmres_start.elapsed().as_secs_f64());
                 }
             }
 
@@ -148,8 +199,13 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
             }
 
             total_iter += kfinal;
+
             rtrue = true_residual(&x);
             residual_rms = rtrue.dot(&rtrue).sqrt() / rms;
+
+            print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
+
+            restart_id += 1;
 
             if residual_rms <= tol {
                 return GMRES {x, residual_rms, iterations: total_iter, converged: true};

@@ -135,8 +135,8 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             let apply = |x: &Array1<f64>| -> Array1<f64> {
                 apply_omega_m(&op, x)
             };
-
-            let a = gmres(apply, Some(&diag), &rhs, 200, opts.gmres.max_iter, opts.gmres.res_tol);
+            
+            let a = gmres(apply, Some(&diag), &rhs, opts.gmres.restart, opts.gmres.max_iter, opts.gmres.res_tol);
             
             // Evaluate NOCI-PT2 energies, score and select candidates.
             let ept2 = a.x.dot(&v_omega);

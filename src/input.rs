@@ -457,6 +457,7 @@ pub struct GMRESOptions {
     pub max_iter: usize,      
     pub res_tol: f64, 
     pub metric_tol: f64,
+    pub restart: usize,
 }
 
 impl Default for GMRESOptions {
@@ -468,6 +469,7 @@ impl Default for GMRESOptions {
             max_iter: 100,
             res_tol: 1e-8,
             metric_tol: 1e-8,
+            restart: 200,
         }
     }
 }
@@ -805,6 +807,7 @@ pub fn load_input(path: &str) -> Input {
                 max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
                 res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
                 metric_tol: gmres_tbl.get("metric_tol").unwrap_or(gmres_defaults.metric_tol),
+                restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
             }
         } else {
             gmres_defaults

@@ -144,6 +144,27 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    println!("SNOCI");
+    match &input.snoci {
+        Some(s) => {
+            println!("ENABLED: true");
+            println!("MAX_ITER: {}", s.max_iter);
+            println!("MAX_DIM: {}", s.max_dim);
+            println!("MAX_ADD: {}", s.max_add);
+            println!("SIGMA: {}", s.sigma);
+            println!("TOL: {}", s.tol);
+            println!("GMRES:");
+            println!("  MAX_ITER: {}", s.gmres.max_iter);
+            println!("  RESTART: {}", s.gmres.restart);
+            println!("  RES_TOL: {}", s.gmres.res_tol);
+            println!("  METRIC_TOL: {}", s.gmres.metric_tol);
+        }
+        None => {
+            println!("ENABLED: false");
+        }
+    }
+    println!();
+
     println!("WRITE");
     println!("VERBOSE: {}", input.write.verbose);
     println!("WRITE_DIR: {}", input.write.write_dir);
