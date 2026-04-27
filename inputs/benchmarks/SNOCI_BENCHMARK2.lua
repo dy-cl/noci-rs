@@ -1,9 +1,9 @@
 mol = {
     basis = 'cc-pVDZ',
-    r = {2.8},
+    r = {1.5},
     unit = 'Ang',
     atoms = function(r)
-        return {string.format("Li 0 0 %g", -r / 2), string.format("H 0 0 %g",  r / 2),}
+        return {string.format("F 0 0 %g", -r / 2), string.format("F 0 0 %g",  r / 2),}
         end,
 }
 
@@ -20,7 +20,7 @@ snoci = {
 
 states = {
     mom = {
-        {label = "RHF (0, 0)", noci = false},
+        {label = "RHF (0, 0)", noci = true},
         {label = "UHF (1, -1)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
         {label = "UHF (-1, 1)", spin_bias = {pattern = {-1, 1}, pol = 0.75}, noci = true},
     }
