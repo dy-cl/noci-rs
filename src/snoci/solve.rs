@@ -8,7 +8,7 @@ use ndarray::{Array1, Array2};
 use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared, WickScratchSpin};
 use crate::noci::{MOCache, NOCIData, FockData, DetPair};
-use crate::noci::{build_noci_s, build_noci_fock, build_noci_hs, calculate_f_pair, calculate_s_pair};
+use crate::noci::{build_noci_s, build_noci_fock, build_noci_hs, calculate_m_pair};
 use crate::maths::{general_evp_real};
 use crate::time_call;
 
@@ -321,6 +321,7 @@ pub(in crate::snoci) fn build_snoci_projection(overlaps: &SNOCIOverlaps, focks: 
 }
 
 /// Apply the unprojected candidate-candidate shifted Fock matrix `M` without materialising it.
+/// Uses symmetry of `M` so that each pair is evaluated only once.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// - `x`: Vector to apply `M` to.
@@ -329,28 +330,52 @@ pub(in crate::snoci) fn build_snoci_projection(overlaps: &SNOCIOverlaps, focks: 
 pub(in crate::snoci) fn apply_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: &Array1<f64>) -> Array1<f64> {
     time_call!(crate::timers::snoci::add_apply_candidate_m, {
         let n = op.candidates.len();
-        
+
+        if n == 0 {
+            return Array1::zeros(0);
+        }
+
+        let xs = x.as_slice_memory_order().unwrap();
+        let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
+    
         // Calculate y_a = \sum_b (F_{ab} - E^{(0)} S_{ab}) x_b.
-        let y: Vec<f64> = (0..n).into_par_iter().map_init(WickScratchSpin::new, |scratch, a| {
-            let ldet = &op.candidates[a];
-            let mut ya = 0.0;
+        let y = (0..n).into_par_iter().with_min_len(min_len).fold(
+            || (WickScratchSpin::new(), vec![0.0; n]),
+            |(mut scratch, mut y), a| {
+                let xa = xs[a];
+                let ldet = &op.candidates[a];
 
-            for b in 0..n {
-                let xb = x[b];
+                for b in a..n {
+                    let xb = xs[b];
 
-                if xb == 0.0 {
-                    continue;
+                    if xa == 0.0 && xb == 0.0 {
+                        continue;
+                    }
+
+                    let gdet = &op.candidates[b];
+                    let m_ab = calculate_m_pair(op.data, op.fock, DetPair::new(ldet, gdet), op.projection.e0, Some(&mut scratch));
+
+                    if xb != 0.0 {
+                        y[a] += m_ab * xb;
+                    }
+
+                    if b != a && xa != 0.0 {
+                        y[b] += m_ab * xa;
+                    }
                 }
 
-                let gdet = &op.candidates[b];
-                let f_ab = calculate_f_pair(op.data, op.fock, DetPair::new(ldet, gdet), Some(scratch));
-                let s_ab = calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(scratch));
-                
-                ya += (f_ab - op.projection.e0 * s_ab) * xb;
+                (scratch, y)
             }
+        ).map(|(_, y)| y).reduce(
+            || vec![0.0; n],
+            |mut lhs, rhs| {
+                for i in 0..n {
+                    lhs[i] += rhs[i];
+                }
+                lhs
+            }
+        );
 
-            ya
-        }).collect();
         Array1::from_vec(y)
     })
 }
@@ -397,11 +422,10 @@ pub(in crate::snoci) fn build_omega_m_diag(op: &PT2ProjectedOperator<'_, '_, '_>
         let d: Vec<f64> = (0..n).into_par_iter().map_init(WickScratchSpin::new, |scratch, a| {
             let det = &op.candidates[a];
             let pair = DetPair::new(det, det);
-
-            let f_aa = calculate_f_pair(op.data, op.fock, pair, Some(scratch));
-            let s_aa = calculate_s_pair(op.data, DetPair::new(det, det), Some(scratch));
-
-            f_aa - p.e0 * s_aa - p.f_a0[a] * p.s_0a[a] - p.s_a0[a] * p.f_0a[a] + 2.0 * p.e0 * p.s_a0[a] * p.s_0a[a]
+            
+            let m_aa = calculate_m_pair(op.data, op.fock, pair, p.e0, Some(scratch));
+            
+            m_aa - p.f_a0[a] * p.s_0a[a] - p.s_a0[a] * p.f_0a[a] + 2.0 * p.e0 * p.s_a0[a] * p.s_0a[a]
         }).collect();
 
         Array1::from_vec(d)
