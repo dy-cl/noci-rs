@@ -10,7 +10,7 @@ use crate::noci::{build_noci_s, build_noci_fock, build_noci_hs, calculate_m_pair
 use crate::maths::{general_evp_real};
 use crate::time_call;
 
-use super::{SNOCIOverlaps, SNOCIFocks, PT2ProjectedOperator, PT2Projection};
+use super::{SNOCIOverlaps, SNOCIFocks, PT2ProjectedOperator, PT2Projection, Preconditioner};
 
 /// Build Hamiltonian and overlap matrix elements for the current space and solve the resulting
 /// generalised eigenvalue problem.
@@ -205,12 +205,12 @@ pub(in crate::snoci) fn apply_omega_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: 
     })
 }
 
-/// Build the diagonal of the projected NOCI-PT2 shifted Fock matrix without materialising it.
+/// Build the unprojected candidate-candidate shifted Fock diagonal.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// # Returns:
-/// - `Array1<f64>`: Diagonal of `M^\Omega`.
-pub(in crate::snoci) fn build_omega_m_diag(op: &PT2ProjectedOperator<'_, '_, '_>) -> Array1<f64> {
+/// - `Array1<f64>`: Diagonal of the unprojected matrix `M`.
+pub(in crate::snoci) fn build_candidate_m_diag(op: &PT2ProjectedOperator<'_, '_, '_>) -> Array1<f64> {
     time_call!(crate::timers::snoci::add_build_omega_m_diag, {
         let n = op.candidates.len();
         let p = op.projection;
@@ -218,14 +218,22 @@ pub(in crate::snoci) fn build_omega_m_diag(op: &PT2ProjectedOperator<'_, '_, '_>
         let d: Vec<f64> = (0..n).into_par_iter().map_init(WickScratchSpin::new, |scratch, a| {
             let det = &op.candidates[a];
             let pair = DetPair::new(det, det);
-            
-            let m_aa = calculate_m_pair(op.data, op.fock, pair, p.e0, Some(scratch));
-            
-            m_aa - p.f_a0[a] * p.s_0a[a] - p.s_a0[a] * p.f_0a[a] + 2.0 * p.e0 * p.s_a0[a] * p.s_0a[a]
+
+            calculate_m_pair(op.data, op.fock, pair, p.e0, Some(scratch))
         }).collect();
 
         Array1::from_vec(d)
     })
+}
+
+/// Build a rank-2 Woodbury preconditioner for the projected NOCI-PT2 shifted Fock matrix.
+/// # Arguments:
+/// - `m_diag`: Diagonal of the unprojected candidate-candidate matrix `M`.
+/// - `p`: Projection contractions used to form `M^Omega`.
+/// # Returns:
+/// - `OmegaRank2Preconditioner`: Rank-2 preconditioner for applying an approximate inverse of `M^Omega`.
+pub(in crate::snoci) fn build_preconditioner(m_diag: &Array1<f64>, p: &PT2Projection) -> Preconditioner {
+    Preconditioner::new(m_diag, p)
 }
 
 /// Build the unprojected candidate-current coupling vector `V`.

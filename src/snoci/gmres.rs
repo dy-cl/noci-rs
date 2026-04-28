@@ -4,25 +4,11 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2};
 
-use crate::time_call;
-use super::GMRES;
+use crate::{input::GMRESOptions, time_call};
+use super::{GMRES, ArnoldiCycle, ArnoldiParams};
 
 const SMALL: f64 = 1e-14_f64;
-const DIAG_FLOOR_REL: f64 = 1e-12_f64;
 const PRINT_STRIDE: usize = 1usize;
-
-/// Storage for a single restarted Arnoldi cycle.
-/// # Fields:
-/// - `q`: Orthonormal Krylov vectors.
-/// - `h`: Upper Hessenberg matrix after Givens rotations.
-/// - `g`: Rotated residual right-hand side.
-/// - `kfinal`: Number of Arnoldi vectors generated in the current cycle.
-struct ArnoldiCycle {
-    q: Vec<Array1<f64>>,
-    h: Array2<f64>,
-    g: Array1<f64>,
-    kfinal: usize,
-}
 
 /// Print the GMRES iteration table header.
 /// # Arguments:
@@ -57,32 +43,6 @@ fn print_gmres_iteration(restart_id: usize, iter: usize, residual_est: f64, appl
 /// - `()`: Prints the GMRES restart summary to standard output.
 fn print_gmres_restart_summary(restart_id: usize, iter: usize, residual_true: f64, elapsed_secs: f64) {
     println!("  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}", restart_id, iter, "-", residual_true, "-", elapsed_secs);
-}
-
-/// Build the inverse diagonal used for right Jacobi preconditioning.
-/// # Arguments:
-/// - `diag`: Optional diagonal of the matrix-free operator.
-/// # Returns:
-/// - `Option<Array1<f64>>`: Optional inverse diagonal with small entries safely floored.
-fn build_right_jacobi_inverse(diag: Option<&Array1<f64>>) -> Option<Array1<f64>> {
-    diag.map(|d| {
-        let dmax = d.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
-        let dfloor = (DIAG_FLOOR_REL * dmax).max(SMALL);
-        Array1::from_iter(d.iter().map(|&x| if x.abs() > dfloor {1.0 / x} else {1.0}))
-    })
-}
-
-/// Apply the optional right Jacobi preconditioner to a vector.
-/// # Arguments:
-/// - `v`: Vector to precondition.
-/// - `dinv`: Optional inverse diagonal.
-/// # Returns:
-/// - `Array1<f64>`: Preconditioned vector.
-fn apply_preconditioner(v: &Array1<f64>, dinv: Option<&Array1<f64>>) -> Array1<f64> {
-    match dinv {
-        Some(d) => Array1::from_iter(v.iter().zip(d.iter()).map(|(&vi, &di)| vi * di)),
-        None => v.clone(),
-    }
 }
 
 /// Build the true residual `b - A x`.
@@ -187,72 +147,93 @@ fn apply_current_givens(h: &mut Array2<f64>, cs: &mut [f64], sn: &mut [f64], g: 
     g[k] *= cs[k];
 }
 
-/// Run one restarted Arnoldi cycle for the right-preconditioned GMRES operator.
+/// Run one restarted Arnoldi cycle for a callback-defined right-preconditioned GMRES operator.
 /// # Arguments:
 /// - `apply`: Matrix-vector product callback.
-/// - `dinv`: Optional inverse diagonal for right Jacobi preconditioning.
+/// - `precondition`: Right-preconditioner callback.
 /// - `rtrue`: True residual at the start of the restart cycle.
-/// - `inner_max`: Maximum number of Arnoldi iterations in this restart cycle.
-/// - `restart_id`: GMRES restart cycle index.
-/// - `total_iter`: Total number of GMRES iterations before this cycle.
-/// - `rms`: Square-root of the vector length.
-/// - `tol`: Arnoldi/Givens residual estimate convergence tolerance.
-/// - `gmres_start`: Wall-time origin for GMRES.
+/// - `params`: Parameters for the current Arnoldi cycle.
+/// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
-fn run_arnoldi_cycle<F>(apply: &F, dinv: Option<&Array1<f64>>, rtrue: &Array1<f64>, inner_max: usize, restart_id: usize, 
-                        total_iter: usize, rms: f64, tol: f64, gmres_start: &Instant) -> ArnoldiCycle
-where F: Fn(&Array1<f64>) -> Array1<f64> {
+fn run_arnoldi_cycle<F, P>(apply: &F, precondition: &P, rtrue: &Array1<f64>, params: &ArnoldiParams<'_>, opts: &GMRESOptions) -> ArnoldiCycle
+where
+    F: Fn(&Array1<f64>) -> Array1<f64>,
+    P: Fn(&Array1<f64>) -> Array1<f64>,
+{
     let beta = rtrue.dot(rtrue).sqrt();
 
-    let mut q: Vec<Array1<f64>> = Vec::with_capacity(inner_max + 1);
+    let mut q: Vec<Array1<f64>> = Vec::with_capacity(params.inner_max + 1);
     q.push(rtrue.mapv(|ri| ri / beta));
 
-    let mut h = Array2::<f64>::zeros((inner_max + 1, inner_max));
-    let mut cs = vec![0.0; inner_max];
-    let mut sn = vec![0.0; inner_max];
-    let mut g = Array1::<f64>::zeros(inner_max + 1);
+    let mut h = Array2::<f64>::zeros((params.inner_max + 1, params.inner_max));
+    let mut cs = vec![0.0; params.inner_max];
+    let mut sn = vec![0.0; params.inner_max];
+    let mut g = Array1::<f64>::zeros(params.inner_max + 1);
     g[0] = beta;
 
     let mut kfinal = 0usize;
 
-    for k in 0..inner_max {
-        let z = apply_preconditioner(&q[k], dinv);
+    for k in 0..params.inner_max {
+        // Apply the right preconditioner first so Arnoldi sees A P^{-1}.
+        let z = precondition(&q[k]);
 
+        // Apply the expensive matrix-free operator.
         let t_apply = Instant::now();
         let aq = apply(&z);
         let apply_secs = t_apply.elapsed().as_secs_f64();
 
         let mut w = aq;
 
+        // Modified Gram-Schmidt: orthogonalise A P^{-1} q_k against previous q vectors.
         orthogonalise_arnoldi_vector(&q, &mut h, &mut w, k);
+
+        // Normalise the new direction and append it to the Krylov basis if non-zero.
         let h_next = extend_arnoldi_basis(&mut q, &mut h, w, k);
 
+        // Update the small least-squares problem with Givens rotations.
         apply_previous_givens(&mut h, &cs, &sn, k);
         apply_current_givens(&mut h, &mut cs, &mut sn, &mut g, k);
 
         kfinal = k + 1;
 
-        let residual_est = g[k + 1].abs() / rms;
-        let iter = total_iter + k + 1;
+        // Cheap GMRES residual estimate from the rotated least-squares RHS.
+        let residual_est = g[k + 1].abs() / params.rms;
+        let iter = params.total_iter + k + 1;
 
-        if k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= tol {
-            print_gmres_iteration(restart_id, iter, residual_est, apply_secs, gmres_start.elapsed().as_secs_f64());
+        if k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol {
+            print_gmres_iteration(params.restart_id, iter, residual_est, apply_secs, params.gmres_start.elapsed().as_secs_f64());
         }
 
-        if residual_est <= tol || h_next <= SMALL {
+        // Stop early if the Krylov solve has converged or Arnoldi has broken down.
+        if residual_est <= opts.res_tol || h_next <= SMALL {
             break;
         }
     }
-
     ArnoldiCycle {q, h, g, kfinal}
+}
+
+/// Update the solution vector using a callback-defined right-preconditioned Krylov basis.
+/// # Arguments:
+/// - `x`: Solution vector to update in place.
+/// - `q`: Krylov basis vectors.
+/// - `y`: Krylov expansion coefficients.
+/// - `precondition`: Right-preconditioner callback.
+/// # Returns:
+/// - `()`: Updates `x` in place.
+fn update_solution<P>(x: &mut Array1<f64>, q: &[Array1<f64>], y: &Array1<f64>, precondition: &P)
+where P: Fn(&Array1<f64>) -> Array1<f64> {
+    for j in 0..y.len() {
+        let z = precondition(&q[j]);
+        x.scaled_add(y[j], &z);
+    }
 }
 
 /// Solve the small upper-triangular least-squares problem after Arnoldi.
 /// # Arguments:
 /// - `h`: Rotated Hessenberg matrix.
 /// - `g`: Rotated residual right-hand side.
-/// - `kfinal`: Number of Arnoldi iterations completed.
+/// - `kfinal`: Number of Arnoldi iterations completed in the current cycle.
 /// # Returns:
 /// - `Array1<f64>`: Least-squares coefficients in the Krylov basis.
 fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
@@ -272,35 +253,20 @@ fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
     y
 }
 
-/// Update the solution vector using the right-preconditioned Krylov basis.
-/// # Arguments:
-/// - `x`: Solution vector to update in place.
-/// - `q`: Krylov basis vectors.
-/// - `y`: Krylov expansion coefficients.
-/// - `dinv`: Optional inverse diagonal for right Jacobi preconditioning.
-/// # Returns:
-/// - `()`: Updates `x` in place.
-fn update_solution(x: &mut Array1<f64>, q: &[Array1<f64>], y: &Array1<f64>, dinv: Option<&Array1<f64>>) {
-    for j in 0..y.len() {
-        let z = apply_preconditioner(&q[j], dinv);
-        x.scaled_add(y[j], &z);
-    }
-}
-
-/// Solve a linear system using restarted GMRES with an operator callback.
-/// Uses optional right Jacobi preconditioning.
+/// Solve a linear system using restarted GMRES with a callback-defined right preconditioner.
 /// # Arguments:
 /// - `apply`: Matrix-vector product callback.
-/// - `diag`: Optional diagonal used for right Jacobi preconditioning.
+/// - `precondition`: Right-preconditioner callback.
 /// - `b`: Right-hand side vector.
-/// - `restart`: Maximum Krylov subspace size before restart.
-/// - `max_iter`: Maximum total GMRES iterations.
-/// - `tol`: True residual RMS convergence tolerance.
+/// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
 /// # Returns:
 /// - `GMRES`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.
-pub(in crate::snoci) fn gmres<F>(apply: F, diag: Option<&Array1<f64>>, b: &Array1<f64>, restart: usize, max_iter: usize, tol: f64) -> GMRES
-where F: Fn(&Array1<f64>) -> Array1<f64> {
+pub(in crate::snoci) fn gmres<F, P>(apply: F, precondition: P, b: &Array1<f64>, opts: &GMRESOptions) -> GMRES
+where
+    F: Fn(&Array1<f64>) -> Array1<f64>,
+    P: Fn(&Array1<f64>) -> Array1<f64>,
+{
     time_call!(crate::timers::snoci::add_gmres, {
         let gmres_start = Instant::now();
         let n = b.len();
@@ -308,43 +274,58 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
 
         print_gmres_header();
 
+        // Empty systems are already solved.
         if n == 0 {
             return GMRES {x, residual_rms: 0.0, iterations: 0, converged: true};
         }
 
-        let restart = restart.max(1).min(n);
         let rms = (n as f64).sqrt();
-        let dinv = build_right_jacobi_inverse(diag);
 
+        // Start from the zero vector and compute the true residual.
         let mut rtrue = true_residual(&apply, b, &x);
         let mut residual_rms = calculate_residual_rms(&rtrue, rms);
 
         print_gmres_restart_summary(0, 0, residual_rms, gmres_start.elapsed().as_secs_f64());
 
-        if residual_rms <= tol {
+        // Accept the zero initial guess if it already satisfies the true residual tolerance.
+        if residual_rms <= opts.res_tol {
             return GMRES {x, residual_rms, iterations: 0, converged: true};
         }
 
         let mut total_iter = 0usize;
         let mut restart_id = 0usize;
 
-        while total_iter < max_iter {
+        while total_iter < opts.max_iter {
             let beta = rtrue.dot(&rtrue).sqrt();
 
+            // Stop if the residual is numerically zero.
             if beta <= SMALL {
                 residual_rms = beta / rms;
                 print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
-                return GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= tol};
+                return GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= opts.res_tol};
             }
 
-            let inner_max = restart.min(max_iter - total_iter);
-            let cycle = run_arnoldi_cycle(&apply, dinv.as_ref(), &rtrue, inner_max, restart_id, total_iter, rms, tol, &gmres_start);
+            // Build one Krylov subspace for the right-preconditioned operator A P^{-1}.
+            let inner_max = opts.restart.min(opts.max_iter - total_iter);
+            let arnoldi_params = ArnoldiParams {
+                inner_max,
+                restart_id,
+                total_iter,
+                rms,
+                gmres_start: &gmres_start,
+            };
+
+            let cycle = run_arnoldi_cycle(&apply, &precondition, &rtrue, &arnoldi_params, opts);
+
+            // Solve the small least-squares problem in the Krylov basis.
             let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
 
-            update_solution(&mut x, &cycle.q, &y, dinv.as_ref());
+            // Apply the right-preconditioned Krylov correction.
+            update_solution(&mut x, &cycle.q, &y, &precondition);
 
             total_iter += cycle.kfinal;
 
+            // Recompute the true residual after each restart as the Arnoldi residual is only an estimate.
             rtrue = true_residual(&apply, b, &x);
             residual_rms = calculate_residual_rms(&rtrue, rms);
 
@@ -352,11 +333,12 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
 
             restart_id += 1;
 
-            if residual_rms <= tol {
+            // Only the true residual is accepted as final convergence.
+            if residual_rms <= opts.res_tol {
                 return GMRES {x, residual_rms, iterations: total_iter, converged: true};
             }
         }
 
-        GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= tol}
+        GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= opts.res_tol}
     })
 }

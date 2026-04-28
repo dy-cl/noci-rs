@@ -10,8 +10,8 @@ use crate::time_call;
 
 use crate::noci::{noci_density, build_fock_mo_cache, update_wicks_fock};
 use crate::scf::form_fock_matrices;
-use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_omega_m_diag, build_snoci_projection, 
-            apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h};
+use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_candidate_m_diag, build_snoci_projection, 
+            apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h, build_preconditioner};
 
 /// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
 /// # Arguments:
@@ -129,15 +129,11 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
 
             let op = PT2ProjectedOperator {data: &candidate_data, fock: &fock, candidates: &pool.candidates, projection: &projection};
             
-            let diag = build_omega_m_diag(&op);
+            let m_diag = build_candidate_m_diag(&op);
+            let prec = build_preconditioner(&m_diag, op.projection);
             let rhs = v_omega.mapv(|x| -x);
+            let a = gmres(|x| apply_omega_m(&op, x), |x| prec.apply(x), &rhs, &opts.gmres);
 
-            let apply = |x: &Array1<f64>| -> Array1<f64> {
-                apply_omega_m(&op, x)
-            };
-            
-            let a = gmres(apply, Some(&diag), &rhs, opts.gmres.restart, opts.gmres.max_iter, opts.gmres.res_tol);
-            
             // Evaluate NOCI-PT2 energies, score and select candidates.
             let ept2 = a.x.dot(&v_omega);
             let candidate_scores: Vec<f64> = a.x.iter().zip(v_omega.iter()).map(|(&a, &v)| (a * v).abs()).collect();
