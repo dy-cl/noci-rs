@@ -213,18 +213,27 @@ def readHistogram(filepath: Path) -> pd.DataFrame:
 def formatAxes(xlabel = None, ylabel = None, legend = False, legendLoc = None):
     """
     Apply uniform axis formatting.
+    Legends are always placed outside the plotting axes for consistency.
     """
+    ax = plt.gca()
+    fig = ax.figure
+
     if xlabel is not None:
-        plt.xlabel(xlabel, fontsize = LABELFONTSIZE)
+        ax.set_xlabel(xlabel, fontsize = LABELFONTSIZE)
     if ylabel is not None:
-        plt.ylabel(ylabel, fontsize = LABELFONTSIZE)
-    plt.xticks(fontsize = TICKFONTSIZE)
-    plt.yticks(fontsize = TICKFONTSIZE)
+        ax.set_ylabel(ylabel, fontsize = LABELFONTSIZE)
+
+    ax.tick_params(axis = "both", labelsize = TICKFONTSIZE)
+
     if legend:
-        if legendLoc is None:
-            plt.legend(fontsize = LABELFONTSIZE)
-        else:
-            plt.legend(fontsize = LABELFONTSIZE, loc = legendLoc)
+        ax.legend(
+            fontsize = LABELFONTSIZE,
+            loc = "center left",
+            bbox_to_anchor = (1.02, 0.5),
+            frameon = False,
+            borderaxespad = 0.0,
+        )
+    fig.subplots_adjust(right = 0.75)
 
 def plotDeterministicCoefficients(args):
     """
@@ -309,7 +318,6 @@ def plotEnergy(args):
 
     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
     plt.grid(True)
-    fig.subplots_adjust(left = 0.14)
     finish(args)
 
 
@@ -418,6 +426,7 @@ def setStyle():
     """
     plt.rcParams["mathtext.fontset"] = "cm"
     plt.rcParams["font.family"] = "serif"
+    plt.rcParams["figure.figsize"] = (22, 10)
 
 def addCommonArgs(parser):
     """
