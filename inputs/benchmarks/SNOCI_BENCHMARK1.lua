@@ -15,6 +15,7 @@ snoci = {
         max_iter = 512,
         restart = 256,
         res_tol = 1e-6,
+        full_m = true,
     },
 }
 

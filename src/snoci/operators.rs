@@ -116,14 +116,95 @@ pub(in crate::snoci) fn build_snoci_projection(overlaps: &SNOCIOverlaps, focks: 
     })
 }
 
-/// Apply the unprojected candidate-candidate shifted Fock matrix `M` without materialising it.
-/// Uses symmetry of `M` so that each pair is evaluated only once.
+/// Build the upper triangle of the unprojected candidate-candidate shifted Fock matrix `M`.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// # Returns:
+/// - `Vec<f64>`: Packed upper triangle of `M`.
+pub(in crate::snoci) fn build_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>) -> Vec<f64> {
+    time_call!(crate::timers::snoci::add_build_candidate_m, {
+        let n = op.candidates.len();
+        let mut m = vec![0.0; n * (n + 1) / 2];
+
+        m.par_iter_mut().enumerate().for_each_init(
+            WickScratchSpin::new,
+            |scratch, (k, m_ab)| {
+                let mut lo = 0usize;
+                let mut hi = n;
+
+                while lo < hi {
+                    let mid = lo + (hi - lo).div_ceil(2);
+                    let prefix = mid * (2 * n - mid + 1) / 2;
+
+                    if prefix <= k {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+
+                let a = lo;
+                let b = a + (k - a * (2 * n - a + 1) / 2);
+
+                let ldet = &op.candidates[a];
+                let gdet = &op.candidates[b];
+
+                *m_ab = calculate_m_pair(
+                    op.data,
+                    op.fock,
+                    DetPair::new(ldet, gdet),
+                    op.projection.e0,
+                    Some(scratch),
+                );
+            },
+        );
+        m
+    })
+}
+
+/// Build the diagonal of the unprojected candidate-candidate shifted Fock matrix `M`.
+/// Uses a cached packed matrix if provided, otherwise evaluates diagonal matrix elements on the fly.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `m`: Optional packed candidate-candidate shifted Fock matrix.
+/// # Returns:
+/// - `Array1<f64>`: Diagonal entries of `M`.
+pub(in crate::snoci) fn build_candidate_m_diag(op: &PT2ProjectedOperator<'_, '_, '_>, m: Option<&[f64]>) -> Array1<f64> {
+    time_call!(crate::timers::snoci::add_build_candidate_m_diag, {
+        let n = op.candidates.len();
+
+        if let Some(m) = m {
+            let mut diag = Array1::<f64>::zeros(n);
+
+            for i in 0..n {
+                let k = i * (2 * n - i + 1) / 2;
+                diag[i] = m[k];
+            }
+
+            return diag;
+        }
+
+        let diag: Vec<f64> = (0..n).into_par_iter().map_init(
+            WickScratchSpin::new,
+            |scratch, a| {
+                let det = &op.candidates[a];
+                calculate_m_pair(op.data, op.fock, DetPair::new(det, det), op.projection.e0, Some(scratch))
+            },
+        ).collect();
+
+        Array1::from_vec(diag)
+    })
+}
+
+/// Apply the unprojected candidate-candidate shifted Fock matrix `M`.
+/// Uses a cached packed matrix if provided, otherwise evaluates matrix elements on the fly.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// - `x`: Vector to apply `M` to.
+/// - `m`: Optional packed candidate-candidate shifted Fock matrix.
 /// # Returns:
 /// - `Array1<f64>`: Matrix-vector product `M x`.
-pub(in crate::snoci) fn apply_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: &Array1<f64>) -> Array1<f64> {
+pub(in crate::snoci) fn apply_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: &Array1<f64>, m: Option<&[f64]>) -> Array1<f64> {
     time_call!(crate::timers::snoci::add_apply_candidate_m, {
         let n = op.candidates.len();
 
@@ -132,9 +213,29 @@ pub(in crate::snoci) fn apply_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>,
         }
 
         let xs = x.as_slice_memory_order().unwrap();
+
+        if let Some(m) = m {
+            let y: Vec<f64> = (0..n).into_par_iter().map(|a| {
+                let mut ya = 0.0;
+
+                for b in 0..a {
+                    let k = b * (2 * n - b + 1) / 2 + (a - b);
+                    ya += m[k] * xs[b];
+                }
+
+                let row = a * (2 * n - a + 1) / 2;
+                for b in a..n {
+                    let k = row + (b - a);
+                    ya += m[k] * xs[b];
+                }
+
+                ya
+            }).collect();
+            return Array1::from_vec(y);
+        }
+
         let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
-    
-        // Calculate y_a = \sum_b (F_{ab} - E^{(0)} S_{ab}) x_b.
+
         let y = (0..n).into_par_iter().with_min_len(min_len).fold(
             || (WickScratchSpin::new(), vec![0.0; n]),
             |(mut scratch, mut y), a| {
@@ -161,7 +262,7 @@ pub(in crate::snoci) fn apply_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>,
                 }
 
                 (scratch, y)
-            }
+            },
         ).map(|(_, y)| y).reduce(
             || vec![0.0; n],
             |mut lhs, rhs| {
@@ -169,23 +270,25 @@ pub(in crate::snoci) fn apply_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>,
                     lhs[i] += rhs[i];
                 }
                 lhs
-            }
+            },
         );
-
         Array1::from_vec(y)
     })
 }
 
-/// Apply the projected NOCI-PT2 shifted Fock matrix `M^Omega` without materialising it.
+/// Apply the projected NOCI-PT2 shifted Fock matrix `M^Omega`.
+/// Uses a cached packed candidate-candidate shifted Fock matrix if provided,
+/// otherwise applies `M` without materialising it.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// - `x`: Vector to apply `M^Omega` to.
+/// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
 /// # Returns:
 /// - `Array1<f64>`: Matrix-vector product `M^Omega x`.
-pub(in crate::snoci) fn apply_omega_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: &Array1<f64>) -> Array1<f64> {
-    time_call!(crate::timers::snoci::add_apply_omega_m, { 
+pub(in crate::snoci) fn apply_omega_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: &Array1<f64>, m: Option<&[f64]>) -> Array1<f64> {
+    time_call!(crate::timers::snoci::add_apply_omega_m, {
         let p = op.projection;
-        
+
         // Projected matrix elements are defined as:
         // M_{ab}^\Omega = \langle \Omega_a | \hat F - E^{(0)} | \Omega_b \rangle.
         // Expanding the projected states gives:
@@ -196,33 +299,13 @@ pub(in crate::snoci) fn apply_omega_m(op: &PT2ProjectedOperator<'_, '_, '_>, x: 
         let fx = p.f_0a.dot(x);
 
         // Get the action of unprojected M_{ab} = F_{ab} - E^{(0)} S_{ab} on a vector `x`.
-        let mut y = apply_candidate_m(op, x);
+        let mut y = apply_candidate_m(op, x, m);
 
         for a in 0..y.len() {
             y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + 2.0 * p.e0 * p.s_a0[a] * sx;
         }
+
         y
-    })
-}
-
-/// Build the unprojected candidate-candidate shifted Fock diagonal.
-/// # Arguments:
-/// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// # Returns:
-/// - `Array1<f64>`: Diagonal of the unprojected matrix `M`.
-pub(in crate::snoci) fn build_candidate_m_diag(op: &PT2ProjectedOperator<'_, '_, '_>) -> Array1<f64> {
-    time_call!(crate::timers::snoci::add_build_omega_m_diag, {
-        let n = op.candidates.len();
-        let p = op.projection;
-
-        let d: Vec<f64> = (0..n).into_par_iter().map_init(WickScratchSpin::new, |scratch, a| {
-            let det = &op.candidates[a];
-            let pair = DetPair::new(det, det);
-
-            calculate_m_pair(op.data, op.fock, pair, p.e0, Some(scratch))
-        }).collect();
-
-        Array1::from_vec(d)
     })
 }
 

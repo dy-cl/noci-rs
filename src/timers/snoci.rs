@@ -27,6 +27,10 @@ pub struct Totals {
     pub build_snoci_overlaps: Counter,
     /// Total time spent in `build_snoci_focks`.
     pub build_snoci_focks: Counter,
+    /// Total time spent in `build_candidate_m`.
+    pub build_candidate_m: Counter,
+    /// Total time spent in `build_candidate_m_diag`.
+    pub build_candidate_m_diag: Counter,
     /// Total time spent in `apply_candidate_m`.
     pub apply_candidate_m: Counter,
     /// Total time spent in `apply_omega_m`.
@@ -58,6 +62,8 @@ impl Totals {
         self.build_snoci_projection.merge_from(&other.build_snoci_projection);
         self.build_snoci_overlaps.merge_from(&other.build_snoci_overlaps);
         self.build_snoci_focks.merge_from(&other.build_snoci_focks);
+        self.build_candidate_m.merge_from(&other.build_candidate_m);
+        self.build_candidate_m_diag.merge_from(&other.build_candidate_m_diag);
         self.apply_candidate_m.merge_from(&other.apply_candidate_m);
         self.apply_omega_m.merge_from(&other.apply_omega_m);
         self.build_omega_m_diag.merge_from(&other.build_omega_m_diag);
@@ -184,6 +190,26 @@ pub fn add_build_snoci_focks(ns: u64) {
 #[inline(always)]
 pub fn add_apply_candidate_m(ns: u64) {
     with_totals(|t| t.snoci.apply_candidate_m.add_ns(ns));
+}
+
+/// Add one timed call to the `build_candidate_m` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `build_candidate_m`.
+/// # Returns:
+/// - `()`: Updates the current thread local `build_candidate_m` counter.
+#[inline(always)]
+pub fn add_build_candidate_m(ns: u64) {
+    with_totals(|t| t.snoci.build_candidate_m.add_ns(ns));
+}
+
+/// Add one timed call to the `build_candidate_m_diag` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `build_candidate_m_diag`.
+/// # Returns:
+/// - `()`: Updates the current thread local `build_candidate_m_diag` counter.
+#[inline(always)]
+pub fn add_build_candidate_m_diag(ns: u64) {
+    with_totals(|t| t.snoci.build_candidate_m_diag.add_ns(ns));
 }
 
 /// Add one timed call to the `apply_omega_m` counter.

@@ -64,6 +64,8 @@ macro_rules! for_each_counter {
         $f!($tot.snoci.build_snoci_projection);
         $f!($tot.snoci.build_snoci_overlaps);
         $f!($tot.snoci.build_snoci_focks);
+        $f!($tot.snoci.build_candidate_m_diag);
+        $f!($tot.snoci.build_candidate_m);
         $f!($tot.snoci.apply_candidate_m);
         $f!($tot.snoci.apply_omega_m);
         $f!($tot.snoci.build_omega_m_diag);

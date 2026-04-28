@@ -180,7 +180,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
         }
 
         if input.snoci.is_some() {
-            let (e_snoci_res, e_pt2_res) = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut(), &mocache);
+            let (e_snoci_res, e_pt2_res) = run_snoci(&ao, &noci_reference_basis, &noci_reference_basis, input, tol, wicks_shared.as_mut(), &mocache, world);
             e_snoci = Some(e_snoci_res);
             e_pt2 = Some(e_pt2_res);
         }
@@ -441,12 +441,18 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Optional shared-memory Wick's intermediates storage.
 /// - `mocache`: MO-basis one and two-electron integral caches.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `f64`: Current SNOCI and NOCI-PT2 energies.
 pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64,
-                 wicks: Option<&mut WicksShared>, mocache: &[MOCache]) -> (f64, f64) {
+                 wicks: Option<&mut WicksShared>, mocache: &[MOCache], world: &impl Communicator) -> (f64, f64) {
     time_call!(crate::timers::snoci::add_run_snoci, {
         let current_space = initial_space.to_vec();
+
+        if world.rank() == 0 {
+            println!("{}", "=".repeat(100));
+        }
+
         let state = snoci_step(ao, &current_space, noci_reference_basis, input, mocache, tol, wicks);
         (state.ecurrent, state.ept2)
     })
@@ -548,6 +554,10 @@ fn print_report(res: &Results, input: &Input) {
             res.timings.snoci.build_generalised_fock, 2);
         print_counter("Current-current and candidate-current Fock blocks", 
             res.timings.snoci.build_snoci_focks, 2);
+        print_counter("Build cached candidate shifted Fock", 
+            res.timings.snoci.build_candidate_m, 2);
+        print_counter("Build candidate shifted Fock diagonal", 
+            res.timings.snoci.build_candidate_m_diag, 2);
         print_counter("PT2 projection contractions", 
             res.timings.snoci.build_snoci_projection, 2);
         print_counter("Candidate coupling vector", 

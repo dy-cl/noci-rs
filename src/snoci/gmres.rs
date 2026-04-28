@@ -16,6 +16,8 @@ const PRINT_STRIDE: usize = 1usize;
 /// # Returns:
 /// - `()`: Prints the GMRES iteration header to standard output.
 fn print_gmres_header() {
+    println!();
+    println!("  GMRES solve");
     println!("  {}", "-".repeat(98));
     println!("  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}", "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s");
 }

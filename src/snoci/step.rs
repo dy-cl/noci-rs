@@ -11,7 +11,8 @@ use crate::time_call;
 use crate::noci::{noci_density, build_fock_mo_cache, update_wicks_fock};
 use crate::scf::form_fock_matrices;
 use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_candidate_m_diag, build_snoci_projection, 
-            apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h, build_preconditioner};
+            apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h, build_preconditioner,
+            build_candidate_m};
 
 /// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
 /// # Arguments:
@@ -27,32 +28,55 @@ fn empty_state(ecurrent: f64, coeffs: Array1<f64>, hcurrent: Array2<f64>, scurre
     SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates, selected: Vec::new(), candidate_scores: Vec::new(), ept2: 0.0}
 }
 
-/// Print the SNOCI iteration table header.
+/// Print the start of a SNOCI iteration block.
 /// # Arguments:
-/// None.
+/// - `it`: SNOCI iteration index.
+/// - `n_current`: Number of determinants in the current selected space.
+/// - `npoolpre`: Candidate-pool size before projected-norm filter.
+/// - `npoolpost`: Candidate-pool size after projected-norm filter.
 /// # Returns:
-/// - `()`: Prints the SNOCI iteration header to standard output.
-fn print_snoci_header() {
-    println!("{}", "=".repeat(100));
-    println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-             "iter", "NCurr", "NCand (R)", "NCand", "NSelect", "E", "Ecorr", "EPT2", "E + EPT2", "Res (GMRES)", "iter (GMRES)", "Converged (GMRES)");
+/// - `()`: Prints the SNOCI iteration block header to standard output.
+fn print_snoci_iteration_start(it: usize, n_current: usize, npoolpre: usize, npoolpost: usize) {
+    println!("SNOCI iteration: {}", it);
+    println!("  NCurr:     {}", n_current);
+    println!("  NCand (R): {}", npoolpre);
+    println!("  NCand:     {}", npoolpost);
 }
 
-/// Print a single SNOCI iteration summary line.
+/// Print the status message for building the cached shifted Fock matrix.
+/// # Arguments:
+/// - `n`: Number of candidates.
+/// # Returns:
+/// - `()`: Prints the shifted Fock build message to standard output.
+fn print_build_candidate_m(n: usize) {
+    let nelem = n * (n + 1) / 2;
+    let mib = nelem as f64 * std::mem::size_of::<f64>() as f64 / 1024.0 / 1024.0;
+    println!("  Building upper triangle shifted Fock matrix ({} elements, {:.3} MiB)...", nelem, mib);
+}
+
+/// Print the SNOCI result for a completed iteration.
 /// # Arguments:
 /// - `it`: SNOCI iteration index.
 /// - `n_current`: Number of determinants in the current selected space.
 /// - `e0`: RHF reference energy used to define the correlation energy.
 /// - `state`: SNOCI state for the current iteration.
 /// - `gmres`: GMRES solve information for the current iteration.
-/// - `npoolpre`: Candidate-pool size before projected-norm filter.
-/// - `npoolpost`: Candidate-pool size after projected-norm filter.
 /// # Returns:
-/// - `()`: Prints the SNOCI iteration summary to standard output.
-fn print_snoci_iteration(it: usize, n_current: usize, e0: f64, state: &SNOCIState, gmres: &GMRES, npoolpre: usize, npoolpost: usize) {
-    println!("{:>6} {:>16} {:>16} {:>16} {:>16} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16} {:>16}",
-             it, n_current, npoolpre, npoolpost, state.selected.len(), state.ecurrent, state.ecurrent - e0, state.ept2,
-             state.ecurrent + state.ept2, gmres.residual_rms, gmres.iterations, gmres.converged);
+/// - `()`: Prints the SNOCI iteration result to standard output.
+fn print_snoci_iteration_result(it: usize, n_current: usize, e0: f64, state: &SNOCIState, gmres: &GMRES) {
+    println!();
+    println!("  SNOCI result");
+    println!("  {}", "-".repeat(98));
+    println!("  Iteration:          {}", it);
+    println!("  NCurr:              {}", n_current);
+    println!("  NSelect:            {}", state.selected.len());
+    println!("  E:                  {:.12}", state.ecurrent);
+    println!("  Ecorr:              {:.12}", state.ecurrent - e0);
+    println!("  EPT2:               {:.12}", state.ept2);
+    println!("  E + EPT2:           {:.12}", state.ecurrent + state.ept2);
+    println!("  GMRES residual:     {:.12}", gmres.residual_rms);
+    println!("  GMRES iterations:   {}", gmres.iterations);
+    println!("  GMRES converged:    {}", gmres.converged);
 }
 
 /// Perform selected NOCI with selection from excitations of the current space.
@@ -75,8 +99,6 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
 
         let mut final_state: Option<SNOCIState> = None;
         let mut candidate_pool: Option<CandidatePool> = None;
-
-        print_snoci_header();
 
         for it in 0..opts.max_iter {
             // Generate matrix elements for current space and solve GEVP for the energy.
@@ -128,11 +150,25 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             let v_omega = build_omega_v(&overlaps.s_ai, &coeffs, v_a, ecurrent);
 
             let op = PT2ProjectedOperator {data: &candidate_data, fock: &fock, candidates: &pool.candidates, projection: &projection};
-            
-            let m_diag = build_candidate_m_diag(&op);
+
+            if it > 0 {
+                println!("{}", "=".repeat(100));
+            }
+
+            print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
+
+            let m = if opts.gmres.full_m {
+                print_build_candidate_m(op.candidates.len());
+                Some(build_candidate_m(&op))
+            } else {
+                None
+            };
+
+            let m_diag = build_candidate_m_diag(&op, m.as_deref());
             let prec = build_preconditioner(&m_diag, op.projection);
             let rhs = v_omega.mapv(|x| -x);
-            let a = gmres(|x| apply_omega_m(&op, x), |x| prec.apply(x), &rhs, &opts.gmres);
+
+            let a = gmres(|x| apply_omega_m(&op, x, m.as_deref()), |x| prec.apply(x), &rhs, &opts.gmres);
 
             // Evaluate NOCI-PT2 energies, score and select candidates.
             let ept2 = a.x.dot(&v_omega);
@@ -142,11 +178,12 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
                 println!("SNOCI stopped at iteration {}: selected space reached max_dim ({}).", it, opts.max_dim);
                 return SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates: pool.candidates.clone(), selected: Vec::new(), candidate_scores, ept2};
             }
+
             let selected = select_candidates(&pool.candidates, &candidate_scores, opts.sigma, opts.max_add.min(remaining));
             let state = SNOCIState {ecurrent, coeffs, hcurrent, scurrent, candidates: pool.candidates.clone(), selected, candidate_scores, ept2};
 
-            print_snoci_iteration(it, selected_space.len(), noci_reference_basis[0].e, &state, &a, npoolpre, npoolpost);
-
+            print_snoci_iteration_result(it, selected_space.len(), noci_reference_basis[0].e, &state, &a);
+            
             if state.selected.is_empty() {
                 println!("SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).", it, opts.sigma);
                 return state;

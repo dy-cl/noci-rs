@@ -458,6 +458,7 @@ pub struct GMRESOptions {
     pub res_tol: f64, 
     pub metric_tol: f64,
     pub restart: usize,
+    pub full_m: bool,
 }
 
 impl Default for GMRESOptions {
@@ -470,6 +471,7 @@ impl Default for GMRESOptions {
             res_tol: 1e-8,
             metric_tol: 1e-8,
             restart: 200,
+            full_m: false,
         }
     }
 }
@@ -808,6 +810,7 @@ pub fn load_input(path: &str) -> Input {
                 res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
                 metric_tol: gmres_tbl.get("metric_tol").unwrap_or(gmres_defaults.metric_tol),
                 restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
+                full_m: gmres_tbl.get("full_m").unwrap_or(gmres_defaults.full_m),
             }
         } else {
             gmres_defaults
