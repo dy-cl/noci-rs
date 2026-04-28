@@ -508,7 +508,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
             };
 
             // Bias the densities as prescribed by the pattern.
-            bias_spin(&mut da, &mut db, &atomao, meta.spatialpol, &pattern);
+            bias_spatial(&mut da, &mut db, &atomao, meta.spatialpol, &pattern);
 
             if input.write.verbose {
                 let left = "=".repeat(45);
