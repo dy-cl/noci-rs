@@ -7,7 +7,7 @@ use crate::{input::Input, AoData, SCFState};
 use crate::nonorthogonalwicks::{WicksShared, WickScratchSpin};
 use crate::noci::{MOCache, NOCIData, FockData, DetPair};
 use crate::noci::{build_noci_s, build_noci_fock, build_noci_hs, calculate_m_pair};
-use crate::maths::{general_evp_real};
+use crate::maths::{general_evp};
 use crate::time_call;
 
 use super::{SNOCIOverlaps, SNOCIFocks, PT2ProjectedOperator, PT2Projection, Preconditioner};
@@ -31,7 +31,7 @@ pub(in crate::snoci) fn solve_current_space(ao: &AoData, current_space: &[SCFSta
         let data = NOCIData::new(ao, current_space, input, tol, wview).withmocache(mocache);
 
         let (hcurrent, scurrent, _) = build_noci_hs(&data, current_space, current_space, true);
-        let (evals, c) = general_evp_real(&hcurrent, &scurrent, true, tol);
+        let (evals, c) = general_evp(&hcurrent, &scurrent, true, tol);
 
         let ecurrent = evals[0];
         let coeffs = c.column(0).to_owned();

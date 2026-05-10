@@ -4,7 +4,7 @@ use ndarray_linalg::{Eigh, UPLO, Norm};
 
 use crate::input::{Input, Propagator};
 
-use crate::maths::parallel_matvec_real;
+use crate::maths::parallel_matvec;
 
 pub struct ProjPropagator {
     /// Propagator block coupling the relevant subspace to itself.
@@ -94,11 +94,11 @@ impl Projectors {
     /// `(Array1<f64>, Array1<f64>)`, coefficients projected into the relevant and null subspaces.
     pub fn project(&self, c: &Array1<f64>) -> (Array1<f64>, Array1<f64>) {
         // C_r = U_r U_r^\dagger C  
-        let yr = parallel_matvec_real(&self.ur_dag, c);
-        let c_relevant = parallel_matvec_real(&self.ur, &yr);
+        let yr = parallel_matvec(&self.ur_dag, c);
+        let c_relevant = parallel_matvec(&self.ur, &yr);
         // C_n = U_n U_n^\dagger C
-        let yn = parallel_matvec_real(&self.un_dag, c);
-        let c_null = parallel_matvec_real(&self.un, &yn);
+        let yn = parallel_matvec(&self.un_dag, c);
+        let c_null = parallel_matvec(&self.un, &yn);
 
         (c_relevant, c_null)
     }
@@ -155,8 +155,8 @@ impl ProjPropagator {
 /// - `Array1<f64>`: Updated NOCI-QMC coefficient vector after one unshifted propagation step.
 pub fn propagate_step_unshifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>, esc: f64, dt: f64) 
                                 -> Array1<f64> {
-    let hc = parallel_matvec_real(h, c);
-    let sc = parallel_matvec_real(s, c);
+    let hc = parallel_matvec(h, c);
+    let sc = parallel_matvec(s, c);
     let htildec = hc - sc.mapv(|z| esc * z);
     let dtc = htildec.mapv(|z| dt * z);
     c - &dtc 
@@ -174,8 +174,8 @@ pub fn propagate_step_unshifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64
 /// - `Array1<f64>`: Updated NOCI-QMC coefficient vector after one shifted propagation step.
 pub fn propagate_step_shifted(h: &Array2<f64>, s: &Array2<f64>, c: &Array1<f64>, esc: f64, dt: f64) 
                               -> Array1<f64> {
-    let hc = parallel_matvec_real(h, c);
-    let sc = parallel_matvec_real(s, c);
+    let hc = parallel_matvec(h, c);
+    let sc = parallel_matvec(s, c);
     let htildec = hc - sc.mapv(|z| esc * z);
     let rhs = htildec - c.mapv(|z| esc * z);
     let dtc = rhs.mapv(|z| dt * z);

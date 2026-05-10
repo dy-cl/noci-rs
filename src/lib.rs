@@ -1,6 +1,5 @@
 // lib.rs
 pub mod basis;
-pub mod diis;
 pub mod noci;
 pub mod read;
 pub mod write;
@@ -14,13 +13,13 @@ pub mod snoci;
 pub mod mpiutils;
 pub mod nonorthogonalwicks;
 pub mod timers;
-pub mod state;
+pub mod scalar;
 
 use serde::{Serialize, Deserialize};
 
 use ndarray::{Array1, Array2, Array4};
 
-pub use state::{DetState, HSCFState, SCFState, StateScalar};
+pub use scalar::{DetState, HSCFState, SCFState, StateScalar};
 
 pub struct AoData {
     /// AO overlap matrix, (nao, nao).

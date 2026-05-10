@@ -6,6 +6,7 @@ mod holomorphic;
 mod kernels;
 mod occupation;
 mod select;
+mod diis;
 mod print;
 
 pub use kernels::DensityMode; 

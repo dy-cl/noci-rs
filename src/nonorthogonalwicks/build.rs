@@ -4,7 +4,7 @@ use ndarray_linalg::{SVD, Determinant};
 use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
 
-use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x_real};
+use crate::maths::{einsum_ba_ab_real, eri_ao2mo, loewdin_x};
 use crate::noci::occ_coeffs;
 
 /// Owning struct for the same-spin computed intermediates.
@@ -208,8 +208,8 @@ impl SameSpinBuild {
         // Orthonormalise.
         let s_ll = l_c_occ.t().dot(&s_munu.dot(l_c_occ));
         let s_gg = g_c_occ.t().dot(&s_munu.dot(g_c_occ));
-        let x_l = loewdin_x_real(&s_ll, true, tol);
-        let x_g = loewdin_x_real(&s_gg, true, tol);
+        let x_l = loewdin_x(&s_ll, true, tol);
+        let x_g = loewdin_x(&s_gg, true, tol);
         let l_c_occ_ortho = l_c_occ.dot(&x_l);
         let g_c_occ_ortho = g_c_occ.dot(&x_g);
 

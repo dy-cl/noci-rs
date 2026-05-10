@@ -8,11 +8,11 @@ use ndarray::{Array1, Array2, Axis};
 
 use crate::{AoData, SCFState, Excitation, ExcitationSpin};
 use crate::input::{Input, Spin, SCFExcitation, StateType};
-use crate::diis::Diis;
 use super::kernels::DensityMode;
+use super::diis::Diis;
 
 use crate::write::write_orbitals;
-use crate::maths::general_evp_real;
+use crate::maths::general_evp;
 use crate::utils::print_array2;
 use super::bias::metadynamics_bias;
 use super::kernels::{energy, fock, density};
@@ -169,8 +169,8 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         if use_diis {diis.push(&fa_curr, &fb_curr, &da, &db, s);}
         let (fa_use, fb_use) = if use_diis {diis.extrapolate_fock().unwrap_or((fa_curr.clone(), fb_curr.clone()))} else {(fa_curr.clone(), fb_curr.clone())};
 
-        let (ea, ca) = general_evp_real(&fa_use, s, false, 1e-8);
-        let (eb, cb) = general_evp_real(&fb_use, s, false, 1e-8);
+        let (ea, ca) = general_evp(&fa_use, s, false, 1e-8);
+        let (eb, cb) = general_evp(&fb_use, s, false, 1e-8);
 
         let (idx_a, ca_occ) = occupy(&ea, &ca, s, na, mom_a, ca_occ_old.as_ref(), scfexcitation);
         let (idx_b, cb_occ) = occupy(&eb, &cb, s, nb, mom_b, cb_occ_old.as_ref(), scfexcitation);

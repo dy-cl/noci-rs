@@ -12,7 +12,7 @@ use crate::time_call;
 
 use crate::utils::print_array2;
 use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
-use crate::maths::general_evp_real;
+use crate::maths::general_evp;
 use crate::write::write_hs_matrices;
 use super::hs::compare_hs_pair_wicks_naive;
 use super::fock::compare_f_pair_wicks_naive;
@@ -206,7 +206,7 @@ pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState],
     println!("Shifted NOCI-reference Hamiltonian");
     let h_shift = &h.map(|z: &f64| z) - scfstates[0].e * &s;
     print_array2(&h_shift);
-    let (evals, c) = general_evp_real(&h, &s, true, f64::EPSILON);
+    let (evals, c) = general_evp(&h, &s, true, f64::EPSILON);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
 
     let c0 = c.column(0).to_owned();

@@ -39,18 +39,18 @@ pub fn density<T: StateScalar>(c: &Array2<T>, nocc: usize, mode: DensityMode) ->
 pub fn fock<T: StateScalar>(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<T>, db: &Array2<T>) -> (Array2<T>, Array2<T>) {
     let n = h.nrows();
     let d = da + db;
-    let mut fa = h.mapv(T::from_f64);
-    let mut fb = h.mapv(T::from_f64);
+    let mut fa = h.mapv(T::from_real);
+    let mut fb = h.mapv(T::from_real);
     for p in 0..n {
         for q in 0..n {
-            let mut j = T::from_f64(0.0);
-            let mut ka = T::from_f64(0.0);
-            let mut kb = T::from_f64(0.0);
+            let mut j = T::from_real(0.0);
+            let mut ka = T::from_real(0.0);
+            let mut kb = T::from_real(0.0);
             for r in 0..n {
                 for s in 0..n {
-                    j += d[(r, s)] * T::from_f64(eri[(p, q, r, s)]);
-                    ka += da[(r, s)] * T::from_f64(eri[(p, r, q, s)]);
-                    kb += db[(r, s)] * T::from_f64(eri[(p, r, q, s)]);
+                    j += d[(r, s)] * T::from_real(eri[(p, q, r, s)]);
+                    ka += da[(r, s)] * T::from_real(eri[(p, r, q, s)]);
+                    kb += db[(r, s)] * T::from_real(eri[(p, r, q, s)]);
                 }
             }
             fa[(p, q)] += j - ka;
@@ -72,11 +72,11 @@ pub fn fock<T: StateScalar>(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<T>, 
 /// - `T`: SCF energy.
 pub fn energy<T: StateScalar>(h: &Array2<f64>, enuc: f64, da: &Array2<T>, db: &Array2<T>, fa: &Array2<T>, fb: &Array2<T>) -> T {
     let p = da + db;
-    let mut e = T::from_f64(enuc);
+    let mut e = T::from_real(enuc);
     for mu in 0..h.nrows() {
         for nu in 0..h.ncols() {
-            let hmn = T::from_f64(h[(mu, nu)]);
-            e += hmn * p[(mu, nu)] + T::from_f64(0.5) * ((fa[(mu, nu)] - hmn) * da[(mu, nu)] + (fb[(mu, nu)] - hmn) * db[(mu, nu)]);
+            let hmn = T::from_real(h[(mu, nu)]);
+            e += hmn * p[(mu, nu)] + T::from_real(0.5) * ((fa[(mu, nu)] - hmn) * da[(mu, nu)] + (fb[(mu, nu)] - hmn) * db[(mu, nu)]);
         }
     }
     e
@@ -97,7 +97,7 @@ pub fn orbital_gradient<T: StateScalar>(c: &Array2<T>, f: &Array2<T>, nocc: usiz
         DensityMode::Holomorphic => cvir.t().to_owned(),
         DensityMode::Hermitian => cvir.t().mapv(|z| z.conj()),
     };
-    bra.dot(f).dot(&cocc).mapv(|z| z * T::from_f64(2.0))
+    bra.dot(f).dot(&cocc).mapv(|z| z * T::from_real(2.0))
 }
 
 /// Compute diagonal MO Fock elements.

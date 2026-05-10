@@ -10,7 +10,7 @@ use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState};
 use crate::input::{HSCFOptions, Input, StateRecipe};
 use crate::scf::DensityMode;
 
-use crate::maths::{symmetric_evp_complex, complex_from_real, matrix_exp_complex};
+use crate::maths::{symmetric_evp_complex, real2_as, matrix_exp_complex};
 use super::{density, energy, fock, orbital_energies, orbital_gradient};
 use super::print::print_header_h;
 
@@ -51,8 +51,8 @@ pub fn hscf_from_real_state(seed: &SCFState, ao: &AoData, input: &Input, label: 
     let idx_a: Vec<usize> = (0..seed.ca.ncols()).filter(|&p| ((seed.oa >> p) & 1u128) == 1).chain((0..seed.ca.ncols()).filter(|&p| ((seed.oa >> p) & 1u128) == 0)).collect();
     let idx_b: Vec<usize> = (0..seed.cb.ncols()).filter(|&p| ((seed.ob >> p) & 1u128) == 1).chain((0..seed.cb.ncols()).filter(|&p| ((seed.ob >> p) & 1u128) == 0)).collect();
 
-    let ca = complex_from_real(&seed.ca).select(Axis(1), &idx_a);
-    let cb = complex_from_real(&seed.cb).select(Axis(1), &idx_b);
+    let ca = real2_as::<Complex64>(&seed.ca).select(Axis(1), &idx_a);
+    let cb = real2_as::<Complex64>(&seed.cb).select(Axis(1), &idx_b);
 
     hscf_cycle(&ca, &cb, ao, input, label, noci_basis, i)
 }
@@ -502,14 +502,14 @@ pub fn h_seed_orbitals(seed: &SCFState, recipe: &StateRecipe, ao: &AoData) -> (A
         .filter(|&p| ((seed.oa >> p) & 1u128) == 1)
         .chain((0..seed.ca.ncols()).filter(|&p| ((seed.oa >> p) & 1u128) == 0))
         .collect();
-    let mut ca = complex_from_real(&seed.ca).select(Axis(1), &idx_a);
+    let mut ca = real2_as::<Complex64>(&seed.ca).select(Axis(1), &idx_a);
 
     // Reorder beta orbitals so occupied columns are first, followed by virtual columns.
     let idx_b: Vec<usize> = (0..seed.cb.ncols())
         .filter(|&p| ((seed.ob >> p) & 1u128) == 1)
         .chain((0..seed.cb.ncols()).filter(|&p| ((seed.ob >> p) & 1u128) == 0))
         .collect();
-    let mut cb = complex_from_real(&seed.cb).select(Axis(1), &idx_b);
+    let mut cb = real2_as::<Complex64>(&seed.cb).select(Axis(1), &idx_b);
 
     if let Some(sb) = &recipe.spin_bias {
         let theta = Complex64::new(0.0, sb.pol.abs().max(0.05));

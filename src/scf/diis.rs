@@ -2,7 +2,7 @@
 use ndarray::{s, Array1, Array2};
 use ndarray_linalg::{EighInto, UPLO};
 
-use crate::maths::loewdin_x_real;
+use crate::maths::loewdin_x;
 
 /// DIIS storage for SCF states. Stores Fock and error matrices for each spin.
 pub struct Diis {
@@ -45,7 +45,7 @@ impl Diis {
     /// - `Array2<f64>`: Orthonormalised DIIS error matrix.
     fn build_error(f: &Array2<f64>, d: &Array2<f64>, s: &Array2<f64>) -> Array2<f64> {
         let r = f.dot(d).dot(s) - s.dot(d).dot(f);
-        let x = loewdin_x_real(s, false, 1e-12);
+        let x = loewdin_x(s, false, 1e-12);
         x.t().dot(&r).dot(&x)
     }
     
