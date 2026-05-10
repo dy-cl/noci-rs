@@ -1,3 +1,5 @@
+// scf/kernels.rs
+
 use ndarray::{s, Array1, Array2, Array4};
 
 use crate::StateScalar;

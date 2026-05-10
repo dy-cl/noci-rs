@@ -18,29 +18,14 @@ use super::bias::metadynamics_bias;
 use super::kernels::{energy, fock, density};
 use super::occupation::{mo_occupancies, occvec_to_bits};
 use super::select::{aufbau_indices, mom_select};
-
-/// Print SCF header information.
-/// # Arguments
-/// - `input`: Contains user specified input data.
-/// - `scfexcitation`: Optional excited SCF occupation request.
-fn print_header(input: &Input, scfexcitation: Option<&SCFExcitation>) {
-    if !input.write.verbose {return;}
-    match scfexcitation {
-        Some(ex) => {
-            let sp = spin_label(&ex.spin);
-            println!("Requested excitation: [spin: {}, from occupied: {}, to virtual: {}]", sp, ex.occ, ex.vir);
-        }
-        None => println!("No excitation requested."),
-    }
-    println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
-}
+use super::print::{print_header, print_mos};
 
 /// Convert spin enum to printable label.
 /// # Arguments
 /// - `spin`: Spin sector from input.
 /// # Returns
 /// - `&str`: Printable spin label.
-fn spin_label(spin: &Spin) -> &str {
+pub (in crate::scf) fn spin_label(spin: &Spin) -> &str {
     match spin {Spin::Alpha => "alpha", Spin::Beta => "beta", Spin::Both => "both"}
 }
 
@@ -87,19 +72,6 @@ fn occupy(e: &Array1<f64>, c: &Array2<f64>, s: &Array2<f64>, nocc: usize, use_mo
     } else {aufbau_indices(e, nocc)};
     let c_occ = c.select(Axis(1), &idx);
     (idx, c_occ)
-}
-
-/// Print MO occupations and energies.
-/// # Arguments
-/// - `title`: Title for this spin channel.
-/// - `e`: MO energies.
-/// - `occ`: MO occupation vector.
-fn print_mos(title: &str, e: &Array1<f64>, occ: &Array1<f64>) {
-    println!("{}", "-".repeat(100));
-    let mut mos: Vec<(f64, usize, bool)> = (0..e.len()).map(|i| (e[i], i, occ[i] > 0.5)).collect();
-    mos.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-    println!("{title}:"); println!("{:^5} {:^5} {:^5}", "MO", "Occ", "E");
-    for (e, i, occ) in mos.iter() {println!("{:^5} {:^5.6} {:^5.6}", i, if *occ {1} else {0}, e);}
 }
 
 /// Calculate spin contamination expectation value.

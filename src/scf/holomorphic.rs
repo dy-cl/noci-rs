@@ -1,3 +1,5 @@
+// scf/holomorphic.rs
+
 use std::sync::Arc;
 
 use ndarray::{s, Array1, Array2, Axis};
@@ -9,7 +11,8 @@ use crate::input::{HSCFOptions, Input, StateRecipe};
 use crate::scf::DensityMode;
 
 use crate::maths::{symmetric_evp_complex, complex_from_real, matrix_exp_complex};
-use crate::scf::{density, energy, fock, orbital_energies, orbital_gradient};
+use super::{density, energy, fock, orbital_energies, orbital_gradient};
+use super::print::print_header_h;
 
 /// Stored quasi-Newton secant pair in the current local tangent basis.
 #[derive(Clone, Debug)]
@@ -71,7 +74,7 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
     let mut ca = ca0.clone(); let mut cb = cb0.clone();
     let mut hist: Vec<SecantPair> = Vec::new();
 
-    print_header(input, label);
+    print_header_h(input, label);
 
     let mut gbar_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
     let mut eps_prev: Option<(Array1<Complex64>, Array1<Complex64>)> = None;
@@ -99,8 +102,13 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
         // Use the Euclidean Frobenius norm only as a real convergence diagnostic.
         let gnorm = (ga.iter().map(|z| z.norm_sqr()).sum::<f64>() + gb.iter().map(|z| z.norm_sqr()).sum::<f64>()).sqrt();
 
-        if input.write.verbose {println!("{:4} {:16.10} {:+16.10}i {:12.4e}", iter, e.re, e.im, gnorm);}
-        if gnorm < opts.g_tol {return Some(finalise(ca, cb, ao, input, label, noci_basis, i, true));}
+        if input.write.verbose {
+            println!("{:4} {:16.10} {:+16.10}i {:12.4e}", iter, e.re, e.im, gnorm);
+        }
+
+        if gnorm < opts.g_tol {
+            return Some(finalise(ca, cb, ao, input, label, noci_basis, i, true));
+        }
 
         // Convert the current gradient into pseudo-canonical energy-weighted coordinates.
         let gbar_a = weight_by_gap(&ga, &epsa, na, opts.denom_tol, false);
@@ -122,7 +130,9 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
 
         let (alpha, ca_new, cb_new) = line_search(&ca, &cb, ao, na, nb, &pa, &pb, gnorm, opts);
         if alpha == 0.0 {
-            if input.write.verbose {println!("h-SCF line search found no improving step.");}
+            if input.write.verbose {
+                println!("h-SCF line search found no improving step.");
+            }
             return Some(finalise(ca_new, cb_new, ao, input, label, noci_basis, i, false));
         }
 
@@ -134,19 +144,6 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
     }
 
     Some(finalise(ca, cb, ao, input, label, noci_basis, i, false))
-}
-
-/// Print h-SCF iteration header.
-/// # Arguments:
-/// - `input`: User input specifications.
-/// - `label`: Label for the h-SCF state.
-/// # Returns:
-/// - `()`: Prints header if verbose output is enabled.
-fn print_header(input: &Input, label: &str) {
-    if !input.write.verbose {return;}
-    println!("{}Begin h-SCF{}", "=".repeat(45), "=".repeat(46));
-    println!("State: {label}");
-    println!("{:>4} {:>16} {:>17} {:>12}", "i", "Re(E)", "Im(E)", "||g_ov||");
 }
 
 /// Pseudo-canonicalise occupied and virtual spaces for one spin block.
