@@ -3,15 +3,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use itertools::Itertools;
-use ndarray::{Array2};
+use ndarray::Array2;
 use rand::{SeedableRng};
 use rand::rngs::StdRng;
 
-use crate::{AoData, Excitation, ExcitationSpin, SCFState};
+use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState};
 use crate::input::{Input, StateType, StateRecipe, Metadynamics};
+use crate::maths::complex_metric_orthonormalize;
 
 use crate::utils::random_pattern;
-use crate::scf::scf_cycle;
+use crate::scf::{hscf_cycle, hscf_from_real_state, scf_cycle, h_seed_orbitals};
 
 pub struct SpinOccupation {
     /// Indices of occupied alpha-spin orbitals.
@@ -144,11 +145,24 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
 /// - `excitation`: Excitation carried by the excited state.
 /// # Returns
 /// - `SCFState`: Excited state built from the reference state with modified occupancies.
-fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str, parent: usize, excitation: Excitation, parent_oa: u128, parent_ob: u128) -> SCFState {
+fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str, parent: usize, 
+                      excitation: Excitation, parent_oa: u128, parent_ob: u128) -> SCFState {
     let pha = excitation_phase(parent_oa, &excitation.alpha.holes, &excitation.alpha.parts);
     let phb = excitation_phase(parent_ob, &excitation.beta.holes, &excitation.beta.parts);
-    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, pha, phb, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), da: Arc::clone(&reference.da), db: Arc::clone(&reference.db), 
-              label: format!("{} {}", reference.label, label_suffix), noci_basis: false, parent, excitation}
+
+    SCFState {
+        e: 0.0, 
+        oa: oa_ex, 
+        ob: ob_ex, 
+        pha, 
+        phb, 
+        ca: Arc::clone(&reference.ca), 
+        cb: Arc::clone(&reference.cb), 
+        da: Arc::clone(&reference.da), 
+        db: Arc::clone(&reference.db), 
+        label: format!("{} {}", reference.label, label_suffix), 
+        noci_basis: false, parent, excitation
+    }
 }
 
 /// Given aolabels (which contains) information about which atom an AO belongs to, find the AO
@@ -590,6 +604,87 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
 
     // Put back. Note that this is not very idiomatic. Should definetly refactor this somehow.
     input.states = states;
+    out
+}
+
+/// Generate reference basis with complex h-SCF support.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: Contains user inputted options.
+/// - `prev`: Previous complex states if available.
+/// # Returns:
+/// - `Vec<HSCFState>`: Complex determinant states.
+pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[HSCFState]>) -> Vec<HSCFState> {
+    let mut prev_map: HashMap<&str, &HSCFState> = HashMap::new();
+    if let Some(ps) = prev {
+        for st in ps {
+            prev_map.insert(&st.label, st);
+        }
+    }
+    let recipes = match &input.states {
+        StateType::Mom(recipes) => recipes,
+        StateType::Metadynamics(_) => {
+            println!("Holomorphic SCF metadynamics is not implemented.");
+            return Vec::new();
+        }
+    };
+
+    let da0: Array2<f64> = ao.dm.clone() * 0.5;
+    let db0: Array2<f64> = ao.dm.clone() * 0.5;
+    let mut out: Vec<HSCFState> = Vec::with_capacity(recipes.len());
+    for (i, recipe) in recipes.iter().enumerate() {
+        if input.write.verbose {
+            println!("{}Begin staged h-SCF seed{}", "=".repeat(45), "=".repeat(31));
+            println!("State({}): {}", i + 1, recipe.label);
+        }
+
+        let mut da = da0.clone();
+        let mut db = db0.clone();
+
+        if let Some(sb) = &recipe.spin_bias {
+            let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
+            let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
+            bias_spin(&mut da, &mut db, &atomao, sb.pol, &sb.pattern);
+        }
+
+        if let Some(spb) = &recipe.spatial_bias {
+            let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
+            let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
+            bias_spatial(&mut da, &mut db, &atomao, spb.pol, &spb.pattern);
+        }
+
+        let state = if recipe.holomorphic {
+            let seed = scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, recipe.scfexcitation.as_ref(), i, None).expect("SCF seed did not converge");
+            let mut candidates: Vec<HSCFState> = Vec::new();
+
+            if let Some(st) = prev_map.get(recipe.label.as_str()).copied() {
+                if input.write.verbose {println!("Seeding h-SCF state '{}' from previous complex geometry.", recipe.label);}
+                let ca = complex_metric_orthonormalize(&st.ca, &ao.s);
+                let cb = complex_metric_orthonormalize(&st.cb, &ao.s);
+                candidates.push(hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
+            }
+
+            if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
+                let (ca, cb) = h_seed_orbitals(&seed, recipe, ao);
+                candidates.push(hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
+            } else {
+                candidates.push(hscf_from_real_state(&seed, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
+            }
+
+            if recipe.spin_bias.is_some() {
+                candidates.into_iter().min_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap()).unwrap()
+            } else if recipe.spatial_bias.is_some() {
+                candidates.into_iter().max_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap()).unwrap()
+            } else {
+                candidates.into_iter().next().unwrap()
+            }
+        } else {
+            let seed = scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, recipe.scfexcitation.as_ref(), i, None).expect("SCF seed did not converge");
+            HSCFState::from_real(&seed)
+        };
+        out.push(state);
+    }
+    println!("Duplicate filtering for genuinely complex h-SCF states is deferred until complex NOCI metrics are implemented.");
     out
 }
 

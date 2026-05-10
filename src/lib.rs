@@ -14,12 +14,13 @@ pub mod snoci;
 pub mod mpiutils;
 pub mod nonorthogonalwicks;
 pub mod timers;
-
-use std::{sync::Arc};
+pub mod state;
 
 use serde::{Serialize, Deserialize};
 
 use ndarray::{Array1, Array2, Array4};
+
+pub use state::{DetState, HSCFState, SCFState, StateScalar};
 
 pub struct AoData {
     /// AO overlap matrix, (nao, nao).
@@ -59,34 +60,4 @@ pub struct ExcitationSpin {
     pub holes: Vec<usize>,
     /// List of previously unoccupied now occupied orbitals.
     pub parts: Vec<usize>
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SCFState {
-    /// Energy of SCF state in Ha, scalar.
-    pub e: f64,  
-    /// MO occupancy vector for spin a orbitals, (nao,) as bitstring.
-    pub oa: u128, 
-    /// MO occupancies for spin b orbitals (nao,) as bitstring.
-    pub ob: u128, 
-    /// Fermionic phase relative to parent for spin a electrons.
-    pub pha: f64,
-    /// Fermionic phase relative to parent for spin n electrons.
-    pub phb: f64,
-    /// MO coefficients for spin a electrons, (nao, nao).
-    pub ca: Arc<Array2<f64>>,  
-    /// MO coefficients for spin b electrons, (nao, nao).
-    pub cb: Arc<Array2<f64>>,  
-    /// SCF converged density matrix spin a. 
-    pub da: Arc<Array2<f64>>, 
-    /// SCF converged density matrix spin b. 
-    pub db: Arc<Array2<f64>>,
-    /// Label defined in user input.
-    pub label: String,
-    /// Is this state used in the NOCI basis?
-    pub noci_basis: bool,
-    /// Index of reference parent determinant if excited for QMC basis.
-    pub parent: usize,
-    /// Excitation relative to parent if excited for QMC basis.
-    pub excitation: Excitation,
 }

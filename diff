@@ -1,0 +1,768 @@
+diff --git a/.gitignore b/.gitignore
+index 6259df6..72e5f0d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -9,4 +9,5 @@ tests/fixtures/**/data.h5
+ scaling*
+ data.h5
+ Cargo.lock
++.codex
+ 
+diff --git a/Cargo.toml b/Cargo.toml
+index 7ec1410..6bd237d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -12,7 +12,7 @@ ndarray = {version = "0.15",   features = ["rayon", "serde"], default-features =
+ serde = {version = "1", features = ["derive", "rc"]}
+ serde_json = {version = "1", features = ["std"], default-features = false}
+ rayon = {version = "1", default-features = false}
+-num-complex = {version = "0.4"}
++num-complex = {version = "0.4", features = ["serde"]}
+ hdf5 = {version = "0.8.1", default-features = false}
+ bincode = {version = "1"}
+ rand_distr = {version = "0.4"}
+diff --git a/scripts/plotting.py b/scripts/plotting.py
+index 1237379..7af5bfb 100644
+--- a/scripts/plotting.py
++++ b/scripts/plotting.py
+@@ -296,13 +296,22 @@ def plotEnergy(args):
+         ax.plot(gFCI["R"], gFCI["E"], label = "FCI", color = "black", marker = "o", linestyle = " ", markersize = MARKERSIZE, zorder = 30)
+ 
+     seen = set()
+-    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("M "))
++    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("h-RHF") or l.startswith("h-UHF") or l.startswith("M "))
+     for lbl in autoLabels:
+         g = df[df["label"] == lbl].sort_values("R")
+         if g.empty:
+             continue
+ 
+-        if "RHF" in lbl:
++        linestyle = "-"
++        if lbl.startswith("h-RHF"):
++            color = "tab:red"
++            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!RHF}}\rangle$"
++            linestyle = "--"
++        elif lbl.startswith("h-UHF"):
++            color = "tab:blue"
++            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!UHF}}\rangle$"
++            linestyle = "--"
++        elif "RHF" in lbl:
+             color = "tab:red"
+             display = r"$|\Psi^{\mathrm{RHF}}\rangle$"
+         elif "UHF" in lbl:
+@@ -314,7 +323,7 @@ def plotEnergy(args):
+ 
+         label = display if display not in seen else None
+         seen.add(display)
+-        ax.plot(g["R"], g["E"], linewidth = LINEWIDTH, color = color, label = label)
++        ax.plot(g["R"], g["E"], linewidth = LINEWIDTH, color = color, linestyle = linestyle, label = label)
+ 
+     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
+     plt.grid(True)
+diff --git a/src/basis.rs b/src/basis.rs
+index f296234..e5f5c97 100644
+--- a/src/basis.rs
++++ b/src/basis.rs
+@@ -3,15 +3,16 @@ use std::collections::HashMap;
+ use std::sync::Arc;
+ 
+ use itertools::Itertools;
+-use ndarray::{Array2};
++use ndarray::Array2;
+ use rand::{SeedableRng};
+ use rand::rngs::StdRng;
+ 
+-use crate::{AoData, Excitation, ExcitationSpin, SCFState};
++use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState};
+ use crate::input::{Input, StateType, StateRecipe, Metadynamics};
++use crate::maths::complex_metric_orthonormalize;
+ 
+ use crate::utils::random_pattern;
+-use crate::scf::scf_cycle;
++use crate::scf::{hscf_cycle, hscf_from_real_state, scf_cycle, h_seed_orbitals};
+ 
+ pub struct SpinOccupation {
+     /// Indices of occupied alpha-spin orbitals.
+@@ -144,11 +145,24 @@ fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
+ /// - `excitation`: Excitation carried by the excited state.
+ /// # Returns
+ /// - `SCFState`: Excited state built from the reference state with modified occupancies.
+-fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str, parent: usize, excitation: Excitation, parent_oa: u128, parent_ob: u128) -> SCFState {
++fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str, parent: usize, 
++                      excitation: Excitation, parent_oa: u128, parent_ob: u128) -> SCFState {
+     let pha = excitation_phase(parent_oa, &excitation.alpha.holes, &excitation.alpha.parts);
+     let phb = excitation_phase(parent_ob, &excitation.beta.holes, &excitation.beta.parts);
+-    SCFState {e: 0.0, oa: oa_ex, ob: ob_ex, pha, phb, ca: Arc::clone(&reference.ca), cb: Arc::clone(&reference.cb), da: Arc::clone(&reference.da), db: Arc::clone(&reference.db), 
+-              label: format!("{} {}", reference.label, label_suffix), noci_basis: false, parent, excitation}
++
++    SCFState {
++        e: 0.0, 
++        oa: oa_ex, 
++        ob: ob_ex, 
++        pha, 
++        phb, 
++        ca: Arc::clone(&reference.ca), 
++        cb: Arc::clone(&reference.cb), 
++        da: Arc::clone(&reference.da), 
++        db: Arc::clone(&reference.db), 
++        label: format!("{} {}", reference.label, label_suffix), 
++        noci_basis: false, parent, excitation
++    }
+ }
+ 
+ /// Given aolabels (which contains) information about which atom an AO belongs to, find the AO
+@@ -593,6 +607,87 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
+     out
+ }
+ 
++/// Generate reference basis with complex h-SCF support.
++/// # Arguments:
++/// - `ao`: Contains AO integrals and other system data.
++/// - `input`: Contains user inputted options.
++/// - `prev`: Previous complex states if available.
++/// # Returns:
++/// - `Vec<HSCFState>`: Complex determinant states.
++pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[HSCFState]>) -> Vec<HSCFState> {
++    let mut prev_map: HashMap<&str, &HSCFState> = HashMap::new();
++    if let Some(ps) = prev {
++        for st in ps {
++            prev_map.insert(&st.label, st);
++        }
++    }
++    let recipes = match &input.states {
++        StateType::Mom(recipes) => recipes,
++        StateType::Metadynamics(_) => {
++            println!("Holomorphic SCF metadynamics is not implemented.");
++            return Vec::new();
++        }
++    };
++
++    let da0: Array2<f64> = ao.dm.clone() * 0.5;
++    let db0: Array2<f64> = ao.dm.clone() * 0.5;
++    let mut out: Vec<HSCFState> = Vec::with_capacity(recipes.len());
++    for (i, recipe) in recipes.iter().enumerate() {
++        if input.write.verbose {
++            println!("{}Begin staged h-SCF seed{}", "=".repeat(45), "=".repeat(31));
++            println!("State({}): {}", i + 1, recipe.label);
++        }
++
++        let mut da = da0.clone();
++        let mut db = db0.clone();
++
++        if let Some(sb) = &recipe.spin_bias {
++            let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
++            let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
++            bias_spin(&mut da, &mut db, &atomao, sb.pol, &sb.pattern);
++        }
++
++        if let Some(spb) = &recipe.spatial_bias {
++            let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
++            let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
++            bias_spatial(&mut da, &mut db, &atomao, spb.pol, &spb.pattern);
++        }
++
++        let state = if recipe.holomorphic {
++            let seed = scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, recipe.scfexcitation.as_ref(), i, None).expect("SCF seed did not converge");
++            let mut candidates: Vec<HSCFState> = Vec::new();
++
++            if let Some(st) = prev_map.get(recipe.label.as_str()).copied() {
++                if input.write.verbose {println!("Seeding h-SCF state '{}' from previous complex geometry.", recipe.label);}
++                let ca = complex_metric_orthonormalize(&st.ca, &ao.s);
++                let cb = complex_metric_orthonormalize(&st.cb, &ao.s);
++                candidates.push(hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
++            }
++
++            if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
++                let (ca, cb) = h_seed_orbitals(&seed, recipe, ao);
++                candidates.push(hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
++            } else {
++                candidates.push(hscf_from_real_state(&seed, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
++            }
++
++            if recipe.spin_bias.is_some() {
++                candidates.into_iter().min_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap()).unwrap()
++            } else if recipe.spatial_bias.is_some() {
++                candidates.into_iter().max_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap()).unwrap()
++            } else {
++                candidates.into_iter().next().unwrap()
++            }
++        } else {
++            let seed = scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, recipe.scfexcitation.as_ref(), i, None).expect("SCF seed did not converge");
++            HSCFState::from_real(&seed)
++        };
++        out.push(state);
++    }
++    println!("Duplicate filtering for genuinely complex h-SCF states is deferred until complex NOCI metrics are implemented.");
++    out
++}
++
+ /// Construct a label describing an excitation in alpha and/or beta spin.
+ /// # Arguments 
+ /// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
+diff --git a/src/input.rs b/src/input.rs
+index a5ada59..35e0421 100644
+--- a/src/input.rs
++++ b/src/input.rs
+@@ -176,6 +176,36 @@ pub struct SCFInfo {
+     pub e_tol: f64,
+     pub diis: DiisOptions,
+     pub do_fci: bool,
++    pub h: HSCFOptions,
++}
++
++/// Options controlling holomorphic SCF optimisation.
++pub struct HSCFOptions {
++    /// Maximum number of h-SCF quasi-Newton iterations.
++    pub max_cycle: usize,
++    /// Convergence threshold for the occupied-virtual gradient norm.
++    pub g_tol: f64,
++    /// Threshold for accepting SR1 secant updates.
++    pub sr1_tol: f64,
++    /// Minimum orbital-energy gap used in energy weighting.
++    pub denom_tol: f64,
++    /// Maximum occupied-virtual step norm.
++    pub max_step: f64,
++    /// Maximum number of backtracking line-search steps.
++    pub line_steps: usize,
++    /// Multiplicative shrink factor for line-search steps.
++    pub line_shrink: f64,
++    /// Maximum number of stored secant pairs.
++    pub history: usize,
++}
++
++impl Default for HSCFOptions {
++    /// Return default h-SCF quasi-Newton options.
++    /// # Returns:
++    /// - `Self`: h-SCF quasi-Newton options with conservative convergence settings.
++    fn default() -> Self {
++        Self {max_cycle: 100, g_tol: 1e-10, sr1_tol: 1e-12, denom_tol: 1e-10, max_step: 0.5, line_steps: 12, line_shrink: 0.5, history: 20}
++    }
+ }
+ 
+ impl Default for SCFInfo {
+@@ -188,6 +218,7 @@ impl Default for SCFInfo {
+             e_tol: 1e-12,
+             diis: DiisOptions::default(),
+             do_fci: false,
++            h: HSCFOptions::default(),
+         }
+     }
+ }
+@@ -251,6 +282,7 @@ pub struct StateRecipe {
+     pub spatial_bias: Option<SpatialBias>,
+     pub scfexcitation: Option<SCFExcitation>,
+     pub noci: bool,
++    pub holomorphic: bool,
+ }
+ 
+ impl Default for StateRecipe {
+@@ -265,6 +297,7 @@ impl Default for StateRecipe {
+             spatial_bias: None,
+             scfexcitation: None,
+             noci: true,
++            holomorphic: false,
+         }
+     }
+ }
+@@ -583,6 +616,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
+     let defaults = StateRecipe::default();
+     let label: String = t.get("label").unwrap_or(defaults.label);
+     let noci: bool = t.get("noci").unwrap_or(defaults.noci);
++    let holomorphic: bool = t.get("holomorphic").unwrap_or(defaults.holomorphic);
+ 
+     let spin_bias = t.get::<_, Option<Table>>("spin_bias").unwrap_or(None).map(|sb| {
+         let defaults = SpinBias::default();
+@@ -614,7 +648,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
+         }
+     });
+ 
+-    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci }
++    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci, holomorphic }
+ }
+ 
+ /// Read input parameters from lua file and assign to Input object.
+@@ -695,7 +729,9 @@ pub fn load_input(path: &str) -> Input {
+     let scf = if let Some(scf_tbl) = scf_tbl {
+         let defaults = SCFInfo::default();
+         let diis_defaults = DiisOptions::default();
++        let h_defaults = HSCFOptions::default();
+         let diis_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("diis").unwrap_or(None);
++        let h_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("h").unwrap_or(None);
+         let diis = if let Some(diis_tbl) = diis_tbl {
+             DiisOptions {
+                 space: diis_tbl.get("space").unwrap_or(diis_defaults.space),
+@@ -703,11 +739,26 @@ pub fn load_input(path: &str) -> Input {
+         } else {
+             diis_defaults
+         };
++        let h = if let Some(h_tbl) = h_tbl {
++            HSCFOptions {
++                max_cycle: h_tbl.get("max_cycle").unwrap_or(h_defaults.max_cycle),
++                g_tol: h_tbl.get("g_tol").unwrap_or(h_defaults.g_tol),
++                sr1_tol: h_tbl.get("sr1_tol").unwrap_or(h_defaults.sr1_tol),
++                denom_tol: h_tbl.get("denom_tol").unwrap_or(h_defaults.denom_tol),
++                max_step: h_tbl.get("max_step").unwrap_or(h_defaults.max_step),
++                line_steps: h_tbl.get("line_steps").unwrap_or(h_defaults.line_steps),
++                line_shrink: h_tbl.get("line_shrink").unwrap_or(h_defaults.line_shrink),
++                history: h_tbl.get("history").unwrap_or(h_defaults.history),
++            }
++        } else {
++            h_defaults
++        };
+         SCFInfo {
+             max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
+             e_tol: scf_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+             diis,
+             do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),
++            h,
+         }
+     } else {
+         SCFInfo::default()
+@@ -907,4 +958,3 @@ pub fn load_input(path: &str) -> Input {
+     };
+     Input {mol, scf, write, states, det, qmc, snoci, excit, prop, wicks}
+ }
+-
+diff --git a/src/lib.rs b/src/lib.rs
+index f2eeae5..64cd64f 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -14,13 +14,14 @@ pub mod snoci;
+ pub mod mpiutils;
+ pub mod nonorthogonalwicks;
+ pub mod timers;
+-
+-use std::{sync::Arc};
++pub mod state;
+ 
+ use serde::{Serialize, Deserialize};
+ 
+ use ndarray::{Array1, Array2, Array4};
+ 
++pub use state::{DetState, HSCFState, SCFState, StateScalar};
++
+ pub struct AoData {
+     /// AO overlap matrix, (nao, nao).
+     pub s: Array2<f64>, 
+@@ -60,33 +61,3 @@ pub struct ExcitationSpin {
+     /// List of previously unoccupied now occupied orbitals.
+     pub parts: Vec<usize>
+ }
+-
+-#[derive(Clone, Serialize, Deserialize)]
+-pub struct SCFState {
+-    /// Energy of SCF state in Ha, scalar.
+-    pub e: f64,  
+-    /// MO occupancy vector for spin a orbitals, (nao,) as bitstring.
+-    pub oa: u128, 
+-    /// MO occupancies for spin b orbitals (nao,) as bitstring.
+-    pub ob: u128, 
+-    /// Fermionic phase relative to parent for spin a electrons.
+-    pub pha: f64,
+-    /// Fermionic phase relative to parent for spin n electrons.
+-    pub phb: f64,
+-    /// MO coefficients for spin a electrons, (nao, nao).
+-    pub ca: Arc<Array2<f64>>,  
+-    /// MO coefficients for spin b electrons, (nao, nao).
+-    pub cb: Arc<Array2<f64>>,  
+-    /// SCF converged density matrix spin a. 
+-    pub da: Arc<Array2<f64>>, 
+-    /// SCF converged density matrix spin b. 
+-    pub db: Arc<Array2<f64>>,
+-    /// Label defined in user input.
+-    pub label: String,
+-    /// Is this state used in the NOCI basis?
+-    pub noci_basis: bool,
+-    /// Index of reference parent determinant if excited for QMC basis.
+-    pub parent: usize,
+-    /// Excitation relative to parent if excited for QMC basis.
+-    pub excitation: Excitation,
+-}
+diff --git a/src/main.rs b/src/main.rs
+index 9052cd9..46e1e3a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -9,9 +9,9 @@ use mpi::collective::CommunicatorCollectives;
+ use rayon::ThreadPoolBuilder;
+ use ndarray::Array1;
+ 
+-use noci_rs::input::Input;
++use noci_rs::input::{Input, StateType};
+ use noci_rs::AoData;
+-use noci_rs::SCFState;
++use noci_rs::{HSCFState, SCFState};
+ use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
+ use noci_rs::noci::{NOCIData, MOCache};
+ use noci_rs::timers;
+@@ -19,7 +19,7 @@ use noci_rs::time_call;
+ 
+ use noci_rs::input::load_input;
+ use noci_rs::read::read_integrals;
+-use noci_rs::basis::{generate_reference_noci_basis, generate_excited_basis};
++use noci_rs::basis::{generate_reference_hscf_basis, generate_reference_noci_basis, generate_excited_basis};
+ use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_wicks_shared, build_mo_cache};
+ use noci_rs::deterministic::{propagate, projected_energy};
+ use noci_rs::stochastic::{qmc_step};
+@@ -34,6 +34,8 @@ struct Results {
+     r: f64,
+     /// SCF states generated for this geometry.
+     states: Vec<SCFState>,
++    /// Complex h-SCF states generated for this geometry.
++    hstates: Vec<HSCFState>,
+     /// RHF energy at this geometry.
+     e_rhf: f64,
+     /// Reference-space NOCI energy at this geometry.
+@@ -71,6 +73,7 @@ fn main() {
+     let mut input = load_input(&input_path);
+ 
+     let mut prev_states: Vec<SCFState> = Vec::new();
++    let mut prev_hstates: Vec<HSCFState> = Vec::new();
+     
+     let universe = mpi::initialize().unwrap();
+     let world = universe.world(); 
+@@ -85,9 +88,10 @@ fn main() {
+     for (i, r) in rlist.iter().copied().enumerate() {
+         println!("\n");
+         let atoms: &Atoms = &geoms[i];
+-        let res = run(r, atoms, &mut input, &prev_states, &world);  
++        let res = run(r, atoms, &mut input, &prev_states, &prev_hstates, &world);  
+         if irank == 0 {print_report(&res, &input);}
+         prev_states = res.states.clone();
++        prev_hstates = res.hstates.clone();
+     }
+     if irank == 0 {println!("\n Total wall time: {:?}", t_total.elapsed());}
+ }
+@@ -100,10 +104,11 @@ fn main() {
+ /// - `atoms`: Atom types.
+ /// - `input`: User input specifications.
+ /// - `prev_states`: Converged SCF states at previous r, used for seeding.
++/// - `prev_hstates`: Converged h-SCF states at previous r, used for complex branch tracking.
+ /// - `world`: MPI communicator object.
+ /// # Returns
+ /// - `Results`: Calculated energies, timings, and SCF states for the current geometry.
+-fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world: &impl Communicator) -> Results {
++fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_hstates: &[HSCFState], world: &impl Communicator) -> Results {
+     
+     let tol = 1e-8;
+     let irank = world.rank();
+@@ -118,6 +123,39 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
+     // Read in data generated by PySCF on all ranks.
+     let ao: AoData = read_integrals("data.h5");
+ 
++    let run_holomorphic = match &input.states {
++        StateType::Mom(recipes) => recipes.iter().any(|r| r.holomorphic),
++        StateType::Metadynamics(_) => false,
++    };
++    if run_holomorphic {
++        let mut states_h: Vec<HSCFState> = Vec::new();
++        if irank == 0 {
++            states_h = if prev_hstates.is_empty() {
++                generate_reference_hscf_basis(&ao, input, None)
++            } else {
++                generate_reference_hscf_basis(&ao, input, Some(prev_hstates))
++            };
++            println!("Generated {} complex h-SCF/reference states. Complex NOCI/Wick is not implemented in this patch.", states_h.len());
++        }
++        world.barrier();
++
++        let timings = noci_rs::timers::snapshot_all_mpi(world);
++
++        return Results {
++            r, 
++            states: Vec::new(), 
++            hstates: states_h, 
++            e_rhf: 0.0, 
++            e_noci_ref: 0.0, 
++            e_noci_qmc_det: None, 
++            e_noci_qmc_stoch: None, 
++            e_snoci: None, 
++            e_pt2: None, 
++            e_fci: ao.e_fci, 
++            nranks: world.size() as usize, 
++            timings};
++    }
++
+     // Create the following on all ranks such that they may be filled by broadcast.
+     let mut states: Vec<SCFState> = Vec::new();
+     let mut noci_reference_basis: Vec<SCFState> = Vec::new();
+@@ -199,7 +237,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], world
+     }
+ 
+     let timings = noci_rs::timers::snapshot_all_mpi(world);
+-    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_pt2, e_fci: ao.e_fci, 
++    Results {r, e_rhf: states[0].e, e_noci_ref, e_noci_qmc_det, e_noci_qmc_stoch, e_snoci, e_pt2, e_fci: ao.e_fci, hstates: Vec::new(), 
+              timings, nranks: world.size() as usize, states: states.clone()}
+ }
+ 
+@@ -758,6 +796,14 @@ fn print_report(res: &Results, input: &Input) {
+     println!("{}", "-".repeat(100));
+ 
+     println!("R: {}", res.r);
++    if res.states.is_empty() {
++        for (i, st) in res.hstates.iter().enumerate() {
++            println!("State({}): {},  E: {}", i + 1, st.label, st.e.re);
++        }
++        println!("Complex h-SCF run completed; real NOCI/Wick reporting is skipped.");
++        println!("{}", "=".repeat(100));
++        return;
++    }
+     for (i, st) in res.states.iter().enumerate() {
+         println!("State({}): {},  E: {}", i + 1, st.label, st.e);
+     }
+diff --git a/src/maths.rs b/src/maths.rs
+index 1a264b7..d23af6c 100644
+--- a/src/maths.rs
++++ b/src/maths.rs
+@@ -2,7 +2,8 @@
+ use std::{cell::RefCell};
+ 
+ use ndarray::{Array1, Array2, ArrayView2, Array4, Axis};
+-use ndarray_linalg::{Eigh, UPLO};
++use ndarray_linalg::{Eig, Eigh, Inverse, UPLO};
++use num_complex::Complex64;
+ use rayon::prelude::*;
+ 
+ thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::new())}; static GT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::new())};}
+@@ -88,6 +89,69 @@ pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f6
+     (epsilon, c)
+ }
+ 
++/// Diagonalise a complex-symmetric matrix and transpose-normalise eigenvectors.
++/// # Arguments:
++/// - `a`: Complex-symmetric occupied or virtual Fock block.
++/// # Returns:
++/// - `(Array1<Complex64>, Array2<Complex64>)`: Eigenvalues and transpose-normalised eigenvectors.
++pub fn symmetric_evp_complex(a: &Array2<Complex64>) -> (Array1<Complex64>, Array2<Complex64>) {
++    if a.nrows() == 0 {return (Array1::zeros(0), Array2::zeros((0, 0)));}
++    if a.nrows() == 1 {return (Array1::from_vec(vec![a[(0, 0)]]), Array2::from_elem((1, 1), Complex64::new(1.0, 0.0)));}
++
++    let (vals, vecs) = a.eig().unwrap();
++    let mut order: Vec<usize> = (0..vals.len()).collect();
++    order.sort_by(|&i, &j| vals[i].re.partial_cmp(&vals[j].re).unwrap().then(vals[i].im.partial_cmp(&vals[j].im).unwrap()));
++
++    let mut e = Array1::<Complex64>::zeros(vals.len());
++    let mut u = Array2::<Complex64>::zeros(vecs.raw_dim());
++    for (k, &i) in order.iter().enumerate() {
++        e[k] = vals[i];
++
++        let mut col = vecs.column(i).to_owned();
++        let nrm = col.dot(&col).sqrt();
++        if nrm.norm() > 1e-14 {col.mapv_inplace(|z| z / nrm);}
++        u.column_mut(k).assign(&col);
++    }
++    (e, u)
++}
++
++
++
++/// Convert a real matrix to a complex matrix with zero imaginary part.
++/// # Arguments:
++/// - `x`: Real matrix.
++/// # Returns:
++/// - `Array2<Complex64>`: Complex matrix.
++pub fn complex_from_real(x: &Array2<f64>) -> Array2<Complex64> {
++    x.mapv(|v| Complex64::new(v, 0.0))
++}
++
++/// Compute a dense complex matrix exponential through diagonalisation.
++/// # Arguments:
++/// - `a`: Complex square matrix.
++/// # Returns:
++/// - `Array2<Complex64>`: Matrix exponential.
++pub fn matrix_exp_complex(a: &Array2<Complex64>) -> Array2<Complex64> {
++    if a.nrows() == 0 {return Array2::zeros((0, 0));}
++    let (vals, vecs) = a.eig().unwrap();
++    let d = Array2::from_diag(&vals.mapv(|z| z.exp()));
++    vecs.dot(&d).dot(&vecs.inv().unwrap())
++}
++
++/// Reorthonormalise complex orbitals in a transpose metric.
++/// # Arguments:
++/// - `c`: MO coefficient matrix.
++/// - `s`: Real AO overlap matrix defining the metric.
++/// # Returns:
++/// - `Array2<Complex64>`: Coefficients transformed so that `C^T S C = I`.
++pub fn complex_metric_orthonormalize(c: &Array2<Complex64>, s: &Array2<f64>) -> Array2<Complex64> {
++    let sc = complex_from_real(s);
++    let m = c.t().dot(&sc).dot(c);
++    let (vals, vecs) = m.eig().unwrap();
++    let d = Array2::from_diag(&vals.mapv(|z| Complex64::new(1.0, 0.0) / z.sqrt()));
++    c.dot(&vecs.dot(&d).dot(&vecs.inv().unwrap()))
++}
++
+ /// Calculate Einstein summation of matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{ab}. 
+ /// Assumes `g` and `h` are of identical shape.
+ /// # Arguments 
+@@ -1282,4 +1346,3 @@ mod adjt {
+         Some(det)
+     }
+ }
+-
+diff --git a/src/scf/cycle.rs b/src/scf/cycle.rs
+index 15ef4a0..a614d5e 100644
+--- a/src/scf/cycle.rs
++++ b/src/scf/cycle.rs
+@@ -1,16 +1,21 @@
+ // scf/cycle.rs
+ 
+-use std::fs; use std::path::{Path, PathBuf}; use std::sync::Arc;
++use std::fs; 
++use std::path::{Path, PathBuf}; 
++use std::sync::Arc;
++
+ use ndarray::{Array1, Array2, Axis};
++
+ use crate::{AoData, SCFState, Excitation, ExcitationSpin};
+ use crate::input::{Input, Spin, SCFExcitation, StateType};
+-use crate::write::write_orbitals;
+ use crate::diis::Diis;
++use super::kernels::DensityMode;
++
++use crate::write::write_orbitals;
+ use crate::maths::general_evp_real;
+ use crate::utils::print_array2;
+ use super::bias::metadynamics_bias;
+-use super::energy::scf_energy;
+-use super::fock::form_fock_matrices;
++use super::kernels::{energy, fock, density};
+ use super::occupation::{mo_occupancies, occvec_to_bits};
+ use super::select::{aufbau_indices, mom_select};
+ 
+@@ -180,7 +185,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
+ 
+     let mut iter = 0;
+     while iter < input.scf.max_cycle {
+-        let (mut fa_curr, mut fb_curr) = form_fock_matrices(h, eri, &da, &db);
++        let (mut fa_curr, mut fb_curr) = fock(h, eri, &da, &db);
+ 
+         if let (Some(bias_states), Some(lambda)) = (biases, lambda) {
+             if !bias_states.is_empty() {
+@@ -199,9 +204,9 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
+         let (idx_b, cb_occ) = occupy(&eb, &cb, s, nb, mom_b, cb_occ_old.as_ref(), scfexcitation);
+         ca_occ_old = Some(ca_occ.clone()); cb_occ_old = Some(cb_occ.clone());
+ 
+-        let da_new = ca_occ.dot(&ca_occ.t()); let db_new = cb_occ.dot(&cb_occ.t());
+-        let (fa_new, fb_new) = form_fock_matrices(h, eri, &da_new, &db_new);
+-        let e_new = scf_energy(&da_new, &db_new, &fa_new, &fb_new, h, enuc);
++        let da_new = density(&ca_occ, na, DensityMode::Hermitian); let db_new = density(&cb_occ, nb, DensityMode::Hermitian);
++        let (fa_new, fb_new) = fock(h, eri, &da_new, &db_new);
++        let e_new = energy(h, enuc, &da_new, &db_new, &fa_new, &fb_new);
+ 
+         let err = if use_diis {diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt()} else {f64::INFINITY};
+         let d_e = (e_new - e).abs();
+diff --git a/src/scf/energy.rs b/src/scf/energy.rs
+deleted file mode 100644
+index dc649fa..0000000
+--- a/src/scf/energy.rs
++++ /dev/null
+@@ -1,21 +0,0 @@
+-// scf/energy.rs
+-
+-use ndarray::Array2;
+-
+-/// Calculate the total energy of an SCF state.
+-/// # Arguments
+-/// - `da`: Alpha-spin density matrix.
+-/// - `db`: Beta-spin density matrix.
+-/// - `fa`: Alpha-spin Fock matrix.
+-/// - `fb`: Beta-spin Fock matrix.
+-/// - `h`: One-electron Hamiltonian.
+-/// - `enuc`: Nuclear repulsion energy.
+-/// # Returns
+-/// - `f64`: SCF total energy.
+-pub(crate) fn scf_energy(da: &Array2<f64>, db: &Array2<f64>, fa: &Array2<f64>, fb: &Array2<f64>, h: &Array2<f64>, enuc: f64) -> f64 {
+-    let p = da + db;
+-    let e1 = (h * &p).sum();
+-    let ea = 0.5 * ((fa - h) * da).sum();
+-    let eb = 0.5 * ((fb - h) * db).sum();
+-    e1 + ea + eb + enuc
+-}
+diff --git a/src/scf/fock.rs b/src/scf/fock.rs
+deleted file mode 100644
+index 6646bd8..0000000
+--- a/src/scf/fock.rs
++++ /dev/null
+@@ -1,40 +0,0 @@
+-// scf/fock.rs
+-
+-use ndarray::{s, Array2, Array4};
+-
+-/// Build the spin-resolved Fock matrices for UHF.
+-/// Uses the Coulomb term from the total density and the exchange term from each spin density.
+-/// If `da = db = 0.5 * dm`, this collapses to the RHF expression.
+-/// # Arguments
+-/// - `h`: One-electron Hamiltonian.
+-/// - `eri`: Two-electron integrals `(pq|rs)` in chemists' notation.
+-/// - `da`: Alpha-spin density matrix.
+-/// - `db`: Beta-spin density matrix.
+-/// # Returns
+-/// - `(Array2<f64>, Array2<f64>)`: Alpha- and beta-spin Fock matrices.
+-pub fn form_fock_matrices(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<f64>, db: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+-    let n = h.nrows();
+-    let mut j = Array2::<f64>::zeros((n, n));
+-    let mut ka = Array2::<f64>::zeros((n, n));
+-    let mut kb = Array2::<f64>::zeros((n, n));
+-    let d = da + db;
+-
+-    for p in 0..n {
+-        for q in 0..n {
+-            let block = eri.slice(s![p, q, .., ..]);
+-            j[(p, q)] = (&block * &d).sum();
+-        }
+-    }
+-
+-    for p in 0..n {
+-        for q in 0..n {
+-            let block = eri.slice(s![p, .., q, ..]);
+-            ka[(p, q)] = (&block * da).sum();
+-            kb[(p, q)] = (&block * db).sum();
+-        }
+-    }
+-
+-    let fa = h + &j - &ka;
+-    let fb = h + &j - &kb;
+-    (fa, fb)
+-}
+diff --git a/src/scf/mod.rs b/src/scf/mod.rs
+index ed50434..ffa8332 100644
+--- a/src/scf/mod.rs
++++ b/src/scf/mod.rs
+@@ -2,10 +2,13 @@
+ 
+ mod bias;
+ mod cycle;
+-mod energy;
+-mod fock;
++mod holomorphic;
++mod kernels;
+ mod occupation;
+ mod select;
+ 
++pub use kernels::DensityMode; 
++
+ pub use cycle::scf_cycle;
+-pub use fock::form_fock_matrices;
++pub use holomorphic::{hscf_cycle, hscf_from_real_state, h_seed_orbitals};
++pub use kernels::{orbital_energies, orbital_gradient, density, energy, fock};
+diff --git a/src/snoci/step.rs b/src/snoci/step.rs
+index 747444e..38fbdbc 100644
+--- a/src/snoci/step.rs
++++ b/src/snoci/step.rs
+@@ -9,7 +9,7 @@ use super::{SNOCIState, CandidatePool, GMRES, PT2ProjectedOperator};
+ use crate::time_call;
+ 
+ use crate::noci::{noci_density, build_fock_mo_cache, update_wicks_fock};
+-use crate::scf::form_fock_matrices;
++use crate::scf::fock;
+ use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_candidate_m_diag, build_snoci_projection, 
+             apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h, build_preconditioner,
+             build_candidate_m};
+@@ -127,7 +127,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
+             // Form multireference NOCI density and generalised AO Focks.
+             let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
+             let (fa, fb) = time_call!(crate::timers::snoci::add_build_generalised_fock, {
+-                form_fock_matrices(&ao.h, &ao.eri_coul, &da, &db)
++                fock(&ao.h, &ao.eri_coul, &da, &db)
+             });
+             // Transform Focks into MO basis for each reference.
+             let fock_mocache = build_fock_mo_cache(&fa, &fb, noci_reference_basis);

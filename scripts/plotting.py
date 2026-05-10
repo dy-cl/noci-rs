@@ -296,13 +296,22 @@ def plotEnergy(args):
         ax.plot(gFCI["R"], gFCI["E"], label = "FCI", color = "black", marker = "o", linestyle = " ", markersize = MARKERSIZE, zorder = 30)
 
     seen = set()
-    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("M "))
+    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("h-RHF") or l.startswith("h-UHF") or l.startswith("M "))
     for lbl in autoLabels:
         g = df[df["label"] == lbl].sort_values("R")
         if g.empty:
             continue
 
-        if "RHF" in lbl:
+        linestyle = "-"
+        if lbl.startswith("h-RHF"):
+            color = "tab:red"
+            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!RHF}}\rangle$"
+            linestyle = "--"
+        elif lbl.startswith("h-UHF"):
+            color = "tab:blue"
+            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!UHF}}\rangle$"
+            linestyle = "--"
+        elif "RHF" in lbl:
             color = "tab:red"
             display = r"$|\Psi^{\mathrm{RHF}}\rangle$"
         elif "UHF" in lbl:
@@ -314,7 +323,7 @@ def plotEnergy(args):
 
         label = display if display not in seen else None
         seen.add(display)
-        ax.plot(g["R"], g["E"], linewidth = LINEWIDTH, color = color, label = label)
+        ax.plot(g["R"], g["E"], linewidth = LINEWIDTH, color = color, linestyle = linestyle, label = label)
 
     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
     plt.grid(True)

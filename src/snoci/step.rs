@@ -9,7 +9,7 @@ use super::{SNOCIState, CandidatePool, GMRES, PT2ProjectedOperator};
 use crate::time_call;
 
 use crate::noci::{noci_density, build_fock_mo_cache, update_wicks_fock};
-use crate::scf::form_fock_matrices;
+use crate::scf::fock;
 use super::{gmres, solve_current_space, build_snoci_overlaps, build_snoci_focks, build_candidate_m_diag, build_snoci_projection, 
             apply_omega_m, build_candidate_v, build_omega_v, select_candidates, build_candidate_current_h, build_preconditioner,
             build_candidate_m};
@@ -127,7 +127,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
             // Form multireference NOCI density and generalised AO Focks.
             let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
             let (fa, fb) = time_call!(crate::timers::snoci::add_build_generalised_fock, {
-                form_fock_matrices(&ao.h, &ao.eri_coul, &da, &db)
+                fock(&ao.h, &ao.eri_coul, &da, &db)
             });
             // Transform Focks into MO basis for each reference.
             let fock_mocache = build_fock_mo_cache(&fa, &fb, noci_reference_basis);

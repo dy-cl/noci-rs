@@ -2,7 +2,8 @@
 use std::{cell::RefCell};
 
 use ndarray::{Array1, Array2, ArrayView2, Array4, Axis};
-use ndarray_linalg::{Eigh, UPLO};
+use ndarray_linalg::{Eig, Eigh, Inverse, UPLO};
+use num_complex::Complex64;
 use rayon::prelude::*;
 
 thread_local! {static HT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::new())}; static GT_SCRATCH: RefCell<Vec<f64>> = const {RefCell::new(Vec::new())};}
@@ -86,6 +87,69 @@ pub fn general_evp_real(f: &Array2<f64>, s: &Array2<f64>, project: bool, tol: f6
     // C = X U. 
     let c = x.dot(&u);
     (epsilon, c)
+}
+
+/// Diagonalise a complex-symmetric matrix and transpose-normalise eigenvectors.
+/// # Arguments:
+/// - `a`: Complex-symmetric occupied or virtual Fock block.
+/// # Returns:
+/// - `(Array1<Complex64>, Array2<Complex64>)`: Eigenvalues and transpose-normalised eigenvectors.
+pub fn symmetric_evp_complex(a: &Array2<Complex64>) -> (Array1<Complex64>, Array2<Complex64>) {
+    if a.nrows() == 0 {return (Array1::zeros(0), Array2::zeros((0, 0)));}
+    if a.nrows() == 1 {return (Array1::from_vec(vec![a[(0, 0)]]), Array2::from_elem((1, 1), Complex64::new(1.0, 0.0)));}
+
+    let (vals, vecs) = a.eig().unwrap();
+    let mut order: Vec<usize> = (0..vals.len()).collect();
+    order.sort_by(|&i, &j| vals[i].re.partial_cmp(&vals[j].re).unwrap().then(vals[i].im.partial_cmp(&vals[j].im).unwrap()));
+
+    let mut e = Array1::<Complex64>::zeros(vals.len());
+    let mut u = Array2::<Complex64>::zeros(vecs.raw_dim());
+    for (k, &i) in order.iter().enumerate() {
+        e[k] = vals[i];
+
+        let mut col = vecs.column(i).to_owned();
+        let nrm = col.dot(&col).sqrt();
+        if nrm.norm() > 1e-14 {col.mapv_inplace(|z| z / nrm);}
+        u.column_mut(k).assign(&col);
+    }
+    (e, u)
+}
+
+
+
+/// Convert a real matrix to a complex matrix with zero imaginary part.
+/// # Arguments:
+/// - `x`: Real matrix.
+/// # Returns:
+/// - `Array2<Complex64>`: Complex matrix.
+pub fn complex_from_real(x: &Array2<f64>) -> Array2<Complex64> {
+    x.mapv(|v| Complex64::new(v, 0.0))
+}
+
+/// Compute a dense complex matrix exponential through diagonalisation.
+/// # Arguments:
+/// - `a`: Complex square matrix.
+/// # Returns:
+/// - `Array2<Complex64>`: Matrix exponential.
+pub fn matrix_exp_complex(a: &Array2<Complex64>) -> Array2<Complex64> {
+    if a.nrows() == 0 {return Array2::zeros((0, 0));}
+    let (vals, vecs) = a.eig().unwrap();
+    let d = Array2::from_diag(&vals.mapv(|z| z.exp()));
+    vecs.dot(&d).dot(&vecs.inv().unwrap())
+}
+
+/// Reorthonormalise complex orbitals in a transpose metric.
+/// # Arguments:
+/// - `c`: MO coefficient matrix.
+/// - `s`: Real AO overlap matrix defining the metric.
+/// # Returns:
+/// - `Array2<Complex64>`: Coefficients transformed so that `C^T S C = I`.
+pub fn complex_metric_orthonormalize(c: &Array2<Complex64>, s: &Array2<f64>) -> Array2<Complex64> {
+    let sc = complex_from_real(s);
+    let m = c.t().dot(&sc).dot(c);
+    let (vals, vecs) = m.eig().unwrap();
+    let d = Array2::from_diag(&vals.mapv(|z| Complex64::new(1.0, 0.0) / z.sqrt()));
+    c.dot(&vecs.dot(&d).dot(&vecs.inv().unwrap()))
 }
 
 /// Calculate Einstein summation of matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{ab}. 
@@ -1282,4 +1346,3 @@ mod adjt {
         Some(det)
     }
 }
-

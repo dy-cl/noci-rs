@@ -176,6 +176,36 @@ pub struct SCFInfo {
     pub e_tol: f64,
     pub diis: DiisOptions,
     pub do_fci: bool,
+    pub h: HSCFOptions,
+}
+
+/// Options controlling holomorphic SCF optimisation.
+pub struct HSCFOptions {
+    /// Maximum number of h-SCF quasi-Newton iterations.
+    pub max_cycle: usize,
+    /// Convergence threshold for the occupied-virtual gradient norm.
+    pub g_tol: f64,
+    /// Threshold for accepting SR1 secant updates.
+    pub sr1_tol: f64,
+    /// Minimum orbital-energy gap used in energy weighting.
+    pub denom_tol: f64,
+    /// Maximum occupied-virtual step norm.
+    pub max_step: f64,
+    /// Maximum number of backtracking line-search steps.
+    pub line_steps: usize,
+    /// Multiplicative shrink factor for line-search steps.
+    pub line_shrink: f64,
+    /// Maximum number of stored secant pairs.
+    pub history: usize,
+}
+
+impl Default for HSCFOptions {
+    /// Return default h-SCF quasi-Newton options.
+    /// # Returns:
+    /// - `Self`: h-SCF quasi-Newton options with conservative convergence settings.
+    fn default() -> Self {
+        Self {max_cycle: 100, g_tol: 1e-10, sr1_tol: 1e-12, denom_tol: 1e-10, max_step: 0.5, line_steps: 12, line_shrink: 0.5, history: 20}
+    }
 }
 
 impl Default for SCFInfo {
@@ -188,6 +218,7 @@ impl Default for SCFInfo {
             e_tol: 1e-12,
             diis: DiisOptions::default(),
             do_fci: false,
+            h: HSCFOptions::default(),
         }
     }
 }
@@ -251,6 +282,7 @@ pub struct StateRecipe {
     pub spatial_bias: Option<SpatialBias>,
     pub scfexcitation: Option<SCFExcitation>,
     pub noci: bool,
+    pub holomorphic: bool,
 }
 
 impl Default for StateRecipe {
@@ -265,6 +297,7 @@ impl Default for StateRecipe {
             spatial_bias: None,
             scfexcitation: None,
             noci: true,
+            holomorphic: false,
         }
     }
 }
@@ -583,6 +616,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
     let defaults = StateRecipe::default();
     let label: String = t.get("label").unwrap_or(defaults.label);
     let noci: bool = t.get("noci").unwrap_or(defaults.noci);
+    let holomorphic: bool = t.get("holomorphic").unwrap_or(defaults.holomorphic);
 
     let spin_bias = t.get::<_, Option<Table>>("spin_bias").unwrap_or(None).map(|sb| {
         let defaults = SpinBias::default();
@@ -614,7 +648,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
         }
     });
 
-    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci }
+    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci, holomorphic }
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -695,7 +729,9 @@ pub fn load_input(path: &str) -> Input {
     let scf = if let Some(scf_tbl) = scf_tbl {
         let defaults = SCFInfo::default();
         let diis_defaults = DiisOptions::default();
+        let h_defaults = HSCFOptions::default();
         let diis_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("diis").unwrap_or(None);
+        let h_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("h").unwrap_or(None);
         let diis = if let Some(diis_tbl) = diis_tbl {
             DiisOptions {
                 space: diis_tbl.get("space").unwrap_or(diis_defaults.space),
@@ -703,11 +739,26 @@ pub fn load_input(path: &str) -> Input {
         } else {
             diis_defaults
         };
+        let h = if let Some(h_tbl) = h_tbl {
+            HSCFOptions {
+                max_cycle: h_tbl.get("max_cycle").unwrap_or(h_defaults.max_cycle),
+                g_tol: h_tbl.get("g_tol").unwrap_or(h_defaults.g_tol),
+                sr1_tol: h_tbl.get("sr1_tol").unwrap_or(h_defaults.sr1_tol),
+                denom_tol: h_tbl.get("denom_tol").unwrap_or(h_defaults.denom_tol),
+                max_step: h_tbl.get("max_step").unwrap_or(h_defaults.max_step),
+                line_steps: h_tbl.get("line_steps").unwrap_or(h_defaults.line_steps),
+                line_shrink: h_tbl.get("line_shrink").unwrap_or(h_defaults.line_shrink),
+                history: h_tbl.get("history").unwrap_or(h_defaults.history),
+            }
+        } else {
+            h_defaults
+        };
         SCFInfo {
             max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
             e_tol: scf_tbl.get("e_tol").unwrap_or(defaults.e_tol),
             diis,
             do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),
+            h,
         }
     } else {
         SCFInfo::default()
@@ -907,4 +958,3 @@ pub fn load_input(path: &str) -> Input {
     };
     Input {mol, scf, write, states, det, qmc, snoci, excit, prop, wicks}
 }
-

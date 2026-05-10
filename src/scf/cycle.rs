@@ -1,16 +1,21 @@
 // scf/cycle.rs
 
-use std::fs; use std::path::{Path, PathBuf}; use std::sync::Arc;
+use std::fs; 
+use std::path::{Path, PathBuf}; 
+use std::sync::Arc;
+
 use ndarray::{Array1, Array2, Axis};
+
 use crate::{AoData, SCFState, Excitation, ExcitationSpin};
 use crate::input::{Input, Spin, SCFExcitation, StateType};
-use crate::write::write_orbitals;
 use crate::diis::Diis;
+use super::kernels::DensityMode;
+
+use crate::write::write_orbitals;
 use crate::maths::general_evp_real;
 use crate::utils::print_array2;
 use super::bias::metadynamics_bias;
-use super::energy::scf_energy;
-use super::fock::form_fock_matrices;
+use super::kernels::{energy, fock, density};
 use super::occupation::{mo_occupancies, occvec_to_bits};
 use super::select::{aufbau_indices, mom_select};
 
@@ -180,7 +185,7 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
 
     let mut iter = 0;
     while iter < input.scf.max_cycle {
-        let (mut fa_curr, mut fb_curr) = form_fock_matrices(h, eri, &da, &db);
+        let (mut fa_curr, mut fb_curr) = fock(h, eri, &da, &db);
 
         if let (Some(bias_states), Some(lambda)) = (biases, lambda) {
             if !bias_states.is_empty() {
@@ -199,9 +204,9 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
         let (idx_b, cb_occ) = occupy(&eb, &cb, s, nb, mom_b, cb_occ_old.as_ref(), scfexcitation);
         ca_occ_old = Some(ca_occ.clone()); cb_occ_old = Some(cb_occ.clone());
 
-        let da_new = ca_occ.dot(&ca_occ.t()); let db_new = cb_occ.dot(&cb_occ.t());
-        let (fa_new, fb_new) = form_fock_matrices(h, eri, &da_new, &db_new);
-        let e_new = scf_energy(&da_new, &db_new, &fa_new, &fb_new, h, enuc);
+        let da_new = density(&ca_occ, na, DensityMode::Hermitian); let db_new = density(&cb_occ, nb, DensityMode::Hermitian);
+        let (fa_new, fb_new) = fock(h, eri, &da_new, &db_new);
+        let e_new = energy(h, enuc, &da_new, &db_new, &fa_new, &fb_new);
 
         let err = if use_diis {diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt()} else {f64::INFINITY};
         let d_e = (e_new - e).abs();
