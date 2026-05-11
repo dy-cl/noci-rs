@@ -878,12 +878,10 @@ fn print_report(res: &Results, input: &Input) {
 
     if res.states.is_empty() {
         if let Some(e_fci) = res.e_fci {
-            if let Some(e_fci) = res.e_fci {
-                if let Some((label, e0)) = ref_energy.as_ref() {
-                    println!("State(FCI): E: {}, [E - {}]: {}", e_fci, label, e_fci - e0);
-                } else {
-                    println!("State(FCI): E: {}", e_fci);
-                }
+            if let Some((label, e0)) = ref_energy.as_ref() {
+                println!("State(FCI): E: {}, [E - {}]: {}", e_fci, label, e_fci - e0);
+            } else {
+                println!("State(FCI): E: {}", e_fci);
             }
         }
 

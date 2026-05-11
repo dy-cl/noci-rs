@@ -215,7 +215,7 @@ pub fn calculate_noci_energy<T: NOCIScalar>(ao: &AoData, input: &Input, scfstate
     let h_shift = &h - &s.mapv(|x| scfstates[0].e * x);
     print_array2(&h_shift);
 
-    let (evals, c) = general_evp(&h, &s, true, f64::EPSILON);
+    let (evals, c) = general_evp(&h, &s, true, tol);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
 
     let c0 = c.column(0).to_owned();

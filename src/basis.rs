@@ -150,6 +150,47 @@ fn mark_duplicate_noci_states<T: NOCIScalar>(states: &mut [DetState<T>], s: &Arr
     }
 }
 
+/// Check whether two state recipes request opposite spin-bias patterns.
+/// # Arguments
+/// - `a`: First state recipe.
+/// - `b`: Second state recipe.
+/// # Returns
+/// - `bool`: Whether both recipes have spin biases and the patterns are sign opposites.
+fn opposite_spin_bias(a: &StateRecipe, b: &StateRecipe) -> bool {
+    let (Some(sa), Some(sb)) = (&a.spin_bias, &b.spin_bias) else {
+        return false;
+    };
+
+    sa.pattern.len() == sb.pattern.len()
+        && sa.pattern.iter().zip(sb.pattern.iter()).all(|(&x, &y)| x == -y)
+}
+
+/// Construct the spin-flipped partner of an h-SCF state.
+/// # Arguments
+/// - `st`: h-SCF state to spin flip.
+/// - `label`: Label for the spin-flipped state.
+/// - `noci_basis`: Whether the spin-flipped state is used in the NOCI basis.
+/// - `parent`: Reference parent index of the spin-flipped state.
+/// # Returns
+/// - `HSCFState`: State with alpha and beta orbitals, densities, occupations, and phases swapped.
+fn spin_flip_hscf_state(st: &HSCFState, label: &str, noci_basis: bool, parent: usize) -> HSCFState {
+    HSCFState {
+        e: st.e,
+        oa: st.ob,
+        ob: st.oa,
+        pha: st.phb,
+        phb: st.pha,
+        ca: st.cb.clone(),
+        cb: st.ca.clone(),
+        da: st.db.clone(),
+        db: st.da.clone(),
+        label: label.to_string(),
+        noci_basis,
+        parent,
+        excitation: st.excitation.clone(),
+    }
+}
+
 /// Using the occupation vectors oa, ob, get positions p of oa, ob which are equal to 0 and 1. That is, 
 /// the virtual and occupied column indices for each spin.
 /// # Arguments
@@ -276,7 +317,7 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
-    let d_tol = 1e-2;
+    let d_tol = 1e-8;
     
     let mut out: Vec<SCFState> = Vec::with_capacity(recipes.len());
     for (i, recipe) in recipes.iter().enumerate() {
@@ -351,7 +392,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
-    let d_tol = 1e-2;
+    let d_tol = 1e-8;
     let rhf_tol = 1e-2;
 
     let mut biases_rhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf);
@@ -670,7 +711,18 @@ pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[
             bias_spatial(&mut da, &mut db, &atomao, spb.pol, &spb.pattern);
         }
 
-        let state = if recipe.holomorphic {
+        let spin_partner = if recipe.holomorphic && ao.nelec[0] == ao.nelec[1] && recipe.spin_bias.is_some() {
+            recipes.iter().take(i).enumerate().find(|&(_, other)| other.holomorphic && opposite_spin_bias(other, recipe)).map(|(j, _)| j)
+        } else {
+            None
+        };
+
+        let state = if let Some(j) = spin_partner {
+            if input.write.verbose {
+                println!("Constructing h-SCF state '{}' by spin flip of '{}'.", recipe.label, out[j].label);
+            }
+            spin_flip_hscf_state(&out[j], &recipe.label, recipe.noci, i)
+        } else if recipe.holomorphic {
             let seed = scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, recipe.scfexcitation.as_ref(), i, None).expect("SCF seed did not converge");
             let mut candidates: Vec<HSCFState> = Vec::new();
 
@@ -701,7 +753,6 @@ pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[
         };
         out.push(state);
     }
-    mark_duplicate_noci_states(&mut out, &ao.s, 1e-2);
     out
 }
 

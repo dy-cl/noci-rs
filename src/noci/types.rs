@@ -9,7 +9,7 @@ use crate::nonorthogonalwicks::WicksView;
 use crate::input::Input;
 use crate::maths::ERIScalar;
 
-use crate::maths::{einsum_ba_ab_real, einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_abcd_cd_real, einsum_ba_abcd_cd_complex, einsum_ba_abcd_cd_complex_real,};
+use crate::maths::{einsum_ba_ab_real, einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_abcd_cd_real, einsum_ba_abcd_cd_complex, einsum_ba_abcd_cd_complex_real};
 
 
 /// Scalar type accepted by generic NOCI matrix-element code.
@@ -378,4 +378,3 @@ pub struct FockMOCache<T: NOCIScalar> {
     /// Whether parent alpha and beta MO spaces are Hermitian-orthonormal.
     pub hermitian_orthonormal: bool,
 }
-

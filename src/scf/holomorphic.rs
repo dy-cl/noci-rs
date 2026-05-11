@@ -512,7 +512,8 @@ pub fn h_seed_orbitals(seed: &SCFState, recipe: &StateRecipe, ao: &AoData) -> (A
     let mut cb = real2_as::<Complex64>(&seed.cb).select(Axis(1), &idx_b);
 
     if let Some(sb) = &recipe.spin_bias {
-        let theta = Complex64::new(0.0, sb.pol.abs().max(0.05));
+        let sgn = sb.pattern.iter().copied().find(|&x| x != 0).unwrap_or(1) as f64;
+        let theta = Complex64::new(0.0, sgn * sb.pol.abs().max(0.05));
         ca = perturb_ov(&ca, na, theta);
         cb = perturb_ov(&cb, nb, -theta);
     }
