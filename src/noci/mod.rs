@@ -21,5 +21,5 @@ pub(crate) use m::calculate_m_pair;
 pub(crate) use hs::calculate_hs_pair;
 
 pub(crate) use naive::occ_coeffs;
-pub use types::NOCIData;
+pub use types::{NOCIScalar, NOCIData};
 pub(crate) use types::{DetPair, FockData};

@@ -24,8 +24,8 @@ use super::{SNOCIOverlaps, SNOCIFocks, PT2ProjectedOperator, PT2Projection, Prec
 /// # Returns:
 /// - `(Array2<f64>, Array2<f64>, f64, Array1<f64>)`: Hamiltonian matrix in the current space,
 ///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
-pub(in crate::snoci) fn solve_current_space(ao: &AoData, current_space: &[SCFState], input: &Input, wicks: Option<&WicksShared>, 
-                                            mocache: &[MOCache], tol: f64) -> (Array2<f64>, Array2<f64>, f64, Array1<f64>) {
+pub(in crate::snoci) fn solve_current_space(ao: &AoData, current_space: &[SCFState], input: &Input, wicks: Option<&WicksShared<f64>>, 
+                                            mocache: &[MOCache<f64>], tol: f64) -> (Array2<f64>, Array2<f64>, f64, Array1<f64>) {
     time_call!(crate::timers::snoci::add_solve_current_space, {
         let wview = wicks.as_ref().map(|ws| ws.view());
         let data = NOCIData::new(ao, current_space, input, tol, wview).withmocache(mocache);
@@ -47,7 +47,7 @@ pub(in crate::snoci) fn solve_current_space(ao: &AoData, current_space: &[SCFSta
 /// - `selected_space`: Current selected nonorthogonal determinant space.
 /// # Returns:
 /// - `SNOCIOverlaps`: Candidate-current and current-candidate overlap blocks.
-pub(in crate::snoci) fn build_snoci_overlaps(data: &NOCIData<'_>, candidates: &[SCFState], selected_space: &[SCFState]) -> SNOCIOverlaps {
+pub(in crate::snoci) fn build_snoci_overlaps(data: &NOCIData<'_, f64>, candidates: &[SCFState], selected_space: &[SCFState]) -> SNOCIOverlaps {
     time_call!(crate::timers::snoci::add_build_snoci_overlaps, {
         let (s_ai, _) = build_noci_s(data, candidates, selected_space, false);
         let s_ia = s_ai.t().to_owned();
@@ -65,7 +65,7 @@ pub(in crate::snoci) fn build_snoci_overlaps(data: &NOCIData<'_>, candidates: &[
 /// - `candidates`: Candidate determinant space.
 /// # Returns:
 /// - `SNOCIFocks`: Current-current and candidate-current Fock blocks.
-pub(in crate::snoci) fn build_snoci_focks(current_data: &NOCIData<'_>, candidate_data: &NOCIData<'_>, fock: &FockData<'_>,
+pub(in crate::snoci) fn build_snoci_focks(current_data: &NOCIData<'_, f64>, candidate_data: &NOCIData<'_, f64>, fock: &FockData<'_, f64>,
                                           selected_space: &[SCFState], candidates: &[SCFState]) -> SNOCIFocks {
     time_call!(crate::timers::snoci::add_build_snoci_focks, {
         let (f_ii, _) = build_noci_fock(current_data, fock, selected_space, selected_space, true);
@@ -83,7 +83,7 @@ pub(in crate::snoci) fn build_snoci_focks(current_data: &NOCIData<'_>, candidate
 /// - `selected_space`: Current selected nonorthogonal determinant space.
 /// # Returns:
 /// - `Array2<f64>`: Candidate-current Hamiltonian block `H_ai`.
-pub(in crate::snoci) fn build_candidate_current_h(data: &NOCIData<'_>, candidates: &[SCFState], selected_space: &[SCFState]) -> Array2<f64> {
+pub(in crate::snoci) fn build_candidate_current_h(data: &NOCIData<'_, f64>, candidates: &[SCFState], selected_space: &[SCFState]) -> Array2<f64> {
     time_call!(crate::timers::snoci::add_build_candidate_h_ai, {
         build_noci_hs(data, candidates, selected_space, false).0
     })

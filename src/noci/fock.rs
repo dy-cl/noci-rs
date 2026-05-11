@@ -1,34 +1,43 @@
 // noci/fock.rs
 use ndarray::{Array2};
 
-use crate::{AoData, SCFState};
+use crate::{AoData, DetState};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use super::types::{DetPair, FockMOCache, NOCIData, FockData};
+use super::types::{DetPair, FockMOCache, NOCIData, FockData, NOCIScalar};
 use crate::time_call;
 
 use crate::basis::excitation_phase;
 use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_f};
-use super::naive::{occ_coeffs, build_s_pair, one_electron};
+use super::naive::{occ_coeffs, build_s_pair, one_electron_scalar};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved. If the determinant pair have the
-/// same parents we may use the standard Slater-Condon rules, if not we can either use generalised
-/// Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate the matrix element.
+/// same Hermitian-orthonormal parents we may use the standard Slater-Condon rules, if not we can
+/// either use generalised Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate
+/// the matrix element.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `fock`: Fock-specific data required for Fock matrix-element evaluation.
 /// - `pair`: Pair of determinants whose Fock matrix element is to be evaluated.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `f64`: Fock matrix element between the determinant pair.
-pub(crate) fn calculate_f_pair(data: &NOCIData<'_>, fock: &FockData<'_>, pair: DetPair<'_>, scratch: Option<&mut WickScratchSpin>) -> f64 {
+/// - `T`: Fock matrix element between the determinant pair.
+pub(crate) fn calculate_f_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &FockData<'_, T>, pair: DetPair<'_, T>, scratch: Option<&mut WickScratchSpin<T>>) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair, {
-        if pair.ldet.parent == pair.gdet.parent {
-            calculate_f_pair_orthogonal(&fock.fock_mocache[pair.ldet.parent], pair.ldet, pair.gdet)
-        } else if data.input.wicks.enabled {
-            calculate_f_pair_wicks(pair.ldet, pair.gdet, data.tol, data.wicks.unwrap(), scratch.unwrap())
+        let ldet = pair.ldet;
+        let gdet = pair.gdet;
+
+        if ldet.parent == gdet.parent {
+            let cache = &fock.fock_mocache[ldet.parent];
+            if cache.hermitian_orthonormal {
+                return calculate_f_pair_orthogonal(cache, ldet, gdet);
+            }
+        }
+
+        if data.input.wicks.enabled {
+            calculate_f_pair_wicks(ldet, gdet, data.tol, data.wicks.unwrap(), scratch.unwrap())
         } else {
-            calculate_f_pair_naive(fock.fa, fock.fb, data.ao, pair.ldet, pair.gdet, data.tol)
+            calculate_f_pair_naive(fock.fa, fock.fb, data.ao, ldet, gdet, data.tol)
         }
     })
 }
@@ -40,8 +49,8 @@ pub(crate) fn calculate_f_pair(data: &NOCIData<'_>, fock: &FockData<'_>, pair: D
 /// - `pair`: Pair of determinants whose Fock matrix element is to be compared.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(f64, f64)`: Wick's Fock matrix element, and the absolute discrepancy from the naive path.
-pub(in crate::noci) fn compare_f_pair_wicks_naive(data: &NOCIData<'_>, fock: &FockData<'_>, pair: DetPair<'_>, scratch: &mut WickScratchSpin) -> (f64, f64) {
+/// - `(T, f64)`: Wick's Fock matrix element, and the absolute discrepancy from the naive path.
+pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &FockData<'_, T>, pair: DetPair<'_, T>, scratch: &mut WickScratchSpin<T>) -> (T, f64) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
@@ -58,8 +67,8 @@ pub(in crate::noci) fn compare_f_pair_wicks_naive(data: &NOCIData<'_>, fock: &Fo
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
 /// # Returns:
-/// - `f64`: Fock matrix element between `ldet` and `gdet`.
-fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFState) -> f64 {
+/// - `T`: Fock matrix element between `ldet` and `gdet`.
+fn calculate_f_pair_orthogonal<T: NOCIScalar>(cache: &FockMOCache<T>, ldet: &DetState<T>, gdet: &DetState<T>) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair_orthogonal, {
         let xa = ldet.oa ^ gdet.oa;
         let xb = ldet.ob ^ gdet.ob;
@@ -68,7 +77,7 @@ fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFS
         let nb = xb.count_ones() as usize;
 
         if na == 0 && nb == 0 {
-            let mut f = 0.0;
+            let mut f = <T as From<f64>>::from(0.0);
 
             for p in 0..128 {
                 if ((gdet.oa >> p) & 1) == 1 {
@@ -84,17 +93,17 @@ fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFS
         if na == 2 && nb == 0 {
             let hole = (gdet.oa & xa).trailing_zeros() as usize;
             let part = (ldet.oa & xa).trailing_zeros() as usize;
-            let phase = excitation_phase(gdet.oa, &[hole], &[part]);
+            let phase = <T as From<f64>>::from(excitation_phase(gdet.oa, &[hole], &[part]));
             return phase * cache.fa[(part, hole)];
         }
 
         if na == 0 && nb == 2 {
             let hole = (gdet.ob & xb).trailing_zeros() as usize;
             let part = (ldet.ob & xb).trailing_zeros() as usize;
-            let phase = excitation_phase(gdet.ob, &[hole], &[part]);
+            let phase = <T as From<f64>>::from(excitation_phase(gdet.ob, &[hole], &[part]));
             return phase * cache.fb[(part, hole)];
         }
-        0.0
+        <T as From<f64>>::from(0.0)
     })
 }
 
@@ -107,8 +116,8 @@ fn calculate_f_pair_orthogonal(cache: &FockMOCache, ldet: &SCFState, gdet: &SCFS
 /// - `fa`: NOCI Fock matrix spin alpha.
 /// - `fb`: NOCI Fock matrix spin beta.
 /// # Returns:
-/// - `f64`: Fock matrix element between `ldet` and `gdet`.
-fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> f64 {
+/// - `T`: Fock matrix element between `ldet` and `gdet`.
+fn calculate_f_pair_naive<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, ao: &AoData, ldet: &DetState<T>, gdet: &DetState<T>, tol: f64) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair_naive, {
         // Per spin occupid coefficients.
         let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
@@ -119,7 +128,9 @@ fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet:
         let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
         let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
 
-        pb.s * one_electron(fa, &pa) + pa.s * one_electron(fb, &pb)
+        let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+
+        det_phase * (pb.s * one_electron_scalar(fa, &pa) + pa.s * one_electron_scalar(fb, &pb))
     })
 }
 
@@ -132,8 +143,8 @@ fn calculate_f_pair_naive(fa: &Array2<f64>, fb: &Array2<f64>, ao: &AoData, ldet:
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `f64`: Fock matrix element between the determinant pair.
-fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> f64 {
+/// - `T`: Fock matrix element between the determinant pair.
+fn calculate_f_pair_wicks<T: NOCIScalar>(ldet: &DetState<T>, gdet: &DetState<T>, tol: f64, wicks: &WicksView<T>, scratch: &mut WickScratchSpin<T>) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair_wicks, {
         let lp = ldet.parent;
         let gp = gdet.parent;
@@ -145,28 +156,27 @@ fn calculate_f_pair_wicks(ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &Wi
         let ex_lb = &ldet.excitation.beta;
         let ex_gb = &gdet.excitation.beta;
 
-        let pha = ldet.pha * gdet.pha;
-        let phb = ldet.phb * gdet.phb;
+        let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
+        let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
 
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
         let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
         let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
-        if sa == 0.0 && sb == 0.0 {
-            return 0.0;
+        if sa.abs() == 0.0 && sb.abs() == 0.0 {
+            return <T as From<f64>>::from(0.0);
         }
 
-        let mut f = 0.0;
-        if sb != 0.0 {
+        let mut f = <T as From<f64>>::from(0.0);
+        if sb.abs() != 0.0 {
             let f1a = lg_f(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
             f += pha * f1a * sb;
         }
-        if sa != 0.0 {
+        if sa.abs() != 0.0 {
             let f1b = lg_f(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
             f += phb * f1b * sa;
         }
         f
     })
 }
-

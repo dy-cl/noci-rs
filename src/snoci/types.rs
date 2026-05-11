@@ -74,9 +74,9 @@ pub(in crate::snoci) struct PT2Projection {
 /// Matrix-free projected NOCI-PT2 operator.
 pub(in crate::snoci) struct PT2ProjectedOperator<'a, 'data, 'fock> {
     /// Shared NOCI matrix-element data.
-    pub(in crate::snoci) data: &'a NOCIData<'data>,
+    pub(in crate::snoci) data: &'a NOCIData<'data, f64>,
     /// Fock-specific matrix-element data.
-    pub(in crate::snoci) fock: &'a FockData<'fock>,
+    pub(in crate::snoci) fock: &'a FockData<'fock, f64>,
     /// Candidate determinants defining the first-order interacting space.
     pub(in crate::snoci) candidates: &'a [SCFState],
     /// Precomputed projection quantities.

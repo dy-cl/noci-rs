@@ -7,9 +7,10 @@ use ndarray::Array2;
 use rand::{SeedableRng};
 use rand::rngs::StdRng;
 
-use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState};
+use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState, DetState};
+use crate::noci::NOCIScalar;
 use crate::input::{Input, StateType, StateRecipe, Metadynamics};
-use crate::maths::complex_metric_orthonormalize;
+use crate::maths::{real2_as, complex_metric_orthonormalize};
 
 use crate::utils::random_pattern;
 use crate::scf::{hscf_cycle, hscf_from_real_state, scf_cycle, h_seed_orbitals};
@@ -96,24 +97,57 @@ fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], 
     }
 }
 
-/// Calculate the distance between SCF states from Phys. Rev. Lett. 101, 193001 as 
+/// Calculate the distance between determinant states from Phys. Rev. Lett. 101, 193001 as 
 /// d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).
 /// # Arguments 
 /// - `w`: Reference state from which distance is computed. 
 /// - `x`: State to which distance is computed.
 /// - `s`: AO overlap matrix.
 /// # Returns
-/// - `f64`: Electron distance between the two SCF states.
-pub fn electron_distance(w: &SCFState, x: &SCFState, s: &Array2<f64>) -> f64 {
+/// - `f64`: Electron distance between the two determinant states.
+pub fn electron_distance<T: NOCIScalar>(w: &DetState<T>, x: &DetState<T>, s: &Array2<f64>) -> f64 {
+    let smat = real2_as::<T>(s);
+
     // Calculate electron number N as Tr(D_r S).
-    let na = (w.da.dot(s)).diag().sum();
-    let nb = (w.db.dot(s)).diag().sum();
+    let na = w.da.dot(&smat).diag().sum();
+    let nb = w.db.dot(&smat).diag().sum();
     let n = na + nb;
+
     // Calculate Tr(D_w S D_x S).
-    let tr_a = (*w.da).dot(s).dot(&*x.da).dot(s).diag().sum();
-    let tr_b = (*w.db).dot(s).dot(&*x.db).dot(s).diag().sum();
+    let tr_a = w.da.dot(&smat).dot(&*x.da).dot(&smat).diag().sum();
+    let tr_b = w.db.dot(&smat).dot(&*x.db).dot(&smat).diag().sum();
+
     // Electron distance is the difference.
-    n - (tr_a + tr_b)
+    (n - (tr_a + tr_b)).abs()
+}
+
+/// Mark duplicate NOCI-basis determinant states by setting `noci_basis = false`.
+/// States are retained for printing and branch tracking.
+/// # Arguments:
+/// - `states`: Determinant states to deduplicate.
+/// - `s`: AO overlap matrix.
+/// - `d_tol`: Tolerance below which two states are treated as duplicates.
+/// # Returns:
+/// - `()`: Mutates duplicate states in place by setting `noci_basis = false`.
+fn mark_duplicate_noci_states<T: NOCIScalar>(states: &mut [DetState<T>], s: &Array2<f64>, d_tol: f64) {
+    for i in 0..states.len() {
+        if !states[i].noci_basis {
+            continue;
+        }
+
+        for j in 0..i {
+            if !states[j].noci_basis {
+                continue;
+            }
+
+            let d2 = electron_distance(&states[j], &states[i], s);
+            if d2 < d_tol {
+                println!("Removed state '{}' from NOCI basis as d^2({}, {}) = {:.6}", states[i].label, states[j].label, states[i].label, d2);
+                states[i].noci_basis = false;
+                break;
+            }
+        }
+    }
 }
 
 /// Using the occupation vectors oa, ob, get positions p of oa, ob which are equal to 0 and 1. That is, 
@@ -299,26 +333,9 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
         let noci_basis = recipes[i].noci;
 
         let state: SCFState = scf_cycle(&da, &db, ao, input, label, noci_basis, scfexcitation, i, None).expect("SCF did not converge");
-
-        // Remove duplicate states from the basis to avoid singularity issues.
-        let mut is_duplicate = false;
-        for existing in &out {
-            // If this state is not requested to be used in the NOCI basis we can ignore it.
-            if !existing.noci_basis {
-                continue;
-            }
-            let d2 = electron_distance(existing, &state, &ao.s);
-            if d2 < d_tol {
-                println!("Removed state '{}' from basis as d^2({}, {}) = {:.6}", state.label, existing.label, state.label, d2);
-                is_duplicate = true;
-                break;
-            }
-        }
-        // By this point we are sure there are no duplicate states
-        if !is_duplicate {
-            out.push(state);
-        }
+        out.push(state);
     }
+    mark_duplicate_noci_states(&mut out, &ao.s, d_tol);
     out
 }
 
@@ -684,7 +701,7 @@ pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[
         };
         out.push(state);
     }
-    println!("Duplicate filtering for genuinely complex h-SCF states is deferred until complex NOCI metrics are implemented.");
+    mark_duplicate_noci_states(&mut out, &ao.s, 1e-2);
     out
 }
 

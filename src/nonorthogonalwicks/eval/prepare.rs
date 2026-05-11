@@ -1,6 +1,7 @@
 // nonorthogonalwicks/eval/prepare.rs 
 use crate::ExcitationSpin;
 use crate::maths::build_d;
+use crate::noci::NOCIScalar;
 use crate::time_call;
 use super::helpers::construct_determinant_indices_gen;
 use super::super::scratch::WickScratch;
@@ -15,7 +16,7 @@ use super::super::view::SameSpinView;
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `()`: Prepares the required same-spin scratch quantities in place.
-pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) {
+pub fn prepare_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same, {
         if w.m == 0 {
             prepare_same_m0(w, l_ex, g_ex, scratch)
@@ -37,7 +38,7 @@ pub fn prepare_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 /// # Returns
 /// - `()`: Prepares the zero-overlap same-spin scratch quantities in place.
 #[inline(always)]
-fn prepare_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) {
+fn prepare_same_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
@@ -86,7 +87,7 @@ fn prepare_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
 /// # Returns
 /// - `()`: Writes the one-by-one contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) {
+fn prepare_same_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l1, {
         let x0 = w.x(0);
         let xstr = x0.strides();
@@ -106,7 +107,7 @@ fn prepare_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) {
 /// # Returns
 /// - `()`: Writes the two-by-two contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) {
+fn prepare_same_m0_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l2, {
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -142,7 +143,7 @@ fn prepare_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) {
 /// # Returns
 /// - `()`: Writes the three-by-three contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch) {
+fn prepare_same_m0_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l3, {
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -189,7 +190,7 @@ fn prepare_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch) {
 /// # Returns
 /// - `()`: Writes the four-by-four contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l4(w: &SameSpinView, scratch: &mut WickScratch) {
+fn prepare_same_m0_l4<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l4, {
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -250,7 +251,7 @@ fn prepare_same_m0_l4(w: &SameSpinView, scratch: &mut WickScratch) {
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `()`: Prepares the generic same-spin scratch quantities in place.
-pub fn prepare_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch) {
+pub fn prepare_same_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);

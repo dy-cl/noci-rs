@@ -16,7 +16,7 @@ use super::propagate::{find_hs, coupling};
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `HeatBath`: Precomputed heat-bath excitation generation data for determinant `gamma`.
-pub(in crate::stochastic) fn init_heat_bath(gamma: usize, shifts: Shifts, data: &NOCIData<'_>, scratch: &mut WickScratchSpin) -> HeatBath {
+pub(in crate::stochastic) fn init_heat_bath(gamma: usize, shifts: Shifts, data: &NOCIData<'_, f64>, scratch: &mut WickScratchSpin<f64>) -> HeatBath {
     let ndets = data.basis.len();
     // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} 
     let mut sumlg = 0.0_f64;
@@ -53,7 +53,7 @@ pub(in crate::stochastic) fn init_heat_bath(gamma: usize, shifts: Shifts, data: 
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
-pub(in crate::stochastic) fn pgen_uniform(gamma: usize, shifts: Shifts, data: &NOCIData<'_>, rng: &mut SmallRng, scratch: &mut WickScratchSpin) -> (f64, f64, usize) {
+pub(in crate::stochastic) fn pgen_uniform(gamma: usize, shifts: Shifts, data: &NOCIData<'_, f64>, rng: &mut SmallRng, scratch: &mut WickScratchSpin<f64>) -> (f64, f64, usize) {
     let ndets = data.basis.len();
     // Sample Lambda uniformly from all dets except Gamma. If Lambda index is the same or
     // more than the Gamma index we map it back into the full index set.
@@ -77,7 +77,7 @@ pub(in crate::stochastic) fn pgen_uniform(gamma: usize, shifts: Shifts, data: &N
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
-pub(in crate::stochastic) fn pgen_heat_bath(gamma: usize, shifts: Shifts, data: &NOCIData<'_>, rng: &mut SmallRng, hb: &HeatBath, scratch: &mut WickScratchSpin) -> (f64, f64, usize) {
+pub(in crate::stochastic) fn pgen_heat_bath(gamma: usize, shifts: Shifts, data: &NOCIData<'_, f64>, rng: &mut SmallRng, hb: &HeatBath, scratch: &mut WickScratchSpin<f64>) -> (f64, f64, usize) {
     let ndets = data.basis.len();
     // If \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} (sumlg) 
     // is zero (unsure how likely this is) then fallback to uniform distribution.

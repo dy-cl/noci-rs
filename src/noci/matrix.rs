@@ -4,21 +4,21 @@ use std::time::{Duration, Instant};
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
-use crate::{AoData, SCFState};
+use crate::{AoData, DetState};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::input::Input;
-use super::types::{MOCache, NOCIData, FockData, DetPair, ScatterValue};
+use super::types::{MOCache, NOCIData, FockData, DetPair, ScatterValue, NOCIScalar};
 use crate::time_call;
 
+use crate::maths::general_evp;
 use crate::utils::print_array2;
 use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
-use crate::maths::general_evp;
 use crate::write::write_hs_matrices;
 use super::hs::compare_hs_pair_wicks_naive;
 use super::fock::compare_f_pair_wicks_naive;
 
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
-/// which computes `T` for the pair. The closure may evaluate, for example,
+/// which computes `U` for the pair. The closure may evaluate, for example,
 /// Hamiltonian, overlap, or Fock matrix elements.
 /// # Arguments:
 /// - `left`: First set of determinants.
@@ -27,14 +27,17 @@ use super::fock::compare_f_pair_wicks_naive;
 /// - `symmetric`: Whether only the upper triangle should be evaluated.
 /// - `o`: closure for determinant-pair evaluation.
 /// # Returns:
-/// - `(Vec<(usize, usize, T)>, Duration)`: Evaluated matrix elements with
+/// - `(Vec<(usize, usize, U)>, Duration)`: Evaluated matrix elements with
 ///   their indices and the wall time for the evaluation.
 /// # Type Parameters:
-/// - `O`: &SCFState, Option<&mut WickScratchSpin>) -> T` and `Sync`.
-/// - `T`: Required to be `Send`.
-fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input: &Input, symmetric: bool, o: O) -> (Vec<(usize, usize, T)>, Duration)
-    where T: Send, O: Fn(&SCFState, &SCFState, Option<&mut WickScratchSpin>) -> T + Sync {
-
+/// - `O`: `Fn(&DetState<T>, &DetState<T>, Option<&mut WickScratchSpin<T>>) -> U` and `Sync`.
+/// - `U`: Required to be `Send`.
+fn calculate_matrix_elements<T, U, O>(left: &[DetState<T>], right: &[DetState<T>], input: &Input, symmetric: bool, o: O) -> (Vec<(usize, usize, U)>, Duration)
+where
+    T: NOCIScalar,
+    U: Send,
+    O: Fn(&DetState<T>, &DetState<T>, Option<&mut WickScratchSpin<T>>) -> U + Sync,
+{
     let nl = left.len();
     let nr = right.len();
     
@@ -43,11 +46,14 @@ fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input
     else {(0..nl).flat_map(|i| (0..nr).map(move |j| (i, j))).collect()};
     
     let t0 = Instant::now();
-    let vals = if input.wicks.enabled {
-        pairs.par_iter().map_init(WickScratchSpin::new, |scratch, &(i, j)| {(i, j, o(&left[i], &right[j], Some(scratch)))}).collect()
+
+    let use_wicks_scratch = input.wicks.enabled || input.wicks.compare;
+    let vals = if use_wicks_scratch {
+        pairs.par_iter().map_init(WickScratchSpin::<T>::new, |scratch, &(i, j)| {(i, j, o(&left[i], &right[j], Some(scratch)))}).collect()
     } else {
-         pairs.par_iter().map(|&(i, j)| (i, j, o(&left[i], &right[j], None))).collect()
+        pairs.par_iter().map(|&(i, j)| (i, j, o(&left[i], &right[j], None))).collect()
     };
+
     let dt = t0.elapsed();
 
     (vals, dt)
@@ -55,21 +61,23 @@ fn calculate_matrix_elements<T, O> (left: &[SCFState], right: &[SCFState], input
 
 /// Scatter matrix elements into 2D Array.
 /// # Arguments:
-/// - `vals`: Usize, T)>, matrix elements and indices.
+/// - `vals`: Usize, U)>, matrix elements and indices.
 /// - `nl`: Length of determinant set 1.
 /// - `nr`: Length of determinant set 2.
 /// - `symmetric`: Whether symmetry should be used to fill the lower triangle.
 /// # Returns:
-/// - `T::Output`: Scattered dense matrix or matrix pair.
+/// - `U::Output`: Scattered dense matrix or matrix pair.
 /// # Type Parameters:
-/// - `T`: F64)`.
-fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize, symmetric: bool) -> T::Output 
-    where T: ScatterValue + Copy {
-    let mut out = T::zeros(nl, nr);
+/// - `U`: Type implementing `ScatterValue`.
+fn scatter_matrix_elements<U>(vals: Vec<(usize, usize, U)>, nl: usize, nr: usize, symmetric: bool) -> U::Output 
+where
+    U: ScatterValue + Copy,
+{
+    let mut out = U::zeros(nl, nr);
     for (i, j, val) in vals {
-        T::write(&mut out, i, j, val);
+        U::write(&mut out, i, j, val);
         if symmetric && i != j {
-            T::write(&mut out, j, i, val);
+            U::write(&mut out, j, i, val.mirror());
         }
     }
     out
@@ -84,8 +92,8 @@ fn scatter_matrix_elements<T>(vals: Vec<(usize, usize, T)>, nl: usize, nr: usize
 /// - `right`: Second set of determinants.
 /// - `symmetric`: Whether the matrix is symmetric.
 /// # Returns:
-/// - `(Array2<f64>, Duration)`: NOCI Fock matrix and matrix-build time.
-pub(crate) fn build_noci_fock(data: &NOCIData<'_>, fock: &FockData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Duration) {
+/// - `(Array2<T>, Duration)`: NOCI Fock matrix and matrix-build time.
+pub(crate) fn build_noci_fock<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &FockData<'_, T>, left: &[DetState<T>], right: &[DetState<T>], symmetric: bool) -> (Array2<T>, Duration) {
     time_call!(crate::timers::noci::add_build_full_fock, {
         let nl = left.len();
         let nr = right.len();
@@ -123,8 +131,8 @@ pub(crate) fn build_noci_fock(data: &NOCIData<'_>, fock: &FockData<'_>, left: &[
 /// - `right`: Second set of determinants.
 /// - `symmetric`: Whether the matrix is symmetric.
 /// # Returns:
-/// - `(Array2<f64>, Duration)`: The overlap matrix and the matrix-build time.
-pub fn build_noci_s(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Duration) {
+/// - `(Array2<T>, Duration)`: The overlap matrix and the matrix-build time.
+pub fn build_noci_s<T: NOCIScalar>(data: &NOCIData<'_, T>, left: &[DetState<T>], right: &[DetState<T>], symmetric: bool) -> (Array2<T>, Duration) {
     time_call!(crate::timers::noci::add_build_full_overlap, {
         let nl = left.len();
         let nr = right.len();
@@ -146,9 +154,9 @@ pub fn build_noci_s(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], 
 /// - `right`: Second set of determinants.
 /// - `symmetric`: Whether the matrices are symmetric.
 /// # Returns:
-/// - `(Array2<f64>, Array2<f64>, Duration)`: The Hamiltonian matrix, overlap matrix,
+/// - `(Array2<T>, Array2<T>, Duration)`: The Hamiltonian matrix, overlap matrix,
 ///   and matrix-build time.
-pub fn build_noci_hs(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState], symmetric: bool) -> (Array2<f64>, Array2<f64>, Duration) {
+pub fn build_noci_hs<T: NOCIScalar>(data: &NOCIData<'_, T>, left: &[DetState<T>], right: &[DetState<T>], symmetric: bool) -> (Array2<T>, Array2<T>, Duration) {
     time_call!(crate::timers::noci::add_build_full_hs, {
         let nl = left.len();
         let nr = right.len();
@@ -192,9 +200,9 @@ pub fn build_noci_hs(data: &NOCIData<'_>, left: &[SCFState], right: &[SCFState],
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns:
-/// - `(f64, Array1<f64>, Duration)`: The lowest NOCI eigenvalue, its coefficient
+/// - `(f64, Array1<T>, Duration)`: The lowest NOCI eigenvalue, its coefficient
 ///   vector in the NOCI basis, and the time spent building the Hamiltonian/overlap matrices.
-pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState], tol: f64, mocache: &[MOCache], wicks: Option<&WicksView>) -> (f64, Array1<f64>, Duration) {
+pub fn calculate_noci_energy<T: NOCIScalar>(ao: &AoData, input: &Input, scfstates: &[DetState<T>], tol: f64, mocache: &[MOCache<T>], wicks: Option<&WicksView<T>>) -> (f64, Array1<T>, Duration) {
     let data = NOCIData::new(ao, scfstates, input, tol, wicks).withmocache(mocache);
     let (h, s, d_hs) = build_noci_hs(&data, scfstates, scfstates, true);
 
@@ -204,8 +212,9 @@ pub fn calculate_noci_energy(ao: &AoData, input: &Input, scfstates: &[SCFState],
     println!("NOCI-reference Overlap:");
     print_array2(&s);
     println!("Shifted NOCI-reference Hamiltonian");
-    let h_shift = &h.map(|z: &f64| z) - scfstates[0].e * &s;
+    let h_shift = &h - &s.mapv(|x| scfstates[0].e * x);
     print_array2(&h_shift);
+
     let (evals, c) = general_evp(&h, &s, true, f64::EPSILON);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
 

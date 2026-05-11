@@ -1,6 +1,7 @@
 // nonorthogonalwicks/eval/onebody.rs
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
+use crate::noci::NOCIScalar;
 use crate::time_call;
 use super::helpers::{bit, column_replacement_correction, get_det_adjt_same};
 use super::super::scratch::WickScratch;
@@ -20,9 +21,9 @@ enum OneBody {
 /// - `ob`: Selects Hamiltonian or Fock intermediates.
 /// - `mi`: Branch selector for the operator contraction.
 /// # Returns
-/// - `f64`: Zeroth-order one-body scalar contribution.
+/// - `T`: Zeroth-order one-body scalar contribution.
 #[inline(always)]
-fn one_body_scalar(w: &SameSpinView<'_>, ob: OneBody, mi: usize) -> f64 {
+fn one_body_scalar<T: NOCIScalar>(w: &SameSpinView<'_, T>, ob: OneBody, mi: usize) -> T {
     match ob {OneBody::H1 => w.f0h[mi], OneBody::Fock => w.f0f[mi]}
 }
 
@@ -35,9 +36,9 @@ fn one_body_scalar(w: &SameSpinView<'_>, ob: OneBody, mi: usize) -> f64 {
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: One-electron Hamiltonian matrix element.
+/// - `T`: One-electron Hamiltonian matrix element.
 #[inline(always)]
-pub(crate) fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+pub(crate) fn lg_h1<T: NOCIScalar>(w: &SameSpinView<T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h1, {
         lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::H1)
     })
@@ -52,9 +53,9 @@ pub(crate) fn lg_h1(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSp
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: One-electron Fock matrix element.
+/// - `T`: One-electron Fock matrix element.
 #[inline(always)]
-pub(crate) fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+pub(crate) fn lg_f<T: NOCIScalar>(w: &SameSpinView<T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_f, {
         lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::Fock)
     })
@@ -72,9 +73,9 @@ pub(crate) fn lg_f(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
 /// # Returns
-/// - `f64`: One-body matrix element.
+/// - `T`: One-body matrix element.
 #[inline(always)]
-fn lg_one_body(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody) -> f64 {
+fn lg_one_body<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>, tol: f64, ob: OneBody) -> T {
     if w.m == 0 {
         lg_one_body_m0(w, l_ex, g_ex, scratch, tol, ob)
     }
@@ -94,13 +95,13 @@ fn lg_one_body(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpi
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
 /// # Returns
-/// - `f64`: One-body matrix element in the `m = 0` case.
+/// - `T`: One-body matrix element in the `m = 0` case.
 #[inline(always)]
-fn lg_one_body_m0(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody) -> f64 {
+fn lg_one_body_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>, tol: f64, ob: OneBody) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         match l {
-            0 => w.phase * w.tilde_s_prod * one_body_scalar(w, ob, 0),
+            0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * one_body_scalar(w, ob, 0),
             1 => lg_one_body_m0_l1(w, scratch, ob),
             2 => lg_one_body_m0_l2(w, scratch, ob),
             _ => lg_one_body_m0_gen(w, l_ex, g_ex, scratch, tol, ob),
@@ -114,9 +115,9 @@ fn lg_one_body_m0(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &Excitation
 /// - `scratch`: Scratch space containing the prepared `l = 1` contraction determinant and indices.
 /// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
 /// # Returns
-/// - `f64`: One-body matrix element for `l = 1`.
+/// - `T`: One-body matrix element for `l = 1`.
 #[inline(always)]
-fn lg_one_body_m0_l1(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBody) -> f64 {
+fn lg_one_body_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>, ob: OneBody) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l1, {
         let n = w.n();
         let det0 = scratch.det0.as_slice();
@@ -126,7 +127,7 @@ fn lg_one_body_m0_l1(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBod
         let fsl = match ob {OneBody::H1 => w.fh_t_slice(0, 0), OneBody::Fock => w.ff_t_slice(0, 0)};
         let repl = fsl[c0 * n + r0];
 
-        w.phase * w.tilde_s_prod * (det * one_body_scalar(w, ob, 0) - repl)
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (det * one_body_scalar(w, ob, 0) - repl)
     })
 }
 
@@ -136,9 +137,9 @@ fn lg_one_body_m0_l1(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBod
 /// - `scratch`: Scratch space containing the prepared `l = 2` contraction determinant and indices.
 /// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
 /// # Returns
-/// - `f64`: One-body matrix element for `l = 2`.
+/// - `T`: One-body matrix element for `l = 2`.
 #[inline(always)]
-fn lg_one_body_m0_l2(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBody) -> f64 {
+fn lg_one_body_m0_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>, ob: OneBody) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l2, {
         let n = w.n();
         let d = scratch.det0.as_slice();
@@ -163,7 +164,7 @@ fn lg_one_body_m0_l2(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBod
         let det_c0 = u0 * a11 - a01 * u1;
         let det_c1 = a00 * v1 - v0 * a10;
 
-        w.phase * w.tilde_s_prod * (det * one_body_scalar(w, ob, 0) - det_c0 - det_c1)
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (det * one_body_scalar(w, ob, 0) - det_c0 - det_c1)
     })
 }
 
@@ -177,12 +178,12 @@ fn lg_one_body_m0_l2(w: &SameSpinView<'_>, scratch: &mut WickScratch, ob: OneBod
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
 /// # Returns
-/// - `f64`: One-body matrix element for the general `m = 0` path.
+/// - `T`: One-body matrix element for the general `m = 0` path.
 #[inline(always)]
-fn lg_one_body_m0_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody) -> f64 {
+fn lg_one_body_m0_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>, tol: f64, ob: OneBody) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
-        let mut acc = 0.0;
+        let mut acc = <T as From<f64>>::from(0.0);
         let n = w.n();
         let det0 = &scratch.det0.as_slice()[..l * l];
 
@@ -194,12 +195,12 @@ fn lg_one_body_m0_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &Excita
                 let cb = scratch.cols[b];
                 let base = cb * n;
                 let corr = column_replacement_correction(l, det0, scratch.adjt_det.as_slice(), b, |r| fsl[base + scratch.rows[r]]);
-                contrib -= det_det + corr;
+                contrib = contrib - (det_det + corr);
             }
-            acc += contrib;
+            acc = acc + contrib;
         }
 
-        w.phase * w.tilde_s_prod * acc
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })
 }
 
@@ -215,13 +216,13 @@ fn lg_one_body_m0_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &Excita
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
 /// # Returns
-/// - `f64`: One-body matrix element.
+/// - `T`: One-body matrix element.
 #[inline(always)]
-fn lg_one_body_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64, ob: OneBody,) -> f64 {
+fn lg_one_body_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>, tol: f64, ob: OneBody,) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
-        let mut acc = 0.0;
+        let mut acc = <T as From<f64>>::from(0.0);
         let n = w.n();
 
         get_det_adjt_same(w, l, 1, scratch, tol, |bits, scratch, det_det| {
@@ -244,10 +245,10 @@ fn lg_one_body_gen(w: &SameSpinView<'_>, l_ex: &ExcitationSpin, g_ex: &Excitatio
                 let base = cb * n;
 
                 let corr = column_replacement_correction(l, scratch.det_mix.as_slice(), scratch.adjt_det.as_slice(), b, |r| fsl[base + scratch.rows[r]]);
-                contrib -= det_det + corr;
+                contrib = contrib - (det_det + corr);
             }
-            acc += contrib;
+            acc = acc + contrib;
         });
-        w.phase * w.tilde_s_prod * acc
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })
 }

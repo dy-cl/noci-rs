@@ -1,18 +1,19 @@
 // utils.rs
+use std::fmt::Display;
+
 use rand::{Rng};
 use rand::rngs::StdRng;
 use ndarray::{Array2, Array4};
 
-/// Print a 2D array as a matrix.
-/// # Arguments
+/// Print a matrix.
+/// # Arguments:
 /// - `a`: Matrix to print.
-/// # Returns
-/// - `()`: Prints the matrix to stdout.
-pub fn print_array2(a: &Array2<f64>) {
-    let (nr, nc) = a.dim();
-    for i in 0..nr {
-        for j in 0..nc {
-            print!("{:>12.6}", a[(i, j)]);
+/// # Returns:
+/// - `()`: Prints matrix to stdout.
+pub fn print_array2<T: Display>(a: &Array2<T>) {
+    for i in 0..a.nrows() {
+        for j in 0..a.ncols() {
+            print!("{:>18} ", a[(i, j)]);
         }
         println!();
     }

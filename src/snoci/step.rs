@@ -91,7 +91,7 @@ fn print_snoci_iteration_result(it: usize, n_current: usize, e0: f64, state: &SN
 /// # Returns:
 /// - `SNOCIState`: Final SNOCI state from the last completed iteration.
 pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input,
-                  mocache: &[MOCache], tol: f64, mut wicks: Option<&mut WicksShared>) -> SNOCIState {
+                  mocache: &[MOCache<f64>], tol: f64, mut wicks: Option<&mut WicksShared<f64>>) -> SNOCIState {
     time_call!(crate::timers::snoci::add_snoci_step, {
         let opts = input.snoci.as_ref().expect("snoci_step called without input.snoci.");
 
@@ -130,7 +130,7 @@ pub fn snoci_step(ao: &AoData, current_space: &[SCFState], noci_reference_basis:
                 fock(&ao.h, &ao.eri_coul, &da, &db)
             });
             // Transform Focks into MO basis for each reference.
-            let fock_mocache = build_fock_mo_cache(&fa, &fb, noci_reference_basis);
+            let fock_mocache = build_fock_mo_cache(&fa, &fb, noci_reference_basis, &ao.s, tol);
             // Update the Wick's intermediates if using them.
             if input.wicks.enabled && let Some(ws) = wicks.as_deref_mut() {
                 update_wicks_fock(&fa, &fb, noci_reference_basis, ws);

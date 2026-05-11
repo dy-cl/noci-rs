@@ -1,7 +1,7 @@
 // noci/hs.rs
-use crate::{AoData, SCFState};
+use crate::{AoData, DetState};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use super::types::{DetPair, MOCache, NOCIData};
+use super::types::{DetPair, MOCache, NOCIData, NOCIScalar};
 
 use crate::basis::excitation_phase;
 use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_h1, lg_h2_same, lg_h2_diff};
@@ -11,24 +11,29 @@ use super::overlap::calculate_s_pair_orthogonal;
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
 /// depending on user input and properties of the determinant pair involved. If the determinant
-/// pair have the same parents we may use the standard Slater-Condon rules, if not we can either
-/// use generalised Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate the
-/// matrix element.
+/// pair have the same Hermitian-orthonormal parents we may use the standard Slater-Condon rules,
+/// if not we can either use generalised Slater-Condon rules or extended non-orthogonal Wick's
+/// theorem to evaluate the matrix element.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose Hamiltonian and overlap matrix elements are to be evaluated.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(f64, f64)`: Hamiltonian and overlap matrix elements between the determinant pair.
-pub(crate) fn calculate_hs_pair(data: &NOCIData<'_>, pair: DetPair<'_>, scratch: Option<&mut WickScratchSpin>) -> (f64, f64) {
+/// - `(T, T)`: Hamiltonian and overlap matrix elements between the determinant pair.
+pub(crate) fn calculate_hs_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, pair: DetPair<'_, T>, scratch: Option<&mut WickScratchSpin<T>>) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair, {
         let ldet = pair.ldet;
         let gdet = pair.gdet;
 
         if ldet.parent == gdet.parent {
             let mocache = data.mocache.expect("Orthogonal Hamiltonian matrix elements require mocache.");
-            calculate_hs_pair_orthogonal(data.ao, &mocache[ldet.parent], ldet, gdet)
-        } else if data.input.wicks.enabled {
+            let cache = &mocache[ldet.parent];
+            if cache.hermitian_orthonormal {
+                return calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
+            }
+        }
+
+        if data.input.wicks.enabled {
             calculate_hs_pair_wicks(data.ao, ldet, gdet, data.tol, data.wicks.unwrap(), scratch.unwrap())
         } else {
             calculate_hs_pair_naive(data.ao, ldet, gdet, data.tol)
@@ -42,9 +47,9 @@ pub(crate) fn calculate_hs_pair(data: &NOCIData<'_>, pair: DetPair<'_>, scratch:
 /// - `pair`: Pair of determinants whose matrix elements are to be compared.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `((f64, f64), f64)`: Hamiltonian and overlap matrix elements between the determinant pair, and
+/// - `((T, T), f64)`: Hamiltonian and overlap matrix elements between the determinant pair, and
 ///   the total discrepancy between the naive and Wick's path.
-pub(in crate::noci) fn compare_hs_pair_wicks_naive(data: &NOCIData<'_>, pair: DetPair<'_>, scratch: &mut WickScratchSpin) -> ((f64, f64), f64) {
+pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(data: &NOCIData<'_, T>, pair: DetPair<'_, T>, scratch: &mut WickScratchSpin<T>) -> ((T, T), f64) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
@@ -61,8 +66,8 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive(data: &NOCIData<'_>, pair: De
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
 /// # Returns:
-/// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
-fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, gdet: &SCFState) -> (f64, f64) {
+/// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
+fn calculate_hs_pair_orthogonal<T: NOCIScalar>(ao: &AoData, cache: &MOCache<T>, ldet: &DetState<T>, gdet: &DetState<T>) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
         let xa = ldet.oa ^ gdet.oa;
         let xb = ldet.ob ^ gdet.ob;
@@ -73,7 +78,7 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
         let s = calculate_s_pair_orthogonal(ldet, gdet);
 
         if ra > 2 || rb > 2 || ra + rb > 2 {
-            return (0.0, s);
+            return (<T as From<f64>>::from(0.0), s);
         }
 
         let mut holesa = [0usize; 2];
@@ -117,10 +122,10 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
             }
         }
 
-        let phase = excitation_phase(gdet.oa, &holesa[..ra], &partsa[..ra]) * excitation_phase(gdet.ob, &holesb[..rb], &partsb[..rb]);
+        let phase = <T as From<f64>>::from(excitation_phase(gdet.oa, &holesa[..ra], &partsa[..ra]) * excitation_phase(gdet.ob, &holesb[..rb], &partsb[..rb]));
 
         if ra == 0 && rb == 0 {
-            let mut h = ao.enuc;
+            let mut h = <T as From<f64>>::from(ao.enuc);
 
             let mut bits = ldet.oa;
             while bits != 0 {
@@ -145,7 +150,7 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
                 while bits_j != 0 {
                     let j = bits_j.trailing_zeros() as usize;
                     bits_j &= bits_j - 1;
-                    h += 0.5 * cache.eri_aa_asym[(i, i, j, j)];
+                    h += <T as From<f64>>::from(0.5) * cache.eri_aa_asym[(i, i, j, j)];
                 }
             }
 
@@ -158,7 +163,7 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
                 while bits_j != 0 {
                     let j = bits_j.trailing_zeros() as usize;
                     bits_j &= bits_j - 1;
-                    h += 0.5 * cache.eri_bb_asym[(i, i, j, j)];
+                    h += <T as From<f64>>::from(0.5) * cache.eri_bb_asym[(i, i, j, j)];
                 }
             }
 
@@ -247,7 +252,7 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
             let b = partsb[0];
             return (phase * cache.eri_ab_coul[(i, a, b, j)], s);
         }
-        (0.0, s)
+        (<T as From<f64>>::from(0.0), s)
     })
 }
 
@@ -258,8 +263,8 @@ fn calculate_hs_pair_orthogonal(ao: &AoData, cache: &MOCache, ldet: &SCFState, g
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
 /// # Returns:
-/// - `(f64, f64)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
-pub(in crate::noci) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64) -> (f64, f64) {
+/// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
+pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(ao: &AoData, ldet: &DetState<T>, gdet: &DetState<T>, tol: f64) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair_naive, {
         // Per spin occupid coefficients.
         let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
@@ -274,8 +279,8 @@ pub(in crate::noci) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gde
         let s = pa.s * pb.s;
         
         let hnuc = match (pa.zeros.len(), pb.zeros.len()) {
-            (0, 0) => ao.enuc * s,
-            _ => 0.0,
+            (0, 0) => <T as From<f64>>::from(ao.enuc) * s,
+            _ => <T as From<f64>>::from(0.0),
         };
 
         let h1a = one_electron(&ao.h, &pa);
@@ -287,7 +292,9 @@ pub(in crate::noci) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gde
         let h2ab = two_electron_diff(&ao.eri_coul, &pa, &pb);
         let h2 = h2aa + h2bb + h2ab;
 
-        (hnuc + h1 + h2, s)
+        let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+
+        (det_phase * (hnuc + h1 + h2), det_phase * s)
     })
 }
 
@@ -301,8 +308,8 @@ pub(in crate::noci) fn calculate_hs_pair_naive(ao: &AoData, ldet: &SCFState, gde
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(f64, f64)`: Hamiltonian and overlap matrix elements for the pair.
-pub(in crate::noci) fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gdet: &SCFState, tol: f64, wicks: &WicksView, scratch: &mut WickScratchSpin) -> (f64, f64) {
+/// - `(T, T)`: Hamiltonian and overlap matrix elements for the pair.
+pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(ao: &AoData, ldet: &DetState<T>, gdet: &DetState<T>, tol: f64, wicks: &WicksView<T>, scratch: &mut WickScratchSpin<T>) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair_wicks, {
         let lp = ldet.parent;
         let gp = gdet.parent;
@@ -324,10 +331,10 @@ pub(in crate::noci) fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gde
         let doh2bb = w.bb.m <= lb + 2;
         let doh2ab = (w.aa.m <= la + 1) && (w.bb.m <= lb + 1);
 
-        let mut sa = 0.0;
-        let mut sb = 0.0;
-        let pha = ldet.pha * gdet.pha;
-        let phb = ldet.phb * gdet.phb;
+        let mut sa = <T as From<f64>>::from(0.0);
+        let mut sb = <T as From<f64>>::from(0.0);
+        let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
+        let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
 
         if dosa || doh1a || doh2aa {
             prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
@@ -343,33 +350,33 @@ pub(in crate::noci) fn calculate_hs_pair_wicks(ao: &AoData, ldet: &SCFState, gde
             }
         }
 
-        let mut h1a = 0.0;
-        let mut h2aa = 0.0;
-        if sb != 0.0 {
+        let mut h1a = <T as From<f64>>::from(0.0);
+        let mut h2aa = <T as From<f64>>::from(0.0);
+        if sb.abs() != 0.0 {
             if doh1a {h1a = lg_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);}
             if doh2aa {h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);}
         }
 
-        let mut h1b = 0.0;
-        let mut h2bb = 0.0;
-        if sa != 0.0 {
+        let mut h1b = <T as From<f64>>::from(0.0);
+        let mut h2bb = <T as From<f64>>::from(0.0);
+        if sa.abs() != 0.0 {
             if doh1b {h1b = lg_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);}
             if doh2bb {h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);}
         }
 
-        let mut h2ab = 0.0;
+        let mut h2ab = <T as From<f64>>::from(0.0);
         if doh2ab {
             h2ab = lg_h2_diff(&w, ex_la, ex_ga, ex_lb, ex_gb, &mut scratch.diff, &scratch.aa, &scratch.bb, tol);
         }
 
         let s = sa * sb;
-        let mut hnuc = 0.0;
+        let mut hnuc = <T as From<f64>>::from(0.0);
         if dosa && dosb && w.aa.m == 0 && w.bb.m == 0 {
-            hnuc = ao.enuc * s
+            hnuc = <T as From<f64>>::from(ao.enuc) * s
         }
 
         let h1 = pha * h1a * sb + phb * h1b * sa;
-        let h2 = (0.5 * pha * sb * h2aa) + (0.5 * phb * sa * h2bb) + (pha * phb * h2ab);
+        let h2 = (<T as From<f64>>::from(0.5) * pha * sb * h2aa) + (<T as From<f64>>::from(0.5) * phb * sa * h2bb) + (pha * phb * h2ab);
 
         (hnuc + h1 + h2, s)
     })

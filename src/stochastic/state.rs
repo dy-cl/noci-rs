@@ -380,7 +380,7 @@ pub(in crate::stochastic) struct ThreadPropagation {
     /// Thread local RNG.
     pub(in crate::stochastic) rng: SmallRng,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
-    pub(in crate::stochastic) scratch: WickScratchSpin,
+    pub(in crate::stochastic) scratch: WickScratchSpin<f64>,
 }
 
 impl ThreadPropagation {
@@ -392,7 +392,7 @@ impl ThreadPropagation {
     /// - `data`: Immutable stochastic propagation data.
     /// # Returns
     /// - `()`: Appends local death/cloning population updates to `self.local`.
-    pub(in crate::stochastic) fn death_cloning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_>) {
+    pub(in crate::stochastic) fn death_cloning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_, f64>) {
         let (hgg, sgg) = find_hs(data, gamma, gamma, &mut self.scratch);
 
         let pdeath = match data.input.prop_ref().propagator {
@@ -431,7 +431,7 @@ impl ThreadPropagation {
     /// # Returns
     /// - `()`: Appends local and remote spawning updates to `self.local` and `self.remote`,
     ///   and excitation histogram samples to `self.samples`.
-    pub(in crate::stochastic) fn spawning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_>, run: &QMCRunInfo) {
+    pub(in crate::stochastic) fn spawning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_, f64>, run: &QMCRunInfo) {
         let parent_sign = if ngamma > 0 {1} else {-1};
         let nwalkers = ngamma.unsigned_abs();
 

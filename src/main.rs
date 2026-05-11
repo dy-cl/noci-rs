@@ -8,12 +8,13 @@ use mpi::topology::Communicator;
 use mpi::collective::CommunicatorCollectives;
 use rayon::ThreadPoolBuilder;
 use ndarray::Array1;
+use num_complex::Complex64;
 
 use noci_rs::input::{Input, StateType};
 use noci_rs::AoData;
-use noci_rs::{HSCFState, SCFState};
+use noci_rs::{DetState, HSCFState, SCFState};
+use noci_rs::noci::{NOCIScalar, NOCIData, MOCache};
 use noci_rs::nonorthogonalwicks::{WicksShared, WicksView};
-use noci_rs::noci::{NOCIData, MOCache};
 use noci_rs::timers;
 use noci_rs::time_call;
 
@@ -127,33 +128,91 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
         StateType::Mom(recipes) => recipes.iter().any(|r| r.holomorphic),
         StateType::Metadynamics(_) => false,
     };
+
+    let holomorphic_noci_refs = matches!(
+        &input.states,
+        StateType::Mom(recipes) if recipes.iter().any(|st| st.holomorphic && st.noci)
+    );
+
     if run_holomorphic {
-        let mut states_h: Vec<HSCFState> = Vec::new();
+        // Create the following on all ranks such that they may be filled by broadcast.
+        let mut hstates: Vec<HSCFState> = Vec::new();
+        let mut hnoci_reference_basis: Vec<HSCFState> = Vec::new();
+
+        let mut e_noci_ref: f64 = 0.0;
+
+        // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
+        // for multithreading. SCF calculations are currently single threaded. 
         if irank == 0 {
-            states_h = if prev_hstates.is_empty() {
+            // Run h-SCF calculations.
+            hstates = if prev_hstates.is_empty() {
                 generate_reference_hscf_basis(&ao, input, None)
             } else {
                 generate_reference_hscf_basis(&ao, input, Some(prev_hstates))
             };
-            println!("Generated {} complex h-SCF/reference states. Complex NOCI/Wick is not implemented in this patch.", states_h.len());
+
+            hnoci_reference_basis = hstates.iter().filter(|s| s.noci_basis).cloned().collect();
+            for (i, st) in hnoci_reference_basis.iter_mut().enumerate() {
+                st.parent = i;
+            }
         }
+
         world.barrier();
+        broadcast(world, &mut hstates);
+        broadcast(world, &mut hnoci_reference_basis);
+
+        // Construct intermediates for extended non-orthogonal Wick's theorem if using. The actual
+        // computation happens on only world rank 0 (with rayon). If multiple shared memory regions are 
+        // used multiple copies of the intermediates will be computed.
+        let wicks_shared: Option<WicksShared<Complex64>> = time_call!(crate::timers::general::add_build_wicks_shared, {
+            if input.wicks.enabled || input.wicks.compare {
+                if irank == 0 {
+                    println!("{}", "=".repeat(100));
+                    println!("Precomputing complex Wick's intermediates....");
+                }
+                Some(build_wicks_shared(world, &ao, &hnoci_reference_basis, tol, input))
+            } else {
+                None
+            }
+        });
+
+        // Transform all references used in NOCI basis to MO basis. This allows for evaluation of
+        // matrix elements using standard Slater-Condon rules if the determinant pair share a parent.
+        println!("Constructing complex reference NOCI MO basis....");
+        let mocache = build_mo_cache(&ao, &hnoci_reference_basis, tol);
+
+        // Reference NOCI occurs only on rank 0 (with Rayon).
+        if irank == 0 {
+            let wicks_view = wicks_shared.as_ref().map(|ws| ws.view());
+            let (refb, e_ref, _c0v) = run_reference_noci(&ao, input, &hstates, tol, &mocache, wicks_view);
+            hnoci_reference_basis = refb;
+            e_noci_ref = e_ref;
+
+            if holomorphic_noci_refs && (input.det.is_some() || input.snoci.is_some() || input.qmc.is_some()) {
+                println!("Holomorphic NOCI states not currently supported for deterministic or stochastic propagation and SNOCI. Returning after SCF and reference NOCI.");
+            }
+        }
+
+        world.barrier();
+        broadcast(world, &mut hnoci_reference_basis);
+        broadcast(world, &mut e_noci_ref);
 
         let timings = noci_rs::timers::snapshot_all_mpi(world);
 
         return Results {
-            r, 
-            states: Vec::new(), 
-            hstates: states_h, 
-            e_rhf: 0.0, 
-            e_noci_ref: 0.0, 
-            e_noci_qmc_det: None, 
-            e_noci_qmc_stoch: None, 
-            e_snoci: None, 
-            e_pt2: None, 
-            e_fci: ao.e_fci, 
-            nranks: world.size() as usize, 
-            timings};
+            r,
+            states: Vec::new(),
+            hstates,
+            e_rhf: 0.0,
+            e_noci_ref,
+            e_noci_qmc_det: None,
+            e_noci_qmc_stoch: None,
+            e_snoci: None,
+            e_pt2: None,
+            e_fci: ao.e_fci,
+            nranks: world.size() as usize,
+            timings,
+        };
     }
 
     // Create the following on all ranks such that they may be filled by broadcast.
@@ -187,7 +246,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
     // Construct intermediates for extended non-orthogonal Wick's theorem if using. The actual
     // computation happens on only world rank 0 (with rayon). If multiple shared memory regions are 
     // used multiple copies of the intermediates will be computed.
-    let mut wicks_shared: Option<WicksShared> = time_call!(crate::timers::general::add_build_wicks_shared, {
+    let mut wicks_shared: Option<WicksShared<f64>> = time_call!(crate::timers::general::add_build_wicks_shared, {
         if input.wicks.enabled || input.wicks.compare {
             if irank == 0 {
                 println!("{}", "=".repeat(100));
@@ -202,7 +261,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
     // Transform all references used in NOCI basis to MO basis. This allows for evaluation of
     // matrix elements using standard Slater-Condon rules if the determinant pair share a parent.
     println!("Constructing reference NOCI MO basis....");
-    let mocache = build_mo_cache(&ao, &noci_reference_basis);
+    let mocache = build_mo_cache(&ao, &noci_reference_basis, tol);
 
     // Reference NOCI, deterministic propagation and selected NOCI (SNOCI) occur only on rank 0 (with Rayon).
     if irank == 0 {
@@ -290,10 +349,10 @@ fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> Vec<SCFS
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns
-/// - `(Vec<SCFState>, f64, Vec<f64>)`: Reference NOCI basis, reference NOCI energy, and reference NOCI coefficients.
-fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64, mocache: &[MOCache], wicks: Option<&WicksView>) -> (Vec<SCFState>, f64, Vec<f64>) {
+/// - `(Vec<DetState<T>>, f64, Vec<T>)`: Reference NOCI basis, reference NOCI energy, and reference NOCI coefficients.
+fn run_reference_noci<T: NOCIScalar>(ao: &AoData, input: &Input, states: &[DetState<T>], tol: f64, mocache: &[MOCache<T>], wicks: Option<&WicksView<T>>) -> (Vec<DetState<T>>, f64, Vec<T>) {
     time_call!(crate::timers::general::add_run_reference_noci, {
-        let mut noci_reference_basis: Vec<SCFState> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+        let mut noci_reference_basis: Vec<DetState<T>> = states.iter().filter(|s| s.noci_basis).cloned().collect();
         for (i, st) in noci_reference_basis.iter_mut().enumerate() {
             st.parent = i;
         }
@@ -319,8 +378,8 @@ fn run_reference_noci(ao: &AoData, input: &Input, states: &[SCFState], tol: f64,
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns
 /// - `f64`: Propagated energy.
-fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], mocache: &[MOCache],
-                              tol: f64, wicks: Option<&WicksView>) -> f64 {
+fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], noci_reference_basis: &[SCFState], c0: &[f64], mocache: &[MOCache<f64>],
+                              tol: f64, wicks: Option<&WicksView<f64>>) -> f64 {
     time_call!(crate::timers::deterministic::add_run_qmc_deterministic_noci, {
         println!("{}", "=".repeat(100));
         println!("Building NOCI-QMC basis....");
@@ -417,7 +476,7 @@ fn run_qmc_deterministic_noci(ao: &AoData, input: &Input, states: &[SCFState], n
 /// # Returns
 /// - `f64`: Stochastic energy estimate.
 pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_basis: &[SCFState], c0: &[f64], world: &impl Communicator, tol: f64,
-                               wicks: Option<&WicksView>, mocache: &[MOCache]) -> f64 {
+                               wicks: Option<&WicksView<f64>>, mocache: &[MOCache<f64>]) -> f64 {
     time_call!(crate::timers::stochastic::add_run_qmc_stochastic_noci, {
         let irank = world.rank();
 
@@ -483,7 +542,7 @@ pub fn run_qmc_stochastic_noci(ao: &AoData, input: &mut Input, noci_reference_ba
 /// # Returns
 /// - `f64`: Current SNOCI and NOCI-PT2 energies.
 pub fn run_snoci(ao: &AoData, initial_space: &[SCFState], noci_reference_basis: &[SCFState], input: &Input, tol: f64,
-                 wicks: Option<&mut WicksShared>, mocache: &[MOCache], world: &impl Communicator) -> (f64, f64) {
+                 wicks: Option<&mut WicksShared<f64>>, mocache: &[MOCache<f64>], world: &impl Communicator) -> (f64, f64) {
     time_call!(crate::timers::snoci::add_run_snoci, {
         let current_space = initial_space.to_vec();
 
@@ -795,22 +854,50 @@ fn print_report(res: &Results, input: &Input) {
 
     println!("{}", "-".repeat(100));
 
-    println!("R: {}", res.r);
-    if res.states.is_empty() {
+        println!("R: {}", res.r);
+
+    let ref_energy = if res.states.is_empty() {
         for (i, st) in res.hstates.iter().enumerate() {
-            println!("State({}): {},  E: {}", i + 1, st.label, st.e.re);
+            println!("State({}): {},  E: {} + {}i", i + 1, st.label, st.e.re, st.e.im);
         }
-        println!("Complex h-SCF run completed; real NOCI/Wick reporting is skipped.");
+
+        res.hstates.first().map(|st| (format!("Re(E({}))", st.label), st.e.re))
+    } else {
+        for (i, st) in res.states.iter().enumerate() {
+            println!("State({}): {},  E: {}", i + 1, st.label, st.e);
+        }
+
+        Some(("E(RHF)".to_string(), res.e_rhf))
+    };
+
+    if let Some((label, e0)) = ref_energy.as_ref() {
+        println!("State(NOCI-reference): E: {}, [E - {}]: {}", res.e_noci_ref, label, res.e_noci_ref - e0);
+    } else {
+        println!("State(NOCI-reference): E: {}", res.e_noci_ref);
+    }
+
+    if res.states.is_empty() {
+        if let Some(e_fci) = res.e_fci {
+            if let Some(e_fci) = res.e_fci {
+                if let Some((label, e0)) = ref_energy.as_ref() {
+                    println!("State(FCI): E: {}, [E - {}]: {}", e_fci, label, e_fci - e0);
+                } else {
+                    println!("State(FCI): E: {}", e_fci);
+                }
+            }
+        }
+
+        println!("Complex h-SCF/reference NOCI run completed; det, SNOCI, and QMC reporting is skipped.");
         println!("{}", "=".repeat(100));
         return;
     }
-    for (i, st) in res.states.iter().enumerate() {
-        println!("State({}): {},  E: {}", i + 1, st.label, st.e);
-    }
 
-    println!("State(NOCI-reference): E: {}, [E - E(RHF)]: {}", res.e_noci_ref, res.e_noci_ref - res.e_rhf);
-    if let Some(e_det) = res.e_noci_qmc_det {println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_det, e_det - res.e_rhf);}
-    if res.e_noci_qmc_stoch.is_some() {println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");}
+    if let Some(e_det) = res.e_noci_qmc_det {
+        println!("State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}", e_det, e_det - res.e_rhf);
+    }
+    if res.e_noci_qmc_stoch.is_some() {
+        println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");
+    }
     if let Some(e_snoci) = res.e_snoci {
         println!("State(SNOCI): E: {}, [E - E(RHF)]: {}", e_snoci, e_snoci - res.e_rhf);
     }
@@ -818,7 +905,10 @@ fn print_report(res: &Results, input: &Input) {
         let e_noci_pt2 = e_snoci + ept2;
         println!("State(NOCI-PT2): E: {}, [E - E(RHF)]: {}", e_noci_pt2, e_noci_pt2 - res.e_rhf);
     }
-    if let Some(e_fci) = res.e_fci {println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);}
+    if let Some(e_fci) = res.e_fci {
+        println!("State(FCI): E: {},  [E - E(RHF)]: {}", e_fci, e_fci - res.e_rhf);
+    }
 
     println!("{}", "=".repeat(100));
 }
+    

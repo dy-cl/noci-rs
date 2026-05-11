@@ -1,6 +1,7 @@
 // nonorthogonalwicks/eval/h2diff.rs
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
+use crate::noci::NOCIScalar;
 use crate::time_call;
 use super::helpers::{bit, column_replacement_correction, get_det_adjt_diff, ii_replacement};
 use super::super::layout::{idx, idx4};
@@ -22,10 +23,10 @@ use super::super::view::WicksPairView;
 /// - `b`: Prepared same-spin beta scratch space.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-pub(crate) fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                  diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+pub(crate) fn lg_h2_diff<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
+                  diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff, {
         if w.aa.m == 0 && w.bb.m == 0 {
             lg_h2_diff_m0(w, l_ex_a, g_ex_a, l_ex_b, g_ex_b, diff, a, b, tol)
@@ -50,16 +51,16 @@ pub(crate) fn lg_h2_diff(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Ex
 /// - `b`: Prepared same-spin beta scratch space.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element in the `m = 0` case.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element in the `m = 0` case.
 #[inline(always)]
-fn lg_h2_diff_m0(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                 diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+fn lg_h2_diff_m0<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
+                 diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
 
         match (la, lb) {
-            (0, 0) => (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * w.ab.vab0[0][0],
+            (0, 0) => (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * w.ab.vab0[0][0],
             (1, 1) => lg_h2_diff_m0_11(w, a, b),
             (1, 3) => lg_h2_diff_m0_13(w, diff, a, b, tol),
             (2, 2) => lg_h2_diff_m0_22(w, a, b),
@@ -76,9 +77,9 @@ fn lg_h2_diff_m0(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitation
 /// - `a`: Prepared same-spin alpha scratch space with `la = 1`.
 /// - `b`: Prepared same-spin beta scratch space with `lb = 1`.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 1)`.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 1)`.
 #[inline(always)]
-fn lg_h2_diff_m0_11(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 {
+fn lg_h2_diff_m0_11<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>, b: &WickScratch<T>) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_11, {
         let n = w.ab.n();
 
@@ -99,7 +100,7 @@ fn lg_h2_diff_m0_11(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
             - vba[cb * n + rb] * deta
             + iisl[idx4(n, ra, ca, rb, cb)];
 
-        (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * term
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * term
     })
 }
 
@@ -110,9 +111,9 @@ fn lg_h2_diff_m0_11(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
 /// - `a`: Prepared same-spin alpha scratch space with `la = 1`.
 /// - `b`: Prepared same-spin beta scratch space with `lb = 3`.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 3)`.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 3)`.
 #[inline(always)]
-fn lg_h2_diff_m0_13(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+fn lg_h2_diff_m0_13<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_13, {
         diff.ensure_diff(1, 3);
 
@@ -150,9 +151,9 @@ fn lg_h2_diff_m0_13(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, 
               + cofb[idx(3, 0, 2)] * iisl[idx4(n, ra, ca, r0, c2)] + cofb[idx(3, 1, 2)] * iisl[idx4(n, ra, ca, r1, c2)] + cofb[idx(3, 2, 2)] * iisl[idx4(n, ra, ca, r2, c2)];
 
             let contrib = w.ab.vab0[0][0] * deta * detb - vab[ca * n + ra] * detb - deta * vba_term + ii_term;
-            (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * contrib
+            (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * contrib
         } else {
-            0.0
+            <T as From<f64>>::from(0.0)
         }
     })
 }
@@ -164,9 +165,9 @@ fn lg_h2_diff_m0_13(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, 
 /// - `a`: Prepared same-spin alpha scratch space with `la = 2`.
 /// - `b`: Prepared same-spin beta scratch space with `lb = 2`.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (2, 2)`.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (2, 2)`.
 #[inline(always)]
-fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 {
+fn lg_h2_diff_m0_22<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>, b: &WickScratch<T>) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_22, {
         let n = w.ab.n();
 
@@ -222,8 +223,8 @@ fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
 
         let mut contrib = w.ab.vab0[0][0] * deta * detb - (deta_c0 + deta_c1) * detb - (detb_c0 + detb_c1) * deta;
 
-        let cofa = [a11, -a10, -a01, a00];
-        let cofb = [b11, -b10, -b01, b00];
+        let cofa = [a11, <T as From<f64>>::from(-1.0) * a10, <T as From<f64>>::from(-1.0) * a01, a00];
+        let cofb = [b11, <T as From<f64>>::from(-1.0) * b10, <T as From<f64>>::from(-1.0) * b01, b00];
 
         for i in 0..2 {
             let ra = rows_a[i];
@@ -236,8 +237,8 @@ fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
                 let x01 = iisl[idx4(n, ra, ca, r0b, c1b)];
                 let x11 = iisl[idx4(n, ra, ca, r1b, c1b)];
 
-                contrib += 0.5 * cof * (x00 * b11 - b01 * x10);
-                contrib += 0.5 * cof * (b00 * x11 - x01 * b10);
+                contrib = contrib + <T as From<f64>>::from(0.5) * cof * (x00 * b11 - b01 * x10);
+                contrib = contrib + <T as From<f64>>::from(0.5) * cof * (b00 * x11 - x01 * b10);
             }
         }
 
@@ -252,12 +253,12 @@ fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
                 let x01 = iisl[idx4(n, r0a, c1a, rb, cb)];
                 let x11 = iisl[idx4(n, r1a, c1a, rb, cb)];
 
-                contrib += 0.5 * cof * (x00 * a11 - a01 * x10);
-                contrib += 0.5 * cof * (a00 * x11 - x01 * a10);
+                contrib = contrib + <T as From<f64>>::from(0.5) * cof * (x00 * a11 - a01 * x10);
+                contrib = contrib + <T as From<f64>>::from(0.5) * cof * (a00 * x11 - x01 * a10);
             }
         }
 
-        (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * contrib
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * contrib
     })
 }
 
@@ -268,9 +269,9 @@ fn lg_h2_diff_m0_22(w: &WicksPairView, a: &WickScratch, b: &WickScratch) -> f64 
 /// - `a`: Prepared same-spin alpha scratch space with `la = 3`.
 /// - `b`: Prepared same-spin beta scratch space with `lb = 1`.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (3, 1)`.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (3, 1)`.
 #[inline(always)]
-fn lg_h2_diff_m0_31(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+fn lg_h2_diff_m0_31<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_31, {
         diff.ensure_diff(3, 1);
 
@@ -308,9 +309,9 @@ fn lg_h2_diff_m0_31(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, 
               + cofa[idx(3, 0, 2)] * iisl[idx4(n, r0, c2, rb, cb)] + cofa[idx(3, 1, 2)] * iisl[idx4(n, r1, c2, rb, cb)] + cofa[idx(3, 2, 2)] * iisl[idx4(n, r2, c2, rb, cb)];
 
             let contrib = w.ab.vab0[0][0] * deta * detb - detb * vab_term - vba[cb * n + rb] * deta + ii_term;
-            (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * contrib
+            (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * contrib
         } else {
-            0.0
+            <T as From<f64>>::from(0.0)
         }
     })
 }
@@ -328,10 +329,10 @@ fn lg_h2_diff_m0_31(w: &WicksPairView, diff: &mut WickScratch, a: &WickScratch, 
 /// - `b`: Prepared same-spin beta scratch space.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element for the general `m = 0` path.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for the general `m = 0` path.
 #[inline(always)]
-fn lg_h2_diff_m0_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                 diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
+                 diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_gen, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
@@ -346,59 +347,60 @@ fn lg_h2_diff_m0_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excita
         let cols_b = &b.cols[..lb];
         let detb0 = &b.det0.as_slice()[..lb * lb];
 
-        let mut acc = 0.0;
+        let mut acc = <T as From<f64>>::from(0.0);
         let n = w.ab.n();
 
-        if let Some(det_deta) = adjugate_transpose(diff.adjt_deta.as_mut_slice(), diff.invsla.as_mut_slice(), diff.lua.as_mut_slice(), deta0, la, tol)
-            && let Some(det_detb) = adjugate_transpose(diff.adjt_detb.as_mut_slice(), diff.invslb.as_mut_slice(), diff.lub.as_mut_slice(), detb0, lb, tol) {
-            let mut contrib = w.ab.vab0[0][0] * det_deta * det_detb;
+        if let Some(det_deta) = adjugate_transpose(diff.adjt_deta.as_mut_slice(), diff.invsla.as_mut_slice(), diff.lua.as_mut_slice(), deta0, la, tol) {
+            if let Some(det_detb) = adjugate_transpose(diff.adjt_detb.as_mut_slice(), diff.invslb.as_mut_slice(), diff.lub.as_mut_slice(), detb0, lb, tol) {
+                let mut contrib = w.ab.vab0[0][0] * det_deta * det_detb;
 
-            let vab = w.ab.vab_t_slice(0, 0, 0);
-            for (k, &ck) in cols_a.iter().enumerate().take(la) {
-                let base = ck * n;
-                let corr = column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| vab[base + rows_a[r]]);
-                contrib -= (det_deta + corr) * det_detb;
-            }
+                let vab = w.ab.vab_t_slice(0, 0, 0);
+                for (k, &ck) in cols_a.iter().enumerate().take(la) {
+                    let base = ck * n;
+                    let corr = column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| vab[base + rows_a[r]]);
+                    contrib = contrib - (det_deta + corr) * det_detb;
+                }
 
-            let vba = w.ab.vba_t_slice(0, 0, 0);
-            for (k, &ck) in cols_b.iter().enumerate().take(lb) {
-                let base = ck * n;
-                let corr = column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| vba[base + rows_b[r]]);
-                contrib -= (det_detb + corr) * det_deta;
-            }
+                let vba = w.ab.vba_t_slice(0, 0, 0);
+                for (k, &ck) in cols_b.iter().enumerate().take(lb) {
+                    let base = ck * n;
+                    let corr = column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| vba[base + rows_b[r]]);
+                    contrib = contrib - (det_detb + corr) * det_deta;
+                }
 
-            let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+                let iisl = w.ab.iiab_slice(0, 0, 0, 0);
 
-            for (i, &ra) in rows_a.iter().enumerate() {
-                for (j, &ca) in cols_a.iter().enumerate() {
-                    let cofa = diff.adjt_deta.as_slice()[idx(la, i, j)];
+                for (i, &ra) in rows_a.iter().enumerate() {
+                    for (j, &ca) in cols_a.iter().enumerate() {
+                        let cofa = diff.adjt_deta.as_slice()[idx(la, i, j)];
 
-                    for k in 0..lb {
-                        let corr = column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| {
-                            ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true)
-                        });
-                        contrib += 0.5 * cofa * (det_detb + corr);
+                        for k in 0..lb {
+                            let corr = column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| {
+                                ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true)
+                            });
+                            contrib = contrib + <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
+                        }
                     }
                 }
-            }
 
-            for (i, &rb) in rows_b.iter().enumerate() {
-                for (j, &cb) in cols_b.iter().enumerate() {
-                    let cofb = diff.adjt_detb.as_slice()[idx(lb, i, j)];
+                for (i, &rb) in rows_b.iter().enumerate() {
+                    for (j, &cb) in cols_b.iter().enumerate() {
+                        let cofb = diff.adjt_detb.as_slice()[idx(lb, i, j)];
 
-                    for k in 0..la {
-                        let corr = column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| {
-                            ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false)
-                        });
-                        contrib += 0.5 * cofb * (det_deta + corr);
+                        for k in 0..la {
+                            let corr = column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| {
+                                ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false)
+                            });
+                            contrib = contrib + <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
+                        }
                     }
                 }
-            }
 
-            acc += contrib;
+                acc = acc + contrib;
+            }
         }
 
-        (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * acc
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * acc
     })
 }
 
@@ -413,10 +415,10 @@ fn lg_h2_diff_m0_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excita
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Different-spin two-electron Hamiltonian matrix element.
+/// - `T`: Different-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                  diff: &mut WickScratch, a: &WickScratch, b: &WickScratch, tol: f64) -> f64 {
+fn lg_h2_diff_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
+                  diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_gen, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
@@ -433,7 +435,7 @@ fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
         let detb0  = &b.det0.as_slice()[..lb * lb];
         let detb1  = &b.det1.as_slice()[..lb * lb];
 
-        let mut acc = 0.0;
+        let mut acc = <T as From<f64>>::from(0.0);
         let n = w.ab.n();
 
         get_det_adjt_diff(w, la, lb, diff, deta0, deta1, detb0, detb1, tol, |bits_a, bits_b, scratch, det_deta, det_detb| {
@@ -451,7 +453,7 @@ fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                 let base = ck * na;
 
                 let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| vsl[base + rows_a[r]]);
-                contrib -= (det_deta + corr) * det_detb;
+                contrib = contrib - (det_deta + corr) * det_detb;
             }
 
             let nb = w.ab.n();
@@ -464,7 +466,7 @@ fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                 let base = ck * nb;
 
                 let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| vsl[base + rows_b[r]]);
-                contrib -= (det_detb + corr) * det_deta;
+                contrib = contrib - (det_detb + corr) * det_deta;
             }
 
             for (i, &ra) in rows_a.iter().enumerate() {
@@ -479,7 +481,7 @@ fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                         let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| {
                             ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true)
                         });
-                        contrib += 0.5 * cofa * (det_detb + corr);
+                        contrib = contrib + <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
                     }
                 }
             }
@@ -496,14 +498,12 @@ fn lg_h2_diff_gen(w: &WicksPairView, l_ex_a: &ExcitationSpin, g_ex_a: &Excitatio
                         let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| {
                             ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false)
                         });
-                        contrib += 0.5 * cofb * (det_deta + corr);
+                        contrib = contrib + <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
                     }
                 }
             }
-            acc += contrib;
+            acc = acc + contrib;
         });
-        (w.aa.phase * w.aa.tilde_s_prod) * (w.bb.phase * w.bb.tilde_s_prod) * acc
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * acc
     })
 }
-
-

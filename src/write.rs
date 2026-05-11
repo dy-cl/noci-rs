@@ -1,4 +1,5 @@
 // write.rs
+use std::fmt::Display;
 use std::io::{BufWriter, Write};
 use std::fs::{File as StdFile, create_dir_all};
 
@@ -222,33 +223,34 @@ pub fn write_orbitals(path: &str, ao: &AoData, label: &str, ca: &Array2<f64>, cb
     f.new_dataset::<f64>().shape(ob.len()).create("ob").unwrap().write(ob).unwrap();
 }
 
-/// Write a matrix to a text file.
+/// Write matrix to disk.
 /// # Arguments:
-/// - `path`: Output file path.
+/// - `path`: Output path.
 /// - `m`: Matrix to write.
-/// # Returns
-/// - `()`: Writes the matrix to the requested file.
-pub fn write_matrix(path: &str, m: &Array2<f64>) {
+/// # Returns:
+/// - `()`: Writes matrix to disk.
+pub fn write_matrix<T: Display>(path: &str, m: &Array2<T>) {
     let mut f = BufWriter::new(StdFile::create(path).unwrap());
-    for r in 0..m.nrows() {
-        for c in 0..m.ncols() {
-            if c > 0 {
+
+    for i in 0..m.nrows() {
+        for j in 0..m.ncols() {
+            if j > 0 {
                 write!(f, " ").unwrap();
             }
-            write!(f, "{}", m[(r, c)]).unwrap();
+            write!(f, "{}", m[(i, j)]).unwrap();
         }
         writeln!(f).unwrap();
     }
 }
 
-/// Write Hamiltonian and overlap matrices to the write directory.
+/// Write Hamiltonian and overlap matrices to disk.
 /// # Arguments:
-/// - `write_dir`: Output directory.
+/// - `write_dir`: Directory to write matrices into.
 /// - `h`: Hamiltonian matrix.
 /// - `s`: Overlap matrix.
-/// # Returns
-/// - `()`: Writes the Hamiltonian and overlap matrices to `write_dir`.
-pub fn write_hs_matrices(write_dir: &str, h: &Array2<f64>, s: &Array2<f64>) {
+/// # Returns:
+/// - `()`: Writes Hamiltonian and overlap matrices.
+pub fn write_hs_matrices<T: Display>(write_dir: &str, h: &Array2<T>, s: &Array2<T>) {
     create_dir_all(write_dir).unwrap();
     write_matrix(&format!("{}/HAMI", write_dir), h);
     write_matrix(&format!("{}/OVLP", write_dir), s);

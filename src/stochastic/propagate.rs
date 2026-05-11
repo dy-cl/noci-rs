@@ -27,7 +27,7 @@ use super::state::{owner, owned};
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `f64`: Overlap matrix element `S_{ij}`.
-pub(in crate::stochastic) fn find_s(data: &NOCIData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> f64 {
+pub(in crate::stochastic) fn find_s(data: &NOCIData<'_, f64>, i: usize, j: usize, scratch: &mut WickScratchSpin<f64>) -> f64 {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
     calculate_s_pair(data, DetPair::new(&data.basis[a], &data.basis[b]), Some(scratch))
@@ -41,7 +41,7 @@ pub(in crate::stochastic) fn find_s(data: &NOCIData<'_>, i: usize, j: usize, scr
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `(f64, f64)`: Hamiltonian and overlap matrix elements `H_{ij}` and `S_{ij}`.
-pub(in crate::stochastic) fn find_hs(data: &NOCIData<'_>, i: usize, j: usize, scratch: &mut WickScratchSpin) -> (f64, f64) {
+pub(in crate::stochastic) fn find_hs(data: &NOCIData<'_, f64>, i: usize, j: usize, scratch: &mut WickScratchSpin<f64>) -> (f64, f64) {
     // Get the sorted pair of indices 
     let (a, b) = if i <= j {(i, j)} else {(j, i)};
     calculate_hs_pair(data, DetPair::new(&data.basis[a], &data.basis[b]), Some(scratch))
@@ -194,7 +194,7 @@ pub(in crate::stochastic) fn coupling(hlg: f64, slg: f64, es_s: f64, es: f64, pr
 /// - `data`: Immutable stochastic propagation data.
 /// # Returns
 /// - `(f64, f64)`: Local projected-energy numerator and denominator increments.
-fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'_>) -> (f64, f64) {
+fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'_, f64>) -> (f64, f64) {
     // For each updated determinant `\Gamma` accumulate `dN_\Gamma H_{\text{ref}, \Gamma}` into the
     // numerator and `dN_\Gamma S_{\text{ref}, \Gamma}` into the denominator. 
     d.par_iter().map_init(WickScratchSpin::new, |scratch, up| {
@@ -212,7 +212,7 @@ fn projected_energy_local(d: &[PopulationUpdate], iref: usize, data: &NOCIData<'
 /// - `run`: Rank-local run metadata.
 /// # Returns
 /// - `()`: Adds the contribution from `updates` into `plocal`.
-fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo) {
+fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<'_, f64>, run: &QMCRunInfo) {
     // Fast exit.
     if updates.is_empty() {return;}
     
@@ -239,7 +239,7 @@ fn add_plocal(plocal: &mut [f64], updates: &[PopulationUpdate], data: &NOCIData<
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `bool`: `true` if any determinant populations changed globally in this iteration.
-fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl CommunicatorCollectives) -> bool {
+fn update_p(plocal: &mut [f64], dlocal: &[PopulationUpdate], data: &NOCIData<'_, f64>, run: &QMCRunInfo, mpi: &mut MPIScratch, world: &impl CommunicatorCollectives) -> bool {
     time_call!(crate::timers::stochastic::add_update_p, {
 
         // Gather number of updates that each rank will send to this rank.
@@ -413,7 +413,7 @@ fn pack_spawn_updates(remote: &[PopulationUpdate], ndets: usize, nranks: usize, 
 /// - `shifts`: Current non-overlap and overlap-transformed shifts.
 /// # Returns
 /// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
-fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_>, run: &QMCRunInfo, scratchsize: &ScratchSize, shifts: Shifts) -> PropagationResult {
+fn propagate_iteration(it: usize, mc: &MCState, data: &NOCIData<'_, f64>, run: &QMCRunInfo, scratchsize: &ScratchSize, shifts: Shifts) -> PropagationResult {
     time_call!(crate::timers::stochastic::add_propagate_iteration, {
         
         // Closure to initialise per Rayon thread state. Each thread gets individual RNG seed and
@@ -513,7 +513,7 @@ fn population_local(mc: &MCState, isref: &[bool], run: &QMCRunInfo) -> ([i64; 3]
 /// # Returns
 /// - `PopulationStats`: Current total and reference populations in both representations.
 fn update_observables(mc: &MCState, d: &[PopulationUpdate], pe: &mut ProjectedEnergyUpdate, isref: &[bool], 
-                      run: &QMCRunInfo, data: &NOCIData<'_>, world: &impl Communicator) -> PopulationStats {
+                      run: &QMCRunInfo, data: &NOCIData<'_, f64>, world: &impl Communicator) -> PopulationStats {
     // Compute rank local number and denominator of the projected energy.
     let (dnumlocal, ddenlocal) = time_call!(crate::timers::stochastic::add_update_projected_energy, {
         projected_energy_local(d, pe.iref, data)
@@ -603,7 +603,7 @@ fn update_shifts(stats: &PopulationStats, state: &mut PropagationState, es: &mut
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `(f64, Option<ExcitationHist>)`: Final projected energy estimate and optional excitation histogram.
-pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>) {
+pub fn qmc_step(data: &NOCIData<'_, f64>, c0: &[f64], es: &mut f64, ref_indices: &[usize], world: &impl Communicator) -> (f64, Option<ExcitationHist>) {
     let qmc = data.input.qmc.as_ref().unwrap();
 
     // Local MPI rank metadata.
@@ -640,9 +640,9 @@ pub fn qmc_step(data: &NOCIData<'_>, c0: &[f64], es: &mut f64, ref_indices: &[us
     if irank == 0 {
         println!(
             "Size of Wick's Scratch (MiB): {}", 
-            std::mem::size_of::<WickScratchSpin>() as f64 / (1024.0 * 1024.0)
+            std::mem::size_of::<WickScratchSpin<f64>>() as f64 / (1024.0 * 1024.0)
         );
-        type ThreadState = (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>, SmallRng, WickScratchSpin);
+        type ThreadState = (Vec<(usize, i64)>, Vec<PopulationUpdate>, Vec<f64>, SmallRng, WickScratchSpin<f64>);
         println!(
             "Size of per thread state (MiB): {}", 
             std::mem::size_of::<ThreadState>() as f64 / (1024.0 * 1024.0)

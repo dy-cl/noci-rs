@@ -26,7 +26,7 @@ use super::restart::read_restart_hdf5;
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `Walkers`: Initial walker population.
-pub(in crate::stochastic) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &NOCIData<'_>, iref: usize, scratch: &mut WickScratchSpin) -> Walkers {
+pub(in crate::stochastic) fn initialise_walkers(c0: &[f64], init_pop: i64, n: usize, data: &NOCIData<'_, f64>, iref: usize, scratch: &mut WickScratchSpin<f64>) -> Walkers {
     time_call!(crate::timers::stochastic::add_initialise_walkers, {
         let mut w = Walkers::new(n);
 
@@ -80,7 +80,7 @@ pub(in crate::stochastic) fn initialise_walkers(c0: &[f64], init_pop: i64, n: us
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
 /// - `ProjectedEnergyUpdate`: Initial projected-energy numerator and denominator.
-pub(in crate::stochastic) fn init_projected_energy(walkers: &Walkers, iref: usize, data: &NOCIData<'_>, world: &impl Communicator) -> ProjectedEnergyUpdate {
+pub(in crate::stochastic) fn init_projected_energy(walkers: &Walkers, iref: usize, data: &NOCIData<'_, f64>, world: &impl Communicator) -> ProjectedEnergyUpdate {
     let (num_local, den_local) = walkers.occ().par_iter().fold(|| (0.0_f64, 0.0_f64, WickScratchSpin::new()), |(mut num, mut den, mut scratch), &gamma| {
         let ngamma = walkers.get(gamma) as f64;
         let (hgr, sgr) = find_hs(data, gamma, iref, &mut scratch);
@@ -107,8 +107,8 @@ pub(in crate::stochastic) fn init_projected_energy(walkers: &Walkers, iref: usiz
 /// - `mpiscratch`: Reusable MPI scratch space.
 /// # Returns
 /// - `Vec<f64>`: Local portion of the overlap-transformed population vector `p_{\Gamma}`.
-pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_>, run: &QMCRunInfo, world: &impl Communicator, 
-                                    scratch: &mut WickScratchSpin, mpiscratch: &mut MPIScratch) -> Vec<f64> {
+pub(in crate::stochastic) fn init_p(walkers: &Walkers, data: &NOCIData<'_, f64>, run: &QMCRunInfo, world: &impl Communicator, 
+                                    scratch: &mut WickScratchSpin<f64>, mpiscratch: &mut MPIScratch) -> Vec<f64> {
     let local: Vec<PopulationUpdate> = walkers.occ().iter().map(|&i| PopulationUpdate {det: i as u64, dn: walkers.get(i)}).collect();
     let global = gather_all_walkers(world, &local, mpiscratch);
 
@@ -158,8 +158,8 @@ pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, us
 /// - `mpiscratch`: Reusable MPI scratch space.
 /// # Returns
 /// - `PropagationState`: Initialised NOCI-QMC state with required bookkeeping parameters.
-pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data: &NOCIData<'_>, run: &QMCRunInfo, isref: &[bool], 
-                                                  world: &impl Communicator, scratch: &mut WickScratchSpin, mpiscratch: &mut MPIScratch) -> PropagationState {
+pub(in crate::stochastic) fn initialise_qmc_state(c0: &[f64], es: &mut f64, data: &NOCIData<'_, f64>, run: &QMCRunInfo, isref: &[bool], 
+                                                  world: &impl Communicator, scratch: &mut WickScratchSpin<f64>, mpiscratch: &mut MPIScratch) -> PropagationState {
 
     let qmc = data.input.qmc.as_ref().unwrap();
     // Use restart file if avaliable.
