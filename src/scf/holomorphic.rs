@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ndarray::{s, Array1, Array2, Axis};
-use ndarray_linalg::{Solve};
+use ndarray_linalg::Solve;
 use num_complex::Complex64;
 
 use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState};
@@ -17,13 +17,13 @@ use super::print::print_header_h;
 /// Stored quasi-Newton secant pair in the current local tangent basis.
 #[derive(Clone, Debug)]
 struct SecantPair {
-    /// Previous alpha-spin step in energy-weighted occupied-virtual rotation coordinates.
+    /// Previous alpha-spin accepted step in unweighted occupied-virtual rotation coordinates.
     sa: Array2<Complex64>,
-    /// Previous beta-spin step in energy-weighted occupied-virtual rotation coordinates.
+    /// Previous beta-spin accepted step in unweighted occupied-virtual rotation coordinates.
     sb: Array2<Complex64>,
-    /// Previous alpha-spin gradient change in energy-weighted occupied-virtual rotation coordinates.
+    /// Previous alpha-spin gradient change in unweighted occupied-virtual coordinates.
     ya: Array2<Complex64>,
-    /// Previous beta-spin gradient change in energy-weighted occupied-virtual rotation coordinates.
+    /// Previous beta-spin gradient change in unweighted occupied-virtual coordinates.
     yb: Array2<Complex64>,
 }
 
@@ -76,22 +76,36 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
 
     print_header_h(input, label);
 
-    let mut gbar_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
-    let mut eps_prev: Option<(Array1<Complex64>, Array1<Complex64>)> = None;
+    let mut g_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
     let mut step_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
 
     for iter in 0..opts.max_cycle {
         let da = density(&ca, na, DensityMode::Holomorphic);
         let db = density(&cb, nb, DensityMode::Holomorphic);
         let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
-        let e = energy(&ao.h, ao.enuc, &da, &db, &fa, &fb);
 
-        pseudo_canonicalise(&mut ca, &fa, na, &mut hist, SpinBlock::Alpha, &mut []);
-        pseudo_canonicalise(&mut cb, &fb, nb, &mut hist, SpinBlock::Beta, &mut []);
+        let mut extra_a: Vec<&mut Array2<Complex64>> = Vec::new();
+        if let Some((sa, _)) = step_prev.as_mut() {
+            extra_a.push(sa);
+        }
+        if let Some((ga, _)) = g_prev.as_mut() {
+            extra_a.push(ga);
+        }
+        pseudo_canonicalise(&mut ca, &fa, na, &mut hist, SpinBlock::Alpha, &mut extra_a);
+
+        let mut extra_b: Vec<&mut Array2<Complex64>> = Vec::new();
+        if let Some((_, sb)) = step_prev.as_mut() {
+            extra_b.push(sb);
+        }
+        if let Some((_, gb)) = g_prev.as_mut() {
+            extra_b.push(gb);
+        }
+        pseudo_canonicalise(&mut cb, &fb, nb, &mut hist, SpinBlock::Beta, &mut extra_b);
 
         let da = density(&ca, na, DensityMode::Holomorphic);
         let db = density(&cb, nb, DensityMode::Holomorphic);
         let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+        let e = energy(&ao.h, ao.enuc, &da, &db, &fa, &fb);
         let epsa = orbital_energies(&ca, &fa, DensityMode::Holomorphic);
         let epsb = orbital_energies(&cb, &fb, DensityMode::Holomorphic);
 
@@ -110,19 +124,14 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
             return Some(finalise(ca, cb, ao, input, label, noci_basis, i, true));
         }
 
-        // Convert the current gradient into pseudo-canonical energy-weighted coordinates.
-        let gbar_a = weight_by_gap(&ga, &epsa, na, opts.denom_tol, false);
-        let gbar_b = weight_by_gap(&gb, &epsb, nb, opts.denom_tol, false);
+        if let (Some((sa, sb)), Some((gpa, gpb))) = (step_prev.take(), g_prev.take()) {
+            let ya = &ga - &gpa;
+            let yb = &gb - &gpb;
 
-        if let (Some((pa, pb)), Some((gpa, gpb)), Some((ep_a, ep_b))) = (step_prev.take(), gbar_prev.take(), eps_prev.take()) {
-            // Convert the accepted previous step into the same energy-weighted coordinates as its previous gradient.
-            let sa = weight_by_gap(&pa, &ep_a, na, opts.denom_tol, false);
-            let sb = weight_by_gap(&pb, &ep_b, nb, opts.denom_tol, false);
-
-            // Store the secant gradient difference in energy-weighted coordinates.
-            let ya = &gbar_a - &gpa; let yb = &gbar_b - &gpb;
             hist.push(SecantPair {sa, sb, ya, yb});
-            if hist.len() > opts.history {hist.remove(0);}
+            if hist.len() > opts.history {
+                hist.remove(0);
+            }
         }
 
         let (mut pa, mut pb) = sr1_step(&hist, &ga, &gb, &epsa, &epsb, na, nb, opts);
@@ -133,17 +142,21 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
             if input.write.verbose {
                 println!("h-SCF line search found no improving step.");
             }
-            return Some(finalise(ca_new, cb_new, ao, input, label, noci_basis, i, false));
+            finalise(ca_new, cb_new, ao, input, label, noci_basis, i, false);
+            return None;
         }
 
-        // Store the accepted unweighted displacement for the next SR1 secant pair.
-        step_prev = Some((pa.mapv(|z| z * alpha), pb.mapv(|z| z * alpha)));
-        gbar_prev = Some((gbar_a, gbar_b));
-        eps_prev = Some((epsa, epsb));
+        let pa_acc = pa.mapv(|z| z * alpha);
+        let pb_acc = pb.mapv(|z| z * alpha);
+
+        // Store the accepted unweighted displacement and gradient for the next SR1 secant pair.
+        step_prev = Some((pa_acc, pb_acc));
+        g_prev = Some((ga, gb));
         ca = ca_new; cb = cb_new;
     }
 
-    Some(finalise(ca, cb, ao, input, label, noci_basis, i, false))
+    finalise(ca, cb, ao, input, label, noci_basis, i, false);
+    None
 }
 
 /// Pseudo-canonicalise occupied and virtual spaces for one spin block.
@@ -238,7 +251,7 @@ fn weight_by_gap(x: &Array2<Complex64>, eps: &Array1<Complex64>, nocc: usize, to
 
 /// Solve the complex-symmetric SR1 quasi-Newton equation in energy-weighted coordinates.
 /// # Arguments:
-/// - `hist`: Stored energy-weighted secant pairs.
+/// - `hist`: Stored unweighted secant pairs.
 /// - `ga`: Alpha-spin occupied-virtual gradient.
 /// - `gb`: Beta-spin occupied-virtual gradient.
 /// - `epsa`: Alpha-spin pseudo-canonical orbital energies.
@@ -267,8 +280,16 @@ fn sr1_step(hist: &[SecantPair], ga: &Array2<Complex64>, gb: &Array2<Complex64>,
 
     // For every secant pair stored update the approximated Hessian.
     for pair in hist {
-        let s = pack(&pair.sa, &pair.sb);
-        let y = pack(&pair.ya, &pair.yb);
+        // Convert previous step into energy-weighted coordinates as \bar s_{ai} = s_{ai} \sqrt{\Delta_{ai}}.
+        let sa = weight_by_gap(&pair.sa, epsa, na, opts.denom_tol, true);
+        let sb = weight_by_gap(&pair.sb, epsb, nb, opts.denom_tol, true);
+
+        // Convert previous gradient change into energy-weighted coordinates as \bar y_{ai} = y_{ai} / \sqrt{\Delta_{ai}}.
+        let ya = weight_by_gap(&pair.ya, epsa, na, opts.denom_tol, false);
+        let yb = weight_by_gap(&pair.yb, epsb, nb, opts.denom_tol, false);
+
+        let s = pack(&sa, &sb);
+        let y = pack(&ya, &yb);
 
         // Calculate residiual error in current prediction.
         let r = &y - &b.dot(&s);
@@ -283,13 +304,13 @@ fn sr1_step(hist: &[SecantPair], ga: &Array2<Complex64>, gb: &Array2<Complex64>,
         }
     }
     
-    // Solve B p = - g for occupied-virtual rotation amplitudes which point to stationary point.
+    // Solve B \bar p = - \bar g for energy-weighted occupied-virtual rotation amplitudes.
     let rhs = pack(&gpa, &gpb).mapv(|z| -z);
     let p = b.solve_into(rhs.clone()).unwrap_or(rhs);
     let (pa_bar, pb_bar) = unpack(&p, (ga.nrows(), ga.ncols()), (gb.nrows(), gb.ncols()));
 
     // Convert the solution back to unweighted occupied-virtual rotation coordinates.
-    (weight_by_gap(&pa_bar, epsa, na, opts.denom_tol, true), weight_by_gap(&pb_bar, epsb, nb, opts.denom_tol, true))
+    (weight_by_gap(&pa_bar, epsa, na, opts.denom_tol, false), weight_by_gap(&pb_bar, epsb, nb, opts.denom_tol, false))
 }
 
 /// Limit combined alpha/beta occupied-virtual step norm.

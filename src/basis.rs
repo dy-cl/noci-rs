@@ -726,18 +726,40 @@ pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[
             let seed = scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, recipe.scfexcitation.as_ref(), i, None).expect("SCF seed did not converge");
             let mut candidates: Vec<HSCFState> = Vec::new();
 
+            // Try analytic continuation from the previous geometry.
             if let Some(st) = prev_map.get(recipe.label.as_str()).copied() {
                 if input.write.verbose {println!("Seeding h-SCF state '{}' from previous complex geometry.", recipe.label);}
                 let ca = complex_metric_orthonormalize(&st.ca, &ao.s);
                 let cb = complex_metric_orthonormalize(&st.cb, &ao.s);
-                candidates.push(hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
+
+                if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
+                    candidates.push(hst);
+                } else if input.write.verbose {
+                    println!("Previous-geometry h-SCF seed for '{}' did not converge.", recipe.label);
+                }
             }
 
+            // Also try the fresh h-SCF seed. This is important because the continuation seed can
+            // collapse onto the real branch near a coalescence, while the imaginary kick can still
+            // recover the holomorphic branch.
             if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
                 let (ca, cb) = h_seed_orbitals(&seed, recipe, ao);
-                candidates.push(hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
+
+                if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
+                    candidates.push(hst);
+                } else if input.write.verbose {
+                    println!("Fresh h-SCF seed for '{}' did not converge.", recipe.label);
+                }
             } else {
-                candidates.push(hscf_from_real_state(&seed, ao, input, &recipe.label, recipe.noci, i).expect("h-SCF did not converge"));
+                if let Some(hst) = hscf_from_real_state(&seed, ao, input, &recipe.label, recipe.noci, i) {
+                    candidates.push(hst);
+                } else if input.write.verbose {
+                    println!("Real-state h-SCF seed for '{}' did not converge.", recipe.label);
+                }
+            }
+
+            if candidates.is_empty() {
+                panic!("No converged h-SCF candidate for '{}'", recipe.label);
             }
 
             if recipe.spin_bias.is_some() {
