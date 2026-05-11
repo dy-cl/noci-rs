@@ -99,10 +99,14 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         
         // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
         // intermediates required for one electron Hamiltonian matrix elements.
-        let (f0_0h, f00h) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
+        let (_, f00h) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
         let (_, f01h) = Self::construct_f(l_c, h_munu, &x[0], &y[1]);
         let (_, f10h) = Self::construct_f(l_c, h_munu, &x[1], &y[0]);
-        let (f0_1h, f11h) = Self::construct_f(l_c, h_munu, &x[1], &y[1]);
+        let (_, f11h) = Self::construct_f(l_c, h_munu, &x[1], &y[1]);
+
+        let f0_0h = T::einsum_ba_ab_realop(&mao[0], h_munu);
+        let f0_1h = T::einsum_ba_ab_realop(&mao[1], h_munu);
+
         let f0h: [T; 2] = [f0_0h, f0_1h];
         let fh: [[Array2<T>; 2]; 2] = [[f00h, f01h], [f10h, f11h]];
         
