@@ -32,7 +32,7 @@ pub (in crate::scf) fn print_header_h(input: &Input, label: &str) {
     if !input.write.verbose {return;}
     println!("{}Begin h-SCF{}", "=".repeat(45), "=".repeat(46));
     println!("State: {label}");
-    println!("{:>4} {:>16} {:>17} {:>12}", "i", "Re(E)", "Im(E)", "||g_ov||");
+    println!("{:>4} {:>16} {:>17} {:>12} {:>12} {:>12}", "i", "Re(E)", "Im(E)", "||g_ov||", "alpha", "||p||");
 }
 
 /// Print MO occupations and energies.

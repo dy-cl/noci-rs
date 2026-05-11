@@ -116,11 +116,10 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
         // Use the Euclidean Frobenius norm only as a real convergence diagnostic.
         let gnorm = (ga.iter().map(|z| z.norm_sqr()).sum::<f64>() + gb.iter().map(|z| z.norm_sqr()).sum::<f64>()).sqrt();
 
-        if input.write.verbose {
-            println!("{:4} {:16.10} {:+16.10}i {:12.4e}", iter, e.re, e.im, gnorm);
-        }
-
         if gnorm < opts.g_tol {
+            if input.write.verbose {
+                println!("{:4} {:16.10} {:+16.10}i {:12.4e} {:>12} {:>12}", iter, e.re, e.im, gnorm, "-", "-");
+            }
             return Some(finalise(ca, cb, ao, input, label, noci_basis, i, true));
         }
 
@@ -136,8 +135,12 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
 
         let (mut pa, mut pb) = sr1_step(&hist, &ga, &gb, &epsa, &epsb, na, nb, opts);
         limit_step(&mut pa, &mut pb, opts.max_step);
+        let pnorm = step_norm(&pa, &pb);
 
         let (alpha, ca_new, cb_new) = line_search(&ca, &cb, ao, na, nb, &pa, &pb, gnorm, opts);
+        if input.write.verbose {
+            println!("{:4} {:16.10} {:+16.10}i {:12.4e} {:12.4e} {:12.4e}", iter, e.re, e.im, gnorm, alpha, pnorm);
+        }
         if alpha == 0.0 {
             if input.write.verbose {
                 println!("h-SCF line search found no improving step.");
@@ -322,7 +325,7 @@ fn sr1_step(hist: &[SecantPair], ga: &Array2<Complex64>, gb: &Array2<Complex64>,
 /// - `()`: Updates `pa` and `pb` in place.
 fn limit_step(pa: &mut Array2<Complex64>, pb: &mut Array2<Complex64>, max_step: f64) {
     // ||p|| = \sqrt{\sum_{ai} |p_{ai}^\alpha|^2 + \sum_{ai} |p_{ai}^\beta|^2}.
-    let n = (pa.iter().map(|z| z.norm_sqr()).sum::<f64>() + pb.iter().map(|z| z.norm_sqr()).sum::<f64>()).sqrt();
+    let n = step_norm(pa, pb);
 
     // If the proposed step size found by the SR1 solve is too big scale it down.
     if n > max_step && n > 0.0 {
@@ -330,6 +333,16 @@ fn limit_step(pa: &mut Array2<Complex64>, pb: &mut Array2<Complex64>, max_step: 
         pa.mapv_inplace(|z| z * scale);
         pb.mapv_inplace(|z| z * scale);
     }
+}
+
+/// Combined alpha/beta occupied-virtual step norm.
+/// # Arguments:
+/// - `pa`: Alpha-spin occupied-virtual step.
+/// - `pb`: Beta-spin occupied-virtual step.
+/// # Returns:
+/// - `f64`: Euclidean norm of the complex alpha/beta step blocks.
+fn step_norm(pa: &Array2<Complex64>, pb: &Array2<Complex64>) -> f64 {
+    (pa.iter().map(|z| z.norm_sqr()).sum::<f64>() + pb.iter().map(|z| z.norm_sqr()).sum::<f64>()).sqrt()
 }
 
 /// Backtrack along the complex-orthogonal geodesic and minimise gradient norm.
