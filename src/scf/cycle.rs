@@ -15,7 +15,7 @@ use crate::write::write_orbitals;
 use crate::maths::general_evp;
 use crate::utils::print_array2_indexed;
 use super::bias::metadynamics_bias;
-use super::kernels::{energy, fock, density};
+use super::kernels::{energy, fock, density, orbital_gradient};
 use super::occupation::{mo_occupancies, occvec_to_bits};
 use super::select::{aufbau_indices, mom_select};
 use super::print::{print_header, print_mos};
@@ -194,7 +194,14 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
 
         let err = if use_diis {diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt()} else {f64::INFINITY};
         let d_e = (e_new - e).abs();
-        if input.write.verbose {println!("{:4} {:12.6} {:12.4e} {:12.4e}", iter, e_new, d_e, err);}
+
+        let ga = orbital_gradient(&ca, &fa_new, na, DensityMode::Hermitian);
+        let gb = orbital_gradient(&cb, &fb_new, nb, DensityMode::Hermitian);
+        let gnorm = (ga.iter().map(|z| z * z).sum::<f64>() + gb.iter().map(|z| z * z).sum::<f64>()).sqrt();
+
+        if input.write.verbose {
+            println!("{:4} {:12.6} {:12.4e} {:12.4e} {:12.4e}", iter, e_new, d_e, err, gnorm);
+        }
 
         if d_e < input.scf.e_tol {return Some(finalise(e_new, ca, cb, da_new, db_new, &ea, &eb, &idx_a, &idx_b, ao, input, label, noci_basis, i));}
 

@@ -11,7 +11,7 @@ use super::types::{MOCache, NOCIData, FockData, DetPair, ScatterValue, NOCIScala
 use crate::time_call;
 
 use crate::maths::general_evp;
-use crate::utils::print_array2;
+use crate::utils::print_array2_indexed;
 use crate::noci::{calculate_f_pair, calculate_s_pair, calculate_hs_pair};
 use crate::write::write_hs_matrices;
 use super::hs::compare_hs_pair_wicks_naive;
@@ -208,12 +208,12 @@ pub fn calculate_noci_energy<T: NOCIScalar>(ao: &AoData, input: &Input, scfstate
 
     println!("{}", "=".repeat(100));
     println!("NOCI-reference Hamiltonian:");
-    print_array2(&h);
+    print_array2_indexed(&h);
     println!("NOCI-reference Overlap:");
-    print_array2(&s);
+    print_array2_indexed(&s);
     println!("Shifted NOCI-reference Hamiltonian");
     let h_shift = &h - &s.mapv(|x| scfstates[0].e * x);
-    print_array2(&h_shift);
+    print_array2_indexed(&h_shift);
 
     let (evals, c) = general_evp(&h, &s, true, tol);
     println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);

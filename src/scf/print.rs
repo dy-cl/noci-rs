@@ -19,7 +19,7 @@ pub (in crate::scf) fn print_header(input: &Input, scfexcitation: Option<&SCFExc
         }
         None => println!("No excitation requested."),
     }
-    println!("{:>4} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖");
+    println!("{:>4} {:>12} {:>12} {:>12} {:>12}", "i", "E", "dE", "‖FDS - SDF‖", "||g_ov||");
 }
 
 /// Print h-SCF iteration header.
