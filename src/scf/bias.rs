@@ -1,9 +1,9 @@
 // scf/bias.rs
 
-use std::sync::Arc;
-use ndarray::Array2;
-use crate::{AoData, Excitation, ExcitationSpin, SCFState};
 use crate::basis::electron_distance;
+use crate::{AoData, Excitation, ExcitationSpin, SCFState};
+use ndarray::Array2;
+use std::sync::Arc;
 
 /// Construct the SCF metadynamics bias term.
 /// # Arguments
@@ -14,7 +14,13 @@ use crate::basis::electron_distance;
 /// - `lambda`: Bias strength.
 /// # Returns
 /// - `(Array2<f64>, Array2<f64>)`: Alpha- and beta-spin bias matrices.
-pub(crate) fn metadynamics_bias(da: &Array2<f64>, db: &Array2<f64>, ao: &AoData, biases: &[SCFState], lambda: f64) -> (Array2<f64>, Array2<f64>) {
+pub(crate) fn metadynamics_bias(
+    da: &Array2<f64>,
+    db: &Array2<f64>,
+    ao: &AoData,
+    biases: &[SCFState],
+    lambda: f64,
+) -> (Array2<f64>, Array2<f64>) {
     let nbf = da.nrows();
     let mut ba = Array2::<f64>::zeros((nbf, nbf));
     let mut bb = Array2::<f64>::zeros((nbf, nbf));
@@ -32,7 +38,16 @@ pub(crate) fn metadynamics_bias(da: &Array2<f64>, db: &Array2<f64>, ao: &AoData,
         label: String::new(),
         noci_basis: false,
         parent: 0,
-        excitation: Excitation {alpha: ExcitationSpin {holes: vec![], parts: vec![]}, beta: ExcitationSpin {holes: vec![], parts: vec![]}},
+        excitation: Excitation {
+            alpha: ExcitationSpin {
+                holes: vec![],
+                parts: vec![],
+            },
+            beta: ExcitationSpin {
+                holes: vec![],
+                parts: vec![],
+            },
+        },
     };
 
     for bias in biases {

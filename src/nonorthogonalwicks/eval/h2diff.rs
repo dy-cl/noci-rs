@@ -1,12 +1,12 @@
 // nonorthogonalwicks/eval/h2diff.rs
+use super::super::layout::{idx, idx4};
+use super::super::scratch::WickScratch;
+use super::super::view::WicksPairView;
+use super::helpers::{bit, column_replacement_correction, get_det_adjt_diff, ii_replacement};
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use super::helpers::{bit, column_replacement_correction, get_det_adjt_diff, ii_replacement};
-use super::super::layout::{idx, idx4};
-use super::super::scratch::WickScratch;
-use super::super::view::WicksPairView;
 
 /// Calculate the different-spin two-electron Hamiltonian matrix element between two determinants
 /// |{}^\Lambda \Psi\rangle and |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's
@@ -25,13 +25,21 @@ use super::super::view::WicksPairView;
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-pub(crate) fn lg_h2_diff<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                  diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
+pub(crate) fn lg_h2_diff<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    l_ex_a: &ExcitationSpin,
+    g_ex_a: &ExcitationSpin,
+    l_ex_b: &ExcitationSpin,
+    g_ex_b: &ExcitationSpin,
+    diff: &mut WickScratch<T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff, {
         if w.aa.m == 0 && w.bb.m == 0 {
             lg_h2_diff_m0(w, l_ex_a, g_ex_a, l_ex_b, g_ex_b, diff, a, b, tol)
-        }
-        else {
+        } else {
             lg_h2_diff_gen(w, l_ex_a, g_ex_a, l_ex_b, g_ex_b, diff, a, b, tol)
         }
     })
@@ -53,14 +61,27 @@ pub(crate) fn lg_h2_diff<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &Excit
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element in the `m = 0` case.
 #[inline(always)]
-fn lg_h2_diff_m0<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                 diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
+fn lg_h2_diff_m0<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    l_ex_a: &ExcitationSpin,
+    g_ex_a: &ExcitationSpin,
+    l_ex_b: &ExcitationSpin,
+    g_ex_b: &ExcitationSpin,
+    diff: &mut WickScratch<T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
 
         match (la, lb) {
-            (0, 0) => (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * w.ab.vab0[0][0],
+            (0, 0) => {
+                (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+                    * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+                    * w.ab.vab0[0][0]
+            }
             (1, 1) => lg_h2_diff_m0_11(w, a, b),
             (1, 3) => lg_h2_diff_m0_13(w, diff, a, b, tol),
             (2, 2) => lg_h2_diff_m0_22(w, a, b),
@@ -79,7 +100,11 @@ fn lg_h2_diff_m0<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpi
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 1)`.
 #[inline(always)]
-fn lg_h2_diff_m0_11<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>, b: &WickScratch<T>) -> T {
+fn lg_h2_diff_m0_11<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_11, {
         let n = w.ab.n();
 
@@ -95,12 +120,13 @@ fn lg_h2_diff_m0_11<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>,
         let vba = w.ab.vba_t_slice(0, 0, 0);
         let iisl = w.ab.iiab_slice(0, 0, 0, 0);
 
-        let term = w.ab.vab0[0][0] * deta * detb
-            - vab[ca * n + ra] * detb
-            - vba[cb * n + rb] * deta
-            + iisl[idx4(n, ra, ca, rb, cb)];
+        let term =
+            w.ab.vab0[0][0] * deta * detb - vab[ca * n + ra] * detb - vba[cb * n + rb] * deta
+                + iisl[idx4(n, ra, ca, rb, cb)];
 
-        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * term
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+            * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+            * term
     })
 }
 
@@ -113,7 +139,13 @@ fn lg_h2_diff_m0_11<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>,
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 3)`.
 #[inline(always)]
-fn lg_h2_diff_m0_13<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
+fn lg_h2_diff_m0_13<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    diff: &mut WickScratch<T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_13, {
         diff.ensure_diff(1, 3);
 
@@ -126,7 +158,14 @@ fn lg_h2_diff_m0_13<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
         let cols_b = &b.cols[..3];
         let detb0 = &b.det0.as_slice()[..9];
 
-        if let Some(detb) = adjugate_transpose(diff.adjt_detb.as_mut_slice(), diff.invslb.as_mut_slice(), diff.lub.as_mut_slice(), detb0, 3, tol) {
+        if let Some(detb) = adjugate_transpose(
+            diff.adjt_detb.as_mut_slice(),
+            diff.invslb.as_mut_slice(),
+            diff.lub.as_mut_slice(),
+            detb0,
+            3,
+            tol,
+        ) {
             let cofb = diff.adjt_detb.as_slice();
 
             let r0 = rows_b[0];
@@ -140,18 +179,31 @@ fn lg_h2_diff_m0_13<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
             let vba = w.ab.vba_t_slice(0, 0, 0);
             let iisl = w.ab.iiab_slice(0, 0, 0, 0);
 
-            let vba_term =
-                cofb[idx(3, 0, 0)] * vba[c0 * n + r0] + cofb[idx(3, 1, 0)] * vba[c0 * n + r1] + cofb[idx(3, 2, 0)] * vba[c0 * n + r2]
-              + cofb[idx(3, 0, 1)] * vba[c1 * n + r0] + cofb[idx(3, 1, 1)] * vba[c1 * n + r1] + cofb[idx(3, 2, 1)] * vba[c1 * n + r2]
-              + cofb[idx(3, 0, 2)] * vba[c2 * n + r0] + cofb[idx(3, 1, 2)] * vba[c2 * n + r1] + cofb[idx(3, 2, 2)] * vba[c2 * n + r2];
+            let vba_term = cofb[idx(3, 0, 0)] * vba[c0 * n + r0]
+                + cofb[idx(3, 1, 0)] * vba[c0 * n + r1]
+                + cofb[idx(3, 2, 0)] * vba[c0 * n + r2]
+                + cofb[idx(3, 0, 1)] * vba[c1 * n + r0]
+                + cofb[idx(3, 1, 1)] * vba[c1 * n + r1]
+                + cofb[idx(3, 2, 1)] * vba[c1 * n + r2]
+                + cofb[idx(3, 0, 2)] * vba[c2 * n + r0]
+                + cofb[idx(3, 1, 2)] * vba[c2 * n + r1]
+                + cofb[idx(3, 2, 2)] * vba[c2 * n + r2];
 
-            let ii_term =
-                cofb[idx(3, 0, 0)] * iisl[idx4(n, ra, ca, r0, c0)] + cofb[idx(3, 1, 0)] * iisl[idx4(n, ra, ca, r1, c0)] + cofb[idx(3, 2, 0)] * iisl[idx4(n, ra, ca, r2, c0)]
-              + cofb[idx(3, 0, 1)] * iisl[idx4(n, ra, ca, r0, c1)] + cofb[idx(3, 1, 1)] * iisl[idx4(n, ra, ca, r1, c1)] + cofb[idx(3, 2, 1)] * iisl[idx4(n, ra, ca, r2, c1)]
-              + cofb[idx(3, 0, 2)] * iisl[idx4(n, ra, ca, r0, c2)] + cofb[idx(3, 1, 2)] * iisl[idx4(n, ra, ca, r1, c2)] + cofb[idx(3, 2, 2)] * iisl[idx4(n, ra, ca, r2, c2)];
+            let ii_term = cofb[idx(3, 0, 0)] * iisl[idx4(n, ra, ca, r0, c0)]
+                + cofb[idx(3, 1, 0)] * iisl[idx4(n, ra, ca, r1, c0)]
+                + cofb[idx(3, 2, 0)] * iisl[idx4(n, ra, ca, r2, c0)]
+                + cofb[idx(3, 0, 1)] * iisl[idx4(n, ra, ca, r0, c1)]
+                + cofb[idx(3, 1, 1)] * iisl[idx4(n, ra, ca, r1, c1)]
+                + cofb[idx(3, 2, 1)] * iisl[idx4(n, ra, ca, r2, c1)]
+                + cofb[idx(3, 0, 2)] * iisl[idx4(n, ra, ca, r0, c2)]
+                + cofb[idx(3, 1, 2)] * iisl[idx4(n, ra, ca, r1, c2)]
+                + cofb[idx(3, 2, 2)] * iisl[idx4(n, ra, ca, r2, c2)];
 
-            let contrib = w.ab.vab0[0][0] * deta * detb - vab[ca * n + ra] * detb - deta * vba_term + ii_term;
-            (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * contrib
+            let contrib =
+                w.ab.vab0[0][0] * deta * detb - vab[ca * n + ra] * detb - deta * vba_term + ii_term;
+            (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+                * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+                * contrib
         } else {
             <T as From<f64>>::from(0.0)
         }
@@ -159,7 +211,7 @@ fn lg_h2_diff_m0_13<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
 }
 
 /// Calculate the different-spin two-electron Hamiltonian matrix element for the specialized
-/// `(la, lb) = (2, 2)`, `m = 0` case. 
+/// `(la, lb) = (2, 2)`, `m = 0` case.
 /// # Arguments:
 /// - `w`: Same-spin and different-spin Wick's reference pair intermediates with zero-overlap counts zero.
 /// - `a`: Prepared same-spin alpha scratch space with `la = 2`.
@@ -167,7 +219,11 @@ fn lg_h2_diff_m0_13<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (2, 2)`.
 #[inline(always)]
-fn lg_h2_diff_m0_22<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>, b: &WickScratch<T>) -> T {
+fn lg_h2_diff_m0_22<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_22, {
         let n = w.ab.n();
 
@@ -221,10 +277,21 @@ fn lg_h2_diff_m0_22<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>,
         let detb_c0 = bu0 * b11 - b01 * bu1;
         let detb_c1 = b00 * bv1 - bv0 * b10;
 
-        let mut contrib = w.ab.vab0[0][0] * deta * detb - (deta_c0 + deta_c1) * detb - (detb_c0 + detb_c1) * deta;
+        let mut contrib =
+            w.ab.vab0[0][0] * deta * detb - (deta_c0 + deta_c1) * detb - (detb_c0 + detb_c1) * deta;
 
-        let cofa = [a11, <T as From<f64>>::from(-1.0) * a10, <T as From<f64>>::from(-1.0) * a01, a00];
-        let cofb = [b11, <T as From<f64>>::from(-1.0) * b10, <T as From<f64>>::from(-1.0) * b01, b00];
+        let cofa = [
+            a11,
+            <T as From<f64>>::from(-1.0) * a10,
+            <T as From<f64>>::from(-1.0) * a01,
+            a00,
+        ];
+        let cofb = [
+            b11,
+            <T as From<f64>>::from(-1.0) * b10,
+            <T as From<f64>>::from(-1.0) * b01,
+            b00,
+        ];
 
         for i in 0..2 {
             let ra = rows_a[i];
@@ -258,7 +325,9 @@ fn lg_h2_diff_m0_22<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>,
             }
         }
 
-        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * contrib
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+            * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+            * contrib
     })
 }
 
@@ -271,7 +340,13 @@ fn lg_h2_diff_m0_22<T: NOCIScalar>(w: &WicksPairView<'_, T>, a: &WickScratch<T>,
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (3, 1)`.
 #[inline(always)]
-fn lg_h2_diff_m0_31<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
+fn lg_h2_diff_m0_31<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    diff: &mut WickScratch<T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_31, {
         diff.ensure_diff(3, 1);
 
@@ -284,7 +359,14 @@ fn lg_h2_diff_m0_31<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
         let cols_a = &a.cols[..3];
         let deta0 = &a.det0.as_slice()[..9];
 
-        if let Some(deta) = adjugate_transpose(diff.adjt_deta.as_mut_slice(), diff.invsla.as_mut_slice(), diff.lua.as_mut_slice(), deta0, 3, tol) {
+        if let Some(deta) = adjugate_transpose(
+            diff.adjt_deta.as_mut_slice(),
+            diff.invsla.as_mut_slice(),
+            diff.lua.as_mut_slice(),
+            deta0,
+            3,
+            tol,
+        ) {
             let cofa = diff.adjt_deta.as_slice();
 
             let r0 = rows_a[0];
@@ -298,18 +380,31 @@ fn lg_h2_diff_m0_31<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
             let vba = w.ab.vba_t_slice(0, 0, 0);
             let iisl = w.ab.iiab_slice(0, 0, 0, 0);
 
-            let vab_term =
-                cofa[idx(3, 0, 0)] * vab[c0 * n + r0] + cofa[idx(3, 1, 0)] * vab[c0 * n + r1] + cofa[idx(3, 2, 0)] * vab[c0 * n + r2]
-              + cofa[idx(3, 0, 1)] * vab[c1 * n + r0] + cofa[idx(3, 1, 1)] * vab[c1 * n + r1] + cofa[idx(3, 2, 1)] * vab[c1 * n + r2]
-              + cofa[idx(3, 0, 2)] * vab[c2 * n + r0] + cofa[idx(3, 1, 2)] * vab[c2 * n + r1] + cofa[idx(3, 2, 2)] * vab[c2 * n + r2];
+            let vab_term = cofa[idx(3, 0, 0)] * vab[c0 * n + r0]
+                + cofa[idx(3, 1, 0)] * vab[c0 * n + r1]
+                + cofa[idx(3, 2, 0)] * vab[c0 * n + r2]
+                + cofa[idx(3, 0, 1)] * vab[c1 * n + r0]
+                + cofa[idx(3, 1, 1)] * vab[c1 * n + r1]
+                + cofa[idx(3, 2, 1)] * vab[c1 * n + r2]
+                + cofa[idx(3, 0, 2)] * vab[c2 * n + r0]
+                + cofa[idx(3, 1, 2)] * vab[c2 * n + r1]
+                + cofa[idx(3, 2, 2)] * vab[c2 * n + r2];
 
-            let ii_term =
-                cofa[idx(3, 0, 0)] * iisl[idx4(n, r0, c0, rb, cb)] + cofa[idx(3, 1, 0)] * iisl[idx4(n, r1, c0, rb, cb)] + cofa[idx(3, 2, 0)] * iisl[idx4(n, r2, c0, rb, cb)]
-              + cofa[idx(3, 0, 1)] * iisl[idx4(n, r0, c1, rb, cb)] + cofa[idx(3, 1, 1)] * iisl[idx4(n, r1, c1, rb, cb)] + cofa[idx(3, 2, 1)] * iisl[idx4(n, r2, c1, rb, cb)]
-              + cofa[idx(3, 0, 2)] * iisl[idx4(n, r0, c2, rb, cb)] + cofa[idx(3, 1, 2)] * iisl[idx4(n, r1, c2, rb, cb)] + cofa[idx(3, 2, 2)] * iisl[idx4(n, r2, c2, rb, cb)];
+            let ii_term = cofa[idx(3, 0, 0)] * iisl[idx4(n, r0, c0, rb, cb)]
+                + cofa[idx(3, 1, 0)] * iisl[idx4(n, r1, c0, rb, cb)]
+                + cofa[idx(3, 2, 0)] * iisl[idx4(n, r2, c0, rb, cb)]
+                + cofa[idx(3, 0, 1)] * iisl[idx4(n, r0, c1, rb, cb)]
+                + cofa[idx(3, 1, 1)] * iisl[idx4(n, r1, c1, rb, cb)]
+                + cofa[idx(3, 2, 1)] * iisl[idx4(n, r2, c1, rb, cb)]
+                + cofa[idx(3, 0, 2)] * iisl[idx4(n, r0, c2, rb, cb)]
+                + cofa[idx(3, 1, 2)] * iisl[idx4(n, r1, c2, rb, cb)]
+                + cofa[idx(3, 2, 2)] * iisl[idx4(n, r2, c2, rb, cb)];
 
-            let contrib = w.ab.vab0[0][0] * deta * detb - detb * vab_term - vba[cb * n + rb] * deta + ii_term;
-            (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * contrib
+            let contrib =
+                w.ab.vab0[0][0] * deta * detb - detb * vab_term - vba[cb * n + rb] * deta + ii_term;
+            (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+                * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+                * contrib
         } else {
             <T as From<f64>>::from(0.0)
         }
@@ -317,7 +412,7 @@ fn lg_h2_diff_m0_31<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
 }
 
 /// Calculate the different-spin two-electron Hamiltonian matrix element for the general `m = 0`
-/// case with arbitrary excitation ranks `la` and `lb`. 
+/// case with arbitrary excitation ranks `la` and `lb`.
 /// # Arguments:
 /// - `w`: Same-spin and different-spin Wick's reference pair intermediates with zero-overlap counts zero.
 /// - `l_ex_a`: Spin-alpha excitation array for |{}^\Lambda \Psi\rangle.
@@ -331,8 +426,17 @@ fn lg_h2_diff_m0_31<T: NOCIScalar>(w: &WicksPairView<'_, T>, diff: &mut WickScra
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element for the general `m = 0` path.
 #[inline(always)]
-fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                 diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
+fn lg_h2_diff_m0_gen<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    l_ex_a: &ExcitationSpin,
+    g_ex_a: &ExcitationSpin,
+    l_ex_b: &ExcitationSpin,
+    g_ex_b: &ExcitationSpin,
+    diff: &mut WickScratch<T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_gen, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
@@ -350,21 +454,47 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &Excitatio
         let mut acc = <T as From<f64>>::from(0.0);
         let n = w.ab.n();
 
-        if let Some(det_deta) = adjugate_transpose(diff.adjt_deta.as_mut_slice(), diff.invsla.as_mut_slice(), diff.lua.as_mut_slice(), deta0, la, tol) {
-            if let Some(det_detb) = adjugate_transpose(diff.adjt_detb.as_mut_slice(), diff.invslb.as_mut_slice(), diff.lub.as_mut_slice(), detb0, lb, tol) {
+        if let Some(det_deta) = adjugate_transpose(
+            diff.adjt_deta.as_mut_slice(),
+            diff.invsla.as_mut_slice(),
+            diff.lua.as_mut_slice(),
+            deta0,
+            la,
+            tol,
+        ) {
+            if let Some(det_detb) = adjugate_transpose(
+                diff.adjt_detb.as_mut_slice(),
+                diff.invslb.as_mut_slice(),
+                diff.lub.as_mut_slice(),
+                detb0,
+                lb,
+                tol,
+            ) {
                 let mut contrib = w.ab.vab0[0][0] * det_deta * det_detb;
 
                 let vab = w.ab.vab_t_slice(0, 0, 0);
                 for (k, &ck) in cols_a.iter().enumerate().take(la) {
                     let base = ck * n;
-                    let corr = column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| vab[base + rows_a[r]]);
+                    let corr = column_replacement_correction(
+                        la,
+                        deta0,
+                        diff.adjt_deta.as_slice(),
+                        k,
+                        |r| vab[base + rows_a[r]],
+                    );
                     contrib = contrib - (det_deta + corr) * det_detb;
                 }
 
                 let vba = w.ab.vba_t_slice(0, 0, 0);
                 for (k, &ck) in cols_b.iter().enumerate().take(lb) {
                     let base = ck * n;
-                    let corr = column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| vba[base + rows_b[r]]);
+                    let corr = column_replacement_correction(
+                        lb,
+                        detb0,
+                        diff.adjt_detb.as_slice(),
+                        k,
+                        |r| vba[base + rows_b[r]],
+                    );
                     contrib = contrib - (det_detb + corr) * det_deta;
                 }
 
@@ -375,10 +505,15 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &Excitatio
                         let cofa = diff.adjt_deta.as_slice()[idx(la, i, j)];
 
                         for k in 0..lb {
-                            let corr = column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| {
-                                ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true)
-                            });
-                            contrib = contrib + <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
+                            let corr = column_replacement_correction(
+                                lb,
+                                detb0,
+                                diff.adjt_detb.as_slice(),
+                                k,
+                                |r| ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true),
+                            );
+                            contrib =
+                                contrib + <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
                         }
                     }
                 }
@@ -388,10 +523,15 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &Excitatio
                         let cofb = diff.adjt_detb.as_slice()[idx(lb, i, j)];
 
                         for k in 0..la {
-                            let corr = column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| {
-                                ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false)
-                            });
-                            contrib = contrib + <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
+                            let corr = column_replacement_correction(
+                                la,
+                                deta0,
+                                diff.adjt_deta.as_slice(),
+                                k,
+                                |r| ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false),
+                            );
+                            contrib =
+                                contrib + <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
                         }
                     }
                 }
@@ -400,12 +540,14 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &Excitatio
             }
         }
 
-        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * acc
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+            * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+            * acc
     })
 }
 
 /// Calculate the different-spin two electron Hamiltonian matrix element between two determinants |{}^\Lambda \Psi\rangle and
-/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription. 
+/// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription.
 /// # Arguments:
 /// - `w`: Same-spin and different-spin Wick's reference pair intermediates.
 /// - `l_ex_a`: Spin alpha excitation array for |{}^\Lambda \Psi\rangle.
@@ -417,8 +559,17 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &Excitatio
 /// # Returns
 /// - `T`: Different-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-fn lg_h2_diff_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSpin, g_ex_a: &ExcitationSpin, l_ex_b: &ExcitationSpin, g_ex_b: &ExcitationSpin,
-                  diff: &mut WickScratch<T>, a: &WickScratch<T>, b: &WickScratch<T>, tol: f64) -> T {
+fn lg_h2_diff_gen<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    l_ex_a: &ExcitationSpin,
+    g_ex_a: &ExcitationSpin,
+    l_ex_b: &ExcitationSpin,
+    g_ex_b: &ExcitationSpin,
+    diff: &mut WickScratch<T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_gen, {
         let la = l_ex_a.holes.len() + g_ex_a.holes.len();
         let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
@@ -427,83 +578,118 @@ fn lg_h2_diff_gen<T: NOCIScalar>(w: &WicksPairView<'_, T>, l_ex_a: &ExcitationSp
 
         let rows_a = &a.rows[..la];
         let cols_a = &a.cols[..la];
-        let deta0  = &a.det0.as_slice()[..la * la];
-        let deta1  = &a.det1.as_slice()[..la * la];
+        let deta0 = &a.det0.as_slice()[..la * la];
+        let deta1 = &a.det1.as_slice()[..la * la];
 
         let rows_b = &b.rows[..lb];
         let cols_b = &b.cols[..lb];
-        let detb0  = &b.det0.as_slice()[..lb * lb];
-        let detb1  = &b.det1.as_slice()[..lb * lb];
+        let detb0 = &b.det0.as_slice()[..lb * lb];
+        let detb1 = &b.det1.as_slice()[..lb * lb];
 
         let mut acc = <T as From<f64>>::from(0.0);
         let n = w.ab.n();
 
-        get_det_adjt_diff(w, la, lb, diff, deta0, deta1, detb0, detb1, tol, |bits_a, bits_b, scratch, det_deta, det_detb| {
-            let ma0 = bit(bits_a, 0);
-            let mb0 = bit(bits_b, 0);
-            let mut contrib = w.ab.vab0[ma0][mb0] * det_deta * det_detb;
+        get_det_adjt_diff(
+            w,
+            la,
+            lb,
+            diff,
+            deta0,
+            deta1,
+            detb0,
+            detb1,
+            tol,
+            |bits_a, bits_b, scratch, det_deta, det_detb| {
+                let ma0 = bit(bits_a, 0);
+                let mb0 = bit(bits_b, 0);
+                let mut contrib = w.ab.vab0[ma0][mb0] * det_deta * det_detb;
 
-            let na = w.ab.n();
-            let vab0 = w.ab.vab_t_slice(ma0, mb0, 0);
-            let vab1 = w.ab.vab_t_slice(ma0, mb0, 1);
+                let na = w.ab.n();
+                let vab0 = w.ab.vab_t_slice(ma0, mb0, 0);
+                let vab1 = w.ab.vab_t_slice(ma0, mb0, 1);
 
-            for (k, &ck) in cols_a.iter().enumerate().take(la) {
-                let mak = bit(bits_a, k + 1);
-                let vsl = if mak == 0 {vab0} else {vab1};
-                let base = ck * na;
+                for (k, &ck) in cols_a.iter().enumerate().take(la) {
+                    let mak = bit(bits_a, k + 1);
+                    let vsl = if mak == 0 { vab0 } else { vab1 };
+                    let base = ck * na;
 
-                let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| vsl[base + rows_a[r]]);
-                contrib = contrib - (det_deta + corr) * det_detb;
-            }
+                    let corr = column_replacement_correction(
+                        la,
+                        scratch.deta_mix.as_slice(),
+                        scratch.adjt_deta.as_slice(),
+                        k,
+                        |r| vsl[base + rows_a[r]],
+                    );
+                    contrib = contrib - (det_deta + corr) * det_detb;
+                }
 
-            let nb = w.ab.n();
-            let vba0 = w.ab.vba_t_slice(mb0, ma0, 0);
-            let vba1 = w.ab.vba_t_slice(mb0, ma0, 1);
+                let nb = w.ab.n();
+                let vba0 = w.ab.vba_t_slice(mb0, ma0, 0);
+                let vba1 = w.ab.vba_t_slice(mb0, ma0, 1);
 
-            for (k, &ck) in cols_b.iter().enumerate().take(lb) {
-                let mbk = bit(bits_b, k + 1);
-                let vsl = if mbk == 0 {vba0} else {vba1};
-                let base = ck * nb;
+                for (k, &ck) in cols_b.iter().enumerate().take(lb) {
+                    let mbk = bit(bits_b, k + 1);
+                    let vsl = if mbk == 0 { vba0 } else { vba1 };
+                    let base = ck * nb;
 
-                let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| vsl[base + rows_b[r]]);
-                contrib = contrib - (det_detb + corr) * det_deta;
-            }
+                    let corr = column_replacement_correction(
+                        lb,
+                        scratch.detb_mix.as_slice(),
+                        scratch.adjt_detb.as_slice(),
+                        k,
+                        |r| vsl[base + rows_b[r]],
+                    );
+                    contrib = contrib - (det_detb + corr) * det_deta;
+                }
 
-            for (i, &ra) in rows_a.iter().enumerate() {
-                for (j, &ca) in cols_a.iter().enumerate() {
-                    let cofa = scratch.adjt_deta.as_slice()[idx(la, i, j)];
-                    let ma1 = bit(bits_a, j + 1);
+                for (i, &ra) in rows_a.iter().enumerate() {
+                    for (j, &ca) in cols_a.iter().enumerate() {
+                        let cofa = scratch.adjt_deta.as_slice()[idx(la, i, j)];
+                        let ma1 = bit(bits_a, j + 1);
 
-                    for k in 0..lb {
-                        let mbk = bit(bits_b, k + 1);
-                        let iisl = w.ab.iiab_slice(ma0, ma1, mb0, mbk);
+                        for k in 0..lb {
+                            let mbk = bit(bits_b, k + 1);
+                            let iisl = w.ab.iiab_slice(ma0, ma1, mb0, mbk);
 
-                        let corr = column_replacement_correction(lb, scratch.detb_mix.as_slice(), scratch.adjt_detb.as_slice(), k, |r| {
-                            ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true)
-                        });
-                        contrib = contrib + <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
+                            let corr = column_replacement_correction(
+                                lb,
+                                scratch.detb_mix.as_slice(),
+                                scratch.adjt_detb.as_slice(),
+                                k,
+                                |r| ii_replacement(iisl, n, rows_b, cols_b, r, k, ra, ca, true),
+                            );
+                            contrib =
+                                contrib + <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
+                        }
                     }
                 }
-            }
 
-            for (i, &rb) in rows_b.iter().enumerate() {
-                for (j, &cb) in cols_b.iter().enumerate() {
-                    let cofb = scratch.adjt_detb.as_slice()[idx(lb, i, j)];
-                    let mb1 = bit(bits_b, j + 1);
+                for (i, &rb) in rows_b.iter().enumerate() {
+                    for (j, &cb) in cols_b.iter().enumerate() {
+                        let cofb = scratch.adjt_detb.as_slice()[idx(lb, i, j)];
+                        let mb1 = bit(bits_b, j + 1);
 
-                    for k in 0..la {
-                        let mak = bit(bits_a, k + 1);
-                        let iisl = w.ab.iiab_slice(ma0, mak, mb0, mb1);
+                        for k in 0..la {
+                            let mak = bit(bits_a, k + 1);
+                            let iisl = w.ab.iiab_slice(ma0, mak, mb0, mb1);
 
-                        let corr = column_replacement_correction(la, scratch.deta_mix.as_slice(), scratch.adjt_deta.as_slice(), k, |r| {
-                            ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false)
-                        });
-                        contrib = contrib + <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
+                            let corr = column_replacement_correction(
+                                la,
+                                scratch.deta_mix.as_slice(),
+                                scratch.adjt_deta.as_slice(),
+                                k,
+                                |r| ii_replacement(iisl, n, rows_a, cols_a, r, k, rb, cb, false),
+                            );
+                            contrib =
+                                contrib + <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
+                        }
                     }
                 }
-            }
-            acc = acc + contrib;
-        });
-        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod)) * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod)) * acc
+                acc = acc + contrib;
+            },
+        );
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+            * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+            * acc
     })
 }

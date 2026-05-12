@@ -1,9 +1,9 @@
 // utils.rs
 use std::fmt::Display;
 
-use rand::{Rng};
-use rand::rngs::StdRng;
 use ndarray::{Array2, Array4};
+use rand::Rng;
+use rand::rngs::StdRng;
 
 /// Print a matrix.
 /// # Arguments:
@@ -33,8 +33,8 @@ pub fn print_array2_indexed<T: Display>(a: &Array2<T>) {
 }
 
 /// Print a 4D array as grid of 2D blocks.
-/// # Arguments 
-/// - `t`: Tensor to print. 
+/// # Arguments
+/// - `t`: Tensor to print.
 /// # Returns
 /// - `()`: Prints the tensor to stdout.
 pub fn print_array4(t: &Array4<f64>) {
@@ -53,15 +53,17 @@ pub fn print_array4(t: &Array4<f64>) {
 }
 
 /// Calculate number of coefficients (or basis states) in a coefficient vector (not including the
-/// reference states) required to reach 99%, 99.9%, .... of the total coefficient weight. Yields approximate 
+/// reference states) required to reach 99%, 99.9%, .... of the total coefficient weight. Yields approximate
 /// indication of the sparsity of a wavefunction.  
-/// # Arguments 
+/// # Arguments
 /// - `c`: Basis coefficient vector.
 ///   `ref_indices`: indices of the reference states in the coefficient vector.
 /// # Returns
 /// - `()`: Prints wavefunction sparsity diagnostics to stdout.
-pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
-
+pub fn wavefunction_sparsity(
+    c: &[f64],
+    ref_indices: &[usize],
+) {
     // Construct mask for the references.
     let mut ref_mask = vec![false; c.len()];
     for &i in ref_indices {
@@ -71,7 +73,10 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
     }
 
     // Exclude references from c.
-    let c_tail: Vec<f64> = c.iter().enumerate().filter_map(|(i, &ci)| if ref_mask[i] {None} else {Some(ci)})
+    let c_tail: Vec<f64> = c
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &ci)| if ref_mask[i] { None } else { Some(ci) })
         .collect();
 
     // w_i = |c_i|^2.
@@ -80,7 +85,7 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
     let sum_w: f64 = w.iter().sum();
     // Sort weights by descending, i.e., from most to least important.
     w.sort_by(|a, b| b.partial_cmp(a).unwrap());
-    
+
     let targets: [f64; 4] = [0.99, 0.999, 0.9999, 0.99999];
     let mut k = [0_usize; 4];
 
@@ -91,10 +96,10 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
         // Add next largest weight and calculate fraction of total weight.
         cumulative += wi;
         let frac = cumulative / sum_w;
-        
+
         // Record the number of coefficients k required to reach target[t].
         while t < targets.len() && frac >= targets[t] {
-            k[t] = k0 + 1; 
+            k[t] = k0 + 1;
             t += 1;
         }
         // Stop once all targets reached.
@@ -102,7 +107,7 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
             break;
         }
     }
-    
+
     // Print diagnostics.
     println!("{}", "=".repeat(100));
     println!("Wavefunction sparsity:");
@@ -119,7 +124,15 @@ pub fn wavefunction_sparsity(c: &[f64], ref_indices: &[usize]) {
 /// - `natoms`: Number of atoms.
 /// # Returns
 /// - `Vec<i8>`: Random pattern over the atoms.
-pub fn random_pattern(rng: &mut StdRng, natoms: usize) -> Vec<i8> {
-    (0..natoms).map(|_| match rng.gen_range(0..3) {0 => -1, 1 => 0, _ => 1,}).collect()
+pub fn random_pattern(
+    rng: &mut StdRng,
+    natoms: usize,
+) -> Vec<i8> {
+    (0..natoms)
+        .map(|_| match rng.gen_range(0..3) {
+            0 => -1,
+            1 => 0,
+            _ => 1,
+        })
+        .collect()
 }
-

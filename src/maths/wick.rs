@@ -1,7 +1,7 @@
 // maths/wick.rs
 
-use ndarray::ArrayView2;
 use crate::StateScalar;
+use ndarray::ArrayView2;
 
 /// Build the square `l x l` contraction determinant with `x` elements in the
 /// diagonal and lower triangle, and `y` elements in the upper triangle.
@@ -16,7 +16,14 @@ use crate::StateScalar;
 /// # Returns
 /// - `()`: Writes the contraction determinant into `d`.
 #[inline(always)]
-pub fn build_d<T: Copy>(d: &mut [T], l: usize, x: &ArrayView2<T>, y: &ArrayView2<T>, rows: &[usize], cols: &[usize]) {
+pub fn build_d<T: Copy>(
+    d: &mut [T],
+    l: usize,
+    x: &ArrayView2<T>,
+    y: &ArrayView2<T>,
+    rows: &[usize],
+    cols: &[usize],
+) {
     match l {
         0 => {}
         1 => build_d::build_d1(d, x, y, rows, cols),
@@ -40,7 +47,13 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d1<T: Copy>(d: &mut [T], x: &ArrayView2<T>, _y: &ArrayView2<T>, rows: &[usize], cols: &[usize]) {
+    pub(super) fn build_d1<T: Copy>(
+        d: &mut [T],
+        x: &ArrayView2<T>,
+        _y: &ArrayView2<T>,
+        rows: &[usize],
+        cols: &[usize],
+    ) {
         let xstr = x.strides();
         let xptr = x.as_ptr();
 
@@ -62,7 +75,13 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d2<T: Copy>(d: &mut [T], x: &ArrayView2<T>, y: &ArrayView2<T>, rows: &[usize], cols: &[usize]) {
+    pub(super) fn build_d2<T: Copy>(
+        d: &mut [T],
+        x: &ArrayView2<T>,
+        y: &ArrayView2<T>,
+        rows: &[usize],
+        cols: &[usize],
+    ) {
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -97,7 +116,13 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d3<T: Copy>(d: &mut [T], x: &ArrayView2<T>, y: &ArrayView2<T>, rows: &[usize], cols: &[usize]) {
+    pub(super) fn build_d3<T: Copy>(
+        d: &mut [T],
+        x: &ArrayView2<T>,
+        y: &ArrayView2<T>,
+        rows: &[usize],
+        cols: &[usize],
+    ) {
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -143,7 +168,13 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d4<T: Copy>(d: &mut [T], x: &ArrayView2<T>, y: &ArrayView2<T>, rows: &[usize], cols: &[usize]) {
+    pub(super) fn build_d4<T: Copy>(
+        d: &mut [T],
+        x: &ArrayView2<T>,
+        y: &ArrayView2<T>,
+        rows: &[usize],
+        cols: &[usize],
+    ) {
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -202,7 +233,14 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d_gen<T: Copy>(d: &mut [T], l: usize, x: &ArrayView2<T>, y: &ArrayView2<T>, rows: &[usize], cols: &[usize]) {
+    pub(super) fn build_d_gen<T: Copy>(
+        d: &mut [T],
+        l: usize,
+        x: &ArrayView2<T>,
+        y: &ArrayView2<T>,
+        rows: &[usize],
+        cols: &[usize],
+    ) {
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -243,7 +281,13 @@ mod build_d {
 /// # Returns
 /// - `()`: Writes the mixed matrix into `d`.
 #[inline(always)]
-pub fn mix_columns<T: Copy>(d: &mut [T], det0: &[T], det1: &[T], l: usize, bits: u64) {
+pub fn mix_columns<T: Copy>(
+    d: &mut [T],
+    det0: &[T],
+    det1: &[T],
+    l: usize,
+    bits: u64,
+) {
     match l {
         0 => {}
         1 => mix_columns::mix_columns1(d, det0, det1, bits),
@@ -264,9 +308,14 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns1<T: Copy>(d: &mut [T], det0: &[T], det1: &[T], bits: u64) {
+    pub(super) fn mix_columns1<T: Copy>(
+        d: &mut [T],
+        det0: &[T],
+        det1: &[T],
+        bits: u64,
+    ) {
         let b0 = (bits & 1) != 0;
-        d[0] = if b0 {det1[0]} else {det0[0]};
+        d[0] = if b0 { det1[0] } else { det0[0] };
     }
 
     /// Mix columns of `det1` into `det0` according to `bits` for excitation rank 2.
@@ -278,15 +327,20 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns2<T: Copy>(d: &mut [T], det0: &[T], det1: &[T], bits: u64) {
+    pub(super) fn mix_columns2<T: Copy>(
+        d: &mut [T],
+        det0: &[T],
+        det1: &[T],
+        bits: u64,
+    ) {
         let b0 = (bits & 1) != 0;
         let b1 = (bits & 2) != 0;
 
-        d[0] = if b0 {det1[0]} else {det0[0]};
-        d[1] = if b1 {det1[1]} else {det0[1]};
+        d[0] = if b0 { det1[0] } else { det0[0] };
+        d[1] = if b1 { det1[1] } else { det0[1] };
 
-        d[2] = if b0 {det1[2]} else {det0[2]};
-        d[3] = if b1 {det1[3]} else {det0[3]};
+        d[2] = if b0 { det1[2] } else { det0[2] };
+        d[3] = if b1 { det1[3] } else { det0[3] };
     }
 
     /// Mix columns of `det1` into `det0` according to `bits` for excitation rank 3.
@@ -298,22 +352,27 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns3<T: Copy>(d: &mut [T], det0: &[T], det1: &[T], bits: u64) {
+    pub(super) fn mix_columns3<T: Copy>(
+        d: &mut [T],
+        det0: &[T],
+        det1: &[T],
+        bits: u64,
+    ) {
         let b0 = (bits & 1) != 0;
         let b1 = (bits & 2) != 0;
         let b2 = (bits & 4) != 0;
 
-        d[0] = if b0 {det1[0]} else {det0[0]};
-        d[1] = if b1 {det1[1]} else {det0[1]};
-        d[2] = if b2 {det1[2]} else {det0[2]};
+        d[0] = if b0 { det1[0] } else { det0[0] };
+        d[1] = if b1 { det1[1] } else { det0[1] };
+        d[2] = if b2 { det1[2] } else { det0[2] };
 
-        d[3] = if b0 {det1[3]} else {det0[3]};
-        d[4] = if b1 {det1[4]} else {det0[4]};
-        d[5] = if b2 {det1[5]} else {det0[5]};
+        d[3] = if b0 { det1[3] } else { det0[3] };
+        d[4] = if b1 { det1[4] } else { det0[4] };
+        d[5] = if b2 { det1[5] } else { det0[5] };
 
-        d[6] = if b0 {det1[6]} else {det0[6]};
-        d[7] = if b1 {det1[7]} else {det0[7]};
-        d[8] = if b2 {det1[8]} else {det0[8]};
+        d[6] = if b0 { det1[6] } else { det0[6] };
+        d[7] = if b1 { det1[7] } else { det0[7] };
+        d[8] = if b2 { det1[8] } else { det0[8] };
     }
 
     /// Mix columns of `det1` into `det0` according to `bits` for excitation rank 4.
@@ -325,31 +384,36 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns4<T: Copy>(d: &mut [T], det0: &[T], det1: &[T], bits: u64) {
+    pub(super) fn mix_columns4<T: Copy>(
+        d: &mut [T],
+        det0: &[T],
+        det1: &[T],
+        bits: u64,
+    ) {
         let b0 = (bits & 1) != 0;
         let b1 = (bits & 2) != 0;
         let b2 = (bits & 4) != 0;
         let b3 = (bits & 8) != 0;
 
-        d[0] = if b0 {det1[0]} else {det0[0]};
-        d[1] = if b1 {det1[1]} else {det0[1]};
-        d[2] = if b2 {det1[2]} else {det0[2]};
-        d[3] = if b3 {det1[3]} else {det0[3]};
+        d[0] = if b0 { det1[0] } else { det0[0] };
+        d[1] = if b1 { det1[1] } else { det0[1] };
+        d[2] = if b2 { det1[2] } else { det0[2] };
+        d[3] = if b3 { det1[3] } else { det0[3] };
 
-        d[4] = if b0 {det1[4]} else {det0[4]};
-        d[5] = if b1 {det1[5]} else {det0[5]};
-        d[6] = if b2 {det1[6]} else {det0[6]};
-        d[7] = if b3 {det1[7]} else {det0[7]};
+        d[4] = if b0 { det1[4] } else { det0[4] };
+        d[5] = if b1 { det1[5] } else { det0[5] };
+        d[6] = if b2 { det1[6] } else { det0[6] };
+        d[7] = if b3 { det1[7] } else { det0[7] };
 
-        d[8] = if b0 {det1[8]} else {det0[8]};
-        d[9] = if b1 {det1[9]} else {det0[9]};
-        d[10] = if b2 {det1[10]} else {det0[10]};
-        d[11] = if b3 {det1[11]} else {det0[11]};
+        d[8] = if b0 { det1[8] } else { det0[8] };
+        d[9] = if b1 { det1[9] } else { det0[9] };
+        d[10] = if b2 { det1[10] } else { det0[10] };
+        d[11] = if b3 { det1[11] } else { det0[11] };
 
-        d[12] = if b0 {det1[12]} else {det0[12]};
-        d[13] = if b1 {det1[13]} else {det0[13]};
-        d[14] = if b2 {det1[14]} else {det0[14]};
-        d[15] = if b3 {det1[15]} else {det0[15]};
+        d[12] = if b0 { det1[12] } else { det0[12] };
+        d[13] = if b1 { det1[13] } else { det0[13] };
+        d[14] = if b2 { det1[14] } else { det0[14] };
+        d[15] = if b3 { det1[15] } else { det0[15] };
     }
 
     /// Mix columns of `det1` into `det0` according to `bits` for arbitrary excitation rank.
@@ -362,14 +426,24 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns_gen<T: Copy>(d: &mut [T], det0: &[T], det1: &[T], l: usize, bits: u64) {
+    pub(super) fn mix_columns_gen<T: Copy>(
+        d: &mut [T],
+        det0: &[T],
+        det1: &[T],
+        l: usize,
+        bits: u64,
+    ) {
         unsafe {
             for r in 0..l {
                 let base = r * l;
                 for c in 0..l {
                     let k = base + c;
                     let use1 = ((bits >> c) & 1) != 0;
-                    *d.get_unchecked_mut(k) = if use1 {*det1.get_unchecked(k)} else {*det0.get_unchecked(k)};
+                    *d.get_unchecked_mut(k) = if use1 {
+                        *det1.get_unchecked(k)
+                    } else {
+                        *det0.get_unchecked(k)
+                    };
                 }
             }
         }
@@ -387,7 +461,13 @@ mod mix_columns {
 /// # Returns
 /// - `()`: Writes the minor into `out`.
 #[inline(always)]
-pub fn minor<T: Copy>(out: &mut [T], m: &[T], n: usize, r_rm: usize, c_rm: usize) {
+pub fn minor<T: Copy>(
+    out: &mut [T],
+    m: &[T],
+    n: usize,
+    r_rm: usize,
+    c_rm: usize,
+) {
     match n {
         0 | 1 => {}
         2 => minor::minor2(out, m, r_rm, c_rm),
@@ -407,7 +487,12 @@ mod minor {
     /// # Returns
     /// - `()`: Writes the minor into `out`.
     #[inline(always)]
-    pub(super) fn minor2<T: Copy>(out: &mut [T], m: &[T], r_rm: usize, c_rm: usize) {
+    pub(super) fn minor2<T: Copy>(
+        out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) {
         let r = 1 ^ r_rm;
         let c = 1 ^ c_rm;
         out[0] = m[r * 2 + c];
@@ -422,15 +507,24 @@ mod minor {
     /// # Returns
     /// - `()`: Writes the minor into `out`.
     #[inline(always)]
-    pub(super) fn minor3<T: Copy>(out: &mut [T], m: &[T], r_rm: usize, c_rm: usize) {
+    pub(super) fn minor3<T: Copy>(
+        out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) {
         let mut ii = 0usize;
         for i in 0..3 {
-            if i == r_rm {continue;}
+            if i == r_rm {
+                continue;
+            }
             let base_i = i * 3;
             let base_o = ii * 2;
             let mut jj = 0usize;
             for j in 0..3 {
-                if j == c_rm {continue;}
+                if j == c_rm {
+                    continue;
+                }
                 out[base_o + jj] = m[base_i + j];
                 jj += 1;
             }
@@ -447,15 +541,24 @@ mod minor {
     /// # Returns
     /// - `()`: Writes the minor into `out`.
     #[inline(always)]
-    pub(super) fn minor4<T: Copy>(out: &mut [T], m: &[T], r_rm: usize, c_rm: usize) {
+    pub(super) fn minor4<T: Copy>(
+        out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) {
         let mut ii = 0usize;
         for i in 0..4 {
-            if i == r_rm {continue;}
+            if i == r_rm {
+                continue;
+            }
             let base_i = i * 4;
             let base_o = ii * 3;
             let mut jj = 0usize;
             for j in 0..4 {
-                if j == c_rm {continue;}
+                if j == c_rm {
+                    continue;
+                }
                 out[base_o + jj] = m[base_i + j];
                 jj += 1;
             }
@@ -472,14 +575,26 @@ mod minor {
     /// # Returns
     /// - `()`: Writes the minor into `out`.
     #[inline(always)]
-    pub(super) fn minor_gen<T: Copy>(out: &mut [T], m: &[T], n: usize, r_rm: usize, c_rm: usize) {
-        if n == 0 {return;}
+    pub(super) fn minor_gen<T: Copy>(
+        out: &mut [T],
+        m: &[T],
+        n: usize,
+        r_rm: usize,
+        c_rm: usize,
+    ) {
+        if n == 0 {
+            return;
+        }
         let mut ii = 0usize;
         for i in 0..n {
-            if i == r_rm {continue;}
+            if i == r_rm {
+                continue;
+            }
             let mut jj = 0usize;
             for j in 0..n {
-                if j == c_rm {continue;}
+                if j == c_rm {
+                    continue;
+                }
                 out[ii * (n - 1) + jj] = m[i * n + j];
                 jj += 1;
             }
@@ -496,7 +611,10 @@ mod minor {
 /// # Returns
 /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-pub fn det<T: StateScalar>(a: &[T], n: usize) -> Option<T> {
+pub fn det<T: StateScalar>(
+    a: &[T],
+    n: usize,
+) -> Option<T> {
     if a.len() != n * n {
         return None;
     }
@@ -506,24 +624,24 @@ pub fn det<T: StateScalar>(a: &[T], n: usize) -> Option<T> {
         1 => Some(a[0]),
         2 => {
             let d = det_mod::det2(a);
-            if d.abs().is_finite() {Some(d)} else {None}
+            if d.abs().is_finite() { Some(d) } else { None }
         }
         3 => {
             let d = det_mod::det3(a);
-            if d.abs().is_finite() {Some(d)} else {None}
+            if d.abs().is_finite() { Some(d) } else { None }
         }
         4 => {
             let d = det_mod::det4(a);
-            if d.abs().is_finite() {Some(d)} else {None}
+            if d.abs().is_finite() { Some(d) } else { None }
         }
         _ => det_mod::det_gen(a, n),
     }
 }
 
 mod det_mod {
+    use crate::StateScalar;
     use ndarray::ArrayView2;
     use ndarray_linalg::{Determinant, FactorizeInto, SVD};
-    use crate::StateScalar;
 
     /// Calculate determinant of a 2 x 2 matrix.
     /// # Arguments:
@@ -544,7 +662,12 @@ mod det_mod {
     /// # Returns
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
-    pub(super) fn det2scalar<T: StateScalar>(a00: T, a01: T, a10: T, a11: T) -> T {
+    pub(super) fn det2scalar<T: StateScalar>(
+        a00: T,
+        a01: T,
+        a10: T,
+        a11: T,
+    ) -> T {
         a00 * a11 - a01 * a10
     }
 
@@ -555,9 +678,15 @@ mod det_mod {
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
     pub(super) fn det3<T: StateScalar>(a: &[T]) -> T {
-        let a00 = a[0]; let a01 = a[1]; let a02 = a[2];
-        let a10 = a[3]; let a11 = a[4]; let a12 = a[5];
-        let a20 = a[6]; let a21 = a[7]; let a22 = a[8];
+        let a00 = a[0];
+        let a01 = a[1];
+        let a02 = a[2];
+        let a10 = a[3];
+        let a11 = a[4];
+        let a12 = a[5];
+        let a20 = a[6];
+        let a21 = a[7];
+        let a22 = a[8];
 
         det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22)
     }
@@ -576,8 +705,19 @@ mod det_mod {
     /// # Returns
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
-    pub(super) fn det3scalar<T: StateScalar>(a00: T, a01: T, a02: T, a10: T, a11: T, a12: T, a20: T, a21: T, a22: T) -> T {
-        a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
+    pub(super) fn det3scalar<T: StateScalar>(
+        a00: T,
+        a01: T,
+        a02: T,
+        a10: T,
+        a11: T,
+        a12: T,
+        a20: T,
+        a21: T,
+        a22: T,
+    ) -> T {
+        a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
+            + a02 * (a10 * a21 - a11 * a20)
     }
 
     /// Calculate determinant of a 4 x 4 matrix.
@@ -588,31 +728,59 @@ mod det_mod {
     #[inline(always)]
     pub(super) fn det4<T: StateScalar>(a: &[T]) -> T {
         let m00 = {
-            let a11 = a[5];  let a12 = a[6];  let a13 = a[7];
-            let a21 = a[9];  let a22 = a[10]; let a23 = a[11];
-            let a31 = a[13]; let a32 = a[14]; let a33 = a[15];
-            a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31)
+            let a11 = a[5];
+            let a12 = a[6];
+            let a13 = a[7];
+            let a21 = a[9];
+            let a22 = a[10];
+            let a23 = a[11];
+            let a31 = a[13];
+            let a32 = a[14];
+            let a33 = a[15];
+            a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31)
+                + a13 * (a21 * a32 - a22 * a31)
         };
 
         let m01 = {
-            let a10 = a[4];  let a12 = a[6];  let a13 = a[7];
-            let a20 = a[8];  let a22 = a[10]; let a23 = a[11];
-            let a30 = a[12]; let a32 = a[14]; let a33 = a[15];
-            a10 * (a22 * a33 - a23 * a32) - a12 * (a20 * a33 - a23 * a30) + a13 * (a20 * a32 - a22 * a30)
+            let a10 = a[4];
+            let a12 = a[6];
+            let a13 = a[7];
+            let a20 = a[8];
+            let a22 = a[10];
+            let a23 = a[11];
+            let a30 = a[12];
+            let a32 = a[14];
+            let a33 = a[15];
+            a10 * (a22 * a33 - a23 * a32) - a12 * (a20 * a33 - a23 * a30)
+                + a13 * (a20 * a32 - a22 * a30)
         };
 
         let m02 = {
-            let a10 = a[4];  let a11 = a[5];  let a13 = a[7];
-            let a20 = a[8];  let a21 = a[9];  let a23 = a[11];
-            let a30 = a[12]; let a31 = a[13]; let a33 = a[15];
-            a10 * (a21 * a33 - a23 * a31) - a11 * (a20 * a33 - a23 * a30) + a13 * (a20 * a31 - a21 * a30)
+            let a10 = a[4];
+            let a11 = a[5];
+            let a13 = a[7];
+            let a20 = a[8];
+            let a21 = a[9];
+            let a23 = a[11];
+            let a30 = a[12];
+            let a31 = a[13];
+            let a33 = a[15];
+            a10 * (a21 * a33 - a23 * a31) - a11 * (a20 * a33 - a23 * a30)
+                + a13 * (a20 * a31 - a21 * a30)
         };
 
         let m03 = {
-            let a10 = a[4];  let a11 = a[5];  let a12 = a[6];
-            let a20 = a[8];  let a21 = a[9];  let a22 = a[10];
-            let a30 = a[12]; let a31 = a[13]; let a32 = a[14];
-            a10 * (a21 * a32 - a22 * a31) - a11 * (a20 * a32 - a22 * a30) + a12 * (a20 * a31 - a21 * a30)
+            let a10 = a[4];
+            let a11 = a[5];
+            let a12 = a[6];
+            let a20 = a[8];
+            let a21 = a[9];
+            let a22 = a[10];
+            let a30 = a[12];
+            let a31 = a[13];
+            let a32 = a[14];
+            a10 * (a21 * a32 - a22 * a31) - a11 * (a20 * a32 - a22 * a30)
+                + a12 * (a20 * a31 - a21 * a30)
         };
 
         a[0] * m00 - a[1] * m01 + a[2] * m02 - a[3] * m03
@@ -625,12 +793,17 @@ mod det_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn det_gen<T: StateScalar>(a: &[T], n: usize) -> Option<T> {
+    pub(super) fn det_gen<T: StateScalar>(
+        a: &[T],
+        n: usize,
+    ) -> Option<T> {
         let av = ArrayView2::from_shape((n, n), a).ok()?;
 
         if let Ok(m) = av.to_owned().factorize_into() {
             if let Ok(d) = m.det() {
-                if d.abs().is_finite() {return Some(d);}
+                if d.abs().is_finite() {
+                    return Some(d);
+                }
             }
         }
 
@@ -646,7 +819,11 @@ mod det_mod {
             det *= T::from_real(si);
         }
 
-        if det.abs().is_finite() {Some(det)} else {None}
+        if det.abs().is_finite() {
+            Some(det)
+        } else {
+            None
+        }
     }
 }
 
@@ -662,7 +839,14 @@ mod det_mod {
 /// # Returns
 /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
 #[inline(always)]
-pub fn adjugate_transpose<T: StateScalar>(adjt: &mut [T], invs: &mut [f64], lu: &mut [T], a: &[T], n: usize, thresh: f64) -> Option<T> {
+pub fn adjugate_transpose<T: StateScalar>(
+    adjt: &mut [T],
+    invs: &mut [f64],
+    lu: &mut [T],
+    a: &[T],
+    n: usize,
+    thresh: f64,
+) -> Option<T> {
     match n {
         0 => Some(T::from_real(1.0)),
         1 => adjt_mod::adjt1(adjt, a),
@@ -674,10 +858,10 @@ pub fn adjugate_transpose<T: StateScalar>(adjt: &mut [T], invs: &mut [f64], lu: 
 }
 
 mod adjt_mod {
+    use super::det_mod::{det2scalar, det3scalar, det4};
+    use crate::StateScalar;
     use ndarray::{Array2, ArrayView2};
     use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
-    use crate::StateScalar;
-    use super::det_mod::{det2scalar, det3scalar, det4};
 
     /// Calculate determinant of 1 by 1 matrix `a` and write its adjugate transpose into `adjt`.
     /// # Arguments:
@@ -686,7 +870,10 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt1<T: StateScalar>(adjt: &mut [T], a: &[T]) -> Option<T> {
+    pub(super) fn adjt1<T: StateScalar>(
+        adjt: &mut [T],
+        a: &[T],
+    ) -> Option<T> {
         adjt[0] = T::from_real(1.0);
         Some(a[0])
     }
@@ -698,12 +885,19 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt2<T: StateScalar>(adjt: &mut [T], a: &[T]) -> Option<T> {
-        let a00 = a[0]; let a01 = a[1];
-        let a10 = a[2]; let a11 = a[3];
+    pub(super) fn adjt2<T: StateScalar>(
+        adjt: &mut [T],
+        a: &[T],
+    ) -> Option<T> {
+        let a00 = a[0];
+        let a01 = a[1];
+        let a10 = a[2];
+        let a11 = a[3];
 
         let det = det2scalar(a00, a01, a10, a11);
-        if !det.abs().is_finite() {return None;}
+        if !det.abs().is_finite() {
+            return None;
+        }
 
         adjt[0] = a11;
         adjt[1] = T::from_real(-1.0) * a10;
@@ -720,13 +914,24 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt3<T: StateScalar>(adjt: &mut [T], a: &[T]) -> Option<T> {
-        let a00 = a[0]; let a01 = a[1]; let a02 = a[2];
-        let a10 = a[3]; let a11 = a[4]; let a12 = a[5];
-        let a20 = a[6]; let a21 = a[7]; let a22 = a[8];
+    pub(super) fn adjt3<T: StateScalar>(
+        adjt: &mut [T],
+        a: &[T],
+    ) -> Option<T> {
+        let a00 = a[0];
+        let a01 = a[1];
+        let a02 = a[2];
+        let a10 = a[3];
+        let a11 = a[4];
+        let a12 = a[5];
+        let a20 = a[6];
+        let a21 = a[7];
+        let a22 = a[8];
 
         let det = det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22);
-        if !det.abs().is_finite() {return None;}
+        if !det.abs().is_finite() {
+            return None;
+        }
 
         let neg = T::from_real(-1.0);
 
@@ -742,9 +947,15 @@ mod adjt_mod {
         let c21 = neg * det2scalar(a00, a02, a10, a12);
         let c22 = det2scalar(a00, a01, a10, a11);
 
-        adjt[0] = c00; adjt[1] = c01; adjt[2] = c02;
-        adjt[3] = c10; adjt[4] = c11; adjt[5] = c12;
-        adjt[6] = c20; adjt[7] = c21; adjt[8] = c22;
+        adjt[0] = c00;
+        adjt[1] = c01;
+        adjt[2] = c02;
+        adjt[3] = c10;
+        adjt[4] = c11;
+        adjt[5] = c12;
+        adjt[6] = c20;
+        adjt[7] = c21;
+        adjt[8] = c22;
 
         Some(det)
     }
@@ -756,9 +967,14 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt4<T: StateScalar>(adjt: &mut [T], a: &[T]) -> Option<T> {
+    pub(super) fn adjt4<T: StateScalar>(
+        adjt: &mut [T],
+        a: &[T],
+    ) -> Option<T> {
         let det = det4(a);
-        if !det.abs().is_finite() {return None;}
+        if !det.abs().is_finite() {
+            return None;
+        }
 
         for i in 0..4 {
             for j in 0..4 {
@@ -767,14 +983,18 @@ mod adjt_mod {
 
                 let mut ri = 0usize;
                 for rr in 0..4 {
-                    if rr == i {continue;}
+                    if rr == i {
+                        continue;
+                    }
                     r[ri] = rr;
                     ri += 1;
                 }
 
                 let mut ci = 0usize;
                 for cc in 0..4 {
-                    if cc == j {continue;}
+                    if cc == j {
+                        continue;
+                    }
                     c[ci] = cc;
                     ci += 1;
                 }
@@ -790,7 +1010,11 @@ mod adjt_mod {
                 let m22 = a[r[2] * 4 + c[2]];
 
                 let minordet = det3scalar(m00, m01, m02, m10, m11, m12, m20, m21, m22);
-                let sign = if ((i + j) & 1) == 0 {T::from_real(1.0)} else {T::from_real(-1.0)};
+                let sign = if ((i + j) & 1) == 0 {
+                    T::from_real(1.0)
+                } else {
+                    T::from_real(-1.0)
+                };
                 adjt[i * 4 + j] = sign * minordet;
             }
         }
@@ -809,8 +1033,17 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt_gen<T: StateScalar>(adjt: &mut [T], invs: &mut [f64], lu: &mut [T], a: &[T], n: usize, thresh: f64) -> Option<T> {
-        if let Some(det) = adjtlu(adjt, lu, a, n) {return Some(det);}
+    pub(super) fn adjt_gen<T: StateScalar>(
+        adjt: &mut [T],
+        invs: &mut [f64],
+        lu: &mut [T],
+        a: &[T],
+        n: usize,
+        thresh: f64,
+    ) -> Option<T> {
+        if let Some(det) = adjtlu(adjt, lu, a, n) {
+            return Some(det);
+        }
         adjtsvd(adjt, invs, a, n, thresh)
     }
 
@@ -823,7 +1056,12 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjtlu<T: StateScalar>(adjt: &mut [T], lu: &mut [T], a: &[T], n: usize) -> Option<T> {
+    pub(super) fn adjtlu<T: StateScalar>(
+        adjt: &mut [T],
+        lu: &mut [T],
+        a: &[T],
+        n: usize,
+    ) -> Option<T> {
         let nn = n * n;
         lu[..nn].copy_from_slice(&a[..nn]);
 
@@ -852,7 +1090,13 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjtsvd<T: StateScalar>(adjt: &mut [T], invs: &mut [f64], a: &[T], n: usize, thresh: f64) -> Option<T> {
+    pub(super) fn adjtsvd<T: StateScalar>(
+        adjt: &mut [T],
+        invs: &mut [f64],
+        a: &[T],
+        n: usize,
+        thresh: f64,
+    ) -> Option<T> {
         let nn = n * n;
         if adjt.len() < nn || invs.len() < n || a.len() < nn {
             return None;

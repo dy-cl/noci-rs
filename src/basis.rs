@@ -4,16 +4,16 @@ use std::sync::Arc;
 
 use itertools::Itertools;
 use ndarray::Array2;
-use rand::{SeedableRng};
+use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState, DetState};
-use crate::noci::NOCIScalar;
-use crate::input::{Input, StateType, StateRecipe, Metadynamics};
+use crate::input::{Input, Metadynamics, StateRecipe, StateType};
 use crate::maths::real2_as;
+use crate::noci::NOCIScalar;
+use crate::{AoData, DetState, Excitation, ExcitationSpin, HSCFState, SCFState};
 
-use crate::utils::random_pattern;
 use crate::scf::{build_hscf_state, scf_cycle};
+use crate::utils::random_pattern;
 
 pub struct SpinOccupation {
     /// Indices of occupied alpha-spin orbitals.
@@ -42,30 +42,40 @@ pub struct ReferenceBasis {
 /// - `scale`: Multiplicative factor applied to the selected sub-block.
 /// # Returns:
 /// - `()`: Modifies `d` in place.
-fn scale_block(d: &mut Array2<f64>, idx: &[usize], scale: f64) {
+fn scale_block(
+    d: &mut Array2<f64>,
+    idx: &[usize],
+    scale: f64,
+) {
     for &i in idx {
-        for &j in idx{
+        for &j in idx {
             d[(i, j)] *= scale
         }
     }
 }
 
 /// Bias density matrices towards a spatial symmetry broken RHF guess. We will have da = db.
-/// # Arguments 
+/// # Arguments
 /// - `da`: Spin density matrix a.
 /// - `db`: Spin density matrix b.
-/// - `atomao`: Global AO indices of AOs belonging to atom i. 
+/// - `atomao`: Global AO indices of AOs belonging to atom i.
 /// - `pol`: Bias strength.
 /// - `pattern`: Spin biasing pattern.
 /// # Returns
 /// - `()`: Modifies `da` and `db` in place.
-fn bias_spatial(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], pol: f64, pattern: &[i8]) { 
+fn bias_spatial(
+    da: &mut Array2<f64>,
+    db: &mut Array2<f64>,
+    atomao: &[Vec<usize>],
+    pol: f64,
+    pattern: &[i8],
+) {
     let up = 1.0 + pol;
     let dn = 1.0 - pol;
 
     for (a, &sgn) in pattern.iter().enumerate() {
-        if sgn == 0 { 
-            continue; 
+        if sgn == 0 {
+            continue;
         }
         let idx = &atomao[a];
         if sgn > 0 {
@@ -79,15 +89,21 @@ fn bias_spatial(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>
 }
 
 /// Bias density matrices towards a spin symmetry-broken UHF guess. We will have da != db.
-/// # Arguments 
+/// # Arguments
 /// - `da`: Spin density matrix a.
 /// - `db`: Spin density matrix b.
-/// - `atomao`: Global AO indices of AOs belonging to atom i. 
+/// - `atomao`: Global AO indices of AOs belonging to atom i.
 /// - `pol`: Bias strength.
 /// - `pattern`: Spin biasing pattern.
 /// # Returns
 /// - `()`: Modifies `da` and `db` in place.
-fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], pol: f64, pattern: &[i8]) {
+fn bias_spin(
+    da: &mut Array2<f64>,
+    db: &mut Array2<f64>,
+    atomao: &[Vec<usize>],
+    pol: f64,
+    pattern: &[i8],
+) {
     let up = 1.0 + pol;
     let dn = 1.0 - pol;
 
@@ -106,15 +122,19 @@ fn bias_spin(da: &mut Array2<f64>, db: &mut Array2<f64>, atomao: &[Vec<usize>], 
     }
 }
 
-/// Calculate the distance between determinant states from Phys. Rev. Lett. 101, 193001 as 
+/// Calculate the distance between determinant states from Phys. Rev. Lett. 101, 193001 as
 /// d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).
-/// # Arguments 
-/// - `w`: Reference state from which distance is computed. 
+/// # Arguments
+/// - `w`: Reference state from which distance is computed.
 /// - `x`: State to which distance is computed.
 /// - `s`: AO overlap matrix.
 /// # Returns
 /// - `f64`: Electron distance between the two determinant states.
-pub fn electron_distance<T: NOCIScalar>(w: &DetState<T>, x: &DetState<T>, s: &Array2<f64>) -> f64 {
+pub fn electron_distance<T: NOCIScalar>(
+    w: &DetState<T>,
+    x: &DetState<T>,
+    s: &Array2<f64>,
+) -> f64 {
     let smat = real2_as::<T>(s);
 
     // Calculate electron number N as Tr(D_r S).
@@ -138,18 +158,32 @@ pub fn electron_distance<T: NOCIScalar>(w: &DetState<T>, x: &DetState<T>, s: &Ar
 /// - `d_tol`: Tolerance below which two states are treated as duplicates.
 /// # Returns:
 /// - `()`: Mutates duplicate states in place by setting `noci_basis = false`.
-fn mark_duplicate_noci_states<T: NOCIScalar>(states: &mut [DetState<T>], s: &Array2<f64>, d_tol: f64) {
+fn mark_duplicate_noci_states<T: NOCIScalar>(
+    states: &mut [DetState<T>],
+    s: &Array2<f64>,
+    d_tol: f64,
+) {
     println!("{}", "=".repeat(100));
     for i in 0..states.len() {
-        if !states[i].noci_basis {continue;}
+        if !states[i].noci_basis {
+            continue;
+        }
 
         for j in 0..i {
-            if !states[j].noci_basis {continue;}
+            if !states[j].noci_basis {
+                continue;
+            }
 
             let d2 = electron_distance(&states[j], &states[i], s);
-            println!("State '{}' electron distance from state '{}': {}", states[i].label, states[j].label, d2);
+            println!(
+                "State '{}' electron distance from state '{}': {}",
+                states[i].label, states[j].label, d2
+            );
             if d2 < d_tol {
-                println!("Removed state '{}' from NOCI basis as duplicate of '{}' (d^2 = {:.6})", states[i].label, states[j].label, d2);
+                println!(
+                    "Removed state '{}' from NOCI basis as duplicate of '{}' (d^2 = {:.6})",
+                    states[i].label, states[j].label, d2
+                );
                 states[i].noci_basis = false;
                 break;
             }
@@ -163,7 +197,10 @@ fn mark_duplicate_noci_states<T: NOCIScalar>(states: &mut [DetState<T>], s: &Arr
 /// - `prev_map`: Previous real SCF states keyed by label.
 /// # Returns
 /// - `Option<&SCFState>`: Previous state with the same label, or previous RHF for excited MOM states.
-fn previous_mom_seed<'a>(recipe: &StateRecipe, prev_map: &'a HashMap<&str, &SCFState>) -> Option<&'a SCFState> {
+fn previous_mom_seed<'a>(
+    recipe: &StateRecipe,
+    prev_map: &'a HashMap<&str, &SCFState>,
+) -> Option<&'a SCFState> {
     if recipe.scfexcitation.is_none() {
         prev_map.get(recipe.label.as_str()).copied()
     } else {
@@ -180,13 +217,35 @@ fn previous_mom_seed<'a>(recipe: &StateRecipe, prev_map: &'a HashMap<&str, &SCFS
 /// - `seed`: Optional previous or partner SCF state used as the base density.
 /// # Returns
 /// - `(Array2<f64>, Array2<f64>)`: Biased alpha and beta density guesses.
-fn biased_density_guess(ao: &AoData, recipe: &StateRecipe, seed: Option<&SCFState>) -> (Array2<f64>, Array2<f64>) {
-    let mut da = seed.map(|st| (*st.da).clone()).unwrap_or_else(|| ao.dm.clone() * 0.5);
-    let mut db = seed.map(|st| (*st.db).clone()).unwrap_or_else(|| ao.dm.clone() * 0.5);
+fn biased_density_guess(
+    ao: &AoData,
+    recipe: &StateRecipe,
+    seed: Option<&SCFState>,
+) -> (Array2<f64>, Array2<f64>) {
+    let mut da = seed
+        .map(|st| (*st.da).clone())
+        .unwrap_or_else(|| ao.dm.clone() * 0.5);
+    let mut db = seed
+        .map(|st| (*st.db).clone())
+        .unwrap_or_else(|| ao.dm.clone() * 0.5);
 
     if seed.is_none() && (recipe.spin_bias.is_some() || recipe.spatial_bias.is_some()) {
-        let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
-        let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
+        let natoms: usize = ao
+            .labels
+            .iter()
+            .map(|s| {
+                s.split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let atomao: Vec<Vec<usize>> = (0..natoms)
+            .map(|a| ao_indices_for_atomset(&ao.labels, &[a]))
+            .collect();
 
         if let Some(sb) = &recipe.spin_bias {
             bias_spin(&mut da, &mut db, &atomao, sb.pol, &sb.pattern);
@@ -209,7 +268,14 @@ fn biased_density_guess(ao: &AoData, recipe: &StateRecipe, seed: Option<&SCFStat
 /// - `i`: Recipe index used as the parent/state index.
 /// # Returns
 /// - `SCFState`: Converged real SCF state for this recipe.
-fn run_mom_scf_state(ao: &AoData, input: &Input, recipe: &StateRecipe, prev: Option<&[SCFState]>, prev_map: &HashMap<&str, &SCFState>, i: usize) -> SCFState {
+fn run_mom_scf_state(
+    ao: &AoData,
+    input: &Input,
+    recipe: &StateRecipe,
+    prev: Option<&[SCFState]>,
+    prev_map: &HashMap<&str, &SCFState>,
+    i: usize,
+) -> SCFState {
     if input.write.verbose {
         let left = "=".repeat(45);
         let right = "=".repeat(46);
@@ -229,55 +295,89 @@ fn run_mom_scf_state(ao: &AoData, input: &Input, recipe: &StateRecipe, prev: Opt
     };
     let (da, db) = biased_density_guess(ao, recipe, seed);
 
-    scf_cycle(&da, &db, ao, input, &recipe.label, recipe.noci, scfexcitation, i, None).expect("SCF did not converge")
+    scf_cycle(
+        &da,
+        &db,
+        ao,
+        input,
+        &recipe.label,
+        recipe.noci,
+        scfexcitation,
+        i,
+        None,
+    )
+    .expect("SCF did not converge")
 }
 
-/// Using the occupation vectors oa, ob, get positions p of oa, ob which are equal to 0 and 1. That is, 
+/// Using the occupation vectors oa, ob, get positions p of oa, ob which are equal to 0 and 1. That is,
 /// the virtual and occupied column indices for each spin.
 /// # Arguments
 /// - `st`: State which we are finding virtual and occupied indices.
 /// # Returns
 /// - `SpinOccupation`: Occupied and virtual orbital indices for alpha and beta spin.
-fn get_spin_occupation(st: &SCFState,) -> SpinOccupation {
+fn get_spin_occupation(st: &SCFState) -> SpinOccupation {
     //  For each entry in oa/ob find all indices p where o[p] = 1.
-     let occ_alpha: Vec<usize> = (0..st.ca.ncols()).filter(|&p| ((st.oa >> p) & 1u128) == 1).collect();
-    let occ_beta: Vec<usize> = (0..st.cb.ncols()).filter(|&p| ((st.ob >> p) & 1u128) == 1).collect();
+    let occ_alpha: Vec<usize> = (0..st.ca.ncols())
+        .filter(|&p| ((st.oa >> p) & 1u128) == 1)
+        .collect();
+    let occ_beta: Vec<usize> = (0..st.cb.ncols())
+        .filter(|&p| ((st.ob >> p) & 1u128) == 1)
+        .collect();
 
     //  For each entry in oa/ob find all indices p where o[p] = 0.
-    let virt_alpha: Vec<usize> = (0..st.ca.ncols()).filter(|&p| ((st.oa >> p) & 1u128) == 0).collect();
-    let virt_beta: Vec<usize> = (0..st.cb.ncols()).filter(|&p| ((st.ob >> p) & 1u128) == 0).collect();
+    let virt_alpha: Vec<usize> = (0..st.ca.ncols())
+        .filter(|&p| ((st.oa >> p) & 1u128) == 0)
+        .collect();
+    let virt_beta: Vec<usize> = (0..st.cb.ncols())
+        .filter(|&p| ((st.ob >> p) & 1u128) == 0)
+        .collect();
 
-    SpinOccupation{occ_alpha, virt_alpha, occ_beta, virt_beta}
+    SpinOccupation {
+        occ_alpha,
+        virt_alpha,
+        occ_beta,
+        virt_beta,
+    }
 }
 
 // Copy a reference SCF state (i.e., those that form the deterministic NOCI basis) and replace the
 /// oa, ob with modified occupancies, and rebuild cs_occ accordingly.
-/// # Arguments 
+/// # Arguments
 /// - `reference`: SCF state from which to build an excited state.
 /// - `oa_ex`: Excited occupied indices spin alpha.
-/// - `ob_ex`: Excited occupied indices spin beta. 
+/// - `ob_ex`: Excited occupied indices spin beta.
 /// - `label_suffix`: What to append to reference state label to indicate excitation.
 /// - `parent`: Index of the parent reference determinant.
 /// - `excitation`: Excitation carried by the excited state.
 /// # Returns
 /// - `SCFState`: Excited state built from the reference state with modified occupancies.
-fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suffix: &str, parent: usize, 
-                      excitation: Excitation, parent_oa: u128, parent_ob: u128) -> SCFState {
+fn make_excited_state(
+    reference: &SCFState,
+    oa_ex: u128,
+    ob_ex: u128,
+    label_suffix: &str,
+    parent: usize,
+    excitation: Excitation,
+    parent_oa: u128,
+    parent_ob: u128,
+) -> SCFState {
     let pha = excitation_phase(parent_oa, &excitation.alpha.holes, &excitation.alpha.parts);
     let phb = excitation_phase(parent_ob, &excitation.beta.holes, &excitation.beta.parts);
 
     SCFState {
-        e: 0.0, 
-        oa: oa_ex, 
-        ob: ob_ex, 
-        pha, 
-        phb, 
-        ca: Arc::clone(&reference.ca), 
-        cb: Arc::clone(&reference.cb), 
-        da: Arc::clone(&reference.da), 
-        db: Arc::clone(&reference.db), 
-        label: format!("{} {}", reference.label, label_suffix), 
-        noci_basis: false, parent, excitation
+        e: 0.0,
+        oa: oa_ex,
+        ob: ob_ex,
+        pha,
+        phb,
+        ca: Arc::clone(&reference.ca),
+        cb: Arc::clone(&reference.cb),
+        da: Arc::clone(&reference.da),
+        db: Arc::clone(&reference.db),
+        label: format!("{} {}", reference.label, label_suffix),
+        noci_basis: false,
+        parent,
+        excitation,
     }
 }
 
@@ -289,16 +389,28 @@ fn make_excited_state(reference: &SCFState, oa_ex: u128, ob_ex: u128, label_suff
 /// `atoms`: Atom indices for which we wish to know the corresponding AO indices.
 /// # Returns
 /// - `Vec<usize>`: AO indices belonging to the requested atom set.
-fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
+fn ao_indices_for_atomset(
+    aolabels: &[String],
+    atoms: &[usize],
+) -> Vec<usize> {
     // Iterate over all AO labels which contain for example "2 1s".
-    aolabels.iter().enumerate()
+    aolabels
+        .iter()
+        .enumerate()
         // Take the first part of the label (e.g. "2") and keep it if the AOs atom index is in
         // atoms list.
         .filter(|(_, s)| {
-            let a = s.split_whitespace().next().unwrap().parse::<usize>().unwrap();
+            let a = s
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
             atoms.contains(&a)
-        // Return the AO indices i.
-        }).map(|(i, _)| i).collect()
+            // Return the AO indices i.
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Calculate fermionic sign associated with applying a set of creation and annhilation operators
@@ -310,8 +422,11 @@ fn ao_indices_for_atomset(aolabels: &[String], atoms: &[usize]) -> Vec<usize> {
 /// # Returns
 /// - `f64`: Fermionic phase factor.
 #[inline(always)]
-pub fn excitation_phase(mut occ: u128, holes: &[usize], parts: &[usize]) -> f64 {
-
+pub fn excitation_phase(
+    mut occ: u128,
+    holes: &[usize],
+    parts: &[usize],
+) -> f64 {
     /// Determine whether the number of occupied orbitals below orbital index `p`
     /// is odd.
     /// # Arguments:
@@ -319,9 +434,12 @@ pub fn excitation_phase(mut occ: u128, holes: &[usize], parts: &[usize]) -> f64 
     /// - `p`: Orbital index.
     /// # Returns:
     /// - `bool`: `true` if the number of occupied orbitals with index less than
-    ///   `p` is odd, otherwise `false`. 
+    ///   `p` is odd, otherwise `false`.
     #[inline(always)]
-    fn below(bits: u128, p: usize) -> bool {
+    fn below(
+        bits: u128,
+        p: usize,
+    ) -> bool {
         if p == 0 {
             false
         } else {
@@ -342,20 +460,25 @@ pub fn excitation_phase(mut occ: u128, holes: &[usize], parts: &[usize]) -> f64 
             occ |= 1u128 << a;
         }
     }
-    if odd {-1.0} else {1.0}
+    if odd { -1.0 } else { 1.0 }
 }
 
 /// Generate the SCF states using the maximum orbital overlap procedure.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `input`: Contains user inputted options. 
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: Contains user inputted options.
 /// - `prev`: May or may not contain states from a previous geometry.
 /// - `prev_map`: Map between the SCFState object and its label.
 /// - `recipes`: Instructions for how to construct each state.
 /// # Returns:
 /// - `Vec<SCFState>`: Generated SCF states.
-fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, prev_map: &HashMap<&str, &SCFState>, recipes: &[StateRecipe]) -> Vec<SCFState> {
-    
+fn generate_states_mom(
+    ao: &AoData,
+    input: &Input,
+    prev: Option<&[SCFState]>,
+    prev_map: &HashMap<&str, &SCFState>,
+    recipes: &[StateRecipe],
+) -> Vec<SCFState> {
     let mut out: Vec<SCFState> = Vec::with_capacity(recipes.len());
     for (i, recipe) in recipes.iter().enumerate() {
         if recipe.holomorphic {
@@ -371,14 +494,18 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
 
 /// Generate the SCF states using the SCF metadynamics procedure.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `input`: Contains user inputted options. 
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: Contains user inputted options.
 /// - `prev_map`: Map between the SCFState object and its label.
 /// - `meta`: SCF metadynamics parameters.
 /// # Returns:
 /// - `Vec<SCFState>`: Generated SCF states.
-fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&str, &SCFState>, meta: &mut Metadynamics) -> Vec<SCFState> {
-
+fn generate_states_metadynamics(
+    ao: &AoData,
+    input: &Input,
+    prev_map: &HashMap<&str, &SCFState>,
+    meta: &mut Metadynamics,
+) -> Vec<SCFState> {
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
     let rhf_tol = 1e-2;
@@ -386,33 +513,49 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
     let mut biases_rhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf);
     let mut biases_uhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_uhf);
 
-    let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
-    let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
+    let natoms: usize = ao
+        .labels
+        .iter()
+        .map(|s| {
+            s.split_whitespace()
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let atomao: Vec<Vec<usize>> = (0..natoms)
+        .map(|a| ao_indices_for_atomset(&ao.labels, &[a]))
+        .collect();
     let mut states: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf + meta.nstates_uhf);
-    
+
     let mut attempt = 0_u64;
     let mut irhf = 0;
     while biases_uhf.len() < meta.nstates_uhf || biases_rhf.len() < meta.nstates_rhf {
-        
         attempt += 1;
         if attempt > (meta.max_attempts as u64) {
-            println!("Maximum number of attempts to find UHF solution has been exceeded. UHF is likely not distinct from RHF at this geometry.");
+            println!(
+                "Maximum number of attempts to find UHF solution has been exceeded. UHF is likely not distinct from RHF at this geometry."
+            );
             break;
         }
 
         // Attempt spin biased state. Usually produces UHF but can collapse to RHF.
-        if  meta.nstates_uhf > 0 && biases_uhf.len() < meta.nstates_uhf {
-            
+        if meta.nstates_uhf > 0 && biases_uhf.len() < meta.nstates_uhf {
             // Assume that all metadynamics found states are to be used in NOCI basis.
             let noci_basis = true;
 
             let pair = biases_uhf.len() / 2;
             let base = biases_uhf.len();
-            if base + 1 >= meta.labels_uhf.len() {break;}
+            if base + 1 >= meta.labels_uhf.len() {
+                break;
+            }
 
             let labela = &meta.labels_uhf[base];
             let labelb = &meta.labels_uhf[base + 1];
-      
+
             let mut cand: [Option<SCFState>; 2] = [None, None];
 
             // If previous densities for the current label exist use them. Otherwise start from RHF density.
@@ -430,7 +573,9 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
             let pattern: Vec<i8> = if let Some(p) = meta.spin_patterns_uhf[base].as_ref() {
                 p.clone()
             } else {
-                let mut rng = StdRng::seed_from_u64(attempt.wrapping_add((pair as u64).wrapping_mul(0x9E3779B97F4A7C15_u64)));
+                let mut rng = StdRng::seed_from_u64(
+                    attempt.wrapping_add((pair as u64).wrapping_mul(0x9E3779B97F4A7C15_u64)),
+                );
                 random_pattern(&mut rng, natoms)
             };
 
@@ -438,39 +583,74 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 
             // Any spin-broken UHF state should have a spin-flipped degernerate counterpart, find both.
             for (j, cand_slot) in cand.iter_mut().enumerate() {
-
                 let labelidx = base + j;
-                if labelidx >= meta.nstates_uhf {break;}
+                if labelidx >= meta.nstates_uhf {
+                    break;
+                }
                 let label = &meta.labels_uhf[labelidx];
-                
+
                 let (mut daj, mut dbj) = (da0.clone(), db0.clone());
 
                 // Bias the densities as prescribed by the pattern.
                 bias_spin(&mut daj, &mut dbj, &atomao, meta.spinpol, &pattern);
-                
+
                 // When j == 1 we swap the densities so as to get the spin-flipped density.
-                if j == 1 {std::mem::swap(&mut daj, &mut dbj);}
+                if j == 1 {
+                    std::mem::swap(&mut daj, &mut dbj);
+                }
 
                 if input.write.verbose {
                     let left = "=".repeat(45);
                     let right = "=".repeat(46);
                     println!("{}Begin UHF Metadynamics Biased SCF{}", left, right);
-                    println!("State({}): {}, Spin-flip: {}, Attempt: {}", labelidx, label, j, attempt);
+                    println!(
+                        "State({}): {}, Spin-flip: {}, Attempt: {}",
+                        labelidx, label, j, attempt
+                    );
                 }
 
                 let biased = {
-                    let biasi = if biases_uhf.is_empty() {None} else {Some(biases_uhf.as_slice())};
-                    scf_cycle(&daj, &dbj, ao, input, &label.to_string(), noci_basis, None, labelidx, biasi).expect("SCF did not converge")
+                    let biasi = if biases_uhf.is_empty() {
+                        None
+                    } else {
+                        Some(biases_uhf.as_slice())
+                    };
+                    scf_cycle(
+                        &daj,
+                        &dbj,
+                        ao,
+                        input,
+                        &label.to_string(),
+                        noci_basis,
+                        None,
+                        labelidx,
+                        biasi,
+                    )
+                    .expect("SCF did not converge")
                 };
-                
+
                 if input.write.verbose {
                     let left = "=".repeat(45);
                     let right = "=".repeat(46);
                     println!("{}Begin UHF Metadynamics Relaxed SCF{}", left, right);
-                    println!("State({}): {}, Spin-flip: {}, Attempt: {}", labelidx, label, j, attempt);
+                    println!(
+                        "State({}): {}, Spin-flip: {}, Attempt: {}",
+                        labelidx, label, j, attempt
+                    );
                 }
 
-                let relaxed = scf_cycle(&biased.da, &biased.db, ao, input, &label.to_string(), noci_basis, None, labelidx, None).expect("SCF did not converge");
+                let relaxed = scf_cycle(
+                    &biased.da,
+                    &biased.db,
+                    ao,
+                    input,
+                    &label.to_string(),
+                    noci_basis,
+                    None,
+                    labelidx,
+                    None,
+                )
+                .expect("SCF did not converge");
 
                 let mut candidate = relaxed;
                 candidate.noci_basis = true;
@@ -483,10 +663,19 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                 if drhf < rhf_tol {
                     // RHF branch.
                     // Ignore state if duplicate.
-                    println!("UHF candidate collapsed to RHF: drhf = {:.3e} < {:.3e}", drhf, rhf_tol);
-                    let dup = biases_rhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < input.scf.d_tol);
+                    println!(
+                        "UHF candidate collapsed to RHF: drhf = {:.3e} < {:.3e}",
+                        drhf, rhf_tol
+                    );
+                    let dup = biases_rhf
+                        .iter()
+                        .map(|st| electron_distance(st, &candidate, &ao.s))
+                        .any(|d2| d2 < input.scf.d_tol);
                     if dup {
-                        println!("Removed state '{}' from basis as duplicate.", candidate.label);
+                        println!(
+                            "Removed state '{}' from basis as duplicate.",
+                            candidate.label
+                        );
                         continue;
                     }
 
@@ -497,7 +686,9 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                         meta.labels_rhf.push("RHF".to_string());
                         meta.spatial_patterns_rhf.push(Some(pattern.clone()));
                     }
-                    if irhf >= meta.nstates_rhf {continue;}
+                    if irhf >= meta.nstates_rhf {
+                        continue;
+                    }
                     candidate.label = meta.labels_rhf[irhf].clone();
                     meta.spatial_patterns_rhf[irhf] = Some(pattern.clone());
 
@@ -510,10 +701,19 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                 } else {
                     // UHF branch.
                     // Ignore state if duplicate.
-                    println!("UHF candidate stayed UHF: drhf = {:.3e} > {:.3e}", drhf, rhf_tol);
-                    let dup = biases_uhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < input.scf.d_tol);
+                    println!(
+                        "UHF candidate stayed UHF: drhf = {:.3e} > {:.3e}",
+                        drhf, rhf_tol
+                    );
+                    let dup = biases_uhf
+                        .iter()
+                        .map(|st| electron_distance(st, &candidate, &ao.s))
+                        .any(|d2| d2 < input.scf.d_tol);
                     if dup {
-                        println!("Removed state '{}' from basis as duplicate.", candidate.label);
+                        println!(
+                            "Removed state '{}' from basis as duplicate.",
+                            candidate.label
+                        );
                         continue;
                     }
 
@@ -545,25 +745,26 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 
         // Attempt spatial biased state. Should only produce RHF.
         if meta.nstates_rhf > 0 && biases_rhf.len() < meta.nstates_rhf {
-
             // Assume that all metadynamics found states are to be used in NOCI basis.
             let noci_basis = true;
 
             let label = &meta.labels_rhf[irhf];
-            
+
             // If previous densities for the current label exist use them. Otherwise start from RHF density.
             let (mut da, mut db) = (da0.clone(), db0.clone());
             if let Some(st) = prev_map.get(label.as_str()).copied() {
                 da = (*st.da).clone();
                 db = (*st.db).clone();
             }
-            
+
             // If a bias pattern which was previously successful in obtaining an RHF state exists
             // then we should reuse it. Otherwise generate a new pattern.
             let pattern: Vec<i8> = if let Some(p) = meta.spatial_patterns_rhf[irhf].as_ref() {
                 p.clone()
             } else {
-                let mut rng = StdRng::seed_from_u64(attempt.wrapping_add((irhf as u64).wrapping_mul(0x9E3779B97F4A7C15_u64)));
+                let mut rng = StdRng::seed_from_u64(
+                    attempt.wrapping_add((irhf as u64).wrapping_mul(0x9E3779B97F4A7C15_u64)),
+                );
                 random_pattern(&mut rng, natoms)
             };
 
@@ -578,10 +779,25 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
             }
 
             let biased = {
-                let biasi = if biases_uhf.is_empty() {None} else {Some(biases_uhf.as_slice())};
-                scf_cycle(&da, &db, ao, input, &label.to_string(), noci_basis, None, irhf, biasi).expect("SCF did not converge")
+                let biasi = if biases_uhf.is_empty() {
+                    None
+                } else {
+                    Some(biases_uhf.as_slice())
+                };
+                scf_cycle(
+                    &da,
+                    &db,
+                    ao,
+                    input,
+                    &label.to_string(),
+                    noci_basis,
+                    None,
+                    irhf,
+                    biasi,
+                )
+                .expect("SCF did not converge")
             };
-            
+
             if input.write.verbose {
                 let left = "=".repeat(45);
                 let right = "=".repeat(46);
@@ -589,22 +805,45 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                 println!("State({}): {}, Attempt: {}", irhf, label, attempt);
             }
 
-            let relaxed = scf_cycle(&biased.da, &biased.db, ao, input, &label.to_string(), noci_basis, None, irhf, None).expect("SCF did not converge");
+            let relaxed = scf_cycle(
+                &biased.da,
+                &biased.db,
+                ao,
+                input,
+                &label.to_string(),
+                noci_basis,
+                None,
+                irhf,
+                None,
+            )
+            .expect("SCF did not converge");
 
             let mut candidate = relaxed;
             candidate.noci_basis = true;
 
             // Ensure found state is not a duplicate.
-            let is_duplicate = states.iter().map(|st| (st, electron_distance(st, &candidate, &ao.s))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).is_some_and(|(closest, d2)| {
-                println!("State '{}' electron distance from state '{}': {}", candidate.label, closest.label, d2);
-                if d2 < input.scf.d_tol {
-                    println!("Removed state '{}' from basis as duplicate of '{}' (d^2 = {:.6})", candidate.label, closest.label, d2);
-                    true
-                } else {
-                    false
-                }
-            });
-            if is_duplicate {continue;}
+            let is_duplicate = states
+                .iter()
+                .map(|st| (st, electron_distance(st, &candidate, &ao.s)))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .is_some_and(|(closest, d2)| {
+                    println!(
+                        "State '{}' electron distance from state '{}': {}",
+                        candidate.label, closest.label, d2
+                    );
+                    if d2 < input.scf.d_tol {
+                        println!(
+                            "Removed state '{}' from basis as duplicate of '{}' (d^2 = {:.6})",
+                            candidate.label, closest.label, d2
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                });
+            if is_duplicate {
+                continue;
+            }
 
             // No need to check for UHF vs RHF here, if we started with equal densities we should
             // not escape this. All duplicates removed by this point. Since we have successfully found a new
@@ -619,15 +858,19 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 }
 
 /// Generate the requested real and holomorphic reference NOCI basis states.
-/// # Arguments 
-/// - `ao`: Contains AO integrals and other system data. 
-/// - `input`: Contains user inputted options. 
+/// # Arguments
+/// - `ao`: Contains AO integrals and other system data.
+/// - `input`: Contains user inputted options.
 /// - `prev`: Previous real states, if available for continuation.
 /// - `prev_h`: Previous h-SCF states, if available for holomorphic continuation.
 /// # Returns
 /// - `ReferenceBasis`: Real SCF states and any complex h-SCF states generated from the same recipes.
-pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Option<&[SCFState]>, prev_h: Option<&[HSCFState]>) -> ReferenceBasis {
-    
+pub fn generate_reference_noci_basis(
+    ao: &AoData,
+    input: &mut Input,
+    prev: Option<&[SCFState]>,
+    prev_h: Option<&[HSCFState]>,
+) -> ReferenceBasis {
     // Construct lookuptable from state label to previous SCF states. Allows for seeding of SCF
     // states at a subsequent geometry to be done by label rather than via index which breaks
     // easily.
@@ -643,12 +886,8 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
     let wants_holomorphic = matches!(&states, StateType::Mom(recipes) if recipes.iter().any(|recipe| recipe.holomorphic));
 
     let real_states = match &mut states {
-        StateType::Mom(recipes) => {
-            generate_states_mom(ao, &*input, prev, &prev_map, recipes)
-        }
-        StateType::Metadynamics(meta) => {
-            generate_states_metadynamics(ao, &*input, &prev_map, meta)
-        }
+        StateType::Mom(recipes) => generate_states_mom(ao, &*input, prev, &prev_map, recipes),
+        StateType::Metadynamics(meta) => generate_states_metadynamics(ao, &*input, &prev_map, meta),
     };
 
     let hstates = if wants_holomorphic {
@@ -667,7 +906,10 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
 
     // Put back. Note that this is not very idiomatic. Should definetly refactor this somehow.
     input.states = states;
-    ReferenceBasis {states: real_states, hstates}
+    ReferenceBasis {
+        states: real_states,
+        hstates,
+    }
 }
 
 /// Generate reference basis with complex h-SCF support.
@@ -678,7 +920,13 @@ pub fn generate_reference_noci_basis(ao: &AoData, input: &mut Input, prev: Optio
 /// - `prev`: Previous complex states if available.
 /// # Returns:
 /// - `Vec<HSCFState>`: Complex determinant states.
-fn generate_hscf_states(ao: &AoData, input: &Input, recipes: &[StateRecipe], real_states: &[SCFState], prev: Option<&[HSCFState]>) -> Vec<HSCFState> {
+fn generate_hscf_states(
+    ao: &AoData,
+    input: &Input,
+    recipes: &[StateRecipe],
+    real_states: &[SCFState],
+    prev: Option<&[HSCFState]>,
+) -> Vec<HSCFState> {
     let mut prev_map: HashMap<&str, &HSCFState> = HashMap::new();
     if let Some(ps) = prev {
         for st in ps {
@@ -686,8 +934,14 @@ fn generate_hscf_states(ao: &AoData, input: &Input, recipes: &[StateRecipe], rea
         }
     }
 
-    let real_map: HashMap<&str, &SCFState> = real_states.iter().map(|st| (st.label.as_str(), st)).collect();
-    let recipe_map: HashMap<&str, &StateRecipe> = recipes.iter().map(|recipe| (recipe.label.as_str(), recipe)).collect();
+    let real_map: HashMap<&str, &SCFState> = real_states
+        .iter()
+        .map(|st| (st.label.as_str(), st))
+        .collect();
+    let recipe_map: HashMap<&str, &StateRecipe> = recipes
+        .iter()
+        .map(|recipe| (recipe.label.as_str(), recipe))
+        .collect();
 
     let mut out: Vec<HSCFState> = real_states.iter().map(HSCFState::from_real).collect();
     let mut hstate_index: HashMap<&str, usize> = HashMap::new();
@@ -698,13 +952,27 @@ fn generate_hscf_states(ao: &AoData, input: &Input, recipes: &[StateRecipe], rea
         }
 
         if input.write.verbose {
-            println!("{}Begin staged h-SCF seed{}", "=".repeat(45), "=".repeat(31));
+            println!(
+                "{}Begin staged h-SCF seed{}",
+                "=".repeat(45),
+                "=".repeat(31)
+            );
             println!("State({}): {}", i + 1, recipe.label);
         }
 
-        let Some(state) = build_hscf_state(ao, input, recipes, recipe, &real_map, &recipe_map, &prev_map, &hstate_index, &out, i, || {
-            run_mom_scf_state(ao, input, recipe, None, &HashMap::new(), i)
-        }) else {
+        let Some(state) = build_hscf_state(
+            ao,
+            input,
+            recipes,
+            recipe,
+            &real_map,
+            &recipe_map,
+            &prev_map,
+            &hstate_index,
+            &out,
+            i,
+            || run_mom_scf_state(ao, input, recipe, None, &HashMap::new(), i),
+        ) else {
             continue;
         };
         hstate_index.insert(recipe.label.as_str(), out.len());
@@ -715,39 +983,67 @@ fn generate_hscf_states(ao: &AoData, input: &Input, recipes: &[StateRecipe], rea
 }
 
 /// Construct a label describing an excitation in alpha and/or beta spin.
-/// # Arguments 
+/// # Arguments
 /// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
 /// - `alpha_parts`: Virtual alpha orbital indices into which electrons are placed.
 /// - `beta_holes`: Occupied beta orbital indices from which electrons are removed.
 /// - `beta_parts`: Virtual beta orbital indices into which electrons are placed.
 /// # Returns
 /// - `String`: Label describing the excitation pattern.
-fn excitation_label(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[usize], beta_parts: &[usize]) -> String {
+fn excitation_label(
+    alpha_holes: &[usize],
+    alpha_parts: &[usize],
+    beta_holes: &[usize],
+    beta_parts: &[usize],
+) -> String {
     let mut label = Vec::new();
     if !alpha_holes.is_empty() {
-        label.push(format!("alpha {} -> {}", 
-                alpha_holes.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),  
-                alpha_parts.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+        label.push(format!(
+            "alpha {} -> {}",
+            alpha_holes
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+            alpha_parts
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
         ))
     }
     if !beta_holes.is_empty() {
-        label.push(format!("beta {} -> {}", 
-                beta_holes.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),  
-                beta_parts.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "),
+        label.push(format!(
+            "beta {} -> {}",
+            beta_holes
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+            beta_parts
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
         ))
     }
     format!("({})", label.join("; "))
 }
 
 /// Construct an excitation object from alpha and beta hole/particle lists.
-/// # Arguments 
+/// # Arguments
 /// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
 /// - `alpha_parts`: Virtual alpha orbital indices into which electrons are placed.
 /// - `beta_holes`: Occupied beta orbital indices from which electrons are removed.
 /// - `beta_parts`: Virtual beta orbital indices into which electrons are placed.
 /// # Returns
 /// - `Excitation`: Excitation object containing the specified alpha and beta spin excitations.
-fn build_excitation(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[usize], beta_parts: &[usize]) -> Excitation {
+fn build_excitation(
+    alpha_holes: &[usize],
+    alpha_parts: &[usize],
+    beta_holes: &[usize],
+    beta_parts: &[usize],
+) -> Excitation {
     Excitation {
         alpha: ExcitationSpin {
             holes: alpha_holes.to_vec(),
@@ -761,16 +1057,24 @@ fn build_excitation(alpha_holes: &[usize], alpha_parts: &[usize], beta_holes: &[
 }
 
 /// Apply a spin-specific excitation to an occupation vector.
-/// # Arguments 
+/// # Arguments
 /// - `occ`: Occupation vector to be modified.
 /// - `holes`: Occupied orbital indices from which electrons are removed.
 /// - `parts`: Virtual orbital indices into which electrons are placed.
 /// # Returns
 /// - `Array1<f64>`: New occupation vector with the requested excitation applied.
-fn apply_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
+fn apply_excitation(
+    occ: u128,
+    holes: &[usize],
+    parts: &[usize],
+) -> u128 {
     let mut out = occ;
-    for &i in holes {out &= !(1u128 << i);}
-    for &a in parts {out |= 1u128 << a;}
+    for &i in holes {
+        out &= !(1u128 << i);
+    }
+    for &a in parts {
+        out |= 1u128 << a;
+    }
     out
 }
 
@@ -781,10 +1085,18 @@ fn apply_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
 /// - `parts`: Orbitals added to the parent determinant.
 /// # Returns
 /// - `u128`: Reconstructed parent occupation bitstring.
-fn undo_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
+fn undo_excitation(
+    occ: u128,
+    holes: &[usize],
+    parts: &[usize],
+) -> u128 {
     let mut out = occ;
-    for &a in parts {out &= !(1u128 << a);}
-    for &i in holes {out |= 1u128 << i;}
+    for &a in parts {
+        out &= !(1u128 << a);
+    }
+    for &i in holes {
+        out |= 1u128 << i;
+    }
     out
 }
 
@@ -794,11 +1106,18 @@ fn undo_excitation(occ: u128, holes: &[usize], parts: &[usize]) -> u128 {
 /// - `child`: Child occupation bitstring.
 /// # Returns
 /// - `(Vec<usize>, Vec<usize>)`: Hole and particle orbital indices.
-fn excitation_between(parent: u128, child: u128) -> (Vec<usize>, Vec<usize>) {
+fn excitation_between(
+    parent: u128,
+    child: u128,
+) -> (Vec<usize>, Vec<usize>) {
     let holes_bits = parent & !child;
     let parts_bits = child & !parent;
-    let holes = (0..128).filter(|&i| ((holes_bits >> i) & 1u128) == 1).collect();
-    let parts = (0..128).filter(|&i| ((parts_bits >> i) & 1u128) == 1).collect();
+    let holes = (0..128)
+        .filter(|&i| ((holes_bits >> i) & 1u128) == 1)
+        .collect();
+    let parts = (0..128)
+        .filter(|&i| ((parts_bits >> i) & 1u128) == 1)
+        .collect();
     (holes, parts)
 }
 
@@ -806,11 +1125,15 @@ fn excitation_between(parent: u128, child: u128) -> (Vec<usize>, Vec<usize>) {
 /// basis.  
 /// # Arguments
 /// - `refs`: Array of reference states for which excitations are generated.
-/// - `input`: Contains user inputted options. 
+/// - `input`: Contains user inputted options.
 /// - `include_refs`: Whether or not to include the references in the returned basis.
 /// # Returns
 /// - `Vec<SCFState>`: Generated excited basis, optionally including the reference states.
-pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bool) -> Vec<SCFState> {
+pub fn generate_excited_basis(
+    refs: &[SCFState],
+    input: &Input,
+    include_refs: bool,
+) -> Vec<SCFState> {
     let mut out = Vec::new();
 
     for r in refs {
@@ -825,7 +1148,8 @@ pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bo
         let spin_occ = get_spin_occupation(r);
 
         let mut orders = if input.excit.all {
-            let max_order = (spin_occ.occ_alpha.len() + spin_occ.occ_beta.len()).min(spin_occ.virt_alpha.len() + spin_occ.virt_beta.len());
+            let max_order = (spin_occ.occ_alpha.len() + spin_occ.occ_beta.len())
+                .min(spin_occ.virt_alpha.len() + spin_occ.virt_beta.len());
             (1..=max_order).collect::<Vec<_>>()
         } else {
             input.excit.orders.clone()
@@ -841,11 +1165,12 @@ pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bo
                 for alpha_holes in spin_occ.occ_alpha.iter().copied().combinations(k_alpha) {
                     for alpha_parts in spin_occ.virt_alpha.iter().copied().combinations(k_alpha) {
                         for beta_holes in spin_occ.occ_beta.iter().copied().combinations(k_beta) {
-                            for beta_parts in spin_occ.virt_beta.iter().copied().combinations(k_beta) {
-                                
+                            for beta_parts in
+                                spin_occ.virt_beta.iter().copied().combinations(k_beta)
+                            {
                                 // Apply excitation to supplied state `r`. In stochastic routines
                                 // this will always be a reference determinant, but in SNOCI this
-                                // may be an already excited determinant relative to its parent. 
+                                // may be an already excited determinant relative to its parent.
                                 let oa_ex = apply_excitation(r.oa, &alpha_holes, &alpha_parts);
                                 let ob_ex = apply_excitation(r.ob, &beta_holes, &beta_parts);
 
@@ -853,14 +1178,37 @@ pub fn generate_excited_basis(refs: &[SCFState], input: &Input, include_refs: bo
                                 // to the parent of `r`, so if `r` is already excited, we must undo
                                 // the excitation, and calculate the total excitation from the
                                 // parent of `r` to the new state.
-                                let parent_oa = undo_excitation(r.oa, &r.excitation.alpha.holes, &r.excitation.alpha.parts);
-                                let parent_ob = undo_excitation(r.ob, &r.excitation.beta.holes, &r.excitation.beta.parts);
-                                let (alpha_holes_total, alpha_parts_total) = excitation_between(parent_oa, oa_ex);
-                                let (beta_holes_total, beta_parts_total) = excitation_between(parent_ob, ob_ex);
+                                let parent_oa = undo_excitation(
+                                    r.oa,
+                                    &r.excitation.alpha.holes,
+                                    &r.excitation.alpha.parts,
+                                );
+                                let parent_ob = undo_excitation(
+                                    r.ob,
+                                    &r.excitation.beta.holes,
+                                    &r.excitation.beta.parts,
+                                );
+                                let (alpha_holes_total, alpha_parts_total) =
+                                    excitation_between(parent_oa, oa_ex);
+                                let (beta_holes_total, beta_parts_total) =
+                                    excitation_between(parent_ob, ob_ex);
 
-                                let label = excitation_label(&alpha_holes_total, &alpha_parts_total, &beta_holes_total, &beta_parts_total);
-                                let excitation = build_excitation(&alpha_holes_total, &alpha_parts_total, &beta_holes_total, &beta_parts_total);
-                                let exstate = make_excited_state(r, oa_ex, ob_ex, &label, parent, excitation, parent_oa, parent_ob);
+                                let label = excitation_label(
+                                    &alpha_holes_total,
+                                    &alpha_parts_total,
+                                    &beta_holes_total,
+                                    &beta_parts_total,
+                                );
+                                let excitation = build_excitation(
+                                    &alpha_holes_total,
+                                    &alpha_parts_total,
+                                    &beta_holes_total,
+                                    &beta_parts_total,
+                                );
+                                let exstate = make_excited_state(
+                                    r, oa_ex, ob_ex, &label, parent, excitation, parent_oa,
+                                    parent_ob,
+                                );
                                 out.push(exstate);
                             }
                         }

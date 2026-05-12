@@ -1,15 +1,15 @@
-// stochastic/state.rs 
-use rand::rngs::SmallRng;
-use rand::Rng;
+// stochastic/state.rs
 use mpi::traits::*;
+use rand::Rng;
+use rand::rngs::SmallRng;
 use rand_distr::{Binomial, Distribution};
 
-use crate::nonorthogonalwicks::{WickScratchSpin};
-use crate::input::{Propagator, ExcitationGen};
-use crate::noci::{NOCIData};
+use crate::input::{ExcitationGen, Propagator};
+use crate::noci::NOCIData;
+use crate::nonorthogonalwicks::WickScratchSpin;
 
-use super::propagate::{find_hs};
-use super::excit::{pgen_uniform, pgen_heat_bath, init_heat_bath};
+use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
+use super::propagate::find_hs;
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
@@ -42,7 +42,7 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) nranks: usize,
     /// Total number of determinants in the stochastic basis.
     pub(in crate::stochastic) ndets: usize,
-     /// Global determinant indices owned by this rank.
+    /// Global determinant indices owned by this rank.
     pub(in crate::stochastic) owned: Vec<usize>,
     /// Reference determinant index used in projected-energy estimates.
     pub(in crate::stochastic) iref: usize,
@@ -83,8 +83,8 @@ pub(crate) struct Walkers {
 
 impl Walkers {
     /// Construct empty walker object for n determinants.
-    /// # Arguments: 
-    /// - `n`: Number of determinants. 
+    /// # Arguments:
+    /// - `n`: Number of determinants.
     /// # Returns
     /// - `Walkers`: Empty walker storage for `n` determinants.
     pub(crate) fn new(n: usize) -> Self {
@@ -94,17 +94,20 @@ impl Walkers {
             pos: vec![usize::MAX; n],
         }
     }
-    
+
     /// Return the current population of determinant i.
-    /// # Arguments: 
+    /// # Arguments:
     /// - `self`: Object containing information about current walkers.
     /// - `i`: Determinant index of choice.
     /// # Returns
     /// - `i64`: Current signed walker population on determinant `i`.
-    pub(crate) fn get(&self, i: usize) -> i64 {
+    pub(crate) fn get(
+        &self,
+        i: usize,
+    ) -> i64 {
         self.pop[i]
     }
-    
+
     /// Return a list of occupied determinant indices.
     /// # Arguments:
     /// - `self`: Object containing information about current walkers.
@@ -117,21 +120,27 @@ impl Walkers {
     /// Add dn (change in population) to determinant i, modifying pop, occ and pos as required
     /// # Arguments:
     /// - `self`: Object containing information about current walkers.
-    /// - `i`: Determinant index of choice. 
+    /// - `i`: Determinant index of choice.
     /// - `dn`: Change in population of determinant i.
     /// # Returns
     /// - `()`: Updates the walker storage in place.
-    pub(crate) fn add(&mut self, i: usize, dn: i64) {
+    pub(crate) fn add(
+        &mut self,
+        i: usize,
+        dn: i64,
+    ) {
         // No changes to be made.
-        if dn == 0 {return;}
-       
+        if dn == 0 {
+            return;
+        }
+
         unsafe {
             // Update population vector.
             let pop = self.pop.get_unchecked_mut(i);
             let old = *pop;
             let new = old + dn;
             *pop = new;
-            
+
             // If old population of determinant i was 0 and we are introducing population we must
             // add determinant i to the occupied list and store its position in pos.
             if old == 0 && new != 0 {
@@ -148,9 +157,9 @@ impl Walkers {
                 let p = *self.pos.get_unchecked(i);
                 // Pop the last occupied determinant index from occ.
                 let last = self.occ.pop().unwrap_unchecked();
-                
+
                 // If the popped element is not i, then i was somewhere in the middle of occ and we
-                // lmust move the popped element (last) to position p where i used to be. The position of  
+                // lmust move the popped element (last) to position p where i used to be. The position of
                 // last is then updated in the position vector. If the popped element is i then we do
                 // nothing as we have directly removed it by popping.
                 if last != i {
@@ -175,7 +184,7 @@ impl Walkers {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.pop.len() 
+        self.pop.len()
     }
 }
 
@@ -187,7 +196,11 @@ impl Walkers {
 /// # Returns
 /// - `usize`: MPI rank that owns the determinant.
 #[inline(always)]
-pub fn owner(det: usize, _ndets: usize, nranks: usize) -> usize {
+pub fn owner(
+    det: usize,
+    _ndets: usize,
+    nranks: usize,
+) -> usize {
     let mut x = det as u64;
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51afd7ed558ccd);
@@ -204,7 +217,11 @@ pub fn owner(det: usize, _ndets: usize, nranks: usize) -> usize {
 /// - `nranks`: Number of MPI ranks.
 /// # Returns
 /// - `(Vec<usize>, Vec<usize>)`: Owned determinant indices.
-pub fn owned(irank: usize, ndets: usize, nranks: usize) -> Vec<usize> {
+pub fn owned(
+    irank: usize,
+    ndets: usize,
+    nranks: usize,
+) -> Vec<usize> {
     let mut owned = Vec::new();
 
     for det in 0..ndets {
@@ -225,7 +242,11 @@ pub fn owned(irank: usize, ndets: usize, nranks: usize) -> Vec<usize> {
 /// - `nranks`: Total number of threads.
 /// # Returns
 /// - `Walkers`: Walker population restricted to determinants owned by the current rank.
-pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walkers {
+pub(crate) fn local_walkers(
+    mut w: Walkers,
+    irank: usize,
+    nranks: usize,
+) -> Walkers {
     let occ = w.occ().to_vec();
     for i in occ {
         if owner(i, w.len(), nranks) != irank {
@@ -236,7 +257,7 @@ pub(crate) fn local_walkers(mut w: Walkers, irank: usize, nranks: usize) -> Walk
     w
 }
 
-/// Storage for Monte Carlo state. 
+/// Storage for Monte Carlo state.
 pub(in crate::stochastic) struct MCState {
     /// Walker distribution.
     pub(in crate::stochastic) walkers: Walkers,
@@ -246,8 +267,8 @@ pub(in crate::stochastic) struct MCState {
     pub(in crate::stochastic) changed: Vec<usize>,
     /// Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
     pub(in crate::stochastic) pg: Vec<f64>,
-    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics. 
-    pub(in crate::stochastic) excitation_hist: Option<ExcitationHist> 
+    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
+    pub(in crate::stochastic) excitation_hist: Option<ExcitationHist>,
 }
 
 /// Storage for the incrementally updated projected-energy.
@@ -273,7 +294,7 @@ pub(in crate::stochastic) struct PopulationStats {
     /// Overlap-transformed reference walker populations.
     pub(in crate::stochastic) nrefsc: f64,
     /// Number of determinants currently occupied.
-    pub (in crate::stochastic) noccdets: i64,
+    pub(in crate::stochastic) noccdets: i64,
 }
 
 impl PopulationStats {
@@ -286,8 +307,20 @@ impl PopulationStats {
     /// - `noccdets`: Number of currently occupied determinants.
     /// # Returns
     /// - `PopulationStats`: Walker population statistics.
-    pub(in crate::stochastic) fn new(nwc: i64, nrefc: i64, nwsc: f64, nrefsc: f64, noccdets: i64) -> Self {
-        Self {nwc, nrefc, nwsc, nrefsc, noccdets}
+    pub(in crate::stochastic) fn new(
+        nwc: i64,
+        nrefc: i64,
+        nwsc: f64,
+        nrefsc: f64,
+        noccdets: i64,
+    ) -> Self {
+        Self {
+            nwc,
+            nrefc,
+            nwsc,
+            nrefsc,
+            noccdets,
+        }
     }
 }
 
@@ -304,7 +337,7 @@ pub(in crate::stochastic) struct PropagationState {
     /// Current walker populations.
     pub(in crate::stochastic) cur_pop: PopulationStats,
     /// From where did iterations begin (was a restart file used?).
-    pub (in crate::stochastic) start_report: usize,
+    pub(in crate::stochastic) start_report: usize,
     /// Has the overlap-transformed population reached the target.
     pub(in crate::stochastic) reached_sc: bool,
     /// Has the non-overlap-transformed population reached the target.
@@ -326,11 +359,29 @@ impl PropagationState {
     /// - `prev_pop`: Walker populations at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Initialised propagation state.
-    pub(in crate::stochastic) fn new(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_report: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn new(
+        mc: MCState,
+        pe: ProjectedEnergyUpdate,
+        es_s: f64,
+        start_report: usize,
+        reached_sc: bool,
+        reached_c: bool,
+        prev_pop: PopulationStats,
+    ) -> Self {
         let eprojcur = pe.num / pe.den;
-        Self {mc, pe, es_s, prev_pop, cur_pop: prev_pop, start_report, reached_sc, reached_c, eprojcur}
+        Self {
+            mc,
+            pe,
+            es_s,
+            prev_pop,
+            cur_pop: prev_pop,
+            start_report,
+            reached_sc,
+            reached_c,
+            eprojcur,
+        }
     }
-    
+
     /// Construct propagation state for a run beginning from iteration zero.
     /// # Arguments:
     /// - `mc`: Monte Carlo state.
@@ -339,10 +390,15 @@ impl PropagationState {
     /// - `prev_pop`: Initial walker populations.
     /// # Returns
     /// - `PropagationState`: Propagation state for a stochastic run from iteration zero.
-    pub(in crate::stochastic) fn fresh(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn fresh(
+        mc: MCState,
+        pe: ProjectedEnergyUpdate,
+        es_s: f64,
+        prev_pop: PopulationStats,
+    ) -> Self {
         Self::new(mc, pe, es_s, 0, false, false, prev_pop)
     }
-    
+
     /// Construct propagation state for a run resumed from a restart file.
     /// # Arguments:
     /// - `mc`: Monte Carlo state.
@@ -354,7 +410,15 @@ impl PropagationState {
     /// - `prev_pop`: Walker populations stored at the previous shift update.
     /// # Returns
     /// - `PropagationState`: Propagation state for a restarted stochastic run.
-    pub(in crate::stochastic) fn restart(mc: MCState, pe: ProjectedEnergyUpdate, es_s: f64, start_report: usize, reached_sc: bool, reached_c: bool, prev_pop: PopulationStats) -> Self {
+    pub(in crate::stochastic) fn restart(
+        mc: MCState,
+        pe: ProjectedEnergyUpdate,
+        es_s: f64,
+        start_report: usize,
+        reached_sc: bool,
+        reached_c: bool,
+        prev_pop: PopulationStats,
+    ) -> Self {
         Self::new(mc, pe, es_s, start_report, reached_sc, reached_c, prev_pop)
     }
 }
@@ -392,35 +456,58 @@ impl ThreadPropagation {
     /// - `data`: Immutable stochastic propagation data.
     /// # Returns
     /// - `()`: Appends local death/cloning population updates to `self.local`.
-    pub(in crate::stochastic) fn death_cloning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_, f64>) {
+    pub(in crate::stochastic) fn death_cloning(
+        &mut self,
+        gamma: usize,
+        ngamma: i64,
+        shifts: Shifts,
+        data: &NOCIData<'_, f64>,
+    ) {
         let (hgg, sgg) = find_hs(data, gamma, gamma, &mut self.scratch);
 
         let pdeath = match data.input.prop_ref().propagator {
             Propagator::Unshifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s),
-            Propagator::Shifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es_s),
-            Propagator::DoublyShifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es),
-            Propagator::DifferenceDoublyShiftedU1 => data.input.prop_ref().dt * (hgg - sgg * 0.5 * (shifts.es_s + shifts.es) - (shifts.es - shifts.es_s)),
-            Propagator::DifferenceDoublyShiftedU2 => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - (shifts.es - shifts.es_s)),
+            Propagator::Shifted => {
+                data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es_s)
+            }
+            Propagator::DoublyShifted => {
+                data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es)
+            }
+            Propagator::DifferenceDoublyShiftedU1 => {
+                data.input.prop_ref().dt
+                    * (hgg - sgg * 0.5 * (shifts.es_s + shifts.es) - (shifts.es - shifts.es_s))
+            }
+            Propagator::DifferenceDoublyShiftedU2 => {
+                data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - (shifts.es - shifts.es_s))
+            }
         };
         if pdeath == 0.0 {
             return;
         }
 
         let p = pdeath.abs();
-        let parent_sign = if ngamma > 0 {1} else {-1};
+        let parent_sign = if ngamma > 0 { 1 } else { -1 };
         let n = ngamma.abs();
         let m = p.floor() as i64;
         let frac = p - (m as f64);
-        let extra = if frac > 0.0 {Binomial::new(n as u64, frac).unwrap().sample(&mut self.rng) as i64} else {0};
+        let extra = if frac > 0.0 {
+            Binomial::new(n as u64, frac).unwrap().sample(&mut self.rng) as i64
+        } else {
+            0
+        };
         let nevents = n * m + extra;
         if nevents == 0 {
             return;
         }
 
-        let dn = if pdeath > 0.0 {-parent_sign} else {parent_sign};
+        let dn = if pdeath > 0.0 {
+            -parent_sign
+        } else {
+            parent_sign
+        };
         self.local.push((gamma, dn * nevents));
     }
-    
+
     /// Perform the off-diagonal spawning step for a parent determinant.
     /// # Arguments:
     /// - `gamma`: Index of parent determinant `\Gamma`.
@@ -431,8 +518,15 @@ impl ThreadPropagation {
     /// # Returns
     /// - `()`: Appends local and remote spawning updates to `self.local` and `self.remote`,
     ///   and excitation histogram samples to `self.samples`.
-    pub(in crate::stochastic) fn spawning(&mut self, gamma: usize, ngamma: i64, shifts: Shifts, data: &NOCIData<'_, f64>, run: &QMCRunInfo) {
-        let parent_sign = if ngamma > 0 {1} else {-1};
+    pub(in crate::stochastic) fn spawning(
+        &mut self,
+        gamma: usize,
+        ngamma: i64,
+        shifts: Shifts,
+        data: &NOCIData<'_, f64>,
+        run: &QMCRunInfo,
+    ) {
+        let parent_sign = if ngamma > 0 { 1 } else { -1 };
         let nwalkers = ngamma.unsigned_abs();
 
         let mut hb: Option<HeatBath> = None;
@@ -442,8 +536,17 @@ impl ThreadPropagation {
 
         for _ in 0..nwalkers {
             let (pgen, k, lambda) = match data.input.qmc.as_ref().unwrap().excitation_gen {
-                ExcitationGen::Uniform => pgen_uniform(gamma, shifts, data, &mut self.rng, &mut self.scratch),
-                ExcitationGen::HeatBath => pgen_heat_bath(gamma, shifts, data, &mut self.rng, hb.as_ref().unwrap(), &mut self.scratch),
+                ExcitationGen::Uniform => {
+                    pgen_uniform(gamma, shifts, data, &mut self.rng, &mut self.scratch)
+                }
+                ExcitationGen::HeatBath => pgen_heat_bath(
+                    gamma,
+                    shifts,
+                    data,
+                    &mut self.rng,
+                    hb.as_ref().unwrap(),
+                    &mut self.scratch,
+                ),
                 ExcitationGen::ApproximateHeatBath => unimplemented!(),
             };
 
@@ -454,13 +557,17 @@ impl ThreadPropagation {
 
             let m = pspawn.floor() as i64;
             let frac = pspawn - (m as f64);
-            let extra = if self.rng.gen_range(0.0..1.0) < frac {1} else {0};
+            let extra = if self.rng.gen_range(0.0..1.0) < frac {
+                1
+            } else {
+                0
+            };
             let nchildren = m + extra;
             if nchildren == 0 {
                 continue;
             }
 
-            let sign = if k > 0.0 {1} else {-1};
+            let sign = if k > 0.0 { 1 } else { -1 };
             let child_sign = -sign * parent_sign;
             let dn = child_sign * nchildren;
 
@@ -471,7 +578,10 @@ impl ThreadPropagation {
                 if destination == run.irank {
                     self.local.push((lambda, dn));
                 } else {
-                    self.remote.push(PopulationUpdate {det: lambda as u64, dn});
+                    self.remote.push(PopulationUpdate {
+                        det: lambda as u64,
+                        dn,
+                    });
                 }
             }
         }
@@ -523,30 +633,54 @@ pub struct ExcitationHist {
 impl ExcitationHist {
     /// Constructor for ExcitationHist object. Creates ExcitationHist with chosen parameters.
     /// # Arguments:
-    /// - `logmin`: Minimum histogram value on a logarithmic scale. 
+    /// - `logmin`: Minimum histogram value on a logarithmic scale.
     /// - `logmax`: Maximum histogram value on a logarithmic scale.
     /// - `nbins`: Number of histogram bins.
     /// # Returns
     /// - `ExcitationHist`: Empty histogram with the requested parameters.
-    pub(in crate::stochastic) fn new(logmin: f64, logmax: f64, nbins: usize) -> Self {
-        Self {logmin, logmax, noverflow_low: 0, noverflow_high: 0, counts: vec![0u64; nbins], nbins, ntotal: 0}
+    pub(in crate::stochastic) fn new(
+        logmin: f64,
+        logmax: f64,
+        nbins: usize,
+    ) -> Self {
+        Self {
+            logmin,
+            logmax,
+            noverflow_low: 0,
+            noverflow_high: 0,
+            counts: vec![0u64; nbins],
+            nbins,
+            ntotal: 0,
+        }
     }
-    
+
     /// Add a computed spawning probability to the histogram.
-    /// # Arguments: 
+    /// # Arguments:
     /// `self`: ExcitationHist.
     /// - `pspawn`: Spawning probability as defined in population dynamics routines.
     /// # Returns
     /// - `()`: Updates the histogram in place.
-    pub(in crate::stochastic) fn add(&mut self, pspawn: f64) {
+    pub(in crate::stochastic) fn add(
+        &mut self,
+        pspawn: f64,
+    ) {
         self.ntotal += 1;
 
-        if !pspawn.is_finite() || pspawn <= 0.0 {self.noverflow_low += 1; return;}
+        if !pspawn.is_finite() || pspawn <= 0.0 {
+            self.noverflow_low += 1;
+            return;
+        }
 
         let logpspawn = pspawn.ln();
 
-        if logpspawn < self.logmin {self.noverflow_low += 1; return;}
-        if logpspawn >= self.logmax {self.noverflow_high += 1; return;}
+        if logpspawn < self.logmin {
+            self.noverflow_low += 1;
+            return;
+        }
+        if logpspawn >= self.logmax {
+            self.noverflow_high += 1;
+            return;
+        }
 
         // Fractional position of logpspawn in histogram range.
         let t = (logpspawn - self.logmin) / (self.logmax - self.logmin);

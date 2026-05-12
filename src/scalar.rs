@@ -8,7 +8,17 @@ use serde::{Deserialize, Serialize};
 use crate::Excitation;
 
 // Scalar generic marker trait for SCF states.
-pub trait StateScalar: LinalgScalar + Scalar<Real = f64> + Lapack + AddAssign + Send + Sync + Serialize + for<'de> Deserialize<'de> {}
+pub trait StateScalar:
+    LinalgScalar
+    + Scalar<Real = f64>
+    + Lapack
+    + AddAssign
+    + Send
+    + Sync
+    + Serialize
+    + for<'de> Deserialize<'de>
+{
+}
 
 impl StateScalar for f64 {}
 impl StateScalar for Complex64 {}

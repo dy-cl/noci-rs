@@ -1,12 +1,12 @@
 // noci/m.rs
 use ndarray::Array2;
 
-use crate::{AoData, DetState};
 use crate::basis::excitation_phase;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_f};
+use crate::nonorthogonalwicks::{lg_f, lg_overlap, prepare_same};
+use crate::{AoData, DetState};
 
-use super::naive::{occ_coeffs, build_s_pair, one_electron_scalar};
+use super::naive::{build_s_pair, occ_coeffs, one_electron_scalar};
 use super::types::{DetPair, FockData, FockMOCache, NOCIData, NOCIScalar};
 
 /// Calculate the shifted candidate-candidate matrix element
@@ -19,7 +19,13 @@ use super::types::{DetPair, FockData, FockMOCache, NOCIData, NOCIScalar};
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `T`: Shifted matrix element `M_{ab}`.
-pub(crate) fn calculate_m_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &FockData<'_, T>, pair: DetPair<'_, T>, e0: f64, scratch: Option<&mut WickScratchSpin<T>>) -> T {
+pub(crate) fn calculate_m_pair<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    fock: &FockData<'_, T>,
+    pair: DetPair<'_, T>,
+    e0: f64,
+    scratch: Option<&mut WickScratchSpin<T>>,
+) -> T {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
@@ -31,7 +37,14 @@ pub(crate) fn calculate_m_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &Foc
     }
 
     if data.input.wicks.enabled {
-        calculate_m_pair_wicks(ldet, gdet, data.tol, data.wicks.unwrap(), e0, scratch.unwrap())
+        calculate_m_pair_wicks(
+            ldet,
+            gdet,
+            data.tol,
+            data.wicks.unwrap(),
+            e0,
+            scratch.unwrap(),
+        )
     } else {
         calculate_m_pair_naive(fock.fa, fock.fb, data.ao, ldet, gdet, data.tol, e0)
     }
@@ -46,7 +59,12 @@ pub(crate) fn calculate_m_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &Foc
 /// - `e0`: Zeroth-order energy shift.
 /// # Returns:
 /// - `T`: Shifted matrix element `M_{ab}`.
-fn calculate_m_pair_orthogonal<T: NOCIScalar>(cache: &FockMOCache<T>, ldet: &DetState<T>, gdet: &DetState<T>, e0: f64) -> T {
+fn calculate_m_pair_orthogonal<T: NOCIScalar>(
+    cache: &FockMOCache<T>,
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    e0: f64,
+) -> T {
     let xa = ldet.oa ^ gdet.oa;
     let xb = ldet.ob ^ gdet.ob;
     let na = xa.count_ones() as usize;
@@ -103,7 +121,15 @@ fn calculate_m_pair_orthogonal<T: NOCIScalar>(cache: &FockMOCache<T>, ldet: &Det
 /// - `e0`: Zeroth-order energy shift.
 /// # Returns:
 /// - `T`: Shifted matrix element `M_{ab}`.
-fn calculate_m_pair_naive<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, ao: &AoData, ldet: &DetState<T>, gdet: &DetState<T>, tol: f64, e0: f64) -> T {
+fn calculate_m_pair_naive<T: NOCIScalar>(
+    fa: &Array2<T>,
+    fb: &Array2<T>,
+    ao: &AoData,
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    tol: f64,
+    e0: f64,
+) -> T {
     let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
     let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
     let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
@@ -130,7 +156,14 @@ fn calculate_m_pair_naive<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, ao: &Ao
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `T`: Shifted matrix element `M_{ab}`.
-fn calculate_m_pair_wicks<T: NOCIScalar>(ldet: &DetState<T>, gdet: &DetState<T>, tol: f64, wicks: &WicksView<T>, e0: f64, scratch: &mut WickScratchSpin<T>) -> T {
+fn calculate_m_pair_wicks<T: NOCIScalar>(
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    tol: f64,
+    wicks: &WicksView<T>,
+    e0: f64,
+    scratch: &mut WickScratchSpin<T>,
+) -> T {
     let lp = ldet.parent;
     let gp = gdet.parent;
     let w = wicks.pair(lp, gp);

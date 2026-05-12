@@ -1,5 +1,5 @@
 // timers/noci.rs
-use super::{with_totals, Counter};
+use super::{Counter, with_totals};
 
 /// Timing counters for routines in the `noci` module.
 #[derive(Clone, Copy, Debug, Default)]
@@ -47,23 +47,37 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this set of NOCI timing totals in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.build_mo_cache.merge_from(&other.build_mo_cache);
-        self.build_fock_mo_cache.merge_from(&other.build_fock_mo_cache);
+        self.build_fock_mo_cache
+            .merge_from(&other.build_fock_mo_cache);
         self.calculate_s_pair.merge_from(&other.calculate_s_pair);
-        self.calculate_s_pair_wicks.merge_from(&other.calculate_s_pair_wicks);
-        self.calculate_s_pair_naive.merge_from(&other.calculate_s_pair_naive);
-        self.calculate_s_pair_orthogonal.merge_from(&other.calculate_s_pair_orthogonal);
+        self.calculate_s_pair_wicks
+            .merge_from(&other.calculate_s_pair_wicks);
+        self.calculate_s_pair_naive
+            .merge_from(&other.calculate_s_pair_naive);
+        self.calculate_s_pair_orthogonal
+            .merge_from(&other.calculate_s_pair_orthogonal);
         self.calculate_f_pair.merge_from(&other.calculate_f_pair);
-        self.calculate_f_pair_wicks.merge_from(&other.calculate_f_pair_wicks);
-        self.calculate_f_pair_naive.merge_from(&other.calculate_f_pair_naive);
-        self.calculate_f_pair_orthogonal.merge_from(&other.calculate_f_pair_orthogonal);
+        self.calculate_f_pair_wicks
+            .merge_from(&other.calculate_f_pair_wicks);
+        self.calculate_f_pair_naive
+            .merge_from(&other.calculate_f_pair_naive);
+        self.calculate_f_pair_orthogonal
+            .merge_from(&other.calculate_f_pair_orthogonal);
         self.calculate_hs_pair.merge_from(&other.calculate_hs_pair);
-        self.calculate_hs_pair_wicks.merge_from(&other.calculate_hs_pair_wicks);
-        self.calculate_hs_pair_naive.merge_from(&other.calculate_hs_pair_naive);
-        self.calculate_hs_pair_orthogonal.merge_from(&other.calculate_hs_pair_orthogonal);
+        self.calculate_hs_pair_wicks
+            .merge_from(&other.calculate_hs_pair_wicks);
+        self.calculate_hs_pair_naive
+            .merge_from(&other.calculate_hs_pair_naive);
+        self.calculate_hs_pair_orthogonal
+            .merge_from(&other.calculate_hs_pair_orthogonal);
         self.build_full_fock.merge_from(&other.build_full_fock);
-        self.build_full_overlap.merge_from(&other.build_full_overlap);
+        self.build_full_overlap
+            .merge_from(&other.build_full_overlap);
         self.build_full_hs.merge_from(&other.build_full_hs);
     }
 }

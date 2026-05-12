@@ -3,8 +3,8 @@ use std::ptr::NonNull;
 
 use ndarray::ArrayView2;
 
+use super::types::{DiffSpinOffset, PairMeta, PairOffset, SameSpinOffset};
 use crate::noci::NOCIScalar;
-use super::types::{PairMeta, PairOffset, SameSpinOffset, DiffSpinOffset};
 
 /// Storage for data which allows the Wicks objects to be viewed.
 #[derive(Clone)]
@@ -33,10 +33,14 @@ impl<T: NOCIScalar> WicksView<T> {
     /// - `gp`: Pair index 2.
     /// # Returns
     /// - `usize`: Flattened pair index.
-    fn idx(&self, lp: usize, gp: usize) -> usize {
+    fn idx(
+        &self,
+        lp: usize,
+        gp: usize,
+    ) -> usize {
         lp * self.nref + gp
     }
-    
+
     /// Get a pointer to the start of the shared tensor storage.
     /// # Arguments:
     /// - `self`: View into Wick's intermediates.
@@ -45,7 +49,7 @@ impl<T: NOCIScalar> WicksView<T> {
     fn slab_ptr(&self) -> *const T {
         self.slab.as_ptr() as *const T
     }
-    
+
     /// Read tensor slab beginning at a given offset and interpret the following n * n elements as
     /// a n by n matrix. Lifetime elision '_ ensures that the ArrayView2 may not outlive the borrow
     /// of self (WicksView) which in turn is only valid while the remote memory storage is valid.
@@ -55,8 +59,12 @@ impl<T: NOCIScalar> WicksView<T> {
     /// - `n`: Size of matrix to be read.
     /// # Returns
     /// - `ArrayView2<'_, T>`: Matrix view into the tensor slab.
-    fn view2(&self, off: usize, n: usize) -> ArrayView2<'_, T> {
-        unsafe {ArrayView2::from_shape_ptr((n, n), self.slab_ptr().add(off))}
+    fn view2(
+        &self,
+        off: usize,
+        n: usize,
+    ) -> ArrayView2<'_, T> {
+        unsafe { ArrayView2::from_shape_ptr((n, n), self.slab_ptr().add(off)) }
     }
 
     /// Read tensor slab beginning at a given offset and interpret the following `n * n` elements
@@ -68,8 +76,12 @@ impl<T: NOCIScalar> WicksView<T> {
     /// # Returns
     /// - `&[T]`: Slice containing the `n * n` matrix entries in row-major order.
     #[inline(always)]
-    fn slice2(&self, off: usize, n: usize) -> &[T] {
-        unsafe {std::slice::from_raw_parts(self.slab_ptr().add(off), n * n)}
+    fn slice2(
+        &self,
+        off: usize,
+        n: usize,
+    ) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off), n * n) }
     }
 
     /// Read tensor slab beginning at a given offset and interpret the following `n * n * n * n`
@@ -81,12 +93,16 @@ impl<T: NOCIScalar> WicksView<T> {
     /// # Returns
     /// - `&[T]`: Slice containing the `n^4` tensor entries in row-major order.
     #[inline(always)]
-    fn slice4(&self, off: usize, n: usize) -> &[T] {
-        unsafe {std::slice::from_raw_parts(self.slab_ptr().add(off), n * n * n * n)}
+    fn slice4(
+        &self,
+        off: usize,
+        n: usize,
+    ) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off), n * n * n * n) }
     }
 
-    /// Return a view for precomputed intermediates for a given lp, gp. Lifetime elision '_ ensures 
-    /// that the ArrayView4 may not outlive the borrow of self (WicksView) which in turn is only valid 
+    /// Return a view for precomputed intermediates for a given lp, gp. Lifetime elision '_ ensures
+    /// that the ArrayView4 may not outlive the borrow of self (WicksView) which in turn is only valid
     /// while the remote memory storage is valid.
     /// # Arguments:
     /// - `self`: View into Wick's intermediates.
@@ -94,22 +110,47 @@ impl<T: NOCIScalar> WicksView<T> {
     /// - `gp`: Pair index 2.
     /// # Returns
     /// - `WicksPairView<'_, T>`: Grouped view of the same-spin and different-spin intermediates for the pair.
-    pub(crate) fn pair(&self, lp: usize, gp: usize) -> WicksPairView<'_, T> {
+    pub(crate) fn pair(
+        &self,
+        lp: usize,
+        gp: usize,
+    ) -> WicksPairView<'_, T> {
         let idx = self.idx(lp, gp);
 
-        let aa = SameSpinView {nmo: self.meta[idx].aa.nmo, m: self.meta[idx].aa.m, tilde_s_prod: self.meta[idx].aa.tilde_s_prod, 
-                               phase: self.meta[idx].aa.phase, f0f: self.meta[idx].aa.f0f, f0h: self.meta[idx].aa.f0h, v0: self.meta[idx].aa.v0, 
-                               w: self, off: self.off[idx].aa};
-        let bb = SameSpinView {nmo: self.meta[idx].bb.nmo, m: self.meta[idx].bb.m, tilde_s_prod: self.meta[idx].bb.tilde_s_prod, 
-                               phase: self.meta[idx].bb.phase, f0f: self.meta[idx].bb.f0f, f0h: self.meta[idx].bb.f0h, v0: self.meta[idx].bb.v0, 
-                               w: self, off: self.off[idx].bb};
-        let ab = DiffSpinView {nmo: self.meta[idx].ab.nmo, vab0: self.meta[idx].ab.vab0, w: self, off: self.off[idx].ab};
+        let aa = SameSpinView {
+            nmo: self.meta[idx].aa.nmo,
+            m: self.meta[idx].aa.m,
+            tilde_s_prod: self.meta[idx].aa.tilde_s_prod,
+            phase: self.meta[idx].aa.phase,
+            f0f: self.meta[idx].aa.f0f,
+            f0h: self.meta[idx].aa.f0h,
+            v0: self.meta[idx].aa.v0,
+            w: self,
+            off: self.off[idx].aa,
+        };
+        let bb = SameSpinView {
+            nmo: self.meta[idx].bb.nmo,
+            m: self.meta[idx].bb.m,
+            tilde_s_prod: self.meta[idx].bb.tilde_s_prod,
+            phase: self.meta[idx].bb.phase,
+            f0f: self.meta[idx].bb.f0f,
+            f0h: self.meta[idx].bb.f0h,
+            v0: self.meta[idx].bb.v0,
+            w: self,
+            off: self.off[idx].bb,
+        };
+        let ab = DiffSpinView {
+            nmo: self.meta[idx].ab.nmo,
+            vab0: self.meta[idx].ab.vab0,
+            w: self,
+            off: self.off[idx].ab,
+        };
 
-        WicksPairView {aa, bb, ab}
+        WicksPairView { aa, bb, ab }
     }
 }
 
-// Read only view of same-spin Wick's intermediates.  
+// Read only view of same-spin Wick's intermediates.
 #[derive(Clone, Copy)]
 pub(crate) struct SameSpinView<'a, T: NOCIScalar> {
     /// Number of molecular orbitals for this spin block.
@@ -133,33 +174,41 @@ pub(crate) struct SameSpinView<'a, T: NOCIScalar> {
 }
 
 impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
-    /// Get tensor dimension n. 
+    /// Get tensor dimension n.
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.
     /// # Returns
     /// - `usize`: Tensor dimension `2 * nmo`.
-    pub(crate) fn n(&self) -> usize {2 * self.nmo}
-    
+    pub(crate) fn n(&self) -> usize {
+        2 * self.nmo
+    }
+
     /// Get a view to the `X[mi]` matrix.
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector. 
+    /// - `mi`: Zero distribution selector.
     /// # Returns
     /// - `ArrayView2<'_, T>`: View of the `X[mi]` matrix.
-    pub(crate) fn x(&self, mi: usize) -> ArrayView2<'_, T> {
+    pub(crate) fn x(
+        &self,
+        mi: usize,
+    ) -> ArrayView2<'_, T> {
         self.w.view2(self.off.x[mi], self.n())
     }
-    
+
     /// Get a view to the `Y[mi]` matrix.
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector. 
+    /// - `mi`: Zero distribution selector.
     /// # Returns
     /// - `ArrayView2<'_, T>`: View of the `Y[mi]` matrix.
-    pub(crate) fn y(&self, mi: usize) -> ArrayView2<'_, T> {
+    pub(crate) fn y(
+        &self,
+        mi: usize,
+    ) -> ArrayView2<'_, T> {
         self.w.view2(self.off.y[mi], self.n())
     }
-    
+
     /// Get a slice of the transpoed Hamiltonian `F[mi][mj]` tensor.
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.
@@ -167,7 +216,11 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the transpoed Hamiltonian `F[mi][mj]` matrix data.
     #[inline(always)]
-    pub(in crate::nonorthogonalwicks) fn fh_t_slice(&self, mi: usize, mj: usize) -> &[T] {
+    pub(in crate::nonorthogonalwicks) fn fh_t_slice(
+        &self,
+        mi: usize,
+        mj: usize,
+    ) -> &[T] {
         self.w.slice2(self.off.fh[mi][mj], self.n())
     }
 
@@ -178,7 +231,11 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the transpoed Fock `F[mi][mj]` matrix data.
     #[inline(always)]
-    pub(in crate::nonorthogonalwicks) fn ff_t_slice(&self, mi: usize, mj: usize) -> &[T] {
+    pub(in crate::nonorthogonalwicks) fn ff_t_slice(
+        &self,
+        mi: usize,
+        mj: usize,
+    ) -> &[T] {
         self.w.slice2(self.off.ff[mi][mj], self.n())
     }
 
@@ -189,7 +246,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the transpoed `V[mi][mj][mk]` matrix data.
     #[inline(always)]
-    pub(in crate::nonorthogonalwicks) fn v_t_slice(&self, mi: usize, mj: usize, mk: usize) -> &[T] {
+    pub(in crate::nonorthogonalwicks) fn v_t_slice(
+        &self,
+        mi: usize,
+        mj: usize,
+        mk: usize,
+    ) -> &[T] {
         self.w.slice2(self.off.v[mi][mj][mk], self.n())
     }
 
@@ -200,12 +262,15 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the requested J tensor data.
     #[inline(always)]
-    pub(in crate::nonorthogonalwicks) fn j_slice(&self, slot: usize) -> &[T] {
+    pub(in crate::nonorthogonalwicks) fn j_slice(
+        &self,
+        slot: usize,
+    ) -> &[T] {
         self.w.slice4(self.off.j[slot], self.n())
     }
 }
 
-/// Read only view of diff-spin Wick's intermediates. 
+/// Read only view of diff-spin Wick's intermediates.
 #[derive(Clone, Copy)]
 pub(crate) struct DiffSpinView<'a, T: NOCIScalar> {
     /// Number of molecular orbitals for this different-spin block.
@@ -219,13 +284,15 @@ pub(crate) struct DiffSpinView<'a, T: NOCIScalar> {
 }
 
 impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
-    /// Get tensor dimension n. 
+    /// Get tensor dimension n.
     /// # Arguments:
     /// - `self`: View to diff-spin Wick's intermediates.
     /// # Returns
     /// - `usize`: Tensor dimension `2 * nmo`.
-    pub(crate) fn n(&self) -> usize {2 * self.nmo}
-    
+    pub(crate) fn n(&self) -> usize {
+        2 * self.nmo
+    }
+
     /// Get a slice of the transpoed `Vab[ma0][mb0][mak]` tensor.
     /// # Arguments:
     /// - `self`: View to diff-spin Wick's intermediates.
@@ -233,7 +300,12 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the transpoed `Vab[ma0][mb0][mak]` matrix data.
     #[inline(always)]
-    pub fn vab_t_slice(&self, ma0: usize, mb0: usize, mak: usize) -> &[T] {
+    pub fn vab_t_slice(
+        &self,
+        ma0: usize,
+        mb0: usize,
+        mak: usize,
+    ) -> &[T] {
         self.w.slice2(self.off.vab[ma0][mb0][mak], self.n())
     }
 
@@ -244,7 +316,12 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the transpoed `Vba[mb0][ma0][mbk]` matrix data.
     #[inline(always)]
-    pub fn vba_t_slice(&self, mb0: usize, ma0: usize, mbk: usize) -> &[T] {
+    pub fn vba_t_slice(
+        &self,
+        mb0: usize,
+        ma0: usize,
+        mbk: usize,
+    ) -> &[T] {
         self.w.slice2(self.off.vba[mb0][ma0][mbk], self.n())
     }
 
@@ -255,7 +332,13 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     /// # Returns
     /// - `&[T]`: Slice of the `IIab[ma0][maj][mb0][mbj]` tensor data.
     #[inline(always)]
-    pub fn iiab_slice(&self, ma0: usize, maj: usize, mb0: usize, mbj: usize) -> &[T] {
+    pub fn iiab_slice(
+        &self,
+        ma0: usize,
+        maj: usize,
+        mb0: usize,
+        mbj: usize,
+    ) -> &[T] {
         self.w.slice4(self.off.iiab[ma0][maj][mb0][mbj], self.n())
     }
 }

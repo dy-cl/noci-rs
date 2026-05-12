@@ -29,7 +29,8 @@ pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
     generate_data_h5(&dir, &input);
     let input = load_input(dir.join("input.lua").to_str().unwrap());
     let ao = read_integrals(dir.join("data.h5").to_str().unwrap());
-    let expected: T = serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
+    let expected: T =
+        serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, ao, expected)
 }
 
@@ -37,15 +38,30 @@ pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
 /// # Arguments:
 /// - `dir`: Fixture directory from which to run `generate.py`.
 /// - `input`: User input specifications for this fixture.
-fn generate_data_h5(dir: &std::path::Path, input: &Input) {
+fn generate_data_h5(
+    dir: &std::path::Path,
+    input: &Input,
+) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let generate_py = root.join("scripts/generate.py");
     let atoms: Vec<String> = input.mol.geoms[0].clone();
     let atomsj = serde_json::to_string(&atoms).unwrap();
 
-    Command::new("python3").arg(&generate_py).arg("--atoms").arg(&atomsj).arg("--basis").arg(&input.mol.basis).arg("--unit")
-    .arg(&input.mol.unit).arg("--out").arg("data.h5").arg("--fci").arg(if input.scf.do_fci {"true"} else {"false"}).current_dir(dir)
-    .status().unwrap();
+    Command::new("python3")
+        .arg(&generate_py)
+        .arg("--atoms")
+        .arg(&atomsj)
+        .arg("--basis")
+        .arg(&input.mol.basis)
+        .arg("--unit")
+        .arg(&input.mol.unit)
+        .arg("--out")
+        .arg("data.h5")
+        .arg("--fci")
+        .arg(if input.scf.do_fci { "true" } else { "false" })
+        .current_dir(dir)
+        .status()
+        .unwrap();
 }
 
 /// Assert that two floating point numbers agree within tolerance
@@ -54,7 +70,15 @@ fn generate_data_h5(dir: &std::path::Path, input: &Input) {
 /// - `y`: Reference value.
 /// - `tol`: Maximum allowed absolute error.
 /// - `label`: Description printed if assertion fails.
-pub fn assert_close(x: f64, y: f64, tol: f64, label: &str) {
+pub fn assert_close(
+    x: f64,
+    y: f64,
+    tol: f64,
+    label: &str,
+) {
     let err = (x - y).abs();
-    assert!(err < tol, "{label}: expected {y}, got {x}, |Δ|: {err}, tol: {tol}");
+    assert!(
+        err < tol,
+        "{label}: expected {y}, got {x}, |Δ|: {err}, tol: {tol}"
+    );
 }

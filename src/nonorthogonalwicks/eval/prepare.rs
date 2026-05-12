@@ -1,11 +1,11 @@
-// nonorthogonalwicks/eval/prepare.rs 
+// nonorthogonalwicks/eval/prepare.rs
+use super::super::scratch::WickScratch;
+use super::super::view::SameSpinView;
+use super::helpers::construct_determinant_indices_gen;
 use crate::ExcitationSpin;
 use crate::maths::build_d;
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use super::helpers::construct_determinant_indices_gen;
-use super::super::scratch::WickScratch;
-use super::super::view::SameSpinView;
 
 /// Prepare shared same-spin scratch quantities used by overlap and Hamiltonian evaluations.
 /// Dispatches to the zero-overlap fast path when `w.m == 0` and otherwise to the full generic path.
@@ -16,12 +16,16 @@ use super::super::view::SameSpinView;
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `()`: Prepares the required same-spin scratch quantities in place.
-pub fn prepare_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) {
+pub fn prepare_same<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same, {
         if w.m == 0 {
             prepare_same_m0(w, l_ex, g_ex, scratch)
-        }
-        else {
+        } else {
             prepare_same_gen(w, l_ex, g_ex, scratch)
         }
     })
@@ -38,7 +42,12 @@ pub fn prepare_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpi
 /// # Returns
 /// - `()`: Prepares the zero-overlap same-spin scratch quantities in place.
 #[inline(always)]
-fn prepare_same_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) {
+fn prepare_same_m0<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
@@ -50,31 +59,68 @@ fn prepare_same_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin
             }
             1 => {
                 scratch.ensure_same(1);
-                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(
+                    l_ex,
+                    g_ex,
+                    w.nmo,
+                    &mut scratch.rows,
+                    &mut scratch.cols,
+                );
                 prepare_same_m0_l1(w, scratch);
             }
             2 => {
                 scratch.ensure_same(2);
-                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(
+                    l_ex,
+                    g_ex,
+                    w.nmo,
+                    &mut scratch.rows,
+                    &mut scratch.cols,
+                );
                 prepare_same_m0_l2(w, scratch);
             }
             3 => {
                 scratch.ensure_same(3);
-                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(
+                    l_ex,
+                    g_ex,
+                    w.nmo,
+                    &mut scratch.rows,
+                    &mut scratch.cols,
+                );
                 prepare_same_m0_l3(w, scratch);
             }
             4 => {
                 scratch.ensure_same(4);
-                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(
+                    l_ex,
+                    g_ex,
+                    w.nmo,
+                    &mut scratch.rows,
+                    &mut scratch.cols,
+                );
                 prepare_same_m0_l4(w, scratch);
             }
             _ => {
                 scratch.ensure_same(l);
-                construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices(
+                    l_ex,
+                    g_ex,
+                    w.nmo,
+                    &mut scratch.rows,
+                    &mut scratch.cols,
+                );
 
                 let x0 = w.x(0);
                 let y0 = w.y(0);
-                build_d(scratch.det0.as_mut_slice(), l, &x0, &y0, scratch.rows.as_slice(), scratch.cols.as_slice());
+                build_d(
+                    scratch.det0.as_mut_slice(),
+                    l,
+                    &x0,
+                    &y0,
+                    scratch.rows.as_slice(),
+                    scratch.cols.as_slice(),
+                );
             }
         }
     })
@@ -87,7 +133,10 @@ fn prepare_same_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin
 /// # Returns
 /// - `()`: Writes the one-by-one contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
+fn prepare_same_m0_l1<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l1, {
         let x0 = w.x(0);
         let xstr = x0.strides();
@@ -96,7 +145,9 @@ fn prepare_same_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut Wick
         let c0 = scratch.cols[0] as isize;
         let det0 = scratch.det0.as_mut_slice();
 
-        unsafe {det0[0] = *xptr.offset(r0 * xstr[0] + c0 * xstr[1]);}
+        unsafe {
+            det0[0] = *xptr.offset(r0 * xstr[0] + c0 * xstr[1]);
+        }
     })
 }
 
@@ -107,7 +158,10 @@ fn prepare_same_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut Wick
 /// # Returns
 /// - `()`: Writes the two-by-two contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
+fn prepare_same_m0_l2<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l2, {
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -143,7 +197,10 @@ fn prepare_same_m0_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut Wick
 /// # Returns
 /// - `()`: Writes the three-by-three contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
+fn prepare_same_m0_l3<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l3, {
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -190,7 +247,10 @@ fn prepare_same_m0_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut Wick
 /// # Returns
 /// - `()`: Writes the four-by-four contraction determinant into `scratch.det0`.
 #[inline(always)]
-fn prepare_same_m0_l4<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) {
+fn prepare_same_m0_l4<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l4, {
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -219,18 +279,18 @@ fn prepare_same_m0_l4<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut Wick
         let det0 = scratch.det0.as_mut_slice();
 
         unsafe {
-            det0[0]  = *xptr.offset(xr0 + c0 * xstr[1]);
-            det0[1]  = *yptr.offset(yr0 + c1 * ystr[1]);
-            det0[2]  = *yptr.offset(yr0 + c2 * ystr[1]);
-            det0[3]  = *yptr.offset(yr0 + c3 * ystr[1]);
+            det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
+            det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
+            det0[2] = *yptr.offset(yr0 + c2 * ystr[1]);
+            det0[3] = *yptr.offset(yr0 + c3 * ystr[1]);
 
-            det0[4]  = *xptr.offset(xr1 + c0 * xstr[1]);
-            det0[5]  = *xptr.offset(xr1 + c1 * xstr[1]);
-            det0[6]  = *yptr.offset(yr1 + c2 * ystr[1]);
-            det0[7]  = *yptr.offset(yr1 + c3 * ystr[1]);
+            det0[4] = *xptr.offset(xr1 + c0 * xstr[1]);
+            det0[5] = *xptr.offset(xr1 + c1 * xstr[1]);
+            det0[6] = *yptr.offset(yr1 + c2 * ystr[1]);
+            det0[7] = *yptr.offset(yr1 + c3 * ystr[1]);
 
-            det0[8]  = *xptr.offset(xr2 + c0 * xstr[1]);
-            det0[9]  = *xptr.offset(xr2 + c1 * xstr[1]);
+            det0[8] = *xptr.offset(xr2 + c0 * xstr[1]);
+            det0[9] = *xptr.offset(xr2 + c1 * xstr[1]);
             det0[10] = *xptr.offset(xr2 + c2 * xstr[1]);
             det0[11] = *yptr.offset(yr2 + c3 * ystr[1]);
 
@@ -251,7 +311,12 @@ fn prepare_same_m0_l4<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut Wick
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `()`: Prepares the generic same-spin scratch quantities in place.
-pub fn prepare_same_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) {
+pub fn prepare_same_gen<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);
@@ -260,11 +325,25 @@ pub fn prepare_same_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &Excitatio
 
         let x0 = w.x(0);
         let y0 = w.y(0);
-        build_d(scratch.det0.as_mut_slice(), l, &x0, &y0, scratch.rows.as_slice(), scratch.cols.as_slice());
+        build_d(
+            scratch.det0.as_mut_slice(),
+            l,
+            &x0,
+            &y0,
+            scratch.rows.as_slice(),
+            scratch.cols.as_slice(),
+        );
 
         let x1 = w.x(1);
         let y1 = w.y(1);
-        build_d(scratch.det1.as_mut_slice(), l, &x1, &y1, scratch.rows.as_slice(), scratch.cols.as_slice());
+        build_d(
+            scratch.det1.as_mut_slice(),
+            l,
+            &x1,
+            &y1,
+            scratch.rows.as_slice(),
+            scratch.cols.as_slice(),
+        );
     })
 }
 
@@ -280,18 +359,27 @@ pub fn prepare_same_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l_ex: &Excitatio
 /// # Returns
 /// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-fn construct_determinant_indices(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices, {
-        let l = l_ex.holes.len() + g_ex.holes.len();
+fn construct_determinant_indices(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    nmo: usize,
+    rows: &mut Vec<usize>,
+    cols: &mut Vec<usize>,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices,
+        {
+            let l = l_ex.holes.len() + g_ex.holes.len();
 
-        match l {
-            1 => construct_determinant_indices_l1(l_ex, g_ex, nmo, rows, cols),
-            2 => construct_determinant_indices_l2(l_ex, g_ex, nmo, rows, cols),
-            3 => construct_determinant_indices_l3(l_ex, g_ex, nmo, rows, cols),
-            4 => construct_determinant_indices_l4(l_ex, g_ex, nmo, rows, cols),
-            _ => construct_determinant_indices_gen(l_ex, g_ex, nmo, rows, cols),
+            match l {
+                1 => construct_determinant_indices_l1(l_ex, g_ex, nmo, rows, cols),
+                2 => construct_determinant_indices_l2(l_ex, g_ex, nmo, rows, cols),
+                3 => construct_determinant_indices_l3(l_ex, g_ex, nmo, rows, cols),
+                4 => construct_determinant_indices_l4(l_ex, g_ex, nmo, rows, cols),
+                _ => construct_determinant_indices_gen(l_ex, g_ex, nmo, rows, cols),
+            }
         }
-    })
+    )
 }
 
 /// Construct the row and column indices used for a rank-1 contraction determinant.
@@ -304,27 +392,39 @@ fn construct_determinant_indices(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, n
 /// # Returns
 /// - `()`: Writes the rank-1 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l1(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l1, {
-        let nl = l_ex.holes.len();
+pub(super) fn construct_determinant_indices_l1(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    nmo: usize,
+    rows: &mut Vec<usize>,
+    cols: &mut Vec<usize>,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l1,
+        {
+            let nl = l_ex.holes.len();
 
-        rows.clear();
-        cols.clear();
+            rows.clear();
+            cols.clear();
 
-        if rows.capacity() < 1 {rows.reserve_exact(1 - rows.capacity());}
-        if cols.capacity() < 1 {cols.reserve_exact(1 - cols.capacity());}
-
-        unsafe {
-            if nl == 1 {
-                rows.push(*l_ex.parts.get_unchecked(0));
-                cols.push(*l_ex.holes.get_unchecked(0));
+            if rows.capacity() < 1 {
+                rows.reserve_exact(1 - rows.capacity());
             }
-            else {
-                rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                cols.push(nmo + *g_ex.parts.get_unchecked(0));
+            if cols.capacity() < 1 {
+                cols.reserve_exact(1 - cols.capacity());
+            }
+
+            unsafe {
+                if nl == 1 {
+                    rows.push(*l_ex.parts.get_unchecked(0));
+                    cols.push(*l_ex.holes.get_unchecked(0));
+                } else {
+                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                }
             }
         }
-    })
+    )
 }
 
 /// Construct the row and column indices used for a rank-2 contraction determinant.
@@ -337,38 +437,49 @@ pub(super) fn construct_determinant_indices_l1(l_ex: &ExcitationSpin, g_ex: &Exc
 /// # Returns
 /// - `()`: Writes the rank-2 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l2(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l2, {
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
+pub(super) fn construct_determinant_indices_l2(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    nmo: usize,
+    rows: &mut Vec<usize>,
+    cols: &mut Vec<usize>,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l2,
+        {
+            let nl = l_ex.holes.len();
+            let ng = g_ex.holes.len();
 
-        rows.clear();
-        cols.clear();
+            rows.clear();
+            cols.clear();
 
-        if rows.capacity() < 2 {rows.reserve_exact(2 - rows.capacity());}
-        if cols.capacity() < 2 {cols.reserve_exact(2 - cols.capacity());}
-
-        unsafe {
-            if nl == 2 {
-                rows.push(*l_ex.parts.get_unchecked(0));
-                rows.push(*l_ex.parts.get_unchecked(1));
-                cols.push(*l_ex.holes.get_unchecked(0));
-                cols.push(*l_ex.holes.get_unchecked(1));
+            if rows.capacity() < 2 {
+                rows.reserve_exact(2 - rows.capacity());
             }
-            else if ng == 2 {
-                rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                cols.push(nmo + *g_ex.parts.get_unchecked(1));
+            if cols.capacity() < 2 {
+                cols.reserve_exact(2 - cols.capacity());
             }
-            else {
-                rows.push(*l_ex.parts.get_unchecked(0));
-                rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                cols.push(*l_ex.holes.get_unchecked(0));
-                cols.push(nmo + *g_ex.parts.get_unchecked(0));
+
+            unsafe {
+                if nl == 2 {
+                    rows.push(*l_ex.parts.get_unchecked(0));
+                    rows.push(*l_ex.parts.get_unchecked(1));
+                    cols.push(*l_ex.holes.get_unchecked(0));
+                    cols.push(*l_ex.holes.get_unchecked(1));
+                } else if ng == 2 {
+                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
+                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                } else {
+                    rows.push(*l_ex.parts.get_unchecked(0));
+                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                    cols.push(*l_ex.holes.get_unchecked(0));
+                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                }
             }
         }
-    })
+    )
 }
 
 /// Construct the row and column indices used for a rank-3 contraction determinant.
@@ -384,59 +495,72 @@ pub(super) fn construct_determinant_indices_l2(l_ex: &ExcitationSpin, g_ex: &Exc
 /// # Returns
 /// - `()`: Writes the rank-3 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l3(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l3, {
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
+pub(super) fn construct_determinant_indices_l3(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    nmo: usize,
+    rows: &mut Vec<usize>,
+    cols: &mut Vec<usize>,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l3,
+        {
+            let nl = l_ex.holes.len();
+            let ng = g_ex.holes.len();
 
-        rows.clear();
-        cols.clear();
+            rows.clear();
+            cols.clear();
 
-        if rows.capacity() < 3 {rows.reserve_exact(3 - rows.capacity());}
-        if cols.capacity() < 3 {cols.reserve_exact(3 - cols.capacity());}
+            if rows.capacity() < 3 {
+                rows.reserve_exact(3 - rows.capacity());
+            }
+            if cols.capacity() < 3 {
+                cols.reserve_exact(3 - cols.capacity());
+            }
 
-        unsafe {
-            match (nl, ng) {
-                (3, 0) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(*l_ex.parts.get_unchecked(1));
-                    rows.push(*l_ex.parts.get_unchecked(2));
+            unsafe {
+                match (nl, ng) {
+                    (3, 0) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(*l_ex.parts.get_unchecked(1));
+                        rows.push(*l_ex.parts.get_unchecked(2));
 
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(1));
-                    cols.push(*l_ex.holes.get_unchecked(2));
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(*l_ex.holes.get_unchecked(1));
+                        cols.push(*l_ex.holes.get_unchecked(2));
+                    }
+                    (2, 1) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(*l_ex.parts.get_unchecked(1));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(*l_ex.holes.get_unchecked(1));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                    }
+                    (1, 2) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
+
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                    }
+                    (0, 3) => {
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(2));
+
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(2));
+                    }
+                    _ => unreachable!(),
                 }
-                (2, 1) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(*l_ex.parts.get_unchecked(1));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(1));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                }
-                (1, 2) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
-
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                }
-                (0, 3) => {
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(2));
-
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(2));
-                }
-                _ => unreachable!(),
             }
         }
-    })
+    )
 }
 
 /// Construct the row and column indices used for a rank-4 contraction determinant.
@@ -449,76 +573,89 @@ pub(super) fn construct_determinant_indices_l3(l_ex: &ExcitationSpin, g_ex: &Exc
 /// # Returns
 /// - `()`: Writes the rank-4 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l4(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l4, {
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
+pub(super) fn construct_determinant_indices_l4(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    nmo: usize,
+    rows: &mut Vec<usize>,
+    cols: &mut Vec<usize>,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l4,
+        {
+            let nl = l_ex.holes.len();
+            let ng = g_ex.holes.len();
 
-        rows.clear();
-        cols.clear();
+            rows.clear();
+            cols.clear();
 
-        if rows.capacity() < 4 {rows.reserve_exact(4 - rows.capacity());}
-        if cols.capacity() < 4 {cols.reserve_exact(4 - cols.capacity());}
+            if rows.capacity() < 4 {
+                rows.reserve_exact(4 - rows.capacity());
+            }
+            if cols.capacity() < 4 {
+                cols.reserve_exact(4 - cols.capacity());
+            }
 
-        unsafe {
-            match (nl, ng) {
-                (4, 0) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(*l_ex.parts.get_unchecked(1));
-                    rows.push(*l_ex.parts.get_unchecked(2));
-                    rows.push(*l_ex.parts.get_unchecked(3));
+            unsafe {
+                match (nl, ng) {
+                    (4, 0) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(*l_ex.parts.get_unchecked(1));
+                        rows.push(*l_ex.parts.get_unchecked(2));
+                        rows.push(*l_ex.parts.get_unchecked(3));
 
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(1));
-                    cols.push(*l_ex.holes.get_unchecked(2));
-                    cols.push(*l_ex.holes.get_unchecked(3));
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(*l_ex.holes.get_unchecked(1));
+                        cols.push(*l_ex.holes.get_unchecked(2));
+                        cols.push(*l_ex.holes.get_unchecked(3));
+                    }
+                    (3, 1) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(*l_ex.parts.get_unchecked(1));
+                        rows.push(*l_ex.parts.get_unchecked(2));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(*l_ex.holes.get_unchecked(1));
+                        cols.push(*l_ex.holes.get_unchecked(2));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                    }
+                    (2, 2) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(*l_ex.parts.get_unchecked(1));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
+
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(*l_ex.holes.get_unchecked(1));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                    }
+                    (1, 3) => {
+                        rows.push(*l_ex.parts.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(2));
+
+                        cols.push(*l_ex.holes.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(2));
+                    }
+                    (0, 4) => {
+                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(2));
+                        rows.push(nmo + *g_ex.holes.get_unchecked(3));
+
+                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(2));
+                        cols.push(nmo + *g_ex.parts.get_unchecked(3));
+                    }
+                    _ => unreachable!(),
                 }
-                (3, 1) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(*l_ex.parts.get_unchecked(1));
-                    rows.push(*l_ex.parts.get_unchecked(2));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(1));
-                    cols.push(*l_ex.holes.get_unchecked(2));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                }
-                (2, 2) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(*l_ex.parts.get_unchecked(1));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
-
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(1));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                }
-                (1, 3) => {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(2));
-
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(2));
-                }
-                (0, 4) => {
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(2));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(3));
-
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(2));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(3));
-                }
-                _ => unreachable!(),
             }
         }
-    })
+    )
 }

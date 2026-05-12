@@ -4,11 +4,11 @@ use std::path::Path;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use super::state::{PropagationState, Walkers, ExcitationHist};
 use super::restart::RestartState;
+use super::state::{ExcitationHist, PropagationState, Walkers};
 
 use super::restart::write_restart_hdf5;
-use super::state::{QMCRunInfo, PopulationStats, Shifts};
+use super::state::{PopulationStats, QMCRunInfo, Shifts};
 
 /// Print the iteration table header on rank zero.
 /// # Arguments:
@@ -18,8 +18,19 @@ use super::state::{QMCRunInfo, PopulationStats, Shifts};
 pub(in crate::stochastic) fn print_header(irank: usize) {
     if irank == 0 {
         println!("{}", "=".repeat(100));
-        println!("{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-                 "iter", "E", "Ecorr", "Shift (Es)", "Shift (EsS)", "Nw (||C||)", "Nref (||C||)", "Nw (||SC||)", "Nref (||SC||)", "Nocc");
+        println!(
+            "{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+            "iter",
+            "E",
+            "Ecorr",
+            "Shift (Es)",
+            "Shift (EsS)",
+            "Nw (||C||)",
+            "Nref (||C||)",
+            "Nw (||SC||)",
+            "Nref (||SC||)",
+            "Nocc"
+        );
     }
 }
 
@@ -30,11 +41,25 @@ pub(in crate::stochastic) fn print_header(irank: usize) {
 /// - `e0`: Energy of the first basis determinant.
 /// # Returns
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
-pub(in crate::stochastic) fn print_initial_row(irank: usize, state: &PropagationState, e0: f64) {
+pub(in crate::stochastic) fn print_initial_row(
+    irank: usize,
+    state: &PropagationState,
+    e0: f64,
+) {
     if irank == 0 {
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-                 0, state.eprojcur, state.eprojcur - e0, 0.0, 0.0, state.prev_pop.nwc as f64, state.prev_pop.nrefc as f64, 
-                 state.prev_pop.nwsc, state.prev_pop.nrefsc, state.prev_pop.noccdets);
+        println!(
+            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+            0,
+            state.eprojcur,
+            state.eprojcur - e0,
+            0.0,
+            0.0,
+            state.prev_pop.nwc as f64,
+            state.prev_pop.nrefc as f64,
+            state.prev_pop.nwsc,
+            state.prev_pop.nrefsc,
+            state.prev_pop.noccdets
+        );
     }
 }
 
@@ -48,14 +73,34 @@ pub(in crate::stochastic) fn print_initial_row(irank: usize, state: &Propagation
 /// - `es`: Non-overlap transformed shift energy.
 /// # Returns
 /// - `()`: Writes the cached iteration line to stdout on rank zero.
-pub(in crate::stochastic) fn print_cached_row(irank: usize, iter: usize, state: &PropagationState, e0: f64, es: f64) {
-    let es_corr = if state.reached_c {es - e0} else {0.0};
-    let es_s_corr = if state.reached_sc {state.es_s - e0} else {0.0};
+pub(in crate::stochastic) fn print_cached_row(
+    irank: usize,
+    iter: usize,
+    state: &PropagationState,
+    e0: f64,
+    es: f64,
+) {
+    let es_corr = if state.reached_c { es - e0 } else { 0.0 };
+    let es_s_corr = if state.reached_sc {
+        state.es_s - e0
+    } else {
+        0.0
+    };
 
     if irank == 0 {
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-                 iter, state.eprojcur, state.eprojcur - e0, es_corr, es_s_corr, state.cur_pop.nwc as f64, 
-                 state.cur_pop.nrefc as f64, state.cur_pop.nwsc, state.cur_pop.nrefsc, state.cur_pop.noccdets);
+        println!(
+            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+            iter,
+            state.eprojcur,
+            state.eprojcur - e0,
+            es_corr,
+            es_s_corr,
+            state.cur_pop.nwc as f64,
+            state.cur_pop.nrefc as f64,
+            state.cur_pop.nwsc,
+            state.cur_pop.nrefsc,
+            state.cur_pop.noccdets
+        );
     }
 }
 
@@ -69,14 +114,35 @@ pub(in crate::stochastic) fn print_cached_row(irank: usize, iter: usize, state: 
 /// - `es`: Non-overlap transformed shift energy.
 /// # Returns
 /// - `()`: Writes the current iteration line to stdout on rank zero.
-pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &PropagationState, stats: &PopulationStats, e0: f64, es: f64) {
-    let es_corr = if state.reached_c {es - e0} else {0.0};
-    let es_s_corr = if state.reached_sc {state.es_s - e0} else {0.0};
+pub(in crate::stochastic) fn print_row(
+    irank: usize,
+    iter: usize,
+    state: &PropagationState,
+    stats: &PopulationStats,
+    e0: f64,
+    es: f64,
+) {
+    let es_corr = if state.reached_c { es - e0 } else { 0.0 };
+    let es_s_corr = if state.reached_sc {
+        state.es_s - e0
+    } else {
+        0.0
+    };
 
     if irank == 0 {
-        println!("{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-                 iter, state.eprojcur, state.eprojcur - e0, es_corr, es_s_corr, stats.nwc as f64, stats.nrefc as f64, 
-                 stats.nwsc, stats.nrefsc, stats.noccdets);
+        println!(
+            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+            iter,
+            state.eprojcur,
+            state.eprojcur - e0,
+            es_corr,
+            es_s_corr,
+            stats.nwc as f64,
+            stats.nrefc as f64,
+            stats.nwsc,
+            stats.nrefsc,
+            stats.noccdets
+        );
     }
 }
 
@@ -88,11 +154,17 @@ pub(in crate::stochastic) fn print_row(irank: usize, iter: usize, state: &Propag
 /// - `shifts`: Current non-overlap and overlap-transformed shifts.
 /// - `run`: Rank-local run metadata.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `restart_path`: File path to write restart file to. 
+/// - `restart_path`: File path to write restart file to.
 /// # Returns
 /// - `Option<(f64, Option<ExcitationHist>)>`: Final return values if a stop was requested, otherwise `None`.
-pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationState, shifts: Shifts, run: &QMCRunInfo, 
-                                        world: &impl Communicator, restart_path: Option<&String>) -> Option<(f64, Option<ExcitationHist>)> {
+pub(in crate::stochastic) fn check_stop(
+    report: usize,
+    state: &mut PropagationState,
+    shifts: Shifts,
+    run: &QMCRunInfo,
+    world: &impl Communicator,
+    restart_path: Option<&String>,
+) -> Option<(f64, Option<ExcitationHist>)> {
     let mut stop = 0;
     if run.irank == 0 && Path::new("STOP").exists() {
         stop = 1;
@@ -117,7 +189,7 @@ pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationSt
         excitation_hist: state.mc.excitation_hist.take(),
         base_seed: Some(run.base_seed),
     };
-    
+
     let restart_path = restart_path.map(|s| s.as_str()).unwrap_or("RESTART.H5");
     write_restart_hdf5(restart_path, world, &rs, run.ndets).unwrap();
 
@@ -128,4 +200,3 @@ pub(in crate::stochastic) fn check_stop(report: usize, state: &mut PropagationSt
 
     Some((state.eprojcur, rs.excitation_hist))
 }
-

@@ -1,6 +1,6 @@
 // scf/kernels.rs
 
-use ndarray::{s, Array1, Array2, Array4};
+use ndarray::{Array1, Array2, Array4, s};
 
 use crate::StateScalar;
 
@@ -20,7 +20,11 @@ pub enum DensityMode {
 /// - `mode`: Whether to use transpose or adjoint in the bra.
 /// # Returns:
 /// - `Array2<T>`: Spin density matrix.
-pub fn density<T: StateScalar>(c: &Array2<T>, nocc: usize, mode: DensityMode) -> Array2<T> {
+pub fn density<T: StateScalar>(
+    c: &Array2<T>,
+    nocc: usize,
+    mode: DensityMode,
+) -> Array2<T> {
     let cocc = c.slice(s![.., 0..nocc]).to_owned();
     match mode {
         DensityMode::Holomorphic => cocc.dot(&cocc.t()),
@@ -36,7 +40,12 @@ pub fn density<T: StateScalar>(c: &Array2<T>, nocc: usize, mode: DensityMode) ->
 /// - `db`: Beta-spin density matrix.
 /// # Returns:
 /// - `(Array2<T>, Array2<T>)`: Alpha- and beta-spin Fock matrices.
-pub fn fock<T: StateScalar>(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<T>, db: &Array2<T>) -> (Array2<T>, Array2<T>) {
+pub fn fock<T: StateScalar>(
+    h: &Array2<f64>,
+    eri: &Array4<f64>,
+    da: &Array2<T>,
+    db: &Array2<T>,
+) -> (Array2<T>, Array2<T>) {
     let n = h.nrows();
     let d = da + db;
     let mut fa = h.mapv(T::from_real);
@@ -70,13 +79,22 @@ pub fn fock<T: StateScalar>(h: &Array2<f64>, eri: &Array4<f64>, da: &Array2<T>, 
 /// - `fb`: Beta-spin Fock matrix.
 /// # Returns:
 /// - `T`: SCF energy.
-pub fn energy<T: StateScalar>(h: &Array2<f64>, enuc: f64, da: &Array2<T>, db: &Array2<T>, fa: &Array2<T>, fb: &Array2<T>) -> T {
+pub fn energy<T: StateScalar>(
+    h: &Array2<f64>,
+    enuc: f64,
+    da: &Array2<T>,
+    db: &Array2<T>,
+    fa: &Array2<T>,
+    fb: &Array2<T>,
+) -> T {
     let p = da + db;
     let mut e = T::from_real(enuc);
     for mu in 0..h.nrows() {
         for nu in 0..h.ncols() {
             let hmn = T::from_real(h[(mu, nu)]);
-            e += hmn * p[(mu, nu)] + T::from_real(0.5) * ((fa[(mu, nu)] - hmn) * da[(mu, nu)] + (fb[(mu, nu)] - hmn) * db[(mu, nu)]);
+            e += hmn * p[(mu, nu)]
+                + T::from_real(0.5)
+                    * ((fa[(mu, nu)] - hmn) * da[(mu, nu)] + (fb[(mu, nu)] - hmn) * db[(mu, nu)]);
         }
     }
     e
@@ -90,7 +108,12 @@ pub fn energy<T: StateScalar>(h: &Array2<f64>, enuc: f64, da: &Array2<T>, db: &A
 /// - `mode`: Whether to use transpose or adjoint in the virtual bra.
 /// # Returns:
 /// - `Array2<T>`: Gradient block with shape `(nvir, nocc)`.
-pub fn orbital_gradient<T: StateScalar>(c: &Array2<T>, f: &Array2<T>, nocc: usize, mode: DensityMode) -> Array2<T> {
+pub fn orbital_gradient<T: StateScalar>(
+    c: &Array2<T>,
+    f: &Array2<T>,
+    nocc: usize,
+    mode: DensityMode,
+) -> Array2<T> {
     let cocc = c.slice(s![.., 0..nocc]).to_owned();
     let cvir = c.slice(s![.., nocc..]).to_owned();
     let bra = match mode {
@@ -107,7 +130,11 @@ pub fn orbital_gradient<T: StateScalar>(c: &Array2<T>, f: &Array2<T>, nocc: usiz
 /// - `mode`: Whether to use transpose or adjoint in the bra.
 /// # Returns:
 /// - `Array1<T>`: Diagonal MO Fock elements.
-pub fn orbital_energies<T: StateScalar>(c: &Array2<T>, f: &Array2<T>, mode: DensityMode) -> Array1<T> {
+pub fn orbital_energies<T: StateScalar>(
+    c: &Array2<T>,
+    f: &Array2<T>,
+    mode: DensityMode,
+) -> Array1<T> {
     let bra = match mode {
         DensityMode::Holomorphic => c.t().to_owned(),
         DensityMode::Hermitian => c.t().mapv(|z| z.conj()),

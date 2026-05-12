@@ -1,8 +1,8 @@
 // nonorthogonalwicks/layout.rs
 use ndarray::{Array2, Array4};
 
-use super::types::{PairOffset, SameSpinOffset, DiffSpinOffset};
-use super::build::{SameSpinBuild, DiffSpinBuild};
+use super::build::{DiffSpinBuild, SameSpinBuild};
+use super::types::{DiffSpinOffset, PairOffset, SameSpinOffset};
 use crate::noci::NOCIScalar;
 
 /// Calculate and store all the required offsets from the beginning of the large contiguous shared
@@ -12,7 +12,10 @@ use crate::noci::NOCIScalar;
 /// - `nmo`: Number of molecular orbitals.
 /// # Returns
 /// - `(Vec<PairOffset>, usize)`: Per-pair offset table and total slab length in units of `T`.
-pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
+pub fn assign_offsets(
+    nref: usize,
+    nmo: usize,
+) -> (Vec<PairOffset>, usize) {
     let n = 2 * nmo;
     let nn2 = n * n;
     let nn4 = n * n * n * n;
@@ -20,23 +23,98 @@ pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
     let mut i: usize = 0;
 
     for p in off.iter_mut() {
-        for mi in 0..2 {p.aa.x[mi] = i; i += nn2;}
-        for mi in 0..2 {p.aa.y[mi] = i; i += nn2;}
-        for mi in 0..2 {for mj in 0..2 {p.aa.fh[mi][mj] = i; i += nn2;}}
-        for mi in 0..2 {for mj in 0..2 {p.aa.ff[mi][mj] = i; i += nn2;}}
-        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.aa.v[mi][mj][mk] = i; i += nn2;}}}
-        for s in 0..10 {p.aa.j[s] = i; i += nn4;}
+        for mi in 0..2 {
+            p.aa.x[mi] = i;
+            i += nn2;
+        }
+        for mi in 0..2 {
+            p.aa.y[mi] = i;
+            i += nn2;
+        }
+        for mi in 0..2 {
+            for mj in 0..2 {
+                p.aa.fh[mi][mj] = i;
+                i += nn2;
+            }
+        }
+        for mi in 0..2 {
+            for mj in 0..2 {
+                p.aa.ff[mi][mj] = i;
+                i += nn2;
+            }
+        }
+        for mi in 0..2 {
+            for mj in 0..2 {
+                for mk in 0..2 {
+                    p.aa.v[mi][mj][mk] = i;
+                    i += nn2;
+                }
+            }
+        }
+        for s in 0..10 {
+            p.aa.j[s] = i;
+            i += nn4;
+        }
 
-        for mi in 0..2 {p.bb.x[mi] = i; i += nn2;}
-        for mi in 0..2 {p.bb.y[mi] = i; i += nn2;}
-        for mi in 0..2 {for mj in 0..2 {p.bb.fh[mi][mj] = i; i += nn2;}}
-        for mi in 0..2 {for mj in 0..2 {p.bb.ff[mi][mj] = i; i += nn2;}}
-        for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {p.bb.v[mi][mj][mk] = i; i += nn2;}}}
-        for s in 0..10 {p.bb.j[s] = i; i += nn4;}
+        for mi in 0..2 {
+            p.bb.x[mi] = i;
+            i += nn2;
+        }
+        for mi in 0..2 {
+            p.bb.y[mi] = i;
+            i += nn2;
+        }
+        for mi in 0..2 {
+            for mj in 0..2 {
+                p.bb.fh[mi][mj] = i;
+                i += nn2;
+            }
+        }
+        for mi in 0..2 {
+            for mj in 0..2 {
+                p.bb.ff[mi][mj] = i;
+                i += nn2;
+            }
+        }
+        for mi in 0..2 {
+            for mj in 0..2 {
+                for mk in 0..2 {
+                    p.bb.v[mi][mj][mk] = i;
+                    i += nn2;
+                }
+            }
+        }
+        for s in 0..10 {
+            p.bb.j[s] = i;
+            i += nn4;
+        }
 
-        for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {p.ab.vab[ma0][mb0][mk] = i; i += nn2;}}}
-        for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {p.ab.vba[mb0][ma0][mk] = i; i += nn2;}}}
-        for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {p.ab.iiab[ma0][maj][mb0][mbj] = i; i += nn4;}}}}
+        for ma0 in 0..2 {
+            for mb0 in 0..2 {
+                for mk in 0..2 {
+                    p.ab.vab[ma0][mb0][mk] = i;
+                    i += nn2;
+                }
+            }
+        }
+        for mb0 in 0..2 {
+            for ma0 in 0..2 {
+                for mk in 0..2 {
+                    p.ab.vba[mb0][ma0][mk] = i;
+                    i += nn2;
+                }
+            }
+        }
+        for ma0 in 0..2 {
+            for maj in 0..2 {
+                for mb0 in 0..2 {
+                    for mbj in 0..2 {
+                        p.ab.iiab[ma0][maj][mb0][mbj] = i;
+                        i += nn4;
+                    }
+                }
+            }
+        }
     }
 
     (off, i)
@@ -50,16 +128,36 @@ pub fn assign_offsets(nref: usize, nmo: usize) -> (Vec<PairOffset>, usize) {
 /// - `w`: Owned Wick's intermediates.
 /// # Returns
 /// - `()`: Writes the same-spin intermediates into the slab.
-pub fn write_same_spin<T: NOCIScalar>(slab: &mut [T], o: &SameSpinOffset, w: &SameSpinBuild<T>) {
+pub fn write_same_spin<T: NOCIScalar>(
+    slab: &mut [T],
+    o: &SameSpinOffset,
+    w: &SameSpinBuild<T>,
+) {
     write2(slab, o.x[0], &w.x[0]);
     write2(slab, o.x[1], &w.x[1]);
     write2(slab, o.y[0], &w.y[0]);
     write2(slab, o.y[1], &w.y[1]);
 
-    for mi in 0..2 {for mj in 0..2 {write2t(slab, o.fh[mi][mj], &w.fh[mi][mj]);}}
-    for mi in 0..2 {for mj in 0..2 {write2t(slab, o.ff[mi][mj], &w.ff[mi][mj]);}}
-    for mi in 0..2 {for mj in 0..2 {for mk in 0..2 {write2t(slab, o.v[mi][mj][mk], &w.v[mi][mj][mk]);}}}
-    for s in 0..10 {write4ijrc(slab, o.j[s], &w.j[s]);}
+    for mi in 0..2 {
+        for mj in 0..2 {
+            write2t(slab, o.fh[mi][mj], &w.fh[mi][mj]);
+        }
+    }
+    for mi in 0..2 {
+        for mj in 0..2 {
+            write2t(slab, o.ff[mi][mj], &w.ff[mi][mj]);
+        }
+    }
+    for mi in 0..2 {
+        for mj in 0..2 {
+            for mk in 0..2 {
+                write2t(slab, o.v[mi][mj][mk], &w.v[mi][mj][mk]);
+            }
+        }
+    }
+    for s in 0..10 {
+        write4ijrc(slab, o.j[s], &w.j[s]);
+    }
 }
 
 /// Fill the diff-spin data owning structs with the diff-spin Wick's intermediates using the
@@ -70,10 +168,38 @@ pub fn write_same_spin<T: NOCIScalar>(slab: &mut [T], o: &SameSpinOffset, w: &Sa
 /// - `w`: Owned Wick's intermediates.
 /// # Returns
 /// - `()`: Writes the diff-spin intermediates into the slab.
-pub fn write_diff_spin<T: NOCIScalar>(slab: &mut [T], o: &DiffSpinOffset, w: &DiffSpinBuild<T>) {
-    for ma0 in 0..2 {for mb0 in 0..2 {for mk in 0..2 {write2t(slab, o.vab[ma0][mb0][mk], &w.vab[ma0][mb0][mk]);}}}
-    for mb0 in 0..2 {for ma0 in 0..2 {for mk in 0..2 {write2t(slab, o.vba[mb0][ma0][mk], &w.vba[mb0][ma0][mk]);}}}
-    for ma0 in 0..2 {for maj in 0..2 {for mb0 in 0..2 {for mbj in 0..2 {write4rcij(slab, o.iiab[ma0][maj][mb0][mbj], &w.iiab[ma0][maj][mb0][mbj]);}}}}
+pub fn write_diff_spin<T: NOCIScalar>(
+    slab: &mut [T],
+    o: &DiffSpinOffset,
+    w: &DiffSpinBuild<T>,
+) {
+    for ma0 in 0..2 {
+        for mb0 in 0..2 {
+            for mk in 0..2 {
+                write2t(slab, o.vab[ma0][mb0][mk], &w.vab[ma0][mb0][mk]);
+            }
+        }
+    }
+    for mb0 in 0..2 {
+        for ma0 in 0..2 {
+            for mk in 0..2 {
+                write2t(slab, o.vba[mb0][ma0][mk], &w.vba[mb0][ma0][mk]);
+            }
+        }
+    }
+    for ma0 in 0..2 {
+        for maj in 0..2 {
+            for mb0 in 0..2 {
+                for mbj in 0..2 {
+                    write4rcij(
+                        slab,
+                        o.iiab[ma0][maj][mb0][mbj],
+                        &w.iiab[ma0][maj][mb0][mbj],
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Copy matrix into tensor slab provided it is contiguous.
@@ -83,7 +209,11 @@ pub fn write_diff_spin<T: NOCIScalar>(slab: &mut [T], o: &DiffSpinOffset, w: &Di
 /// - `a`: Matrix to copy.
 /// # Returns
 /// - `()`: Writes the matrix into the tensor slab.
-pub fn write2<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array2<T>) {
+pub fn write2<T: NOCIScalar>(
+    slab: &mut [T],
+    off: usize,
+    a: &Array2<T>,
+) {
     let src = a.as_slice().expect("Array2 must be contiguous");
     slab[off..off + src.len()].copy_from_slice(src);
 }
@@ -95,7 +225,11 @@ pub fn write2<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array2<T>) {
 /// - `a`: Matrix to copy.
 /// # Returns
 /// - `()`: Writes the matrix into the tensor slab.
-pub fn write2t<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array2<T>) {
+pub fn write2t<T: NOCIScalar>(
+    slab: &mut [T],
+    off: usize,
+    a: &Array2<T>,
+) {
     let (nr, nc) = a.dim();
     let src = a.as_slice().expect("Array2 must be contiguous");
     let dst = &mut slab[off..off + nr * nc];
@@ -115,7 +249,11 @@ pub fn write2t<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array2<T>) {
 /// - `a`: Tensor to copy.
 /// # Returns
 /// - `()`: Writes the tensor into the tensor slab.
-fn write4rcij<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array4<T>) {
+fn write4rcij<T: NOCIScalar>(
+    slab: &mut [T],
+    off: usize,
+    a: &Array4<T>,
+) {
     let src = a.as_slice().expect("Array4 must be contiguous");
     slab[off..off + src.len()].copy_from_slice(src);
 }
@@ -127,7 +265,11 @@ fn write4rcij<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array4<T>) {
 /// - `a`: Tensor to copy.
 /// # Returns
 /// - `()`: Writes the tensor into the tensor slab.
-fn write4ijrc<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array4<T>) {
+fn write4ijrc<T: NOCIScalar>(
+    slab: &mut [T],
+    off: usize,
+    a: &Array4<T>,
+) {
     let sh = a.shape();
     let nr = sh[0];
     let nc = sh[1];
@@ -158,7 +300,11 @@ fn write4ijrc<T: NOCIScalar>(slab: &mut [T], off: usize, a: &Array4<T>) {
 /// # Returns
 /// - `usize`: Flat row-major index corresponding to `(r, c)`.
 #[inline(always)]
-pub(in crate::nonorthogonalwicks) fn idx(ncols: usize, r: usize, c: usize) -> usize {
+pub(in crate::nonorthogonalwicks) fn idx(
+    ncols: usize,
+    r: usize,
+    c: usize,
+) -> usize {
     r * ncols + c
 }
 
@@ -169,6 +315,12 @@ pub(in crate::nonorthogonalwicks) fn idx(ncols: usize, r: usize, c: usize) -> us
 /// # Returns
 /// - `usize`: Flat row-major index corresponding to `(a, b, c, d)`.
 #[inline(always)]
-pub(in crate::nonorthogonalwicks) fn idx4(n: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
+pub(in crate::nonorthogonalwicks) fn idx4(
+    n: usize,
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+) -> usize {
     (((a * n + b) * n + c) * n) + d
 }

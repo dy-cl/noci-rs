@@ -1,10 +1,10 @@
-// maths/linalg.rs 
+// maths/linalg.rs
 
+use crate::StateScalar;
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::{Eig, Eigh, Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
-use crate::StateScalar;
 
 /// Hermitian adjoint of a matrix.
 /// # Arguments:
@@ -39,13 +39,16 @@ pub fn real2_as<T: StateScalar>(a: &Array2<f64>) -> Array2<T> {
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns
 /// - `(Array1<f64>, Array2<T>)`: Positive eigenvalues and their associated eigenvectors.
-pub fn positive_subspace<T: StateScalar>(s: &Array2<T>, tol: f64) -> (Array1<f64>, Array2<T>) {
+pub fn positive_subspace<T: StateScalar>(
+    s: &Array2<T>,
+    tol: f64,
+) -> (Array1<f64>, Array2<T>) {
     let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
 
     let pos: Vec<usize> = lambdas
         .iter()
         .enumerate()
-        .filter_map(|(i, &x)| if x > tol {Some(i)} else {None})
+        .filter_map(|(i, &x)| if x > tol { Some(i) } else { None })
         .collect();
 
     let vals = Array1::from_iter(pos.iter().map(|&i| lambdas[i]));
@@ -67,14 +70,22 @@ pub fn positive_subspace<T: StateScalar>(s: &Array2<T>, tol: f64) -> (Array1<f64
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns
 /// - `Array2<T>`: Orthogonalizer.
-pub fn loewdin_x<T: StateScalar>(s: &Array2<T>, project: bool, tol: f64) -> Array2<T> {
+pub fn loewdin_x<T: StateScalar>(
+    s: &Array2<T>,
+    project: bool,
+    tol: f64,
+) -> Array2<T> {
     if project {
         let (vals, vecs) = positive_subspace(s, tol);
-        let d = Array2::from_diag(&Array1::from_iter(vals.iter().map(|&x| T::from_real(1.0 / x.sqrt()))));
+        let d = Array2::from_diag(&Array1::from_iter(
+            vals.iter().map(|&x| T::from_real(1.0 / x.sqrt())),
+        ));
         vecs.dot(&d)
     } else {
         let (vals, vecs) = s.eigh(UPLO::Lower).unwrap();
-        let d = Array2::from_diag(&Array1::from_iter(vals.iter().map(|&x| T::from_real(1.0 / x.sqrt()))));
+        let d = Array2::from_diag(&Array1::from_iter(
+            vals.iter().map(|&x| T::from_real(1.0 / x.sqrt())),
+        ));
         vecs.dot(&d).dot(&adjoint(&vecs))
     }
 }
@@ -87,7 +98,12 @@ pub fn loewdin_x<T: StateScalar>(s: &Array2<T>, project: bool, tol: f64) -> Arra
 /// - `tol`: Tolerance for whether an overlap eigenvalue is considered zero.
 /// # Returns
 /// - `(Array1<f64>, Array2<T>)`: Eigenvalues and generalized eigenvectors.
-pub fn general_evp<T: StateScalar>(h: &Array2<T>, s: &Array2<T>, project: bool, tol: f64) -> (Array1<f64>, Array2<T>) {
+pub fn general_evp<T: StateScalar>(
+    h: &Array2<T>,
+    s: &Array2<T>,
+    project: bool,
+    tol: f64,
+) -> (Array1<f64>, Array2<T>) {
     let x = loewdin_x(s, project, tol);
     let ht = adjoint(&x).dot(h).dot(&x);
     let (epsilon, u) = ht.eigh(UPLO::Lower).unwrap();
@@ -107,12 +123,21 @@ pub fn symmetric_evp_complex(a: &Array2<Complex64>) -> (Array1<Complex64>, Array
     }
 
     if a.nrows() == 1 {
-        return (Array1::from_vec(vec![a[(0, 0)]]), Array2::from_elem((1, 1), Complex64::new(1.0, 0.0)));
+        return (
+            Array1::from_vec(vec![a[(0, 0)]]),
+            Array2::from_elem((1, 1), Complex64::new(1.0, 0.0)),
+        );
     }
 
     let (vals, vecs) = a.eig().unwrap();
     let mut order: Vec<usize> = (0..vals.len()).collect();
-    order.sort_by(|&i, &j| vals[i].re.partial_cmp(&vals[j].re).unwrap().then(vals[i].im.partial_cmp(&vals[j].im).unwrap()));
+    order.sort_by(|&i, &j| {
+        vals[i]
+            .re
+            .partial_cmp(&vals[j].re)
+            .unwrap()
+            .then(vals[i].im.partial_cmp(&vals[j].im).unwrap())
+    });
 
     let mut e = Array1::<Complex64>::zeros(vals.len());
     let mut u = Array2::<Complex64>::zeros(vecs.raw_dim());
@@ -153,7 +178,10 @@ pub fn matrix_exp_complex(a: &Array2<Complex64>) -> Array2<Complex64> {
 /// - `s`: Real AO overlap matrix defining the metric.
 /// # Returns
 /// - `Array2<Complex64>`: Coefficients transformed so that `C^T S C = I`.
-pub fn complex_metric_orthonormalize(c: &Array2<Complex64>, s: &Array2<f64>) -> Array2<Complex64> {
+pub fn complex_metric_orthonormalize(
+    c: &Array2<Complex64>,
+    s: &Array2<f64>,
+) -> Array2<Complex64> {
     let sc = real2_as::<Complex64>(s);
     let m = c.t().dot(&sc).dot(c);
     let (vals, vecs) = m.eig().unwrap();
@@ -186,14 +214,21 @@ pub fn max_hermitian_error<T: StateScalar>(a: &Array2<T>) -> f64 {
 /// - `c`: Vector.
 /// # Returns
 /// - `Array1<T>`: Matrix-vector product.
-pub fn parallel_matvec<T: StateScalar>(h: &Array2<T>, c: &Array1<T>) -> Array1<T> {
-    let result: Vec<T> = h.axis_iter(Axis(0)).into_par_iter().map(|row| {
-        let mut acc = T::from_real(0.0);
-        for (&hij, &cj) in row.iter().zip(c.iter()) {
-            acc += hij * cj;
-        }
-        acc
-    }).collect();
+pub fn parallel_matvec<T: StateScalar>(
+    h: &Array2<T>,
+    c: &Array1<T>,
+) -> Array1<T> {
+    let result: Vec<T> = h
+        .axis_iter(Axis(0))
+        .into_par_iter()
+        .map(|row| {
+            let mut acc = T::from_real(0.0);
+            for (&hij, &cj) in row.iter().zip(c.iter()) {
+                acc += hij * cj;
+            }
+            acc
+        })
+        .collect();
 
     Array1::from_vec(result)
 }

@@ -8,7 +8,10 @@ pub struct Vec1<T> {
 
 impl<T> Default for Vec1<T> {
     fn default() -> Self {
-        Self {data: Vec::new(), len: 0}
+        Self {
+            data: Vec::new(),
+            len: 0,
+        }
     }
 }
 
@@ -32,7 +35,10 @@ impl<T: Clone + From<f64>> Vec1<T> {
     /// # Returns
     /// - `()`: Grows storage if required and updates length.
     #[inline(always)]
-    pub fn ensure(&mut self, len: usize) {
+    pub fn ensure(
+        &mut self,
+        len: usize,
+    ) {
         if self.data.len() < len {
             self.data.resize(len, <T as From<f64>>::from(0.0));
         }
@@ -48,7 +54,11 @@ pub struct Vec2<T> {
 
 impl<T> Default for Vec2<T> {
     fn default() -> Self {
-        Self {data: Vec::new(), nrows: 0, ncols: 0}
+        Self {
+            data: Vec::new(),
+            nrows: 0,
+            ncols: 0,
+        }
     }
 }
 
@@ -84,7 +94,11 @@ impl<T: Clone + From<f64>> Vec2<T> {
     /// # Returns
     /// - `()`: Grows storage if required and updates the shape.
     #[inline(always)]
-    pub fn ensure(&mut self, nrows: usize, ncols: usize) {
+    pub fn ensure(
+        &mut self,
+        nrows: usize,
+        ncols: usize,
+    ) {
         let need = nrows * ncols;
         if self.data.len() < need {
             self.data.resize(need, <T as From<f64>>::from(0.0));
@@ -127,7 +141,11 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
     /// # Returns
     /// - `WickScratchSpin<T>`: Split scratch storage with the requested capacities reserved.
     #[inline]
-    pub fn with_sizes(maxsame: usize, maxla: usize, maxlb: usize) -> Self {
+    pub fn with_sizes(
+        maxsame: usize,
+        maxla: usize,
+        maxlb: usize,
+    ) -> Self {
         Self {
             aa: WickScratch::with_sizes(maxsame, 0, 0),
             bb: WickScratch::with_sizes(maxsame, 0, 0),
@@ -249,7 +267,11 @@ impl<T: NOCIScalar> WickScratch<T> {
     /// # Returns
     /// - `WickScratch<T>`: Scratch storage with the requested capacities reserved.
     #[inline]
-    pub fn with_sizes(maxsame: usize, maxla: usize, maxlb: usize) -> Self {
+    pub fn with_sizes(
+        maxsame: usize,
+        maxla: usize,
+        maxlb: usize,
+    ) -> Self {
         let mut s = Self::default();
         s.ensure_same(maxsame);
         s.ensure_diff(maxla, maxlb);
@@ -264,12 +286,19 @@ impl<T: NOCIScalar> WickScratch<T> {
     /// # Returns
     /// - `()`: Resizes same-spin scratch storage in place.
     #[inline(always)]
-    pub fn ensure_same(&mut self, l: usize) {
+    pub fn ensure_same(
+        &mut self,
+        l: usize,
+    ) {
         self.rows.clear();
         self.cols.clear();
 
-        if self.rows.capacity() < l {self.rows.reserve_exact(l - self.rows.capacity());}
-        if self.cols.capacity() < l {self.cols.reserve_exact(l - self.cols.capacity());}
+        if self.rows.capacity() < l {
+            self.rows.reserve_exact(l - self.rows.capacity());
+        }
+        if self.cols.capacity() < l {
+            self.cols.reserve_exact(l - self.cols.capacity());
+        }
 
         self.det0.ensure(l, l);
         self.det1.ensure(l, l);
@@ -300,7 +329,11 @@ impl<T: NOCIScalar> WickScratch<T> {
     /// # Returns
     /// - `()`: Resizes different-spin scratch storage in place.
     #[inline(always)]
-    pub fn ensure_diff(&mut self, la: usize, lb: usize) {
+    pub fn ensure_diff(
+        &mut self,
+        la: usize,
+        lb: usize,
+    ) {
         self.deta0.ensure(la, la);
         self.deta1.ensure(la, la);
         self.deta_mix.ensure(la, la);

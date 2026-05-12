@@ -1,6 +1,6 @@
 // timers/stochastic.rs
 
-use super::{with_totals, Counter};
+use super::{Counter, with_totals};
 
 /// Timing counters for individual stochastic propagation substeps.
 #[derive(Clone, Copy, Debug, Default)]
@@ -46,23 +46,36 @@ impl StepTotals {
     /// # Returns:
     /// - `()`: Updates this set of stochastic propagation step timings in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &StepTotals) {
-        self.initialise_walkers.merge_from(&other.initialise_walkers);
-        self.propagate_iteration.merge_from(&other.propagate_iteration);
+    pub fn merge_from(
+        &mut self,
+        other: &StepTotals,
+    ) {
+        self.initialise_walkers
+            .merge_from(&other.initialise_walkers);
+        self.propagate_iteration
+            .merge_from(&other.propagate_iteration);
         self.acc_pack_updates.merge_from(&other.acc_pack_updates);
-        self.communicate_spawn_updates.merge_from(&other.communicate_spawn_updates);
+        self.communicate_spawn_updates
+            .merge_from(&other.communicate_spawn_updates);
         self.comm_spawn_counts.merge_from(&other.comm_spawn_counts);
-        self.comm_spawn_payload.merge_from(&other.comm_spawn_payload);
-        self.gather_all_walkers.merge_from(&other.gather_all_walkers);
-        self.observables_allreduce.merge_from(&other.observables_allreduce);
-        self.compute_populations.merge_from(&other.compute_populations);
+        self.comm_spawn_payload
+            .merge_from(&other.comm_spawn_payload);
+        self.gather_all_walkers
+            .merge_from(&other.gather_all_walkers);
+        self.observables_allreduce
+            .merge_from(&other.observables_allreduce);
+        self.compute_populations
+            .merge_from(&other.compute_populations);
         self.apply_delta.merge_from(&other.apply_delta);
         self.update_p.merge_from(&other.update_p);
-        self.update_p_gather_counts.merge_from(&other.update_p_gather_counts);
-        self.update_p_local_overlap.merge_from(&other.update_p_local_overlap);
+        self.update_p_gather_counts
+            .merge_from(&other.update_p_gather_counts);
+        self.update_p_local_overlap
+            .merge_from(&other.update_p_local_overlap);
         self.update_p_wait.merge_from(&other.update_p_wait);
         self.update_p_apply.merge_from(&other.update_p_apply);
-        self.update_projected_energy.merge_from(&other.update_projected_energy);
+        self.update_projected_energy
+            .merge_from(&other.update_projected_energy);
     }
 }
 
@@ -86,9 +99,14 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this set of stochastic timing totals in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
-        self.run_qmc_stochastic_noci.merge_from(&other.run_qmc_stochastic_noci);
-        self.generate_excited_basis.merge_from(&other.generate_excited_basis);
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
+        self.run_qmc_stochastic_noci
+            .merge_from(&other.run_qmc_stochastic_noci);
+        self.generate_excited_basis
+            .merge_from(&other.generate_excited_basis);
         self.qmc_step.merge_from(&other.qmc_step);
         self.step.merge_from(&other.step);
     }

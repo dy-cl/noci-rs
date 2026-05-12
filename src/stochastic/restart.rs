@@ -44,37 +44,66 @@ pub(in crate::stochastic) struct RestartState {
 /// - `ndets`: Total number of determinants in the stochastic basis.
 /// # Returns
 /// - `hdf5::Result<()>`: `Ok(())` if the restart file was written successfully.
-pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communicator, state: &RestartState, ndets: usize) -> hdf5::Result<()> {
+pub(in crate::stochastic) fn write_restart_hdf5(
+    path: &str,
+    world: &impl Communicator,
+    state: &RestartState,
+    ndets: usize,
+) -> hdf5::Result<()> {
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
 
     if irank == 0 {
         // Ensure a parent directory exists and it it does not, create it.
-        if let Some(parent) = Path::new(path).parent() && !parent.as_os_str().is_empty() {
+        if let Some(parent) = Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
             let _ = fs::create_dir_all(parent);
         }
         // Create HDF5 file.
         let file = File::create(path)?;
         // Create and write metadata group.
         let meta = file.create_group("meta")?;
-        meta.new_dataset_builder().with_data(&[state.report as u64]).create("report")?;
-        meta.new_dataset_builder().with_data(&[ndets as u64]).create("ndets")?;
-        meta.new_dataset_builder().with_data(&[nranks as u64]).create("nranks")?;
-        meta.new_dataset_builder().with_data(&[state.es]).create("es")?;
-        meta.new_dataset_builder().with_data(&[state.es_s]).create("es_s")?;
-        meta.new_dataset_builder().with_data(&[state.nwprevc]).create("nwprevc")?;
-        meta.new_dataset_builder().with_data(&[state.nrefprevc]).create("nrefprevc")?;
-        meta.new_dataset_builder().with_data(&[state.nwprevsc]).create("nwprevsc")?;
-        meta.new_dataset_builder().with_data(&[state.nrefprevsc]).create("nrefprevsc")?;
-        meta.new_dataset_builder().with_data(&[state.noccdets]).create("noccdets")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.report as u64])
+            .create("report")?;
+        meta.new_dataset_builder()
+            .with_data(&[ndets as u64])
+            .create("ndets")?;
+        meta.new_dataset_builder()
+            .with_data(&[nranks as u64])
+            .create("nranks")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.es])
+            .create("es")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.es_s])
+            .create("es_s")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.nwprevc])
+            .create("nwprevc")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.nrefprevc])
+            .create("nrefprevc")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.nwprevsc])
+            .create("nwprevsc")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.nrefprevsc])
+            .create("nrefprevsc")?;
+        meta.new_dataset_builder()
+            .with_data(&[state.noccdets])
+            .create("noccdets")?;
         // If there was a user provided RNG seed reuse it.
         if let Some(seed) = state.base_seed {
-            meta.new_dataset_builder().with_data(&[seed]).create("base_seed")?;
+            meta.new_dataset_builder()
+                .with_data(&[seed])
+                .create("base_seed")?;
         }
     }
 
     world.barrier();
-    
+
     // Ensure each MPI rank writes its data sequentially to avoid conflict.
     for r in 0..nranks {
         if irank == r {
@@ -83,20 +112,41 @@ pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communi
             let grp = file.create_group(&format!("rank_{irank:02}"))?;
             // Store walker distribution.
             let occ: Vec<u64> = state.walkers.occ().iter().map(|&i| i as u64).collect();
-            let pop: Vec<i64> = state.walkers.occ().iter().map(|&i| state.walkers.get(i)).collect();
+            let pop: Vec<i64> = state
+                .walkers
+                .occ()
+                .iter()
+                .map(|&i| state.walkers.get(i))
+                .collect();
             grp.new_dataset_builder().with_data(&occ).create("occ")?;
             grp.new_dataset_builder().with_data(&pop).create("pop")?;
-            grp.new_dataset_builder().with_data(&state.pg).create("pg")?;
+            grp.new_dataset_builder()
+                .with_data(&state.pg)
+                .create("pg")?;
             // If the excitation histogram is being recorded store this data also.
             if let Some(hist) = &state.excitation_hist {
                 let h = grp.create_group("excitation_hist")?;
-                h.new_dataset_builder().with_data(&[hist.logmin]).create("logmin")?;
-                h.new_dataset_builder().with_data(&[hist.logmax]).create("logmax")?;
-                h.new_dataset_builder().with_data(&[hist.noverflow_low]).create("noverflow_low")?;
-                h.new_dataset_builder().with_data(&[hist.noverflow_high]).create("noverflow_high")?;
-                h.new_dataset_builder().with_data(&[hist.nbins as u64]).create("nbins")?;
-                h.new_dataset_builder().with_data(&[hist.ntotal]).create("ntotal")?;
-                h.new_dataset_builder().with_data(&hist.counts).create("counts")?;
+                h.new_dataset_builder()
+                    .with_data(&[hist.logmin])
+                    .create("logmin")?;
+                h.new_dataset_builder()
+                    .with_data(&[hist.logmax])
+                    .create("logmax")?;
+                h.new_dataset_builder()
+                    .with_data(&[hist.noverflow_low])
+                    .create("noverflow_low")?;
+                h.new_dataset_builder()
+                    .with_data(&[hist.noverflow_high])
+                    .create("noverflow_high")?;
+                h.new_dataset_builder()
+                    .with_data(&[hist.nbins as u64])
+                    .create("nbins")?;
+                h.new_dataset_builder()
+                    .with_data(&[hist.ntotal])
+                    .create("ntotal")?;
+                h.new_dataset_builder()
+                    .with_data(&hist.counts)
+                    .create("counts")?;
             }
         }
         world.barrier();
@@ -111,7 +161,11 @@ pub(in crate::stochastic) fn write_restart_hdf5(path: &str, world: &impl Communi
 /// - `ndets`: Total number of determinants in the stochastic basis.
 /// # Returns
 /// - `hdf5::Result<RestartState>`: Restart state reconstructed for the current rank.
-pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communicator, ndets: usize) -> hdf5::Result<RestartState> {
+pub(in crate::stochastic) fn read_restart_hdf5(
+    path: &str,
+    world: &impl Communicator,
+    ndets: usize,
+) -> hdf5::Result<RestartState> {
     let irank = world.rank() as usize;
     let file = File::open(path)?;
 
@@ -123,8 +177,14 @@ pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communic
     let nrefprevc = meta.dataset("nrefprevc")?.read_1d::<i64>()?[0];
     let nwprevsc = meta.dataset("nwprevsc")?.read_1d::<f64>()?[0];
     let nrefprevsc = meta.dataset("nrefprevsc")?.read_1d::<f64>()?[0];
-    let noccdets = meta.dataset("noccdets").map(|d| d.read_1d::<i64>().unwrap()[0]).unwrap_or(0);
-    let base_seed = meta.dataset("base_seed").ok().map(|d| d.read_1d::<u64>().unwrap()[0]);
+    let noccdets = meta
+        .dataset("noccdets")
+        .map(|d| d.read_1d::<i64>().unwrap()[0])
+        .unwrap_or(0);
+    let base_seed = meta
+        .dataset("base_seed")
+        .ok()
+        .map(|d| d.read_1d::<u64>().unwrap()[0]);
 
     let grp = file.group(&format!("rank_{irank:02}"))?;
     let occ = grp.dataset("occ")?.read_1d::<u64>()?;
@@ -150,5 +210,18 @@ pub(in crate::stochastic) fn read_restart_hdf5(path: &str, world: &impl Communic
         None
     };
 
-    Ok(RestartState {report, es, es_s, nwprevc, nrefprevc, nwprevsc, nrefprevsc, walkers, noccdets, pg, excitation_hist, base_seed})
+    Ok(RestartState {
+        report,
+        es,
+        es_s,
+        nwprevc,
+        nrefprevc,
+        nwprevsc,
+        nrefprevsc,
+        walkers,
+        noccdets,
+        pg,
+        excitation_hist,
+        base_seed,
+    })
 }

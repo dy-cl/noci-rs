@@ -17,8 +17,13 @@ use super::super::view::{SameSpinView, WicksPairView};
 /// # Returns
 /// - `Option<T>`: Determinant if the matrix could be formed and factorised.
 #[inline(always)]
-pub(super) fn det_slice<T: NOCIScalar>(a: &[T], n: usize) -> Option<T> {
-    if n == 0 {return Some(<T as From<f64>>::from(1.0));}
+pub(super) fn det_slice<T: NOCIScalar>(
+    a: &[T],
+    n: usize,
+) -> Option<T> {
+    if n == 0 {
+        return Some(<T as From<f64>>::from(1.0));
+    }
     let m = Array2::<T>::from_shape_vec((n, n), a[..n * n].to_vec()).ok()?;
     m.det().ok()
 }
@@ -30,7 +35,10 @@ pub(super) fn det_slice<T: NOCIScalar>(a: &[T], n: usize) -> Option<T> {
 /// # Returns
 /// - `T`: Determinant or zero if singular/factorisation failed.
 #[inline(always)]
-pub(super) fn det_or_zero<T: NOCIScalar>(a: &[T], n: usize) -> T {
+pub(super) fn det_or_zero<T: NOCIScalar>(
+    a: &[T],
+    n: usize,
+) -> T {
     det_slice(a, n).unwrap_or(<T as From<f64>>::from(0.0))
 }
 
@@ -38,7 +46,12 @@ pub(super) fn det_or_zero<T: NOCIScalar>(a: &[T], n: usize) -> T {
 /// - `mi, mj, mk, ml`: Zero distribution selectors.
 /// # Returns
 /// - `(usize, bool)`: Compressed slot index and whether swapped access is required.
-pub(super) fn jslot(mi: usize, mj: usize, mk: usize, ml: usize,) -> (usize, bool) {
+pub(super) fn jslot(
+    mi: usize,
+    mj: usize,
+    mk: usize,
+    ml: usize,
+) -> (usize, bool) {
     match (mi, mj, mk, ml) {
         (0, 0, 0, 0) => (0, false),
         (0, 0, 0, 1) => (1, false),
@@ -76,7 +89,19 @@ pub(super) fn jslot(mi: usize, mj: usize, mk: usize, ml: usize,) -> (usize, bool
 /// # Returns
 /// - `T`: Requested entry of the minor-column.
 #[inline(always)]
-pub(super) fn j_replacement<T: NOCIScalar>(jsl: &[T], n: usize, rows: &[usize], cols: &[usize], i_rm: usize, j_rm: usize, r_minor: usize, k_minor: usize, i_fixed: usize, j_fixed: usize, swap: bool) -> T {
+pub(super) fn j_replacement<T: NOCIScalar>(
+    jsl: &[T],
+    n: usize,
+    rows: &[usize],
+    cols: &[usize],
+    i_rm: usize,
+    j_rm: usize,
+    r_minor: usize,
+    k_minor: usize,
+    i_fixed: usize,
+    j_fixed: usize,
+    swap: bool,
+) -> T {
     let r_full = minor_to_full(r_minor, i_rm);
     let k_full = minor_to_full(k_minor, j_rm);
     let rr = rows[r_full];
@@ -102,7 +127,17 @@ pub(super) fn j_replacement<T: NOCIScalar>(jsl: &[T], n: usize, rows: &[usize], 
 /// # Returns
 /// - `T`: Requested entry of the replacement column.
 #[inline(always)]
-pub(super) fn ii_replacement<T: NOCIScalar>(iisl: &[T], n: usize, rows: &[usize], cols: &[usize], r_full: usize, k_full: usize, i_fixed: usize, j_fixed: usize, ijrc: bool) -> T {
+pub(super) fn ii_replacement<T: NOCIScalar>(
+    iisl: &[T],
+    n: usize,
+    rows: &[usize],
+    cols: &[usize],
+    r_full: usize,
+    k_full: usize,
+    i_fixed: usize,
+    j_fixed: usize,
+    ijrc: bool,
+) -> T {
     let rr = rows[r_full];
     let cc = cols[k_full];
     if ijrc {
@@ -119,8 +154,11 @@ pub(super) fn ii_replacement<T: NOCIScalar>(iisl: &[T], n: usize, rows: &[usize]
 /// # Returns
 /// - `usize`: Corresponding index in the full matrix.
 #[inline(always)]
-pub(super) fn minor_to_full(midx: usize, removed: usize) -> usize {
-    if midx < removed {midx} else {midx + 1}
+pub(super) fn minor_to_full(
+    midx: usize,
+    removed: usize,
+) -> usize {
+    if midx < removed { midx } else { midx + 1 }
 }
 
 /// Extract bit `k` from a distribution bitstring. Each possible bitstring assigns `m` zero-overlap
@@ -132,7 +170,10 @@ pub(super) fn minor_to_full(midx: usize, removed: usize) -> usize {
 /// # Returns
 /// - `usize`: `0` or `1` depending on the selected branch for contraction `k`.
 #[inline(always)]
-pub(super) fn bit(bits: u64, k: usize) -> usize {
+pub(super) fn bit(
+    bits: u64,
+    k: usize,
+) -> usize {
     ((bits >> k) & 1) as usize
 }
 
@@ -149,7 +190,13 @@ pub(super) fn bit(bits: u64, k: usize) -> usize {
 /// # Returns
 /// - `T`: Cofactor contraction for the chosen column replacement.
 #[inline(always)]
-pub(super) fn column_replacement_correction<T: NOCIScalar>(n: usize, old: &[T], cof: &[T], col: usize, mut new_at: impl FnMut(usize) -> T) -> T {
+pub(super) fn column_replacement_correction<T: NOCIScalar>(
+    n: usize,
+    old: &[T],
+    cof: &[T],
+    col: usize,
+    mut new_at: impl FnMut(usize) -> T,
+) -> T {
     let mut correction = <T as From<f64>>::from(0.0);
     for r in 0..n {
         let i = idx(n, r, col);
@@ -172,13 +219,25 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(n: usize, old: &[T], 
 /// # Returns
 /// - `()`: Writes the mixed determinant into `scratch.det_mix` and calls `f`.
 #[inline(always)]
-pub(super) fn mix_dets_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, pbits: usize, scratch: &mut WickScratch<T>, mut f: impl FnMut(u64, &mut WickScratch<T>)) {
+pub(super) fn mix_dets_same<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l: usize,
+    pbits: usize,
+    scratch: &mut WickScratch<T>,
+    mut f: impl FnMut(u64, &mut WickScratch<T>),
+) {
     let mut prev_cbits: Option<u64> = None;
     for_each_m_combination(l + pbits, w.m, |bits| {
         let cbits = bits >> pbits;
         match prev_cbits {
             None => {
-                mix_columns(scratch.det_mix.as_mut_slice(), scratch.det0.as_slice(), scratch.det1.as_slice(), l, cbits);
+                mix_columns(
+                    scratch.det_mix.as_mut_slice(),
+                    scratch.det0.as_slice(),
+                    scratch.det1.as_slice(),
+                    l,
+                    cbits,
+                );
             }
             Some(prev) => {
                 let mut changed = prev ^ cbits;
@@ -220,10 +279,22 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, pb
 /// # Returns
 /// - `()`: Calls `f` only for nonsingular mixed determinants.
 #[inline(always)]
-pub(super) fn get_det_adjt_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, pbits: usize, scratch: &mut WickScratch<T>, tol: f64, mut f: impl FnMut(u64, &mut WickScratch<T>, T)) {
+pub(super) fn get_det_adjt_same<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l: usize,
+    pbits: usize,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+    mut f: impl FnMut(u64, &mut WickScratch<T>, T),
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_same, {
         mix_dets_same(w, l, pbits, scratch, |bits, scratch| {
-            if let Some(det_det) = adjugate_transpose_generic(scratch.adjt_det.as_mut_slice(), scratch.det_mix.as_slice(), l, tol) {
+            if let Some(det_det) = adjugate_transpose_generic(
+                scratch.adjt_det.as_mut_slice(),
+                scratch.det_mix.as_slice(),
+                l,
+                tol,
+            ) {
                 f(bits, scratch, det_det);
             }
         });
@@ -242,16 +313,37 @@ pub(super) fn get_det_adjt_same<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize
 /// # Returns
 /// - `()`: Calls `f` only for nonsingular mixed determinants.
 #[inline(always)]
-pub(super) fn get_det_adjt_diff<T: NOCIScalar>(w: &WicksPairView<'_, T>, la: usize, lb: usize, scratch: &mut WickScratch<T>, deta0: &[T], deta1: &[T], detb0: &[T], detb1: &[T], tol: f64, mut f: impl FnMut(u64, u64, &mut WickScratch<T>, T, T)) {
+pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    la: usize,
+    lb: usize,
+    scratch: &mut WickScratch<T>,
+    deta0: &[T],
+    deta1: &[T],
+    detb0: &[T],
+    detb1: &[T],
+    tol: f64,
+    mut f: impl FnMut(u64, u64, &mut WickScratch<T>, T, T),
+) {
     time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_diff, {
         for_each_m_combination(la + 1, w.aa.m, |bits_a| {
             let inda = bits_a >> 1;
             mix_columns(scratch.deta_mix.as_mut_slice(), deta0, deta1, la, inda);
-            if let Some(det_a) = adjugate_transpose_generic(scratch.adjt_deta.as_mut_slice(), scratch.deta_mix.as_slice(), la, tol) {
+            if let Some(det_a) = adjugate_transpose_generic(
+                scratch.adjt_deta.as_mut_slice(),
+                scratch.deta_mix.as_slice(),
+                la,
+                tol,
+            ) {
                 for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
                     let indb = bits_b >> 1;
                     mix_columns(scratch.detb_mix.as_mut_slice(), detb0, detb1, lb, indb);
-                    if let Some(det_b) = adjugate_transpose_generic(scratch.adjt_detb.as_mut_slice(), scratch.detb_mix.as_slice(), lb, tol) {
+                    if let Some(det_b) = adjugate_transpose_generic(
+                        scratch.adjt_detb.as_mut_slice(),
+                        scratch.detb_mix.as_slice(),
+                        lb,
+                        tol,
+                    ) {
                         f(bits_a, bits_b, scratch, det_a, det_b);
                     }
                 });
@@ -275,11 +367,23 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(w: &WicksPairView<'_, T>, la: usi
 /// # Returns
 /// - `()`: Calls `f` only if the minor determinant is nonsingular.
 #[inline(always)]
-pub(super) fn minor_adjt<T: NOCIScalar>(full: &[T], l: usize, i: usize, j: usize, minorb: &mut Vec2<T>, adjtb: &mut Vec2<T>, _invsb: &mut Vec1<f64>, 
-                                        _lub: &mut Vec2<T>, tol: f64, mut f: impl FnMut(usize, &[T], &[T], T)) {
+pub(super) fn minor_adjt<T: NOCIScalar>(
+    full: &[T],
+    l: usize,
+    i: usize,
+    j: usize,
+    minorb: &mut Vec2<T>,
+    adjtb: &mut Vec2<T>,
+    _invsb: &mut Vec1<f64>,
+    _lub: &mut Vec2<T>,
+    tol: f64,
+    mut f: impl FnMut(usize, &[T], &[T], T),
+) {
     let lm1 = l.saturating_sub(1);
     minor_generic(minorb.as_mut_slice(), full, l, i, j);
-    if let Some(det_minor) = adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol) {
+    if let Some(det_minor) =
+        adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
+    {
         f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
     }
 }
@@ -296,37 +400,66 @@ pub(super) fn minor_adjt<T: NOCIScalar>(full: &[T], l: usize, i: usize, j: usize
 /// # Returns
 /// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_gen(l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, nmo: usize, rows: &mut Vec<usize>, cols: &mut Vec<usize>) {
-    time_call!(crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen, {
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
-        rows.clear();
-        cols.clear();
-        let need = nl + ng;
-        if rows.capacity() < need {rows.reserve_exact(need - rows.capacity());}
-        if cols.capacity() < need {cols.reserve_exact(need - cols.capacity());}
+pub(super) fn construct_determinant_indices_gen(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    nmo: usize,
+    rows: &mut Vec<usize>,
+    cols: &mut Vec<usize>,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen,
+        {
+            let nl = l_ex.holes.len();
+            let ng = g_ex.holes.len();
+            rows.clear();
+            cols.clear();
+            let need = nl + ng;
+            if rows.capacity() < need {
+                rows.reserve_exact(need - rows.capacity());
+            }
+            if cols.capacity() < need {
+                cols.reserve_exact(need - cols.capacity());
+            }
 
-        if nl == 0 && ng == 0 {
-            return;
+            if nl == 0 && ng == 0 {
+                return;
+            }
+
+            if nl > 0 && ng == 0 {
+                for &a in &l_ex.parts {
+                    rows.push(a);
+                }
+                for &i in &l_ex.holes {
+                    cols.push(i);
+                }
+                return;
+            }
+
+            if nl == 0 && ng > 0 {
+                for &i in &g_ex.holes {
+                    rows.push(nmo + i);
+                }
+                for &a in &g_ex.parts {
+                    cols.push(nmo + a);
+                }
+                return;
+            }
+
+            for &a in &l_ex.parts {
+                rows.push(a);
+            }
+            for &i in &g_ex.holes {
+                rows.push(nmo + i);
+            }
+            for &i in &l_ex.holes {
+                cols.push(i);
+            }
+            for &a in &g_ex.parts {
+                cols.push(nmo + a);
+            }
         }
-
-        if nl > 0 && ng == 0 {
-            for &a in &l_ex.parts {rows.push(a);}
-            for &i in &l_ex.holes {cols.push(i);}
-            return;
-        }
-
-        if nl == 0 && ng > 0 {
-            for &i in &g_ex.holes {rows.push(nmo + i);}
-            for &a in &g_ex.parts {cols.push(nmo + a);}
-            return;
-        }
-
-        for &a in &l_ex.parts {rows.push(a);}
-        for &i in &g_ex.holes {rows.push(nmo + i);}
-        for &i in &l_ex.holes {cols.push(i);}
-        for &a in &g_ex.parts {cols.push(nmo + a);}
-    })
+    )
 }
 
 /// Call `f` for every bitstring of length `l` containing exactly `m` set bits.
@@ -338,10 +471,22 @@ pub(super) fn construct_determinant_indices_gen(l_ex: &ExcitationSpin, g_ex: &Ex
 /// # Returns
 /// - `()`: Calls `f` once for each valid combination.
 #[inline(always)]
-pub(super) fn for_each_m_combination(l: usize, m: usize, mut f: impl FnMut(u64)) {
-    if m > l {return;}
-    if m == 0 {f(0); return;}
-    if m == l {f((1u64 << l) - 1); return;}
+pub(super) fn for_each_m_combination(
+    l: usize,
+    m: usize,
+    mut f: impl FnMut(u64),
+) {
+    if m > l {
+        return;
+    }
+    if m == 0 {
+        f(0);
+        return;
+    }
+    if m == l {
+        f((1u64 << l) - 1);
+        return;
+    }
 
     let limit = 1u64 << l;
     let mut x = (1u64 << m) - 1;
@@ -363,9 +508,15 @@ pub(super) fn for_each_m_combination(l: usize, m: usize, mut f: impl FnMut(u64))
 /// # Returns
 /// - `()`: Writes mixed determinant.
 #[inline(always)]
-fn mix_columns<T: NOCIScalar>(out: &mut [T], det0: &[T], det1: &[T], n: usize, bits: u64) {
+fn mix_columns<T: NOCIScalar>(
+    out: &mut [T],
+    det0: &[T],
+    det1: &[T],
+    n: usize,
+    bits: u64,
+) {
     for c in 0..n {
-        let src = if bit(bits, c) == 0 {det0} else {det1};
+        let src = if bit(bits, c) == 0 { det0 } else { det1 };
         for r in 0..n {
             out[idx(n, r, c)] = src[idx(n, r, c)];
         }
@@ -382,13 +533,23 @@ fn mix_columns<T: NOCIScalar>(out: &mut [T], det0: &[T], det1: &[T], n: usize, b
 /// # Returns
 /// - `()`: Writes minor.
 #[inline(always)]
-fn minor_generic<T: NOCIScalar>(out: &mut [T], full: &[T], n: usize, i: usize, j: usize) {
+fn minor_generic<T: NOCIScalar>(
+    out: &mut [T],
+    full: &[T],
+    n: usize,
+    i: usize,
+    j: usize,
+) {
     let mut rr = 0;
     for r in 0..n {
-        if r == i {continue;}
+        if r == i {
+            continue;
+        }
         let mut cc = 0;
         for c in 0..n {
-            if c == j {continue;}
+            if c == j {
+                continue;
+            }
             out[idx(n - 1, rr, cc)] = full[idx(n, r, c)];
             cc += 1;
         }
@@ -405,9 +566,16 @@ fn minor_generic<T: NOCIScalar>(out: &mut [T], full: &[T], n: usize, i: usize, j
 /// # Returns
 /// - `Option<T>`: Determinant if nonsingular.
 #[inline(always)]
-fn adjugate_transpose_generic<T: NOCIScalar>(adjt: &mut [T], full: &[T], n: usize, tol: f64) -> Option<T> {
+fn adjugate_transpose_generic<T: NOCIScalar>(
+    adjt: &mut [T],
+    full: &[T],
+    n: usize,
+    tol: f64,
+) -> Option<T> {
     let detv = det_slice(full, n)?;
-    if detv.abs() <= tol {return None;}
+    if detv.abs() <= tol {
+        return None;
+    }
 
     if n == 0 {
         return Some(<T as From<f64>>::from(1.0));
@@ -423,7 +591,7 @@ fn adjugate_transpose_generic<T: NOCIScalar>(adjt: &mut [T], full: &[T], n: usiz
         for c in 0..n {
             minor_generic(&mut minor, full, n, r, c);
             let md = det_or_zero(&minor, n - 1);
-            let sign = if ((r + c) & 1) == 0 {1.0} else {-1.0};
+            let sign = if ((r + c) & 1) == 0 { 1.0 } else { -1.0 };
             adjt[idx(n, r, c)] = <T as From<f64>>::from(sign) * md;
         }
     }

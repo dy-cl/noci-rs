@@ -1,11 +1,11 @@
 // nonorthogonalwicks/eval/overlap.rs
+use super::super::scratch::WickScratch;
+use super::super::view::SameSpinView;
+use super::helpers::mix_dets_same;
 use crate::ExcitationSpin;
 use crate::maths::det;
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use super::helpers::mix_dets_same;
-use super::super::scratch::WickScratch;
-use super::super::view::SameSpinView;
 
 /// Calculate overlap matrix element between two determinants |{}^\Lambda \Psi\rangle and
 /// |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's theorem prescription.
@@ -18,20 +18,22 @@ use super::super::view::SameSpinView;
 /// # Returns
 /// - `T`: Overlap matrix element.
 #[inline(always)]
-pub fn lg_overlap<T: NOCIScalar>(w: &SameSpinView<T>, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch<T>) -> T {
+pub fn lg_overlap<T: NOCIScalar>(
+    w: &SameSpinView<T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
         if w.m > l {
             <T as From<f64>>::from(0.0)
-        }
-        else if w.m == 0 {
+        } else if w.m == 0 {
             lg_overlap_m0(w, l, scratch)
-        }
-        else if w.m == l {
+        } else if w.m == l {
             lg_overlap_ml(w, l, scratch)
-        }
-        else {
+        } else {
             lg_overlap_gen(w, l, scratch)
         }
     })
@@ -45,14 +47,22 @@ pub fn lg_overlap<T: NOCIScalar>(w: &SameSpinView<T>, l_ex: &ExcitationSpin, g_e
 /// # Returns
 /// - `T`: Overlap matrix element in the `m = 0` case.
 #[inline(always)]
-fn lg_overlap_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_m0<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l: usize,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0, {
         match l {
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod),
             1 => lg_overlap_m0_l1(w, scratch),
             2 => lg_overlap_m0_l2(w, scratch),
             3 => lg_overlap_m0_l3(w, scratch),
-            _ => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det(scratch.det0.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0)),
+            _ => {
+                w.phase
+                    * <T as From<f64>>::from(w.tilde_s_prod)
+                    * det(scratch.det0.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
+            }
         }
     })
 }
@@ -64,7 +74,10 @@ fn lg_overlap_m0<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, scratch: &mut
 /// # Returns
 /// - `T`: Overlap matrix element for `l = 1`.
 #[inline(always)]
-fn lg_overlap_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_m0_l1<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l1, {
         let d = scratch.det0.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * d[0]
@@ -78,7 +91,10 @@ fn lg_overlap_m0_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickSc
 /// # Returns
 /// - `T`: Overlap matrix element for `l = 2`.
 #[inline(always)]
-fn lg_overlap_m0_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_m0_l2<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l2, {
         let d = scratch.det0.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * d[3] - d[1] * d[2])
@@ -92,10 +108,16 @@ fn lg_overlap_m0_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickSc
 /// # Returns
 /// - `T`: Overlap matrix element for `l = 3`.
 #[inline(always)]
-fn lg_overlap_m0_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_m0_l3<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l3, {
         let d = scratch.det0.as_slice();
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6]) + d[2] * (d[3] * d[7] - d[4] * d[6]))
+        w.phase
+            * <T as From<f64>>::from(w.tilde_s_prod)
+            * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
+                + d[2] * (d[3] * d[7] - d[4] * d[6]))
     })
 }
 
@@ -108,14 +130,22 @@ fn lg_overlap_m0_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickSc
 /// # Returns
 /// - `T`: Overlap matrix element in the `m = l` case.
 #[inline(always)]
-fn lg_overlap_ml<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_ml<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l: usize,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml, {
         match l {
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod),
             1 => lg_overlap_ml_l1(w, scratch),
             2 => lg_overlap_ml_l2(w, scratch),
             3 => lg_overlap_ml_l3(w, scratch),
-            _ => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det(scratch.det1.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0)),
+            _ => {
+                w.phase
+                    * <T as From<f64>>::from(w.tilde_s_prod)
+                    * det(scratch.det1.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
+            }
         }
     })
 }
@@ -127,7 +157,10 @@ fn lg_overlap_ml<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, scratch: &mut
 /// # Returns
 /// - `T`: Overlap matrix element for `l = 1`.
 #[inline(always)]
-fn lg_overlap_ml_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_ml_l1<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml_l1, {
         let d = scratch.det1.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * d[0]
@@ -141,7 +174,10 @@ fn lg_overlap_ml_l1<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickSc
 /// # Returns
 /// - `T`: Overlap matrix element for `l = 2`.
 #[inline(always)]
-fn lg_overlap_ml_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_ml_l2<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml_l2, {
         let d = scratch.det1.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * d[3] - d[1] * d[2])
@@ -155,10 +191,16 @@ fn lg_overlap_ml_l2<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickSc
 /// # Returns
 /// - `T`: Overlap matrix element for `l = 3`.
 #[inline(always)]
-fn lg_overlap_ml_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_ml_l3<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml_l3, {
         let d = scratch.det1.as_slice();
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6]) + d[2] * (d[3] * d[7] - d[4] * d[6]))
+        w.phase
+            * <T as From<f64>>::from(w.tilde_s_prod)
+            * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
+                + d[2] * (d[3] * d[7] - d[4] * d[6]))
     })
 }
 
@@ -170,7 +212,11 @@ fn lg_overlap_ml_l3<T: NOCIScalar>(w: &SameSpinView<'_, T>, scratch: &mut WickSc
 /// # Returns
 /// - `T`: Overlap matrix element for the general mixed-column path.
 #[inline(always)]
-fn lg_overlap_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, scratch: &mut WickScratch<T>) -> T {
+fn lg_overlap_gen<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l: usize,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_gen, {
         let mut acc = <T as From<f64>>::from(0.0);
         mix_dets_same(w, l, 0, scratch, |_, scratch| {
@@ -178,7 +224,10 @@ fn lg_overlap_gen<T: NOCIScalar>(w: &SameSpinView<'_, T>, l: usize, scratch: &mu
             let contrib = match l {
                 1 => d[0],
                 2 => d[0] * d[3] - d[1] * d[2],
-                3 => d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6]) + d[2] * (d[3] * d[7] - d[4] * d[6]),
+                3 => {
+                    d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
+                        + d[2] * (d[3] * d[7] - d[4] * d[6])
+                }
                 _ => det(d, l).unwrap_or(<T as From<f64>>::from(0.0)),
             };
             acc += contrib;

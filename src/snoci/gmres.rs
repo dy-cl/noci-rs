@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2};
 
+use super::{ArnoldiCycle, ArnoldiParams, GMRES};
 use crate::{input::GMRESOptions, time_call};
-use super::{GMRES, ArnoldiCycle, ArnoldiParams};
 
 const SMALL: f64 = 1e-14_f64;
 const PRINT_STRIDE: usize = 1usize;
@@ -19,7 +19,10 @@ fn print_gmres_header() {
     println!();
     println!("  GMRES solve");
     println!("  {}", "-".repeat(98));
-    println!("  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}", "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s");
+    println!(
+        "  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}",
+        "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s"
+    );
 }
 
 /// Print a single GMRES iteration summary line.
@@ -31,8 +34,17 @@ fn print_gmres_header() {
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
 /// - `()`: Prints the GMRES iteration summary to standard output.
-fn print_gmres_iteration(restart_id: usize, iter: usize, residual_est: f64, apply_secs: f64, elapsed_secs: f64) {
-    println!("  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}", restart_id, iter, residual_est, "-", apply_secs, elapsed_secs);
+fn print_gmres_iteration(
+    restart_id: usize,
+    iter: usize,
+    residual_est: f64,
+    apply_secs: f64,
+    elapsed_secs: f64,
+) {
+    println!(
+        "  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}",
+        restart_id, iter, residual_est, "-", apply_secs, elapsed_secs
+    );
 }
 
 /// Print a single GMRES restart summary line using the true residual.
@@ -43,8 +55,16 @@ fn print_gmres_iteration(restart_id: usize, iter: usize, residual_est: f64, appl
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
 /// - `()`: Prints the GMRES restart summary to standard output.
-fn print_gmres_restart_summary(restart_id: usize, iter: usize, residual_true: f64, elapsed_secs: f64) {
-    println!("  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}", restart_id, iter, "-", residual_true, "-", elapsed_secs);
+fn print_gmres_restart_summary(
+    restart_id: usize,
+    iter: usize,
+    residual_true: f64,
+    elapsed_secs: f64,
+) {
+    println!(
+        "  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}",
+        restart_id, iter, "-", residual_true, "-", elapsed_secs
+    );
 }
 
 /// Build the true residual `b - A x`.
@@ -54,8 +74,14 @@ fn print_gmres_restart_summary(restart_id: usize, iter: usize, residual_true: f6
 /// - `x`: Current solution vector.
 /// # Returns:
 /// - `Array1<f64>`: True residual vector.
-fn true_residual<F>(apply: &F, b: &Array1<f64>, x: &Array1<f64>) -> Array1<f64>
-where F: Fn(&Array1<f64>) -> Array1<f64> {
+fn true_residual<F>(
+    apply: &F,
+    b: &Array1<f64>,
+    x: &Array1<f64>,
+) -> Array1<f64>
+where
+    F: Fn(&Array1<f64>) -> Array1<f64>,
+{
     let mut r = b.clone();
     r.scaled_add(-1.0, &apply(x));
     r
@@ -67,7 +93,10 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
 /// - `rms`: Square-root of the vector length.
 /// # Returns:
 /// - `f64`: RMS residual norm.
-fn calculate_residual_rms(r: &Array1<f64>, rms: f64) -> f64 {
+fn calculate_residual_rms(
+    r: &Array1<f64>,
+    rms: f64,
+) -> f64 {
     r.dot(r).sqrt() / rms
 }
 
@@ -79,7 +108,12 @@ fn calculate_residual_rms(r: &Array1<f64>, rms: f64) -> f64 {
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `()`: Updates `h` and `w` in place.
-fn orthogonalise_arnoldi_vector(q: &[Array1<f64>], h: &mut Array2<f64>, w: &mut Array1<f64>, k: usize) {
+fn orthogonalise_arnoldi_vector(
+    q: &[Array1<f64>],
+    h: &mut Array2<f64>,
+    w: &mut Array1<f64>,
+    k: usize,
+) {
     for j in 0..=k {
         h[(j, k)] = q[j].dot(w);
         w.scaled_add(-h[(j, k)], &q[j]);
@@ -94,7 +128,12 @@ fn orthogonalise_arnoldi_vector(q: &[Array1<f64>], h: &mut Array2<f64>, w: &mut 
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `f64`: Norm of the candidate next Arnoldi vector.
-fn extend_arnoldi_basis(q: &mut Vec<Array1<f64>>, h: &mut Array2<f64>, w: Array1<f64>, k: usize) -> f64 {
+fn extend_arnoldi_basis(
+    q: &mut Vec<Array1<f64>>,
+    h: &mut Array2<f64>,
+    w: Array1<f64>,
+    k: usize,
+) -> f64 {
     let h_next = w.dot(&w).sqrt();
     h[(k + 1, k)] = h_next;
 
@@ -113,7 +152,12 @@ fn extend_arnoldi_basis(q: &mut Vec<Array1<f64>>, h: &mut Array2<f64>, w: Array1
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `()`: Updates the current column of `h` in place.
-fn apply_previous_givens(h: &mut Array2<f64>, cs: &[f64], sn: &[f64], k: usize) {
+fn apply_previous_givens(
+    h: &mut Array2<f64>,
+    cs: &[f64],
+    sn: &[f64],
+    k: usize,
+) {
     for j in 0..k {
         let temp = cs[j] * h[(j, k)] + sn[j] * h[(j + 1, k)];
         h[(j + 1, k)] = -sn[j] * h[(j, k)] + cs[j] * h[(j + 1, k)];
@@ -130,7 +174,13 @@ fn apply_previous_givens(h: &mut Array2<f64>, cs: &[f64], sn: &[f64], k: usize) 
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `()`: Updates `h`, `cs`, `sn`, and `g` in place.
-fn apply_current_givens(h: &mut Array2<f64>, cs: &mut [f64], sn: &mut [f64], g: &mut Array1<f64>, k: usize) {
+fn apply_current_givens(
+    h: &mut Array2<f64>,
+    cs: &mut [f64],
+    sn: &mut [f64],
+    g: &mut Array1<f64>,
+    k: usize,
+) {
     let hk = h[(k, k)];
     let hk1 = h[(k + 1, k)];
     let denom = (hk * hk + hk1 * hk1).sqrt();
@@ -158,7 +208,13 @@ fn apply_current_givens(h: &mut Array2<f64>, cs: &mut [f64], sn: &mut [f64], g: 
 /// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
-fn run_arnoldi_cycle<F, P>(apply: &F, precondition: &P, rtrue: &Array1<f64>, params: &ArnoldiParams<'_>, opts: &GMRESOptions) -> ArnoldiCycle
+fn run_arnoldi_cycle<F, P>(
+    apply: &F,
+    precondition: &P,
+    rtrue: &Array1<f64>,
+    params: &ArnoldiParams<'_>,
+    opts: &GMRESOptions,
+) -> ArnoldiCycle
 where
     F: Fn(&Array1<f64>) -> Array1<f64>,
     P: Fn(&Array1<f64>) -> Array1<f64>,
@@ -204,7 +260,13 @@ where
         let iter = params.total_iter + k + 1;
 
         if k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol {
-            print_gmres_iteration(params.restart_id, iter, residual_est, apply_secs, params.gmres_start.elapsed().as_secs_f64());
+            print_gmres_iteration(
+                params.restart_id,
+                iter,
+                residual_est,
+                apply_secs,
+                params.gmres_start.elapsed().as_secs_f64(),
+            );
         }
 
         // Stop early if the Krylov solve has converged or Arnoldi has broken down.
@@ -212,7 +274,7 @@ where
             break;
         }
     }
-    ArnoldiCycle {q, h, g, kfinal}
+    ArnoldiCycle { q, h, g, kfinal }
 }
 
 /// Update the solution vector using a callback-defined right-preconditioned Krylov basis.
@@ -223,8 +285,14 @@ where
 /// - `precondition`: Right-preconditioner callback.
 /// # Returns:
 /// - `()`: Updates `x` in place.
-fn update_solution<P>(x: &mut Array1<f64>, q: &[Array1<f64>], y: &Array1<f64>, precondition: &P)
-where P: Fn(&Array1<f64>) -> Array1<f64> {
+fn update_solution<P>(
+    x: &mut Array1<f64>,
+    q: &[Array1<f64>],
+    y: &Array1<f64>,
+    precondition: &P,
+) where
+    P: Fn(&Array1<f64>) -> Array1<f64>,
+{
     for j in 0..y.len() {
         let z = precondition(&q[j]);
         x.scaled_add(y[j], &z);
@@ -238,7 +306,11 @@ where P: Fn(&Array1<f64>) -> Array1<f64> {
 /// - `kfinal`: Number of Arnoldi iterations completed in the current cycle.
 /// # Returns:
 /// - `Array1<f64>`: Least-squares coefficients in the Krylov basis.
-fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
+fn back_solve(
+    h: &Array2<f64>,
+    g: &Array1<f64>,
+    kfinal: usize,
+) -> Array1<f64> {
     let mut y = Array1::<f64>::zeros(kfinal);
 
     for ii in 0..kfinal {
@@ -249,7 +321,11 @@ fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
             rhs -= h[(i, j)] * y[j];
         }
 
-        y[i] = if h[(i, i)].abs() > SMALL {rhs / h[(i, i)]} else {0.0};
+        y[i] = if h[(i, i)].abs() > SMALL {
+            rhs / h[(i, i)]
+        } else {
+            0.0
+        };
     }
 
     y
@@ -264,7 +340,12 @@ fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
 /// # Returns:
 /// - `GMRES`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.
-pub(in crate::snoci) fn gmres<F, P>(apply: F, precondition: P, b: &Array1<f64>, opts: &GMRESOptions) -> GMRES
+pub(in crate::snoci) fn gmres<F, P>(
+    apply: F,
+    precondition: P,
+    b: &Array1<f64>,
+    opts: &GMRESOptions,
+) -> GMRES
 where
     F: Fn(&Array1<f64>) -> Array1<f64>,
     P: Fn(&Array1<f64>) -> Array1<f64>,
@@ -278,7 +359,12 @@ where
 
         // Empty systems are already solved.
         if n == 0 {
-            return GMRES {x, residual_rms: 0.0, iterations: 0, converged: true};
+            return GMRES {
+                x,
+                residual_rms: 0.0,
+                iterations: 0,
+                converged: true,
+            };
         }
 
         let rms = (n as f64).sqrt();
@@ -291,7 +377,12 @@ where
 
         // Accept the zero initial guess if it already satisfies the true residual tolerance.
         if residual_rms <= opts.res_tol {
-            return GMRES {x, residual_rms, iterations: 0, converged: true};
+            return GMRES {
+                x,
+                residual_rms,
+                iterations: 0,
+                converged: true,
+            };
         }
 
         let mut total_iter = 0usize;
@@ -303,8 +394,18 @@ where
             // Stop if the residual is numerically zero.
             if beta <= SMALL {
                 residual_rms = beta / rms;
-                print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
-                return GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= opts.res_tol};
+                print_gmres_restart_summary(
+                    restart_id,
+                    total_iter,
+                    residual_rms,
+                    gmres_start.elapsed().as_secs_f64(),
+                );
+                return GMRES {
+                    x,
+                    residual_rms,
+                    iterations: total_iter,
+                    converged: residual_rms <= opts.res_tol,
+                };
             }
 
             // Build one Krylov subspace for the right-preconditioned operator A P^{-1}.
@@ -331,16 +432,31 @@ where
             rtrue = true_residual(&apply, b, &x);
             residual_rms = calculate_residual_rms(&rtrue, rms);
 
-            print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
+            print_gmres_restart_summary(
+                restart_id,
+                total_iter,
+                residual_rms,
+                gmres_start.elapsed().as_secs_f64(),
+            );
 
             restart_id += 1;
 
             // Only the true residual is accepted as final convergence.
             if residual_rms <= opts.res_tol {
-                return GMRES {x, residual_rms, iterations: total_iter, converged: true};
+                return GMRES {
+                    x,
+                    residual_rms,
+                    iterations: total_iter,
+                    converged: true,
+                };
             }
         }
 
-        GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= opts.res_tol}
+        GMRES {
+            x,
+            residual_rms,
+            iterations: total_iter,
+            converged: residual_rms <= opts.res_tol,
+        }
     })
 }

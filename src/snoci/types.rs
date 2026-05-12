@@ -140,13 +140,25 @@ impl Preconditioner {
     /// - `p`: Projection contractions used to form `M^Omega`.
     /// # Returns:
     /// - `OmegaRank2Preconditioner`: Rank-2 preconditioner.
-    pub (in crate::snoci) fn new(m_diag: &Array1<f64>, p: &PT2Projection) -> Self {
+    pub(in crate::snoci) fn new(
+        m_diag: &Array1<f64>,
+        p: &PT2Projection,
+    ) -> Self {
         let dmax = m_diag.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
         let dfloor = (1e-12_f64 * dmax).max(1e-14_f64);
 
-        let dinv = Array1::from_iter(m_diag.iter().map(|&x| if x.abs() > dfloor {1.0 / x} else {1.0}));
+        let dinv = Array1::from_iter(
+            m_diag
+                .iter()
+                .map(|&x| if x.abs() > dfloor { 1.0 / x } else { 1.0 }),
+        );
 
-        let u0 = Array1::from_iter(p.f_a0.iter().zip(p.s_a0.iter()).map(|(&f, &s)| -f + 2.0 * p.e0 * s));
+        let u0 = Array1::from_iter(
+            p.f_a0
+                .iter()
+                .zip(p.s_a0.iter())
+                .map(|(&f, &s)| -f + 2.0 * p.e0 * s),
+        );
         let u1 = p.s_a0.mapv(|s| -s);
         let v0 = p.s_0a.clone();
         let v1 = p.f_0a.clone();
@@ -168,7 +180,18 @@ impl Preconditioner {
             (1.0, 0.0, 0.0, 1.0)
         };
 
-        Preconditioner {dinv, z0, z1, v0, v1, w00, w01, w10, w11, active}
+        Preconditioner {
+            dinv,
+            z0,
+            z1,
+            v0,
+            v1,
+            w00,
+            w01,
+            w10,
+            w11,
+            active,
+        }
     }
 
     /// Apply the rank-2 Woodbury preconditioner to a vector.
@@ -176,7 +199,10 @@ impl Preconditioner {
     /// - `v`: Vector to precondition.
     /// # Returns:
     /// - `Array1<f64>`: Approximate action of `(M^Omega)^{-1} v`.
-    pub(in crate::snoci) fn apply(&self, v: &Array1<f64>) -> Array1<f64> {
+    pub(in crate::snoci) fn apply(
+        &self,
+        v: &Array1<f64>,
+    ) -> Array1<f64> {
         let mut y = Array1::from_iter(v.iter().zip(self.dinv.iter()).map(|(&vi, &di)| vi * di));
 
         if !self.active {

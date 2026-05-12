@@ -1,14 +1,14 @@
 // nonorthogonalwicks/storage.rs
-use std::ptr::NonNull;
 use std::fs::{File, OpenOptions};
+use std::ptr::NonNull;
 
-use serde::{Serialize, Deserialize};
 use memmap2::{Mmap, MmapMut, MmapOptions};
+use serde::{Deserialize, Serialize};
 
+use super::types::{PairMeta, PairOffset};
+use super::view::WicksView;
 use crate::mpiutils::Sharedffi;
 use crate::noci::NOCIScalar;
-use super::view::WicksView;
-use super::types::{PairOffset, PairMeta};
 
 #[allow(dead_code)]
 pub(crate) enum WicksBacking<T: NOCIScalar> {
@@ -32,8 +32,10 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `self`: View and RMA for Wick's intermediates.
     /// # Returns
     /// - `&WicksView<T>`: Shared view of the Wick's intermediates.
-    pub fn view(&self) -> &WicksView<T> {&self.view}
-    
+    pub fn view(&self) -> &WicksView<T> {
+        &self.view
+    }
+
     /// Get a mutable reference to the WicksView object.
     /// # Arguments:
     /// - `self`: View and RMA for Wick's intermediates.
@@ -42,7 +44,7 @@ impl<T: NOCIScalar> WicksShared<T> {
     pub fn view_mut(&mut self) -> &mut WicksView<T> {
         &mut self.view
     }
-    
+
     /// Get a mutable slice over the full contiguous shared tensor storage.
     /// The returned slice may be used to overwrite stored matrices or tensors in place.
     /// # Arguments:
@@ -52,9 +54,9 @@ impl<T: NOCIScalar> WicksShared<T> {
     pub fn slab_mut(&mut self) -> &mut [T] {
         let ptr = self.base_mut_ptr();
         let len = self.view.slab_len;
-        unsafe {std::slice::from_raw_parts_mut(ptr, len)}
+        unsafe { std::slice::from_raw_parts_mut(ptr, len) }
     }
-    
+
     /// Return a mutable pointer to the start of the contiguous tensor storage.
     /// # Arguments:
     /// - `self`: View and backing storage for Wick's intermediates.
@@ -88,8 +90,14 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `view`: View over the contiguous Wick's slab.
     /// # Returns
     /// - `WicksShared<T>`: Wick's storage and associated view.
-    pub(crate) fn from_shared(rma: WicksRma<T>, view: WicksView<T>) -> Self {
-        Self {backing: WicksBacking::Shared(rma), view}
+    pub(crate) fn from_shared(
+        rma: WicksRma<T>,
+        view: WicksView<T>,
+    ) -> Self {
+        Self {
+            backing: WicksBacking::Shared(rma),
+            view,
+        }
     }
 
     /// Construct file-backed read-only Wick's storage.
@@ -98,8 +106,14 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `view`: View over the contiguous Wick's slab.
     /// # Returns
     /// - `WicksShared<T>`: Wick's storage and associated view.
-    pub(crate) fn from_mmap(mmap: Mmap, view: WicksView<T>) -> Self {
-        Self {backing: WicksBacking::Mmap(mmap), view}
+    pub(crate) fn from_mmap(
+        mmap: Mmap,
+        view: WicksView<T>,
+    ) -> Self {
+        Self {
+            backing: WicksBacking::Mmap(mmap),
+            view,
+        }
     }
 
     /// Construct file-backed writable Wick's storage.
@@ -108,8 +122,14 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `view`: View over the contiguous Wick's slab.
     /// # Returns
     /// - `WicksShared<T>`: Wick's storage and associated view.
-    pub(crate) fn from_mmap_cow(mmap: MmapMut, view: WicksView<T>) -> Self {
-        Self {backing: WicksBacking::MmapCow(mmap), view}
+    pub(crate) fn from_mmap_cow(
+        mmap: MmapMut,
+        view: WicksView<T>,
+    ) -> Self {
+        Self {
+            backing: WicksBacking::MmapCow(mmap),
+            view,
+        }
     }
 }
 
@@ -149,19 +169,35 @@ pub(crate) struct WicksDiskMeta<T: NOCIScalar> {
 /// - `slab_len`: Total slab length in units of `T`.
 /// # Returns
 /// - `std::io::Result<WicksShared<T>>`: File-backed Wick's storage and view over the mapped slab.
-pub(crate) fn create_wicks_mmap<T: NOCIScalar>(slab_path: &std::path::Path, nref: usize, off: Vec<PairOffset>, slab_len: usize) -> std::io::Result<WicksShared<T>> {
+pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
+    slab_path: &std::path::Path,
+    nref: usize,
+    off: Vec<PairOffset>,
+    slab_len: usize,
+) -> std::io::Result<WicksShared<T>> {
     let nbytes = slab_len * std::mem::size_of::<T>();
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(slab_path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(slab_path)?;
     file.set_len(nbytes as u64)?;
 
-    let mut mmap = unsafe {MmapOptions::new().len(nbytes).map_mut(&file)?};
+    let mut mmap = unsafe { MmapOptions::new().len(nbytes).map_mut(&file)? };
     let ptr = mmap.as_mut_ptr() as *mut T;
-    let slab = unsafe {std::slice::from_raw_parts_mut(ptr, slab_len)};
+    let slab = unsafe { std::slice::from_raw_parts_mut(ptr, slab_len) };
     slab.fill(<T as From<f64>>::from(f64::NAN));
 
     let meta = vec![PairMeta::<T>::default(); nref * nref];
-    let view = WicksView {slab: NonNull::new(ptr).unwrap(), slab_len, nref, off, meta};
-    
+    let view = WicksView {
+        slab: NonNull::new(ptr).unwrap(),
+        slab_len,
+        nref,
+        off,
+        meta,
+    };
+
     Ok(WicksShared::from_mmap_cow(mmap, view))
 }
 
@@ -172,13 +208,22 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(slab_path: &std::path::Path, nref
 /// - `meta_path`: Path to the file storing serialised Wick's metadata.
 /// # Returns
 /// - `std::io::Result<WicksShared<T>>`: File-backed Wick's storage and view over the mapped slab.
-pub(crate) fn load_wicks_mmap<T: NOCIScalar>(slab_path: &std::path::Path, meta_path: &std::path::Path) -> std::io::Result<WicksShared<T>> {
+pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
+    slab_path: &std::path::Path,
+    meta_path: &std::path::Path,
+) -> std::io::Result<WicksShared<T>> {
     let disk_meta: WicksDiskMeta<T> = bincode::deserialize(&std::fs::read(meta_path)?).unwrap();
     let file = File::open(slab_path)?;
-    let mmap = unsafe {MmapOptions::new().map(&file)?};
+    let mmap = unsafe { MmapOptions::new().map(&file)? };
     let ptr = mmap.as_ptr() as *mut T;
 
-    let view = WicksView {slab: NonNull::new(ptr).unwrap(), slab_len: disk_meta.slab_len, nref: disk_meta.nref, off: disk_meta.off, meta: disk_meta.meta};
-    
+    let view = WicksView {
+        slab: NonNull::new(ptr).unwrap(),
+        slab_len: disk_meta.slab_len,
+        nref: disk_meta.nref,
+        off: disk_meta.off,
+        meta: disk_meta.meta,
+    };
+
     Ok(WicksShared::from_mmap(mmap, view))
 }

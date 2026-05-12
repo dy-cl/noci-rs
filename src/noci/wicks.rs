@@ -1,20 +1,24 @@
 // noci/wicks.rs
-use std::ptr::NonNull;
 use std::fs::{self};
 use std::path::PathBuf;
+use std::ptr::NonNull;
 
-use ndarray::Array2;
 use mpi::topology::Communicator;
+use ndarray::Array2;
 
-use crate::{AoData, DetState};
-use crate::nonorthogonalwicks::{DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WicksRma, WicksShared, 
-           WicksView, WicksDiskMeta};
-use crate::mpiutils::Sharedffi;
 use crate::input::Input;
+use crate::mpiutils::Sharedffi;
+use crate::nonorthogonalwicks::{
+    DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WicksDiskMeta, WicksRma,
+    WicksShared, WicksView,
+};
+use crate::{AoData, DetState};
 
-use crate::nonorthogonalwicks::{write2t, write_same_spin, write_diff_spin, assign_offsets, create_wicks_mmap, load_wicks_mmap};
-use crate::mpiutils::{broadcast};
 use super::types::NOCIScalar;
+use crate::mpiutils::broadcast;
+use crate::nonorthogonalwicks::{
+    assign_offsets, create_wicks_mmap, load_wicks_mmap, write_diff_spin, write_same_spin, write2t,
+};
 
 /// Build all Wick's intermediates and metadata for one reference pair.
 /// # Arguments:
@@ -24,41 +28,110 @@ use super::types::NOCIScalar;
 /// - `tol`: Tolerance for a number being zero.
 /// # Returns
 /// - `(SameSpinBuild<T>, SameSpinBuild<T>, DiffSpinBuild<T>, PairMeta<T>)`: Alpha-alpha, beta-beta, and alpha-beta Wick's intermediates together with the corresponding per-pair metadata.
-fn build_wicks_pair<T: NOCIScalar>(ao: &AoData, ri: &DetState<T>, rj: &DetState<T>, tol: f64) -> (SameSpinBuild<T>, SameSpinBuild<T>, DiffSpinBuild<T>, PairMeta<T>) {
-    let aa = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.ca, &ri.ca, rj.oa, ri.oa, tol);
-    let bb = SameSpinBuild::new(&ao.eri_coul, &ao.h, &ao.s, &rj.cb, &ri.cb, rj.ob, ri.ob, tol);
-    let ab = DiffSpinBuild::new(&ao.eri_coul, &ao.s, &rj.ca, &rj.cb, &ri.ca, &ri.cb, rj.oa, rj.ob, ri.oa, ri.ob, tol);
+fn build_wicks_pair<T: NOCIScalar>(
+    ao: &AoData,
+    ri: &DetState<T>,
+    rj: &DetState<T>,
+    tol: f64,
+) -> (
+    SameSpinBuild<T>,
+    SameSpinBuild<T>,
+    DiffSpinBuild<T>,
+    PairMeta<T>,
+) {
+    let aa = SameSpinBuild::new(
+        &ao.eri_coul,
+        &ao.h,
+        &ao.s,
+        &rj.ca,
+        &ri.ca,
+        rj.oa,
+        ri.oa,
+        tol,
+    );
+    let bb = SameSpinBuild::new(
+        &ao.eri_coul,
+        &ao.h,
+        &ao.s,
+        &rj.cb,
+        &ri.cb,
+        rj.ob,
+        ri.ob,
+        tol,
+    );
+    let ab = DiffSpinBuild::new(
+        &ao.eri_coul,
+        &ao.s,
+        &rj.ca,
+        &rj.cb,
+        &ri.ca,
+        &ri.cb,
+        rj.oa,
+        rj.ob,
+        ri.oa,
+        ri.ob,
+        tol,
+    );
 
     let meta = PairMeta {
-        aa: SameSpinMeta {tilde_s_prod: aa.tilde_s_prod, phase: aa.phase, m: aa.m, nmo: aa.nmo, f0h: aa.f0h, f0f: aa.f0f, v0: aa.v0},
-        bb: SameSpinMeta {tilde_s_prod: bb.tilde_s_prod, phase: bb.phase, m: bb.m, nmo: bb.nmo, f0h: bb.f0h, f0f: bb.f0f, v0: bb.v0},
-        ab: DiffSpinMeta {nmo: ab.vab[0][0][0].nrows() / 2, vab0: ab.vab0, vba0: ab.vba0},
+        aa: SameSpinMeta {
+            tilde_s_prod: aa.tilde_s_prod,
+            phase: aa.phase,
+            m: aa.m,
+            nmo: aa.nmo,
+            f0h: aa.f0h,
+            f0f: aa.f0f,
+            v0: aa.v0,
+        },
+        bb: SameSpinMeta {
+            tilde_s_prod: bb.tilde_s_prod,
+            phase: bb.phase,
+            m: bb.m,
+            nmo: bb.nmo,
+            f0h: bb.f0h,
+            f0f: bb.f0f,
+            v0: bb.v0,
+        },
+        ab: DiffSpinMeta {
+            nmo: ab.vab[0][0][0].nrows() / 2,
+            vab0: ab.vab0,
+            vba0: ab.vba0,
+        },
     };
 
     (aa, bb, ab, meta)
 }
 
-/// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node). 
+/// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node).
 /// This may be in RAM or on disk if requested.
 /// # Arguments:
 /// - `world`: MPI communicator object.
-/// - `ao`: Contains AO integrals and other system data. 
+/// - `ao`: Contains AO integrals and other system data.
 /// - `noci_reference_basis`: Vector of only the reference determinants.
 /// - `tol`: Tolerance for a number being zero.
 /// - `input`: User input specifications.
 /// # Returns:
 /// - `WicksShared<T>`: Shared-memory storage and view for precomputed Wick's intermediates.
-pub fn build_wicks_shared<T: NOCIScalar>(world: &impl Communicator, ao: &AoData, noci_reference_basis: &[DetState<T>], tol: f64, input: &Input) -> WicksShared<T> {
+pub fn build_wicks_shared<T: NOCIScalar>(
+    world: &impl Communicator,
+    ao: &AoData,
+    noci_reference_basis: &[DetState<T>],
+    tol: f64,
+    input: &Input,
+) -> WicksShared<T> {
     let nref = noci_reference_basis.len();
-    let nmo  = noci_reference_basis[0].ca.ncols();
+    let nmo = noci_reference_basis[0].ca.ncols();
     let irank = world.rank();
 
     let (offset, tensor_len) = assign_offsets(nref, nmo);
     let nbytes = tensor_len * std::mem::size_of::<T>();
-    
+
     if irank == 0 {
         println!("Number of MOs: {}", ao.n);
-        println!("Estimated memory required for Wick's intermediates (MiB): {}", nbytes as f64 / (1024.0 * 1024.0));
+        println!(
+            "Estimated memory required for Wick's intermediates (MiB): {}",
+            nbytes as f64 / (1024.0 * 1024.0)
+        );
     }
 
     match input.wicks.storage {
@@ -70,13 +143,19 @@ pub fn build_wicks_shared<T: NOCIScalar>(world: &impl Communicator, ao: &AoData,
             let mut meta = vec![PairMeta::<T>::default(); nref * nref];
 
             if shared_rank == 0 {
-                let tensor: &mut [T] = unsafe {std::slice::from_raw_parts_mut(tensor_ptr, tensor_len)};
+                let tensor: &mut [T] =
+                    unsafe { std::slice::from_raw_parts_mut(tensor_ptr, tensor_len) };
                 tensor.fill(<T as From<f64>>::from(f64::NAN));
 
                 for i in 0..nref {
                     let ri = &noci_reference_basis[i];
                     for (j, rj) in noci_reference_basis.iter().enumerate() {
-                        println!("Building intermediates for reference pair: {}, {} on world rank {}", i, j, world.rank());
+                        println!(
+                            "Building intermediates for reference pair: {}, {} on world rank {}",
+                            i,
+                            j,
+                            world.rank()
+                        );
 
                         let idx = i * nref + j;
                         let (aa, bb, ab, pair_meta) = build_wicks_pair(ao, ri, rj, tol);
@@ -92,15 +171,32 @@ pub fn build_wicks_shared<T: NOCIScalar>(world: &impl Communicator, ao: &AoData,
             shared.barrier();
             broadcast(world, &mut meta);
 
-            let rma = WicksRma::<T> {base_ptr: shared.base, _nbytes: nbytes, _shared: shared, _marker: std::marker::PhantomData};
+            let rma = WicksRma::<T> {
+                base_ptr: shared.base,
+                _nbytes: nbytes,
+                _shared: shared,
+                _marker: std::marker::PhantomData,
+            };
             let slab = NonNull::new(tensor_ptr).expect("Should not be null.");
-            let view = WicksView {slab, slab_len: tensor_len, nref, off: offset, meta};
-            
+            let view = WicksView {
+                slab,
+                slab_len: tensor_len,
+                nref,
+                off: offset,
+                meta,
+            };
+
             WicksShared::from_shared(rma, view)
         }
 
         crate::input::WicksStorage::Disk => {
-            let cache_dir = PathBuf::from(input.wicks.cachedir.clone().unwrap_or_else(|| ".".to_string()));
+            let cache_dir = PathBuf::from(
+                input
+                    .wicks
+                    .cachedir
+                    .clone()
+                    .unwrap_or_else(|| ".".to_string()),
+            );
             fs::create_dir_all(&cache_dir).unwrap();
 
             let slab_path = cache_dir.join("wicks.bin");
@@ -110,14 +206,24 @@ pub fn build_wicks_shared<T: NOCIScalar>(world: &impl Communicator, ao: &AoData,
             let shared_rank = shared.shared_rank;
 
             if shared_rank == 0 {
-                println!("Building Wick's intermediates and writing disk cache on world rank {}: {:?}", world.rank(), cache_dir);
+                println!(
+                    "Building Wick's intermediates and writing disk cache on world rank {}: {:?}",
+                    world.rank(),
+                    cache_dir
+                );
 
-                let mut wicks = create_wicks_mmap::<T>(&slab_path, nref, offset.clone(), tensor_len).unwrap();
+                let mut wicks =
+                    create_wicks_mmap::<T>(&slab_path, nref, offset.clone(), tensor_len).unwrap();
 
                 for i in 0..nref {
                     let ri = &noci_reference_basis[i];
                     for (j, rj) in noci_reference_basis.iter().enumerate() {
-                        println!("Building intermediates for reference pair: {}, {} on world rank {}", i, j, world.rank());
+                        println!(
+                            "Building intermediates for reference pair: {}, {} on world rank {}",
+                            i,
+                            j,
+                            world.rank()
+                        );
 
                         let idx = i * nref + j;
                         let (aa, bb, ab, pair_meta) = build_wicks_pair(ao, ri, rj, tol);
@@ -130,11 +236,17 @@ pub fn build_wicks_shared<T: NOCIScalar>(world: &impl Communicator, ao: &AoData,
                         write_diff_spin(slab, &offset[idx].ab, &ab);
                     }
                 }
-                
+
                 wicks.flush_mmap().unwrap();
 
                 let view = wicks.view();
-                let disk_meta = WicksDiskMeta::<T> {version: 1, nref: view.nref, slab_len: view.slab_len, off: view.off.clone(), meta: view.meta.clone()};
+                let disk_meta = WicksDiskMeta::<T> {
+                    version: 1,
+                    nref: view.nref,
+                    slab_len: view.slab_len,
+                    off: view.off.clone(),
+                    meta: view.meta.clone(),
+                };
                 std::fs::write(&meta_path, bincode::serialize(&disk_meta).unwrap()).unwrap();
             }
 
@@ -148,12 +260,17 @@ pub fn build_wicks_shared<T: NOCIScalar>(world: &impl Communicator, ao: &AoData,
 /// intermediates change per iteration of SNOCI.
 /// # Arguments:
 /// - `fa`: Fock matrix spin alpha.
-/// - `fb`: Fock matrix spin beta. 
+/// - `fb`: Fock matrix spin beta.
 /// - `noci_reference_basis`: Vector of only the reference determinants.
 /// - `wicks`: Shared memory Wick's intermediates storage.
 /// # Returns:
 /// - `()`: Updates the stored Fock-related Wick's intermediates in `wicks` in place.
-pub fn update_wicks_fock<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, noci_reference_basis: &[DetState<T>], wicks: &mut WicksShared<T>) {
+pub fn update_wicks_fock<T: NOCIScalar>(
+    fa: &Array2<T>,
+    fb: &Array2<T>,
+    noci_reference_basis: &[DetState<T>],
+    wicks: &mut WicksShared<T>,
+) {
     let nref = noci_reference_basis.len();
 
     for (i, ri) in noci_reference_basis.iter().enumerate().take(nref) {
@@ -176,15 +293,15 @@ pub fn update_wicks_fock<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, noci_ref
             };
 
             let (f0_0fa, f00fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[0], &ya[0]);
-            let (_,       f01fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[0], &ya[1]);
-            let (_,       f10fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[1], &ya[0]);
+            let (_, f01fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[0], &ya[1]);
+            let (_, f10fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[1], &ya[0]);
             let (f0_1fa, f11fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[1], &ya[1]);
             let f0fa: [T; 2] = [f0_0fa, f0_1fa];
             let ffa: [[Array2<T>; 2]; 2] = [[f00fa, f01fa], [f10fa, f11fa]];
 
             let (f0_0fb, f00fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[0], &yb[0]);
-            let (_,       f01fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[0], &yb[1]);
-            let (_,       f10fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[1], &yb[0]);
+            let (_, f01fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[0], &yb[1]);
+            let (_, f10fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[1], &yb[0]);
             let (f0_1fb, f11fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[1], &yb[1]);
             let f0fb: [T; 2] = [f0_0fb, f0_1fb];
             let ffb: [[Array2<T>; 2]; 2] = [[f00fb, f01fb], [f10fb, f11fb]];

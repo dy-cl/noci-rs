@@ -14,7 +14,13 @@ use num_complex::Complex64;
 /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
 /// # Returns
 /// - `Array4<f64>`: ERIs transformed to the real MO basis.
-pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, c_lam_r: &Array2<f64>, c_sig_s: &Array2<f64>) -> Array4<f64> {
+pub fn eri_ao2mo(
+    eri: &Array4<f64>,
+    c_mu_p: &Array2<f64>,
+    c_nu_q: &Array2<f64>,
+    c_lam_r: &Array2<f64>,
+    c_sig_s: &Array2<f64>,
+) -> Array4<f64> {
     let nbas = c_mu_p.nrows();
     let nmo_p = c_mu_p.ncols();
     let nmo_q = c_nu_q.ncols();
@@ -95,7 +101,13 @@ pub fn eri_ao2mo(eri: &Array4<f64>, c_mu_p: &Array2<f64>, c_nu_q: &Array2<f64>, 
 /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
 /// # Returns
 /// - `Array4<Complex64>`: ERIs transformed to the complex MO basis.
-pub fn eri_ao2mo_complex_hermitian(eri: &Array4<f64>, c_mu_p: &Array2<Complex64>, c_nu_q: &Array2<Complex64>, c_lam_r: &Array2<Complex64>, c_sig_s: &Array2<Complex64>) -> Array4<Complex64> {
+pub fn eri_ao2mo_complex_hermitian(
+    eri: &Array4<f64>,
+    c_mu_p: &Array2<Complex64>,
+    c_nu_q: &Array2<Complex64>,
+    c_lam_r: &Array2<Complex64>,
+    c_sig_s: &Array2<Complex64>,
+) -> Array4<Complex64> {
     let nbas = c_mu_p.nrows();
     let nmo_p = c_mu_p.ncols();
     let nmo_q = c_nu_q.ncols();
@@ -178,7 +190,13 @@ pub trait ERIScalar: Sized {
     /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
     /// # Returns
     /// - `Array4<Self>`: ERIs transformed to the MO basis.
-    fn eri_ao2mo_hermitian(eri: &Array4<f64>, c_mu_p: &Array2<Self>, c_nu_q: &Array2<Self>, c_lam_r: &Array2<Self>, c_sig_s: &Array2<Self>) -> Array4<Self>;
+    fn eri_ao2mo_hermitian(
+        eri: &Array4<f64>,
+        c_mu_p: &Array2<Self>,
+        c_nu_q: &Array2<Self>,
+        c_lam_r: &Array2<Self>,
+        c_sig_s: &Array2<Self>,
+    ) -> Array4<Self>;
 }
 
 impl ERIScalar for f64 {
@@ -192,7 +210,13 @@ impl ERIScalar for f64 {
     /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
     /// # Returns
     /// - `Array4<f64>`: ERIs transformed to the real MO basis.
-    fn eri_ao2mo_hermitian(eri: &Array4<f64>, c_mu_p: &Array2<Self>, c_nu_q: &Array2<Self>, c_lam_r: &Array2<Self>, c_sig_s: &Array2<Self>) -> Array4<Self> {
+    fn eri_ao2mo_hermitian(
+        eri: &Array4<f64>,
+        c_mu_p: &Array2<Self>,
+        c_nu_q: &Array2<Self>,
+        c_lam_r: &Array2<Self>,
+        c_sig_s: &Array2<Self>,
+    ) -> Array4<Self> {
         eri_ao2mo(eri, c_mu_p, c_nu_q, c_lam_r, c_sig_s)
     }
 }
@@ -208,7 +232,13 @@ impl ERIScalar for Complex64 {
     /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
     /// # Returns
     /// - `Array4<Complex64>`: ERIs transformed to the complex MO basis.
-    fn eri_ao2mo_hermitian(eri: &Array4<f64>, c_mu_p: &Array2<Self>, c_nu_q: &Array2<Self>, c_lam_r: &Array2<Self>, c_sig_s: &Array2<Self>) -> Array4<Self> {
+    fn eri_ao2mo_hermitian(
+        eri: &Array4<f64>,
+        c_mu_p: &Array2<Self>,
+        c_nu_q: &Array2<Self>,
+        c_lam_r: &Array2<Self>,
+        c_sig_s: &Array2<Self>,
+    ) -> Array4<Self> {
         eri_ao2mo_complex_hermitian(eri, c_mu_p, c_nu_q, c_lam_r, c_sig_s)
     }
 }
@@ -222,6 +252,12 @@ impl ERIScalar for Complex64 {
 /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
 /// # Returns
 /// - `Array4<T>`: ERIs transformed to the MO basis.
-pub fn eri_ao2mo_hermitian_as<T: ERIScalar>(eri: &Array4<f64>, c_mu_p: &Array2<T>, c_nu_q: &Array2<T>, c_lam_r: &Array2<T>, c_sig_s: &Array2<T>) -> Array4<T> {
+pub fn eri_ao2mo_hermitian_as<T: ERIScalar>(
+    eri: &Array4<f64>,
+    c_mu_p: &Array2<T>,
+    c_nu_q: &Array2<T>,
+    c_lam_r: &Array2<T>,
+    c_sig_s: &Array2<T>,
+) -> Array4<T> {
     T::eri_ao2mo_hermitian(eri, c_mu_p, c_nu_q, c_lam_r, c_sig_s)
 }

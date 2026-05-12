@@ -9,6 +9,6 @@ mod types;
 pub use step::*;
 pub use types::*;
 
+pub(in crate::snoci) use candidate::CandidatePool;
 pub(in crate::snoci) use gmres::gmres;
 pub(in crate::snoci) use operators::*;
-pub(in crate::snoci) use candidate::CandidatePool;

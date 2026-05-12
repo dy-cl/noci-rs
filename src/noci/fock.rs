@@ -1,14 +1,14 @@
 // noci/fock.rs
-use ndarray::{Array2};
+use ndarray::Array2;
 
-use crate::{AoData, DetState};
+use super::types::{DetPair, FockData, FockMOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use super::types::{DetPair, FockMOCache, NOCIData, FockData, NOCIScalar};
 use crate::time_call;
+use crate::{AoData, DetState};
 
+use super::naive::{build_s_pair, occ_coeffs, one_electron_scalar};
 use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{prepare_same, lg_overlap, lg_f};
-use super::naive::{occ_coeffs, build_s_pair, one_electron_scalar};
+use crate::nonorthogonalwicks::{lg_f, lg_overlap, prepare_same};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved. If the determinant pair have the
@@ -22,7 +22,12 @@ use super::naive::{occ_coeffs, build_s_pair, one_electron_scalar};
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `T`: Fock matrix element between the determinant pair.
-pub(crate) fn calculate_f_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &FockData<'_, T>, pair: DetPair<'_, T>, scratch: Option<&mut WickScratchSpin<T>>) -> T {
+pub(crate) fn calculate_f_pair<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    fock: &FockData<'_, T>,
+    pair: DetPair<'_, T>,
+    scratch: Option<&mut WickScratchSpin<T>>,
+) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair, {
         let ldet = pair.ldet;
         let gdet = pair.gdet;
@@ -50,7 +55,12 @@ pub(crate) fn calculate_f_pair<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &Foc
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `(T, f64)`: Wick's Fock matrix element, and the absolute discrepancy from the naive path.
-pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(data: &NOCIData<'_, T>, fock: &FockData<'_, T>, pair: DetPair<'_, T>, scratch: &mut WickScratchSpin<T>) -> (T, f64) {
+pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    fock: &FockData<'_, T>,
+    pair: DetPair<'_, T>,
+    scratch: &mut WickScratchSpin<T>,
+) -> (T, f64) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
@@ -68,7 +78,11 @@ pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(data: &NOCIData
 /// - `gdet`: State \Gamma.
 /// # Returns:
 /// - `T`: Fock matrix element between `ldet` and `gdet`.
-fn calculate_f_pair_orthogonal<T: NOCIScalar>(cache: &FockMOCache<T>, ldet: &DetState<T>, gdet: &DetState<T>) -> T {
+fn calculate_f_pair_orthogonal<T: NOCIScalar>(
+    cache: &FockMOCache<T>,
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair_orthogonal, {
         let xa = ldet.oa ^ gdet.oa;
         let xb = ldet.ob ^ gdet.ob;
@@ -107,17 +121,24 @@ fn calculate_f_pair_orthogonal<T: NOCIScalar>(cache: &FockMOCache<T>, ldet: &Det
     })
 }
 
-/// Calculate the Fock matrix element between determinants \Lambda and \Gamma using 
+/// Calculate the Fock matrix element between determinants \Lambda and \Gamma using
 /// generalised Slater-Condon rules.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data. 
+/// - `ao`: Contains AO integrals and other system data.
 /// - `ldet`: State \Lambda.
 /// - `gdet`: State \Gamma.
 /// - `fa`: NOCI Fock matrix spin alpha.
 /// - `fb`: NOCI Fock matrix spin beta.
 /// # Returns:
 /// - `T`: Fock matrix element between `ldet` and `gdet`.
-fn calculate_f_pair_naive<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, ao: &AoData, ldet: &DetState<T>, gdet: &DetState<T>, tol: f64) -> T {
+fn calculate_f_pair_naive<T: NOCIScalar>(
+    fa: &Array2<T>,
+    fb: &Array2<T>,
+    ao: &AoData,
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair_naive, {
         // Per spin occupid coefficients.
         let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
@@ -144,7 +165,13 @@ fn calculate_f_pair_naive<T: NOCIScalar>(fa: &Array2<T>, fb: &Array2<T>, ao: &Ao
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
 /// - `T`: Fock matrix element between the determinant pair.
-fn calculate_f_pair_wicks<T: NOCIScalar>(ldet: &DetState<T>, gdet: &DetState<T>, tol: f64, wicks: &WicksView<T>, scratch: &mut WickScratchSpin<T>) -> T {
+fn calculate_f_pair_wicks<T: NOCIScalar>(
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    tol: f64,
+    wicks: &WicksView<T>,
+    scratch: &mut WickScratchSpin<T>,
+) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair_wicks, {
         let lp = ldet.parent;
         let gp = gdet.parent;
