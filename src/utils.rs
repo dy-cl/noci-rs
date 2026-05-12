@@ -19,6 +19,19 @@ pub fn print_array2<T: Display>(a: &Array2<T>) {
     }
 }
 
+/// Print a matrix with line by line indices.
+/// # Arguments:
+/// - `a`: Matrix to print.
+/// # Returns:
+/// - `()`: Prints matrix to stdout.
+pub fn print_array2_indexed<T: Display>(a: &Array2<T>) {
+    for i in 0..a.nrows() {
+        for j in 0..a.ncols() {
+            println!("({}, {}): {}", i, j, a[(i, j)]);
+        }
+    }
+}
+
 /// Print a 4D array as grid of 2D blocks.
 /// # Arguments 
 /// - `t`: Tensor to print. 

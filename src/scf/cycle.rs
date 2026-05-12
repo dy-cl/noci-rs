@@ -13,7 +13,7 @@ use super::diis::Diis;
 
 use crate::write::write_orbitals;
 use crate::maths::general_evp;
-use crate::utils::print_array2;
+use crate::utils::print_array2_indexed;
 use super::bias::metadynamics_bias;
 use super::kernels::{energy, fock, density};
 use super::occupation::{mo_occupancies, occvec_to_bits};
@@ -110,8 +110,8 @@ fn finalise(e: f64, ca: Array2<f64>, cb: Array2<f64>, da: Array2<f64>, db: Array
     let oaprint = mo_occupancies(&ca, &da, &ao.s); let obprint = mo_occupancies(&cb, &db, &ao.s);
     print_mos("Alpha MOs", ea, &oaprint); print_mos("Beta MOs", eb, &obprint);
     println!("{}", "-".repeat(100));
-    println!("Coefficients ca:"); print_array2(&ca);
-    println!("Coefficients cb:"); print_array2(&cb);
+    println!("Coefficients ca:"); print_array2_indexed(&ca);
+    println!("Coefficients cb:"); print_array2_indexed(&cb);
     println!("<S^2>: {}", spin_square(&da, &db, &ao.s));
 
     let ca = Arc::new(ca); let cb = Arc::new(cb); let da = Arc::new(da); let db = Arc::new(db);
@@ -145,11 +145,23 @@ fn finalise(e: f64, ca: Array2<f64>, cb: Array2<f64>, da: Array2<f64>, db: Array
 /// # Returns
 /// - `Option<SCFState>`: Converged SCF state if the SCF cycle succeeds, otherwise `None`.
 pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Input, label: &str, noci_basis: bool, scfexcitation: Option<&SCFExcitation>, i: usize, biases: Option<&[SCFState]>) -> Option<SCFState> {
-    let h = &ao.h; let eri = &ao.eri_coul; let s = &ao.s; let enuc = ao.enuc;
-    let na = usize::try_from(ao.nelec[0]).unwrap(); let nb = usize::try_from(ao.nelec[1]).unwrap();
-    let mut e = f64::INFINITY; let mut da = da0.clone(); let mut db = db0.clone();
-    let use_diis = true; let mut diis = Diis::new(input.scf.diis.space);
-    let mut ca_occ_old: Option<Array2<f64>> = None; let mut cb_occ_old: Option<Array2<f64>> = None;
+    let h = &ao.h; 
+    let eri = &ao.eri_coul; 
+    let s = &ao.s; 
+    let enuc = ao.enuc;
+
+    let na = usize::try_from(ao.nelec[0]).unwrap(); 
+    let nb = usize::try_from(ao.nelec[1]).unwrap();
+
+    let mut e = f64::INFINITY; 
+    let mut da = da0.clone(); 
+    let mut db = db0.clone();
+
+    let use_diis = true; 
+    let mut diis = Diis::new(input.scf.diis.space);
+
+    let mut ca_occ_old: Option<Array2<f64>> = None; 
+    let mut cb_occ_old: Option<Array2<f64>> = None;
 
     print_header(input, scfexcitation);
     let lambda = match &input.states {StateType::Metadynamics(meta) => Some(meta.lambda), _ => None};

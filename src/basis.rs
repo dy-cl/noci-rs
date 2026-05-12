@@ -317,7 +317,6 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
-    let d_tol = 1e-8;
     
     let mut out: Vec<SCFState> = Vec::with_capacity(recipes.len());
     for (i, recipe) in recipes.iter().enumerate() {
@@ -376,7 +375,7 @@ fn generate_states_mom(ao: &AoData, input: &Input, prev: Option<&[SCFState]>, pr
         let state: SCFState = scf_cycle(&da, &db, ao, input, label, noci_basis, scfexcitation, i, None).expect("SCF did not converge");
         out.push(state);
     }
-    mark_duplicate_noci_states(&mut out, &ao.s, d_tol);
+    mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol);
     out
 }
 
@@ -392,7 +391,6 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 
     let da0: Array2<f64> = ao.dm.clone() * 0.5;
     let db0: Array2<f64> = ao.dm.clone() * 0.5;
-    let d_tol = 1e-8;
     let rhf_tol = 1e-2;
 
     let mut biases_rhf: Vec<SCFState> = Vec::with_capacity(meta.nstates_rhf);
@@ -496,7 +494,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                     // RHF branch.
                     // Ignore state if duplicate.
                     println!("UHF candidate collapsed to RHF: drhf = {:.3e} < {:.3e}", drhf, rhf_tol);
-                    let dup = biases_rhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < d_tol);
+                    let dup = biases_rhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < input.scf.d_tol);
                     if dup {
                         println!("Removed state '{}' from basis as duplicate.", candidate.label);
                         continue;
@@ -523,7 +521,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
                     // UHF branch.
                     // Ignore state if duplicate.
                     println!("UHF candidate stayed UHF: drhf = {:.3e} > {:.3e}", drhf, rhf_tol);
-                    let dup = biases_uhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < d_tol);
+                    let dup = biases_uhf.iter().map(|st| electron_distance(st, &candidate, &ao.s)).any(|d2| d2 < input.scf.d_tol);
                     if dup {
                         println!("Removed state '{}' from basis as duplicate.", candidate.label);
                         continue;
@@ -608,7 +606,7 @@ fn generate_states_metadynamics(ao: &AoData, input: &Input, prev_map: &HashMap<&
 
             // Ensure found state is not a duplicate. 
             let is_duplicate = states.iter().map(|st| (st, electron_distance(st, &candidate, &ao.s))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).is_some_and(|(closest, d2)| {
-                if d2 < d_tol {
+                if d2 < input.scf.d_tol {
                     println!("Removed state '{}' from basis as duplicate of '{}' (d^2 = {:.6})", candidate.label, closest.label, d2);
                     true
                 } else {
@@ -775,6 +773,7 @@ pub fn generate_reference_hscf_basis(ao: &AoData, input: &Input, prev: Option<&[
         };
         out.push(state);
     }
+    mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol);
     out
 }
 

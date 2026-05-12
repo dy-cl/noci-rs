@@ -174,6 +174,7 @@ impl Default for DiisOptions {
 pub struct SCFInfo {
     pub max_cycle: i32,
     pub e_tol: f64,
+    pub d_tol: f64,
     pub diis: DiisOptions,
     pub do_fci: bool,
     pub h: HSCFOptions,
@@ -216,6 +217,7 @@ impl Default for SCFInfo {
         Self {
             max_cycle: 10_000,
             e_tol: 1e-12,
+            d_tol: 1e-4,
             diis: DiisOptions::default(),
             do_fci: false,
             h: HSCFOptions::default(),
@@ -756,6 +758,7 @@ pub fn load_input(path: &str) -> Input {
         SCFInfo {
             max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
             e_tol: scf_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+            d_tol: scf_tbl.get("d_tol").unwrap_or(defaults.d_tol),
             diis,
             do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),
             h,

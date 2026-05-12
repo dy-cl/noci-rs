@@ -13,6 +13,7 @@ use crate::scf::DensityMode;
 use crate::maths::{symmetric_evp_complex, real2_as, matrix_exp_complex};
 use super::{density, energy, fock, orbital_energies, orbital_gradient};
 use super::print::print_header_h;
+use crate::utils::print_array2_indexed;
 
 /// Stored quasi-Newton secant pair in the current local tangent basis.
 #[derive(Clone, Debug)]
@@ -470,6 +471,11 @@ fn finalise(ca: Array2<Complex64>, cb: Array2<Complex64>, ao: &AoData, input: &I
 
     if input.write.verbose {
         println!("h-SCF {}: E = {} {:+}i, ||g_ov|| = {:.4e}", if converged {"converged"} else {"not converged"}, e.re, e.im, gnorm);
+        println!("{}", "-".repeat(100));
+        println!("Complex coefficients ca:");
+        print_array2_indexed(&ca);
+        println!("Complex coefficients cb:");
+        print_array2_indexed(&cb);
     }
     if input.write.write_orbitals {println!("Complex h-SCF orbital HDF5 writing is not implemented yet.");}
 
