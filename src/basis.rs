@@ -172,6 +172,8 @@ fn previous_mom_seed<'a>(recipe: &StateRecipe, prev_map: &'a HashMap<&str, &SCFS
 }
 
 /// Build the real alpha and beta density guess for a state recipe.
+/// Biases are applied only when no continuation seed is available; otherwise the previous
+/// converged density is reused directly so the branch can collapse naturally.
 /// # Arguments
 /// - `ao`: AO data containing the RHF density and AO labels.
 /// - `recipe`: Recipe whose spin/spatial bias should be applied.
@@ -182,7 +184,7 @@ fn biased_density_guess(ao: &AoData, recipe: &StateRecipe, seed: Option<&SCFStat
     let mut da = seed.map(|st| (*st.da).clone()).unwrap_or_else(|| ao.dm.clone() * 0.5);
     let mut db = seed.map(|st| (*st.db).clone()).unwrap_or_else(|| ao.dm.clone() * 0.5);
 
-    if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
+    if seed.is_none() && (recipe.spin_bias.is_some() || recipe.spatial_bias.is_some()) {
         let natoms: usize = ao.labels.iter().map(|s| s.split_whitespace().next().unwrap().parse::<usize>().unwrap()).max().unwrap_or(0) + 1;
         let atomao: Vec<Vec<usize>> = (0..natoms).map(|a| ao_indices_for_atomset(&ao.labels, &[a])).collect();
 

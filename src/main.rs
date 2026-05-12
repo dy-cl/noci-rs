@@ -592,6 +592,22 @@ fn print_report(res: &Results, input: &Input) {
             .collect(),
         StateType::Metadynamics(_) => Vec::new(),
     };
+    let requested_noci = |label: &str| -> bool {
+        match &input.states {
+            StateType::Mom(recipes) => recipes.iter()
+                .find(|recipe| recipe.label == label)
+                .map(|recipe| recipe.noci)
+                .unwrap_or(false),
+            StateType::Metadynamics(_) => false,
+        }
+    };
+    let report_label = |label: &str, noci_basis: bool| -> String {
+        if requested_noci(label) && !noci_basis {
+            format!("(Removed) {}", label)
+        } else {
+            label.to_string()
+        }
+    };
 
     let s_pair_total = res.timings.noci.calculate_s_pair;
     let f_pair_total = res.timings.noci.calculate_f_pair;
@@ -874,19 +890,19 @@ fn print_report(res: &Results, input: &Input) {
             .collect();
 
         for (i, st) in hprint.iter().enumerate() {
-            println!("State({}): {},  E: {} + {}i", i + 1, st.label, st.e.re, st.e.im);
+            println!("State({}): {},  E: {} + {}i", i + 1, report_label(&st.label, st.noci_basis), st.e.re, st.e.im);
         }
 
         hprint.first().map(|st| (format!("Re(E({}))", st.label), st.e.re))
     } else {
         for (i, st) in res.states.iter().enumerate() {
-            println!("State({}): {},  E: {}", i + 1, st.label, st.e);
+            println!("State({}): {},  E: {}", i + 1, report_label(&st.label, st.noci_basis), st.e);
         }
         let hprint: Vec<&HSCFState> = res.hstates.iter()
             .filter(|st| hlabels.contains(&st.label.as_str()))
             .collect();
         for (i, st) in hprint.iter().enumerate() {
-            println!("State({}): {},  E: {} + {}i", res.states.len() + i + 1, st.label, st.e.re, st.e.im);
+            println!("State({}): {},  E: {} + {}i", res.states.len() + i + 1, report_label(&st.label, st.noci_basis), st.e.re, st.e.im);
         }
 
         Some(("E(RHF)".to_string(), res.e_rhf))
