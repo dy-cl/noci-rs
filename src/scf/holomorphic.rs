@@ -79,6 +79,8 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
 
     let mut g_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
     let mut step_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
+    let mut best_gnorm = f64::INFINITY;
+    let mut stagnant = 0usize;
 
     for iter in 0..opts.max_cycle {
         let da = density(&ca, na, DensityMode::Holomorphic);
@@ -121,7 +123,7 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
             if input.write.verbose {
                 println!("{:4} {:16.10} {:+16.10}i {:12.4e} {:>12} {:>12}", iter, e.re, e.im, gnorm, "-", "-");
             }
-            return Some(finalise(ca, cb, ao, input, label, noci_basis, i, true));
+            return Some(finalise(ca, cb, ao, input, label, noci_basis, i));
         }
 
         if let (Some((sa, sb)), Some((gpa, gpb))) = (step_prev.take(), g_prev.take()) {
@@ -134,7 +136,26 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
             }
         }
 
-        let (mut pa, mut pb) = sr1_step(&hist, &ga, &gb, &epsa, &epsb, na, nb, opts);
+        if gnorm < best_gnorm * 0.95 {
+            best_gnorm = gnorm;
+            stagnant = 0;
+        } else {
+            stagnant += 1;
+        }
+        let use_fd_newton = stagnant >= 8;
+        if use_fd_newton && !hist.is_empty() {
+            hist.clear();
+            stagnant = 0;
+            if input.write.verbose {
+                println!("h-SCF progress stalled; using finite-difference Newton rescue step.");
+            }
+        }
+
+        let (mut pa, mut pb) = if use_fd_newton {
+            finite_difference_newton_step(&ca, &cb, ao, na, nb, &ga, &gb).unwrap_or_else(|| sr1_step(&hist, &ga, &gb, &epsa, &epsb, na, nb, opts))
+        } else {
+            sr1_step(&hist, &ga, &gb, &epsa, &epsb, na, nb, opts)
+        };
         limit_step(&mut pa, &mut pb, opts.max_step);
         let pnorm = step_norm(&pa, &pb);
 
@@ -146,7 +167,7 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
             if input.write.verbose {
                 println!("h-SCF line search found no improving step.");
             }
-            finalise(ca_new, cb_new, ao, input, label, noci_basis, i, false);
+            finalise(ca_new, cb_new, ao, input, label, noci_basis, i);
             return None;
         }
 
@@ -159,7 +180,7 @@ pub fn hscf_cycle(ca0: &Array2<Complex64>, cb0: &Array2<Complex64>, ao: &AoData,
         ca = ca_new; cb = cb_new;
     }
 
-    finalise(ca, cb, ao, input, label, noci_basis, i, false);
+    finalise(ca, cb, ao, input, label, noci_basis, i);
     None
 }
 
@@ -295,7 +316,7 @@ fn sr1_step(hist: &[SecantPair], ga: &Array2<Complex64>, gb: &Array2<Complex64>,
         let s = pack(&sa, &sb);
         let y = pack(&ya, &yb);
 
-        // Calculate residiual error in current prediction.
+        // Calculate residual error in current prediction.
         let r = &y - &b.dot(&s);
 
         // Update Hessian approximation as 
@@ -315,6 +336,63 @@ fn sr1_step(hist: &[SecantPair], ga: &Array2<Complex64>, gb: &Array2<Complex64>,
 
     // Convert the solution back to unweighted occupied-virtual rotation coordinates.
     (weight_by_gap(&pa_bar, epsa, na, opts.denom_tol, false), weight_by_gap(&pb_bar, epsb, nb, opts.denom_tol, false))
+}
+
+/// Build and solve a finite-difference local Newton equation for stalled h-SCF iterations.
+/// # Arguments:
+/// - `ca`: Current alpha-spin MO coefficients.
+/// - `cb`: Current beta-spin MO coefficients.
+/// - `ao`: AO data.
+/// - `na`: Number of occupied alpha-spin orbitals.
+/// - `nb`: Number of occupied beta-spin orbitals.
+/// - `ga`: Current alpha-spin occupied-virtual gradient.
+/// - `gb`: Current beta-spin occupied-virtual gradient.
+/// # Returns:
+/// - `Option<(Array2<Complex64>, Array2<Complex64>)>`: Newton step if the linear solve succeeds.
+fn finite_difference_newton_step(ca: &Array2<Complex64>, cb: &Array2<Complex64>, ao: &AoData, na: usize, nb: usize, 
+                                 ga: &Array2<Complex64>, gb: &Array2<Complex64>) -> Option<(Array2<Complex64>, Array2<Complex64>)> {
+    let g0 = pack(ga, gb);
+    let n = g0.len();
+    let eps = 1.0e-4;
+    let mut h = Array2::<Complex64>::zeros((n, n));
+
+    for j in 0..n {
+        let mut va = Array2::<Complex64>::zeros(ga.raw_dim());
+        let mut vb = Array2::<Complex64>::zeros(gb.raw_dim());
+        if j < ga.len() {
+            for (k, x) in va.iter_mut().enumerate() {
+                if k == j {
+                    *x = Complex64::new(eps, 0.0);
+                    break;
+                }
+            }
+        } else {
+            let jb = j - ga.len();
+            for (k, x) in vb.iter_mut().enumerate() {
+                if k == jb {
+                    *x = Complex64::new(eps, 0.0);
+                    break;
+                }
+            }
+        }
+
+        let cat = geodesic_step(ca, &va, na, 1.0);
+        let cbt = geodesic_step(cb, &vb, nb, 1.0);
+
+        let da = density(&cat, na, DensityMode::Holomorphic);
+        let db = density(&cbt, nb, DensityMode::Holomorphic);
+
+        let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+        let gt_a = orbital_gradient(&cat, &fa, na, DensityMode::Holomorphic);
+        let gt_b = orbital_gradient(&cbt, &fb, nb, DensityMode::Holomorphic);
+
+        let dg = (pack(&gt_a, &gt_b) - &g0).mapv(|z| z / eps);
+        h.column_mut(j).assign(&dg);
+    }
+
+    let rhs = g0.mapv(|z| -z);
+    let p = h.solve_into(rhs).ok()?;
+    Some(unpack(&p, (ga.nrows(), ga.ncols()), (gb.nrows(), gb.ncols())))
 }
 
 /// Limit combined alpha/beta occupied-virtual step norm.
@@ -451,10 +529,9 @@ fn perturb_ov(c: &Array2<Complex64>, nocc: usize, theta: Complex64) -> Array2<Co
 /// - `label`: Label for the h-SCF state.
 /// - `noci_basis`: Whether this state is intended for a later NOCI basis.
 /// - `i`: State index.
-/// - `converged`: Whether the h-SCF gradient threshold was reached.
 /// # Returns:
 /// - `HSCFState`: Final h-SCF determinant state.
-fn finalise(ca: Array2<Complex64>, cb: Array2<Complex64>, ao: &AoData, input: &Input, label: &str, noci_basis: bool, i: usize, converged: bool) -> HSCFState {
+fn finalise(ca: Array2<Complex64>, cb: Array2<Complex64>, ao: &AoData, input: &Input, label: &str, noci_basis: bool, i: usize) -> HSCFState {
     let na = usize::try_from(ao.nelec[0]).unwrap(); let nb = usize::try_from(ao.nelec[1]).unwrap();
 
     let da = density(&ca, na, DensityMode::Holomorphic);
@@ -463,14 +540,7 @@ fn finalise(ca: Array2<Complex64>, cb: Array2<Complex64>, ao: &AoData, input: &I
     let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
     let e = energy(&ao.h, ao.enuc, &da, &db, &fa, &fb);
     
-    // Calculate g_{ai} = 2 \sum_{\mu\nu} C_a^\mu F_{\mu\nu} C_i^\nu.
-    let ga = orbital_gradient(&ca, &fa, na, DensityMode::Holomorphic);
-    let gb = orbital_gradient(&cb, &fb, nb, DensityMode::Holomorphic);
-
-    let gnorm = (ga.iter().map(|z| z.norm_sqr()).sum::<f64>() + gb.iter().map(|z| z.norm_sqr()).sum::<f64>()).sqrt();
-
     if input.write.verbose {
-        println!("h-SCF {}: E = {} {:+}i, ||g_ov|| = {:.4e}", if converged {"converged"} else {"not converged"}, e.re, e.im, gnorm);
         println!("{}", "-".repeat(100));
         println!("Complex coefficients ca:");
         print_array2_indexed(&ca);
