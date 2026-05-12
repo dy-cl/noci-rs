@@ -174,6 +174,7 @@ impl Default for DiisOptions {
 pub struct SCFInfo {
     pub max_cycle: i32,
     pub e_tol: f64,
+    pub fds_sdf_tol: f64,
     pub d_tol: f64,
     pub diis: DiisOptions,
     pub do_fci: bool,
@@ -217,6 +218,7 @@ impl Default for SCFInfo {
         Self {
             max_cycle: 10_000,
             e_tol: 1e-12,
+            fds_sdf_tol: 1e-8,
             d_tol: 1e-4,
             diis: DiisOptions::default(),
             do_fci: false,
@@ -283,6 +285,7 @@ pub struct StateRecipe {
     pub spin_bias: Option<SpinBias>,
     pub spatial_bias: Option<SpatialBias>,
     pub scfexcitation: Option<SCFExcitation>,
+    pub partner: Option<String>,
     pub noci: bool,
     pub holomorphic: bool,
 }
@@ -298,6 +301,7 @@ impl Default for StateRecipe {
             spin_bias: None,
             spatial_bias: None,
             scfexcitation: None,
+            partner: None,
             noci: true,
             holomorphic: false,
         }
@@ -619,6 +623,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
     let label: String = t.get("label").unwrap_or(defaults.label);
     let noci: bool = t.get("noci").unwrap_or(defaults.noci);
     let holomorphic: bool = t.get("holomorphic").unwrap_or(defaults.holomorphic);
+    let partner: Option<String> = t.get("partner").unwrap_or(defaults.partner);
 
     let spin_bias = t.get::<_, Option<Table>>("spin_bias").unwrap_or(None).map(|sb| {
         let defaults = SpinBias::default();
@@ -650,7 +655,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
         }
     });
 
-    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci, holomorphic }
+    StateRecipe {label, spin_bias, spatial_bias, scfexcitation, partner, noci, holomorphic}
 }
 
 /// Read input parameters from lua file and assign to Input object.
@@ -758,6 +763,7 @@ pub fn load_input(path: &str) -> Input {
         SCFInfo {
             max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
             e_tol: scf_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+            fds_sdf_tol: scf_tbl.get("fds_sdf_tol").unwrap_or(defaults.fds_sdf_tol),
             d_tol: scf_tbl.get("d_tol").unwrap_or(defaults.d_tol),
             diis,
             do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),

@@ -203,7 +203,9 @@ pub fn scf_cycle(da0: &Array2<f64>, db0: &Array2<f64>, ao: &AoData, input: &Inpu
             println!("{:4} {:12.6} {:12.4e} {:12.4e} {:12.4e}", iter, e_new, d_e, err, gnorm);
         }
 
-        if d_e < input.scf.e_tol {return Some(finalise(e_new, ca, cb, da_new, db_new, &ea, &eb, &idx_a, &idx_b, ao, input, label, noci_basis, i));}
+        if d_e < input.scf.e_tol && err < input.scf.fds_sdf_tol {
+            return Some(finalise(e_new, ca, cb, da_new, db_new, &ea, &eb, &idx_a, &idx_b, ao, input, label, noci_basis, i));
+        }
 
         da = da_new; db = db_new; e = e_new; iter += 1;
     }

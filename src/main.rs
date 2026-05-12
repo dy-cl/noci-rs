@@ -20,7 +20,7 @@ use noci_rs::time_call;
 
 use noci_rs::input::load_input;
 use noci_rs::read::read_integrals;
-use noci_rs::basis::{generate_reference_hscf_basis, generate_reference_noci_basis, generate_excited_basis};
+use noci_rs::basis::{generate_reference_noci_basis, generate_excited_basis};
 use noci_rs::noci::{build_noci_hs, calculate_noci_energy, build_wicks_shared, build_mo_cache};
 use noci_rs::deterministic::{propagate, projected_energy};
 use noci_rs::stochastic::{qmc_step};
@@ -136,6 +136,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
 
     if run_holomorphic {
         // Create the following on all ranks such that they may be filled by broadcast.
+        let mut states: Vec<SCFState> = Vec::new();
         let mut hstates: Vec<HSCFState> = Vec::new();
         let mut hnoci_reference_basis: Vec<HSCFState> = Vec::new();
 
@@ -144,12 +145,14 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
         // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
         // for multithreading. SCF calculations are currently single threaded. 
         if irank == 0 {
-            // Run h-SCF calculations.
-            hstates = if prev_hstates.is_empty() {
-                generate_reference_hscf_basis(&ao, input, None)
+            let refs = if prev_states.is_empty() && prev_hstates.is_empty() {
+                generate_reference_noci_basis(&ao, input, None, None)
             } else {
-                generate_reference_hscf_basis(&ao, input, Some(prev_hstates))
+                let prev_h = if prev_hstates.is_empty() {None} else {Some(prev_hstates)};
+                generate_reference_noci_basis(&ao, input, Some(prev_states), prev_h)
             };
+            states = refs.states;
+            hstates = refs.hstates;
 
             hnoci_reference_basis = hstates.iter().filter(|s| s.noci_basis).cloned().collect();
             for (i, st) in hnoci_reference_basis.iter_mut().enumerate() {
@@ -158,6 +161,7 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
         }
 
         world.barrier();
+        broadcast(world, &mut states);
         broadcast(world, &mut hstates);
         broadcast(world, &mut hnoci_reference_basis);
 
@@ -199,11 +203,12 @@ fn run(r: f64, atoms: &Atoms, input: &mut Input, prev_states: &[SCFState], prev_
 
         let timings = noci_rs::timers::snapshot_all_mpi(world);
 
+        let e_rhf = states.first().map(|st| st.e).unwrap_or(0.0);
         return Results {
             r,
-            states: Vec::new(),
+            states,
             hstates,
-            e_rhf: 0.0,
+            e_rhf,
             e_noci_ref,
             e_noci_qmc_det: None,
             e_noci_qmc_stoch: None,
@@ -332,9 +337,9 @@ fn run_pyscf(atoms: &Atoms, input: &Input) {
 fn run_scf(ao: &AoData, input: &mut Input, prev_states: &[SCFState]) -> Vec<SCFState> {
     time_call!(crate::timers::general::add_run_scf, {
         if prev_states.is_empty() {
-            generate_reference_noci_basis(ao, input, None)
+            generate_reference_noci_basis(ao, input, None, None).states
         } else {
-            generate_reference_noci_basis(ao, input, Some(prev_states))
+            generate_reference_noci_basis(ao, input, Some(prev_states), None).states
         }
     })
 }
@@ -580,6 +585,13 @@ fn print_report(res: &Results, input: &Input) {
     }
 
     let nthreads = rayon::current_num_threads();
+    let hlabels: Vec<&str> = match &input.states {
+        StateType::Mom(recipes) => recipes.iter()
+            .filter(|recipe| recipe.holomorphic)
+            .map(|recipe| recipe.label.as_str())
+            .collect(),
+        StateType::Metadynamics(_) => Vec::new(),
+    };
 
     let s_pair_total = res.timings.noci.calculate_s_pair;
     let f_pair_total = res.timings.noci.calculate_f_pair;
@@ -857,14 +869,24 @@ fn print_report(res: &Results, input: &Input) {
         println!("R: {}", res.r);
 
     let ref_energy = if res.states.is_empty() {
-        for (i, st) in res.hstates.iter().enumerate() {
+        let hprint: Vec<&HSCFState> = res.hstates.iter()
+            .filter(|st| hlabels.is_empty() || hlabels.contains(&st.label.as_str()))
+            .collect();
+
+        for (i, st) in hprint.iter().enumerate() {
             println!("State({}): {},  E: {} + {}i", i + 1, st.label, st.e.re, st.e.im);
         }
 
-        res.hstates.first().map(|st| (format!("Re(E({}))", st.label), st.e.re))
+        hprint.first().map(|st| (format!("Re(E({}))", st.label), st.e.re))
     } else {
         for (i, st) in res.states.iter().enumerate() {
             println!("State({}): {},  E: {}", i + 1, st.label, st.e);
+        }
+        let hprint: Vec<&HSCFState> = res.hstates.iter()
+            .filter(|st| hlabels.contains(&st.label.as_str()))
+            .collect();
+        for (i, st) in hprint.iter().enumerate() {
+            println!("State({}): {},  E: {} + {}i", res.states.len() + i + 1, st.label, st.e.re, st.e.im);
         }
 
         Some(("E(RHF)".to_string(), res.e_rhf))
@@ -876,7 +898,7 @@ fn print_report(res: &Results, input: &Input) {
         println!("State(NOCI-reference): E: {}", res.e_noci_ref);
     }
 
-    if res.states.is_empty() {
+    if !res.hstates.is_empty() {
         if let Some(e_fci) = res.e_fci {
             if let Some((label, e0)) = ref_energy.as_ref() {
                 println!("State(FCI): E: {}, [E - {}]: {}", e_fci, label, e_fci - e0);

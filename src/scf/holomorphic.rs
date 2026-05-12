@@ -1,5 +1,6 @@
 // scf/holomorphic.rs
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ndarray::{s, Array1, Array2, Axis};
@@ -10,7 +11,7 @@ use crate::{AoData, Excitation, ExcitationSpin, HSCFState, SCFState};
 use crate::input::{HSCFOptions, Input, StateRecipe};
 use crate::scf::DensityMode;
 
-use crate::maths::{symmetric_evp_complex, real2_as, matrix_exp_complex};
+use crate::maths::{complex_metric_orthonormalize, symmetric_evp_complex, real2_as, matrix_exp_complex};
 use super::{density, energy, fock, orbital_energies, orbital_gradient};
 use super::print::print_header_h;
 use crate::utils::print_array2_indexed;
@@ -37,6 +38,16 @@ enum SpinBlock {
     Beta,
 }
 
+/// Outcome of checking whether a holomorphic recipe should use its real partner seed.
+enum PartnerSeed<'a> {
+    /// Recipe has no partner gate.
+    NoPartner,
+    /// Partner exists and collapsed out of the NOCI basis, so h-SCF should be attempted.
+    Use(&'a SCFState),
+    /// Partner gate was present, but h-SCF should not be attempted at this geometry.
+    Skip,
+}
+
 /// Build a complex h-SCF state from a real SCF seed.
 /// # Arguments:
 /// - `seed`: Real SCF state used as the initial h-SCF determinant.
@@ -56,6 +67,221 @@ pub fn hscf_from_real_state(seed: &SCFState, ao: &AoData, input: &Input, label: 
     let cb = real2_as::<Complex64>(&seed.cb).select(Axis(1), &idx_b);
 
     hscf_cycle(&ca, &cb, ao, input, label, noci_basis, i)
+}
+
+/// Check whether two state recipes request opposite spin-bias patterns.
+/// # Arguments
+/// - `a`: First state recipe.
+/// - `b`: Second state recipe.
+/// # Returns
+/// - `bool`: Whether both recipes have spin biases and the patterns are sign opposites.
+fn opposite_spin_bias(a: &StateRecipe, b: &StateRecipe) -> bool {
+    let (Some(sa), Some(sb)) = (&a.spin_bias, &b.spin_bias) else {
+        return false;
+    };
+
+    sa.pattern.len() == sb.pattern.len() && sa.pattern.iter().zip(sb.pattern.iter()).all(|(&x, &y)| x == -y)
+}
+
+/// Construct the spin-flipped partner of an h-SCF state.
+/// # Arguments
+/// - `st`: h-SCF state to spin flip.
+/// - `label`: Label for the spin-flipped state.
+/// - `noci_basis`: Whether the spin-flipped state is used in the NOCI basis.
+/// - `parent`: Reference parent index of the spin-flipped state.
+/// # Returns
+/// - `HSCFState`: State with alpha and beta orbitals, densities, occupations, and phases swapped.
+fn spin_flip_hscf_state(st: &HSCFState, label: &str, noci_basis: bool, parent: usize) -> HSCFState {
+    HSCFState {
+        e: st.e,
+        oa: st.ob,
+        ob: st.oa,
+        pha: st.phb,
+        phb: st.pha,
+        ca: st.cb.clone(),
+        cb: st.ca.clone(),
+        da: st.db.clone(),
+        db: st.da.clone(),
+        label: label.to_string(),
+        noci_basis,
+        parent,
+        excitation: st.excitation.clone(),
+    }
+}
+
+/// Apply the optional h-SCF partner gate for one holomorphic recipe.
+/// # Arguments
+/// - `recipe`: Holomorphic state recipe being considered.
+/// - `input`: User input controlling verbose logging.
+/// - `real_map`: Generated real states keyed by label.
+/// - `recipe_map`: All state recipes keyed by label.
+/// # Returns
+/// - `PartnerSeed`: Whether to skip the h-SCF attempt, proceed without a partner, or use a collapsed partner seed.
+fn hscf_partner_seed<'a>(recipe: &StateRecipe, input: &Input, real_map: &HashMap<&str, &'a SCFState>, recipe_map: &HashMap<&str, &StateRecipe>) -> PartnerSeed<'a> {
+    let Some(label) = recipe.partner.as_deref() else {
+        return PartnerSeed::NoPartner;
+    };
+
+    let partner_state = real_map.get(label).copied();
+    let partner_recipe = recipe_map.get(label).copied();
+    match (partner_state, partner_recipe) {
+        (Some(st), Some(partner_recipe)) if partner_recipe.noci && !st.noci_basis => PartnerSeed::Use(st),
+        (Some(_), Some(partner_recipe)) => {
+            if input.write.verbose {
+                if partner_recipe.noci {
+                    println!("Skipping h-SCF state '{}' because partner '{}' remains in the NOCI basis.", recipe.label, label);
+                } else {
+                    println!("Skipping h-SCF state '{}' because partner '{}' was not requested for the NOCI basis.", recipe.label, label);
+                }
+            }
+            PartnerSeed::Skip
+        }
+        (Some(_), None) => {
+            if input.write.verbose {println!("Skipping h-SCF state '{}' because partner recipe '{}' was not found.", recipe.label, label);}
+            PartnerSeed::Skip
+        }
+        (None, _) => {
+            if input.write.verbose {println!("Skipping h-SCF state '{}' because partner state '{}' was not generated.", recipe.label, label);}
+            PartnerSeed::Skip
+        }
+    }
+}
+
+/// Find a previously generated spin-flipped h-SCF partner for an opposite spin-bias recipe.
+/// # Arguments
+/// - `ao`: AO data containing alpha/beta electron counts.
+/// - `recipes`: All state recipes.
+/// - `recipe`: Current holomorphic recipe.
+/// - `i`: Current recipe index.
+/// - `hstate_index`: Generated h-SCF state indices keyed by recipe label.
+/// # Returns
+/// - `Option<usize>`: Index in the h-SCF output that can be spin-flipped.
+fn hscf_spin_flip_source(ao: &AoData, recipes: &[StateRecipe], recipe: &StateRecipe, i: usize, hstate_index: &HashMap<&str, usize>) -> Option<usize> {
+    if ao.nelec[0] != ao.nelec[1] || recipe.spin_bias.is_none() {
+        return None;
+    }
+
+    recipes.iter()
+        .take(i)
+        .enumerate()
+        .find(|&(_, other)| other.holomorphic && opposite_spin_bias(other, recipe))
+        .and_then(|(j, _)| hstate_index.get(recipes[j].label.as_str()).copied())
+}
+
+/// Select the h-SCF candidate consistent with the recipe's branch preference.
+/// # Arguments
+/// - `recipe`: Holomorphic recipe used to generate the candidates.
+/// - `candidates`: Converged h-SCF candidates.
+/// # Returns
+/// - `HSCFState`: Selected h-SCF state.
+fn select_hscf_candidate(recipe: &StateRecipe, candidates: Vec<HSCFState>) -> HSCFState {
+    if candidates.is_empty() {
+        panic!("No converged h-SCF candidate for '{}'", recipe.label);
+    }
+
+    if recipe.spin_bias.is_some() {
+        candidates.into_iter().min_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap()).unwrap()
+    } else if recipe.spatial_bias.is_some() {
+        candidates.into_iter().max_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap()).unwrap()
+    } else {
+        candidates.into_iter().next().unwrap()
+    }
+}
+
+/// Run h-SCF continuation and fresh-seed attempts for one recipe.
+/// # Arguments
+/// - `ao`: AO data containing integrals and overlap.
+/// - `input`: User input controlling h-SCF options and printing.
+/// - `recipe`: Holomorphic recipe being optimized.
+/// - `seed`: Real SCF state used for fresh h-SCF seeding.
+/// - `prev_map`: Previous h-SCF states keyed by label.
+/// - `i`: Recipe index used as the parent/state index.
+/// # Returns
+/// - `HSCFState`: Selected converged h-SCF state.
+fn run_hscf_state(ao: &AoData, input: &Input, recipe: &StateRecipe, seed: &SCFState, prev_map: &HashMap<&str, &HSCFState>, i: usize) -> HSCFState {
+    let mut candidates: Vec<HSCFState> = Vec::new();
+
+    // Try analytic continuation from the previous geometry.
+    if let Some(st) = prev_map.get(recipe.label.as_str()).copied() {
+        if input.write.verbose {println!("Seeding h-SCF state '{}' from previous complex geometry.", recipe.label);}
+        let ca = complex_metric_orthonormalize(&st.ca, &ao.s);
+        let cb = complex_metric_orthonormalize(&st.cb, &ao.s);
+
+        if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
+            candidates.push(hst);
+        } else if input.write.verbose {
+            println!("Previous-geometry h-SCF seed for '{}' did not converge.", recipe.label);
+        }
+    }
+
+    // Also try the fresh h-SCF seed. This is important because the continuation seed can
+    // collapse onto the real branch near a coalescence, while the imaginary kick can still
+    // recover the holomorphic branch.
+    if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
+        let (ca, cb) = h_seed_orbitals(seed, recipe, ao);
+
+        if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
+            candidates.push(hst);
+        } else if input.write.verbose {
+            println!("Fresh h-SCF seed for '{}' did not converge.", recipe.label);
+        }
+    } else {
+        if let Some(hst) = hscf_from_real_state(seed, ao, input, &recipe.label, recipe.noci, i) {
+            candidates.push(hst);
+        } else if input.write.verbose {
+            println!("Real-state h-SCF seed for '{}' did not converge.", recipe.label);
+        }
+    }
+
+    select_hscf_candidate(recipe, candidates)
+}
+
+/// Build one h-SCF state, including partner gating and spin-flip reuse.
+/// # Arguments
+/// - `ao`: AO data containing integrals and electron counts.
+/// - `input`: User input controlling SCF and h-SCF.
+/// - `recipes`: All state recipes.
+/// - `recipe`: Holomorphic recipe being generated.
+/// - `real_map`: Generated real states keyed by label.
+/// - `recipe_map`: All recipes keyed by label.
+/// - `prev_map`: Previous h-SCF states keyed by label.
+/// - `hstate_index`: Generated h-SCF state indices keyed by recipe label.
+/// - `out`: h-SCF output built so far, including promoted real states.
+/// - `i`: Current recipe index.
+/// - `fallback_seed`: Callback that generates a real MOM seed when no generated real seed exists.
+/// # Returns
+/// - `Option<HSCFState>`: Generated h-SCF state, or `None` when a partner gate says to skip it.
+pub fn build_hscf_state<'a, F>(ao: &AoData, input: &Input, recipes: &[StateRecipe], recipe: &StateRecipe, real_map: &HashMap<&str, &'a SCFState>, recipe_map: &HashMap<&str, &StateRecipe>, prev_map: &HashMap<&str, &HSCFState>, hstate_index: &HashMap<&str, usize>, out: &[HSCFState], i: usize, fallback_seed_fn: F) -> Option<HSCFState>
+where
+    F: FnOnce() -> SCFState,
+{
+    let partner_seed = hscf_partner_seed(recipe, input, real_map, recipe_map);
+    if matches!(partner_seed, PartnerSeed::Skip) {
+        return None;
+    }
+
+    if let Some(j) = hscf_spin_flip_source(ao, recipes, recipe, i, hstate_index) {
+        if input.write.verbose {
+            println!("Constructing h-SCF state '{}' by spin flip of '{}'.", recipe.label, out[j].label);
+        }
+        return Some(spin_flip_hscf_state(&out[j], &recipe.label, recipe.noci, i));
+    }
+
+    let fallback_seed;
+    let seed_label = recipe.partner.as_deref().unwrap_or(recipe.label.as_str());
+    let seed = match partner_seed {
+        PartnerSeed::Use(st) => st,
+        PartnerSeed::NoPartner | PartnerSeed::Skip => {
+            if let Some(st) = real_map.get(seed_label).copied() {
+                st
+            } else {
+                fallback_seed = fallback_seed_fn();
+                &fallback_seed
+            }
+        }
+    };
+
+    Some(run_hscf_state(ao, input, recipe, seed, prev_map, i))
 }
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.
@@ -505,17 +731,15 @@ fn geodesic_step(c: &Array2<Complex64>, p: &Array2<Complex64>, nocc: usize, alph
 /// # Returns:
 /// - `Array2<Complex64>`: Kicked MO coefficient matrix.
 fn perturb_ov(c: &Array2<Complex64>, nocc: usize, theta: Complex64) -> Array2<Complex64> {
-    let n = c.ncols(); 
-    let nrot = nocc.min(n - nocc);
+    let n = c.ncols();
+    let nvir = n - nocc;
 
-    if nrot == 0 || theta.norm() == 0.0 {
+    if nocc == 0 || nvir == 0 || theta.norm() == 0.0 {
         return c.clone();
     }
 
-    let mut p = Array2::<Complex64>::zeros((n - nocc, nocc));
-    for i in 0..nrot {
-        p[(i, i)] = theta;
-    }
+    let mut p = Array2::<Complex64>::zeros((nvir, nocc));
+    p[(0, nocc - 1)] = theta;
 
     geodesic_step(c, &p, nocc, 1.0)
 }

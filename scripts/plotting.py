@@ -19,9 +19,10 @@ MARKERSIZE = 10
 # All required regex goes here.
 ENERGYRREGEX = re.compile(r"^\s*R:\s*([+-]?\d+(?:\.\d+)?)", re.MULTILINE)
 ENERGYSTATEREGEX = re.compile(
-    r"^\s*State\((?P<idx>[^)]+)\):\s*"
+    r"^\s*(?P<hprefix>h-)?State\((?P<idx>[^)]+)\):\s*"
     r"(?:(?P<label>.*?)\s*(?:,\s*)?)?"
-    r"E\s*[:=]\s*(?P<E>[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)",
+    r"E\s*[:=]\s*(?P<E>[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)"
+    r"(?:\s*[+-]\s*[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?i)?",
     re.MULTILINE,
 )
 DETITERREGEX = re.compile(r"iter\s+(\d+)", re.IGNORECASE)
@@ -163,6 +164,9 @@ def readEnergy(path: Path) -> pd.DataFrame:
         for m in ENERGYSTATEREGEX.finditer(block):
             idx = m.group("idx")
             rawLabel = (m.group("label") or "").strip()
+            if m.group("hprefix") and rawLabel and not rawLabel.startswith("h-"):
+                if rawLabel.startswith("RHF") or rawLabel.startswith("UHF"):
+                    rawLabel = f"h-{rawLabel}"
             E = float(m.group("E"))
             label = createEnergyLabel(idx, rawLabel)
             rows.append((R, idx, rawLabel, label, E))
