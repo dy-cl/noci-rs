@@ -145,15 +145,55 @@ pub fn symmetric_evp_complex(a: &Array2<Complex64>) -> (Array1<Complex64>, Array
     for (k, &i) in order.iter().enumerate() {
         e[k] = vals[i];
 
-        let mut col = vecs.column(i).to_owned();
-        let nrm = col.dot(&col).sqrt();
+        u.column_mut(k).assign(&vecs.column(i));
+    }
+
+    transpose_orthonormalize_columns(&mut u);
+
+    (e, u)
+}
+
+/// Modified Gram-Schmidt orthonormalisation in the transpose metric.
+/// # Arguments:
+/// - `u`: Matrix whose columns are orthonormalised in place so that `U^T U = I`.
+/// # Returns:
+/// - `()`: Updates `u` in place.
+fn transpose_orthonormalize_columns(u: &mut Array2<Complex64>) {
+    let nrows = u.nrows();
+    let ncols = u.ncols();
+
+    for j in 0..ncols {
+        let mut col = u.column(j).to_owned();
+
+        for i in 0..j {
+            let qi = u.column(i).to_owned();
+            let proj = qi.dot(&col);
+            col = &col - &qi.mapv(|z| z * proj);
+        }
+
+        let mut nrm = col.dot(&col).sqrt();
+        if nrm.norm() <= 1e-14 {
+            col.fill(Complex64::new(0.0, 0.0));
+            for k in 0..nrows {
+                col[k] = Complex64::new(1.0, 0.0);
+                for i in 0..j {
+                    let qi = u.column(i).to_owned();
+                    let proj = qi.dot(&col);
+                    col = &col - &qi.mapv(|z| z * proj);
+                }
+                nrm = col.dot(&col).sqrt();
+                if nrm.norm() > 1e-14 {
+                    break;
+                }
+                col[k] = Complex64::new(0.0, 0.0);
+            }
+        }
+
         if nrm.norm() > 1e-14 {
             col.mapv_inplace(|z| z / nrm);
         }
-        u.column_mut(k).assign(&col);
+        u.column_mut(j).assign(&col);
     }
-
-    (e, u)
 }
 
 /// Compute a dense complex matrix exponential through diagonalisation.

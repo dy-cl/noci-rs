@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ndarray::{Array1, Array2, Axis, s};
-use ndarray_linalg::Solve;
+use ndarray_linalg::{Eig, Solve};
 use num_complex::Complex64;
 
 use crate::input::{HSCFOptions, Input, StateRecipe};
@@ -129,27 +129,13 @@ where
 
     let seed = match partner_seed {
         PartnerSeed::Use(current_partner) => {
-            if let Some(previous_partner) = recipe
-                .partner
-                .as_deref()
-                .and_then(|label| lookups.real.previous.get(label).copied())
-            {
-                if input.write.verbose {
-                    println!(
-                        "Seeding h-SCF state '{}' from previous real partner '{}'.",
-                        recipe.label, seed_label
-                    );
-                }
-                previous_partner
-            } else {
-                if input.write.verbose {
-                    println!(
-                        "Seeding h-SCF state '{}' from current collapsed partner '{}'.",
-                        recipe.label, seed_label
-                    );
-                }
-                current_partner
+            if input.write.verbose {
+                println!(
+                    "Seeding h-SCF state '{}' from current collapsed partner '{}'.",
+                    recipe.label, seed_label
+                );
             }
+            current_partner
         }
         PartnerSeed::NoPartner | PartnerSeed::Skip => {
             if let Some(st) = lookups.real.current.get(seed_label).copied() {
@@ -217,12 +203,23 @@ fn run_hscf_state(
     // collapse onto the real branch near a coalescence, while the imaginary kick can still
     // recover the holomorphic branch.
     if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
-        let (ca, cb) = h_seed_orbitals(seed, recipe, ao);
+        let scales: &[f64] = if recipe.partner.is_some() {
+            &[0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00]
+        } else {
+            &[0.05]
+        };
 
-        if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
-            candidates.push(hst);
-        } else if input.write.verbose {
-            println!("Fresh h-SCF seed for '{}' did not converge.", recipe.label);
+        for &scale in scales {
+            let (ca, cb) = h_seed_orbitals_with_scale(seed, recipe, ao, scale);
+
+            if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
+                candidates.push(hst);
+            } else if input.write.verbose {
+                println!(
+                    "Fresh h-SCF seed for '{}' at scale {:.3} did not converge.",
+                    recipe.label, scale
+                );
+            }
         }
     } else {
         let (ca, cb) = complex_orbitals_from_real(seed, ao);
@@ -237,7 +234,7 @@ fn run_hscf_state(
         }
     }
 
-    select_hscf_candidate(recipe, candidates)
+    select_hscf_candidate(recipe, seed, input.scf.d_tol, candidates)
 }
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.
@@ -403,6 +400,23 @@ pub fn h_seed_orbitals(
     recipe: &StateRecipe,
     ao: &AoData,
 ) -> (Array2<Complex64>, Array2<Complex64>) {
+    h_seed_orbitals_with_scale(seed, recipe, ao, 0.05)
+}
+
+/// Build initial h-SCF orbitals from a real SCF seed and state recipe with a recovery scale.
+/// # Arguments:
+/// - `seed`: Real SCF seed state.
+/// - `recipe`: State construction recipe.
+/// - `ao`: Contains electron counts and AO metadata.
+/// - `scale`: Minimum imaginary rotation amplitude.
+/// # Returns:
+/// - `(Array2<Complex64>, Array2<Complex64>)`: Alpha and beta h-SCF initial orbitals.
+fn h_seed_orbitals_with_scale(
+    seed: &SCFState,
+    recipe: &StateRecipe,
+    ao: &AoData,
+    scale: f64,
+) -> (Array2<Complex64>, Array2<Complex64>) {
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
 
@@ -410,16 +424,26 @@ pub fn h_seed_orbitals(
 
     if let Some(sb) = &recipe.spin_bias {
         let sgn = sb.pattern.iter().copied().find(|&x| x != 0).unwrap_or(1) as f64;
-        let theta = Complex64::new(0.0, sgn * sb.pol.abs().max(0.05));
-        ca = perturb_ov(&ca, na, theta);
-        cb = perturb_ov(&cb, nb, -theta);
+        let theta = Complex64::new(0.0, sgn * scale);
+        if let Some((pa, pb)) = hessian_mode_perturbation(&ca, &cb, ao, na, nb, theta) {
+            ca = geodesic_step(&ca, &pa, na, 1.0);
+            cb = geodesic_step(&cb, &pb, nb, 1.0);
+        } else {
+            ca = perturb_ov(&ca, na, theta);
+            cb = perturb_ov(&cb, nb, -theta);
+        }
     }
 
     if let Some(spb) = &recipe.spatial_bias {
         let sgn = spb.pattern.iter().copied().find(|&x| x != 0).unwrap_or(1) as f64;
-        let theta = Complex64::new(0.0, sgn * spb.pol.abs().max(0.05));
-        ca = perturb_ov(&ca, na, theta);
-        cb = perturb_ov(&cb, nb, theta);
+        let theta = Complex64::new(0.0, sgn * scale);
+        if let Some((pa, pb)) = hessian_mode_perturbation(&ca, &cb, ao, na, nb, theta) {
+            ca = geodesic_step(&ca, &pa, na, 1.0);
+            cb = geodesic_step(&cb, &pb, nb, 1.0);
+        } else {
+            ca = perturb_ov(&ca, na, theta);
+            cb = perturb_ov(&cb, nb, theta);
+        }
     }
 
     (ca, cb)
@@ -544,10 +568,25 @@ fn opposite_spin_bias(
 /// - `HSCFState`: Selected h-SCF state.
 fn select_hscf_candidate(
     recipe: &StateRecipe,
+    seed: &SCFState,
+    d_tol: f64,
     candidates: Vec<HSCFState>,
 ) -> HSCFState {
     if candidates.is_empty() {
         panic!("No converged h-SCF candidate for '{}'", recipe.label);
+    }
+
+    if recipe.partner.is_some() {
+        let best = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, st)| (i, h_density_distance_from_real(st, seed)))
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        if best.1 > d_tol {
+            return candidates.into_iter().nth(best.0).unwrap();
+        }
     }
 
     if recipe.spin_bias.is_some() {
@@ -563,6 +602,31 @@ fn select_hscf_candidate(
     } else {
         candidates.into_iter().next().unwrap()
     }
+}
+
+/// Distance between an h-SCF candidate and a real seed using holomorphic densities.
+/// # Arguments:
+/// - `h`: Holomorphic candidate.
+/// - `seed`: Real seed state.
+/// # Returns:
+/// - `f64`: Frobenius norm of the alpha/beta density difference.
+fn h_density_distance_from_real(
+    h: &HSCFState,
+    seed: &SCFState,
+) -> f64 {
+    let da0 = real2_as::<Complex64>(&seed.da);
+    let db0 = real2_as::<Complex64>(&seed.db);
+
+    h.da.iter()
+        .zip(da0.iter())
+        .map(|(x, y)| (*x - *y).norm_sqr())
+        .chain(
+            h.db.iter()
+                .zip(db0.iter())
+                .map(|(x, y)| (*x - *y).norm_sqr()),
+        )
+        .sum::<f64>()
+        .sqrt()
 }
 
 /// Build occupied-first complex orbitals from a real SCF seed.
@@ -867,6 +931,37 @@ fn finite_difference_newton_step(
     gb: &Array2<Complex64>,
 ) -> Option<(Array2<Complex64>, Array2<Complex64>)> {
     let g0 = pack(ga, gb);
+    let h = finite_difference_hessian(ca, cb, ao, na, nb, ga, gb);
+    let rhs = g0.mapv(|z| -z);
+    let p = h.solve_into(rhs).ok()?;
+    Some(unpack(
+        &p,
+        (ga.nrows(), ga.ncols()),
+        (gb.nrows(), gb.ncols()),
+    ))
+}
+
+/// Build a finite-difference internal h-SCF Hessian in occupied-virtual coordinates.
+/// # Arguments:
+/// - `ca`: Current alpha-spin MO coefficients.
+/// - `cb`: Current beta-spin MO coefficients.
+/// - `ao`: AO data.
+/// - `na`: Number of occupied alpha-spin orbitals.
+/// - `nb`: Number of occupied beta-spin orbitals.
+/// - `ga`: Current alpha-spin occupied-virtual gradient.
+/// - `gb`: Current beta-spin occupied-virtual gradient.
+/// # Returns:
+/// - `Array2<Complex64>`: Finite-difference Jacobian of the h-SCF gradient.
+fn finite_difference_hessian(
+    ca: &Array2<Complex64>,
+    cb: &Array2<Complex64>,
+    ao: &AoData,
+    na: usize,
+    nb: usize,
+    ga: &Array2<Complex64>,
+    gb: &Array2<Complex64>,
+) -> Array2<Complex64> {
+    let g0 = pack(ga, gb);
     let n = g0.len();
     let eps = 1.0e-4;
     let mut h = Array2::<Complex64>::zeros((n, n));
@@ -906,13 +1001,7 @@ fn finite_difference_newton_step(
         h.column_mut(j).assign(&dg);
     }
 
-    let rhs = g0.mapv(|z| -z);
-    let p = h.solve_into(rhs).ok()?;
-    Some(unpack(
-        &p,
-        (ga.nrows(), ga.ncols()),
-        (gb.nrows(), gb.ncols()),
-    ))
+    h
 }
 
 /// Apply or remove pseudo-canonical orbital-gap weighting:
@@ -1021,6 +1110,73 @@ fn geodesic_step(
     }
 
     c.dot(&matrix_exp_complex(&k))
+}
+
+/// Build a RevQCMagic-style complex recovery kick along the softest h-SCF Hessian mode.
+/// # Arguments:
+/// - `ca0`: Initial alpha-spin MO coefficients ordered as occupied then virtual.
+/// - `cb0`: Initial beta-spin MO coefficients ordered as occupied then virtual.
+/// - `ao`: AO data.
+/// - `na`: Number of occupied alpha-spin orbitals.
+/// - `nb`: Number of occupied beta-spin orbitals.
+/// - `theta`: Imaginary rotation amplitude including the requested branch sign.
+/// # Returns:
+/// - `Option<(Array2<Complex64>, Array2<Complex64>)>`: Alpha and beta OV rotations.
+fn hessian_mode_perturbation(
+    ca0: &Array2<Complex64>,
+    cb0: &Array2<Complex64>,
+    ao: &AoData,
+    na: usize,
+    nb: usize,
+    theta: Complex64,
+) -> Option<(Array2<Complex64>, Array2<Complex64>)> {
+    if theta.norm() == 0.0 {
+        return None;
+    }
+
+    let mut ca = ca0.clone();
+    let mut cb = cb0.clone();
+    let mut hist: Vec<SecantPair> = Vec::new();
+    let mut extra: Vec<&mut Array2<Complex64>> = Vec::new();
+
+    let da = density(&ca, na, DensityMode::Holomorphic);
+    let db = density(&cb, nb, DensityMode::Holomorphic);
+    let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+    pseudo_canonicalise(&mut ca, &fa, na, &mut hist, SpinBlock::Alpha, &mut extra);
+    pseudo_canonicalise(&mut cb, &fb, nb, &mut hist, SpinBlock::Beta, &mut extra);
+
+    let da = density(&ca, na, DensityMode::Holomorphic);
+    let db = density(&cb, nb, DensityMode::Holomorphic);
+    let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+    let ga = orbital_gradient(&ca, &fa, na, DensityMode::Holomorphic);
+    let gb = orbital_gradient(&cb, &fb, nb, DensityMode::Holomorphic);
+
+    let h = finite_difference_hessian(&ca, &cb, ao, na, nb, &ga, &gb);
+    if h.nrows() == 0 {
+        return None;
+    }
+
+    let (vals, vecs) = h.eig().ok()?;
+    let mode = vals
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.norm().partial_cmp(&b.norm()).unwrap())?
+        .0;
+
+    let mut v = vecs.column(mode).to_owned();
+    let nrm = v.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+    if nrm <= 1.0e-14 {
+        return None;
+    }
+    v.mapv_inplace(|z| z / nrm);
+
+    let phase = -theta;
+    let p = v.mapv(|z| z * phase);
+    Some(unpack(
+        &p,
+        (ga.nrows(), ga.ncols()),
+        (gb.nrows(), gb.ncols()),
+    ))
 }
 
 /// Apply an imaginary occupied-virtual perturbation to initialise a complex h-SCF branch.
