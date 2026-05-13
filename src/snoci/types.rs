@@ -27,7 +27,7 @@ pub struct SNOCIState {
 }
 
 /// Result of a GMRES linear solve.
-pub(in crate::snoci) struct GMRES {
+pub(in crate::snoci) struct GMRESResult {
     /// Approximate solution vector.
     pub(in crate::snoci) x: Array1<f64>,
     /// Root-mean-square residual norm.

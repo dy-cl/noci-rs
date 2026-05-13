@@ -7,6 +7,7 @@ use mpi::topology::Communicator;
 use ndarray::Array2;
 
 use crate::input::Input;
+use crate::input::Spin;
 use crate::mpiutils::Sharedffi;
 use crate::nonorthogonalwicks::{
     DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WicksDiskMeta, WicksRma,
@@ -39,39 +40,9 @@ fn build_wicks_pair<T: NOCIScalar>(
     DiffSpinBuild<T>,
     PairMeta<T>,
 ) {
-    let aa = SameSpinBuild::new(
-        &ao.eri_coul,
-        &ao.h,
-        &ao.s,
-        &rj.ca,
-        &ri.ca,
-        rj.oa,
-        ri.oa,
-        tol,
-    );
-    let bb = SameSpinBuild::new(
-        &ao.eri_coul,
-        &ao.h,
-        &ao.s,
-        &rj.cb,
-        &ri.cb,
-        rj.ob,
-        ri.ob,
-        tol,
-    );
-    let ab = DiffSpinBuild::new(
-        &ao.eri_coul,
-        &ao.s,
-        &rj.ca,
-        &rj.cb,
-        &ri.ca,
-        &ri.cb,
-        rj.oa,
-        rj.ob,
-        ri.oa,
-        ri.ob,
-        tol,
-    );
+    let aa = SameSpinBuild::new(ao, rj, ri, Spin::Alpha, tol);
+    let bb = SameSpinBuild::new(ao, rj, ri, Spin::Beta, tol);
+    let ab = DiffSpinBuild::new(ao, rj, ri, tol);
 
     let meta = PairMeta {
         aa: SameSpinMeta {

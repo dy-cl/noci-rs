@@ -1,14 +1,17 @@
 // nonorthogonalwicks/eval/h2same.rs
-use super::super::layout::{idx, idx4};
+
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
+use super::helpers::{DetIndex, Minor, ReplacementLayout};
+use crate::ExcitationSpin;
+use crate::noci::NOCIScalar;
+use crate::time_call;
+
+use super::super::layout::{idx, idx4};
 use super::helpers::{
     bit, column_replacement_correction, get_det_adjt_same, j_replacement, jslot, minor_adjt,
 };
-use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
-use crate::noci::NOCIScalar;
-use crate::time_call;
 
 /// Calculate the same-spin two-electron Hamiltonian matrix element between two determinants
 /// |{}^\Lambda \Psi\rangle and |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's
@@ -225,7 +228,7 @@ fn lg_h2_same_m0_l3<T: NOCIScalar>(
                     let j10 = jsl[idx4(n, ri, cj, rows[ra1], cols[cb0])];
                     let j11 = jsl[idx4(n, ri, cj, rows[ra1], cols[cb1])];
 
-                    jterm = jterm + phase * (m11 * j00 - m10 * j01 - m01 * j10 + m00 * j11);
+                    jterm += phase * (m11 * j00 - m10 * j01 - m01 * j10 + m00 * j11);
                 }
             }
 
@@ -281,10 +284,15 @@ fn lg_h2_same_m0_gen<T: NOCIScalar>(
                     column_replacement_correction(l, det0, scratch.adjt_det.as_slice(), k, |r| {
                         vsl[base + scratch.rows[r]]
                     });
-                contrib = contrib - <T as From<f64>>::from(2.0) * (det_det + corr);
+                contrib -= <T as From<f64>>::from(2.0) * (det_det + corr);
             }
 
             let jsl = w.j_slice(0);
+            let layout = ReplacementLayout {
+                n,
+                rows: scratch.rows.as_slice(),
+                cols: scratch.cols.as_slice(),
+            };
 
             for i in 0..l {
                 for j in 0..l {
@@ -298,13 +306,9 @@ fn lg_h2_same_m0_gen<T: NOCIScalar>(
 
                     minor_adjt(
                         det0,
-                        l,
-                        i,
-                        j,
+                        Minor { l, row: i, col: j },
                         &mut scratch.det_mix2,
                         &mut scratch.adjt_det2,
-                        &mut scratch.invslm1,
-                        &mut scratch.lu,
                         tol,
                         |lm1, det_minor, cof_minor, det_det2| {
                             for k2 in 0..lm1 {
@@ -316,27 +320,25 @@ fn lg_h2_same_m0_gen<T: NOCIScalar>(
                                     |r| {
                                         j_replacement(
                                             jsl,
-                                            n,
-                                            scratch.rows.as_slice(),
-                                            scratch.cols.as_slice(),
-                                            i,
-                                            j,
-                                            r,
-                                            k2,
-                                            ri_fixed,
-                                            cj_fixed,
+                                            layout,
+                                            DetIndex { row: i, col: j },
+                                            DetIndex { row: r, col: k2 },
+                                            DetIndex {
+                                                row: ri_fixed,
+                                                col: cj_fixed,
+                                            },
                                             false,
                                         )
                                     },
                                 );
-                                contrib = contrib + phase * (det_det2 + corr);
+                                contrib += phase * (det_det2 + corr);
                             }
                         },
                     );
                 }
             }
 
-            acc = acc + contrib;
+            acc += contrib;
         }
 
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
@@ -390,8 +392,14 @@ fn lg_h2_same_gen<T: NOCIScalar>(
                     k,
                     |r| vsl[base + scratch.rows[r]],
                 );
-                contrib = contrib - <T as From<f64>>::from(2.0) * (det_det + corr);
+                contrib -= <T as From<f64>>::from(2.0) * (det_det + corr);
             }
+
+            let layout = ReplacementLayout {
+                n,
+                rows: scratch.rows.as_slice(),
+                cols: scratch.cols.as_slice(),
+            };
 
             for i in 0..l {
                 for j in 0..l {
@@ -406,13 +414,9 @@ fn lg_h2_same_gen<T: NOCIScalar>(
 
                     minor_adjt(
                         scratch.det_mix.as_slice(),
-                        l,
-                        i,
-                        j,
+                        Minor { l, row: i, col: j },
                         &mut scratch.det_mix2,
                         &mut scratch.adjt_det2,
-                        &mut scratch.invslm1,
-                        &mut scratch.lu,
                         tol,
                         |lm1, det_minor, cof_minor, det_det2| {
                             for k2 in 0..lm1 {
@@ -430,27 +434,25 @@ fn lg_h2_same_gen<T: NOCIScalar>(
                                     |r| {
                                         j_replacement(
                                             jsl,
-                                            n,
-                                            scratch.rows.as_slice(),
-                                            scratch.cols.as_slice(),
-                                            i,
-                                            j,
-                                            r,
-                                            k2,
-                                            ri_fixed,
-                                            cj_fixed,
+                                            layout,
+                                            DetIndex { row: i, col: j },
+                                            DetIndex { row: r, col: k2 },
+                                            DetIndex {
+                                                row: ri_fixed,
+                                                col: cj_fixed,
+                                            },
                                             swap,
                                         )
                                     },
                                 );
 
-                                contrib = contrib + phase * (det_det2 + corr);
+                                contrib += phase * (det_det2 + corr);
                             }
                         },
                     );
                 }
             }
-            acc = acc + contrib;
+            acc += contrib;
         });
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })

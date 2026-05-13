@@ -214,10 +214,10 @@ pub(in crate::stochastic) fn initialise_qmc_state(
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
     isref: &[bool],
-    world: &impl Communicator,
     scratch: &mut WickScratchSpin<f64>,
-    mpiscratch: &mut MPIScratch,
+    mpi: (&impl Communicator, &mut MPIScratch),
 ) -> PropagationState {
+    let (world, mpiscratch) = mpi;
     let qmc = data.input.qmc.as_ref().unwrap();
     // Use restart file if avaliable.
     if let Some(path) = data.input.write.read_restart.as_deref() {

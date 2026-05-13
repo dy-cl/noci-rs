@@ -262,13 +262,14 @@ pub(in crate::snoci) fn apply_candidate_m(
                 .map(|a| {
                     let mut ya = 0.0;
 
-                    for b in 0..a {
+                    for (b, _) in xs.iter().enumerate().take(a) {
                         let k = b * (2 * n - b + 1) / 2 + (a - b);
                         ya += m[k] * xs[b];
                     }
 
                     let row = a * (2 * n - a + 1) / 2;
-                    for b in a..n {
+
+                    for (b, _) in xs.iter().enumerate().take(n).skip(a) {
                         let k = row + (b - a);
                         ya += m[k] * xs[b];
                     }

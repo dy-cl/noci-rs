@@ -209,15 +209,16 @@ pub fn write_orbitals(
     path: &str,
     ao: &AoData,
     label: &str,
-    ca: &Array2<f64>,
-    cb: &Array2<f64>,
-    ea: &Array1<f64>,
-    eb: &Array1<f64>,
-    oa: &Array1<f64>,
-    ob: &Array1<f64>,
-    da: &Array2<f64>,
-    db: &Array2<f64>,
+    c: (&Array2<f64>, &Array2<f64>),
+    e: (&Array1<f64>, &Array1<f64>),
+    occ: (&[f64], &[f64]),
+    d: (&Array2<f64>, &Array2<f64>),
 ) {
+    let (ca, cb) = c;
+    let (ea, eb) = e;
+    let (oa, ob) = occ;
+    let (da, db) = d;
+
     let f = File::create(path).unwrap();
 
     let vlabel: VarLenUnicode = label.parse().unwrap();

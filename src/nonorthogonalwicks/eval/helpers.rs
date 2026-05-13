@@ -1,4 +1,5 @@
 // nonorthogonalwicks/eval/helpers.rs
+
 use ndarray::Array2;
 use ndarray_linalg::Determinant;
 
@@ -7,8 +8,48 @@ use crate::noci::NOCIScalar;
 use crate::time_call;
 
 use super::super::layout::{idx, idx4};
-use super::super::scratch::{Vec1, Vec2, WickScratch};
+use super::super::scratch::{Vec2, WickScratch};
 use super::super::view::{SameSpinView, WicksPairView};
+
+/// Row and column layout for determinant replacement operations.
+#[derive(Clone, Copy)]
+pub(super) struct ReplacementLayout<'a> {
+    /// Tensor dimension.
+    pub n: usize,
+    /// Full contraction-determinant row labels.
+    pub rows: &'a [usize],
+    /// Full contraction-determinant column labels.
+    pub cols: &'a [usize],
+}
+
+/// Row and column index in a determinant-like matrix.
+#[derive(Clone, Copy)]
+pub(super) struct DetIndex {
+    /// Row index.
+    pub row: usize,
+    /// Column index.
+    pub col: usize,
+}
+
+/// Branch-zero and branch-one determinant slices.
+#[derive(Clone, Copy)]
+pub(super) struct DetBranches<'a, T> {
+    /// Branch-zero determinant.
+    pub zero: &'a [T],
+    /// Branch-one determinant.
+    pub one: &'a [T],
+}
+
+/// Minor obtained by deleting one row and one column.
+#[derive(Clone, Copy)]
+pub(super) struct Minor {
+    /// Dimension of the full determinant.
+    pub l: usize,
+    /// Row to remove.
+    pub row: usize,
+    /// Column to remove.
+    pub col: usize,
+}
 
 /// Calculate determinant of a row-major square matrix slice.
 /// # Arguments:
@@ -76,74 +117,58 @@ pub(super) fn jslot(
 /// Read one entry from the required minor-column of same-spin `J`.
 /// # Arguments:
 /// - `jsl`: Flat row-major storage of `J`.
-/// - `n`: Tensor dimension.
-/// - `rows`: Full contraction-determinant row labels.
-/// - `cols`: Full contraction-determinant column labels.
-/// - `i_rm`: Removed row index in the full `l x l` slice.
-/// - `j_rm`: Removed column index in the full `l x l` slice.
-/// - `r_minor`: Row index in the `(l - 1) x (l - 1)` minor.
-/// - `k_minor`: Column index in the `(l - 1) x (l - 1)` minor.
-/// - `i_fixed`: Fixed tensor index for the packed first axis.
-/// - `j_fixed`: Fixed tensor index for the packed second axis.
+/// - `layout`: Tensor dimension and determinant row/column labels.
+/// - `removed`: Removed row and column indices in the full `l x l` slice.
+/// - `minor`: Row and column indices in the `(l - 1) x (l - 1)` minor.
+/// - `fixed`: Fixed tensor indices for the packed first and second axes.
 /// - `swap`: Whether to use the swapped logical access.
 /// # Returns
 /// - `T`: Requested entry of the minor-column.
 #[inline(always)]
 pub(super) fn j_replacement<T: NOCIScalar>(
     jsl: &[T],
-    n: usize,
-    rows: &[usize],
-    cols: &[usize],
-    i_rm: usize,
-    j_rm: usize,
-    r_minor: usize,
-    k_minor: usize,
-    i_fixed: usize,
-    j_fixed: usize,
+    layout: ReplacementLayout<'_>,
+    removed: DetIndex,
+    minor: DetIndex,
+    fixed: DetIndex,
     swap: bool,
 ) -> T {
-    let r_full = minor_to_full(r_minor, i_rm);
-    let k_full = minor_to_full(k_minor, j_rm);
-    let rr = rows[r_full];
-    let cc = cols[k_full];
+    let r_full = minor_to_full(minor.row, removed.row);
+    let k_full = minor_to_full(minor.col, removed.col);
+    let rr = layout.rows[r_full];
+    let cc = layout.cols[k_full];
+
     if !swap {
-        jsl[idx4(n, i_fixed, j_fixed, rr, cc)]
+        jsl[idx4(layout.n, fixed.row, fixed.col, rr, cc)]
     } else {
-        jsl[idx4(n, rr, cc, i_fixed, j_fixed)]
+        jsl[idx4(layout.n, rr, cc, fixed.row, fixed.col)]
     }
 }
 
 /// Read one entry from the required replacement column of different-spin `IIab`.
 /// # Arguments:
 /// - `iisl`: Flat row-major storage of `IIab`.
-/// - `n`: Tensor dimension.
-/// - `rows`: Full contraction-determinant row labels.
-/// - `cols`: Full contraction-determinant column labels.
-/// - `r_full`: Row index in the full determinant column being corrected.
-/// - `k_full`: Column index in the full determinant column being corrected.
-/// - `i_fixed`: First fixed tensor index.
-/// - `j_fixed`: Second fixed tensor index.
+/// - `layout`: Tensor dimension and determinant row/column labels.
+/// - `entry`: Row and column indices in the full determinant column being corrected.
+/// - `fixed`: Fixed tensor indices.
 /// - `ijrc`: Whether to read the tensor as `t[i, j, r, c]` instead of `t[r, c, i, j]`.
 /// # Returns
 /// - `T`: Requested entry of the replacement column.
 #[inline(always)]
 pub(super) fn ii_replacement<T: NOCIScalar>(
     iisl: &[T],
-    n: usize,
-    rows: &[usize],
-    cols: &[usize],
-    r_full: usize,
-    k_full: usize,
-    i_fixed: usize,
-    j_fixed: usize,
+    layout: ReplacementLayout<'_>,
+    entry: DetIndex,
+    fixed: DetIndex,
     ijrc: bool,
 ) -> T {
-    let rr = rows[r_full];
-    let cc = cols[k_full];
+    let rr = layout.rows[entry.row];
+    let cc = layout.cols[entry.col];
+
     if ijrc {
-        iisl[idx4(n, i_fixed, j_fixed, rr, cc)]
+        iisl[idx4(layout.n, fixed.row, fixed.col, rr, cc)]
     } else {
-        iisl[idx4(n, rr, cc, i_fixed, j_fixed)]
+        iisl[idx4(layout.n, rr, cc, fixed.row, fixed.col)]
     }
 }
 
@@ -213,7 +238,7 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
 /// - `w`: Same-spin view containing the number of zero-overlap pairs `m`.
 /// - `l`: Excitation rank.
 /// - `pbits`: Number of leading bits reserved for operator-specific selectors
-/// before the determinant-column bits begin.
+///   before the determinant-column bits begin.
 /// - `scratch`: Wick's scratch space containing `det0`, `det1`, and `det_mix`.
 /// - `f`: Closure applied once for each mixed determinant.
 /// # Returns
@@ -305,30 +330,36 @@ pub(super) fn get_det_adjt_same<T: NOCIScalar>(
 /// bitstring. Mixes determinants for each bitstring and calls determinant routines.
 /// # Arguments:
 /// - `w`: Diff-spin pair Wick's view.
-/// - `l`: Determinant dimension.
-/// - `pbits`: Number of non-column selector bits at the front of the bitstring.
+/// - `rank`: Alpha and beta determinant dimensions.
 /// - `scratch`: Scratch space for mixed determinant, inverse workspace, and cofactors.
+/// - `deta`: Branch-zero and branch-one alpha determinants.
+/// - `detb`: Branch-zero and branch-one beta determinants.
 /// - `tol`: Singularity threshold.
-/// - `f`: Closure receiving the packed bitstring, scratch space, and determinant value.
+/// - `f`: Closure receiving the packed alpha/beta bitstrings, scratch space, and determinant values.
 /// # Returns
 /// - `()`: Calls `f` only for nonsingular mixed determinants.
 #[inline(always)]
 pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    la: usize,
-    lb: usize,
+    rank: (usize, usize),
     scratch: &mut WickScratch<T>,
-    deta0: &[T],
-    deta1: &[T],
-    detb0: &[T],
-    detb1: &[T],
+    deta: DetBranches<'_, T>,
+    detb: DetBranches<'_, T>,
     tol: f64,
     mut f: impl FnMut(u64, u64, &mut WickScratch<T>, T, T),
 ) {
+    let (la, lb) = rank;
+
     time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_diff, {
         for_each_m_combination(la + 1, w.aa.m, |bits_a| {
             let inda = bits_a >> 1;
-            mix_columns(scratch.deta_mix.as_mut_slice(), deta0, deta1, la, inda);
+            mix_columns(
+                scratch.deta_mix.as_mut_slice(),
+                deta.zero,
+                deta.one,
+                la,
+                inda,
+            );
             if let Some(det_a) = adjugate_transpose_generic(
                 scratch.adjt_deta.as_mut_slice(),
                 scratch.deta_mix.as_slice(),
@@ -337,7 +368,13 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
             ) {
                 for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
                     let indb = bits_b >> 1;
-                    mix_columns(scratch.detb_mix.as_mut_slice(), detb0, detb1, lb, indb);
+                    mix_columns(
+                        scratch.detb_mix.as_mut_slice(),
+                        detb.zero,
+                        detb.one,
+                        lb,
+                        indb,
+                    );
                     if let Some(det_b) = adjugate_transpose_generic(
                         scratch.adjt_detb.as_mut_slice(),
                         scratch.detb_mix.as_slice(),
@@ -355,13 +392,9 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
 /// Form the `l - 1` by `l - 1` minor of a determinant and find its adjugate transpose.
 /// # Arguments:
 /// - `full`: Row-major storage of the determinant.
-/// - `l`: Dimension of the determinant.
-/// - `i`: Row to remove.
-/// - `j`: Column to remove.
+/// - `minor`: Dimension and removed row/column of the minor.
 /// - `minorb`: Scratch storage for the minor determinant.
 /// - `adjtb`: Scratch storage for the adjugate-transpose of the minor.
-/// - `invsb`: Scratch storage for inverse-related data.
-/// - `lun`: Scratch storage for the LU factorization.
 /// - `tol`: Singularity threshold.
 /// - `f`: Closure receiving the minor dimension, minor entries, cofactors, and determinant.
 /// # Returns
@@ -369,18 +402,14 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
 #[inline(always)]
 pub(super) fn minor_adjt<T: NOCIScalar>(
     full: &[T],
-    l: usize,
-    i: usize,
-    j: usize,
+    minor: Minor,
     minorb: &mut Vec2<T>,
     adjtb: &mut Vec2<T>,
-    _invsb: &mut Vec1<f64>,
-    _lub: &mut Vec2<T>,
     tol: f64,
     mut f: impl FnMut(usize, &[T], &[T], T),
 ) {
-    let lm1 = l.saturating_sub(1);
-    minor_generic(minorb.as_mut_slice(), full, l, i, j);
+    let lm1 = minor.l.saturating_sub(1);
+    minor_generic(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
     if let Some(det_minor) =
         adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
     {

@@ -21,8 +21,11 @@ struct ExpectedReferenceNoci {
 fn run_reference_noci_fixture(fixture: &str) -> (Vec<f64>, f64) {
     let (mut input, ao, _expected): (_, _, ExpectedReferenceNoci) = load_test(fixture);
 
-    let states = generate_reference_noci_basis(&ao, &mut input, None);
+    let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
+    let states = basis.states;
+
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
+
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let mut basis: Vec<_> = states.into_iter().filter(|s| s.noci_basis).collect();
@@ -30,7 +33,7 @@ fn run_reference_noci_fixture(fixture: &str) -> (Vec<f64>, f64) {
         st.parent = i;
     }
 
-    let mocache = build_mo_cache(&ao, &basis);
+    let mocache = build_mo_cache(&ao, &basis, input.scf.d_tol);
     let (e_ref, _coeffs, _dt_hs) =
         calculate_noci_energy(&ao, &input, &basis, 1e-12, &mocache, None);
 

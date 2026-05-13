@@ -9,7 +9,7 @@ use ndarray::{Array1, Array2, Axis};
 use super::diis::Diis;
 use super::kernels::DensityMode;
 use crate::input::{Input, SCFExcitation, Spin, StateType};
-use crate::{AoData, Excitation, ExcitationSpin, SCFState};
+use crate::{AoData, Excitation, SCFState};
 
 use super::bias::metadynamics_bias;
 use super::kernels::{density, energy, fock, orbital_gradient};
@@ -122,108 +122,59 @@ fn spin_square(
     sz * (sz + 1.0) + nbs - trdasdbs
 }
 
-/// Finalise a converged SCF state.
-/// Prints orbital information, writes orbital data if requested, and creates the SCFState.
+/// Print and write a converged SCF state.
 /// # Arguments
-/// - `e`: Converged SCF energy.
-/// - `ca`: Alpha-spin MO coefficient matrix.
-/// - `cb`: Beta-spin MO coefficient matrix.
-/// - `da`: Alpha-spin density matrix.
-/// - `db`: Beta-spin density matrix.
+/// - `state`: Converged SCF state.
 /// - `ea`: Alpha-spin MO energies.
 /// - `eb`: Beta-spin MO energies.
-/// - `idx_a`: Occupied alpha MO indices.
-/// - `idx_b`: Occupied beta MO indices.
 /// - `ao`: Contains AO integrals and metadata.
 /// - `input`: Contains user specified input data.
-/// - `label`: Label for current SCF state.
-/// - `noci_basis`: Whether or not to use this state in the NOCI basis.
-/// - `i`: Index of the SCF state.
 /// # Returns
 /// - `SCFState`: Converged SCF state.
 fn finalise(
-    e: f64,
-    ca: Array2<f64>,
-    cb: Array2<f64>,
-    da: Array2<f64>,
-    db: Array2<f64>,
+    state: SCFState,
     ea: &Array1<f64>,
     eb: &Array1<f64>,
-    idx_a: &[usize],
-    idx_b: &[usize],
     ao: &AoData,
     input: &Input,
-    label: &str,
-    noci_basis: bool,
-    i: usize,
 ) -> SCFState {
-    let oaprint = mo_occupancies(&ca, &da, &ao.s);
-    let obprint = mo_occupancies(&cb, &db, &ao.s);
+    let oaprint = mo_occupancies(state.ca.as_ref(), state.da.as_ref(), &ao.s);
+    let obprint = mo_occupancies(state.cb.as_ref(), state.db.as_ref(), &ao.s);
+
     print_mos("Alpha MOs", ea, &oaprint);
     print_mos("Beta MOs", eb, &obprint);
     println!("{}", "-".repeat(100));
     println!("Coefficients ca:");
-    print_array2_indexed(&ca);
+    print_array2_indexed(state.ca.as_ref());
     println!("Coefficients cb:");
-    print_array2_indexed(&cb);
-    println!("<S^2>: {}", spin_square(&da, &db, &ao.s));
-
-    let ca = Arc::new(ca);
-    let cb = Arc::new(cb);
-    let da = Arc::new(da);
-    let db = Arc::new(db);
+    print_array2_indexed(state.cb.as_ref());
+    println!(
+        "<S^2>: {}",
+        spin_square(state.da.as_ref(), state.db.as_ref(), &ao.s)
+    );
 
     if input.write.write_orbitals {
         let orbitalsdir: PathBuf = Path::new(&input.write.write_dir).join("orbitals");
         let _ = fs::create_dir_all(&orbitalsdir);
-        let labelstr = label
+        let labelstr = state
+            .label
             .replace([' ', ','], "_")
             .replace(['(', ')'], "")
             .replace('/', "_");
         let fname = orbitalsdir.join(format!("{labelstr}orbitals.h5"));
+
         write_orbitals(
             fname.to_str().unwrap(),
             ao,
-            label,
-            ca.as_ref(),
-            cb.as_ref(),
-            ea,
-            eb,
-            &oaprint,
-            &obprint,
-            da.as_ref(),
-            db.as_ref(),
+            &state.label,
+            (state.ca.as_ref(), state.cb.as_ref()),
+            (ea, eb),
+            (oaprint.as_slice().unwrap(), obprint.as_slice().unwrap()),
+            (state.da.as_ref(), state.db.as_ref()),
         );
     }
 
-    let oa = occvec_to_bits(idx_a);
-    let ob = occvec_to_bits(idx_b);
-    let excitation = Excitation {
-        alpha: ExcitationSpin {
-            holes: vec![],
-            parts: vec![],
-        },
-        beta: ExcitationSpin {
-            holes: vec![],
-            parts: vec![],
-        },
-    };
-
-    SCFState {
-        e,
-        oa,
-        ob,
-        pha: 1.0,
-        phb: 1.0,
-        ca,
-        cb,
-        da,
-        db,
-        label: label.to_string(),
-        noci_basis,
-        parent: i,
-        excitation,
-    }
+    state
 }
 
 /// Unrestricted SCF cycle.
@@ -241,16 +192,17 @@ fn finalise(
 /// # Returns
 /// - `Option<SCFState>`: Converged SCF state if the SCF cycle succeeds, otherwise `None`.
 pub fn scf_cycle(
-    da0: &Array2<f64>,
-    db0: &Array2<f64>,
+    d0: (&Array2<f64>, &Array2<f64>),
     ao: &AoData,
     input: &Input,
     label: &str,
     noci_basis: bool,
-    scfexcitation: Option<&SCFExcitation>,
     i: usize,
-    biases: Option<&[SCFState]>,
+    controls: (Option<&SCFExcitation>, Option<&[SCFState]>),
 ) -> Option<SCFState> {
+    let (da0, db0) = d0;
+    let (scfexcitation, biases) = controls;
+
     let h = &ao.h;
     let eri = &ao.eri_coul;
     let s = &ao.s;
@@ -280,12 +232,12 @@ pub fn scf_cycle(
     while iter < input.scf.max_cycle {
         let (mut fa_curr, mut fb_curr) = fock(h, eri, &da, &db);
 
-        if let (Some(bias_states), Some(lambda)) = (biases, lambda) {
-            if !bias_states.is_empty() {
-                let (ba, bb) = metadynamics_bias(&da, &db, ao, bias_states, lambda);
-                fa_curr = fa_curr + ba;
-                fb_curr = fb_curr + bb;
-            }
+        if let (Some(bias_states), Some(lambda)) = (biases, lambda)
+            && !bias_states.is_empty()
+        {
+            let (ba, bb) = metadynamics_bias(&da, &db, ao, bias_states, lambda);
+            fa_curr = fa_curr + ba;
+            fb_curr = fb_curr + bb;
         }
 
         if use_diis {
@@ -331,10 +283,22 @@ pub fn scf_cycle(
         }
 
         if d_e < input.scf.e_tol && err < input.scf.fds_sdf_tol {
-            return Some(finalise(
-                e_new, ca, cb, da_new, db_new, &ea, &eb, &idx_a, &idx_b, ao, input, label,
-                noci_basis, i,
-            ));
+            let state = SCFState {
+                e: e_new,
+                oa: occvec_to_bits(&idx_a),
+                ob: occvec_to_bits(&idx_b),
+                pha: 1.0,
+                phb: 1.0,
+                ca: Arc::new(ca),
+                cb: Arc::new(cb),
+                da: Arc::new(da_new),
+                db: Arc::new(db_new),
+                label: label.to_string(),
+                noci_basis,
+                parent: i,
+                excitation: Excitation::empty(),
+            };
+            return Some(finalise(state, &ea, &eb, ao, input));
         }
 
         da = da_new;

@@ -414,10 +414,8 @@ pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
         if doh2ab {
             h2ab = lg_h2_diff(
                 &w,
-                ex_la,
-                ex_ga,
-                ex_lb,
-                ex_gb,
+                &ldet.excitation,
+                &gdet.excitation,
                 &mut scratch.diff,
                 &scratch.aa,
                 &scratch.bb,

@@ -53,6 +53,26 @@ pub struct Excitation {
     beta: ExcitationSpin,
 }
 
+impl Excitation {
+    /// Construct an empty excitation descriptor.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `Excitation`: Excitation with no holes or particles in either spin sector.
+    pub fn empty() -> Self {
+        Self {
+            alpha: ExcitationSpin {
+                holes: vec![],
+                parts: vec![],
+            },
+            beta: ExcitationSpin {
+                holes: vec![],
+                parts: vec![],
+            },
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ExcitationSpin {
     /// List of previously occupied now unoccupied orbitals.

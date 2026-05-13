@@ -263,9 +263,9 @@ fn lg_one_body_m0_gen<T: NOCIScalar>(
                     column_replacement_correction(l, det0, scratch.adjt_det.as_slice(), b, |r| {
                         fsl[base + scratch.rows[r]]
                     });
-                contrib = contrib - (det_det + corr);
+                contrib -= det_det + corr;
             }
-            acc = acc + contrib;
+            acc += contrib;
         }
 
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
@@ -326,9 +326,9 @@ fn lg_one_body_gen<T: NOCIScalar>(
                     b,
                     |r| fsl[base + scratch.rows[r]],
                 );
-                contrib = contrib - (det_det + corr);
+                contrib -= det_det + corr;
             }
-            acc = acc + contrib;
+            acc += contrib;
         });
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })

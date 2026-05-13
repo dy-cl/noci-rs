@@ -2,7 +2,7 @@
 
 use ndarray::{Array1, Array2};
 
-use super::{CandidatePool, GMRES, PT2ProjectedOperator, SNOCIState};
+use super::{CandidatePool, GMRESResult, PT2ProjectedOperator, SNOCIState};
 use crate::noci::{FockData, MOCache, NOCIData};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::time_call;
@@ -93,7 +93,7 @@ fn print_snoci_iteration_result(
     n_current: usize,
     e0: f64,
     state: &SNOCIState,
-    gmres: &GMRES,
+    gmres: &GMRESResult,
 ) {
     println!();
     println!("  SNOCI result");

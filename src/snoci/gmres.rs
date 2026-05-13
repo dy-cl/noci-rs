@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2};
 
-use super::{ArnoldiCycle, ArnoldiParams, GMRES};
+use super::{ArnoldiCycle, ArnoldiParams, GMRESResult};
 use crate::{input::GMRESOptions, time_call};
 
 const SMALL: f64 = 1e-14_f64;
@@ -345,7 +345,7 @@ pub(in crate::snoci) fn gmres<F, P>(
     precondition: P,
     b: &Array1<f64>,
     opts: &GMRESOptions,
-) -> GMRES
+) -> GMRESResult
 where
     F: Fn(&Array1<f64>) -> Array1<f64>,
     P: Fn(&Array1<f64>) -> Array1<f64>,
@@ -359,7 +359,7 @@ where
 
         // Empty systems are already solved.
         if n == 0 {
-            return GMRES {
+            return GMRESResult {
                 x,
                 residual_rms: 0.0,
                 iterations: 0,
@@ -377,7 +377,7 @@ where
 
         // Accept the zero initial guess if it already satisfies the true residual tolerance.
         if residual_rms <= opts.res_tol {
-            return GMRES {
+            return GMRESResult {
                 x,
                 residual_rms,
                 iterations: 0,
@@ -400,7 +400,7 @@ where
                     residual_rms,
                     gmres_start.elapsed().as_secs_f64(),
                 );
-                return GMRES {
+                return GMRESResult {
                     x,
                     residual_rms,
                     iterations: total_iter,
@@ -443,7 +443,7 @@ where
 
             // Only the true residual is accepted as final convergence.
             if residual_rms <= opts.res_tol {
-                return GMRES {
+                return GMRESResult {
                     x,
                     residual_rms,
                     iterations: total_iter,
@@ -452,7 +452,7 @@ where
             }
         }
 
-        GMRES {
+        GMRESResult {
             x,
             residual_rms,
             iterations: total_iter,

@@ -825,9 +825,8 @@ pub fn qmc_step(
         data,
         &run,
         &isref,
-        world,
         &mut scratch,
-        &mut mpiscratch,
+        (world, &mut mpiscratch),
     );
 
     if irank == 0 {

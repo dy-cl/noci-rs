@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 // maths/wick.rs
 
 use crate::StateScalar;
@@ -799,12 +801,11 @@ mod det_mod {
     ) -> Option<T> {
         let av = ArrayView2::from_shape((n, n), a).ok()?;
 
-        if let Ok(m) = av.to_owned().factorize_into() {
-            if let Ok(d) = m.det() {
-                if d.abs().is_finite() {
-                    return Some(d);
-                }
-            }
+        if let Ok(m) = av.to_owned().factorize_into()
+            && let Ok(d) = m.det()
+            && d.abs().is_finite()
+        {
+            return Some(d);
         }
 
         let (u_opt, s, vt_opt) = av.svd(true, true).ok()?;

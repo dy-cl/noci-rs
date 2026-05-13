@@ -4,6 +4,9 @@ use ndarray_linalg::{Determinant, SVD};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::input::Spin;
+use crate::{AoData, DetState};
+
 use crate::maths::{adjoint, eri_ao2mo_hermitian_as, real2_as};
 use crate::noci::{NOCIScalar, occ_coeffs};
 
@@ -40,30 +43,34 @@ pub struct SameSpinBuild<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> SameSpinBuild<T> {
-    /// Constructor for the WicksReferencePair object of SameSpin which contains the precomputed values
+    /// Constructor for the `SameSpinBuild` object, which contains the precomputed values
     /// per pair of reference determinants required to evaluate arbitrary excited determinants
     /// in O(1) time when the excitations are of the same spin.
     /// # Arguments:
-    /// - `eri`: Electron repulsion integrals.
-    /// - `h_munu`: AO core Hamiltonian.
-    /// - `s_munu`: AO overlap matrix.
-    /// - `g_c`: Full AO coefficient matrix of |^\Gamma\Psi\rangle.
-    /// - `l_c`: Full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    /// - `go`: Occupancy vector for |^\Gamma\Psi\rangle.
-    /// - `lo`: Occupancy vector for |^\Lambda\Psi\rangle.
+    /// - `ao`: AO integrals and overlap matrix.
+    /// - `g`: Ket/reference determinant |^\Gamma\Psi\rangle.
+    /// - `l`: Bra/reference determinant |^\Lambda\Psi\rangle.
+    /// - `spin`: Spin block to build.
     /// - `tol`: Tolerance for whether a number is considered zero.
     /// # Returns
     /// - `SameSpinBuild`: Precomputed same-spin Wick's intermediates for the reference pair.
     pub fn new(
-        eri: &Array4<f64>,
-        h_munu: &Array2<f64>,
-        s_munu: &Array2<f64>,
-        g_c: &Array2<T>,
-        l_c: &Array2<T>,
-        go: u128,
-        lo: u128,
+        ao: &AoData,
+        g: &DetState<T>,
+        l: &DetState<T>,
+        spin: Spin,
         tol: f64,
     ) -> Self {
+        let eri = &ao.eri_coul;
+        let h_munu = &ao.h;
+        let s_munu = &ao.s;
+
+        let (g_c, go, l_c, lo) = match spin {
+            Spin::Alpha => (g.ca.as_ref(), g.oa, l.ca.as_ref(), l.oa),
+            Spin::Beta => (g.cb.as_ref(), g.ob, l.cb.as_ref(), l.ob),
+            Spin::Both => panic!("SameSpinBuild requires either alpha or beta spin, not both."),
+        };
+
         let nmo = g_c.ncols();
         let nbas = l_c.nrows();
         let z = <T as From<f64>>::from(0.0);
@@ -568,38 +575,36 @@ pub struct DiffSpinBuild<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> DiffSpinBuild<T> {
-    /// Constructor for the WicksReferencePair object of DiffSpin which contains the precomputed values
+    /// Constructor for the `DiffSpinBuild` object, which contains the precomputed values
     /// per pair of reference determinants required to evaluate arbitrary excited determinants
-    /// in O(1) time when the excitations are of different spin. As such, the quantities here are
-    /// lesser as we only need to evaluate two electron terms with these intermediates.
+    /// in O(1) time when the excitations are of different spin. As such, fewer quantities are
+    /// required because only two-electron terms use these intermediates.
     /// # Arguments:
-    /// - `eri`: Electron repulsion integrals.
-    /// - `h_munu`: AO core Hamiltonian.
-    /// - `s_munu`: AO overlap matrix.
-    /// - `g_ca`: Spin alpha AO coefficient matrix of |^\Gamma\Psi\rangle.
-    /// - `g_cb`: Spin beta AO coefficient matrix of |^\Gamma\Psi\rangle.
-    /// - `l_ca`: Spin alpha AO coefficient matrix of |^\Lambda\Psi\rangle.
-    /// - `l_cb`: Spin beta AO coefficient matrix of |^\Lambda\Psi\rangle.
-    /// - `goa`: Alpha occupancy vector for |^\Gamma\Psi\rangle.
-    /// - `gob`: Beta occupancy vector for |^\Gamma\Psi\rangle.
-    /// - `loa`: Alpha occupancy vector for |^\Lambda\Psi\rangle.
-    /// - `lob`: Beta occupancy vector for |^\Lambda\Psi\rangle.
+    /// - `ao`: AO integrals and overlap matrix.
+    /// - `g`: Ket/reference determinant |^\Gamma\Psi\rangle.
+    /// - `l`: Bra/reference determinant |^\Lambda\Psi\rangle.
     /// - `tol`: Tolerance for whether a number is considered zero.
     /// # Returns
     /// - `DiffSpinBuild`: Precomputed different-spin Wick's intermediates for the reference pair.
     pub fn new(
-        eri: &Array4<f64>,
-        s_munu: &Array2<f64>,
-        g_ca: &Array2<T>,
-        g_cb: &Array2<T>,
-        l_ca: &Array2<T>,
-        l_cb: &Array2<T>,
-        goa: u128,
-        gob: u128,
-        loa: u128,
-        lob: u128,
+        ao: &AoData,
+        g: &DetState<T>,
+        l: &DetState<T>,
         tol: f64,
     ) -> Self {
+        let eri = &ao.eri_coul;
+        let s_munu = &ao.s;
+
+        let g_ca = g.ca.as_ref();
+        let g_cb = g.cb.as_ref();
+        let l_ca = l.ca.as_ref();
+        let l_cb = l.cb.as_ref();
+
+        let goa = g.oa;
+        let gob = g.ob;
+        let loa = l.oa;
+        let lob = l.ob;
+
         let nmo = g_ca.ncols();
 
         let l_ca_occ = occ_coeffs(l_ca, loa);

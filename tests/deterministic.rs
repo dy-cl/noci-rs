@@ -27,7 +27,9 @@ struct ExpectedDeterministic {
 fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let (mut input, ao, _expected): (_, _, ExpectedDeterministic) = load_test(fixture);
 
-    let states = generate_reference_noci_basis(&ao, &mut input, None);
+    let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
+    let states = basis.states;
+
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -36,7 +38,7 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     for (i, st) in noci_reference_basis.iter_mut().enumerate() {
         st.parent = i;
     }
-    let mocache = build_mo_cache(&ao, &noci_reference_basis);
+    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
 
     let (e_ref, c0, _dt_hs_ref) =
         calculate_noci_energy(&ao, &input, &noci_reference_basis, 1e-12, &mocache, None);
