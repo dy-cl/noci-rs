@@ -327,23 +327,26 @@ fn run_hscf_state(
 /// - `input`: User input controlling SCF and h-SCF.
 /// - `recipes`: All state recipes.
 /// - `recipe`: Holomorphic recipe being generated.
-/// - `real_map`: Generated real states keyed by label.
+/// - `real_map`: Generated real states keyed by label at the current geometry.
 /// - `recipe_map`: All recipes keyed by label.
-/// - `prev_map`: Previous h-SCF states keyed by label.
+/// - `prev_h_map`: Previous h-SCF states keyed by label.
+/// - `prev_real_map`: Previous real SCF states keyed by label, used to seed h-SCF from the last
+///   distinct real partner after current-geometry coalescence.
 /// - `hstate_index`: Generated h-SCF state indices keyed by recipe label.
 /// - `out`: h-SCF output built so far, including promoted real states.
 /// - `i`: Current recipe index.
 /// - `fallback_seed`: Callback that generates a real MOM seed when no generated real seed exists.
 /// # Returns
 /// - `Option<HSCFState>`: Generated h-SCF state, or `None` when a partner gate says to skip it.
-pub fn build_hscf_state<'a, F>(
+pub fn build_hscf_state<F>(
     ao: &AoData,
     input: &Input,
     recipes: &[StateRecipe],
     recipe: &StateRecipe,
-    real_map: &HashMap<&str, &'a SCFState>,
+    real_map: &HashMap<&str, &SCFState>,
     recipe_map: &HashMap<&str, &StateRecipe>,
-    prev_map: &HashMap<&str, &HSCFState>,
+    prev_h_map: &HashMap<&str, &HSCFState>,
+    prev_real_map: &HashMap<&str, &SCFState>,
     hstate_index: &HashMap<&str, usize>,
     out: &[HSCFState],
     i: usize,
@@ -369,8 +372,31 @@ where
 
     let fallback_seed;
     let seed_label = recipe.partner.as_deref().unwrap_or(recipe.label.as_str());
+
     let seed = match partner_seed {
-        PartnerSeed::Use(st) => st,
+        PartnerSeed::Use(current_partner) => {
+            if let Some(previous_partner) = recipe
+                .partner
+                .as_deref()
+                .and_then(|label| prev_real_map.get(label).copied())
+            {
+                if input.write.verbose {
+                    println!(
+                        "Seeding h-SCF state '{}' from previous real partner '{}'.",
+                        recipe.label, seed_label
+                    );
+                }
+                previous_partner
+            } else {
+                if input.write.verbose {
+                    println!(
+                        "Seeding h-SCF state '{}' from current collapsed partner '{}'.",
+                        recipe.label, seed_label
+                    );
+                }
+                current_partner
+            }
+        }
         PartnerSeed::NoPartner | PartnerSeed::Skip => {
             if let Some(st) = real_map.get(seed_label).copied() {
                 st
@@ -381,7 +407,7 @@ where
         }
     };
 
-    Some(run_hscf_state(ao, input, recipe, seed, prev_map, i))
+    Some(run_hscf_state(ao, input, recipe, seed, prev_h_map, i))
 }
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.
@@ -1065,6 +1091,9 @@ pub fn h_seed_orbitals(
         .chain((0..seed.cb.ncols()).filter(|&p| ((seed.ob >> p) & 1u128) == 0))
         .collect();
     let mut cb = real2_as::<Complex64>(&seed.cb).select(Axis(1), &idx_b);
+
+    ca = complex_metric_orthonormalize(&ca, &ao.s);
+    cb = complex_metric_orthonormalize(&cb, &ao.s);
 
     if let Some(sb) = &recipe.spin_bias {
         let sgn = sb.pattern.iter().copied().find(|&x| x != 0).unwrap_or(1) as f64;
