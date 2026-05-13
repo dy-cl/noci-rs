@@ -139,6 +139,31 @@ pub fn electron_distance<T: NOCIScalar>(
     (n - (tr_a + tr_b)).abs()
 }
 
+/// Calculate a squared overlap-weighted density distance between determinant states as
+/// d_D^2 = ||(D_a^w - D_a^x)S||_F^2 + ||(D_b^w - D_b^x)S||_F^2.
+/// This remains a real positive duplicate-detection metric for holomorphic states.
+/// # Arguments
+/// - `w`: Reference state from which distance is computed.
+/// - `x`: State to which distance is computed.
+/// - `s`: AO overlap matrix.
+/// # Returns
+/// - `f64`: Squared density distance between the two determinant states.
+pub fn density_distance<T: NOCIScalar>(
+    w: &DetState<T>,
+    x: &DetState<T>,
+    s: &Array2<f64>,
+) -> f64 {
+    let smat = real2_as::<T>(s);
+
+    let dsa = (&*w.da - &*x.da).dot(&smat);
+    let dsb = (&*w.db - &*x.db).dot(&smat);
+
+    dsa.iter()
+        .chain(dsb.iter())
+        .map(|z| z.abs().powi(2))
+        .sum()
+}
+
 /// Mark duplicate NOCI-basis determinant states by setting `noci_basis = false`.
 /// States are retained for printing and branch tracking.
 /// # Arguments:
@@ -163,15 +188,16 @@ fn mark_duplicate_noci_states<T: NOCIScalar>(
                 continue;
             }
 
-            let d2 = electron_distance(&states[j], &states[i], s);
+            let delec2 = electron_distance(&states[j], &states[i], s);
+            let dp2 = density_distance(&states[j], &states[i], s);
             println!(
-                "State '{}' electron distance from state '{}': {}",
-                states[i].label, states[j].label, d2
+                "State '{}' distance from state '{}', electron: {}, density: {}",
+                states[i].label, states[j].label, delec2, dp2
             );
-            if d2 < d_tol {
+            if delec2 < d_tol || dp2 < d_tol {
                 println!(
-                    "Removed state '{}' from NOCI basis as duplicate of '{}' (d^2 = {:.6})",
-                    states[i].label, states[j].label, d2
+                    "Removed state '{}' from NOCI basis as duplicate of '{}'",
+                    states[i].label, states[j].label
                 );
                 states[i].noci_basis = false;
                 break;
