@@ -158,10 +158,7 @@ pub fn density_distance<T: NOCIScalar>(
     let dsa = (&*w.da - &*x.da).dot(&smat);
     let dsb = (&*w.db - &*x.db).dot(&smat);
 
-    dsa.iter()
-        .chain(dsb.iter())
-        .map(|z| z.abs().powi(2))
-        .sum()
+    dsa.iter().chain(dsb.iter()).map(|z| z.abs().powi(2)).sum()
 }
 
 /// Mark duplicate NOCI-basis determinant states by setting `noci_basis = false`.

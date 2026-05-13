@@ -327,7 +327,15 @@ def plotEnergy(args):
 
         label = display if display not in seen else None
         seen.add(display)
-        ax.plot(g["R"], g["E"], linewidth = LINEWIDTH, color = color, linestyle = linestyle, label = label)
+
+        gPlot = g
+        if lbl.startswith("h-UHF") or lbl.startswith("h-RHF"):
+            parentLbl = lbl.removeprefix("h-")
+            gParent = df[df["label"] == parentLbl].sort_values("R")
+            if not gParent.empty:
+                gPlot = pd.concat([g, gParent.head(1)], ignore_index = True).sort_values("R")
+
+        ax.plot(gPlot["R"], gPlot["E"], linewidth = LINEWIDTH, color = color, linestyle = linestyle, label = label)
 
     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
     plt.grid(True)

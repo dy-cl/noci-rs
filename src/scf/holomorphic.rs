@@ -175,9 +175,7 @@ fn run_hscf_state(
     prev_h: &HashMap<&str, &HSCFState>,
     i: usize,
 ) -> HSCFState {
-    let mut candidates: Vec<HSCFState> = Vec::new();
-
-    // Try analytic continuation from the previous geometry.
+    // Prefer analytic continuation from the previous geometry.
     if let Some(st) = prev_h.get(recipe.label.as_str()).copied() {
         if input.write.verbose {
             println!(
@@ -190,18 +188,31 @@ fn run_hscf_state(
         let cb = complex_metric_orthonormalize(&st.cb, &ao.s);
 
         if let Some(hst) = hscf_cycle(&ca, &cb, ao, input, &recipe.label, recipe.noci, i) {
-            candidates.push(hst);
-        } else if input.write.verbose {
+            let d = h_density_distance_from_real(&hst, seed);
+
+            if d > input.scf.d_tol {
+                println!(
+                    "Accepted continued h-SCF branch '{}' with d: {:.3e}.",
+                    recipe.label, d
+                );
+                return hst;
+            } else {
+                println!(
+                    "Previous h-SCF branch '{}' collapsed onto real with d: {:.3e}. Trying recovery seeds.",
+                    recipe.label, d
+                );
+            }
+
             println!(
-                "Previous-geometry h-SCF seed for '{}' did not converge.",
-                recipe.label
+                    "Previous h-SCF branch '{}' did not converge. Trying recovery seeds.",
+                    recipe.label
             );
         }
-    }
+    } 
 
-    // Also try the fresh h-SCF seed. This is important because the continuation seed can
-    // collapse onto the real branch near a coalescence, while the imaginary kick can still
-    // recover the holomorphic branch.
+    let mut candidates: Vec<HSCFState> = Vec::new();
+
+    // Only reach this point if no previous h-SCF state exists, or continuation failed.
     if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
         let scales: &[f64] = if recipe.partner.is_some() {
             &[0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00]
