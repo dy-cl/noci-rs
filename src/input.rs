@@ -522,12 +522,57 @@ impl Default for GMRESOptions {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum SNOCIPreconditioner {
+    Diag,
+    Woodbury,
+}
+
+impl SNOCIPreconditioner {
+    /// Return SNOCI preconditioner as input string.
+    /// # Returns:
+    /// - `&'static str`: String representation used in input parsing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Diag => "diag",
+            Self::Woodbury => "woodbury",
+        }
+    }
+}
+
+impl FromStr for SNOCIPreconditioner {
+    type Err = String;
+
+    /// Parse SNOCI preconditioner from input string.
+    /// # Arguments:
+    /// - `s`: String specifying the SNOCI preconditioner.
+    /// # Returns:
+    /// - `Result`: Parsed preconditioner if valid string, otherwise error message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "diag" => Ok(Self::Diag),
+            "woodbury" => Ok(Self::Woodbury),
+            _ => Err(format!("invalid SNOCI preconditioner: {s}")),
+        }
+    }
+}
+
+impl Default for SNOCIPreconditioner {
+    /// Return default SNOCI preconditioner.
+    /// # Returns:
+    /// - `Self`: Default SNOCI preconditioner.
+    fn default() -> Self {
+        Self::Woodbury
+    }
+}
+
 pub struct SNOCIOptions {
     pub sigma: f64,
     pub tol: f64,
     pub max_iter: usize,
     pub max_add: usize,
     pub max_dim: usize,
+    pub preconditioner: SNOCIPreconditioner,
     pub gmres: GMRESOptions,
 }
 
@@ -542,6 +587,7 @@ impl Default for SNOCIOptions {
             max_iter: 100,
             max_add: 1,
             max_dim: 100,
+            preconditioner: SNOCIPreconditioner::default(),
             gmres: GMRESOptions::default(),
         }
     }
@@ -960,7 +1006,7 @@ pub fn load_input(path: &str) -> Input {
                 seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
             }
         });
-
+    
     // SNOCI table.
     let snoci: Option<SNOCIOptions> =
         globals
@@ -969,8 +1015,10 @@ pub fn load_input(path: &str) -> Input {
             .map(|snoci_tbl| {
                 let defaults = SNOCIOptions::default();
                 let gmres_defaults = GMRESOptions::default();
+
                 let gmres_tbl: Option<Table> =
                     snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
+
                 let gmres = if let Some(gmres_tbl) = gmres_tbl {
                     GMRESOptions {
                         max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
@@ -984,12 +1032,24 @@ pub fn load_input(path: &str) -> Input {
                 } else {
                     gmres_defaults
                 };
+
+                let preconditioner_str: String = snoci_tbl
+                    .get("preconditioner")
+                    .unwrap_or_else(|_| defaults.preconditioner.as_str().to_string());
+
+                let preconditioner: SNOCIPreconditioner =
+                    preconditioner_str.parse().unwrap_or_else(|msg| {
+                        eprintln!("{msg}");
+                        std::process::exit(1);
+                    });
+
                 SNOCIOptions {
                     sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
                     tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
                     max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
                     max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
                     max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
+                    preconditioner,
                     gmres,
                 }
             });

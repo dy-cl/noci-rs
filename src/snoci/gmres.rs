@@ -94,7 +94,7 @@ where
 /// - `y`: Right vector.
 /// # Returns:
 /// - `T`: Inner product `x^H y`.
-fn inner_product<T: NOCIScalar>(
+pub fn inner_product<T: NOCIScalar>(
     x: &Array1<T>,
     y: &Array1<T>,
 ) -> T {

@@ -375,17 +375,19 @@ pub(in crate::snoci) fn apply_omega_m<T: NOCIScalar>(
     })
 }
 
-/// Build a rank-2 Woodbury preconditioner for the projected NOCI-PT2 shifted Fock matrix.
+/// Build a preconditioner for the projected NOCI-PT2 shifted Fock matrix.
 /// # Arguments:
 /// - `m_diag`: Diagonal of the unprojected candidate-candidate matrix `M`.
 /// - `p`: Projection contractions used to form `M^Omega`.
+/// - `kind`: Requested SNOCI preconditioner type.
 /// # Returns:
-/// - `OmegaRank2Preconditioner`: Rank-2 preconditioner for applying an approximate inverse of `M^Omega`.
+/// - `Preconditioner`: Preconditioner for applying an approximate inverse of `M^Omega`.
 pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
     m_diag: &Array1<T>,
     p: &PT2Projection<T>,
+    kind: crate::input::SNOCIPreconditioner,
 ) -> Preconditioner<T> {
-    Preconditioner::new(m_diag, p)
+    Preconditioner::new(m_diag, p, kind)
 }
 
 /// Build the unprojected candidate-current coupling vector `V`.

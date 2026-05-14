@@ -242,7 +242,7 @@ where
             };
 
             let m_diag = build_candidate_m_diag(&op, m.as_deref());
-            let prec = build_preconditioner(&m_diag, op.projection);
+            let prec = build_preconditioner(&m_diag, op.projection, opts.preconditioner);
             let rhs = v_omega.mapv(|x| -x);
 
             let a = gmres(
