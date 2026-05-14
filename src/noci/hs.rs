@@ -73,6 +73,7 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
     let (hn, sn) = calculate_hs_pair_naive(data.ao, ldet, gdet, data.tol);
     let (hw, sw) =
         calculate_hs_pair_wicks(data.ao, ldet, gdet, data.tol, data.wicks.unwrap(), scratch);
+
     ((hw, sw), (hn - hw).abs() + (sn - sw).abs())
 }
 

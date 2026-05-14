@@ -110,6 +110,21 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let x: [Array2<T>; 2] = [x0, x1];
         let y: [Array2<T>; 2] = [y0, y1];
 
+        // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and
+        // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
+        // down the line.
+        let mut cx: [Array2<T>; 2] = [
+            Array2::<T>::zeros((nbas, 2 * nmo)),
+            Array2::<T>::zeros((nbas, 2 * nmo)),
+        ];
+        let mut xc: [Array2<T>; 2] = [
+            Array2::<T>::zeros((nbas, 2 * nmo)),
+            Array2::<T>::zeros((nbas, 2 * nmo)),
+        ];
+        for mi in 0..2 {
+            (cx[mi], xc[mi]) = DiffSpinBuild::build_cx_xc(&mao[mi], s_munu, l_c, g_c, mi);
+        }
+
         // Construct Coulomb and exchange contractions of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k},
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k} and {}^{\Gamma\Lambda} K_{\mun\u}^{m_k}. These
         // quantities are used in many of the following intermediates so we precompute here.
@@ -126,10 +141,11 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 
         // Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
         // intermediates required for one electron Hamiltonian matrix elements.
-        let (_, f00h) = Self::construct_f(l_c, h_munu, &x[0], &y[0]);
-        let (_, f01h) = Self::construct_f(l_c, h_munu, &x[0], &y[1]);
-        let (_, f10h) = Self::construct_f(l_c, h_munu, &x[1], &y[0]);
-        let (_, f11h) = Self::construct_f(l_c, h_munu, &x[1], &y[1]);
+        let h = real2_as::<T>(h_munu);
+        let f00h = adjoint(&cx[0]).dot(&h).dot(&xc[0]);
+        let f01h = adjoint(&cx[0]).dot(&h).dot(&xc[1]);
+        let f10h = adjoint(&cx[1]).dot(&h).dot(&xc[0]);
+        let f11h = adjoint(&cx[1]).dot(&h).dot(&xc[1]);
 
         let f0_0h = T::einsum_ba_ab_realop(&mao[0], h_munu);
         let f0_1h = T::einsum_ba_ab_realop(&mao[1], h_munu);
@@ -149,21 +165,6 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
                 Array2::zeros((2 * nmo, 2 * nmo)),
             ],
         ];
-
-        // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and
-        // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
-        // down the line.
-        let mut cx: [Array2<T>; 2] = [
-            Array2::<T>::zeros((nbas, 2 * nmo)),
-            Array2::<T>::zeros((nbas, 2 * nmo)),
-        ];
-        let mut xc: [Array2<T>; 2] = [
-            Array2::<T>::zeros((nbas, 2 * nmo)),
-            Array2::<T>::zeros((nbas, 2 * nmo)),
-        ];
-        for mi in 0..2 {
-            (cx[mi], xc[mi]) = DiffSpinBuild::build_cx_xc(&mao[mi], s_munu, l_c, g_c, mi);
-        }
 
         // Construct {}^{\Lambda\Gamma} V_0^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs) -
         // {}^{\Lambda}(ps|qr)) {}^{\Lambda\Gamma} X_{sq}^{m_i} {}^{\Lambda\Gamma}. This can be
@@ -403,53 +404,6 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let y = adjoint(&lg_c).dot(&ymiddle).dot(&lg_c);
 
         (x, y)
-    }
-
-    /// Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
-    /// intermediates required for one-body coupling as:
-    ///     {}^{\Lambda\Lambda} F_0^{m_i} = \sum_{pq} {}^\Lambda f_{pq} {\Lambda\Lambda} X_{qp}^{m_i}
-    /// where {}^{\Lambda} f_{pq} is the required onebody operator in the MO basis for determinant
-    /// \Lambda, and:
-    ///     {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j} = \sum_{pq} {\Gamma\Lambda} X_{ap}^{m_i}
-    ///     {\Lambda\Lambda} f_{pq} {\Lambda\Lambda} X_{qb}^{m_j},
-    /// where the use of X or Y and their quadrants depends on the requested ordering of \Lambda,
-    /// \Gamma in {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}.
-    /// # Arguments:
-    /// - `l_c`: Full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    /// - `h_munu`: One-electron core AO hamiltonian.
-    /// - `x`: {}^{\Gamma\Lambda} X_{ij}^{m_k}.
-    /// - `y`: {}^{\Gamma\Lambda} Y_{ij}^{m_k}.
-    /// # Returns
-    /// - `(T, Array2<T>)`: Scalar F_0^{m_k} and matrix F_{ab}^{m_i,m_j}.
-    pub fn construct_f(
-        l_c: &Array2<T>,
-        h_munu: &Array2<f64>,
-        x: &Array2<T>,
-        y: &Array2<T>,
-    ) -> (T, Array2<T>) {
-        let nmo = l_c.ncols();
-        let h = real2_as::<T>(h_munu);
-        let ll_h = adjoint(l_c).dot(&h).dot(l_c);
-
-        let ll_x = x.slice(s![0..nmo, 0..nmo]).to_owned();
-        let gl_x = x.slice(s![nmo..2 * nmo, 0..nmo]).to_owned();
-        let ll_y = y.slice(s![0..nmo, 0..nmo]).to_owned();
-        let lg_y = y.slice(s![0..nmo, nmo..2 * nmo]).to_owned();
-
-        let ll_f0 = T::einsum_ba_ab(&ll_x, &ll_h);
-
-        let ll_f = ll_y.dot(&ll_h).dot(&ll_x);
-        let gl_f = gl_x.dot(&ll_h).dot(&ll_x);
-        let lg_f = ll_y.dot(&ll_h).dot(&lg_y);
-        let gg_f = gl_x.dot(&ll_h).dot(&lg_y);
-
-        let mut f = Array2::<T>::zeros((2 * nmo, 2 * nmo));
-        f.slice_mut(s![0..nmo, 0..nmo]).assign(&ll_f);
-        f.slice_mut(s![0..nmo, nmo..2 * nmo]).assign(&lg_f);
-        f.slice_mut(s![nmo..2 * nmo, 0..nmo]).assign(&gl_f);
-        f.slice_mut(s![nmo..2 * nmo, nmo..2 * nmo]).assign(&gg_f);
-
-        (ll_f0, f)
     }
 
     /// Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}

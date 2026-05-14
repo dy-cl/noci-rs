@@ -3,12 +3,12 @@
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
-use crate::maths::general_evp;
-use crate::noci::{DetPair, FockData, MOCache, NOCIData};
+use crate::maths::{adjoint, general_evp};
+use crate::noci::{DetPair, FockData, MOCache, NOCIData, NOCIScalar};
 use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s, calculate_m_pair};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksShared};
 use crate::time_call;
-use crate::{AoData, SCFState, input::Input};
+use crate::{AoData, DetState, input::Input};
 
 use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps};
 
@@ -22,16 +22,16 @@ use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNO
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns:
-/// - `(Array2<f64>, Array2<f64>, f64, Array1<f64>)`: Hamiltonian matrix in the current space,
+/// - `(Array2<T>, Array2<T>, f64, Array1<T>)`: Hamiltonian matrix in the current space,
 ///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
-pub(in crate::snoci) fn solve_current_space(
+pub(in crate::snoci) fn solve_current_space<T: NOCIScalar>(
     ao: &AoData,
-    current_space: &[SCFState],
+    current_space: &[DetState<T>],
     input: &Input,
-    wicks: Option<&WicksShared<f64>>,
-    mocache: &[MOCache<f64>],
+    wicks: Option<&WicksShared<T>>,
+    mocache: &[MOCache<T>],
     tol: f64,
-) -> (Array2<f64>, Array2<f64>, f64, Array1<f64>) {
+) -> (Array2<T>, Array2<T>, f64, Array1<T>) {
     time_call!(crate::timers::snoci::add_solve_current_space, {
         let wview = wicks.as_ref().map(|ws| ws.view());
         let data = NOCIData::new(ao, current_space, input, tol, wview).withmocache(mocache);
@@ -53,14 +53,14 @@ pub(in crate::snoci) fn solve_current_space(
 /// - `selected_space`: Current selected nonorthogonal determinant space.
 /// # Returns:
 /// - `SNOCIOverlaps`: Candidate-current and current-candidate overlap blocks.
-pub(in crate::snoci) fn build_snoci_overlaps(
-    data: &NOCIData<'_, f64>,
-    candidates: &[SCFState],
-    selected_space: &[SCFState],
-) -> SNOCIOverlaps {
+pub(in crate::snoci) fn build_snoci_overlaps<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    candidates: &[DetState<T>],
+    selected_space: &[DetState<T>],
+) -> SNOCIOverlaps<T> {
     time_call!(crate::timers::snoci::add_build_snoci_overlaps, {
         let (s_ai, _) = build_noci_s(data, candidates, selected_space, false);
-        let s_ia = s_ai.t().to_owned();
+        let s_ia = adjoint(&s_ai);
 
         SNOCIOverlaps { s_ai, s_ia }
     })
@@ -75,17 +75,17 @@ pub(in crate::snoci) fn build_snoci_overlaps(
 /// - `candidates`: Candidate determinant space.
 /// # Returns:
 /// - `SNOCIFocks`: Current-current and candidate-current Fock blocks.
-pub(in crate::snoci) fn build_snoci_focks(
-    current_data: &NOCIData<'_, f64>,
-    candidate_data: &NOCIData<'_, f64>,
-    fock: &FockData<'_, f64>,
-    selected_space: &[SCFState],
-    candidates: &[SCFState],
-) -> SNOCIFocks {
+pub(in crate::snoci) fn build_snoci_focks<T: NOCIScalar>(
+    current_data: &NOCIData<'_, T>,
+    candidate_data: &NOCIData<'_, T>,
+    fock: &FockData<'_, T>,
+    selected_space: &[DetState<T>],
+    candidates: &[DetState<T>],
+) -> SNOCIFocks<T> {
     time_call!(crate::timers::snoci::add_build_snoci_focks, {
         let (f_ii, _) = build_noci_fock(current_data, fock, selected_space, selected_space, true);
         let (f_ai, _) = build_noci_fock(candidate_data, fock, candidates, selected_space, false);
-        let f_ia = f_ai.t().to_owned();
+        let f_ia = adjoint(&f_ai);
 
         SNOCIFocks { f_ii, f_ai, f_ia }
     })
@@ -97,12 +97,12 @@ pub(in crate::snoci) fn build_snoci_focks(
 /// - `candidates`: Candidate determinant space.
 /// - `selected_space`: Current selected nonorthogonal determinant space.
 /// # Returns:
-/// - `Array2<f64>`: Candidate-current Hamiltonian block `H_ai`.
-pub(in crate::snoci) fn build_candidate_current_h(
-    data: &NOCIData<'_, f64>,
-    candidates: &[SCFState],
-    selected_space: &[SCFState],
-) -> Array2<f64> {
+/// - `Array2<T>`: Candidate-current Hamiltonian block `H_ai`.
+pub(in crate::snoci) fn build_candidate_current_h<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    candidates: &[DetState<T>],
+    selected_space: &[DetState<T>],
+) -> Array2<T> {
     time_call!(crate::timers::snoci::add_build_candidate_h_ai, {
         build_noci_hs(data, candidates, selected_space, false).0
     })
@@ -116,13 +116,14 @@ pub(in crate::snoci) fn build_candidate_current_h(
 /// - `e0`: Zeroth-order NOCI generalised-Fock energy.
 /// # Returns:
 /// - `PT2Projection`: Projection contractions used to form `M^Omega`.
-pub(in crate::snoci) fn build_snoci_projection(
-    overlaps: &SNOCIOverlaps,
-    focks: &SNOCIFocks,
-    coeffs: &Array1<f64>,
+pub(in crate::snoci) fn build_snoci_projection<T: NOCIScalar>(
+    overlaps: &SNOCIOverlaps<T>,
+    focks: &SNOCIFocks<T>,
+    coeffs: &Array1<T>,
     e0: f64,
-) -> PT2Projection {
+) -> PT2Projection<T> {
     time_call!(crate::timers::snoci::add_build_snoci_projection, {
+        let coeffs_conj = coeffs.mapv(|x| x.conj());
         // A projected candidate state is given by:
         // | \Omega_a \rangle = | \Phi_a \rangle - | \Psi_0 \rangle \langle \Psi_0 | \Phi_a \rangle,
         // where | \Psi_0 \rangle is the current NOCI state.
@@ -130,11 +131,11 @@ pub(in crate::snoci) fn build_snoci_projection(
         // S_{a0} = \langle \Phi_a | \Psi_0 \rangle = \sum_i S_{ai} c_i,
         let s_a0 = overlaps.s_ai.dot(coeffs);
         // S_{0a} = \langle \Psi_0 | \Phi_a \rangle = \sum_i S_{ia} c_i,
-        let s_0a = overlaps.s_ia.t().dot(coeffs);
+        let s_0a = overlaps.s_ia.t().dot(&coeffs_conj);
         // F_{a0} = \langle \Phi_a | \hat F | \Psi_0 \rangle = \sum_i F_{ai} c_i,
         let f_a0 = focks.f_ai.dot(coeffs);
         // F_{0a} = \langle \Psi_0 | \hat F | \Phi_a \rangle = \sum_i F_{ia} c_i.
-        let f_0a = focks.f_ia.t().dot(coeffs);
+        let f_0a = focks.f_ia.t().dot(&coeffs_conj);
 
         PT2Projection {
             e0,
@@ -150,11 +151,13 @@ pub(in crate::snoci) fn build_snoci_projection(
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// # Returns:
-/// - `Vec<f64>`: Packed upper triangle of `M`.
-pub(in crate::snoci) fn build_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>) -> Vec<f64> {
+/// - `Vec<T>`: Packed upper triangle of `M`.
+pub(in crate::snoci) fn build_candidate_m<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+) -> Vec<T> {
     time_call!(crate::timers::snoci::add_build_candidate_m, {
         let n = op.candidates.len();
-        let mut m = vec![0.0; n * (n + 1) / 2];
+        let mut m = vec![T::from_real(0.0); n * (n + 1) / 2];
 
         m.par_iter_mut()
             .enumerate()
@@ -197,16 +200,16 @@ pub(in crate::snoci) fn build_candidate_m(op: &PT2ProjectedOperator<'_, '_, '_>)
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// - `m`: Optional packed candidate-candidate shifted Fock matrix.
 /// # Returns:
-/// - `Array1<f64>`: Diagonal entries of `M`.
-pub(in crate::snoci) fn build_candidate_m_diag(
-    op: &PT2ProjectedOperator<'_, '_, '_>,
-    m: Option<&[f64]>,
-) -> Array1<f64> {
+/// - `Array1<T>`: Diagonal entries of `M`.
+pub(in crate::snoci) fn build_candidate_m_diag<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    m: Option<&[T]>,
+) -> Array1<T> {
     time_call!(crate::timers::snoci::add_build_candidate_m_diag, {
         let n = op.candidates.len();
 
         if let Some(m) = m {
-            let mut diag = Array1::<f64>::zeros(n);
+            let mut diag = Array1::from_elem(n, T::from_real(0.0));
 
             for i in 0..n {
                 let k = i * (2 * n - i + 1) / 2;
@@ -216,7 +219,7 @@ pub(in crate::snoci) fn build_candidate_m_diag(
             return diag;
         }
 
-        let diag: Vec<f64> = (0..n)
+        let diag: Vec<T> = (0..n)
             .into_par_iter()
             .map_init(WickScratchSpin::new, |scratch, a| {
                 let det = &op.candidates[a];
@@ -241,30 +244,30 @@ pub(in crate::snoci) fn build_candidate_m_diag(
 /// - `x`: Vector to apply `M` to.
 /// - `m`: Optional packed candidate-candidate shifted Fock matrix.
 /// # Returns:
-/// - `Array1<f64>`: Matrix-vector product `M x`.
-pub(in crate::snoci) fn apply_candidate_m(
-    op: &PT2ProjectedOperator<'_, '_, '_>,
-    x: &Array1<f64>,
-    m: Option<&[f64]>,
-) -> Array1<f64> {
+/// - `Array1<T>`: Matrix-vector product `M x`.
+pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    m: Option<&[T]>,
+) -> Array1<T> {
     time_call!(crate::timers::snoci::add_apply_candidate_m, {
         let n = op.candidates.len();
 
         if n == 0 {
-            return Array1::zeros(0);
+            return Array1::from_vec(Vec::new());
         }
 
         let xs = x.as_slice_memory_order().unwrap();
 
         if let Some(m) = m {
-            let y: Vec<f64> = (0..n)
+            let y: Vec<T> = (0..n)
                 .into_par_iter()
                 .map(|a| {
-                    let mut ya = 0.0;
+                    let mut ya = T::from_real(0.0);
 
                     for (b, _) in xs.iter().enumerate().take(a) {
                         let k = b * (2 * n - b + 1) / 2 + (a - b);
-                        ya += m[k] * xs[b];
+                        ya += m[k].conj() * xs[b];
                     }
 
                     let row = a * (2 * n - a + 1) / 2;
@@ -281,12 +284,13 @@ pub(in crate::snoci) fn apply_candidate_m(
         }
 
         let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
+        let zero = T::from_real(0.0);
 
         let y = (0..n)
             .into_par_iter()
             .with_min_len(min_len)
             .fold(
-                || (WickScratchSpin::new(), vec![0.0; n]),
+                || (WickScratchSpin::new(), vec![zero; n]),
                 |(mut scratch, mut y), a| {
                     let xa = xs[a];
                     let ldet = &op.candidates[a];
@@ -294,7 +298,7 @@ pub(in crate::snoci) fn apply_candidate_m(
                     for b in a..n {
                         let xb = xs[b];
 
-                        if xa == 0.0 && xb == 0.0 {
+                        if xa == zero && xb == zero {
                             continue;
                         }
 
@@ -307,12 +311,12 @@ pub(in crate::snoci) fn apply_candidate_m(
                             Some(&mut scratch),
                         );
 
-                        if xb != 0.0 {
+                        if xb != zero {
                             y[a] += m_ab * xb;
                         }
 
-                        if b != a && xa != 0.0 {
-                            y[b] += m_ab * xa;
+                        if b != a && xa != zero {
+                            y[b] += m_ab.conj() * xa;
                         }
                     }
 
@@ -321,7 +325,7 @@ pub(in crate::snoci) fn apply_candidate_m(
             )
             .map(|(_, y)| y)
             .reduce(
-                || vec![0.0; n],
+                || vec![zero; n],
                 |mut lhs, rhs| {
                     for i in 0..n {
                         lhs[i] += rhs[i];
@@ -341,12 +345,12 @@ pub(in crate::snoci) fn apply_candidate_m(
 /// - `x`: Vector to apply `M^Omega` to.
 /// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
 /// # Returns:
-/// - `Array1<f64>`: Matrix-vector product `M^Omega x`.
-pub(in crate::snoci) fn apply_omega_m(
-    op: &PT2ProjectedOperator<'_, '_, '_>,
-    x: &Array1<f64>,
-    m: Option<&[f64]>,
-) -> Array1<f64> {
+/// - `Array1<T>`: Matrix-vector product `M^Omega x`.
+pub(in crate::snoci) fn apply_omega_m<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    m: Option<&[T]>,
+) -> Array1<T> {
     time_call!(crate::timers::snoci::add_apply_omega_m, {
         let p = op.projection;
 
@@ -361,9 +365,10 @@ pub(in crate::snoci) fn apply_omega_m(
 
         // Get the action of unprojected M_{ab} = F_{ab} - E^{(0)} S_{ab} on a vector `x`.
         let mut y = apply_candidate_m(op, x, m);
+        let two_e0 = T::from_real(2.0 * p.e0);
 
         for a in 0..y.len() {
-            y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + 2.0 * p.e0 * p.s_a0[a] * sx;
+            y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + two_e0 * p.s_a0[a] * sx;
         }
 
         y
@@ -376,10 +381,10 @@ pub(in crate::snoci) fn apply_omega_m(
 /// - `p`: Projection contractions used to form `M^Omega`.
 /// # Returns:
 /// - `OmegaRank2Preconditioner`: Rank-2 preconditioner for applying an approximate inverse of `M^Omega`.
-pub(in crate::snoci) fn build_preconditioner(
-    m_diag: &Array1<f64>,
-    p: &PT2Projection,
-) -> Preconditioner {
+pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
+    m_diag: &Array1<T>,
+    p: &PT2Projection<T>,
+) -> Preconditioner<T> {
     Preconditioner::new(m_diag, p)
 }
 
@@ -388,11 +393,11 @@ pub(in crate::snoci) fn build_preconditioner(
 /// - `h_ai`: Candidate-current Hamiltonian block.
 /// - `coeffs`: Current-space ground-state eigenvector.
 /// # Returns:
-/// - `Array1<f64>`: Unprojected candidate coupling vector.
-pub(in crate::snoci) fn build_candidate_v(
-    h_ai: &Array2<f64>,
-    coeffs: &Array1<f64>,
-) -> Array1<f64> {
+/// - `Array1<T>`: Unprojected candidate coupling vector.
+pub(in crate::snoci) fn build_candidate_v<T: NOCIScalar>(
+    h_ai: &Array2<T>,
+    coeffs: &Array1<T>,
+) -> Array1<T> {
     time_call!(crate::timers::snoci::add_build_candidate_v, {
         // V_a = \langle \Phi_a | \hat H | \Psi_0 \rangle = \sum_i H_{ai} c_i.
         h_ai.dot(coeffs)
@@ -406,19 +411,19 @@ pub(in crate::snoci) fn build_candidate_v(
 /// - `v_a`: Unprojected candidate-current Hamiltonian coupling vector.
 /// - `ecurrent`: Current selected-space NOCI energy.
 /// # Returns:
-/// - `Array1<f64>`: Omega-projected coupling vector.
-pub(in crate::snoci) fn build_omega_v(
-    s_ai: &Array2<f64>,
-    coeffs: &Array1<f64>,
-    v_a: Array1<f64>,
+/// - `Array1<T>`: Omega-projected coupling vector.
+pub(in crate::snoci) fn build_omega_v<T: NOCIScalar>(
+    s_ai: &Array2<T>,
+    coeffs: &Array1<T>,
+    v_a: Array1<T>,
     ecurrent: f64,
-) -> Array1<f64> {
+) -> Array1<T> {
     time_call!(crate::timers::snoci::add_build_omega_v, {
         // V_a^\Omega = \langle \Omega_a | \hat H | \Psi_0 \rangle.
         // Expanding | \Omega_a \rangle gives:
         // V_a^\Omega = V_a - E_\mathrm{NOCI} S_{a0}.
         let s_a0 = s_ai.dot(coeffs);
-        v_a - s_a0.mapv(|x| ecurrent * x)
+        v_a - s_a0.mapv(|x| T::from_real(ecurrent) * x)
     })
 }
 
@@ -429,14 +434,14 @@ pub(in crate::snoci) fn build_omega_v(
 /// - `sigma`: Selection threshold.
 /// - `max_add`: Maximum number of candidates to add.
 /// # Returns:
-/// - `Vec<SCFState>`: Selected candidates sorted by decreasing score.
-pub(in crate::snoci) fn select_candidates(
-    candidates: &[SCFState],
+/// - `Vec<DetState<T>>`: Selected candidates sorted by decreasing score.
+pub(in crate::snoci) fn select_candidates<T: NOCIScalar>(
+    candidates: &[DetState<T>],
     candidate_scores: &[f64],
     sigma: f64,
     max_add: usize,
-) -> Vec<SCFState> {
-    let mut ranked: Vec<(SCFState, f64)> = candidates
+) -> Vec<DetState<T>> {
+    let mut ranked: Vec<(DetState<T>, f64)> = candidates
         .iter()
         .cloned()
         .zip(candidate_scores.iter().copied())

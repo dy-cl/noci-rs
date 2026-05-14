@@ -29,20 +29,18 @@ pub(crate) fn calculate_f_pair<T: NOCIScalar>(
     scratch: Option<&mut WickScratchSpin<T>>,
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_f_pair, {
-        let ldet = pair.ldet;
-        let gdet = pair.gdet;
+        if pair.ldet.parent == pair.gdet.parent {
+            let cache = &fock.fock_mocache[pair.ldet.parent];
 
-        if ldet.parent == gdet.parent {
-            let cache = &fock.fock_mocache[ldet.parent];
             if cache.hermitian_orthonormal {
-                return calculate_f_pair_orthogonal(cache, ldet, gdet);
+                return calculate_f_pair_orthogonal(cache, pair.ldet, pair.gdet);
             }
         }
 
         if data.input.wicks.enabled {
-            calculate_f_pair_wicks(ldet, gdet, data.tol, data.wicks.unwrap(), scratch.unwrap())
+            calculate_f_pair_wicks(pair.ldet, pair.gdet, data.tol, data.wicks.unwrap(), scratch.unwrap())
         } else {
-            calculate_f_pair_naive(fock.fa, fock.fb, data.ao, ldet, gdet, data.tol)
+            calculate_f_pair_naive(fock.fa, fock.fb, data.ao, pair.ldet, pair.gdet, data.tol)
         }
     })
 }

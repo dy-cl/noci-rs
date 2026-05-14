@@ -3,15 +3,16 @@
 use std::collections::HashSet;
 
 use crate::basis::generate_excited_basis;
+use crate::noci::NOCIScalar;
 use crate::time_call;
-use crate::{SCFState, input::Input};
+use crate::{DetState, input::Input};
 
-pub(in crate::snoci) struct CandidatePool {
+pub(in crate::snoci) struct CandidatePool<T: NOCIScalar> {
     /// Current pool candidates.
-    pub(in crate::snoci) candidates: Vec<SCFState>,
+    pub(in crate::snoci) candidates: Vec<DetState<T>>,
 }
 
-impl CandidatePool {
+impl<T: NOCIScalar> CandidatePool<T> {
     /// Construct the initial candidate pool of determinants from the current selected space.
     /// # Arguments
     /// - `selected_space`: Current selected nonorthogonal determinant space.
@@ -19,7 +20,7 @@ impl CandidatePool {
     /// # Returns
     /// - `CandidatePool`: Initial candidate pool containing all generated candidates.
     pub(in crate::snoci) fn new(
-        selected_space: &[SCFState],
+        selected_space: &[DetState<T>],
         input: &Input,
     ) -> Self {
         time_call!(crate::timers::snoci::add_candidate_pool_new, {
@@ -35,7 +36,7 @@ impl CandidatePool {
     /// - `()`: Updates the candidate pool in place.
     pub(in crate::snoci) fn remove_selected(
         &mut self,
-        selected: &[SCFState],
+        selected: &[DetState<T>],
     ) {
         let selected_keys: HashSet<&str> = selected.iter().map(|st| st.label.as_str()).collect();
         self.candidates
@@ -52,8 +53,8 @@ impl CandidatePool {
     ///   genuinely new candidate determinants.
     pub(in crate::snoci) fn update(
         &mut self,
-        selected_space: &[SCFState],
-        newly_selected: &[SCFState],
+        selected_space: &[DetState<T>],
+        newly_selected: &[DetState<T>],
         input: &Input,
     ) {
         time_call!(crate::timers::snoci::add_candidate_pool_update, {

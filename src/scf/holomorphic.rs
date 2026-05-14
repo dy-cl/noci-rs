@@ -15,7 +15,8 @@ use super::occupation::spin_occupation;
 use super::print::print_header_h;
 use super::{density, energy, fock, orbital_energies, orbital_gradient};
 use crate::maths::{
-    complex_metric_orthonormalize, matrix_exp_complex, real2_as, symmetric_evp_complex,
+    adjoint, complex_metric_orthonormalize, loewdin_x, matrix_exp_complex, real2_as,
+    symmetric_evp_complex,
 };
 use crate::utils::print_array2_indexed;
 
@@ -638,6 +639,88 @@ fn h_density_distance_from_real(
         )
         .sum::<f64>()
         .sqrt()
+}
+
+/// Hermitian-orthonormalise one spin orbital basis while preserving occupied and virtual subspaces.
+/// # Arguments:
+/// - `c`: Spin MO coefficient matrix.
+/// - `occ`: Occupied MO indices.
+/// - `virt`: Virtual MO indices.
+/// - `s`: AO overlap matrix.
+/// - `tol`: Tolerance below which a metric eigenvalue is treated as singular.
+/// # Returns:
+/// - `Array2<Complex64>`: MO coefficients satisfying `C^\dagger S C = I` within the occupied
+///   and virtual spaces and `C_o^\dagger S C_v = 0`.
+fn hermitian_orthonormalise_spin_basis(
+    c: &Array2<Complex64>,
+    occ: &[usize],
+    virt: &[usize],
+    s: &Array2<f64>,
+    tol: f64,
+) -> Array2<Complex64> {
+    let smat = real2_as::<Complex64>(s);
+    let mut out = Array2::<Complex64>::zeros(c.raw_dim());
+
+    let c_occ = c.select(Axis(1), occ);
+    let c_occ = if occ.is_empty() {
+        c_occ
+    } else {
+        let soo = adjoint(&c_occ).dot(&smat).dot(&c_occ);
+        c_occ.dot(&loewdin_x(&soo, false, tol))
+    };
+
+    if !occ.is_empty() {
+        for (k, &p) in occ.iter().enumerate() {
+            out.column_mut(p).assign(&c_occ.column(k));
+        }
+    }
+
+    let c_vir = c.select(Axis(1), virt);
+    let c_vir = if virt.is_empty() {
+        c_vir
+    } else {
+        let c_vir_perp = if occ.is_empty() {
+            c_vir
+        } else {
+            let sov = adjoint(&c_occ).dot(&smat).dot(&c_vir);
+            c_vir - c_occ.dot(&sov)
+        };
+
+        let svv = adjoint(&c_vir_perp).dot(&smat).dot(&c_vir_perp);
+        c_vir_perp.dot(&loewdin_x(&svv, false, tol))
+    };
+
+    if !virt.is_empty() {
+        for (k, &p) in virt.iter().enumerate() {
+            out.column_mut(p).assign(&c_vir.column(k));
+        }
+    }
+
+    out
+}
+
+/// Convert one h-SCF state to the ordinary Hermitian orbital convention required by NOCI/Wick.
+/// h-SCF orbitals are optimised with the holomorphic constraint `C^T S C = I`, while NOCI matrix
+/// elements and Wick's theorem use the ordinary Hermitian bra-ket metric. This constructs a
+/// post-SCF orbital representation satisfying `C^\dagger S C = I` without changing the occupied
+/// or virtual subspaces.
+/// # Arguments:
+/// - `st`: h-SCF determinant state to normalise in place.
+/// - `s`: AO overlap matrix.
+/// # Returns:
+/// - `()`: Updates the stored alpha and beta orbital coefficients in place.
+pub fn normalise_hermitian(
+    st: &mut HSCFState,
+    s: &Array2<f64>,
+) {
+    let occ = spin_occupation(st);
+    let tol = 1.0e-12;
+
+    let ca = hermitian_orthonormalise_spin_basis(&st.ca, &occ.occ_alpha, &occ.virt_alpha, s, tol);
+    let cb = hermitian_orthonormalise_spin_basis(&st.cb, &occ.occ_beta, &occ.virt_beta, s, tol);
+
+    st.ca = Arc::new(ca);
+    st.cb = Arc::new(cb);
 }
 
 /// Build occupied-first complex orbitals from a real SCF seed.

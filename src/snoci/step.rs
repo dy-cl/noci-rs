@@ -1,12 +1,13 @@
 // snoci/step.rs
 
 use ndarray::{Array1, Array2};
+use num_complex::Complex64;
 
 use super::{CandidatePool, GMRESResult, PT2ProjectedOperator, SNOCIState};
-use crate::noci::{FockData, MOCache, NOCIData};
+use crate::noci::{FockData, MOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::time_call;
-use crate::{AoData, SCFState, input::Input};
+use crate::{AoData, DetState, input::Input};
 
 use super::{
     apply_omega_m, build_candidate_current_h, build_candidate_m, build_candidate_m_diag,
@@ -15,6 +16,15 @@ use super::{
 };
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::scf::fock;
+
+/// Return the real component of a scalar used for printed and stored energies.
+/// # Arguments:
+/// - `z`: Scalar value.
+/// # Returns:
+/// - `f64`: Real component.
+fn scalar_real<T: NOCIScalar + Into<Complex64>>(z: T) -> f64 {
+    z.into().re
+}
 
 /// Return a SNOCI state with empty selected, candidate score, and EPT2 fields.
 /// # Arguments:
@@ -26,13 +36,13 @@ use crate::scf::fock;
 /// # Returns:
 /// - `SNOCIState`: SNOCI state with empty selected determinants, empty candidate scores, and
 ///   zero EPT2 correction.
-fn empty_state(
+fn empty_state<T: NOCIScalar>(
     ecurrent: f64,
-    coeffs: Array1<f64>,
-    hcurrent: Array2<f64>,
-    scurrent: Array2<f64>,
-    candidates: Vec<SCFState>,
-) -> SNOCIState {
+    coeffs: Array1<T>,
+    hcurrent: Array2<T>,
+    scurrent: Array2<T>,
+    candidates: Vec<DetState<T>>,
+) -> SNOCIState<T> {
     SNOCIState {
         ecurrent,
         coeffs,
@@ -70,9 +80,9 @@ fn print_snoci_iteration_start(
 /// - `n`: Number of candidates.
 /// # Returns:
 /// - `()`: Prints the shifted Fock build message to standard output.
-fn print_build_candidate_m(n: usize) {
+fn print_build_candidate_m<T: NOCIScalar>(n: usize) {
     let nelem = n * (n + 1) / 2;
-    let mib = nelem as f64 * std::mem::size_of::<f64>() as f64 / 1024.0 / 1024.0;
+    let mib = nelem as f64 * std::mem::size_of::<T>() as f64 / 1024.0 / 1024.0;
     println!(
         "  Building upper triangle shifted Fock matrix ({} elements, {:.3} MiB)...",
         nelem, mib
@@ -88,12 +98,12 @@ fn print_build_candidate_m(n: usize) {
 /// - `gmres`: GMRES solve information for the current iteration.
 /// # Returns:
 /// - `()`: Prints the SNOCI iteration result to standard output.
-fn print_snoci_iteration_result(
+fn print_snoci_iteration_result<T: NOCIScalar>(
     it: usize,
     n_current: usize,
     e0: f64,
-    state: &SNOCIState,
-    gmres: &GMRESResult,
+    state: &SNOCIState<T>,
+    gmres: &GMRESResult<T>,
 ) {
     println!();
     println!("  SNOCI result");
@@ -121,15 +131,18 @@ fn print_snoci_iteration_result(
 /// - `wicks`: Mutable Wick's intermediates as we need to update Fock intermediates.
 /// # Returns:
 /// - `SNOCIState`: Final SNOCI state from the last completed iteration.
-pub fn snoci_step(
+pub fn snoci_step<T>(
     ao: &AoData,
-    current_space: &[SCFState],
-    noci_reference_basis: &[SCFState],
+    current_space: &[DetState<T>],
+    noci_reference_basis: &[DetState<T>],
     input: &Input,
-    mocache: &[MOCache<f64>],
+    mocache: &[MOCache<T>],
     tol: f64,
-    mut wicks: Option<&mut WicksShared<f64>>,
-) -> SNOCIState {
+    mut wicks: Option<&mut WicksShared<T>>,
+) -> SNOCIState<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
     time_call!(crate::timers::snoci::add_snoci_step, {
         let opts = input
             .snoci
@@ -138,8 +151,8 @@ pub fn snoci_step(
 
         let mut selected_space = current_space.to_vec();
 
-        let mut final_state: Option<SNOCIState> = None;
-        let mut candidate_pool: Option<CandidatePool> = None;
+        let mut final_state: Option<SNOCIState<T>> = None;
+        let mut candidate_pool: Option<CandidatePool<T>> = None;
 
         for it in 0..opts.max_iter {
             // Generate matrix elements for current space and solve GEVP for the energy.
@@ -196,8 +209,13 @@ pub fn snoci_step(
                 &selected_space,
                 &pool.candidates,
             );
-
-            let e0 = coeffs.dot(&focks.f_ii.dot(&coeffs));
+            
+            let fc = focks.f_ii.dot(&coeffs);
+            let e0_z = coeffs
+                .iter()
+                .zip(fc.iter())
+                .fold(T::from_real(0.0), |acc, (&c, &x)| acc + c.conj() * x);
+            let e0 = scalar_real(e0_z);
             let projection = build_snoci_projection(&overlaps, &focks, &coeffs, e0);
 
             let v_a = build_candidate_v(&h_ai, &coeffs);
@@ -217,7 +235,7 @@ pub fn snoci_step(
             print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
 
             let m = if opts.gmres.full_m {
-                print_build_candidate_m(op.candidates.len());
+                print_build_candidate_m::<T>(op.candidates.len());
                 Some(build_candidate_m(&op))
             } else {
                 None
@@ -235,7 +253,12 @@ pub fn snoci_step(
             );
 
             // Evaluate NOCI-PT2 energies, score and select candidates.
-            let ept2 = a.x.dot(&v_omega);
+            let ept2_z = v_omega
+                .iter()
+                .zip(a.x.iter())
+                .fold(T::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
+            let ept2 = scalar_real(ept2_z);
+
             let candidate_scores: Vec<f64> =
                 a.x.iter()
                     .zip(v_omega.iter())
@@ -279,7 +302,7 @@ pub fn snoci_step(
             print_snoci_iteration_result(
                 it,
                 selected_space.len(),
-                noci_reference_basis[0].e,
+                scalar_real(noci_reference_basis[0].e),
                 &state,
                 &a,
             );

@@ -12,9 +12,9 @@ use crate::noci::NOCIScalar;
 use crate::scf::{HSCFGenerationLookups, StateLookups};
 use crate::{AoData, DetState, Excitation, ExcitationSpin, HSCFState, SCFState};
 
-use crate::maths::real2_as;
-use crate::scf::{build_hscf_state, scf_cycle, spin_occupation};
 use crate::utils::random_pattern;
+use crate::maths::real2_as;
+use crate::scf::{build_hscf_state, normalise_hermitian, scf_cycle, spin_occupation};
 
 /// Real and holomorphic determinant states generated for a reference-basis request.
 pub struct ReferenceBasis {
@@ -330,14 +330,14 @@ fn run_mom_scf_state(
 /// - `excitation`: Excitation carried by the excited state.
 /// # Returns
 /// - `SCFState`: Excited state built from the reference state with modified occupancies.
-fn make_excited_state(
-    reference: &SCFState,
+fn make_excited_state<T: NOCIScalar>(
+    reference: &DetState<T>,
     occ: (u128, u128),
     label_suffix: &str,
     parent: usize,
     excitation: Excitation,
     parent_occ: (u128, u128),
-) -> SCFState {
+) -> DetState<T> {
     let pha = excitation_phase(
         parent_occ.0,
         &excitation.alpha.holes,
@@ -345,8 +345,8 @@ fn make_excited_state(
     );
     let phb = excitation_phase(parent_occ.1, &excitation.beta.holes, &excitation.beta.parts);
 
-    SCFState {
-        e: 0.0,
+    DetState {
+        e: T::from_real(0.0),
         oa: occ.0,
         ob: occ.1,
         pha,
@@ -962,6 +962,11 @@ fn generate_hscf_states(
     }
 
     mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol);
+    
+    for st in &mut out {
+        normalise_hermitian(st, &ao.s);
+    }
+
     out
 }
 
@@ -1112,12 +1117,12 @@ fn excitation_between(
 /// - `include_refs`: Whether or not to include the references in the returned basis.
 /// # Returns
 /// - `Vec<SCFState>`: Generated excited basis, optionally including the reference states.
-pub fn generate_excited_basis(
-    refs: &[SCFState],
+pub fn generate_excited_basis<T: NOCIScalar>(
+    refs: &[DetState<T>],
     input: &Input,
     include_refs: bool,
-) -> Vec<SCFState> {
-    let mut out = Vec::new();
+) -> Vec<DetState<T>> {
+    let mut out: Vec<DetState<T>> = Vec::new();
 
     for r in refs {
         let parent = r.parent;

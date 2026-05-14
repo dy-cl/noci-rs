@@ -181,8 +181,8 @@ def createEnergyLabel(idx: str, rawLabel: str) -> str:
         return "NOCIQMC"
     if idx.startswith("NOCI-PT2"):
         return "NOCI-PT2"
-    if idx.startswith("SNOCI"):
-        return "SNOCI"
+    #if idx.startswith("SNOCI"):
+    #    return "SNOCI"
     if idx.startswith("NOCI"):
         return "NOCI"
     if idx.startswith("FCI"):
