@@ -216,7 +216,7 @@ fn run_hscf_state(
     // Only reach this point if no previous h-SCF state exists, or continuation failed.
     if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
         let scales: &[f64] = if recipe.partner.is_some() {
-            &[0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00]
+            &[0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.25, 1.50, 2.00]
         } else {
             &[0.05]
         };

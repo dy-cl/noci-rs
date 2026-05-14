@@ -38,6 +38,23 @@ pub fn print_input(input: &Input) {
     println!("DO_FCI: {}", input.scf.do_fci);
     println!();
 
+    println!("HSCF");
+    println!("  MAX_CYCLE: {}", input.scf.h.max_cycle);
+    println!("  G_TOL: {:.12e}", input.scf.h.g_tol);
+    println!("  SR1_TOL: {:.12e}", input.scf.h.sr1_tol);
+    println!("  DENOM_TOL: {:.12e}", input.scf.h.denom_tol);
+    println!("  MAX_STEP: {:.12e}", input.scf.h.max_step);
+    println!("  LINE_STEPS: {}", input.scf.h.line_steps);
+    println!("  LINE_SHRINK: {:.12e}", input.scf.h.line_shrink);
+    println!("  HISTORY: {}", input.scf.h.history);
+
+    for recipe in recipes {
+        println!("  LABEL: {}", recipe.label);
+        println!("    HOLOMORPHIC: {}", recipe.holomorphic);
+        println!("    PARTNER: {:?}", recipe.partner);
+    }
+    println!();
+
     println!("STATES");
     match &input.states {
         StateType::Mom(recipes) => {
