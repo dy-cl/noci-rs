@@ -1006,7 +1006,7 @@ pub fn load_input(path: &str) -> Input {
                 seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
             }
         });
-    
+
     // SNOCI table.
     let snoci: Option<SNOCIOptions> =
         globals

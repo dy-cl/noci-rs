@@ -153,7 +153,7 @@ pub(in crate::snoci) fn build_snoci_projection<T: NOCIScalar>(
 /// # Returns:
 /// - `Vec<T>`: Packed upper triangle of `M`.
 pub(in crate::snoci) fn build_candidate_m<T: NOCIScalar>(
-    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    op: &PT2ProjectedOperator<'_, '_, '_, T>
 ) -> Vec<T> {
     time_call!(crate::timers::snoci::add_build_candidate_m, {
         let n = op.candidates.len();

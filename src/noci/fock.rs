@@ -38,7 +38,13 @@ pub(crate) fn calculate_f_pair<T: NOCIScalar>(
         }
 
         if data.input.wicks.enabled {
-            calculate_f_pair_wicks(pair.ldet, pair.gdet, data.tol, data.wicks.unwrap(), scratch.unwrap())
+            calculate_f_pair_wicks(
+                pair.ldet,
+                pair.gdet,
+                data.tol,
+                data.wicks.unwrap(),
+                scratch.unwrap(),
+            )
         } else {
             calculate_f_pair_naive(fock.fa, fock.fb, data.ao, pair.ldet, pair.gdet, data.tol)
         }

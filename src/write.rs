@@ -9,7 +9,7 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2};
 
 use crate::AoData;
-use crate::input::{ExcitationGen, Input, Spin, StateType};
+use crate::input::{ExcitationGen, Input, Spin, StateType, WicksStorage};
 
 /// Print input options at the top of output.
 /// # Arguments:
@@ -34,6 +34,8 @@ pub fn print_input(input: &Input) {
     println!("SCF");
     println!("MAX_CYCLE: {}", input.scf.max_cycle);
     println!("ETOL: {}", input.scf.e_tol);
+    println!("FDS_SDF_TOL: {}", input.scf.fds_sdf_tol);
+    println!("DTOL: {}", input.scf.d_tol);
     println!("DIIS SPACE DIM: {}", input.scf.diis.space);
     println!("DO_FCI: {}", input.scf.do_fci);
     println!();
@@ -48,10 +50,12 @@ pub fn print_input(input: &Input) {
     println!("  LINE_SHRINK: {:.12e}", input.scf.h.line_shrink);
     println!("  HISTORY: {}", input.scf.h.history);
 
-    for recipe in recipes {
-        println!("  LABEL: {}", recipe.label);
-        println!("    HOLOMORPHIC: {}", recipe.holomorphic);
-        println!("    PARTNER: {:?}", recipe.partner);
+    if let StateType::Mom(recipes) = &input.states {
+        for recipe in recipes {
+            println!("  LABEL: {}", recipe.label);
+            println!("    HOLOMORPHIC: {}", recipe.holomorphic);
+            println!("    PARTNER: {:?}", recipe.partner);
+        }
     }
     println!();
 
@@ -113,6 +117,7 @@ pub fn print_input(input: &Input) {
 
     println!("EXCIT");
     println!("LEVEL (ORDER): {:?}", input.excit.orders);
+    println!("ALL: {}", input.excit.all);
     println!();
 
     println!("PROP");
@@ -171,11 +176,13 @@ pub fn print_input(input: &Input) {
             println!("MAX_ADD: {}", s.max_add);
             println!("SIGMA: {}", s.sigma);
             println!("TOL: {}", s.tol);
+            println!("PRECONDITIONER: {}", s.preconditioner.as_str());
             println!("GMRES:");
             println!("  MAX_ITER: {}", s.gmres.max_iter);
             println!("  RESTART: {}", s.gmres.restart);
             println!("  RES_TOL: {}", s.gmres.res_tol);
             println!("  METRIC_TOL: {}", s.gmres.metric_tol);
+            println!("  FULL_M: {}", s.gmres.full_m);
         }
         None => {
             println!("ENABLED: false");
@@ -196,11 +203,19 @@ pub fn print_input(input: &Input) {
         input.write.write_excitation_hist
     );
     println!("WRITE_MATRICES: {}", input.write.write_matrices);
+    println!("WRITE_RESTART: {:?}", input.write.write_restart);
+    println!("READ_RESTART: {:?}", input.write.read_restart);
     println!();
 
     println!("WICKS");
     println!("ENABLED: {}", input.wicks.enabled);
     println!("COMPARE: {}", input.wicks.compare);
+    let storage = match &input.wicks.storage {
+        WicksStorage::RAM => "ram",
+        WicksStorage::Disk => "disk",
+    };
+    println!("STORAGE: {}", storage);
+    println!("CACHEDIR: {:?}", input.wicks.cachedir);
 
     println!("{}", "=".repeat(100));
 }

@@ -148,14 +148,7 @@ where
         }
     };
 
-    Some(run_hscf_state(
-        ao,
-        input,
-        recipe,
-        seed,
-        lookups.h.previous,
-        i,
-    ))
+    run_hscf_state(ao, input, recipe, seed, lookups.h.previous, i)
 }
 
 /// Run h-SCF continuation and fresh-seed attempts for one recipe.
@@ -167,7 +160,7 @@ where
 /// - `prev_h`: Previous h-SCF states keyed by label.
 /// - `i`: Recipe index used as the parent/state index.
 /// # Returns
-/// - `HSCFState`: Selected converged h-SCF state.
+/// - `Option<HSCFState>`: Selected converged h-SCF state, or `None` if no valid branch was found.
 fn run_hscf_state(
     ao: &AoData,
     input: &Input,
@@ -175,7 +168,7 @@ fn run_hscf_state(
     seed: &SCFState,
     prev_h: &HashMap<&str, &HSCFState>,
     i: usize,
-) -> HSCFState {
+) -> Option<HSCFState> {
     // Prefer analytic continuation from the previous geometry.
     if let Some(st) = prev_h.get(recipe.label.as_str()).copied() {
         if input.write.verbose {
@@ -196,27 +189,27 @@ fn run_hscf_state(
                     "Accepted continued h-SCF branch '{}' with d: {:.3e}.",
                     recipe.label, d
                 );
-                return hst;
-            } else {
-                println!(
-                    "Previous h-SCF branch '{}' collapsed onto real with d: {:.3e}. Trying recovery seeds.",
-                    recipe.label, d
-                );
+                return Some(hst);
             }
 
             println!(
-                    "Previous h-SCF branch '{}' did not converge. Trying recovery seeds.",
-                    recipe.label
+                "Previous h-SCF branch '{}' collapsed onto real with d: {:.3e}. Trying recovery seeds.",
+                recipe.label, d
+            );
+        } else {
+            println!(
+                "Previous h-SCF branch '{}' did not converge. Trying recovery seeds.",
+                recipe.label
             );
         }
-    } 
+    }
 
     let mut candidates: Vec<HSCFState> = Vec::new();
 
     // Only reach this point if no previous h-SCF state exists, or continuation failed.
     if recipe.spin_bias.is_some() || recipe.spatial_bias.is_some() {
         let scales: &[f64] = if recipe.partner.is_some() {
-            &[0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00, 1.25, 1.50, 2.00]
+            &[0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.80, 1.00]
         } else {
             &[0.05]
         };
@@ -573,19 +566,22 @@ fn opposite_spin_bias(
 }
 
 /// Select the h-SCF candidate consistent with the recipe's branch preference.
-/// # Arguments
+/// # Arguments:
 /// - `recipe`: Holomorphic recipe used to generate the candidates.
+/// - `seed`: Real SCF seed used for fresh h-SCF recovery.
+/// - `d_tol`: Density tolerance used to identify collapse onto the real seed.
 /// - `candidates`: Converged h-SCF candidates.
-/// # Returns
-/// - `HSCFState`: Selected h-SCF state.
+/// # Returns:
+/// - `Option<HSCFState>`: Selected h-SCF state, or `None` if no valid branch was found.
 fn select_hscf_candidate(
     recipe: &StateRecipe,
     seed: &SCFState,
     d_tol: f64,
     candidates: Vec<HSCFState>,
-) -> HSCFState {
+) -> Option<HSCFState> {
     if candidates.is_empty() {
-        panic!("No converged h-SCF candidate for '{}'", recipe.label);
+        println!("No converged h-SCF candidate for '{}'.", recipe.label);
+        return None;
     }
 
     if recipe.partner.is_some() {
@@ -593,26 +589,34 @@ fn select_hscf_candidate(
             .iter()
             .enumerate()
             .map(|(i, st)| (i, h_density_distance_from_real(st, seed)))
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap();
+            .filter(|(_, d)| *d > d_tol)
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap());
 
-        if best.1 > d_tol {
-            return candidates.into_iter().nth(best.0).unwrap();
+        if let Some((i, d)) = best {
+            println!(
+                "Accepted recovered h-SCF branch '{}' with d: {:.3e}.",
+                recipe.label, d
+            );
+            return candidates.into_iter().nth(i);
         }
+
+        println!(
+            "No recovered h-SCF branch '{}' survived collapse test.",
+            recipe.label
+        );
+        return None;
     }
 
     if recipe.spin_bias.is_some() {
         candidates
             .into_iter()
             .min_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap())
-            .unwrap()
     } else if recipe.spatial_bias.is_some() {
         candidates
             .into_iter()
             .max_by(|a, b| a.e.re.partial_cmp(&b.e.re).unwrap())
-            .unwrap()
     } else {
-        candidates.into_iter().next().unwrap()
+        candidates.into_iter().next()
     }
 }
 

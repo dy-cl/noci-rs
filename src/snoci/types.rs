@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2};
 
-use crate::input::SNOCIPreconditioner;
 use crate::DetState;
+use crate::input::SNOCIPreconditioner;
 use crate::noci::{FockData, NOCIData, NOCIScalar};
 
 use super::gmres::inner_product;
@@ -153,11 +153,13 @@ impl<T: NOCIScalar> Preconditioner<T> {
         let dmax = m_diag.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
         let dfloor = (1e-12_f64 * dmax).max(1e-14_f64);
 
-        let dinv = Array1::from_iter(
-            m_diag
-                .iter()
-                .map(|&x| if x.abs() > dfloor { T::from_real(1.0) / x } else { T::from_real(1.0) }),
-        );
+        let dinv = Array1::from_iter(m_diag.iter().map(|&x| {
+            if x.abs() > dfloor {
+                T::from_real(1.0) / x
+            } else {
+                T::from_real(1.0)
+            }
+        }));
 
         let n = m_diag.len();
 

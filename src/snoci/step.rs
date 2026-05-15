@@ -209,7 +209,7 @@ where
                 &selected_space,
                 &pool.candidates,
             );
-            
+
             let fc = focks.f_ii.dot(&coeffs);
             let e0_z = coeffs
                 .iter()

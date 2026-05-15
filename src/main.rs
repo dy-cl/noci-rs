@@ -18,7 +18,9 @@ use noci_rs::time_call;
 use noci_rs::timers;
 use noci_rs::{DetState, HSCFState, SCFState};
 
-use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
+use noci_rs::basis::{
+    generate_excited_basis, generate_reference_noci_basis, hermitian_hnoci_basis,
+};
 use noci_rs::deterministic::{projected_energy, propagate};
 use noci_rs::input::load_input;
 use noci_rs::mpiutils::broadcast;
@@ -188,11 +190,7 @@ fn run(
             };
             states = refs.states;
             hstates = refs.hstates;
-
-            hnoci_reference_basis = hstates.iter().filter(|s| s.noci_basis).cloned().collect();
-            for (i, st) in hnoci_reference_basis.iter_mut().enumerate() {
-                st.parent = i;
-            }
+            hnoci_reference_basis = hermitian_hnoci_basis(&hstates, &ao.s);
         }
 
         world.barrier();
@@ -230,8 +228,14 @@ fn run(
         // Reference NOCI and SNOCI occur only on rank 0 (with Rayon).
         if irank == 0 {
             let wicks_view = wicks_shared.as_ref().map(|ws| ws.view());
-            let (refb, e_ref, _c0v) =
-                run_reference_noci(&ao, input, &hstates, tol, &mocache, wicks_view);
+            let (refb, e_ref, _c0v) = run_reference_noci(
+                &ao,
+                input,
+                &hnoci_reference_basis,
+                tol,
+                &mocache,
+                wicks_view,
+            );
             hnoci_reference_basis = refb;
             e_noci_ref = e_ref;
 
@@ -244,7 +248,7 @@ fn run(
             if input.snoci.is_some() {
                 let post = PostSCFData {
                     ao: &ao,
-                    states: &hstates,
+                    states: &hnoci_reference_basis,
                     noci_reference_basis: &hnoci_reference_basis,
                     mocache: &mocache,
                     tol,
@@ -1474,7 +1478,7 @@ fn print_report(
     } else {
         println!("State(NOCI-reference): E: {}", res.e_noci_ref);
     }
-    
+
     if !res.hstates.is_empty() {
         if let Some(e_snoci) = res.e_snoci {
             if let Some((label, e0)) = ref_energy.as_ref() {

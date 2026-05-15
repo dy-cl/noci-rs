@@ -12,9 +12,9 @@ use crate::noci::NOCIScalar;
 use crate::scf::{HSCFGenerationLookups, StateLookups};
 use crate::{AoData, DetState, Excitation, ExcitationSpin, HSCFState, SCFState};
 
-use crate::utils::random_pattern;
 use crate::maths::real2_as;
 use crate::scf::{build_hscf_state, normalise_hermitian, scf_cycle, spin_occupation};
+use crate::utils::random_pattern;
 
 /// Real and holomorphic determinant states generated for a reference-basis request.
 pub struct ReferenceBasis {
@@ -22,6 +22,29 @@ pub struct ReferenceBasis {
     pub states: Vec<SCFState>,
     /// Complex h-SCF states plus promoted real states when holomorphic recipes are present.
     pub hstates: Vec<HSCFState>,
+}
+
+/// Build the Hermitian-normalised h-SCF reference basis used for NOCI/SNOCI matrix elements.
+/// The input states are not mutated, so generated h-SCF states remain in the holomorphic orbital
+/// convention required for branch tracking between geometries.
+/// # Arguments
+/// - `hstates`: Holomorphic h-SCF states generated for the current geometry.
+/// - `s`: AO overlap matrix.
+/// # Returns
+/// - `Vec<HSCFState>`: NOCI-basis h-SCF states with Hermitian-normalised orbitals and compact
+///   parent indices.
+pub fn hermitian_hnoci_basis(
+    hstates: &[HSCFState],
+    s: &Array2<f64>,
+) -> Vec<HSCFState> {
+    let mut out: Vec<HSCFState> = hstates.iter().filter(|st| st.noci_basis).cloned().collect();
+
+    for (i, st) in out.iter_mut().enumerate() {
+        normalise_hermitian(st, s);
+        st.parent = i;
+    }
+
+    out
 }
 
 /// Multiply a square sub-block of a matrix by a scalar in place.
@@ -962,11 +985,6 @@ fn generate_hscf_states(
     }
 
     mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol);
-    
-    for st in &mut out {
-        normalise_hermitian(st, &ao.s);
-    }
-
     out
 }
 
