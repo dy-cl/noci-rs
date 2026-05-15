@@ -387,7 +387,13 @@ pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
     p: &PT2Projection<T>,
     kind: crate::input::SNOCIPreconditioner,
 ) -> Preconditioner<T> {
-    Preconditioner::new(m_diag, p, kind)
+    let diag = if matches!(kind, crate::input::SNOCIPreconditioner::Diag) {
+        build_omega_m_diag(m_diag, p)
+    } else {
+        m_diag.clone()
+    };
+
+    Preconditioner::new(&diag, p, kind)
 }
 
 /// Build the unprojected candidate-current coupling vector `V`.
@@ -427,6 +433,28 @@ pub(in crate::snoci) fn build_omega_v<T: NOCIScalar>(
         let s_a0 = s_ai.dot(coeffs);
         v_a - s_a0.mapv(|x| T::from_real(ecurrent) * x)
     })
+}
+
+/// Build the diagonal of the projected candidate-candidate shifted Fock matrix `M^Omega`.
+///
+/// # Arguments:
+/// - `m_diag`: Diagonal of the unprojected candidate-candidate matrix `M`.
+/// - `p`: Projection contractions used to form `M^Omega`.
+///
+/// # Returns:
+/// - `Array1`: Diagonal entries of `M^Omega`.
+pub(in crate::snoci) fn build_omega_m_diag<T: NOCIScalar>(
+    m_diag: &Array1<T>,
+    p: &PT2Projection<T>,
+) -> Array1<T> {
+    let two_e0 = T::from_real(2.0 * p.e0);
+
+    Array1::from_iter((0..m_diag.len()).map(|a| {
+        m_diag[a]
+            - p.f_a0[a] * p.s_0a[a]
+            - p.s_a0[a] * p.f_0a[a]
+            + two_e0 * p.s_a0[a] * p.s_0a[a]
+    }))
 }
 
 /// Select the highest-scoring candidates above the selection threshold.
