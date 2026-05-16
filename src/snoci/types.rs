@@ -8,8 +8,6 @@ use crate::DetState;
 use crate::input::SNOCIPreconditioner;
 use crate::noci::{FockData, NOCIData, NOCIScalar};
 
-use super::gmres::inner_product;
-
 /// Storage for the result of a selected NOCI step.
 pub struct SNOCIState<T: NOCIScalar> {
     /// Current selected-space NOCI energy.
@@ -154,10 +152,11 @@ impl<T: NOCIScalar> Preconditioner<T> {
         let dfloor = (1e-12_f64 * dmax).max(1e-14_f64);
 
         let dinv = Array1::from_iter(m_diag.iter().map(|&x| {
-            if x.abs() > dfloor {
+            let ax = x.abs();
+            if ax > dfloor {
                 T::from_real(1.0) / x
             } else {
-                T::from_real(1.0)
+                x.conj() / T::from_real(dfloor * dfloor)
             }
         }));
 
@@ -191,10 +190,10 @@ impl<T: NOCIScalar> Preconditioner<T> {
         let z0 = Array1::from_iter(dinv.iter().zip(u0.iter()).map(|(&d, &u)| d * u));
         let z1 = Array1::from_iter(dinv.iter().zip(u1.iter()).map(|(&d, &u)| d * u));
 
-        let c00 = T::from_real(1.0) + inner_product(&v0, &z0);
-        let c01 = inner_product(&v0, &z1);
-        let c10 = inner_product(&v1, &z0);
-        let c11 = T::from_real(1.0) + inner_product(&v1, &z1);
+        let c00 = T::from_real(1.0) + bilinear_dot(&v0, &z0);
+        let c01 = bilinear_dot(&v0, &z1);
+        let c10 = bilinear_dot(&v1, &z0);
+        let c11 = T::from_real(1.0) + bilinear_dot(&v1, &z1);
 
         let det = c00 * c11 - c01 * c10;
         let active = det.abs() > 1e-14_f64;
@@ -250,4 +249,15 @@ impl<T: NOCIScalar> Preconditioner<T> {
         }
         y
     }
+}
+
+/// Compute the unconjugated vector contraction used by the projected operator's
+/// rank updates.
+fn bilinear_dot<T: NOCIScalar>(
+    x: &Array1<T>,
+    y: &Array1<T>,
+) -> T {
+    x.iter()
+        .zip(y.iter())
+        .fold(T::from_real(0.0), |acc, (&xi, &yi)| acc + xi * yi)
 }

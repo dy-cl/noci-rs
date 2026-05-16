@@ -145,11 +145,13 @@ fn orthogonalise_arnoldi_vector<T: NOCIScalar>(
     w: &mut Array1<T>,
     k: usize,
 ) {
-    for j in 0..=k {
-        h[(j, k)] = inner_product(&q[j], w);
-        let hjk = h[(j, k)];
-        for i in 0..w.len() {
-            w[i] -= hjk * q[j][i];
+    for _ in 0..2 {
+        for j in 0..=k {
+            let hjk = inner_product(&q[j], w);
+            h[(j, k)] += hjk;
+            for i in 0..w.len() {
+                w[i] -= hjk * q[j][i];
+            }
         }
     }
 }
@@ -319,8 +321,7 @@ where
             );
         }
 
-        // Stop early if the Krylov solve has converged or Arnoldi has broken down.
-        if residual_est <= opts.res_tol || h_next <= SMALL {
+        if h_next <= SMALL {
             break;
         }
     }
