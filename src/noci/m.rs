@@ -70,8 +70,6 @@ fn calculate_m_pair_orthogonal<T: NOCIScalar>(
     let na = xa.count_ones() as usize;
     let nb = xb.count_ones() as usize;
 
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
-
     if na == 0 && nb == 0 {
         let mut f = <T as From<f64>>::from(0.0);
 
@@ -89,21 +87,22 @@ fn calculate_m_pair_orthogonal<T: NOCIScalar>(
             f += cache.fb[(p, p)];
         }
 
-        return det_phase * (f - <T as From<f64>>::from(e0));
+        let s = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+        return f - <T as From<f64>>::from(e0) * s;
     }
 
     if na == 2 && nb == 0 {
         let hole = (gdet.oa & xa).trailing_zeros() as usize;
         let part = (ldet.oa & xa).trailing_zeros() as usize;
         let phase = <T as From<f64>>::from(excitation_phase(gdet.oa, &[hole], &[part]));
-        return det_phase * phase * cache.fa[(part, hole)];
+        return phase * cache.fa[(part, hole)];
     }
 
     if na == 0 && nb == 2 {
         let hole = (gdet.ob & xb).trailing_zeros() as usize;
         let part = (ldet.ob & xb).trailing_zeros() as usize;
         let phase = <T as From<f64>>::from(excitation_phase(gdet.ob, &[hole], &[part]));
-        return det_phase * phase * cache.fb[(part, hole)];
+        return phase * cache.fb[(part, hole)];
     }
 
     <T as From<f64>>::from(0.0)

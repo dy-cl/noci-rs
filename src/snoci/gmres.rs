@@ -321,7 +321,7 @@ where
             );
         }
 
-        if h_next <= SMALL {
+        if residual_est <= opts.res_tol || h_next <= SMALL {
             break;
         }
     }
