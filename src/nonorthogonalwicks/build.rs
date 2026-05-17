@@ -408,41 +408,47 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 
     /// Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
     /// intermediates required for scalar-valued one-body coupling.
-    /// # Arguments:
-    /// - `l_c`: Full AO coefficient matrix of |^\Lambda\Psi\rangle.
-    /// - `f_munu`: Scalar-valued one-electron AO operator.
-    /// - `x`: {}^{\Gamma\Lambda} X_{ij}^{m_k}.
-    /// - `y`: {}^{\Gamma\Lambda} Y_{ij}^{m_k}.
-    /// # Returns
-    /// - `(T, Array2<T>)`: Scalar F_0^{m_k} and matrix F_{ab}^{m_i,m_j}.
     pub fn construct_f_scalar(
-        l_c: &Array2<T>,
+        s_munu: &Array2<f64>,
         f_munu: &Array2<T>,
-        x: &Array2<T>,
-        y: &Array2<T>,
-    ) -> (T, Array2<T>) {
-        let nmo = l_c.ncols();
-        let ll_fock = adjoint(l_c).dot(f_munu).dot(l_c);
+        g: &DetState<T>,
+        l: &DetState<T>,
+        spin: Spin,
+        tol: f64,
+    ) -> ([T; 2], [[Array2<T>; 2]; 2]) {
+        let (g_c, go, l_c, lo) = match spin {
+            Spin::Alpha => (g.ca.as_ref(), g.oa, l.ca.as_ref(), l.oa),
+            Spin::Beta => (g.cb.as_ref(), g.ob, l.cb.as_ref(), l.ob),
+            Spin::Both => panic!("SameSpinBuild requires either alpha or beta spin, not both."),
+        };
 
-        let ll_x = x.slice(s![0..nmo, 0..nmo]).to_owned();
-        let gl_x = x.slice(s![nmo..2 * nmo, 0..nmo]).to_owned();
-        let ll_y = y.slice(s![0..nmo, 0..nmo]).to_owned();
-        let lg_y = y.slice(s![0..nmo, nmo..2 * nmo]).to_owned();
+        let l_c_occ = occ_coeffs(l_c, lo);
+        let g_c_occ = occ_coeffs(g_c, go);
 
-        let ll_f0 = T::einsum_ba_ab(&ll_x, &ll_fock);
+        let (tilde_s_occ, g_tilde_c_occ, l_tilde_c_occ, _) =
+            Self::perform_ortho_and_svd_and_rotate(s_munu, &l_c_occ, &g_c_occ, 1e-20);
+        let zeros: Vec<usize> = tilde_s_occ
+            .iter()
+            .enumerate()
+            .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
+            .collect();
+        let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros, tol);
+        let mao = [&m0, &m1];
 
-        let ll_f = ll_y.dot(&ll_fock).dot(&ll_x);
-        let gl_f = gl_x.dot(&ll_fock).dot(&ll_x);
-        let lg_f = ll_y.dot(&ll_fock).dot(&lg_y);
-        let gg_f = gl_x.dot(&ll_fock).dot(&lg_y);
+        let (cx0, xc0) = DiffSpinBuild::build_cx_xc(mao[0], s_munu, l_c, g_c, 0);
+        let (cx1, xc1) = DiffSpinBuild::build_cx_xc(mao[1], s_munu, l_c, g_c, 1);
+        let cx = [&cx0, &cx1];
+        let xc = [&xc0, &xc1];
 
-        let mut f = Array2::<T>::zeros((2 * nmo, 2 * nmo));
-        f.slice_mut(s![0..nmo, 0..nmo]).assign(&ll_f);
-        f.slice_mut(s![0..nmo, nmo..2 * nmo]).assign(&lg_f);
-        f.slice_mut(s![nmo..2 * nmo, 0..nmo]).assign(&gl_f);
-        f.slice_mut(s![nmo..2 * nmo, nmo..2 * nmo]).assign(&gg_f);
+        let f0 = [
+            T::einsum_ba_ab(mao[0], f_munu),
+            T::einsum_ba_ab(mao[1], f_munu),
+        ];
+        let ff = std::array::from_fn(|mi| {
+            std::array::from_fn(|mj| adjoint(cx[mi]).dot(f_munu).dot(xc[mj]))
+        });
 
-        (ll_f0, f)
+        (f0, ff)
     }
 
     /// Calculate the Coulomb contraction J^{m_k}_{\mu\nu} required for the two electron

@@ -16,6 +16,9 @@ use crate::maths::{
 
 /// Scalar type accepted by generic NOCI matrix-element code.
 pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
+    /// Construct a purely imaginary scalar.
+    fn from_imag(x: f64) -> Self;
+
     /// Calculate Einstein summation of scalar matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
@@ -72,6 +75,14 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
 }
 
 impl NOCIScalar for f64 {
+    fn from_imag(x: f64) -> Self {
+        if x == 0.0 {
+            0.0
+        } else {
+            panic!("non-zero SNOCI imaginary shift requires complex arithmetic")
+        }
+    }
+
     /// Calculate Einstein summation of real matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
@@ -136,6 +147,10 @@ impl NOCIScalar for f64 {
 }
 
 impl NOCIScalar for Complex64 {
+    fn from_imag(x: f64) -> Self {
+        Complex64::new(0.0, x)
+    }
+
     /// Calculate Einstein summation of complex matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments

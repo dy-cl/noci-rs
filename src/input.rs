@@ -569,6 +569,7 @@ impl Default for SNOCIPreconditioner {
 pub struct SNOCIOptions {
     pub sigma: f64,
     pub tol: f64,
+    pub imag_shift: f64,
     pub max_iter: usize,
     pub max_add: usize,
     pub max_dim: usize,
@@ -584,6 +585,7 @@ impl Default for SNOCIOptions {
         Self {
             sigma: 1e-6,
             tol: 1e-8,
+            imag_shift: 0.0,
             max_iter: 100,
             max_add: 1,
             max_dim: 100,
@@ -1046,6 +1048,7 @@ pub fn load_input(path: &str) -> Input {
                 SNOCIOptions {
                     sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
                     tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
+                    imag_shift: snoci_tbl.get("imag_shift").unwrap_or(defaults.imag_shift),
                     max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
                     max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
                     max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),

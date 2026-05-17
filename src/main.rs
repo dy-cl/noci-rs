@@ -366,16 +366,53 @@ fn run(
             e_noci_qmc_det = Some(e_det);
         }
 
-        if input.snoci.is_some() {
-            let (e_snoci_res, e_pt2_res) = run_snoci(
-                &post,
-                &noci_reference_basis,
-                input,
-                wicks_shared.as_mut(),
-                world,
-            );
-            e_snoci = Some(e_snoci_res);
-            e_pt2 = Some(e_pt2_res);
+        if let Some(snoci) = input.snoci.as_ref() {
+            if snoci.imag_shift == 0.0 {
+                let (e_snoci_res, e_pt2_res) = run_snoci(
+                    &post,
+                    &noci_reference_basis,
+                    input,
+                    wicks_shared.as_mut(),
+                    world,
+                );
+                e_snoci = Some(e_snoci_res);
+                e_pt2 = Some(e_pt2_res);
+            } else {
+                println!("Running imaginary-shifted SNOCI/NOCI-PT2 in complex arithmetic....");
+                let complex_reference_basis: Vec<HSCFState> = noci_reference_basis
+                    .iter()
+                    .map(HSCFState::from_real)
+                    .collect();
+                let mut complex_wicks_shared: Option<WicksShared<Complex64>> =
+                    if input.wicks.enabled || input.wicks.compare {
+                        Some(build_wicks_shared(
+                            world,
+                            &ao,
+                            &complex_reference_basis,
+                            tol,
+                            input,
+                        ))
+                    } else {
+                        None
+                    };
+                let complex_mocache = build_mo_cache(&ao, &complex_reference_basis, tol);
+                let complex_post = PostSCFData {
+                    ao: &ao,
+                    states: &complex_reference_basis,
+                    noci_reference_basis: &complex_reference_basis,
+                    mocache: &complex_mocache,
+                    tol,
+                };
+                let (e_snoci_res, e_pt2_res) = run_snoci(
+                    &complex_post,
+                    &complex_reference_basis,
+                    input,
+                    complex_wicks_shared.as_mut(),
+                    world,
+                );
+                e_snoci = Some(e_snoci_res);
+                e_pt2 = Some(e_pt2_res);
+            }
         }
     }
 

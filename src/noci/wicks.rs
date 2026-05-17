@@ -240,42 +240,26 @@ pub fn update_wicks_fock<T: NOCIScalar>(
     fa: &Array2<T>,
     fb: &Array2<T>,
     noci_reference_basis: &[DetState<T>],
+    s: &Array2<f64>,
+    tol: f64,
     wicks: &mut WicksShared<T>,
 ) {
     let nref = noci_reference_basis.len();
 
     for (i, ri) in noci_reference_basis.iter().enumerate().take(nref) {
-        for j in 0..nref {
+        for (j, rj) in noci_reference_basis.iter().enumerate().take(nref) {
             let idx = i * nref + j;
 
-            let (xa, ya, xb, yb, off_aa, off_bb) = {
+            let (off_aa, off_bb) = {
                 let view = wicks.view();
-                let pair = view.pair(i, j);
-
-                let xa = [pair.aa.x(0).to_owned(), pair.aa.x(1).to_owned()];
-                let ya = [pair.aa.y(0).to_owned(), pair.aa.y(1).to_owned()];
-                let xb = [pair.bb.x(0).to_owned(), pair.bb.x(1).to_owned()];
-                let yb = [pair.bb.y(0).to_owned(), pair.bb.y(1).to_owned()];
-
                 let off_aa = view.off[idx].aa;
                 let off_bb = view.off[idx].bb;
 
-                (xa, ya, xb, yb, off_aa, off_bb)
+                (off_aa, off_bb)
             };
 
-            let (f0_0fa, f00fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[0], &ya[0]);
-            let (_, f01fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[0], &ya[1]);
-            let (_, f10fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[1], &ya[0]);
-            let (f0_1fa, f11fa) = SameSpinBuild::construct_f_scalar(&ri.ca, fa, &xa[1], &ya[1]);
-            let f0fa: [T; 2] = [f0_0fa, f0_1fa];
-            let ffa: [[Array2<T>; 2]; 2] = [[f00fa, f01fa], [f10fa, f11fa]];
-
-            let (f0_0fb, f00fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[0], &yb[0]);
-            let (_, f01fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[0], &yb[1]);
-            let (_, f10fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[1], &yb[0]);
-            let (f0_1fb, f11fb) = SameSpinBuild::construct_f_scalar(&ri.cb, fb, &xb[1], &yb[1]);
-            let f0fb: [T; 2] = [f0_0fb, f0_1fb];
-            let ffb: [[Array2<T>; 2]; 2] = [[f00fb, f01fb], [f10fb, f11fb]];
+            let (f0fa, ffa) = SameSpinBuild::construct_f_scalar(s, fa, rj, ri, Spin::Alpha, tol);
+            let (f0fb, ffb) = SameSpinBuild::construct_f_scalar(s, fb, rj, ri, Spin::Beta, tol);
 
             {
                 let view = wicks.view_mut();

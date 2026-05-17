@@ -10,9 +10,10 @@ use crate::time_call;
 use crate::{AoData, DetState, input::Input};
 
 use super::{
-    apply_omega_m, build_candidate_current_h, build_candidate_m, build_candidate_m_diag,
-    build_candidate_v, build_omega_v, build_preconditioner, build_snoci_focks,
-    build_snoci_overlaps, build_snoci_projection, gmres, select_candidates, solve_current_space,
+    apply_shifted_omega_m, build_candidate_current_h, build_candidate_m, build_candidate_m_diag,
+    build_candidate_s_diag, build_candidate_v, build_omega_v, build_preconditioner,
+    build_snoci_focks, build_snoci_overlaps, build_snoci_projection, gmres, select_candidates,
+    solve_current_space,
 };
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::scf::fock;
@@ -192,7 +193,7 @@ where
             if input.wicks.enabled
                 && let Some(ws) = wicks.as_deref_mut()
             {
-                update_wicks_fock(&fa, &fb, noci_reference_basis, ws);
+                update_wicks_fock(&fa, &fb, noci_reference_basis, &ao.s, tol, ws);
             }
 
             // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
@@ -242,22 +243,38 @@ where
             };
 
             let m_diag = build_candidate_m_diag(&op, m.as_deref());
-            let prec = build_preconditioner(&m_diag, op.projection, opts.preconditioner);
+            let s_diag = (opts.imag_shift != 0.0).then(|| build_candidate_s_diag(&op));
+            let prec = build_preconditioner(
+                &m_diag,
+                s_diag.as_ref(),
+                op.projection,
+                opts.preconditioner,
+                opts.imag_shift,
+            );
             let rhs = v_omega.mapv(|x| -x);
 
             let a = gmres(
-                |x| apply_omega_m(&op, x, m.as_deref()),
+                |x| apply_shifted_omega_m(&op, x, m.as_deref(), opts.imag_shift),
                 |x| prec.apply(x),
                 &rhs,
                 &opts.gmres,
             );
 
             // Evaluate NOCI-PT2 energies, score and select candidates.
-            let ept2_z = v_omega
+            let ma = apply_shifted_omega_m(&op, &a.x, m.as_deref(), opts.imag_shift);
+            let ama =
+                a.x.iter()
+                    .zip(ma.iter())
+                    .fold(T::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
+            let av =
+                a.x.iter()
+                    .zip(v_omega.iter())
+                    .fold(T::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
+            let va = v_omega
                 .iter()
                 .zip(a.x.iter())
                 .fold(T::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
-            let ept2 = scalar_real(ept2_z);
+            let ept2 = scalar_real(ama + av + va);
 
             let candidate_scores: Vec<f64> =
                 a.x.iter()
