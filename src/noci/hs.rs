@@ -324,9 +324,7 @@ pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
         let h2ab = two_electron_diff(&ao.eri_coul, &pa, &pb);
         let h2 = h2aa + h2bb + h2ab;
 
-        let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
-
-        (det_phase * (hnuc + h1 + h2), det_phase * s)
+        ((hnuc + h1 + h2), s)
     })
 }
 

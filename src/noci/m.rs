@@ -139,9 +139,8 @@ fn calculate_m_pair_naive<T: NOCIScalar>(
 
     let s = pa.s * pb.s;
     let f = pb.s * one_electron_scalar(fa, &pa) + pa.s * one_electron_scalar(fb, &pb);
-    let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
 
-    det_phase * (f - <T as From<f64>>::from(e0) * s)
+    f - <T as From<f64>>::from(e0) * s
 }
 
 /// Calculate the shifted candidate-candidate matrix element using extended

@@ -153,9 +153,7 @@ fn calculate_f_pair_naive<T: NOCIScalar>(
         let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
         let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
 
-        let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
-
-        det_phase * (pb.s * one_electron_scalar(fa, &pa) + pa.s * one_electron_scalar(fb, &pb))
+        pb.s * one_electron_scalar(fa, &pa) + pa.s * one_electron_scalar(fb, &pb)
     })
 }
 
