@@ -10,7 +10,7 @@ use super::types::{DetPair, NOCIData, NOCIScalar};
 
 /// Wrapper function which dispatches to overlap matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved.
-/// If the determinant pair have the same Hermitian-orthonormal parent we may use the standard
+/// If the determinant pair have the same real orthonormal parent we may use the standard
 /// Slater-Condon rules, if not we can either use generalised Slater-Condon rules or extended
 /// non-orthogonal Wick's theorem to evaluate the matrix element.
 /// # Arguments:
@@ -32,7 +32,7 @@ pub(crate) fn calculate_s_pair<T: NOCIScalar>(
             let mocache = data
                 .mocache
                 .expect("Orthogonal overlap matrix elements require mocache.");
-            if mocache[ldet.parent].hermitian_orthonormal {
+            if mocache[ldet.parent].orthogonal_slater_condon {
                 return calculate_s_pair_orthogonal(ldet, gdet);
             }
         }

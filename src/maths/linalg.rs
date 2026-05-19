@@ -83,6 +83,7 @@ pub fn loewdin_x<T: StateScalar>(
         vecs.dot(&d)
     } else {
         let (vals, vecs) = s.eigh(UPLO::Lower).unwrap();
+        let vecs = vecs.mapv(|z| z.conj());
         let d = Array2::from_diag(&Array1::from_iter(
             vals.iter().map(|&x| T::from_real(1.0 / x.sqrt())),
         ));

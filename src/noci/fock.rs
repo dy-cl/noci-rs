@@ -12,7 +12,7 @@ use crate::nonorthogonalwicks::{lg_f, lg_overlap, prepare_same};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved. If the determinant pair have the
-/// same Hermitian-orthonormal parents we may use the standard Slater-Condon rules, if not we can
+/// same real orthonormal parents we may use the standard Slater-Condon rules, if not we can
 /// either use generalised Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate
 /// the matrix element.
 /// # Arguments:
@@ -32,7 +32,7 @@ pub(crate) fn calculate_f_pair<T: NOCIScalar>(
         if pair.ldet.parent == pair.gdet.parent {
             let cache = &fock.fock_mocache[pair.ldet.parent];
 
-            if cache.hermitian_orthonormal {
+            if cache.orthogonal_slater_condon {
                 return calculate_f_pair_orthogonal(cache, pair.ldet, pair.gdet);
             }
         }

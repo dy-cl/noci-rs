@@ -31,7 +31,7 @@ pub(crate) fn calculate_m_pair<T: NOCIScalar>(
 
     if ldet.parent == gdet.parent {
         let cache = &fock.fock_mocache[ldet.parent];
-        if cache.hermitian_orthonormal {
+        if cache.orthogonal_slater_condon {
             return calculate_m_pair_orthogonal(cache, ldet, gdet, e0);
         }
     }

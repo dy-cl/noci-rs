@@ -527,13 +527,15 @@ pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
     imag_shift: f64,
 ) -> Preconditioner<T> {
     if imag_shift != 0.0 {
-        let q_diag = build_omega_s_diag(
-            s_diag.expect("shifted preconditioner requires S diagonal"),
-            p,
-        );
+        let s_diag = s_diag.expect("shifted preconditioner requires S diagonal");
         let iq = T::from_imag(imag_shift);
-        let diag = build_omega_m_diag(m_diag, p) + q_diag.mapv(|q| iq * q);
-        return Preconditioner::new(&diag, p, crate::input::SNOCIPreconditioner::Diag);
+        let diag = if matches!(kind, crate::input::SNOCIPreconditioner::Diag) {
+            let q_diag = build_omega_s_diag(s_diag, p);
+            build_omega_m_diag(m_diag, p) + q_diag.mapv(|q| iq * q)
+        } else {
+            m_diag + &s_diag.mapv(|s| iq * s)
+        };
+        return Preconditioner::new(&diag, p, kind, imag_shift);
     }
 
     let diag = if matches!(kind, crate::input::SNOCIPreconditioner::Diag) {
@@ -542,7 +544,7 @@ pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
         m_diag.clone()
     };
 
-    Preconditioner::new(&diag, p, kind)
+    Preconditioner::new(&diag, p, kind, 0.0)
 }
 
 /// Build the unprojected candidate-current coupling vector `V`.

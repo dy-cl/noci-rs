@@ -11,7 +11,7 @@ use crate::time_call;
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
 /// depending on user input and properties of the determinant pair involved. If the determinant
-/// pair have the same Hermitian-orthonormal parents we may use the standard Slater-Condon rules,
+/// pair have the same real orthonormal parents we may use the standard Slater-Condon rules,
 /// if not we can either use generalised Slater-Condon rules or extended non-orthogonal Wick's
 /// theorem to evaluate the matrix element.
 /// # Arguments:
@@ -34,7 +34,7 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
                 .mocache
                 .expect("Orthogonal Hamiltonian matrix elements require mocache.");
             let cache = &mocache[ldet.parent];
-            if cache.hermitian_orthonormal {
+            if cache.orthogonal_slater_condon {
                 return calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
             }
         }

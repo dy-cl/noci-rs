@@ -474,8 +474,8 @@ pub struct MOCache<T: NOCIScalar> {
     pub eri_bb_asym: Array4<T>,
     /// Coulomb different-spin ERIs in parent alpha/beta MO basis.
     pub eri_ab_coul: Array4<T>,
-    /// Whether parent alpha and beta MO spaces are Hermitian-orthonormal.
-    pub hermitian_orthonormal: bool,
+    /// Whether the parent is suitable for ordinary orthogonal Slater-Condon rules.
+    pub orthogonal_slater_condon: bool,
 }
 
 /// MO-basis Fock caches for orthogonal-parent matrix elements.
@@ -484,6 +484,6 @@ pub struct FockMOCache<T: NOCIScalar> {
     pub fa: Array2<T>,
     /// Spin-beta Fock matrix in the parent beta MO basis.
     pub fb: Array2<T>,
-    /// Whether parent alpha and beta MO spaces are Hermitian-orthonormal.
-    pub hermitian_orthonormal: bool,
+    /// Whether the parent is suitable for ordinary orthogonal Slater-Condon rules.
+    pub orthogonal_slater_condon: bool,
 }

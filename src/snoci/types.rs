@@ -141,12 +141,14 @@ impl<T: NOCIScalar> Preconditioner<T> {
     /// - `m_diag`: Diagonal of the unprojected candidate-candidate matrix `M`.
     /// - `p`: Projection contractions used to form `M^Omega`.
     /// - `kind`: Requested SNOCI preconditioner type.
+    /// - `imag_shift`: Imaginary shift strength `epsilon`.
     /// # Returns:
     /// - `Preconditioner`: Diagonal or rank-2 Woodbury preconditioner.
     pub(in crate::snoci) fn new(
         m_diag: &Array1<T>,
         p: &PT2Projection<T>,
         kind: SNOCIPreconditioner,
+        imag_shift: f64,
     ) -> Self {
         let dmax = m_diag.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
         let dfloor = (1e-12_f64 * dmax).max(1e-14_f64);
@@ -181,7 +183,7 @@ impl<T: NOCIScalar> Preconditioner<T> {
             p.f_a0
                 .iter()
                 .zip(p.s_a0.iter())
-                .map(|(&f, &s)| -f + T::from_real(2.0 * p.e0) * s),
+                .map(|(&f, &s)| -f + (T::from_real(2.0 * p.e0) - T::from_imag(imag_shift)) * s),
         );
         let u1 = p.s_a0.mapv(|s| -s);
         let v0 = p.s_0a.clone();
