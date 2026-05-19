@@ -1,7 +1,7 @@
 use std::fs;
 use std::str::FromStr;
 
-use rlua::{Lua, Value, Table};
+use rlua::{Lua, Table, Value};
 
 pub enum Propagator {
     Unshifted,
@@ -28,7 +28,7 @@ impl Propagator {
 
 impl FromStr for Propagator {
     type Err = String;
-    
+
     /// Parse propagator type from input string.
     /// # Arguments:
     /// - `s`: String specifying the propagator type.
@@ -90,7 +90,7 @@ impl Default for ExcitationGen {
 }
 
 pub enum Spin {
-    Alpha, 
+    Alpha,
     Beta,
     Both,
 }
@@ -165,17 +165,56 @@ impl Default for DiisOptions {
     /// # Returns:
     /// - `Self`: DIIS options with default subspace size.
     fn default() -> Self {
-        Self {
-            space: 8,
-        }
+        Self { space: 8 }
     }
 }
 
 pub struct SCFInfo {
     pub max_cycle: i32,
     pub e_tol: f64,
+    pub fds_sdf_tol: f64,
+    pub d_tol: f64,
     pub diis: DiisOptions,
     pub do_fci: bool,
+    pub h: HSCFOptions,
+}
+
+/// Options controlling holomorphic SCF optimisation.
+pub struct HSCFOptions {
+    /// Maximum number of h-SCF quasi-Newton iterations.
+    pub max_cycle: usize,
+    /// Convergence threshold for the occupied-virtual gradient norm.
+    pub g_tol: f64,
+    /// Threshold for accepting SR1 secant updates.
+    pub sr1_tol: f64,
+    /// Minimum orbital-energy gap used in energy weighting.
+    pub denom_tol: f64,
+    /// Maximum occupied-virtual step norm.
+    pub max_step: f64,
+    /// Maximum number of backtracking line-search steps.
+    pub line_steps: usize,
+    /// Multiplicative shrink factor for line-search steps.
+    pub line_shrink: f64,
+    /// Maximum number of stored secant pairs.
+    pub history: usize,
+}
+
+impl Default for HSCFOptions {
+    /// Return default h-SCF quasi-Newton options.
+    /// # Returns:
+    /// - `Self`: h-SCF quasi-Newton options with conservative convergence settings.
+    fn default() -> Self {
+        Self {
+            max_cycle: 100,
+            g_tol: 1e-10,
+            sr1_tol: 1e-12,
+            denom_tol: 1e-10,
+            max_step: 0.5,
+            line_steps: 12,
+            line_shrink: 0.5,
+            history: 20,
+        }
+    }
 }
 
 impl Default for SCFInfo {
@@ -186,15 +225,18 @@ impl Default for SCFInfo {
         Self {
             max_cycle: 10_000,
             e_tol: 1e-12,
+            fds_sdf_tol: 1e-8,
+            d_tol: 1e-4,
             diis: DiisOptions::default(),
             do_fci: false,
+            h: HSCFOptions::default(),
         }
     }
 }
 
 pub struct SCFExcitation {
-    pub spin: Spin, 
-    pub occ: i32, 
+    pub spin: Spin,
+    pub occ: i32,
     pub vir: i32,
 }
 
@@ -213,7 +255,7 @@ impl Default for SCFExcitation {
 
 pub struct SpinBias {
     pub pattern: Vec<i8>,
-    pub pol: f64
+    pub pol: f64,
 }
 
 impl Default for SpinBias {
@@ -246,11 +288,13 @@ impl Default for SpatialBias {
 }
 
 pub struct StateRecipe {
-    pub label: String, 
+    pub label: String,
     pub spin_bias: Option<SpinBias>,
     pub spatial_bias: Option<SpatialBias>,
     pub scfexcitation: Option<SCFExcitation>,
+    pub partner: Option<String>,
     pub noci: bool,
+    pub holomorphic: bool,
 }
 
 impl Default for StateRecipe {
@@ -264,7 +308,9 @@ impl Default for StateRecipe {
             spin_bias: None,
             spatial_bias: None,
             scfexcitation: None,
+            partner: None,
             noci: true,
+            holomorphic: false,
         }
     }
 }
@@ -414,8 +460,8 @@ pub struct Metadynamics {
     pub lambda: f64,
     pub labels_rhf: Vec<String>,
     pub labels_uhf: Vec<String>,
-    pub spatial_patterns_rhf: Vec<Option<Vec<i8>>>, 
-    pub spin_patterns_uhf: Vec<Option<Vec<i8>>>,   
+    pub spatial_patterns_rhf: Vec<Option<Vec<i8>>>,
+    pub spin_patterns_uhf: Vec<Option<Vec<i8>>>,
     pub max_attempts: usize,
 }
 
@@ -454,8 +500,8 @@ impl Default for StateType {
 }
 
 pub struct GMRESOptions {
-    pub max_iter: usize,      
-    pub res_tol: f64, 
+    pub max_iter: usize,
+    pub res_tol: f64,
     pub metric_tol: f64,
     pub restart: usize,
     pub full_m: bool,
@@ -476,12 +522,58 @@ impl Default for GMRESOptions {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum SNOCIPreconditioner {
+    Diag,
+    Woodbury,
+}
+
+impl SNOCIPreconditioner {
+    /// Return SNOCI preconditioner as input string.
+    /// # Returns:
+    /// - `&'static str`: String representation used in input parsing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Diag => "diag",
+            Self::Woodbury => "woodbury",
+        }
+    }
+}
+
+impl FromStr for SNOCIPreconditioner {
+    type Err = String;
+
+    /// Parse SNOCI preconditioner from input string.
+    /// # Arguments:
+    /// - `s`: String specifying the SNOCI preconditioner.
+    /// # Returns:
+    /// - `Result`: Parsed preconditioner if valid string, otherwise error message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "diag" => Ok(Self::Diag),
+            "woodbury" => Ok(Self::Woodbury),
+            _ => Err(format!("invalid SNOCI preconditioner: {s}")),
+        }
+    }
+}
+
+impl Default for SNOCIPreconditioner {
+    /// Return default SNOCI preconditioner.
+    /// # Returns:
+    /// - `Self`: Default SNOCI preconditioner.
+    fn default() -> Self {
+        Self::Woodbury
+    }
+}
+
 pub struct SNOCIOptions {
     pub sigma: f64,
     pub tol: f64,
+    pub imag_shift: f64,
     pub max_iter: usize,
     pub max_add: usize,
     pub max_dim: usize,
+    pub preconditioner: SNOCIPreconditioner,
     pub gmres: GMRESOptions,
 }
 
@@ -493,9 +585,11 @@ impl Default for SNOCIOptions {
         Self {
             sigma: 1e-6,
             tol: 1e-8,
+            imag_shift: 0.0,
             max_iter: 100,
             max_add: 1,
             max_dim: 100,
+            preconditioner: SNOCIPreconditioner::default(),
             gmres: GMRESOptions::default(),
         }
     }
@@ -562,15 +656,19 @@ impl Default for Input {
 /// # Returns:
 /// - `Vec<i8>`: Parsed pattern entries.
 fn read_pattern(pat_tbl: Table) -> Vec<i8> {
-    pat_tbl.sequence_values::<i64>().map(|x| x.unwrap()).map(|x| match x {
-        -1 => -1,
-        0 => 0,
-        1 => 1,
-        _ => {
-            eprintln!("pattern entries must be -1, 0, or 1");
-            std::process::exit(1);
-        }
-    }).collect()
+    pat_tbl
+        .sequence_values::<i64>()
+        .map(|x| x.unwrap())
+        .map(|x| match x {
+            -1 => -1,
+            0 => 0,
+            1 => 1,
+            _ => {
+                eprintln!("pattern entries must be -1, 0, or 1");
+                std::process::exit(1);
+            }
+        })
+        .collect()
 }
 
 /// Read basis state recipe from Lua table.
@@ -583,49 +681,69 @@ fn read_state_recipe(t: Table) -> StateRecipe {
     let defaults = StateRecipe::default();
     let label: String = t.get("label").unwrap_or(defaults.label);
     let noci: bool = t.get("noci").unwrap_or(defaults.noci);
+    let holomorphic: bool = t.get("holomorphic").unwrap_or(defaults.holomorphic);
+    let partner: Option<String> = t.get("partner").unwrap_or(defaults.partner);
 
-    let spin_bias = t.get::<_, Option<Table>>("spin_bias").unwrap_or(None).map(|sb| {
-        let defaults = SpinBias::default();
-        let pol: f64 = sb.get("pol").unwrap_or(defaults.pol);
-        let pat_tbl: Table = sb.get("pattern").unwrap();
-        let pattern = read_pattern(pat_tbl);
-        SpinBias { pattern, pol }
-    });
-
-    let spatial_bias = t.get::<_, Option<Table>>("spatial_bias").unwrap_or(None).map(|sb| {
-        let defaults = SpatialBias::default();
-        let pol: f64 = sb.get("pol").unwrap_or(defaults.pol);
-        let pat_tbl: Table = sb.get("pattern").unwrap();
-        let pattern = read_pattern(pat_tbl);
-        SpatialBias { pattern, pol }
-    });
-
-    let scfexcitation = t.get::<_, Option<Table>>("excit").unwrap_or(None).map(|ex| {
-        let defaults = SCFExcitation::default();
-        let s: String = ex.get("spin").unwrap_or_else(|_| defaults.spin.as_str().to_string());
-        let spin: Spin = s.parse().unwrap_or_else(|msg| {
-            eprintln!("{msg}");
-            std::process::exit(1);
+    let spin_bias = t
+        .get::<_, Option<Table>>("spin_bias")
+        .unwrap_or(None)
+        .map(|sb| {
+            let defaults = SpinBias::default();
+            let pol: f64 = sb.get("pol").unwrap_or(defaults.pol);
+            let pat_tbl: Table = sb.get("pattern").unwrap();
+            let pattern = read_pattern(pat_tbl);
+            SpinBias { pattern, pol }
         });
-        SCFExcitation {
-            spin,
-            occ: ex.get("occ").unwrap_or(defaults.occ),
-            vir: ex.get("vir").unwrap_or(defaults.vir),
-        }
-    });
 
-    StateRecipe { label, spin_bias, spatial_bias, scfexcitation, noci }
+    let spatial_bias = t
+        .get::<_, Option<Table>>("spatial_bias")
+        .unwrap_or(None)
+        .map(|sb| {
+            let defaults = SpatialBias::default();
+            let pol: f64 = sb.get("pol").unwrap_or(defaults.pol);
+            let pat_tbl: Table = sb.get("pattern").unwrap();
+            let pattern = read_pattern(pat_tbl);
+            SpatialBias { pattern, pol }
+        });
+
+    let scfexcitation = t
+        .get::<_, Option<Table>>("excit")
+        .unwrap_or(None)
+        .map(|ex| {
+            let defaults = SCFExcitation::default();
+            let s: String = ex
+                .get("spin")
+                .unwrap_or_else(|_| defaults.spin.as_str().to_string());
+            let spin: Spin = s.parse().unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            });
+            SCFExcitation {
+                spin,
+                occ: ex.get("occ").unwrap_or(defaults.occ),
+                vir: ex.get("vir").unwrap_or(defaults.vir),
+            }
+        });
+
+    StateRecipe {
+        label,
+        spin_bias,
+        spatial_bias,
+        scfexcitation,
+        partner,
+        noci,
+        holomorphic,
+    }
 }
 
 /// Read input parameters from lua file and assign to Input object.
 /// # Arguments
 /// - `path`: File path to input file.
 pub fn load_input(path: &str) -> Input {
-
     let src = fs::read_to_string(path).unwrap();
     let lua = Lua::new();
 
-    let ctx = lua; 
+    let ctx = lua;
     ctx.load(&src).exec().unwrap();
     let globals = ctx.globals();
 
@@ -648,33 +766,41 @@ pub fn load_input(path: &str) -> Input {
 
     // Optional subtables within states.
     let mom_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("mom").unwrap_or(None);
-    let meta_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("metadynamics").unwrap_or(None);
+    let meta_tbl: Option<Table> = state_tbl
+        .get::<_, Option<Table>>("metadynamics")
+        .unwrap_or(None);
 
     // Mol table.
     let basis: String = mol_tbl.get("basis").unwrap();
     let unit: String = mol_tbl.get("unit").unwrap();
-    // Allow mol.r to be a number or table. 
+    // Allow mol.r to be a number or table.
     let r_val: Value = mol_tbl.get("r").unwrap();
     let mut r_list: Vec<f64> = Vec::new();
     match r_val {
         // For a number simply add to r_list.
-        Value::Number(x) => {r_list.push(x)},
+        Value::Number(x) => r_list.push(x),
         // For a table of r iterate over all values and add to r_list.
         Value::Table(t) => {
             for item in t.sequence_values::<f64>() {
                 let r = item.unwrap();
                 r_list.push(r);
             }
-        },
-        _ => {eprintln!("Number or table required by mol.r"); std::process::exit(1);},
+        }
+        _ => {
+            eprintln!("Number or table required by mol.r");
+            std::process::exit(1);
+        }
     }
     // Allow mol.atoms to be either a lua table or function.
     let atoms_val: Value = mol_tbl.get("atoms").unwrap();
     let geoms: Vec<Vec<String>> = match atoms_val {
-        // If atoms is a lua table we have a static geometry and can duplicate 
+        // If atoms is a lua table we have a static geometry and can duplicate
         // this geometry across all r (which for static geometry should be 1 value).
         Value::Table(t) => {
-            let static_atoms = t.sequence_values::<String>().map(|x| x.unwrap()).collect::<Vec<_>>();
+            let static_atoms = t
+                .sequence_values::<String>()
+                .map(|x| x.unwrap())
+                .collect::<Vec<_>>();
             vec![static_atoms; r_list.len()]
         }
         // If atoms is a lua function which returns a table we have a dynamic geometry.
@@ -682,20 +808,33 @@ pub fn load_input(path: &str) -> Input {
             let mut out = Vec::with_capacity(r_list.len());
             for &r in &r_list {
                 let tbl: Table = f.call(r).unwrap();
-                let atoms = tbl.sequence_values::<String>().map(|x| x.unwrap()).collect::<Vec<_>>();
+                let atoms = tbl
+                    .sequence_values::<String>()
+                    .map(|x| x.unwrap())
+                    .collect::<Vec<_>>();
                 out.push(atoms);
             }
             out
         }
-        _ => {eprintln!("Table or function required by mol.atoms"); std::process::exit(1);}
+        _ => {
+            eprintln!("Table or function required by mol.atoms");
+            std::process::exit(1);
+        }
     };
-    let mol = MolOptions {basis, unit, r_list, geoms};
+    let mol = MolOptions {
+        basis,
+        unit,
+        r_list,
+        geoms,
+    };
 
     // SCF table.
     let scf = if let Some(scf_tbl) = scf_tbl {
         let defaults = SCFInfo::default();
         let diis_defaults = DiisOptions::default();
+        let h_defaults = HSCFOptions::default();
         let diis_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("diis").unwrap_or(None);
+        let h_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("h").unwrap_or(None);
         let diis = if let Some(diis_tbl) = diis_tbl {
             DiisOptions {
                 space: diis_tbl.get("space").unwrap_or(diis_defaults.space),
@@ -703,11 +842,28 @@ pub fn load_input(path: &str) -> Input {
         } else {
             diis_defaults
         };
+        let h = if let Some(h_tbl) = h_tbl {
+            HSCFOptions {
+                max_cycle: h_tbl.get("max_cycle").unwrap_or(h_defaults.max_cycle),
+                g_tol: h_tbl.get("g_tol").unwrap_or(h_defaults.g_tol),
+                sr1_tol: h_tbl.get("sr1_tol").unwrap_or(h_defaults.sr1_tol),
+                denom_tol: h_tbl.get("denom_tol").unwrap_or(h_defaults.denom_tol),
+                max_step: h_tbl.get("max_step").unwrap_or(h_defaults.max_step),
+                line_steps: h_tbl.get("line_steps").unwrap_or(h_defaults.line_steps),
+                line_shrink: h_tbl.get("line_shrink").unwrap_or(h_defaults.line_shrink),
+                history: h_tbl.get("history").unwrap_or(h_defaults.history),
+            }
+        } else {
+            h_defaults
+        };
         SCFInfo {
             max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
             e_tol: scf_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+            fds_sdf_tol: scf_tbl.get("fds_sdf_tol").unwrap_or(defaults.fds_sdf_tol),
+            d_tol: scf_tbl.get("d_tol").unwrap_or(defaults.d_tol),
             diis,
             do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),
+            h,
         }
     } else {
         SCFInfo::default()
@@ -718,13 +874,25 @@ pub fn load_input(path: &str) -> Input {
         let defaults = WriteOptions::default();
         WriteOptions {
             verbose: write_tbl.get("verbose").unwrap_or(defaults.verbose),
-            write_deterministic_coeffs: write_tbl.get("write_deterministic_coeffs").unwrap_or(defaults.write_deterministic_coeffs),
-            write_orbitals: write_tbl.get("write_orbitals").unwrap_or(defaults.write_orbitals),
-            write_excitation_hist: write_tbl.get("write_excitation_hist").unwrap_or(defaults.write_excitation_hist),
-            write_matrices: write_tbl.get("write_matrices").unwrap_or(defaults.write_matrices),
+            write_deterministic_coeffs: write_tbl
+                .get("write_deterministic_coeffs")
+                .unwrap_or(defaults.write_deterministic_coeffs),
+            write_orbitals: write_tbl
+                .get("write_orbitals")
+                .unwrap_or(defaults.write_orbitals),
+            write_excitation_hist: write_tbl
+                .get("write_excitation_hist")
+                .unwrap_or(defaults.write_excitation_hist),
+            write_matrices: write_tbl
+                .get("write_matrices")
+                .unwrap_or(defaults.write_matrices),
             write_dir: write_tbl.get("write_dir").unwrap_or(defaults.write_dir),
-            write_restart: write_tbl.get("write_restart").unwrap_or(defaults.write_restart),
-            read_restart: write_tbl.get("read_restart").unwrap_or(defaults.read_restart),
+            write_restart: write_tbl
+                .get("write_restart")
+                .unwrap_or(defaults.write_restart),
+            read_restart: write_tbl
+                .get("read_restart")
+                .unwrap_or(defaults.read_restart),
         }
     } else {
         WriteOptions::default()
@@ -732,7 +900,10 @@ pub fn load_input(path: &str) -> Input {
 
     // States tables (MOM or metadynamics).
     let states: StateType = match (mom_tbl, meta_tbl) {
-        (Some(_), Some(_)) => {eprintln!("Cannot use MOM and SCF metadynamics simultaneously."); std::process::exit(1);}
+        (Some(_), Some(_)) => {
+            eprintln!("Cannot use MOM and SCF metadynamics simultaneously.");
+            std::process::exit(1);
+        }
         (Some(mom_tbl), None) => {
             let mut recipes: Vec<StateRecipe> = Vec::new();
             for st in mom_tbl.sequence_values::<rlua::Table>() {
@@ -748,82 +919,143 @@ pub fn load_input(path: &str) -> Input {
             let spinpol: f64 = meta_tbl.get("spinpol").unwrap_or(defaults.spinpol);
             let spatialpol: f64 = meta_tbl.get("spatialpol").unwrap_or(defaults.spatialpol);
             let lambda: f64 = meta_tbl.get("lambda").unwrap_or(defaults.lambda);
-            let max_attempts: usize = meta_tbl.get("max_attempts").unwrap_or(defaults.max_attempts);
+            let max_attempts: usize = meta_tbl
+                .get("max_attempts")
+                .unwrap_or(defaults.max_attempts);
 
-            let labels_rhf = (1..=nstates_rhf).map(|k| format!("RHF M {}", k)).collect::<Vec<_>>();
-            let labels_uhf = (1..=nstates_uhf).map(|k| {
-                let pair = k.div_ceil(2);
-                let ab = if (k % 2) == 1 { "A" } else { "B" };
-                format!("UHF M {} {}", pair, ab)
-            }).collect::<Vec<_>>();
+            let labels_rhf = (1..=nstates_rhf)
+                .map(|k| format!("RHF M {}", k))
+                .collect::<Vec<_>>();
+            let labels_uhf = (1..=nstates_uhf)
+                .map(|k| {
+                    let pair = k.div_ceil(2);
+                    let ab = if (k % 2) == 1 { "A" } else { "B" };
+                    format!("UHF M {} {}", pair, ab)
+                })
+                .collect::<Vec<_>>();
             let spatial_patterns_rhf = vec![None; nstates_rhf];
             let spin_patterns_uhf = vec![None; nstates_uhf];
 
-            StateType::Metadynamics(Metadynamics {nstates_rhf,  nstates_uhf, spinpol, spatialpol,  lambda, labels_rhf, labels_uhf,
-                                                  spatial_patterns_rhf, spin_patterns_uhf, max_attempts})
+            StateType::Metadynamics(Metadynamics {
+                nstates_rhf,
+                nstates_uhf,
+                spinpol,
+                spatialpol,
+                lambda,
+                labels_rhf,
+                labels_uhf,
+                spatial_patterns_rhf,
+                spin_patterns_uhf,
+                max_attempts,
+            })
         }
-        (None, None) => {eprintln!("Must use either MOM or SCF metadynamics to locate SCF solutions"); std::process::exit(1);}
+        (None, None) => {
+            eprintln!("Must use either MOM or SCF metadynamics to locate SCF solutions");
+            std::process::exit(1);
+        }
     };
 
     // Deterministic table.
-    let det: Option<DeterministicOptions> = globals.get::<_, Option<Table>>("det").unwrap().map(|det_tbl| {
-    let defaults = DeterministicOptions::default();
-        DeterministicOptions {
-            max_steps: det_tbl.get("max_steps").unwrap_or(defaults.max_steps),
-            dynamic_shift: det_tbl.get("dynamic_shift").unwrap_or(defaults.dynamic_shift),
-            dynamic_shift_alpha: det_tbl.get("dynamic_shift_alpha").unwrap_or(defaults.dynamic_shift_alpha),
-            e_tol: det_tbl.get("e_tol").unwrap_or(defaults.e_tol),
-        }
-    });
+    let det: Option<DeterministicOptions> =
+        globals
+            .get::<_, Option<Table>>("det")
+            .unwrap()
+            .map(|det_tbl| {
+                let defaults = DeterministicOptions::default();
+                DeterministicOptions {
+                    max_steps: det_tbl.get("max_steps").unwrap_or(defaults.max_steps),
+                    dynamic_shift: det_tbl
+                        .get("dynamic_shift")
+                        .unwrap_or(defaults.dynamic_shift),
+                    dynamic_shift_alpha: det_tbl
+                        .get("dynamic_shift_alpha")
+                        .unwrap_or(defaults.dynamic_shift_alpha),
+                    e_tol: det_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+                }
+            });
 
     // QMC table.
-    let qmc: Option<QMCOptions> = globals.get::<_, Option<Table>>("qmc").unwrap().map(|qmc_tbl| {
-        let defaults = QMCOptions::default();
-        let excitation_gen_str: String = qmc_tbl.get("excitation_gen").unwrap_or_else(|_| match defaults.excitation_gen {
-            ExcitationGen::Uniform => "uniform".to_string(),
-            ExcitationGen::HeatBath => "heat-bath".to_string(),
-            ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
+    let qmc: Option<QMCOptions> = globals
+        .get::<_, Option<Table>>("qmc")
+        .unwrap()
+        .map(|qmc_tbl| {
+            let defaults = QMCOptions::default();
+            let excitation_gen_str: String =
+                qmc_tbl
+                    .get("excitation_gen")
+                    .unwrap_or_else(|_| match defaults.excitation_gen {
+                        ExcitationGen::Uniform => "uniform".to_string(),
+                        ExcitationGen::HeatBath => "heat-bath".to_string(),
+                        ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
+                    });
+            let excitation_gen: ExcitationGen = excitation_gen_str.parse().unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            });
+            QMCOptions {
+                initial_population: qmc_tbl
+                    .get("initial_population")
+                    .unwrap_or(defaults.initial_population),
+                target_population: qmc_tbl
+                    .get("target_population")
+                    .unwrap_or(defaults.target_population),
+                shift_damping: qmc_tbl
+                    .get("shift_damping")
+                    .unwrap_or(defaults.shift_damping),
+                ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
+                nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
+                excitation_gen,
+                seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
+            }
         });
-        let excitation_gen: ExcitationGen = excitation_gen_str.parse().unwrap_or_else(|msg| {
-            eprintln!("{msg}");
-            std::process::exit(1);
-        });
-        QMCOptions {
-            initial_population: qmc_tbl.get("initial_population").unwrap_or(defaults.initial_population),
-            target_population: qmc_tbl.get("target_population").unwrap_or(defaults.target_population),
-            shift_damping: qmc_tbl.get("shift_damping").unwrap_or(defaults.shift_damping),
-            ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
-            nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
-            excitation_gen,
-            seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
-        }
-    });
 
     // SNOCI table.
-    let snoci: Option<SNOCIOptions> = globals.get::<_, Option<Table>>("snoci").unwrap().map(|snoci_tbl| {
-        let defaults = SNOCIOptions::default();
-        let gmres_defaults = GMRESOptions::default();
-        let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
-        let gmres = if let Some(gmres_tbl) = gmres_tbl {
-            GMRESOptions {
-                max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
-                res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
-                metric_tol: gmres_tbl.get("metric_tol").unwrap_or(gmres_defaults.metric_tol),
-                restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
-                full_m: gmres_tbl.get("full_m").unwrap_or(gmres_defaults.full_m),
-            }
-        } else {
-            gmres_defaults
-        };
-        SNOCIOptions {
-            sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
-            tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
-            max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
-            max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
-            max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
-            gmres,
-        }
-    });
+    let snoci: Option<SNOCIOptions> =
+        globals
+            .get::<_, Option<Table>>("snoci")
+            .unwrap()
+            .map(|snoci_tbl| {
+                let defaults = SNOCIOptions::default();
+                let gmres_defaults = GMRESOptions::default();
+
+                let gmres_tbl: Option<Table> =
+                    snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
+
+                let gmres = if let Some(gmres_tbl) = gmres_tbl {
+                    GMRESOptions {
+                        max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
+                        res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
+                        metric_tol: gmres_tbl
+                            .get("metric_tol")
+                            .unwrap_or(gmres_defaults.metric_tol),
+                        restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
+                        full_m: gmres_tbl.get("full_m").unwrap_or(gmres_defaults.full_m),
+                    }
+                } else {
+                    gmres_defaults
+                };
+
+                let preconditioner_str: String = snoci_tbl
+                    .get("preconditioner")
+                    .unwrap_or_else(|_| defaults.preconditioner.as_str().to_string());
+
+                let preconditioner: SNOCIPreconditioner =
+                    preconditioner_str.parse().unwrap_or_else(|msg| {
+                        eprintln!("{msg}");
+                        std::process::exit(1);
+                    });
+
+                SNOCIOptions {
+                    sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
+                    tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
+                    imag_shift: snoci_tbl.get("imag_shift").unwrap_or(defaults.imag_shift),
+                    max_iter: snoci_tbl.get("max_iter").unwrap_or(defaults.max_iter),
+                    max_add: snoci_tbl.get("max_add").unwrap_or(defaults.max_add),
+                    max_dim: snoci_tbl.get("max_dim").unwrap_or(defaults.max_dim),
+                    preconditioner,
+                    gmres,
+                }
+            });
 
     // Excitation table.
     let excit = if let Some(excit_tbl) = excit_tbl {
@@ -874,7 +1106,9 @@ pub fn load_input(path: &str) -> Input {
     let prop: Option<PropagationOptions> = prop_tbl.map(|prop_tbl| {
         let defaults = PropagationOptions::default();
 
-        let propagator_str: String = prop_tbl.get("propagator").unwrap_or_else(|_| defaults.propagator.as_str().to_string());
+        let propagator_str: String = prop_tbl
+            .get("propagator")
+            .unwrap_or_else(|_| defaults.propagator.as_str().to_string());
         let propagator: Propagator = propagator_str.parse().unwrap_or_else(|msg| {
             eprintln!("{msg}");
             std::process::exit(1);
@@ -905,6 +1139,16 @@ pub fn load_input(path: &str) -> Input {
     } else {
         WicksOptions::default()
     };
-    Input {mol, scf, write, states, det, qmc, snoci, excit, prop, wicks}
+    Input {
+        mol,
+        scf,
+        write,
+        states,
+        det,
+        qmc,
+        snoci,
+        excit,
+        prop,
+        wicks,
+    }
 }
-

@@ -1,6 +1,6 @@
 // timers/deterministic.rs
 
-use super::{with_totals, Counter};
+use super::{Counter, with_totals};
 
 /// Timing counters for deterministic NOCI-QMC stages.
 #[derive(Clone, Copy, Debug, Default)]
@@ -22,9 +22,14 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this set of deterministic timing totals in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
-        self.run_qmc_deterministic_noci.merge_from(&other.run_qmc_deterministic_noci);
-        self.generate_excited_basis.merge_from(&other.generate_excited_basis);
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
+        self.run_qmc_deterministic_noci
+            .merge_from(&other.run_qmc_deterministic_noci);
+        self.generate_excited_basis
+            .merge_from(&other.generate_excited_basis);
         self.build_noci_hs.merge_from(&other.build_noci_hs);
         self.propagate.merge_from(&other.propagate);
     }

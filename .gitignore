@@ -9,4 +9,5 @@ tests/fixtures/**/data.h5
 scaling*
 data.h5
 Cargo.lock
+.codex
 

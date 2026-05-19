@@ -1,6 +1,6 @@
 // timers/snoci.rs
 
-use super::{with_totals, Counter};
+use super::{Counter, with_totals};
 
 /// Timing counters for SNOCI stages.
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,23 +50,35 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this set of SNOCI timing totals in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.run_snoci.merge_from(&other.run_snoci);
         self.snoci_step.merge_from(&other.snoci_step);
-        self.solve_current_space.merge_from(&other.solve_current_space);
-        self.candidate_pool_new.merge_from(&other.candidate_pool_new);
-        self.candidate_pool_update.merge_from(&other.candidate_pool_update);
-        self.build_candidate_h_ai.merge_from(&other.build_candidate_h_ai);
-        self.build_generalised_fock.merge_from(&other.build_generalised_fock);
+        self.solve_current_space
+            .merge_from(&other.solve_current_space);
+        self.candidate_pool_new
+            .merge_from(&other.candidate_pool_new);
+        self.candidate_pool_update
+            .merge_from(&other.candidate_pool_update);
+        self.build_candidate_h_ai
+            .merge_from(&other.build_candidate_h_ai);
+        self.build_generalised_fock
+            .merge_from(&other.build_generalised_fock);
         self.gmres.merge_from(&other.gmres);
-        self.build_snoci_projection.merge_from(&other.build_snoci_projection);
-        self.build_snoci_overlaps.merge_from(&other.build_snoci_overlaps);
+        self.build_snoci_projection
+            .merge_from(&other.build_snoci_projection);
+        self.build_snoci_overlaps
+            .merge_from(&other.build_snoci_overlaps);
         self.build_snoci_focks.merge_from(&other.build_snoci_focks);
         self.build_candidate_m.merge_from(&other.build_candidate_m);
-        self.build_candidate_m_diag.merge_from(&other.build_candidate_m_diag);
+        self.build_candidate_m_diag
+            .merge_from(&other.build_candidate_m_diag);
         self.apply_candidate_m.merge_from(&other.apply_candidate_m);
         self.apply_omega_m.merge_from(&other.apply_omega_m);
-        self.build_omega_m_diag.merge_from(&other.build_omega_m_diag);
+        self.build_omega_m_diag
+            .merge_from(&other.build_omega_m_diag);
         self.build_candidate_v.merge_from(&other.build_candidate_v);
         self.build_omega_v.merge_from(&other.build_omega_v);
     }

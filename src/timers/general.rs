@@ -1,6 +1,6 @@
 // timers/general.rs
 
-use super::{with_totals, Counter};
+use super::{Counter, with_totals};
 
 /// Timing counters for general high level workflow stages.
 #[derive(Clone, Copy, Debug, Default)]
@@ -24,12 +24,18 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this set of general workflow timing totals in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.run_pyscf.merge_from(&other.run_pyscf);
         self.run_scf.merge_from(&other.run_scf);
-        self.run_reference_noci.merge_from(&other.run_reference_noci);
-        self.calculate_noci_energy.merge_from(&other.calculate_noci_energy);
-        self.build_wicks_shared.merge_from(&other.build_wicks_shared);
+        self.run_reference_noci
+            .merge_from(&other.run_reference_noci);
+        self.calculate_noci_energy
+            .merge_from(&other.calculate_noci_energy);
+        self.build_wicks_shared
+            .merge_from(&other.build_wicks_shared);
     }
 }
 

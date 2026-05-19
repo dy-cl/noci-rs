@@ -1,11 +1,17 @@
 // nonorthogonalwicks/eval/h2same.rs
-use crate::ExcitationSpin;
-use crate::maths::adjugate_transpose;
-use crate::time_call;
-use super::helpers::{bit, column_replacement_correction, get_det_adjt_same, j_replacement, jslot, minor_adjt};
-use super::super::layout::{idx, idx4};
+
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
+use super::helpers::{DetIndex, Minor, ReplacementLayout};
+use crate::ExcitationSpin;
+use crate::noci::NOCIScalar;
+use crate::time_call;
+
+use super::super::layout::{idx, idx4};
+use super::helpers::{
+    bit, column_replacement_correction, get_det_adjt_same, j_replacement, jslot, minor_adjt,
+};
+use crate::maths::adjugate_transpose;
 
 /// Calculate the same-spin two-electron Hamiltonian matrix element between two determinants
 /// |{}^\Lambda \Psi\rangle and |{}^\Gamma \Psi\rangle using the extended non-orthogonal Wick's
@@ -18,9 +24,15 @@ use super::super::view::SameSpinView;
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-pub(crate) fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+pub(crate) fn lg_h2_same<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same, {
         if w.m == 0 {
             lg_h2_same_m0(w, l_ex, g_ex, scratch, tol)
@@ -40,13 +52,19 @@ pub(crate) fn lg_h2_same(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &Excitat
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element in the `m = 0` case.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element in the `m = 0` case.
 #[inline(always)]
-fn lg_h2_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+fn lg_h2_same_m0<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
         match l {
-            0 => w.phase * w.tilde_s_prod * w.v0[0],
+            0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * w.v0[0],
             1 => lg_h2_same_m0_l1(w, scratch),
             2 => lg_h2_same_m0_l2(w, scratch),
             3 => lg_h2_same_m0_l3(w, scratch, tol),
@@ -60,9 +78,12 @@ fn lg_h2_same_m0(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin,
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
 /// - `scratch`: Scratch space containing the prepared `l = 1` contraction determinant and indices.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 1`.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element for `l = 1`.
 #[inline(always)]
-fn lg_h2_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
+fn lg_h2_same_m0_l1<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l1, {
         let n = w.n();
         let r0 = scratch.rows[0];
@@ -72,7 +93,9 @@ fn lg_h2_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
         let vsl = w.v_t_slice(0, 0, 0);
         let repl = vsl[c0 * n + r0];
 
-        w.phase * w.tilde_s_prod * (w.v0[0] * det - 2.0 * repl)
+        w.phase
+            * <T as From<f64>>::from(w.tilde_s_prod)
+            * (w.v0[0] * det - <T as From<f64>>::from(2.0) * repl)
     })
 }
 
@@ -81,9 +104,12 @@ fn lg_h2_same_m0_l1(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
 /// - `scratch`: Scratch space containing the prepared `l = 2` contraction determinant and indices.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 2`.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element for `l = 2`.
 #[inline(always)]
-fn lg_h2_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
+fn lg_h2_same_m0_l2<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l2, {
         let n = w.n();
         let d = scratch.det0.as_slice();
@@ -109,9 +135,14 @@ fn lg_h2_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
         let det_c1 = a00 * v1 - v0 * a10;
 
         let jsl = w.j_slice(0);
-        let jterm = jsl[idx4(n, r0, c0, r1, c1)] - jsl[idx4(n, r0, c1, r1, c0)] - jsl[idx4(n, r1, c0, r0, c1)] + jsl[idx4(n, r1, c1, r0, c0)];
+        let jterm = jsl[idx4(n, r0, c0, r1, c1)]
+            - jsl[idx4(n, r0, c1, r1, c0)]
+            - jsl[idx4(n, r1, c0, r0, c1)]
+            + jsl[idx4(n, r1, c1, r0, c0)];
 
-        w.phase * w.tilde_s_prod * (w.v0[0] * det - 2.0 * (det_c0 + det_c1) + jterm)
+        w.phase
+            * <T as From<f64>>::from(w.tilde_s_prod)
+            * (w.v0[0] * det - <T as From<f64>>::from(2.0) * (det_c0 + det_c1) + jterm)
     })
 }
 
@@ -120,16 +151,27 @@ fn lg_h2_same_m0_l2(w: &SameSpinView, scratch: &mut WickScratch) -> f64 {
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
 /// - `scratch`: Scratch space containing the prepared `l = 3` contraction determinant and indices.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element for `l = 3`.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element for `l = 3`.
 #[inline(always)]
-fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f64 {
+fn lg_h2_same_m0_l3<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l3, {
         let n = w.n();
         let rows = scratch.rows.as_slice();
         let cols = scratch.cols.as_slice();
         let det0 = &scratch.det0.as_slice()[..9];
 
-        if let Some(det) = adjugate_transpose(scratch.adjt_det.as_mut_slice(), scratch.invs.as_mut_slice(), scratch.lu.as_mut_slice(), det0, 3, tol) {
+        if let Some(det) = adjugate_transpose(
+            scratch.adjt_det.as_mut_slice(),
+            scratch.invs.as_mut_slice(),
+            scratch.lu.as_mut_slice(),
+            det0,
+            3,
+            tol,
+        ) {
             let cof = scratch.adjt_det.as_slice();
             let vsl = w.v_t_slice(0, 0, 0);
 
@@ -140,22 +182,41 @@ fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f6
             let c1 = cols[1];
             let c2 = cols[2];
 
-            let vterm =
-                cof[idx(3, 0, 0)] * vsl[c0 * n + r0] + cof[idx(3, 1, 0)] * vsl[c0 * n + r1] + cof[idx(3, 2, 0)] * vsl[c0 * n + r2]
-              + cof[idx(3, 0, 1)] * vsl[c1 * n + r0] + cof[idx(3, 1, 1)] * vsl[c1 * n + r1] + cof[idx(3, 2, 1)] * vsl[c1 * n + r2]
-              + cof[idx(3, 0, 2)] * vsl[c2 * n + r0] + cof[idx(3, 1, 2)] * vsl[c2 * n + r1] + cof[idx(3, 2, 2)] * vsl[c2 * n + r2];
+            let vterm = cof[idx(3, 0, 0)] * vsl[c0 * n + r0]
+                + cof[idx(3, 1, 0)] * vsl[c0 * n + r1]
+                + cof[idx(3, 2, 0)] * vsl[c0 * n + r2]
+                + cof[idx(3, 0, 1)] * vsl[c1 * n + r0]
+                + cof[idx(3, 1, 1)] * vsl[c1 * n + r1]
+                + cof[idx(3, 2, 1)] * vsl[c1 * n + r2]
+                + cof[idx(3, 0, 2)] * vsl[c2 * n + r0]
+                + cof[idx(3, 1, 2)] * vsl[c2 * n + r1]
+                + cof[idx(3, 2, 2)] * vsl[c2 * n + r2];
 
             let jsl = w.j_slice(0);
-            let mut jterm = 0.0;
+            let mut jterm = <T as From<f64>>::from(0.0);
 
             for i in 0..3 {
-                let (ra0, ra1) = match i {0 => (1, 2), 1 => (0, 2), 2 => (0, 1), _ => unreachable!()};
+                let (ra0, ra1) = match i {
+                    0 => (1, 2),
+                    1 => (0, 2),
+                    2 => (0, 1),
+                    _ => unreachable!(),
+                };
                 let ri = rows[i];
 
                 for j in 0..3 {
-                    let (cb0, cb1) = match j {0 => (1, 2), 1 => (0, 2), 2 => (0, 1), _ => unreachable!()};
+                    let (cb0, cb1) = match j {
+                        0 => (1, 2),
+                        1 => (0, 2),
+                        2 => (0, 1),
+                        _ => unreachable!(),
+                    };
                     let cj = cols[j];
-                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+                    let phase = if ((i + j) & 1) == 0 {
+                        <T as From<f64>>::from(1.0)
+                    } else {
+                        <T as From<f64>>::from(-1.0)
+                    };
 
                     let m00 = det0[idx(3, ra0, cb0)];
                     let m01 = det0[idx(3, ra0, cb1)];
@@ -171,15 +232,17 @@ fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f6
                 }
             }
 
-            w.phase * w.tilde_s_prod * (w.v0[0] * det - 2.0 * vterm + jterm)
+            w.phase
+                * <T as From<f64>>::from(w.tilde_s_prod)
+                * (w.v0[0] * det - <T as From<f64>>::from(2.0) * vterm + jterm)
         } else {
-            0.0
+            <T as From<f64>>::from(0.0)
         }
     })
 }
 
 /// Calculate the same-spin two-electron Hamiltonian matrix element for the general `m = 0` case
-/// with arbitrary excitation rank `l`. 
+/// with arbitrary excitation rank `l`.
 /// determinant routines.
 /// # Arguments:
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
@@ -188,49 +251,97 @@ fn lg_h2_same_m0_l3(w: &SameSpinView, scratch: &mut WickScratch, tol: f64) -> f6
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element for the general `m = 0` path.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element for the general `m = 0` path.
 #[inline(always)]
-fn lg_h2_same_m0_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+fn lg_h2_same_m0_gen<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
-        let mut acc = 0.0;
+        let mut acc = <T as From<f64>>::from(0.0);
         let n = w.n();
         let det0 = &scratch.det0.as_slice()[..l * l];
 
-        if let Some(det_det) = adjugate_transpose(scratch.adjt_det.as_mut_slice(), scratch.invs.as_mut_slice(), scratch.lu.as_mut_slice(), det0, l, tol) {
+        if let Some(det_det) = adjugate_transpose(
+            scratch.adjt_det.as_mut_slice(),
+            scratch.invs.as_mut_slice(),
+            scratch.lu.as_mut_slice(),
+            det0,
+            l,
+            tol,
+        ) {
             let mut contrib = w.v0[0] * det_det;
             let vsl = w.v_t_slice(0, 0, 0);
 
             for k in 0..l {
                 let ck = scratch.cols[k];
                 let base = ck * n;
-                let corr = column_replacement_correction(l, det0, scratch.adjt_det.as_slice(), k, |r| vsl[base + scratch.rows[r]]);
-                contrib -= 2.0 * (det_det + corr);
+                let corr =
+                    column_replacement_correction(l, det0, scratch.adjt_det.as_slice(), k, |r| {
+                        vsl[base + scratch.rows[r]]
+                    });
+                contrib -= <T as From<f64>>::from(2.0) * (det_det + corr);
             }
 
             let jsl = w.j_slice(0);
+            let layout = ReplacementLayout {
+                n,
+                rows: scratch.rows.as_slice(),
+                cols: scratch.cols.as_slice(),
+            };
 
             for i in 0..l {
                 for j in 0..l {
-                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+                    let phase = if ((i + j) & 1) == 0 {
+                        <T as From<f64>>::from(1.0)
+                    } else {
+                        <T as From<f64>>::from(-1.0)
+                    };
                     let ri_fixed = scratch.rows[i];
                     let cj_fixed = scratch.cols[j];
 
-                    minor_adjt(det0, l, i, j, &mut scratch.det_mix2, &mut scratch.adjt_det2, &mut scratch.invslm1, &mut scratch.lu, tol, |lm1, det_minor, cof_minor, det_det2| {
-                        for k2 in 0..lm1 {
-                            let corr = column_replacement_correction(lm1, det_minor, cof_minor, k2, |r| {
-                                j_replacement(jsl, n, scratch.rows.as_slice(), scratch.cols.as_slice(), i, j, r, k2, ri_fixed, cj_fixed, false)
-                            });
-                            contrib += phase * (det_det2 + corr);
-                        }
-                    });
+                    minor_adjt(
+                        det0,
+                        Minor { l, row: i, col: j },
+                        &mut scratch.det_mix2,
+                        &mut scratch.adjt_det2,
+                        tol,
+                        |lm1, det_minor, cof_minor, det_det2| {
+                            for k2 in 0..lm1 {
+                                let corr = column_replacement_correction(
+                                    lm1,
+                                    det_minor,
+                                    cof_minor,
+                                    k2,
+                                    |r| {
+                                        j_replacement(
+                                            jsl,
+                                            layout,
+                                            DetIndex { row: i, col: j },
+                                            DetIndex { row: r, col: k2 },
+                                            DetIndex {
+                                                row: ri_fixed,
+                                                col: cj_fixed,
+                                            },
+                                            false,
+                                        )
+                                    },
+                                );
+                                contrib += phase * (det_det2 + corr);
+                            }
+                        },
+                    );
                 }
             }
 
             acc += contrib;
         }
 
-        w.phase * w.tilde_s_prod * acc
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })
 }
 
@@ -245,12 +356,18 @@ fn lg_h2_same_m0_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationS
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
-/// - `f64`: Same-spin two-electron Hamiltonian matrix element.
+/// - `T`: Same-spin two-electron Hamiltonian matrix element.
 #[inline(always)]
-fn lg_h2_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin, scratch: &mut WickScratch, tol: f64) -> f64 {
+fn lg_h2_same_gen<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_gen, {
         let l = l_ex.holes.len() + g_ex.holes.len();
-        let mut acc = 0.0;
+        let mut acc = <T as From<f64>>::from(0.0);
         let n = w.n();
 
         get_det_adjt_same(w, l, 2, scratch, tol, |bits, scratch, det_det| {
@@ -265,35 +382,71 @@ fn lg_h2_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
             for k in 0..l {
                 let mk = bit(bits, k + 2);
                 let ck = scratch.cols[k];
-                let vsl = if mk == 0 {v0} else {v1};
+                let vsl = if mk == 0 { v0 } else { v1 };
                 let base = ck * n;
 
-                let corr = column_replacement_correction(l, scratch.det_mix.as_slice(), scratch.adjt_det.as_slice(), k, |r| vsl[base + scratch.rows[r]]);
-                contrib -= 2.0 * (det_det + corr);
+                let corr = column_replacement_correction(
+                    l,
+                    scratch.det_mix.as_slice(),
+                    scratch.adjt_det.as_slice(),
+                    k,
+                    |r| vsl[base + scratch.rows[r]],
+                );
+                contrib -= <T as From<f64>>::from(2.0) * (det_det + corr);
             }
+
+            let layout = ReplacementLayout {
+                n,
+                rows: scratch.rows.as_slice(),
+                cols: scratch.cols.as_slice(),
+            };
 
             for i in 0..l {
                 for j in 0..l {
-                    let phase = if ((i + j) & 1) == 0 {1.0} else {-1.0};
+                    let phase = if ((i + j) & 1) == 0 {
+                        <T as From<f64>>::from(1.0)
+                    } else {
+                        <T as From<f64>>::from(-1.0)
+                    };
                     let ri_fixed = scratch.rows[i];
                     let cj_fixed = scratch.cols[j];
                     let mj = bit(bits, j + 2);
 
-                    minor_adjt(scratch.det_mix.as_slice(), l, i, j, &mut scratch.det_mix2, &mut scratch.adjt_det2, &mut scratch.invslm1, 
-                              &mut scratch.lu, tol, |lm1, det_minor, cof_minor, det_det2| {
+                    minor_adjt(
+                        scratch.det_mix.as_slice(),
+                        Minor { l, row: i, col: j },
+                        &mut scratch.det_mix2,
+                        &mut scratch.adjt_det2,
+                        tol,
+                        |lm1, det_minor, cof_minor, det_det2| {
+                            for k2 in 0..lm1 {
+                                let k_full = if k2 < j { k2 } else { k2 + 1 };
+                                let mk = bit(bits, k_full + 2);
+                                let (slot, swap) = jslot(m1, m2, mk, mj);
 
-                        for k2 in 0..lm1 {
-                            let k_full = if k2 < j {k2} else {k2 + 1};
-                            let mk = bit(bits, k_full + 2);
-                            let (slot, swap) = jslot(m1, m2, mk, mj);
+                                let jsl = w.j_slice(slot);
 
-                            let jsl = w.j_slice(slot);
+                                let corr = column_replacement_correction(
+                                    lm1,
+                                    det_minor,
+                                    cof_minor,
+                                    k2,
+                                    |r| {
+                                        j_replacement(
+                                            jsl,
+                                            layout,
+                                            DetIndex { row: i, col: j },
+                                            DetIndex { row: r, col: k2 },
+                                            DetIndex {
+                                                row: ri_fixed,
+                                                col: cj_fixed,
+                                            },
+                                            swap,
+                                        )
+                                    },
+                                );
 
-                            let corr = column_replacement_correction(lm1, det_minor, cof_minor, k2, |r| {
-                                j_replacement(jsl, n, scratch.rows.as_slice(), scratch.cols.as_slice(), i, j, r, k2, ri_fixed, cj_fixed, swap)
-                            });
-
-                            contrib += phase * (det_det2 + corr);
+                                contrib += phase * (det_det2 + corr);
                             }
                         },
                     );
@@ -301,8 +454,6 @@ fn lg_h2_same_gen(w: &SameSpinView, l_ex: &ExcitationSpin, g_ex: &ExcitationSpin
             }
             acc += contrib;
         });
-        w.phase * w.tilde_s_prod * acc
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })
 }
-
-

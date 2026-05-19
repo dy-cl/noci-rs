@@ -1,25 +1,25 @@
 // noci/mod.rs
 mod cache;
-mod naive;
-mod overlap;
 mod fock;
 mod hs;
 mod m;
-mod wicks;
 mod matrix;
+mod naive;
+mod overlap;
 mod types;
+mod wicks;
 
-pub use types::{MOCache, FockMOCache};
-pub use cache::{build_mo_cache, build_fock_mo_cache};
-pub use matrix::{build_noci_s, build_noci_hs, calculate_noci_energy};
-pub use naive::noci_density;
-pub use wicks::{update_wicks_fock, build_wicks_shared};
-pub(crate) use matrix::build_noci_fock;
-pub(crate) use overlap::calculate_s_pair;
+pub use cache::{build_fock_mo_cache, build_mo_cache};
 pub(crate) use fock::calculate_f_pair;
-pub(crate) use m::calculate_m_pair;
 pub(crate) use hs::calculate_hs_pair;
+pub(crate) use m::calculate_m_pair;
+pub(crate) use matrix::build_noci_fock;
+pub use matrix::{build_noci_hs, build_noci_s, calculate_noci_energy};
+pub use naive::noci_density;
+pub(crate) use overlap::calculate_s_pair;
+pub use types::{FockMOCache, MOCache};
+pub use wicks::{build_wicks_shared, update_wicks_fock};
 
 pub(crate) use naive::occ_coeffs;
-pub use types::NOCIData;
 pub(crate) use types::{DetPair, FockData};
+pub use types::{NOCIData, NOCIScalar};

@@ -4,8 +4,9 @@ use std::time::Instant;
 
 use ndarray::{Array1, Array2};
 
+use super::{ArnoldiCycle, ArnoldiParams, GMRESResult};
+use crate::noci::NOCIScalar;
 use crate::{input::GMRESOptions, time_call};
-use super::{GMRES, ArnoldiCycle, ArnoldiParams};
 
 const SMALL: f64 = 1e-14_f64;
 const PRINT_STRIDE: usize = 1usize;
@@ -19,7 +20,10 @@ fn print_gmres_header() {
     println!();
     println!("  GMRES solve");
     println!("  {}", "-".repeat(98));
-    println!("  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}", "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s");
+    println!(
+        "  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}",
+        "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s"
+    );
 }
 
 /// Print a single GMRES iteration summary line.
@@ -31,8 +35,17 @@ fn print_gmres_header() {
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
 /// - `()`: Prints the GMRES iteration summary to standard output.
-fn print_gmres_iteration(restart_id: usize, iter: usize, residual_est: f64, apply_secs: f64, elapsed_secs: f64) {
-    println!("  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}", restart_id, iter, residual_est, "-", apply_secs, elapsed_secs);
+fn print_gmres_iteration(
+    restart_id: usize,
+    iter: usize,
+    residual_est: f64,
+    apply_secs: f64,
+    elapsed_secs: f64,
+) {
+    println!(
+        "  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}",
+        restart_id, iter, residual_est, "-", apply_secs, elapsed_secs
+    );
 }
 
 /// Print a single GMRES restart summary line using the true residual.
@@ -43,8 +56,16 @@ fn print_gmres_iteration(restart_id: usize, iter: usize, residual_est: f64, appl
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
 /// - `()`: Prints the GMRES restart summary to standard output.
-fn print_gmres_restart_summary(restart_id: usize, iter: usize, residual_true: f64, elapsed_secs: f64) {
-    println!("  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}", restart_id, iter, "-", residual_true, "-", elapsed_secs);
+fn print_gmres_restart_summary(
+    restart_id: usize,
+    iter: usize,
+    residual_true: f64,
+    elapsed_secs: f64,
+) {
+    println!(
+        "  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}",
+        restart_id, iter, "-", residual_true, "-", elapsed_secs
+    );
 }
 
 /// Build the true residual `b - A x`.
@@ -53,12 +74,48 @@ fn print_gmres_restart_summary(restart_id: usize, iter: usize, residual_true: f6
 /// - `b`: Right-hand side vector.
 /// - `x`: Current solution vector.
 /// # Returns:
-/// - `Array1<f64>`: True residual vector.
-fn true_residual<F>(apply: &F, b: &Array1<f64>, x: &Array1<f64>) -> Array1<f64>
-where F: Fn(&Array1<f64>) -> Array1<f64> {
-    let mut r = b.clone();
-    r.scaled_add(-1.0, &apply(x));
-    r
+/// - `Array1<T>`: True residual vector.
+fn true_residual<F, T>(
+    apply: &F,
+    b: &Array1<T>,
+    x: &Array1<T>,
+) -> Array1<T>
+where
+    F: Fn(&Array1<T>) -> Array1<T>,
+    T: NOCIScalar,
+{
+    let ax = apply(x);
+    Array1::from_iter(b.iter().zip(ax.iter()).map(|(&bi, &axi)| bi - axi))
+}
+
+/// Compute the conjugated inner product of two scalar vectors.
+/// # Arguments:
+/// - `x`: Left vector.
+/// - `y`: Right vector.
+/// # Returns:
+/// - `T`: Inner product `x^H y`.
+pub fn inner_product<T: NOCIScalar>(
+    x: &Array1<T>,
+    y: &Array1<T>,
+) -> T {
+    x.iter()
+        .zip(y.iter())
+        .fold(T::from_real(0.0), |acc, (&xi, &yi)| acc + xi.conj() * yi)
+}
+
+/// Compute the Euclidean norm of a scalar vector.
+/// # Arguments:
+/// - `v`: Vector to norm.
+/// # Returns:
+/// - `f64`: Euclidean norm.
+fn vector_norm<T: NOCIScalar>(v: &Array1<T>) -> f64 {
+    v.iter()
+        .map(|&x| {
+            let ax = x.abs();
+            ax * ax
+        })
+        .sum::<f64>()
+        .sqrt()
 }
 
 /// Compute the RMS norm of a residual vector.
@@ -67,8 +124,11 @@ where F: Fn(&Array1<f64>) -> Array1<f64> {
 /// - `rms`: Square-root of the vector length.
 /// # Returns:
 /// - `f64`: RMS residual norm.
-fn calculate_residual_rms(r: &Array1<f64>, rms: f64) -> f64 {
-    r.dot(r).sqrt() / rms
+fn calculate_residual_rms<T: NOCIScalar>(
+    r: &Array1<T>,
+    rms: f64,
+) -> f64 {
+    vector_norm(r) / rms
 }
 
 /// Orthogonalise an Arnoldi vector against the existing Krylov basis.
@@ -79,10 +139,20 @@ fn calculate_residual_rms(r: &Array1<f64>, rms: f64) -> f64 {
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `()`: Updates `h` and `w` in place.
-fn orthogonalise_arnoldi_vector(q: &[Array1<f64>], h: &mut Array2<f64>, w: &mut Array1<f64>, k: usize) {
-    for j in 0..=k {
-        h[(j, k)] = q[j].dot(w);
-        w.scaled_add(-h[(j, k)], &q[j]);
+fn orthogonalise_arnoldi_vector<T: NOCIScalar>(
+    q: &[Array1<T>],
+    h: &mut Array2<T>,
+    w: &mut Array1<T>,
+    k: usize,
+) {
+    for _ in 0..2 {
+        for j in 0..=k {
+            let hjk = inner_product(&q[j], w);
+            h[(j, k)] += hjk;
+            for i in 0..w.len() {
+                w[i] -= hjk * q[j][i];
+            }
+        }
     }
 }
 
@@ -94,12 +164,17 @@ fn orthogonalise_arnoldi_vector(q: &[Array1<f64>], h: &mut Array2<f64>, w: &mut 
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `f64`: Norm of the candidate next Arnoldi vector.
-fn extend_arnoldi_basis(q: &mut Vec<Array1<f64>>, h: &mut Array2<f64>, w: Array1<f64>, k: usize) -> f64 {
-    let h_next = w.dot(&w).sqrt();
-    h[(k + 1, k)] = h_next;
+fn extend_arnoldi_basis<T: NOCIScalar>(
+    q: &mut Vec<Array1<T>>,
+    h: &mut Array2<T>,
+    w: Array1<T>,
+    k: usize,
+) -> f64 {
+    let h_next = vector_norm(&w);
+    h[(k + 1, k)] = T::from_real(h_next);
 
     if h_next > SMALL {
-        q.push(w.mapv(|wi| wi / h_next));
+        q.push(w.mapv(|wi| wi / T::from_real(h_next)));
     }
 
     h_next
@@ -113,10 +188,16 @@ fn extend_arnoldi_basis(q: &mut Vec<Array1<f64>>, h: &mut Array2<f64>, w: Array1
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `()`: Updates the current column of `h` in place.
-fn apply_previous_givens(h: &mut Array2<f64>, cs: &[f64], sn: &[f64], k: usize) {
+fn apply_previous_givens<T: NOCIScalar>(
+    h: &mut Array2<T>,
+    cs: &[f64],
+    sn: &[T],
+    k: usize,
+) {
     for j in 0..k {
-        let temp = cs[j] * h[(j, k)] + sn[j] * h[(j + 1, k)];
-        h[(j + 1, k)] = -sn[j] * h[(j, k)] + cs[j] * h[(j + 1, k)];
+        let csj = T::from_real(cs[j]);
+        let temp = csj * h[(j, k)] + sn[j] * h[(j + 1, k)];
+        h[(j + 1, k)] = -sn[j].conj() * h[(j, k)] + csj * h[(j + 1, k)];
         h[(j, k)] = temp;
     }
 }
@@ -130,23 +211,43 @@ fn apply_previous_givens(h: &mut Array2<f64>, cs: &[f64], sn: &[f64], k: usize) 
 /// - `k`: Current Arnoldi iteration in the restart cycle.
 /// # Returns:
 /// - `()`: Updates `h`, `cs`, `sn`, and `g` in place.
-fn apply_current_givens(h: &mut Array2<f64>, cs: &mut [f64], sn: &mut [f64], g: &mut Array1<f64>, k: usize) {
-    let hk = h[(k, k)];
-    let hk1 = h[(k + 1, k)];
-    let denom = (hk * hk + hk1 * hk1).sqrt();
+fn apply_current_givens<T: NOCIScalar>(
+    h: &mut Array2<T>,
+    cs: &mut [f64],
+    sn: &mut [T],
+    g: &mut Array1<T>,
+    k: usize,
+) {
+    let x = h[(k, k)];
+    let y = h[(k + 1, k)];
+    let ax = x.abs();
+    let ay = y.abs();
+    let denom = (ax * ax + ay * ay).sqrt();
 
     if denom > SMALL {
-        cs[k] = hk / denom;
-        sn[k] = hk1 / denom;
+        cs[k] = ax / denom;
+        sn[k] = if ax > SMALL {
+            T::from_real(cs[k]) * y.conj() / x.conj()
+        } else {
+            T::from_real(1.0)
+        };
     } else {
         cs[k] = 1.0;
-        sn[k] = 0.0;
+        sn[k] = T::from_real(0.0);
     }
 
-    h[(k, k)] = cs[k] * hk + sn[k] * hk1;
-    h[(k + 1, k)] = 0.0;
-    g[k + 1] = -sn[k] * g[k];
-    g[k] *= cs[k];
+    let csk = T::from_real(cs[k]);
+    let snk = sn[k];
+
+    let h0 = h[(k, k)];
+    let h1 = h[(k + 1, k)];
+    h[(k, k)] = csk * h0 + snk * h1;
+    h[(k + 1, k)] = -snk.conj() * h0 + csk * h1;
+
+    let g0 = g[k];
+    let g1 = g[k + 1];
+    g[k] = csk * g0 + snk * g1;
+    g[k + 1] = -snk.conj() * g0 + csk * g1;
 }
 
 /// Run one restarted Arnoldi cycle for a callback-defined right-preconditioned GMRES operator.
@@ -158,21 +259,28 @@ fn apply_current_givens(h: &mut Array2<f64>, cs: &mut [f64], sn: &mut [f64], g: 
 /// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
-fn run_arnoldi_cycle<F, P>(apply: &F, precondition: &P, rtrue: &Array1<f64>, params: &ArnoldiParams<'_>, opts: &GMRESOptions) -> ArnoldiCycle
+fn run_arnoldi_cycle<F, P, T>(
+    apply: &F,
+    precondition: &P,
+    rtrue: &Array1<T>,
+    params: &ArnoldiParams<'_>,
+    opts: &GMRESOptions,
+) -> ArnoldiCycle<T>
 where
-    F: Fn(&Array1<f64>) -> Array1<f64>,
-    P: Fn(&Array1<f64>) -> Array1<f64>,
+    F: Fn(&Array1<T>) -> Array1<T>,
+    P: Fn(&Array1<T>) -> Array1<T>,
+    T: NOCIScalar,
 {
-    let beta = rtrue.dot(rtrue).sqrt();
+    let beta = vector_norm(rtrue);
 
-    let mut q: Vec<Array1<f64>> = Vec::with_capacity(params.inner_max + 1);
-    q.push(rtrue.mapv(|ri| ri / beta));
+    let mut q: Vec<Array1<T>> = Vec::with_capacity(params.inner_max + 1);
+    q.push(rtrue.mapv(|ri| ri / T::from_real(beta)));
 
-    let mut h = Array2::<f64>::zeros((params.inner_max + 1, params.inner_max));
+    let mut h = Array2::<T>::from_elem((params.inner_max + 1, params.inner_max), T::from_real(0.0));
     let mut cs = vec![0.0; params.inner_max];
-    let mut sn = vec![0.0; params.inner_max];
-    let mut g = Array1::<f64>::zeros(params.inner_max + 1);
-    g[0] = beta;
+    let mut sn = vec![T::from_real(0.0); params.inner_max];
+    let mut g = Array1::<T>::from_elem(params.inner_max + 1, T::from_real(0.0));
+    g[0] = T::from_real(beta);
 
     let mut kfinal = 0usize;
 
@@ -204,15 +312,20 @@ where
         let iter = params.total_iter + k + 1;
 
         if k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol {
-            print_gmres_iteration(params.restart_id, iter, residual_est, apply_secs, params.gmres_start.elapsed().as_secs_f64());
+            print_gmres_iteration(
+                params.restart_id,
+                iter,
+                residual_est,
+                apply_secs,
+                params.gmres_start.elapsed().as_secs_f64(),
+            );
         }
 
-        // Stop early if the Krylov solve has converged or Arnoldi has broken down.
         if residual_est <= opts.res_tol || h_next <= SMALL {
             break;
         }
     }
-    ArnoldiCycle {q, h, g, kfinal}
+    ArnoldiCycle { q, h, g, kfinal }
 }
 
 /// Update the solution vector using a callback-defined right-preconditioned Krylov basis.
@@ -223,11 +336,20 @@ where
 /// - `precondition`: Right-preconditioner callback.
 /// # Returns:
 /// - `()`: Updates `x` in place.
-fn update_solution<P>(x: &mut Array1<f64>, q: &[Array1<f64>], y: &Array1<f64>, precondition: &P)
-where P: Fn(&Array1<f64>) -> Array1<f64> {
+fn update_solution<P, T>(
+    x: &mut Array1<T>,
+    q: &[Array1<T>],
+    y: &Array1<T>,
+    precondition: &P,
+) where
+    P: Fn(&Array1<T>) -> Array1<T>,
+    T: NOCIScalar,
+{
     for j in 0..y.len() {
         let z = precondition(&q[j]);
-        x.scaled_add(y[j], &z);
+        for i in 0..x.len() {
+            x[i] += y[j] * z[i];
+        }
     }
 }
 
@@ -237,9 +359,13 @@ where P: Fn(&Array1<f64>) -> Array1<f64> {
 /// - `g`: Rotated residual right-hand side.
 /// - `kfinal`: Number of Arnoldi iterations completed in the current cycle.
 /// # Returns:
-/// - `Array1<f64>`: Least-squares coefficients in the Krylov basis.
-fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
-    let mut y = Array1::<f64>::zeros(kfinal);
+/// - `Array1<T>`: Least-squares coefficients in the Krylov basis.
+fn back_solve<T: NOCIScalar>(
+    h: &Array2<T>,
+    g: &Array1<T>,
+    kfinal: usize,
+) -> Array1<T> {
+    let mut y = Array1::<T>::from_elem(kfinal, T::from_real(0.0));
 
     for ii in 0..kfinal {
         let i = kfinal - 1 - ii;
@@ -249,7 +375,11 @@ fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
             rhs -= h[(i, j)] * y[j];
         }
 
-        y[i] = if h[(i, i)].abs() > SMALL {rhs / h[(i, i)]} else {0.0};
+        y[i] = if h[(i, i)].abs() > SMALL {
+            rhs / h[(i, i)]
+        } else {
+            T::from_real(0.0)
+        };
     }
 
     y
@@ -264,21 +394,32 @@ fn back_solve(h: &Array2<f64>, g: &Array1<f64>, kfinal: usize) -> Array1<f64> {
 /// # Returns:
 /// - `GMRES`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.
-pub(in crate::snoci) fn gmres<F, P>(apply: F, precondition: P, b: &Array1<f64>, opts: &GMRESOptions) -> GMRES
+pub(in crate::snoci) fn gmres<F, P, T>(
+    apply: F,
+    precondition: P,
+    b: &Array1<T>,
+    opts: &GMRESOptions,
+) -> GMRESResult<T>
 where
-    F: Fn(&Array1<f64>) -> Array1<f64>,
-    P: Fn(&Array1<f64>) -> Array1<f64>,
+    F: Fn(&Array1<T>) -> Array1<T>,
+    P: Fn(&Array1<T>) -> Array1<T>,
+    T: NOCIScalar,
 {
     time_call!(crate::timers::snoci::add_gmres, {
         let gmres_start = Instant::now();
         let n = b.len();
-        let mut x = Array1::<f64>::zeros(n);
+        let mut x = Array1::<T>::from_elem(n, T::from_real(0.0));
 
         print_gmres_header();
 
         // Empty systems are already solved.
         if n == 0 {
-            return GMRES {x, residual_rms: 0.0, iterations: 0, converged: true};
+            return GMRESResult {
+                x,
+                residual_rms: 0.0,
+                iterations: 0,
+                converged: true,
+            };
         }
 
         let rms = (n as f64).sqrt();
@@ -291,20 +432,35 @@ where
 
         // Accept the zero initial guess if it already satisfies the true residual tolerance.
         if residual_rms <= opts.res_tol {
-            return GMRES {x, residual_rms, iterations: 0, converged: true};
+            return GMRESResult {
+                x,
+                residual_rms,
+                iterations: 0,
+                converged: true,
+            };
         }
 
         let mut total_iter = 0usize;
         let mut restart_id = 0usize;
 
         while total_iter < opts.max_iter {
-            let beta = rtrue.dot(&rtrue).sqrt();
+            let beta = vector_norm(&rtrue);
 
             // Stop if the residual is numerically zero.
             if beta <= SMALL {
                 residual_rms = beta / rms;
-                print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
-                return GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= opts.res_tol};
+                print_gmres_restart_summary(
+                    restart_id,
+                    total_iter,
+                    residual_rms,
+                    gmres_start.elapsed().as_secs_f64(),
+                );
+                return GMRESResult {
+                    x,
+                    residual_rms,
+                    iterations: total_iter,
+                    converged: residual_rms <= opts.res_tol,
+                };
             }
 
             // Build one Krylov subspace for the right-preconditioned operator A P^{-1}.
@@ -331,16 +487,31 @@ where
             rtrue = true_residual(&apply, b, &x);
             residual_rms = calculate_residual_rms(&rtrue, rms);
 
-            print_gmres_restart_summary(restart_id, total_iter, residual_rms, gmres_start.elapsed().as_secs_f64());
+            print_gmres_restart_summary(
+                restart_id,
+                total_iter,
+                residual_rms,
+                gmres_start.elapsed().as_secs_f64(),
+            );
 
             restart_id += 1;
 
             // Only the true residual is accepted as final convergence.
             if residual_rms <= opts.res_tol {
-                return GMRES {x, residual_rms, iterations: total_iter, converged: true};
+                return GMRESResult {
+                    x,
+                    residual_rms,
+                    iterations: total_iter,
+                    converged: true,
+                };
             }
         }
 
-        GMRES {x, residual_rms, iterations: total_iter, converged: residual_rms <= opts.res_tol}
+        GMRESResult {
+            x,
+            residual_rms,
+            iterations: total_iter,
+            converged: residual_rms <= opts.res_tol,
+        }
     })
 }

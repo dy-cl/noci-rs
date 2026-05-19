@@ -1,5 +1,5 @@
 // timers/nonorthogonalwicks.rs
-use super::{with_totals, Counter};
+use super::{Counter, with_totals};
 
 /// Timing counters for routines in the `nonorthogonalwicks` module.
 #[derive(Clone, Copy, Debug, Default)]
@@ -107,17 +107,25 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this set of nonorthogonal Wick timing totals in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.prepare_same.merge_from(&other.prepare_same);
         self.prepare_same_gen.merge_from(&other.prepare_same_gen);
         self.prepare_same_m0.merge_from(&other.prepare_same_m0);
         self.get_det_adjt_same.merge_from(&other.get_det_adjt_same);
         self.get_det_adjt_diff.merge_from(&other.get_det_adjt_diff);
-        self.construct_determinant_indices.merge_from(&other.construct_determinant_indices);
-        self.construct_determinant_indices_l1.merge_from(&other.construct_determinant_indices_l1);
-        self.construct_determinant_indices_l2.merge_from(&other.construct_determinant_indices_l2);
-        self.construct_determinant_indices_l3.merge_from(&other.construct_determinant_indices_l3);
-        self.construct_determinant_indices_gen.merge_from(&other.construct_determinant_indices_gen);
+        self.construct_determinant_indices
+            .merge_from(&other.construct_determinant_indices);
+        self.construct_determinant_indices_l1
+            .merge_from(&other.construct_determinant_indices_l1);
+        self.construct_determinant_indices_l2
+            .merge_from(&other.construct_determinant_indices_l2);
+        self.construct_determinant_indices_l3
+            .merge_from(&other.construct_determinant_indices_l3);
+        self.construct_determinant_indices_gen
+            .merge_from(&other.construct_determinant_indices_gen);
         self.lg_overlap.merge_from(&other.lg_overlap);
         self.lg_overlap_m0.merge_from(&other.lg_overlap_m0);
         self.lg_overlap_m0_l1.merge_from(&other.lg_overlap_m0_l1);
@@ -138,10 +146,14 @@ impl Totals {
         self.lg_h2_diff.merge_from(&other.lg_h2_diff);
         self.lg_h2_diff_gen.merge_from(&other.lg_h2_diff_gen);
         self.lg_h2_diff_m0.merge_from(&other.lg_h2_diff_m0);
-        self.prepare_same_m0_l1.merge_from(&other.prepare_same_m0_l1);
-        self.prepare_same_m0_l2.merge_from(&other.prepare_same_m0_l2);
-        self.prepare_same_m0_l3.merge_from(&other.prepare_same_m0_l3);
-        self.lg_one_body_m0_gen.merge_from(&other.lg_one_body_m0_gen);
+        self.prepare_same_m0_l1
+            .merge_from(&other.prepare_same_m0_l1);
+        self.prepare_same_m0_l2
+            .merge_from(&other.prepare_same_m0_l2);
+        self.prepare_same_m0_l3
+            .merge_from(&other.prepare_same_m0_l3);
+        self.lg_one_body_m0_gen
+            .merge_from(&other.lg_one_body_m0_gen);
         self.lg_one_body_m0_l1.merge_from(&other.lg_one_body_m0_l1);
         self.lg_one_body_m0_l2.merge_from(&other.lg_one_body_m0_l2);
         self.lg_h2_same_m0_gen.merge_from(&other.lg_h2_same_m0_gen);
@@ -213,7 +225,11 @@ pub fn add_get_det_adjt_diff(ns: u64) {
 /// - `()`: Updates the current thread local `construct_determinant_indices` counter.
 #[inline(always)]
 pub fn add_construct_determinant_indices(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices.add_ns(ns));
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .construct_determinant_indices
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `construct_determinant_indices_l1` counter.
@@ -223,7 +239,11 @@ pub fn add_construct_determinant_indices(ns: u64) {
 /// - `()`: Updates the current thread local `construct_determinant_indices_l1` counter.
 #[inline(always)]
 pub fn add_construct_determinant_indices_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l1.add_ns(ns));
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .construct_determinant_indices_l1
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `construct_determinant_indices_l2` counter.
@@ -233,7 +253,11 @@ pub fn add_construct_determinant_indices_l1(ns: u64) {
 /// - `()`: Updates the current thread local `construct_determinant_indices_l2` counter.
 #[inline(always)]
 pub fn add_construct_determinant_indices_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l2.add_ns(ns));
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .construct_determinant_indices_l2
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `construct_determinant_indices_l3` counter.
@@ -243,7 +267,11 @@ pub fn add_construct_determinant_indices_l2(ns: u64) {
 /// - `()`: Updates the current thread local `construct_determinant_indices_l3` counter.
 #[inline(always)]
 pub fn add_construct_determinant_indices_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l3.add_ns(ns));
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .construct_determinant_indices_l3
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `construct_determinant_indices_l4` counter.
@@ -253,7 +281,11 @@ pub fn add_construct_determinant_indices_l3(ns: u64) {
 /// - `()`: Updates the current thread local `construct_determinant_indices_l4` counter.
 #[inline(always)]
 pub fn add_construct_determinant_indices_l4(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_l4.add_ns(ns));
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .construct_determinant_indices_l4
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `construct_determinant_indices_gen` counter.
@@ -263,7 +295,11 @@ pub fn add_construct_determinant_indices_l4(ns: u64) {
 /// - `()`: Updates the current thread local `construct_determinant_indices_gen` counter.
 #[inline(always)]
 pub fn add_construct_determinant_indices_gen(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.construct_determinant_indices_gen.add_ns(ns));
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .construct_determinant_indices_gen
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `lg_overlap` counter.
@@ -282,8 +318,8 @@ pub fn add_lg_overlap(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_m0` counter.
 #[inline(always)]
-pub fn add_lg_overlap_m0(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0.add_ns(ns)); 
+pub fn add_lg_overlap_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_m0_l1` counter.
@@ -292,8 +328,8 @@ pub fn add_lg_overlap_m0(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_m0_l1` counter.
 #[inline(always)]
-pub fn add_lg_overlap_m0_l1(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l1.add_ns(ns)); 
+pub fn add_lg_overlap_m0_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l1.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_m0_l2` counter.
@@ -302,8 +338,8 @@ pub fn add_lg_overlap_m0_l1(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_m0_l2` counter.
 #[inline(always)]
-pub fn add_lg_overlap_m0_l2(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l2.add_ns(ns)); 
+pub fn add_lg_overlap_m0_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l2.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_m0_l3` counter.
@@ -312,8 +348,8 @@ pub fn add_lg_overlap_m0_l2(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_m0_l3` counter.
 #[inline(always)]
-pub fn add_lg_overlap_m0_l3(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l3.add_ns(ns)); 
+pub fn add_lg_overlap_m0_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l3.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_ml` counter.
@@ -322,8 +358,8 @@ pub fn add_lg_overlap_m0_l3(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_ml` counter.
 #[inline(always)]
-pub fn add_lg_overlap_ml(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml.add_ns(ns)); 
+pub fn add_lg_overlap_ml(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_ml_l1` counter.
@@ -332,8 +368,8 @@ pub fn add_lg_overlap_ml(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_ml_l1` counter.
 #[inline(always)]
-pub fn add_lg_overlap_ml_l1(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l1.add_ns(ns)); 
+pub fn add_lg_overlap_ml_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l1.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_ml_l2` counter.
@@ -342,8 +378,8 @@ pub fn add_lg_overlap_ml_l1(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_ml_l2` counter.
 #[inline(always)]
-pub fn add_lg_overlap_ml_l2(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l2.add_ns(ns)); 
+pub fn add_lg_overlap_ml_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l2.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_ml_l3` counter.
@@ -352,8 +388,8 @@ pub fn add_lg_overlap_ml_l2(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_ml_l3` counter.
 #[inline(always)]
-pub fn add_lg_overlap_ml_l3(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l3.add_ns(ns)); 
+pub fn add_lg_overlap_ml_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_ml_l3.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_gen` counter.
@@ -362,8 +398,8 @@ pub fn add_lg_overlap_ml_l3(ns: u64) {
 /// # Returns:
 /// - `()`: Updates the current thread local `lg_overlap_gen` counter.
 #[inline(always)]
-pub fn add_lg_overlap_gen(ns: u64) { 
-    with_totals(|t| t.nonorthogonalwicks.lg_overlap_gen.add_ns(ns)); 
+pub fn add_lg_overlap_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_gen.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_h1` counter.

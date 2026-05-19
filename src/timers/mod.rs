@@ -1,11 +1,11 @@
 // timers/mod.rs
 
-pub mod general;
 pub mod deterministic;
-pub mod stochastic;
-pub mod snoci;
+pub mod general;
 pub mod noci;
 pub mod nonorthogonalwicks;
+pub mod snoci;
+pub mod stochastic;
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -71,7 +71,7 @@ macro_rules! for_each_counter {
         $f!($tot.snoci.build_omega_m_diag);
         $f!($tot.snoci.build_candidate_v);
         $f!($tot.snoci.build_omega_v);
-        
+
         $f!($tot.noci.build_mo_cache);
         $f!($tot.noci.build_fock_mo_cache);
         $f!($tot.noci.calculate_s_pair);
@@ -158,7 +158,10 @@ impl Counter {
     /// # Returns:
     /// - `()`: Updates the accumulated nanoseconds and increments the call count.
     #[inline(always)]
-    pub fn add_ns(&mut self, ns: u64) {
+    pub fn add_ns(
+        &mut self,
+        ns: u64,
+    ) {
         self.ns += ns;
         self.calls += 1;
     }
@@ -179,7 +182,10 @@ impl Counter {
     /// # Returns:
     /// - `()`: Updates this counter in place by summing nanoseconds and call counts.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Counter) {
+    pub fn merge_from(
+        &mut self,
+        other: &Counter,
+    ) {
         self.ns += other.ns;
         self.calls += other.calls;
     }
@@ -209,15 +215,19 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this top level timing collection in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.general.merge_from(&other.general);
         self.deterministic.merge_from(&other.deterministic);
         self.stochastic.merge_from(&other.stochastic);
         self.snoci.merge_from(&other.snoci);
         self.noci.merge_from(&other.noci);
-        self.nonorthogonalwicks.merge_from(&other.nonorthogonalwicks);
+        self.nonorthogonalwicks
+            .merge_from(&other.nonorthogonalwicks);
     }
-    
+
     /// Number of `u64` entries needed to pack this timing structure.
     /// # Arguments:
     /// - None.
@@ -225,7 +235,12 @@ impl Totals {
     /// - `usize`: Number of packed `u64` entries.
     pub fn flat_len() -> usize {
         let mut n = 0usize;
-        macro_rules! count { ($x:expr) => {{ let _ = &$x; n += 2; }}; }
+        macro_rules! count {
+            ($x:expr) => {{
+                let _ = &$x;
+                n += 2;
+            }};
+        }
         let t = Totals::default();
         for_each_counter!(t, count);
         n
@@ -236,8 +251,16 @@ impl Totals {
     /// - `out`: Output buffer to append packed timing data to.
     /// # Returns:
     /// - `()`: Appends packed timing data to `out`.
-    pub fn pack(&self, out: &mut Vec<u64>) {
-        macro_rules! push_pair { ($x:expr) => {{ out.push($x.ns); out.push($x.calls); }}; }
+    pub fn pack(
+        &self,
+        out: &mut Vec<u64>,
+    ) {
+        macro_rules! push_pair {
+            ($x:expr) => {{
+                out.push($x.ns);
+                out.push($x.calls);
+            }};
+        }
         for_each_counter!(self, push_pair);
     }
 
@@ -280,7 +303,11 @@ pub fn snapshot_all_mpi(world: &impl CommunicatorCollectives) -> Totals {
     local.pack(&mut send);
 
     let mut recv = vec![0_u64; send.len()];
-    world.all_reduce_into(&send[..], &mut recv[..], mpi::collective::SystemOperation::max());
+    world.all_reduce_into(
+        &send[..],
+        &mut recv[..],
+        mpi::collective::SystemOperation::max(),
+    );
 
     Totals::unpack(&recv)
 }
@@ -304,9 +331,7 @@ pub fn snapshot_per_rank_mpi(world: &impl CommunicatorCollectives) -> Vec<Totals
 
     world.all_gather_into(&send[..], &mut recv[..]);
 
-    recv.chunks_exact(flat_len)
-        .map(Totals::unpack)
-        .collect()
+    recv.chunks_exact(flat_len).map(Totals::unpack).collect()
 }
 
 /// Borrow the current thread local timing totals mutably and apply a closure to them.

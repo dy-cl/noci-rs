@@ -19,9 +19,10 @@ MARKERSIZE = 10
 # All required regex goes here.
 ENERGYRREGEX = re.compile(r"^\s*R:\s*([+-]?\d+(?:\.\d+)?)", re.MULTILINE)
 ENERGYSTATEREGEX = re.compile(
-    r"^\s*State\((?P<idx>[^)]+)\):\s*"
+    r"^\s*(?P<hprefix>h-)?State\((?P<idx>[^)]+)\):\s*"
     r"(?:(?P<label>.*?)\s*(?:,\s*)?)?"
-    r"E\s*[:=]\s*(?P<E>[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)",
+    r"E\s*[:=]\s*(?P<E>[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)"
+    r"(?:\s*[+-]\s*[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?i)?",
     re.MULTILINE,
 )
 DETITERREGEX = re.compile(r"iter\s+(\d+)", re.IGNORECASE)
@@ -163,6 +164,9 @@ def readEnergy(path: Path) -> pd.DataFrame:
         for m in ENERGYSTATEREGEX.finditer(block):
             idx = m.group("idx")
             rawLabel = (m.group("label") or "").strip()
+            if m.group("hprefix") and rawLabel and not rawLabel.startswith("h-"):
+                if rawLabel.startswith("RHF") or rawLabel.startswith("UHF"):
+                    rawLabel = f"h-{rawLabel}"
             E = float(m.group("E"))
             label = createEnergyLabel(idx, rawLabel)
             rows.append((R, idx, rawLabel, label, E))
@@ -177,8 +181,8 @@ def createEnergyLabel(idx: str, rawLabel: str) -> str:
         return "NOCIQMC"
     if idx.startswith("NOCI-PT2"):
         return "NOCI-PT2"
-    if idx.startswith("SNOCI"):
-        return "SNOCI"
+    #if idx.startswith("SNOCI"):
+    #    return "SNOCI"
     if idx.startswith("NOCI"):
         return "NOCI"
     if idx.startswith("FCI"):
@@ -296,13 +300,22 @@ def plotEnergy(args):
         ax.plot(gFCI["R"], gFCI["E"], label = "FCI", color = "black", marker = "o", linestyle = " ", markersize = MARKERSIZE, zorder = 30)
 
     seen = set()
-    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("M "))
+    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("h-RHF") or l.startswith("h-UHF") or l.startswith("M "))
     for lbl in autoLabels:
         g = df[df["label"] == lbl].sort_values("R")
         if g.empty:
             continue
 
-        if "RHF" in lbl:
+        linestyle = "-"
+        if lbl.startswith("h-RHF"):
+            color = "tab:red"
+            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!RHF}}\rangle$"
+            linestyle = "--"
+        elif lbl.startswith("h-UHF"):
+            color = "tab:blue"
+            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!UHF}}\rangle$"
+            linestyle = "--"
+        elif "RHF" in lbl:
             color = "tab:red"
             display = r"$|\Psi^{\mathrm{RHF}}\rangle$"
         elif "UHF" in lbl:
@@ -314,7 +327,15 @@ def plotEnergy(args):
 
         label = display if display not in seen else None
         seen.add(display)
-        ax.plot(g["R"], g["E"], linewidth = LINEWIDTH, color = color, label = label)
+
+        gPlot = g
+        if lbl.startswith("h-UHF") or lbl.startswith("h-RHF"):
+            parentLbl = lbl.removeprefix("h-")
+            gParent = df[df["label"] == parentLbl].sort_values("R")
+            if not gParent.empty:
+                gPlot = pd.concat([g, gParent.head(1)], ignore_index = True).sort_values("R")
+
+        ax.plot(gPlot["R"], gPlot["E"], linewidth = LINEWIDTH, color = color, linestyle = linestyle, label = label)
 
     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
     plt.grid(True)
