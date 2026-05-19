@@ -12,7 +12,7 @@ use crate::nonorthogonalwicks::{lg_f, lg_overlap, prepare_same};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved. If the determinant pair have the
-/// same real orthonormal parents we may use the standard Slater-Condon rules, if not we can
+/// same Hermitian-orthonormal parents we may use the standard Slater-Condon rules, if not we can
 /// either use generalised Slater-Condon rules or extended non-orthogonal Wick's theorem to evaluate
 /// the matrix element.
 /// # Arguments:

@@ -11,7 +11,7 @@ use crate::time_call;
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
 /// depending on user input and properties of the determinant pair involved. If the determinant
-/// pair have the same real orthonormal parents we may use the standard Slater-Condon rules,
+/// pair have the same Hermitian-orthonormal parents we may use the standard Slater-Condon rules,
 /// if not we can either use generalised Slater-Condon rules or extended non-orthogonal Wick's
 /// theorem to evaluate the matrix element.
 /// # Arguments:
@@ -220,14 +220,14 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_aa_asym[(j, j, a, i)];
+                h += cache.eri_aa_asym[(a, i, j, j)];
             }
 
             let mut bits = ldet.ob & gdet.ob;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_ab_coul[(i, a, j, j)];
+                h += cache.eri_ab_coul[(a, i, j, j)];
             }
 
             return (phase * h, s);
@@ -243,14 +243,14 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_bb_asym[(j, j, a, i)];
+                h += cache.eri_bb_asym[(a, i, j, j)];
             }
 
             let mut bits = ldet.oa & gdet.oa;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                h += cache.eri_ab_coul[(j, j, a, i)];
+                h += cache.eri_ab_coul[(j, j, i, a)];
             }
 
             return (phase * h, s);
@@ -261,7 +261,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             let j = holesa[1];
             let a = partsa[0];
             let b = partsa[1];
-            return (phase * cache.eri_aa_asym[(i, a, b, j)], s);
+            return (phase * cache.eri_aa_asym[(a, i, j, b)], s);
         }
 
         if ra == 0 && rb == 2 {
@@ -269,7 +269,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             let j = holesb[1];
             let a = partsb[0];
             let b = partsb[1];
-            return (phase * cache.eri_bb_asym[(i, a, b, j)], s);
+            return (phase * cache.eri_bb_asym[(a, i, j, b)], s);
         }
 
         if ra == 1 && rb == 1 {
@@ -277,7 +277,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             let j = holesb[0];
             let a = partsa[0];
             let b = partsb[0];
-            return (phase * cache.eri_ab_coul[(i, a, b, j)], s);
+            return (phase * cache.eri_ab_coul[(a, i, j, b)], s);
         }
         (<T as From<f64>>::from(0.0), s)
     })

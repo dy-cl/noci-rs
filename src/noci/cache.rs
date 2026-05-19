@@ -38,17 +38,6 @@ fn hermitian_orthonormal_error<T: NOCIScalar>(
     err
 }
 
-/// Calculate maximum deviation from a real-valued MO coefficient matrix.
-/// # Arguments:
-/// - `c`: MO coefficient matrix.
-/// # Returns:
-/// - `f64`: Maximum absolute difference between each coefficient and its complex conjugate.
-fn real_orbital_error<T: NOCIScalar>(c: &Array2<T>) -> f64 {
-    c.iter()
-        .map(|&z| (z - z.conj()).abs())
-        .fold(0.0, f64::max)
-}
-
 /// Build MO-basis caches for all reference determinants.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
@@ -72,21 +61,21 @@ pub fn build_mo_cache<T: NOCIScalar>(
                 let ha = adjoint(ca).dot(&h).dot(ca);
                 let hb = adjoint(cb).dot(&h).dot(cb);
 
-                let eri_aa_asym = eri_ao2mo_hermitian_as(&ao.eri_asym, ca, ca, ca, ca)
+                let ca_conj = ca.mapv(|z| z.conj());
+                let cb_conj = cb.mapv(|z| z.conj());
+
+                let eri_aa_asym = eri_ao2mo_hermitian_as(&ao.eri_asym, ca, ca, &ca_conj, &ca_conj)
                     .as_standard_layout()
                     .to_owned();
-                let eri_bb_asym = eri_ao2mo_hermitian_as(&ao.eri_asym, cb, cb, cb, cb)
+                let eri_bb_asym = eri_ao2mo_hermitian_as(&ao.eri_asym, cb, cb, &cb_conj, &cb_conj)
                     .as_standard_layout()
                     .to_owned();
-                let eri_ab_coul = eri_ao2mo_hermitian_as(&ao.eri_coul, ca, ca, cb, cb)
+                let eri_ab_coul = eri_ao2mo_hermitian_as(&ao.eri_coul, ca, ca, &cb_conj, &cb_conj)
                     .as_standard_layout()
                     .to_owned();
 
                 let orthogonal_slater_condon = hermitian_orthonormal_error(ca, &ao.s) < tol
                     && hermitian_orthonormal_error(cb, &ao.s) < tol;
-                let orthogonal_slater_condon = orthogonal_slater_condon
-                    && real_orbital_error(ca) < tol
-                    && real_orbital_error(cb) < tol;
 
                 MOCache {
                     ha,
@@ -128,9 +117,6 @@ pub fn build_fock_mo_cache<T: NOCIScalar>(
                 let fb_mo = adjoint(cb).dot(fb).dot(cb);
                 let orthogonal_slater_condon = hermitian_orthonormal_error(ca, s) < tol
                     && hermitian_orthonormal_error(cb, s) < tol;
-                let orthogonal_slater_condon = orthogonal_slater_condon
-                    && real_orbital_error(ca) < tol
-                    && real_orbital_error(cb) < tol;
 
                 FockMOCache {
                     fa: fa_mo,
