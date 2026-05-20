@@ -32,6 +32,9 @@ DETFULLHEADERREGEX = re.compile(r"^Full coefficients")
 DETCOEFFLINEREGEX = re.compile(
     r"^\s*(\d+)\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$"
 )
+ISHIFTREGEX = re.compile(
+    r"(?:iShift\s*=|i\s*:)\s*([+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)"
+)
 
 def findQMC(path: Path):
     """
@@ -180,6 +183,10 @@ def createEnergyLabel(idx: str, rawLabel: str) -> str:
     if idx.startswith("NOCI-qmc"):
         return "NOCIQMC"
     if idx.startswith("NOCI-PT2"):
+        m = ISHIFTREGEX.search(idx)
+        if m is not None:
+            shift = float(m.group(1))
+            return f"NOCI-PT2 iShift={shift:g}"
         return "NOCI-PT2"
     #if idx.startswith("SNOCI"):
     #    return "SNOCI"
@@ -291,7 +298,52 @@ def plotEnergy(args):
             ax.plot(g["R"], g["E"], label = display if display is not None else lbl, **kwargs)
     
     plotLabel("NOCI", display = r"$|\Psi^{\mathrm{NOCI}}\rangle$", linewidth = LINEWIDTH, zorder = 10, color = "tab:green")
-    plotLabel("NOCI-PT2", display = r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$", linewidth = LINEWIDTH, linestyle = "-.", zorder = 15, color = "tab:purple")
+    
+    pt2Labels = sorted(
+        [lbl for lbl in df["label"].unique() if lbl.startswith("NOCI-PT2")],
+        key = lambda lbl: float(ISHIFTREGEX.search(lbl).group(1)) if ISHIFTREGEX.search(lbl) else -1.0,
+    )
+
+    pt2Shifts = [
+        float(ISHIFTREGEX.search(lbl).group(1))
+        for lbl in pt2Labels
+        if ISHIFTREGEX.search(lbl)
+    ]
+
+    if pt2Labels:
+        baseCmap = plt.get_cmap("Purples")
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            "Purples_trunc",
+            baseCmap(np.linspace(0.5, 0.9, 256)),
+        )
+        if pt2Shifts:
+            norm = mcolors.Normalize(vmin = min(pt2Shifts), vmax = max(pt2Shifts))
+        else:
+            norm = mcolors.Normalize(vmin = 0.0, vmax = 1.0)
+
+        for i, lbl in enumerate(pt2Labels):
+            m = ISHIFTREGEX.search(lbl)
+            shift = float(m.group(1)) if m else 0.0
+            color = cmap(norm(shift)) if pt2Shifts else "tab:purple"
+
+            plotLabel(
+                lbl,
+                display = r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$" if i == len(pt2Labels) - 1 else "_nolegend_",
+                linewidth = LINEWIDTH,
+                linestyle = "-",
+                zorder = 15,
+                color = color,
+            )
+
+        if len(set(pt2Shifts)) > 1:
+            sm = plt.cm.ScalarMappable(norm = norm, cmap = cmap)
+            sm.set_array([])
+            
+            cax = ax.inset_axes([0.05, 0.90, 0.28, 0.035])
+            cbar = fig.colorbar(sm, cax = cax, orientation = "horizontal")
+            cbar.set_label(r"$\epsilon / E_h$", fontsize = 20)
+            cbar.ax.tick_params(labelsize = 16)
+    
     plotLabel("SNOCI", display = r"$|\Psi^{\mathrm{SNOCI}}\rangle$", linewidth = LINEWIDTH, linestyle = ":", zorder = 16, color = "tab:cyan")
     plotLabel("NOCIQMC", display = r"$|\Psi^{\mathrm{NOCI\!-\!QMC}}\rangle$", linewidth = LINEWIDTH, linestyle = "--", zorder = 20, color = "tab:pink")
 

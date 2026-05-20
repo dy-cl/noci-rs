@@ -22,10 +22,30 @@ pub struct SNOCIState<T: NOCIScalar> {
     pub candidates: Vec<DetState<T>>,
     /// Candidate determinants selected for addition to the current space.
     pub selected: Vec<DetState<T>>,
-    /// Importance scores for the current candidate determinants.
-    pub candidate_scores: Vec<f64>,
-    /// Second-order Epstein-Nesbet-like correction from the current candidate space.
+    // Results of the NOCI-PT2 solve.
+    pub pt2: Vec<SNOCIPT2Result>,
+}
+
+// Storage for result of a PT2 solve.
+pub struct SNOCIPT2Result {
+    /// Imaginary shift used in the NOCI-PT2 solve.
+    pub imag_shift: f64,
+    /// Second-order correction for this imaginary shift.
     pub ept2: f64,
+    /// Importance scores `|a_i v_i|` for this imaginary shift.
+    pub candidate_scores: Vec<f64>,
+    /// Largest first-order amplitude magnitude.
+    pub max_abs_a: f64,
+    /// Largest projected coupling magnitude.
+    pub max_abs_v: f64,
+    /// Largest amplitude-coupling product.
+    pub max_abs_av: f64,
+    /// GMRES residual for this shifted solve.
+    pub gmres_residual: f64,
+    /// GMRES iterations for this shifted solve.
+    pub gmres_iterations: usize,
+    /// Whether GMRES converged for this shifted solve.
+    pub gmres_converged: bool,
 }
 
 /// Result of a GMRES linear solve.

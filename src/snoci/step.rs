@@ -3,7 +3,7 @@
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
-use super::{CandidatePool, GMRESResult, PT2ProjectedOperator, SNOCIState};
+use super::{CandidatePool, PT2ProjectedOperator, SNOCIState, SNOCIPT2Result};
 use crate::noci::{FockData, MOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::time_call;
@@ -51,8 +51,7 @@ fn empty_state<T: NOCIScalar>(
         scurrent,
         candidates,
         selected: Vec::new(),
-        candidate_scores: Vec::new(),
-        ept2: 0.0,
+        pt2: Vec::new(),
     }
 }
 
@@ -96,7 +95,6 @@ fn print_build_candidate_m<T: NOCIScalar>(n: usize) {
 /// - `n_current`: Number of determinants in the current selected space.
 /// - `e0`: RHF reference energy used to define the correlation energy.
 /// - `state`: SNOCI state for the current iteration.
-/// - `gmres`: GMRES solve information for the current iteration.
 /// # Returns:
 /// - `()`: Prints the SNOCI iteration result to standard output.
 fn print_snoci_iteration_result<T: NOCIScalar>(
@@ -104,7 +102,6 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
     n_current: usize,
     e0: f64,
     state: &SNOCIState<T>,
-    gmres: &GMRESResult<T>,
 ) {
     println!();
     println!("  SNOCI result");
@@ -114,11 +111,21 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
     println!("  NSelect:            {}", state.selected.len());
     println!("  E:                  {:.12}", state.ecurrent);
     println!("  Ecorr:              {:.12}", state.ecurrent - e0);
-    println!("  EPT2:               {:.12}", state.ept2);
-    println!("  E + EPT2:           {:.12}", state.ecurrent + state.ept2);
-    println!("  GMRES residual:     {:.12}", gmres.residual_rms);
-    println!("  GMRES iterations:   {}", gmres.iterations);
-    println!("  GMRES converged:    {}", gmres.converged);
+
+    for r in &state.pt2 {
+        println!();
+        println!("  NOCI-PT2 result");
+        println!("  Imag shift:         {:.12}", r.imag_shift);
+        println!("  EPT2:               {:.12}", r.ept2);
+        println!("  E + EPT2:           {:.12}", state.ecurrent + r.ept2);
+        println!("  Max |a_i|:          {:.12}", r.max_abs_a);
+        println!("  Max |v_i|:          {:.12}", r.max_abs_v);
+        println!("  Max |a_i v_i|:      {:.12}", r.max_abs_av);
+        println!("  GMRES residual:     {:.12}", r.gmres_residual);
+        println!("  GMRES iterations:   {}", r.gmres_iterations);
+        println!("  GMRES converged:    {}", r.gmres_converged);
+        println!("  {}", "-".repeat(98));
+    }
 }
 
 /// Perform selected NOCI with selection from excitations of the current space.
@@ -243,44 +250,73 @@ where
             };
 
             let m_diag = build_candidate_m_diag(&op, m.as_deref());
-            let s_diag = (opts.imag_shift != 0.0).then(|| build_candidate_s_diag(&op));
-            let prec = build_preconditioner(
-                &m_diag,
-                s_diag.as_ref(),
-                op.projection,
-                opts.preconditioner,
-                opts.imag_shift,
-            );
+            let shifts = if opts.imag_shifts.is_empty() {
+                vec![0.0]
+            } else {
+                opts.imag_shifts.clone()
+            };
+            let s_diag = shifts
+                .iter()
+                .any(|&imag_shift| imag_shift != 0.0)
+                .then(|| build_candidate_s_diag(&op));
             let rhs = v_omega.mapv(|x| -x);
 
-            let a = gmres(
-                |x| apply_shifted_omega_m(&op, x, m.as_deref(), opts.imag_shift),
-                |x| prec.apply(x),
-                &rhs,
-                &opts.gmres,
-            );
+            // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
+            let mut pt2 = Vec::new();
+            for &imag_shift in &shifts {
+                let prec = build_preconditioner(
+                    &m_diag,
+                    s_diag.as_ref(),
+                    op.projection,
+                    opts.preconditioner,
+                    imag_shift,
+                );
 
-            // Evaluate NOCI-PT2 energies, score and select candidates.
-            let ma = apply_shifted_omega_m(&op, &a.x, m.as_deref(), opts.imag_shift);
-            let ama =
-                a.x.iter()
-                    .zip(ma.iter())
-                    .fold(T::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
-            let av =
-                a.x.iter()
-                    .zip(v_omega.iter())
-                    .fold(T::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
-            let va = v_omega
-                .iter()
-                .zip(a.x.iter())
-                .fold(T::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
-            let ept2 = scalar_real(ama + av + va);
+                let a = gmres(
+                    |x| apply_shifted_omega_m(&op, x, m.as_deref(), imag_shift),
+                    |x| prec.apply(x),
+                    &rhs,
+                    &opts.gmres,
+                );
 
-            let candidate_scores: Vec<f64> =
-                a.x.iter()
-                    .zip(v_omega.iter())
-                    .map(|(&a, &v)| (a * v).abs())
-                    .collect();
+                let ma = apply_shifted_omega_m(&op, &a.x, m.as_deref(), imag_shift);
+                let ama =
+                    a.x.iter()
+                        .zip(ma.iter())
+                        .fold(T::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
+                let av =
+                    a.x.iter()
+                        .zip(v_omega.iter())
+                        .fold(T::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
+                let va = v_omega
+                    .iter()
+                    .zip(a.x.iter())
+                    .fold(T::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
+                let ept2 = scalar_real(ama + av + va);
+
+                let candidate_scores: Vec<f64> =
+                    a.x.iter()
+                        .zip(v_omega.iter())
+                        .map(|(&a, &v)| (a * v).abs())
+                        .collect();
+
+                let max_abs_a = a.x.iter().map(|x| x.abs()).fold(0.0, f64::max);
+                let max_abs_v = v_omega.iter().map(|x| x.abs()).fold(0.0, f64::max);
+                let max_abs_av = candidate_scores.iter().copied().fold(0.0, f64::max);
+
+                pt2.push(SNOCIPT2Result {
+                    imag_shift,
+                    ept2,
+                    candidate_scores,
+                    max_abs_a,
+                    max_abs_v,
+                    max_abs_av,
+                    gmres_residual: a.residual_rms,
+                    gmres_iterations: a.iterations,
+                    gmres_converged: a.converged,
+                });
+            }
+
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
             if remaining == 0 {
                 println!(
@@ -294,14 +330,18 @@ where
                     scurrent,
                     candidates: pool.candidates.clone(),
                     selected: Vec::new(),
-                    candidate_scores,
-                    ept2,
+                    pt2,
                 };
             }
 
+            // Use the final imaginary shift in the input list as the main shift for selection.
+            let main_pt2 = pt2
+                .last()
+                .expect("At least one NOCI-PT2 shift must be evaluated.");
+
             let selected = select_candidates(
                 &pool.candidates,
-                &candidate_scores,
+                &main_pt2.candidate_scores,
                 opts.sigma,
                 opts.max_add.min(remaining),
             );
@@ -312,8 +352,7 @@ where
                 scurrent,
                 candidates: pool.candidates.clone(),
                 selected,
-                candidate_scores,
-                ept2,
+                pt2,
             };
 
             print_snoci_iteration_result(
@@ -321,7 +360,6 @@ where
                 selected_space.len(),
                 scalar_real(noci_reference_basis[0].e),
                 &state,
-                &a,
             );
 
             if state.selected.is_empty() {
@@ -332,11 +370,16 @@ where
                 return state;
             }
 
-            if state.ept2.abs() < opts.tol {
+            let main_pt2 = state
+                .pt2
+                .last()
+                .expect("At least one NOCI-PT2 shift must be evaluated.");
+
+            if main_pt2.ept2.abs() < opts.tol {
                 println!(
                     "SNOCI stopped at iteration {}: |EPT2|: {:.12} fell below tolerance {:.12}.",
                     it,
-                    state.ept2.abs(),
+                    main_pt2.ept2.abs(),
                     opts.tol
                 );
                 return state;

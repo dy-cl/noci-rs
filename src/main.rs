@@ -50,7 +50,7 @@ struct Results {
     /// Selected NOCI energy if calculated.
     e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
-    e_pt2: Option<f64>,
+    e_pt2: Option<Vec<(f64, f64)>>,
     /// FCI energy if available.
     e_fci: Option<f64>,
     /// Number of MPI ranks for printing.
@@ -173,7 +173,7 @@ fn run(
 
         let mut e_noci_ref: f64 = 0.0;
         let mut e_snoci: Option<f64> = None;
-        let mut e_pt2: Option<f64> = None;
+        let mut e_pt2: Option<Vec<(f64, f64)>> = None;
 
         // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
         // for multithreading. SCF calculations are currently single threaded.
@@ -300,7 +300,7 @@ fn run(
     let mut e_noci_qmc_det: Option<f64> = None;
     let mut e_noci_qmc_stoch: Option<f64> = None;
     let mut e_snoci: Option<f64> = None;
-    let mut e_pt2: Option<f64> = None;
+    let mut e_pt2: Option<Vec<(f64, f64)>> = None;
 
     // Run all non MPI parts of the code on rank 0. The deterministic propagation still uses Rayon
     // for multithreading. SCF calculations are currently single threaded.
@@ -367,7 +367,7 @@ fn run(
         }
 
         if let Some(snoci) = input.snoci.as_ref() {
-            if snoci.imag_shift == 0.0 {
+            if snoci.imag_shifts.iter().all(|&x| x == 0.0) {
                 let (e_snoci_res, e_pt2_res) = run_snoci(
                     &post,
                     &noci_reference_basis,
@@ -761,14 +761,15 @@ fn run_qmc_stochastic_noci(
 /// - `wicks`: Optional shared-memory Wick's intermediates storage.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
 /// # Returns
-/// - `f64`: Current SNOCI and NOCI-PT2 energies.
+/// - `(f64, Vec<(f64, f64)>)`: Current SNOCI energy and NOCI-PT2 corrections stored as
+///   `(imag_shift, ept2)`.
 fn run_snoci<T>(
     post: &PostSCFData<'_, T>,
     initial_space: &[DetState<T>],
     input: &Input,
     wicks: Option<&mut WicksShared<T>>,
     world: &impl Communicator,
-) -> (f64, f64)
+) -> (f64, Vec<(f64, f64)>)
 where
     T: NOCIScalar + Into<Complex64>,
 {
@@ -789,7 +790,13 @@ where
             wicks,
         );
 
-        (state.ecurrent, state.ept2)
+        let ept2 = state
+            .pt2
+            .iter()
+            .map(|r| (r.imag_shift, r.ept2))
+            .collect::<Vec<_>>();
+
+        (state.ecurrent, ept2)
     })
 }
 
@@ -1487,11 +1494,13 @@ fn print_report(
                 st.e
             );
         }
+
         let hprint: Vec<&HSCFState> = res
             .hstates
             .iter()
             .filter(|st| hlabels.contains(&st.label.as_str()))
             .collect();
+
         for (i, st) in hprint.iter().enumerate() {
             println!(
                 "State({}): {},  E: {} + {}i",
@@ -1505,51 +1514,47 @@ fn print_report(
         Some(("E(RHF)".to_string(), res.e_rhf))
     };
 
-    if let Some((label, e0)) = ref_energy.as_ref() {
-        println!(
-            "State(NOCI-reference): E: {}, [E - {}]: {}",
-            res.e_noci_ref,
-            label,
-            res.e_noci_ref - e0
-        );
-    } else {
-        println!("State(NOCI-reference): E: {}", res.e_noci_ref);
-    }
+    let (label, e0) = ref_energy
+        .as_ref()
+        .expect("Reference energy should exist when printing report.");
+
+    println!(
+        "State(NOCI-reference): E: {}, [E - {}]: {}",
+        res.e_noci_ref,
+        label,
+        res.e_noci_ref - e0
+    );
 
     if !res.hstates.is_empty() {
         if let Some(e_snoci) = res.e_snoci {
-            if let Some((label, e0)) = ref_energy.as_ref() {
-                println!(
-                    "State(SNOCI): E: {}, [E - {}]: {}",
-                    e_snoci,
-                    label,
-                    e_snoci - e0
-                );
-            } else {
-                println!("State(SNOCI): E: {}", e_snoci);
-            }
+            println!(
+                "State(SNOCI): E: {}, [E - {}]: {}",
+                e_snoci,
+                label,
+                e_snoci - e0
+            );
         }
 
-        if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2) {
-            let e_noci_pt2 = e_snoci + ept2;
-            if let Some((label, e0)) = ref_energy.as_ref() {
+        if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2.as_ref()) {
+            for &(imag_shift, ept2) in ept2 {
+                let e_noci_pt2 = e_snoci + ept2;
                 println!(
-                    "State(NOCI-PT2): E: {}, [E - {}]: {}",
+                    "State(NOCI-PT2 i: {}): E: {}, [E - {}]: {}",
+                    imag_shift,
                     e_noci_pt2,
                     label,
                     e_noci_pt2 - e0
                 );
-            } else {
-                println!("State(NOCI-PT2): E: {}", e_noci_pt2);
             }
         }
 
         if let Some(e_fci) = res.e_fci {
-            if let Some((label, e0)) = ref_energy.as_ref() {
-                println!("State(FCI): E: {}, [E - {}]: {}", e_fci, label, e_fci - e0);
-            } else {
-                println!("State(FCI): E: {}", e_fci);
-            }
+            println!(
+                "State(FCI): E: {}, [E - {}]: {}",
+                e_fci,
+                label,
+                e_fci - e0
+            );
         }
 
         println!("{}", "=".repeat(100));
@@ -1558,34 +1563,45 @@ fn print_report(
 
     if let Some(e_det) = res.e_noci_qmc_det {
         println!(
-            "State(NOCI-qmc-deterministic): E: {}, [E - E(RHF)]: {}",
+            "State(NOCI-qmc-deterministic): E: {}, [E - {}]: {}",
             e_det,
-            e_det - res.e_rhf
+            label,
+            e_det - e0
         );
     }
+
     if res.e_noci_qmc_stoch.is_some() {
         println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");
     }
+
     if let Some(e_snoci) = res.e_snoci {
         println!(
-            "State(SNOCI): E: {}, [E - E(RHF)]: {}",
+            "State(SNOCI): E: {}, [E - {}]: {}",
             e_snoci,
-            e_snoci - res.e_rhf
+            label,
+            e_snoci - e0
         );
     }
-    if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2) {
-        let e_noci_pt2 = e_snoci + ept2;
-        println!(
-            "State(NOCI-PT2): E: {}, [E - E(RHF)]: {}",
-            e_noci_pt2,
-            e_noci_pt2 - res.e_rhf
-        );
+
+    if let (Some(e_snoci), Some(ept2)) = (res.e_snoci, res.e_pt2.as_ref()) {
+        for &(imag_shift, ept2) in ept2 {
+            let e_noci_pt2 = e_snoci + ept2;
+            println!(
+                "State(NOCI-PT2: i: {}): E: {}, [E - {}]: {}",
+                imag_shift,
+                e_noci_pt2,
+                label,
+                e_noci_pt2 - e0
+            );
+        }
     }
+
     if let Some(e_fci) = res.e_fci {
         println!(
-            "State(FCI): E: {},  [E - E(RHF)]: {}",
+            "State(FCI): E: {},  [E - {}]: {}",
             e_fci,
-            e_fci - res.e_rhf
+            label,
+            e_fci - e0
         );
     }
 

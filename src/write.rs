@@ -176,7 +176,7 @@ pub fn print_input(input: &Input) {
             println!("MAX_ADD: {}", s.max_add);
             println!("SIGMA: {}", s.sigma);
             println!("TOL: {}", s.tol);
-            println!("IMAG_SHIFT: {}", s.imag_shift);
+            println!("IMAG_SHIFTS: {:?}", s.imag_shifts);
             println!("PRECONDITIONER: {}", s.preconditioner.as_str());
             println!("GMRES:");
             println!("  MAX_ITER: {}", s.gmres.max_iter);
