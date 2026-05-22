@@ -1,3 +1,5 @@
+// driver/mod.rs
+
 //! Program driver.
 
 mod config;

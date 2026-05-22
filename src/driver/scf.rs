@@ -1,3 +1,5 @@
+// driver/scf.rs
+
 use num_complex::Complex64;
 
 use crate::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
