@@ -1,6 +1,7 @@
 // lib.rs
 pub mod basis;
 pub mod deterministic;
+pub mod driver;
 pub mod input;
 pub mod maths;
 pub mod mpiutils;
