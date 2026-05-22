@@ -1,9 +1,12 @@
 // snoci/solve.rs
 
+use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
+use num_complex::Complex64;
 use rayon::prelude::*;
 
 use crate::maths::{adjoint, general_evp};
+use crate::mpiutils::all_reduce_array1;
 use crate::noci::{DetPair, FockData, MOCache, NOCIData, NOCIScalar};
 use crate::noci::{
     build_noci_fock, build_noci_hs, build_noci_s, calculate_m_pair, calculate_s_pair,
@@ -358,6 +361,92 @@ pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
     })
 }
 
+/// Apply the unprojected candidate-candidate shifted Fock matrix `M` across MPI ranks.
+/// Uses a replicated input vector and returns the globally reduced output vector on every rank.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `x`: Replicated vector to apply `M` to.
+/// - `m`: Optional packed candidate-candidate shifted Fock matrix.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Array1<T>`: Globally reduced matrix-vector product `M x`.
+pub(in crate::snoci) fn apply_candidate_m_mpi<T>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    m: Option<&[T]>,
+    world: &impl Communicator,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    time_call!(crate::timers::snoci::add_apply_candidate_m, {
+        let n = op.candidates.len();
+        if n == 0 {
+            return Array1::from_vec(Vec::new());
+        }
+
+        let irank = world.rank() as usize;
+        let nranks = world.size() as usize;
+        let xs = x.as_slice_memory_order().unwrap();
+        let zero = T::from_real(0.0);
+
+        let mut y = vec![zero; n];
+
+        if let Some(m) = m {
+            for a in (irank..n).step_by(nranks) {
+                let mut ya = zero;
+
+                for (b, &xb) in xs.iter().enumerate().take(a) {
+                    let k = b * (2 * n - b + 1) / 2 + (a - b);
+                    ya += m[k].conj() * xb;
+                }
+
+                let row = a * (2 * n - a + 1) / 2;
+                for (b, &xb) in xs.iter().enumerate().skip(a) {
+                    let k = row + (b - a);
+                    ya += m[k] * xb;
+                }
+
+                y[a] = ya;
+            }
+
+            return all_reduce_array1(world, Array1::from_vec(y));
+        }
+
+        let mut scratch = WickScratchSpin::new();
+
+        for a in (irank..n).step_by(nranks) {
+            let xa = xs[a];
+            let ldet = &op.candidates[a];
+
+            for b in a..n {
+                let xb = xs[b];
+                if xa == zero && xb == zero {
+                    continue;
+                }
+
+                let gdet = &op.candidates[b];
+                let m_ab = calculate_m_pair(
+                    op.data,
+                    op.fock,
+                    DetPair::new(ldet, gdet),
+                    op.projection.e0,
+                    Some(&mut scratch),
+                );
+
+                if xb != zero {
+                    y[a] += m_ab * xb;
+                }
+                if b != a && xa != zero {
+                    y[b] += m_ab.conj() * xa;
+                }
+            }
+        }
+
+        all_reduce_array1(world, Array1::from_vec(y))
+    })
+}
+
 /// Apply the unprojected candidate-candidate overlap matrix `S`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
@@ -424,6 +513,60 @@ pub(in crate::snoci) fn apply_candidate_s<T: NOCIScalar>(
     Array1::from_vec(y)
 }
 
+/// Apply the unprojected candidate-candidate overlap matrix `S` across MPI ranks.
+/// Uses a replicated input vector and returns the globally reduced output vector on every rank.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `x`: Replicated vector to apply `S` to.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Array1<T>`: Globally reduced matrix-vector product `S x`.
+pub(in crate::snoci) fn apply_candidate_s_mpi<T>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    world: &impl Communicator,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    let n = op.candidates.len();
+    if n == 0 {
+        return Array1::from_vec(Vec::new());
+    }
+
+    let irank = world.rank() as usize;
+    let nranks = world.size() as usize;
+    let xs = x.as_slice_memory_order().unwrap();
+    let zero = T::from_real(0.0);
+
+    let mut y = vec![zero; n];
+    let mut scratch = WickScratchSpin::new();
+
+    for a in (irank..n).step_by(nranks) {
+        let xa = xs[a];
+        let ldet = &op.candidates[a];
+
+        for b in a..n {
+            let xb = xs[b];
+            if xa == zero && xb == zero {
+                continue;
+            }
+
+            let gdet = &op.candidates[b];
+            let s_ab = calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
+
+            if xb != zero {
+                y[a] += s_ab * xb;
+            }
+            if b != a && xa != zero {
+                y[b] += s_ab.conj() * xa;
+            }
+        }
+    }
+
+    all_reduce_array1(world, Array1::from_vec(y))
+}
+
 /// Apply the projected NOCI-PT2 shifted Fock matrix `M^Omega`.
 /// Uses a cached packed candidate-candidate shifted Fock matrix if provided,
 /// otherwise applies `M` without materialising it.
@@ -462,6 +605,40 @@ pub(in crate::snoci) fn apply_omega_m<T: NOCIScalar>(
     })
 }
 
+/// Apply the projected NOCI-PT2 shifted Fock matrix `M^Omega` across MPI ranks.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `x`: Replicated vector to apply `M^Omega` to.
+/// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Array1<T>`: Globally reduced matrix-vector product `M^Omega x`.
+pub(in crate::snoci) fn apply_omega_m_mpi<T>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    m: Option<&[T]>,
+    world: &impl Communicator,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    time_call!(crate::timers::snoci::add_apply_omega_m, {
+        let p = op.projection;
+
+        let sx = p.s_0a.dot(x);
+        let fx = p.f_0a.dot(x);
+
+        let mut y = apply_candidate_m_mpi(op, x, m, world);
+        let two_e0 = T::from_real(2.0 * p.e0);
+
+        for a in 0..y.len() {
+            y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + two_e0 * p.s_a0[a] * sx;
+        }
+
+        y
+    })
+}
+
 /// Apply the projected first-order-space overlap matrix `Q`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
@@ -476,6 +653,32 @@ pub(in crate::snoci) fn apply_omega_s<T: NOCIScalar>(
     let sx = p.s_0a.dot(x);
     let mut y = apply_candidate_s(op, x);
 
+    for a in 0..y.len() {
+        y[a] -= p.s_a0[a] * sx;
+    }
+
+    y
+}
+
+/// Apply the projected first-order-space overlap matrix `Q` across MPI ranks.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `x`: Replicated vector to apply `Q` to.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Array1<T>`: Globally reduced matrix-vector product `Q x`.
+pub(in crate::snoci) fn apply_omega_s_mpi<T>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    world: &impl Communicator,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    let p = op.projection;
+    let sx = p.s_0a.dot(x);
+
+    let mut y = apply_candidate_s_mpi(op, x, world);
     for a in 0..y.len() {
         y[a] -= p.s_a0[a] * sx;
     }
@@ -502,6 +705,38 @@ pub(in crate::snoci) fn apply_shifted_omega_m<T: NOCIScalar>(
     if imag_shift != 0.0 {
         let iq = T::from_imag(imag_shift);
         let qx = apply_omega_s(op, x);
+        for a in 0..y.len() {
+            y[a] += iq * qx[a];
+        }
+    }
+
+    y
+}
+
+/// Apply the explicit imaginary-shifted NOCI-PT2 matrix `M + i epsilon Q` across MPI ranks.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `x`: Replicated vector to apply the shifted matrix to.
+/// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
+/// - `world`: MPI communicator.
+/// - `imag_shift`: Imaginary shift strength `epsilon`.
+/// # Returns:
+/// - `Array1<T>`: Globally reduced matrix-vector product `(M + i epsilon Q) x`.
+pub(in crate::snoci) fn apply_shifted_omega_m_mpi<T>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    x: &Array1<T>,
+    m: Option<&[T]>,
+    world: &impl Communicator,
+    imag_shift: f64,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    let mut y = apply_omega_m_mpi(op, x, m, world);
+
+    if imag_shift != 0.0 {
+        let iq = T::from_imag(imag_shift);
+        let qx = apply_omega_s_mpi(op, x, world);
         for a in 0..y.len() {
             y[a] += iq * qx[a];
         }

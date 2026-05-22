@@ -1,19 +1,20 @@
 // snoci/step.rs
 
+use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
-use super::{CandidatePool, PT2ProjectedOperator, SNOCIState, SNOCIPT2Result};
-use crate::noci::{FockData, MOCache, NOCIData, NOCIScalar};
+use super::{CandidatePool, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
+use crate::noci::{FockData, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::time_call;
-use crate::{AoData, DetState, input::Input};
+use crate::{DetState, PostSCFData, input::Input};
 
 use super::{
-    apply_shifted_omega_m, build_candidate_current_h, build_candidate_m, build_candidate_m_diag,
-    build_candidate_s_diag, build_candidate_v, build_omega_v, build_preconditioner,
-    build_snoci_focks, build_snoci_overlaps, build_snoci_projection, gmres, select_candidates,
-    solve_current_space,
+    apply_shifted_omega_m, apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
+    build_candidate_m_diag, build_candidate_s_diag, build_candidate_v, build_omega_v,
+    build_preconditioner, build_snoci_focks, build_snoci_overlaps, build_snoci_projection, gmres,
+    select_candidates, solve_current_space,
 };
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::scf::fock;
@@ -130,23 +131,19 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 
 /// Perform selected NOCI with selection from excitations of the current space.
 /// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
+/// - `post`: Data shared by post-SCF methods.
 /// - `current_space`: Current selected nonorthogonal determinant space.
-/// - `noci_reference_basis`: Vector of only the reference determinants.
 /// - `input`: User-defined input options.
-/// - `mocache`: MO-basis one and two-electron integral caches.
-/// - `tol`: Tolerance for whether a number is zero.
 /// - `wicks`: Mutable Wick's intermediates as we need to update Fock intermediates.
+/// - `world`: MPI communicator used to distribute NOCI-PT2 matrix-vector products.
 /// # Returns:
 /// - `SNOCIState`: Final SNOCI state from the last completed iteration.
 pub fn snoci_step<T>(
-    ao: &AoData,
+    post: &PostSCFData<'_, T>,
     current_space: &[DetState<T>],
-    noci_reference_basis: &[DetState<T>],
     input: &Input,
-    mocache: &[MOCache<T>],
-    tol: f64,
     mut wicks: Option<&mut WicksShared<T>>,
+    world: &impl Communicator,
 ) -> SNOCIState<T>
 where
     T: NOCIScalar + Into<Complex64>,
@@ -164,8 +161,14 @@ where
 
         for it in 0..opts.max_iter {
             // Generate matrix elements for current space and solve GEVP for the energy.
-            let (hcurrent, scurrent, ecurrent, coeffs) =
-                solve_current_space(ao, &selected_space, input, wicks.as_deref(), mocache, tol);
+            let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(
+                post.ao,
+                &selected_space,
+                input,
+                wicks.as_deref(),
+                post.mocache,
+                post.tol,
+            );
 
             if candidate_pool.is_none() {
                 candidate_pool = Some(CandidatePool::new(&selected_space, input));
@@ -173,8 +176,8 @@ where
             let pool = candidate_pool.as_mut().unwrap();
 
             let wview = wicks.as_ref().map(|ws| ws.view());
-            let candidate_data =
-                NOCIData::new(ao, &pool.candidates, input, tol, wview).withmocache(mocache);
+            let candidate_data = NOCIData::new(post.ao, &pool.candidates, input, post.tol, wview)
+                .withmocache(post.mocache);
 
             // Build the current-candidate overlap and its transpose.
             let overlaps = build_snoci_overlaps(&candidate_data, &pool.candidates, &selected_space);
@@ -190,25 +193,33 @@ where
                 build_candidate_current_h(&candidate_data, &pool.candidates, &selected_space);
 
             // Form multireference NOCI density and generalised AO Focks.
-            let (da, db) = noci_density(ao, &selected_space, &coeffs, tol);
+            let (da, db) = noci_density(post.ao, &selected_space, &coeffs, post.tol);
             let (fa, fb) = time_call!(crate::timers::snoci::add_build_generalised_fock, {
-                fock(&ao.h, &ao.eri_coul, &da, &db)
+                fock(&post.ao.h, &post.ao.eri_coul, &da, &db)
             });
             // Transform Focks into MO basis for each reference.
-            let fock_mocache = build_fock_mo_cache(&fa, &fb, noci_reference_basis, &ao.s, tol);
+            let fock_mocache =
+                build_fock_mo_cache(&fa, &fb, post.noci_reference_basis, &post.ao.s, post.tol);
             // Update the Wick's intermediates if using them.
             if input.wicks.enabled
                 && let Some(ws) = wicks.as_deref_mut()
             {
-                update_wicks_fock(&fa, &fb, noci_reference_basis, &ao.s, tol, ws);
+                update_wicks_fock(
+                    &fa,
+                    &fb,
+                    post.noci_reference_basis,
+                    &post.ao.s,
+                    post.tol,
+                    ws,
+                );
             }
 
             // Build the candidate-current and candidate-candidate Fock matrix, alongside the shifted Fock `M`.
             let wview = wicks.as_ref().map(|ws| ws.view());
-            let candidate_data =
-                NOCIData::new(ao, &pool.candidates, input, tol, wview).withmocache(mocache);
-            let current_data =
-                NOCIData::new(ao, &selected_space, input, tol, wview).withmocache(mocache);
+            let candidate_data = NOCIData::new(post.ao, &pool.candidates, input, post.tol, wview)
+                .withmocache(post.mocache);
+            let current_data = NOCIData::new(post.ao, &selected_space, input, post.tol, wview)
+                .withmocache(post.mocache);
             let fock = FockData::new(&fock_mocache, &fa, &fb);
             let focks = build_snoci_focks(
                 &current_data,
@@ -236,14 +247,18 @@ where
                 projection: &projection,
             };
 
-            if it > 0 {
+            if it > 0 && world.rank() == 0 {
                 println!("{}", "=".repeat(100));
             }
 
-            print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
+            if world.rank() == 0 {
+                print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
+            }
 
             let m = if opts.gmres.full_m {
-                print_build_candidate_m::<T>(op.candidates.len());
+                if world.rank() == 0 {
+                    print_build_candidate_m::<T>(op.candidates.len());
+                }
                 Some(build_candidate_m(&op))
             } else {
                 None
@@ -273,13 +288,25 @@ where
                 );
 
                 let a = gmres(
-                    |x| apply_shifted_omega_m(&op, x, m.as_deref(), imag_shift),
+                    |x| {
+                        if world.size() > 1 {
+                            apply_shifted_omega_m_mpi(&op, x, m.as_deref(), world, imag_shift)
+                        } else {
+                            apply_shifted_omega_m(&op, x, m.as_deref(), imag_shift)
+                        }
+                    },
                     |x| prec.apply(x),
                     &rhs,
                     &opts.gmres,
+                    world,
                 );
 
-                let ma = apply_shifted_omega_m(&op, &a.x, m.as_deref(), imag_shift);
+                let ma = if world.size() > 1 {
+                    apply_shifted_omega_m_mpi(&op, &a.x, m.as_deref(), world, imag_shift)
+                } else {
+                    apply_shifted_omega_m(&op, &a.x, m.as_deref(), imag_shift)
+                };
+
                 let ama =
                     a.x.iter()
                         .zip(ma.iter())
@@ -318,7 +345,7 @@ where
             }
 
             let remaining = opts.max_dim.saturating_sub(selected_space.len());
-            if remaining == 0 {
+            if remaining == 0 && world.rank() == 0 {
                 println!(
                     "SNOCI stopped at iteration {}: selected space reached max_dim ({}).",
                     it, opts.max_dim
@@ -355,14 +382,16 @@ where
                 pt2,
             };
 
-            print_snoci_iteration_result(
-                it,
-                selected_space.len(),
-                scalar_real(noci_reference_basis[0].e),
-                &state,
-            );
+            if world.rank() == 0 {
+                print_snoci_iteration_result(
+                    it,
+                    selected_space.len(),
+                    scalar_real(post.noci_reference_basis[0].e),
+                    &state,
+                );
+            }
 
-            if state.selected.is_empty() {
+            if state.selected.is_empty() && world.rank() == 0 {
                 println!(
                     "SNOCI stopped at iteration {}: no candidates satisfied the selection threshold ({}).",
                     it, opts.sigma
@@ -376,12 +405,14 @@ where
                 .expect("At least one NOCI-PT2 shift must be evaluated.");
 
             if main_pt2.ept2.abs() < opts.tol {
-                println!(
-                    "SNOCI stopped at iteration {}: |EPT2|: {:.12} fell below tolerance {:.12}.",
-                    it,
-                    main_pt2.ept2.abs(),
-                    opts.tol
-                );
+                if world.rank() == 0 {
+                    println!(
+                        "SNOCI stopped at iteration {}: |EPT2|: {:.12} fell below tolerance {:.12}.",
+                        it,
+                        main_pt2.ept2.abs(),
+                        opts.tol
+                    );
+                }
                 return state;
             }
 
@@ -390,13 +421,22 @@ where
             final_state = Some(state);
         }
 
-        println!(
-            "SNOCI stopped: Maximum iteration was reached ({}).",
-            opts.max_iter
-        );
+        if world.rank() == 0 {
+            println!(
+                "SNOCI stopped: Maximum iteration was reached ({}).",
+                opts.max_iter
+            );
+        }
+
         final_state.unwrap_or_else(|| {
-            let (hcurrent, scurrent, ecurrent, coeffs) =
-                solve_current_space(ao, &selected_space, input, wicks.as_deref(), mocache, tol);
+            let (hcurrent, scurrent, ecurrent, coeffs) = solve_current_space(
+                post.ao,
+                &selected_space,
+                input,
+                wicks.as_deref(),
+                post.mocache,
+                post.tol,
+            );
             empty_state(ecurrent, coeffs, hcurrent, scurrent, Vec::new())
         })
     })

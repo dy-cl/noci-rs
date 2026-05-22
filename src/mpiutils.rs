@@ -1,8 +1,12 @@
 // mpiutils.rs
 use std::{ffi::c_void, ptr};
 
+use crate::noci::NOCIScalar;
+use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
+use ndarray::Array1;
+use num_complex::Complex64;
 use serde::{Serialize, de::DeserializeOwned};
 
 pub struct Sharedffi {
@@ -174,4 +178,40 @@ pub fn broadcast<T>(
     if irank != 0 {
         *value = bincode::deserialize(&bytes).unwrap();
     }
+}
+
+/// Sum a full vector over all MPI ranks.
+/// # Arguments:
+/// - `world`: MPI communicator.
+/// - `local`: Rank-local contribution to a full vector.
+/// # Returns:
+/// - `Array1<T>`: Globally summed vector replicated on every rank.
+pub fn all_reduce_array1<T>(
+    world: &impl Communicator,
+    local: Array1<T>,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    if world.size() == 1 {
+        return local;
+    }
+
+    let n = local.len();
+    let mut send = Vec::with_capacity(2 * n);
+
+    for &x in local.iter() {
+        let z: Complex64 = x.into();
+        send.push(z.re);
+        send.push(z.im);
+    }
+
+    let mut recv = vec![0.0; 2 * n];
+    world.all_reduce_into(&send[..], &mut recv[..], SystemOperation::sum());
+
+    let out = (0..n)
+        .map(|i| T::from_real(recv[2 * i]) + T::from_imag(recv[2 * i + 1]))
+        .collect::<Vec<T>>();
+
+    Array1::from_vec(out)
 }

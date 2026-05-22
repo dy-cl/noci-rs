@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 
 use super::{ArnoldiCycle, ArnoldiParams, GMRESResult};
@@ -265,6 +266,7 @@ fn run_arnoldi_cycle<F, P, T>(
     rtrue: &Array1<T>,
     params: &ArnoldiParams<'_>,
     opts: &GMRESOptions,
+    world: &impl Communicator,
 ) -> ArnoldiCycle<T>
 where
     F: Fn(&Array1<T>) -> Array1<T>,
@@ -311,7 +313,9 @@ where
         let residual_est = g[k + 1].abs() / params.rms;
         let iter = params.total_iter + k + 1;
 
-        if k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol {
+        if world.rank() == 0
+            && (k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol)
+        {
             print_gmres_iteration(
                 params.restart_id,
                 iter,
@@ -399,6 +403,7 @@ pub(in crate::snoci) fn gmres<F, P, T>(
     precondition: P,
     b: &Array1<T>,
     opts: &GMRESOptions,
+    world: &impl Communicator,
 ) -> GMRESResult<T>
 where
     F: Fn(&Array1<T>) -> Array1<T>,
@@ -410,7 +415,9 @@ where
         let n = b.len();
         let mut x = Array1::<T>::from_elem(n, T::from_real(0.0));
 
-        print_gmres_header();
+        if world.rank() == 0 {
+            print_gmres_header();
+        }
 
         // Empty systems are already solved.
         if n == 0 {
@@ -428,7 +435,9 @@ where
         let mut rtrue = true_residual(&apply, b, &x);
         let mut residual_rms = calculate_residual_rms(&rtrue, rms);
 
-        print_gmres_restart_summary(0, 0, residual_rms, gmres_start.elapsed().as_secs_f64());
+        if world.rank() == 0 {
+            print_gmres_restart_summary(0, 0, residual_rms, gmres_start.elapsed().as_secs_f64());
+        }
 
         // Accept the zero initial guess if it already satisfies the true residual tolerance.
         if residual_rms <= opts.res_tol {
@@ -449,12 +458,16 @@ where
             // Stop if the residual is numerically zero.
             if beta <= SMALL {
                 residual_rms = beta / rms;
-                print_gmres_restart_summary(
-                    restart_id,
-                    total_iter,
-                    residual_rms,
-                    gmres_start.elapsed().as_secs_f64(),
-                );
+
+                if world.rank() == 0 {
+                    print_gmres_restart_summary(
+                        restart_id,
+                        total_iter,
+                        residual_rms,
+                        gmres_start.elapsed().as_secs_f64(),
+                    );
+                }
+
                 return GMRESResult {
                     x,
                     residual_rms,
@@ -473,7 +486,8 @@ where
                 gmres_start: &gmres_start,
             };
 
-            let cycle = run_arnoldi_cycle(&apply, &precondition, &rtrue, &arnoldi_params, opts);
+            let cycle =
+                run_arnoldi_cycle(&apply, &precondition, &rtrue, &arnoldi_params, opts, world);
 
             // Solve the small least-squares problem in the Krylov basis.
             let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
@@ -487,12 +501,14 @@ where
             rtrue = true_residual(&apply, b, &x);
             residual_rms = calculate_residual_rms(&rtrue, rms);
 
-            print_gmres_restart_summary(
-                restart_id,
-                total_iter,
-                residual_rms,
-                gmres_start.elapsed().as_secs_f64(),
-            );
+            if world.rank() == 0 {
+                print_gmres_restart_summary(
+                    restart_id,
+                    total_iter,
+                    residual_rms,
+                    gmres_start.elapsed().as_secs_f64(),
+                );
+            }
 
             restart_id += 1;
 
