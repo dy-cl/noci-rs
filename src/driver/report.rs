@@ -41,11 +41,10 @@ pub fn print_report(
         parent: crate::timers::Counter,
         indent: usize,
     ) {
-        let avg = if counter.calls > 0 {
-            std::time::Duration::from_nanos(counter.ns / counter.calls)
-        } else {
-            std::time::Duration::from_nanos(0)
-        };
+        let avg = std::time::Duration::from_nanos(
+            counter.ns.checked_div(counter.calls).unwrap_or(0)
+        );
+        
         let pct = if parent.ns > 0 {
             100.0 * counter.ns as f64 / parent.ns as f64
         } else {
