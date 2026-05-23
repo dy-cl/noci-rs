@@ -1,10 +1,5 @@
-pub mod nociqmc;
 pub mod noccmc;
+pub mod nociqmc;
 
-pub use nociqmc::{
-    projected_energy,
-    propagate,
-    Coefficients,
-    Projectors,
-    ProjPropagator,
-};
+pub use noccmc::run_noccmc;
+pub use nociqmc::{Coefficients, ProjPropagator, Projectors, projected_energy, propagate};

@@ -87,8 +87,7 @@ pub fn run_geometry(
         let timings = timers::snapshot_all_mpi(world);
         GeometryResults::from_holomorphic(
             r,
-            prep.states,
-            prep.hstates,
+            (prep.states, prep.hstates),
             reference,
             post,
             ao.e_fci,

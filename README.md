@@ -132,6 +132,7 @@ Optional top-level tables:
 - `det`: deterministic propagation settings.
 - `qmc`: stochastic NOCI-QMC settings.
 - `snoci`: selected NOCI and NOCI-PT2 settings.
+- `noccmc`: NOCCMC settings.
 - `write`: optional file output and restart settings.
 - `wicks`: extended non-orthogonal Wick's theorem settings.
 
@@ -242,6 +243,12 @@ snoci = {
         full_m = false,
     },
 }
+```
+
+### NOCCMC
+
+```lua
+noccmc = {}
 ```
 
 ### Output

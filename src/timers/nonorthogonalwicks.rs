@@ -50,6 +50,12 @@ pub struct Totals {
     pub lg_h1: Counter,
     /// Total time spent in `lg_f`.
     pub lg_f: Counter,
+    /// Total time spent in `lg_rdm1`.
+    pub lg_rdm1: Counter,
+    /// Total time spent in `lg_rdm1_m0`.
+    pub lg_rdm1_m0: Counter,
+    /// Total time spent in `lg_rdm1_gen`.
+    pub lg_rdm1_gen: Counter,
     /// Total time spent in `lg_one_body_gen`.
     pub lg_one_body_gen: Counter,
     /// Total time spent in `lg_one_body_m0`.
@@ -66,6 +72,14 @@ pub struct Totals {
     pub lg_h2_diff_gen: Counter,
     /// Total time spent in `lg_h2_diff_m0`.
     pub lg_h2_diff_m0: Counter,
+    /// Total time spent in `lg_rdm2_same`.
+    pub lg_rdm2_same: Counter,
+    /// Total time spent in `lg_rdm2_same_gen`.
+    pub lg_rdm2_same_gen: Counter,
+    /// Total time spent in `lg_rdm2_same_m0`.
+    pub lg_rdm2_same_m0: Counter,
+    /// Total time spent in `lg_rdm2_diff`.
+    pub lg_rdm2_diff: Counter,
     /// Total time spent in `prepare_same_m0_l1`.
     pub prepare_same_m0_l1: Counter,
     /// Total time spent in `prepare_same_m0_l2`.
@@ -138,6 +152,9 @@ impl Totals {
         self.lg_overlap_gen.merge_from(&other.lg_overlap_gen);
         self.lg_h1.merge_from(&other.lg_h1);
         self.lg_f.merge_from(&other.lg_f);
+        self.lg_rdm1.merge_from(&other.lg_rdm1);
+        self.lg_rdm1_m0.merge_from(&other.lg_rdm1_m0);
+        self.lg_rdm1_gen.merge_from(&other.lg_rdm1_gen);
         self.lg_one_body_gen.merge_from(&other.lg_one_body_gen);
         self.lg_one_body_m0.merge_from(&other.lg_one_body_m0);
         self.lg_h2_same.merge_from(&other.lg_h2_same);
@@ -146,6 +163,10 @@ impl Totals {
         self.lg_h2_diff.merge_from(&other.lg_h2_diff);
         self.lg_h2_diff_gen.merge_from(&other.lg_h2_diff_gen);
         self.lg_h2_diff_m0.merge_from(&other.lg_h2_diff_m0);
+        self.lg_rdm2_same.merge_from(&other.lg_rdm2_same);
+        self.lg_rdm2_same_gen.merge_from(&other.lg_rdm2_same_gen);
+        self.lg_rdm2_same_m0.merge_from(&other.lg_rdm2_same_m0);
+        self.lg_rdm2_diff.merge_from(&other.lg_rdm2_diff);
         self.prepare_same_m0_l1
             .merge_from(&other.prepare_same_m0_l1);
         self.prepare_same_m0_l2
@@ -422,6 +443,36 @@ pub fn add_lg_f(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_f.add_ns(ns));
 }
 
+/// Add one timed call to the `lg_rdm1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm1` counter.
+#[inline(always)]
+pub fn add_lg_rdm1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm1.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_rdm1_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm1_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm1_m0` counter.
+#[inline(always)]
+pub fn add_lg_rdm1_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm1_m0.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_rdm1_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm1_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm1_gen` counter.
+#[inline(always)]
+pub fn add_lg_rdm1_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm1_gen.add_ns(ns));
+}
+
 /// Add one timed call to the `lg_one_body_gen` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_gen`.
@@ -500,6 +551,46 @@ pub fn add_lg_h2_diff_gen(ns: u64) {
 #[inline(always)]
 pub fn add_lg_h2_diff_m0(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_rdm2_same` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm2_same`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm2_same` counter.
+#[inline(always)]
+pub fn add_lg_rdm2_same(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm2_same.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_rdm2_same_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm2_same_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm2_same_gen` counter.
+#[inline(always)]
+pub fn add_lg_rdm2_same_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm2_same_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_rdm2_same_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm2_same_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm2_same_m0` counter.
+#[inline(always)]
+pub fn add_lg_rdm2_same_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm2_same_m0.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_rdm2_diff` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_rdm2_diff`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_rdm2_diff` counter.
+#[inline(always)]
+pub fn add_lg_rdm2_diff(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_rdm2_diff.add_ns(ns));
 }
 
 /// Add one timed call to the `prepare_same_m0_l1` counter.

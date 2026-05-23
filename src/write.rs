@@ -191,6 +191,17 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    println!("NOCCMC");
+    match &input.noccmc {
+        Some(_) => {
+            println!("ENABLED: true");
+        }
+        None => {
+            println!("ENABLED: false");
+        }
+    }
+    println!();
+
     println!("WRITE");
     println!("VERBOSE: {}", input.write.verbose);
     println!("WRITE_DIR: {}", input.write.write_dir);

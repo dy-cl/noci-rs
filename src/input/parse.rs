@@ -6,9 +6,9 @@ use rlua::{Lua, Table, Value};
 
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, HSCFOptions,
-    Input, Metadynamics, MolOptions, PropagationOptions, Propagator, QMCOptions, SCFExcitation,
-    SCFInfo, SNOCIOptions, SNOCIPreconditioner, SpatialBias, Spin, SpinBias, StateRecipe,
-    StateType, WicksOptions, WicksStorage, WriteOptions,
+    Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
+    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SpatialBias, Spin, SpinBias,
+    StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -437,6 +437,15 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
     })
 }
 
+/// Read NOCCMC options from optional Lua table.
+/// # Arguments:
+/// - `noccmc_tbl`: Optional Lua noccmc table.
+/// # Returns:
+/// - `Option<NOCCMCOptions>`: Parsed NOCCMC options.
+fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
+    noccmc_tbl.map(|_| NOCCMCOptions::default())
+}
+
 /// Read excitation options from optional Lua table.
 /// # Arguments:
 /// - `excit_tbl`: Optional Lua excit table.
@@ -561,6 +570,7 @@ pub fn load_input(path: &str) -> Input {
     let det_tbl: Option<Table> = globals.get::<_, Option<Table>>("det").unwrap_or(None);
     let qmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("qmc").unwrap_or(None);
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
+    let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
 
     Input {
         mol: read_mol(mol_tbl),
@@ -570,6 +580,7 @@ pub fn load_input(path: &str) -> Input {
         det: read_det(det_tbl),
         qmc: read_qmc(qmc_tbl),
         snoci: read_snoci(snoci_tbl),
+        noccmc: read_noccmc(noccmc_tbl),
         excit: read_excit(excit_tbl),
         prop: read_prop(prop_tbl),
         wicks: read_wicks(wicks_tbl),

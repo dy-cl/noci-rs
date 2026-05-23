@@ -115,6 +115,9 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.lg_h1);
         $f!($tot.nonorthogonalwicks.lg_h1);
         $f!($tot.nonorthogonalwicks.lg_f);
+        $f!($tot.nonorthogonalwicks.lg_rdm1);
+        $f!($tot.nonorthogonalwicks.lg_rdm1_m0);
+        $f!($tot.nonorthogonalwicks.lg_rdm1_gen);
         $f!($tot.nonorthogonalwicks.lg_one_body_gen);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0);
         $f!($tot.nonorthogonalwicks.lg_h2_same);
@@ -123,6 +126,10 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.lg_h2_diff);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_gen);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0);
+        $f!($tot.nonorthogonalwicks.lg_rdm2_same);
+        $f!($tot.nonorthogonalwicks.lg_rdm2_same_gen);
+        $f!($tot.nonorthogonalwicks.lg_rdm2_same_m0);
+        $f!($tot.nonorthogonalwicks.lg_rdm2_diff);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_l1);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_l2);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_l3);

@@ -3,6 +3,7 @@
 use mpi::topology::Communicator;
 use num_complex::Complex64;
 
+use crate::deterministic::run_noccmc;
 use crate::driver::deterministic::run_qmc_deterministic_noci;
 use crate::driver::reference::ReferenceRun;
 use crate::driver::snoci::run_snoci;
@@ -75,6 +76,11 @@ pub fn run_real_post_reference(
             &reference.c0,
             wicks,
         ));
+    }
+
+    if world.rank() == 0 && input.noccmc.is_some() {
+        let wicks = reference.wicks.as_ref().map(|ws| ws.view());
+        run_noccmc(&post, input, &reference.c0, wicks);
     }
 
     if let Some(snoci) = input.snoci.as_ref() {

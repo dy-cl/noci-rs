@@ -303,6 +303,7 @@ impl<'a, T: NOCIScalar> FockData<'a, T> {
 }
 
 /// Stores the pair of determinants whose matrix element is being evaluated.
+#[derive(Clone, Copy)]
 pub(crate) struct DetPair<'a, T: NOCIScalar> {
     /// Left determinant in the matrix element.
     pub(crate) ldet: &'a DetState<T>,

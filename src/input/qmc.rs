@@ -68,3 +68,14 @@ impl Default for QMCOptions {
         }
     }
 }
+
+pub struct NOCCMCOptions {}
+
+impl Default for NOCCMCOptions {
+    /// Return default NOCCMC options.
+    /// # Returns:
+    /// - `Self`: NOCCMC options.
+    fn default() -> Self {
+        Self {}
+    }
+}

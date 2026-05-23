@@ -6,6 +6,7 @@ mod m;
 mod matrix;
 mod naive;
 mod overlap;
+mod rdm;
 mod types;
 mod wicks;
 
@@ -17,6 +18,7 @@ pub(crate) use matrix::build_noci_fock;
 pub use matrix::{build_noci_hs, build_noci_s, calculate_noci_energy};
 pub use naive::noci_density;
 pub(crate) use overlap::calculate_s_pair;
+pub(crate) use rdm::build_spin_free_rdms_12;
 pub use types::{FockMOCache, MOCache};
 pub use wicks::{build_wicks_shared, update_wicks_fock};
 

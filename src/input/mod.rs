@@ -17,7 +17,7 @@ pub use excit::ExcitationOptions;
 pub use mol::MolOptions;
 pub use parse::load_input;
 pub use prop::{PropagationOptions, Propagator};
-pub use qmc::{ExcitationGen, QMCOptions};
+pub use qmc::{ExcitationGen, NOCCMCOptions, QMCOptions};
 pub use scf::{DiisOptions, HSCFOptions, SCFInfo};
 pub use snoci::{GMRESOptions, SNOCIOptions, SNOCIPreconditioner};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
@@ -39,6 +39,8 @@ pub struct Input {
     pub qmc: Option<QMCOptions>,
     /// SNOCI adaptive-space options.
     pub snoci: Option<SNOCIOptions>,
+    /// NOCCMC options.
+    pub noccmc: Option<NOCCMCOptions>,
     /// Excitation generation options.
     pub excit: ExcitationOptions,
     /// Shared propagation options.
@@ -82,6 +84,7 @@ impl Default for Input {
             det: None,
             qmc: None,
             snoci: None,
+            noccmc: None,
             excit: ExcitationOptions::default(),
             prop: None,
             wicks: WicksOptions::default(),

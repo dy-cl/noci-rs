@@ -79,8 +79,7 @@ impl GeometryResults {
     /// Construct results from a holomorphic-reference run.
     /// # Arguments:
     /// - `r`: Current geometry.
-    /// - `states`: Real SCF states generated for this geometry.
-    /// - `hstates`: Complex h-SCF states generated for this geometry.
+    /// - `state_sets`: Real SCF states and complex h-SCF states generated for this geometry.
     /// - `reference`: Finished reference-space calculation.
     /// - `post`: Optional post-reference calculation results.
     /// - `e_fci`: Optional FCI energy.
@@ -90,14 +89,14 @@ impl GeometryResults {
     /// - `GeometryResults`: Printable geometry results.
     pub fn from_holomorphic(
         r: f64,
-        states: Vec<SCFState>,
-        hstates: Vec<HSCFState>,
+        state_sets: (Vec<SCFState>, Vec<HSCFState>),
         reference: ReferenceRun<Complex64>,
         post: PostReferenceResults,
         e_fci: Option<f64>,
         nranks: usize,
         timings: timers::Totals,
     ) -> Self {
+        let (states, hstates) = state_sets;
         let e_rhf = states.first().map(|st| st.e).unwrap_or(0.0);
         Self {
             r,
