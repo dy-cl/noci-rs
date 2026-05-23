@@ -1,0 +1,39 @@
+name: Clippy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  clippy:
+    name: cargo clippy --all-targets --all-features
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libopenmpi-dev \
+            openmpi-bin \
+            libopenblas-dev \
+            liblapack-dev \
+            libhdf5-dev \
+            pkg-config \
+            python3-pip
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --prefer-binary pyscf h5py numpy
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings

@@ -3,6 +3,8 @@
 `noci-rs` is a Rust code for non-orthogonal configuration interaction (NOCI), selected NOCI (SNOCI), and deterministic or stochastic NOCI-QMC calculations on molecular systems. It drives PySCF to generate one- and two-electron integrals, builds non-orthogonal SCF determinant bases, and evaluates reference and selected non-orthogonal CI spaces.
 
 [![tests](https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml/badge.svg)](https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml)
+[![Clippy](https://github.com/dy-cl/noci-rs/actions/workflows/clippy.yml/badge.svg?branch=main)](https://github.com/dy-cl/noci-rs/actions/workflows/clippy.yml)
+[![codecov](https://codecov.io/gh/dy-cl/noci-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/dy-cl/noci-rs)
 
 ## Current Capabilities
 
