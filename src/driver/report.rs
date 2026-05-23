@@ -19,11 +19,12 @@ pub fn print_report(
         c: crate::timers::Counter,
         indent: usize,
     ) {
-        let avg = if c.calls > 0 {
-            std::time::Duration::from_nanos(c.ns / c.calls)
-        } else {
-            std::time::Duration::from_nanos(0)
-        };
+        let avg = c
+            .ns
+            .checked_div(c.calls)
+            .map(std::time::Duration::from_nanos)
+            .unwrap_or_default();
+
         println!(
             "{}{}: {:?} [{} calls, avg {:?}/call]",
             " ".repeat(indent),
