@@ -29,10 +29,9 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
         let ldet = pair.ldet;
         let gdet = pair.gdet;
 
-        if ldet.parent == gdet.parent {
-            let mocache = data
-                .mocache
-                .expect("Orthogonal Hamiltonian matrix elements require mocache.");
+        if ldet.parent == gdet.parent
+            && let Some(mocache) = data.mocache
+        {
             let cache = &mocache[ldet.parent];
             if cache.orthogonal_slater_condon {
                 return calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);

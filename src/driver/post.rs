@@ -1,6 +1,7 @@
 // driver/post.rs
 
 use mpi::topology::Communicator;
+use ndarray::Array1;
 use num_complex::Complex64;
 
 use crate::deterministic::run_noccmc;
@@ -9,8 +10,10 @@ use crate::driver::reference::ReferenceRun;
 use crate::driver::snoci::run_snoci;
 use crate::driver::stochastic::run_qmc_stochastic_noci;
 use crate::input::Input;
+use crate::noci::NOCIData;
 use crate::noci::{build_mo_cache, build_wicks_shared};
 use crate::nonorthogonalwicks::WicksShared;
+use crate::orbitals::noci_natural_orbitals;
 use crate::{AoData, HSCFState, PostSCFData, SCFState};
 
 /// Results from optional post-reference calculations.
@@ -78,9 +81,19 @@ pub fn run_real_post_reference(
         ));
     }
 
-    if world.rank() == 0 && input.noccmc.is_some() {
-        let wicks = reference.wicks.as_ref().map(|ws| ws.view());
-        run_noccmc(&post, input, &reference.c0, wicks);
+    if input.noccmc.is_some() {
+        let no = {
+            let wicks = reference.wicks.as_ref().map(|ws| ws.view());
+            let data = NOCIData::new(post.ao, post.noci_reference_basis, input, post.tol, wicks)
+                .withmocache(post.mocache);
+            let coeffs = Array1::from_vec(reference.c0.clone());
+
+            noci_natural_orbitals(&data, &coeffs, 1e-6, 1e-6)
+        };
+
+        reference.wicks = None;
+
+        run_noccmc(&post, input, &reference.c0, &no, world);
     }
 
     if let Some(snoci) = input.snoci.as_ref() {

@@ -1,9 +1,10 @@
 // nonorthogonalwicks/eval/helpers.rs
 
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView2, s};
 use ndarray_linalg::Determinant;
 
 use crate::ExcitationSpin;
+use crate::maths::adjoint;
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -81,6 +82,46 @@ pub(super) fn det_or_zero<T: NOCIScalar>(
     n: usize,
 ) -> T {
     det_slice(a, n).unwrap_or(<T as From<f64>>::from(0.0))
+}
+
+/// Extend a Wick contraction determinant with RDM-basis rows and columns.
+/// # Arguments:
+/// - `d`: Wick contraction determinant indexed in `[left determinant MOs; right determinant MOs]`.
+/// - `l_c`: Left determinant orbital coefficients in the RDM basis.
+/// - `g_c`: Right determinant orbital coefficients in the RDM basis.
+/// - `nmo`: Number of determinant orbitals in one spin block.
+/// # Returns:
+/// - `Array2<T>`: Extended Wick contraction determinant whose original determinant-orbital block
+///   is unchanged, and whose final rows and columns open RDM-basis operators.
+#[inline(always)]
+pub(super) fn extend_rdm_d<T: NOCIScalar>(
+    d: &ArrayView2<'_, T>,
+    l_c: &Array2<T>,
+    g_c: &Array2<T>,
+    nmo: usize,
+) -> Array2<T> {
+    let npair = 2 * nmo;
+    let nrdm = l_c.nrows();
+    let mut out = Array2::<T>::zeros((npair + nrdm, npair + nrdm));
+
+    out.slice_mut(s![0..npair, 0..npair]).assign(d);
+
+    let left_rows = d.slice(s![0..nmo, ..]).to_owned();
+    let right_cols = d.slice(s![.., nmo..npair]).to_owned();
+    let g_dag = adjoint(g_c);
+
+    let rdm_rows = l_c.dot(&left_rows);
+    let rdm_cols = right_cols.dot(&g_dag);
+    let rdm_block = rdm_rows.slice(s![.., nmo..npair]).dot(&g_dag);
+
+    out.slice_mut(s![npair..npair + nrdm, 0..npair])
+        .assign(&rdm_rows);
+    out.slice_mut(s![0..npair, npair..npair + nrdm])
+        .assign(&rdm_cols);
+    out.slice_mut(s![npair..npair + nrdm, npair..npair + nrdm])
+        .assign(&rdm_block);
+
+    out
 }
 
 /// # Arguments:

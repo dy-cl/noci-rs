@@ -7,6 +7,7 @@ pub mod maths;
 pub mod mpiutils;
 pub mod noci;
 pub mod nonorthogonalwicks;
+pub mod orbitals;
 pub mod read;
 pub mod scalar;
 pub mod scf;

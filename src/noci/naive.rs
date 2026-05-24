@@ -205,7 +205,7 @@ fn calculate_codensity_w_pair<T: NOCIScalar>(
 /// - `nao`: Number of AOs.
 /// # Returns:
 /// - `Array2<T>`: AO-basis pair density matrix for the determinant pair.
-fn pair_density<T: NOCIScalar>(
+pub(in crate::noci) fn pair_density<T: NOCIScalar>(
     pair: &Pair<T>,
     nao: usize,
 ) -> Array2<T> {

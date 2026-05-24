@@ -19,11 +19,10 @@ pub fn print_report(
         c: crate::timers::Counter,
         indent: usize,
     ) {
-        let avg = c
-            .ns
-            .checked_div(c.calls)
-            .map(std::time::Duration::from_nanos)
-            .unwrap_or_default();
+        let avg =
+            c.ns.checked_div(c.calls)
+                .map(std::time::Duration::from_nanos)
+                .unwrap_or_default();
 
         println!(
             "{}{}: {:?} [{} calls, avg {:?}/call]",
@@ -41,10 +40,9 @@ pub fn print_report(
         parent: crate::timers::Counter,
         indent: usize,
     ) {
-        let avg = std::time::Duration::from_nanos(
-            counter.ns.checked_div(counter.calls).unwrap_or(0)
-        );
-        
+        let avg =
+            std::time::Duration::from_nanos(counter.ns.checked_div(counter.calls).unwrap_or(0));
+
         let pct = if parent.ns > 0 {
             100.0 * counter.ns as f64 / parent.ns as f64
         } else {

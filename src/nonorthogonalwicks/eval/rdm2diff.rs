@@ -1,10 +1,12 @@
 // nonorthogonalwicks/eval/rdm2diff.rs
 
-use ndarray::Array4;
+use ndarray::{Array2, Array4};
 
 use super::super::scratch::WickScratch;
 use super::super::view::WicksPairView;
-use super::helpers::{construct_determinant_indices_gen, det_slice, for_each_m_combination};
+use super::helpers::{
+    construct_determinant_indices_gen, det_slice, extend_rdm_d, for_each_m_combination,
+};
 use crate::Excitation;
 use crate::maths::{build_d, mix_columns};
 use crate::noci::NOCIScalar;
@@ -23,9 +25,9 @@ use crate::time_call;
 /// - `w`: Same-spin and different-spin Wick's reference pair intermediates.
 /// - `l_ex`: Excitation for |{}^\Lambda \Psi\rangle.
 /// - `g_ex`: Excitation for |{}^\Gamma \Psi\rangle.
-/// - `diff`: Different-spin scratch space.
-/// - `a`: Prepared same-spin alpha scratch space.
-/// - `b`: Prepared same-spin beta scratch space.
+/// - `ca`: Left and right alpha orbital coefficients in the current physical basis.
+/// - `cb`: Left and right beta orbital coefficients in the current physical basis.
+/// - `scratch`: Different-spin scratch space and prepared same-spin alpha/beta scratch spaces.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
 /// - `Array4<T>`: Different-spin contribution to the spin-free two-body RDM.
@@ -34,17 +36,20 @@ pub(crate) fn lg_rdm2_diff<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     l_ex: &Excitation,
     g_ex: &Excitation,
-    diff: &mut WickScratch<T>,
-    a: &WickScratch<T>,
-    b: &WickScratch<T>,
+    ca: (&Array2<T>, &Array2<T>),
+    cb: (&Array2<T>, &Array2<T>),
+    scratch: (&mut WickScratch<T>, &WickScratch<T>, &WickScratch<T>),
     tol: f64,
 ) -> Array4<T> {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm2_diff, {
+        let (diff, a, b) = scratch;
         let _ = diff;
         let _ = a;
         let _ = b;
 
-        let n = w.aa.nmo;
+        let (l_ca, g_ca) = ca;
+        let (l_cb, g_cb) = cb;
+        let n = l_ca.nrows();
         let zero = <T as From<f64>>::from(0.0);
         let pref = w.aa.phase
             * <T as From<f64>>::from(w.aa.tilde_s_prod)
@@ -87,6 +92,22 @@ pub(crate) fn lg_rdm2_diff<T: NOCIScalar>(
         let yb0 = w.bb.y(0);
         let xb1 = w.bb.x(1);
         let yb1 = w.bb.y(1);
+        let xa0p = extend_rdm_d(&xa0, l_ca, g_ca, w.aa.nmo);
+        let ya0p = extend_rdm_d(&ya0, l_ca, g_ca, w.aa.nmo);
+        let xa1p = extend_rdm_d(&xa1, l_ca, g_ca, w.aa.nmo);
+        let ya1p = extend_rdm_d(&ya1, l_ca, g_ca, w.aa.nmo);
+        let xb0p = extend_rdm_d(&xb0, l_cb, g_cb, w.bb.nmo);
+        let yb0p = extend_rdm_d(&yb0, l_cb, g_cb, w.bb.nmo);
+        let xb1p = extend_rdm_d(&xb1, l_cb, g_cb, w.bb.nmo);
+        let yb1p = extend_rdm_d(&yb1, l_cb, g_cb, w.bb.nmo);
+        let xa0p = xa0p.view();
+        let ya0p = ya0p.view();
+        let xa1p = xa1p.view();
+        let ya1p = ya1p.view();
+        let xb0p = xb0p.view();
+        let yb0p = yb0p.view();
+        let xb1p = xb1p.view();
+        let yb1p = yb1p.view();
 
         let mut rows_a = Vec::with_capacity(dima);
         let mut cols_a = Vec::with_capacity(dima);
@@ -109,45 +130,45 @@ pub(crate) fn lg_rdm2_diff<T: NOCIScalar>(
                         rows_b.clear();
                         cols_b.clear();
 
-                        rows_a.push(p);
+                        rows_a.push(2 * w.aa.nmo + p);
                         rows_a.extend_from_slice(rows_a_base.as_slice());
-                        cols_a.push(w.aa.nmo + r);
+                        cols_a.push(2 * w.aa.nmo + r);
                         cols_a.extend_from_slice(cols_a_base.as_slice());
 
-                        rows_b.push(q);
+                        rows_b.push(2 * w.bb.nmo + q);
                         rows_b.extend_from_slice(rows_b_base.as_slice());
-                        cols_b.push(w.bb.nmo + s);
+                        cols_b.push(2 * w.bb.nmo + s);
                         cols_b.extend_from_slice(cols_b_base.as_slice());
 
                         build_d(
                             &mut deta0,
                             dima,
-                            &xa0,
-                            &ya0,
+                            &xa0p,
+                            &ya0p,
                             rows_a.as_slice(),
                             cols_a.as_slice(),
                         );
                         build_d(
                             &mut deta1,
                             dima,
-                            &xa1,
-                            &ya1,
+                            &xa1p,
+                            &ya1p,
                             rows_a.as_slice(),
                             cols_a.as_slice(),
                         );
                         build_d(
                             &mut detb0,
                             dimb,
-                            &xb0,
-                            &yb0,
+                            &xb0p,
+                            &yb0p,
                             rows_b.as_slice(),
                             cols_b.as_slice(),
                         );
                         build_d(
                             &mut detb1,
                             dimb,
-                            &xb1,
-                            &yb1,
+                            &xb1p,
+                            &yb1p,
                             rows_b.as_slice(),
                             cols_b.as_slice(),
                         );
@@ -190,45 +211,45 @@ pub(crate) fn lg_rdm2_diff<T: NOCIScalar>(
                         rows_b.clear();
                         cols_b.clear();
 
-                        rows_a.push(q);
+                        rows_a.push(2 * w.aa.nmo + q);
                         rows_a.extend_from_slice(rows_a_base.as_slice());
-                        cols_a.push(w.aa.nmo + s);
+                        cols_a.push(2 * w.aa.nmo + s);
                         cols_a.extend_from_slice(cols_a_base.as_slice());
 
-                        rows_b.push(p);
+                        rows_b.push(2 * w.bb.nmo + p);
                         rows_b.extend_from_slice(rows_b_base.as_slice());
-                        cols_b.push(w.bb.nmo + r);
+                        cols_b.push(2 * w.bb.nmo + r);
                         cols_b.extend_from_slice(cols_b_base.as_slice());
 
                         build_d(
                             &mut deta0,
                             dima,
-                            &xa0,
-                            &ya0,
+                            &xa0p,
+                            &ya0p,
                             rows_a.as_slice(),
                             cols_a.as_slice(),
                         );
                         build_d(
                             &mut deta1,
                             dima,
-                            &xa1,
-                            &ya1,
+                            &xa1p,
+                            &ya1p,
                             rows_a.as_slice(),
                             cols_a.as_slice(),
                         );
                         build_d(
                             &mut detb0,
                             dimb,
-                            &xb0,
-                            &yb0,
+                            &xb0p,
+                            &yb0p,
                             rows_b.as_slice(),
                             cols_b.as_slice(),
                         );
                         build_d(
                             &mut detb1,
                             dimb,
-                            &xb1,
-                            &yb1,
+                            &xb1p,
+                            &yb1p,
                             rows_b.as_slice(),
                             cols_b.as_slice(),
                         );

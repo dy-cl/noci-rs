@@ -4,7 +4,9 @@ use ndarray::Array2;
 
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::helpers::{construct_determinant_indices_gen, det_slice, for_each_m_combination};
+use super::helpers::{
+    construct_determinant_indices_gen, det_slice, extend_rdm_d, for_each_m_combination,
+};
 use crate::ExcitationSpin;
 use crate::maths::{build_d, mix_columns};
 use crate::noci::NOCIScalar;
@@ -32,14 +34,16 @@ pub(crate) fn lg_rdm1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
+    l_c: &Array2<T>,
+    g_c: &Array2<T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array2<T> {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm1, {
         if w.m == 0 {
-            lg_rdm1_m0(w, l_ex, g_ex, scratch, tol)
+            lg_rdm1_m0(w, l_ex, g_ex, l_c, g_c, scratch, tol)
         } else {
-            lg_rdm1_gen(w, l_ex, g_ex, scratch, tol)
+            lg_rdm1_gen(w, l_ex, g_ex, l_c, g_c, scratch, tol)
         }
     })
 }
@@ -60,17 +64,23 @@ fn lg_rdm1_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
+    l_c: &Array2<T>,
+    g_c: &Array2<T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array2<T> {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm1_m0, {
-        let n = w.nmo;
+        let n = l_c.nrows();
         let l = l_ex.holes.len() + g_ex.holes.len();
         let dim = l + 1;
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
         let zero = <T as From<f64>>::from(0.0);
         let x0 = w.x(0);
         let y0 = w.y(0);
+        let x0p = extend_rdm_d(&x0, l_c, g_c, w.nmo);
+        let y0p = extend_rdm_d(&y0, l_c, g_c, w.nmo);
+        let x0p = x0p.view();
+        let y0p = y0p.view();
 
         let mut out = Array2::<T>::zeros((n, n));
         let mut rows_base = Vec::with_capacity(l);
@@ -85,14 +95,12 @@ fn lg_rdm1_m0<T: NOCIScalar>(
             for q in 0..n {
                 rows.clear();
                 cols.clear();
-
-                rows.push(p);
+                rows.push(2 * w.nmo + p);
                 rows.extend_from_slice(rows_base.as_slice());
-
-                cols.push(w.nmo + q);
+                cols.push(2 * w.nmo + q);
                 cols.extend_from_slice(cols_base.as_slice());
 
-                build_d(&mut det0, dim, &x0, &y0, rows.as_slice(), cols.as_slice());
+                build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
 
                 if let Some(d) = det_slice(det0.as_slice(), dim)
                     && d.abs() > tol
@@ -124,11 +132,13 @@ fn lg_rdm1_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
+    l_c: &Array2<T>,
+    g_c: &Array2<T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array2<T> {
     time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm1_gen, {
-        let n = w.nmo;
+        let n = l_c.nrows();
         let l = l_ex.holes.len() + g_ex.holes.len();
         let dim = l + 1;
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
@@ -137,6 +147,14 @@ fn lg_rdm1_gen<T: NOCIScalar>(
         let y0 = w.y(0);
         let x1 = w.x(1);
         let y1 = w.y(1);
+        let x0p = extend_rdm_d(&x0, l_c, g_c, w.nmo);
+        let y0p = extend_rdm_d(&y0, l_c, g_c, w.nmo);
+        let x1p = extend_rdm_d(&x1, l_c, g_c, w.nmo);
+        let y1p = extend_rdm_d(&y1, l_c, g_c, w.nmo);
+        let x0p = x0p.view();
+        let y0p = y0p.view();
+        let x1p = x1p.view();
+        let y1p = y1p.view();
 
         let mut out = Array2::<T>::zeros((n, n));
         let mut rows_base = Vec::with_capacity(l);
@@ -153,15 +171,13 @@ fn lg_rdm1_gen<T: NOCIScalar>(
             for q in 0..n {
                 rows.clear();
                 cols.clear();
-
-                rows.push(p);
+                rows.push(2 * w.nmo + p);
                 rows.extend_from_slice(rows_base.as_slice());
-
-                cols.push(w.nmo + q);
+                cols.push(2 * w.nmo + q);
                 cols.extend_from_slice(cols_base.as_slice());
 
-                build_d(&mut det0, dim, &x0, &y0, rows.as_slice(), cols.as_slice());
-                build_d(&mut det1, dim, &x1, &y1, rows.as_slice(), cols.as_slice());
+                build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
+                build_d(&mut det1, dim, &x1p, &y1p, rows.as_slice(), cols.as_slice());
 
                 let mut acc = zero;
 
