@@ -6,7 +6,7 @@ use ndarray::Array1;
 use crate::PostSCFData;
 use crate::input::Input;
 use crate::maths::general_evp;
-use crate::noci::{NOCIData, build_noci_hs, build_spin_free_rdms_12, build_wicks_shared};
+use crate::noci::{NOCIData, build_noci_hs, build_wicks_shared, rdm1, rdm2, rdm3, rdm4};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::orbitals::{
     NOCINaturalOrbitals, print_noci_natural_orbitals, transform_ao_data, transform_noci_basis,
@@ -20,7 +20,7 @@ use crate::orbitals::{
 /// - `no`: NOCI natural orbital basis.
 /// - `world`: MPI communicator object.
 /// # Returns:
-/// - `()`: Calls RDM construction so `wicks.compare` compares Wick and naive matrix elements.
+/// - `()`: Builds and checks spin-free RDMs in the NOCI natural orbital basis.
 pub(crate) fn run_noccmc(
     post: &PostSCFData<'_, f64>,
     input: &Input,
@@ -48,19 +48,43 @@ pub(crate) fn run_noccmc(
     let nowicksview = nowicks.as_ref().map(|w| w.view());
     let nodata = NOCIData::new(&noao, &nobasis, input, post.tol, nowicksview);
 
-    let mut scratch = WickScratchSpin::new();
-    let scratch = if input.wicks.enabled {
-        Some(&mut scratch)
-    } else {
-        None
-    };
-
     if world.rank() == 0 {
         println!("{}", "=".repeat(100));
         println!("Running NOCCMC spin-free RDM check in NOCI natural orbital basis....");
     }
 
-    let (_, gamma1, _) = build_spin_free_rdms_12(&nodata, &coeffs, &coeffs, scratch);
+    let mut scratch1 = WickScratchSpin::new();
+    let scratch1 = if input.wicks.enabled {
+        Some(&mut scratch1)
+    } else {
+        None
+    };
+    let (_, gamma1) = rdm1(&nodata, &coeffs, &coeffs, scratch1);
+
+    let mut scratch2 = WickScratchSpin::new();
+    let scratch2 = if input.wicks.enabled {
+        Some(&mut scratch2)
+    } else {
+        None
+    };
+    let (_, gamma2) = rdm2(&nodata, &coeffs, &coeffs, scratch2);
+
+    let mut scratch3 = WickScratchSpin::new();
+    let scratch3 = if input.wicks.enabled {
+        Some(&mut scratch3)
+    } else {
+        None
+    };
+    let (_, gamma3) = rdm3(&nodata, &coeffs, &coeffs, &no.active, scratch3);
+
+    let mut scratch4 = WickScratchSpin::new();
+    let scratch4 = if input.wicks.enabled {
+        Some(&mut scratch4)
+    } else {
+        None
+    };
+    let (_, gamma4) = rdm4(&nodata, &coeffs, &coeffs, &no.active, scratch4);
+    let _active_rank_sizes = (gamma3.n, gamma4.n);
 
     if world.rank() == 0 {
         let mut scheck = no.c.t().dot(&post.ao.s).dot(&no.c);
@@ -74,9 +98,50 @@ pub(crate) fn run_noccmc(
         let e_coeff = coeffs.dot(&h.dot(&coeffs)) / coeffs.dot(&s.dot(&coeffs));
         let (evals, _) = general_evp(&h, &s, true, post.tol);
 
+        let mut e1 = 0.0;
+        for a in 0..gamma1.n {
+            for b in 0..gamma1.n {
+                let i = b * gamma1.n + a;
+                e1 += noao.h[(a, b)] * gamma1.data[i];
+            }
+        }
+
+        let mut e2 = 0.0;
+        for a in 0..gamma2.n {
+            for b in 0..gamma2.n {
+                for c in 0..gamma2.n {
+                    for d in 0..gamma2.n {
+                        let i = (((b * gamma2.n + c) * gamma2.n + a) * gamma2.n) + d;
+                        e2 += noao.eri_coul[(a, b, c, d)] * gamma2.data[i];
+                    }
+                }
+            }
+        }
+
+        let erdm = noao.enuc + e1 + 0.5 * e2;
+
+        let mut trace = 0.0;
+        for p in 0..gamma1.n {
+            trace += gamma1.data[p * gamma1.n + p];
+        }
+
+        let mut nact_elec = 0.0;
+        for &p in no.active.iter() {
+            nact_elec += gamma1.data[p * gamma1.n + p];
+        }
+
         println!("NOCI energy in NO basis: {:.12}", e_coeff);
         println!("Lowest NOCI GEVP energy in NO basis: {:.12}", evals[0]);
-
-        println!("Trace Gamma1(NO): {:.10}", gamma1.diag().sum());
+        println!("NOCI energy from RDMs in NO basis: {:.12}", erdm);
+        println!("Trace Gamma1(NO): {:.10}", trace);
+        println!("Active electron count from Gamma1(NO): {:.10}", nact_elec);
+        println!(
+            "Max active Gamma3(NO): {:.6e}",
+            gamma3.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
+        );
+        println!(
+            "Max active Gamma4(NO): {:.6e}",
+            gamma4.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
+        );
     }
 }

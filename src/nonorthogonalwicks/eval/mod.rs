@@ -7,6 +7,7 @@ mod prepare;
 mod rdm1;
 mod rdm2diff;
 mod rdm2same;
+mod rdmksame;
 
 pub(crate) use h2diff::lg_h2_diff;
 pub(crate) use h2same::lg_h2_same;
@@ -16,3 +17,4 @@ pub use prepare::prepare_same;
 pub(crate) use rdm1::lg_rdm1;
 pub(crate) use rdm2diff::lg_rdm2_diff;
 pub(crate) use rdm2same::lg_rdm2_same;
+pub(crate) use rdmksame::lg_rdm_same_element;

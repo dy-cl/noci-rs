@@ -1,10 +1,9 @@
 // nonorthogonalwicks/eval/helpers.rs
 
 use ndarray::{Array2, ArrayView2, s};
-use ndarray_linalg::Determinant;
 
 use crate::ExcitationSpin;
-use crate::maths::adjoint;
+use crate::maths::{adjoint, det};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -63,11 +62,7 @@ pub(super) fn det_slice<T: NOCIScalar>(
     a: &[T],
     n: usize,
 ) -> Option<T> {
-    if n == 0 {
-        return Some(<T as From<f64>>::from(1.0));
-    }
-    let m = Array2::<T>::from_shape_vec((n, n), a[..n * n].to_vec()).ok()?;
-    m.det().ok()
+    det(a, n)
 }
 
 /// Calculate determinant of a row-major square matrix slice, returning zero if factorisation fails.

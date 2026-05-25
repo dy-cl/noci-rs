@@ -555,3 +555,35 @@ pub fn einsum_ba_abcd_cd_complex_real(
         })
     })
 }
+
+/// Calculate Einstein summation of 4D tensors `g` and `t` as
+/// \sum_{a,b,c,d} g_{a,b,c,d} t_{b,c,a,d}.
+/// Assumes `g` and `t` both have axes of equal length.
+/// # Arguments:
+/// - `g`: 4D tensor 1.
+/// - `t`: 4D tensor 2.
+/// # Returns:
+/// - `f64`: Contracted scalar.
+pub fn einsum_abcd_bcad_real(
+    g: &Array4<f64>,
+    t: &Array4<f64>,
+) -> f64 {
+    let n = g.shape()[0];
+    let gs = g.as_slice_memory_order().unwrap();
+    let ts = t.as_slice_memory_order().unwrap();
+    let mut acc = 0.0;
+
+    for a in 0..n {
+        for b in 0..n {
+            for c in 0..n {
+                for d in 0..n {
+                    let i = ((a * n + b) * n + c) * n + d;
+                    let j = ((b * n + c) * n + a) * n + d;
+                    acc += unsafe { *gs.get_unchecked(i) * *ts.get_unchecked(j) };
+                }
+            }
+        }
+    }
+
+    acc
+}

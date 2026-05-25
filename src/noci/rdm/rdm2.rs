@@ -1,41 +1,40 @@
-// noci/rdm.rs
+// noci/rdm/rdm2.rs
 
-use ndarray::{Array1, Array2, Array4};
+use ndarray::Array1;
 
 use crate::nonorthogonalwicks::{
     WickScratchSpin, lg_overlap, lg_rdm1, lg_rdm2_diff, lg_rdm2_same, prepare_same,
 };
 
-use super::naive::{build_s_pair, occ_coeffs, pair_density};
-use super::types::{DetPair, NOCIData, NOCIScalar};
+use crate::noci::naive::{build_s_pair, occ_coeffs, pair_density};
+use crate::noci::types::{DetPair, NOCIData, NOCIScalar};
 
-/// Build spin-free one and two body RDMs for a NOCI reference state:
-/// \Gamma^p_q = 1 / \mathcal N \sum_{xw} c_x^L c_w^R
-///     \langle {}^x \Psi | \hat E^p_q | {}^w \Psi \rangle,
-/// \Gamma^{pq}_{rs} = 1 / \mathcal N \sum_{xw} c_x^L c_w^R
-///     \langle {}^x \Psi | \hat E^{pq}_{rs} | {}^w \Psi \rangle,
-/// with \mathcal N = \sum_{xw} c_x^L c_w^R
-///     \langle {}^x \Psi | {}^w \Psi \rangle.
+/// Spin-free two-body RDM stored as \Gamma[p, q, r, s].
+pub(crate) struct RDM2<T> {
+    pub n: usize,
+    pub data: Vec<T>,
+}
+
+/// Build the spin-free two-body RDM for a NOCI reference state.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `coeff_l`: Left NOCI coefficient vector.
 /// - `coeff_r`: Right NOCI coefficient vector.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(T, Array2<T>, Array4<T>)`: Reference norm, spin-free 1-RDM and spin-free 2-RDM.
-pub(crate) fn build_spin_free_rdms_12<T: NOCIScalar>(
+/// - `(T, RDM2<T>)`: Reference norm and spin-free two-body RDM.
+pub(crate) fn rdm2<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     coeff_l: &Array1<T>,
     coeff_r: &Array1<T>,
     scratch: Option<&mut WickScratchSpin<T>>,
-) -> (T, Array2<T>, Array4<T>) {
-    assert_eq!(coeff_l.len(), data.basis.len());
-    assert_eq!(coeff_r.len(), data.basis.len());
-
-    let norb = data.ao.h.nrows();
+) -> (T, RDM2<T>) {
+    let n = data.ao.h.nrows();
     let mut norm = <T as From<f64>>::from(0.0);
-    let mut gamma1 = Array2::<T>::zeros((norb, norb));
-    let mut gamma2 = Array4::<T>::zeros((norb, norb, norb, norb));
+    let mut gamma = RDM2 {
+        n,
+        data: vec![<T as From<f64>>::from(0.0); n.pow(4)],
+    };
     let mut scratch = scratch;
     let mut td = 0.0;
 
@@ -44,118 +43,102 @@ pub(crate) fn build_spin_free_rdms_12<T: NOCIScalar>(
             let pair = DetPair::new(&data.basis[x], &data.basis[w]);
             let weight = coeff_l[x] * coeff_r[w];
 
-            let (sxw, g1xw, g2xw) = if data.input.wicks.compare {
-                let ((sxw, g1xw, g2xw), d) = compare_spin_free_rdm12_pair_wicks_naive(
-                    data,
-                    pair,
-                    scratch.as_deref_mut().unwrap(),
-                );
+            let (sxw, gxw) = if data.input.wicks.enabled && data.input.wicks.compare {
+                let ((sxw, gxw), d) =
+                    compare_rdm2_pair_wicks_naive(data, pair, scratch.as_deref_mut().unwrap());
 
                 td += d;
-                (sxw, g1xw, g2xw)
+                (sxw, gxw)
             } else {
-                calculate_spin_free_rdm12_pair(data, pair, scratch.as_deref_mut())
+                rdm2_pair(data, pair, scratch.as_deref_mut())
             };
 
             norm += weight * sxw;
-            gamma1.scaled_add(weight, &g1xw);
-            gamma2.scaled_add(weight, &g2xw);
+
+            for i in 0..gamma.data.len() {
+                gamma.data[i] += weight * gxw.data[i];
+            }
         }
     }
 
-    if data.input.wicks.compare {
-        println!("Total naive–wicks discrepancy (spin-free RDMs): {:.6e}", td);
+    if data.input.wicks.enabled && data.input.wicks.compare {
+        println!(
+            "Total naive–wicks discrepancy (spin-free 2-RDM): {:.6e}",
+            td
+        );
     }
 
-    gamma1.mapv_inplace(|x| x / norm);
-    gamma2.mapv_inplace(|x| x / norm);
+    for v in gamma.data.iter_mut() {
+        *v /= norm;
+    }
 
-    (norm, gamma1, gamma2)
+    (norm, gamma)
 }
 
-/// Calculate spin-free one and two body RDM matrix elements for a determinant pair:
-/// {}^{xw}\Gamma^p_q = \langle {}^x \Psi | \hat E^p_q | {}^w \Psi \rangle,
-/// {}^{xw}\Gamma^{pq}_{rs} = \langle {}^x \Psi | \hat E^{pq}_{rs} | {}^w \Psi \rangle,
-/// where \hat E is the spin-summed excitation operator.
+/// Calculate a spin-free two-body RDM matrix element block for a determinant pair.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `pair`: Pair of determinants whose transition RDMs are to be evaluated.
+/// - `pair`: Pair of determinants whose transition RDM is to be evaluated.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(T, Array2<T>, Array4<T>)`: Pair overlap, spin-free 1-RDM and spin-free 2-RDM.
-pub(crate) fn calculate_spin_free_rdm12_pair<T: NOCIScalar>(
+/// - `(T, RDM2<T>)`: Pair overlap and spin-free two-body RDM.
+fn rdm2_pair<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
     scratch: Option<&mut WickScratchSpin<T>>,
-) -> (T, Array2<T>, Array4<T>) {
+) -> (T, RDM2<T>) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
     if ldet.parent != gdet.parent && data.input.wicks.enabled {
-        calculate_spin_free_rdm12_pair_wicks(
+        rdm2_pair_wicks(
             data,
             pair,
-            scratch.expect("Wick scratch required for spin-free RDM evaluation"),
+            scratch.expect("Wick scratch required for spin-free 2-RDM evaluation"),
         )
     } else {
-        calculate_spin_free_rdm12_pair_naive(data, pair)
+        rdm2_pair_naive(data, pair)
     }
 }
 
-/// Compare naive and Wick's calculation of spin-free RDM matrix elements.
+/// Compare naive and Wick's calculation of spin-free two-body RDM matrix elements.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be compared.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `((T, Array2<T>, Array4<T>), f64)`: Pair overlap, spin-free 1-RDM and spin-free
-///   2-RDM from Wick's path, and the total discrepancy from the naive path.
-pub(in crate::noci) fn compare_spin_free_rdm12_pair_wicks_naive<T: NOCIScalar>(
+/// - `((T, RDM2<T>), f64)`: Pair overlap and spin-free 2-RDM from Wick's path, and
+///   the total discrepancy from the naive path.
+fn compare_rdm2_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
-) -> ((T, Array2<T>, Array4<T>), f64) {
-    let (sn, g1n, g2n) = calculate_spin_free_rdm12_pair_naive(data, pair);
-    let (sw, g1w, g2w) = calculate_spin_free_rdm12_pair_wicks(data, pair, scratch);
+) -> ((T, RDM2<T>), f64) {
+    let (sn, g2n) = rdm2_pair_naive(data, pair);
+    let (sw, g2w) = rdm2_pair_wicks(data, pair, scratch);
 
     let mut diff = (sn - sw).abs();
 
-    for (n, w) in g1n.iter().zip(g1w.iter()) {
+    for (n, w) in g2n.data.iter().zip(g2w.data.iter()) {
         diff += (*n - *w).abs();
     }
 
-    for (n, w) in g2n.iter().zip(g2w.iter()) {
-        diff += (*n - *w).abs();
-    }
-
-    ((sw, g1w, g2w), diff)
+    ((sw, g2w), diff)
 }
 
-/// Calculate spin-free one and two body RDM matrix elements using generalised
-/// Slater-Condon rules:
-/// {}^{xw}S = d_{xw} {}^{xw}S_\alpha {}^{xw}S_\beta,
-/// {}^{xw}\Gamma^p_q = d_{xw} (
-///     {}^{xw}S_\beta {}^{xw}D_\alpha{}^p_q
-///   + {}^{xw}S_\alpha {}^{xw}D_\beta{}^p_q),
-///     {}^{xw}\Gamma^{pq}_{rs} = d_{xw} (
-///     {}^{xw}S_\beta {}^{xw}D_{\alpha\alpha}^{pq}{}_{rs}
-///   + {}^{xw}S_\alpha {}^{xw}D_{\beta\beta}^{pq}{}_{rs}
-///   + {}^{xw}D_\alpha{}^p_r {}^{xw}D_\beta{}^q_s
-///   + {}^{xw}D_\beta{}^p_r {}^{xw}D_\alpha{}^q_s).
-///     Here d_{xw} is the external determinant excitation phase and
-///     D_\alpha and D_\beta are the overlap-weighted spin-block densities.
+/// Calculate spin-free two-body RDM matrix elements using generalised Slater-Condon rules.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be evaluated.
 /// # Returns:
-/// - `(T, Array2<T>, Array4<T>)`: Pair overlap, spin-free 1-RDM and spin-free 2-RDM.
-fn calculate_spin_free_rdm12_pair_naive<T: NOCIScalar>(
+/// - `(T, RDM2<T>)`: Pair overlap and spin-free two-body RDM.
+fn rdm2_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
-) -> (T, Array2<T>, Array4<T>) {
+) -> (T, RDM2<T>) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
-    let norb = data.ao.h.nrows();
+    let n = data.ao.h.nrows();
 
     let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
     let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
@@ -169,14 +152,12 @@ fn calculate_spin_free_rdm12_pair_naive<T: NOCIScalar>(
     let half = <T as From<f64>>::from(0.5);
     let sxw = det_phase * pa.s * pb.s;
 
-    let da = pair_density(&pa, norb);
-    let db = pair_density(&pb, norb);
-
-    let mut gamma1 = Array2::<T>::zeros((norb, norb));
-    gamma1.scaled_add(det_phase * pb.s, &da);
-    gamma1.scaled_add(det_phase * pa.s, &db);
-
-    let mut gamma2 = Array4::<T>::zeros((norb, norb, norb, norb));
+    let da = pair_density(&pa, n);
+    let db = pair_density(&pb, n);
+    let mut gamma = RDM2 {
+        n,
+        data: vec![<T as From<f64>>::from(0.0); n.pow(4)],
+    };
 
     for (spin_pair, other_s) in [(&pa, pb.s), (&pb, pa.s)] {
         let fac = det_phase * other_s * spin_pair.phase * <T as From<f64>>::from(spin_pair.s_red);
@@ -194,11 +175,12 @@ fn calculate_spin_free_rdm12_pair_naive<T: NOCIScalar>(
             _ => continue,
         };
 
-        for p in 0..norb {
-            for q in 0..norb {
-                for r in 0..norb {
-                    for s in 0..norb {
-                        gamma2[(p, q, r, s)] += half
+        for p in 0..n {
+            for q in 0..n {
+                for r in 0..n {
+                    for s in 0..n {
+                        let i = (((p * n + q) * n + r) * n) + s;
+                        gamma.data[i] += half
                             * fac
                             * (a[(p, r)] * b[(q, s)] - a[(p, s)] * b[(q, r)]
                                 + b[(p, r)] * a[(q, s)]
@@ -209,44 +191,36 @@ fn calculate_spin_free_rdm12_pair_naive<T: NOCIScalar>(
         }
     }
 
-    for p in 0..norb {
-        for q in 0..norb {
-            for r in 0..norb {
-                for s in 0..norb {
-                    gamma2[(p, q, r, s)] +=
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for s in 0..n {
+                    let i = (((p * n + q) * n + r) * n) + s;
+                    gamma.data[i] +=
                         det_phase * (da[(p, r)] * db[(q, s)] + db[(p, r)] * da[(q, s)]);
                 }
             }
         }
     }
 
-    (sxw, gamma1, gamma2)
+    (sxw, gamma)
 }
 
-/// Calculate spin-free one and two body RDM matrix elements using extended
-/// non-orthogonal Wick's theorem:
-/// {}^{xw}\Gamma^p_q = d_\alpha d_\beta (
-///     {}^{xw}S_\beta {}^{xw}D_\alpha{}^p_q
-///   + {}^{xw}S_\alpha {}^{xw}D_\beta{}^p_q),
-///     {}^{xw}\Gamma^{pq}_{rs} = d_\alpha d_\beta (
-///     {}^{xw}S_\beta {}^{xw}D_{\alpha\alpha}^{pq}{}_{rs}
-///   + {}^{xw}S_\alpha {}^{xw}D_{\beta\beta}^{pq}{}_{rs}
-///   + {}^{xw}D_{\alpha\beta}^{pq}{}_{rs}
-///   + {}^{xw}D_{\beta\alpha}^{pq}{}_{rs}).
+/// Calculate spin-free two-body RDM matrix elements using extended non-orthogonal Wick's theorem.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be evaluated.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(T, Array2<T>, Array4<T>)`: Pair overlap, spin-free 1-RDM and spin-free 2-RDM.
-fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
+/// - `(T, RDM2<T>)`: Pair overlap and spin-free two-body RDM.
+fn rdm2_pair_wicks<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
-) -> (T, Array2<T>, Array4<T>) {
+) -> (T, RDM2<T>) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
-    let norb = data.ao.h.nrows();
+    let n = data.ao.h.nrows();
 
     let wicks = data.wicks.unwrap();
     let w = wicks.pair(ldet.parent, gdet.parent);
@@ -291,11 +265,13 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
     }
 
     let sxw = det_phase * sa * sb;
-    let mut gamma1 = Array2::<T>::zeros((norb, norb));
-    let mut gamma2 = Array4::<T>::zeros((norb, norb, norb, norb));
+    let mut gamma = RDM2 {
+        n,
+        data: vec![<T as From<f64>>::from(0.0); n.pow(4)],
+    };
 
     let g1a = if do1a {
-        let x = lg_rdm1(
+        Some(lg_rdm1(
             &w.aa,
             ex_la,
             ex_ga,
@@ -303,13 +279,13 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
             gdet.ca.as_ref(),
             &mut scratch.aa,
             data.tol,
-        );
-        Some(x)
+        ))
     } else {
         None
     };
+
     let g1b = if do1b {
-        let x = lg_rdm1(
+        Some(lg_rdm1(
             &w.bb,
             ex_lb,
             ex_gb,
@@ -317,23 +293,10 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
             gdet.cb.as_ref(),
             &mut scratch.bb,
             data.tol,
-        );
-        Some(x)
+        ))
     } else {
         None
     };
-
-    if sb.abs() > data.tol
-        && let Some(g1a) = g1a.as_ref()
-    {
-        gamma1.scaled_add(det_phase * sb, g1a);
-    }
-
-    if sa.abs() > data.tol
-        && let Some(g1b) = g1b.as_ref()
-    {
-        gamma1.scaled_add(det_phase * sa, g1b);
-    }
 
     if sb.abs() > data.tol && do2aa {
         if sa.abs() > data.tol
@@ -341,11 +304,12 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
         {
             let scale = det_phase * sb / sa;
 
-            for p in 0..norb {
-                for q in 0..norb {
-                    for r in 0..norb {
-                        for s in 0..norb {
-                            gamma2[(p, q, r, s)] +=
+            for p in 0..n {
+                for q in 0..n {
+                    for r in 0..n {
+                        for s in 0..n {
+                            let i = (((p * n + q) * n + r) * n) + s;
+                            gamma.data[i] +=
                                 scale * (g1a[(p, r)] * g1a[(q, s)] - g1a[(p, s)] * g1a[(q, r)]);
                         }
                     }
@@ -361,7 +325,17 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
                 &mut scratch.aa,
                 data.tol,
             );
-            gamma2.scaled_add(det_phase * sb, &g2aa);
+
+            for p in 0..n {
+                for q in 0..n {
+                    for r in 0..n {
+                        for s in 0..n {
+                            let i = (((p * n + q) * n + r) * n) + s;
+                            gamma.data[i] += det_phase * sb * g2aa[(p, q, r, s)];
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -371,11 +345,12 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
         {
             let scale = det_phase * sa / sb;
 
-            for p in 0..norb {
-                for q in 0..norb {
-                    for r in 0..norb {
-                        for s in 0..norb {
-                            gamma2[(p, q, r, s)] +=
+            for p in 0..n {
+                for q in 0..n {
+                    for r in 0..n {
+                        for s in 0..n {
+                            let i = (((p * n + q) * n + r) * n) + s;
+                            gamma.data[i] +=
                                 scale * (g1b[(p, r)] * g1b[(q, s)] - g1b[(p, s)] * g1b[(q, r)]);
                         }
                     }
@@ -391,7 +366,17 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
                 &mut scratch.bb,
                 data.tol,
             );
-            gamma2.scaled_add(det_phase * sa, &g2bb);
+
+            for p in 0..n {
+                for q in 0..n {
+                    for r in 0..n {
+                        for s in 0..n {
+                            let i = (((p * n + q) * n + r) * n) + s;
+                            gamma.data[i] += det_phase * sa * g2bb[(p, q, r, s)];
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -405,8 +390,18 @@ fn calculate_spin_free_rdm12_pair_wicks<T: NOCIScalar>(
             (&mut scratch.diff, &scratch.aa, &scratch.bb),
             data.tol,
         );
-        gamma2.scaled_add(det_phase, &g2ab);
+
+        for p in 0..n {
+            for q in 0..n {
+                for r in 0..n {
+                    for s in 0..n {
+                        let i = (((p * n + q) * n + r) * n) + s;
+                        gamma.data[i] += det_phase * g2ab[(p, q, r, s)];
+                    }
+                }
+            }
+        }
     }
 
-    (sxw, gamma1, gamma2)
+    (sxw, gamma)
 }

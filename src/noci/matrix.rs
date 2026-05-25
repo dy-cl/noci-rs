@@ -56,7 +56,7 @@ where
 
     let t0 = Instant::now();
 
-    let use_wicks_scratch = input.wicks.enabled || input.wicks.compare;
+    let use_wicks_scratch = input.wicks.enabled;
     let vals = if use_wicks_scratch {
         pairs
             .par_iter()
@@ -126,7 +126,7 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
         let nl = left.len();
         let nr = right.len();
 
-        if data.input.wicks.compare {
+        if data.input.wicks.enabled && data.input.wicks.compare {
             let (vals, dt) = calculate_matrix_elements(
                 left,
                 right,
@@ -212,7 +212,7 @@ pub fn build_noci_hs<T: NOCIScalar>(
         let nl = left.len();
         let nr = right.len();
 
-        if data.input.wicks.compare {
+        if data.input.wicks.enabled && data.input.wicks.compare {
             let (vals, dt) = calculate_matrix_elements(
                 left,
                 right,

@@ -3,7 +3,41 @@
 // maths/wick.rs
 
 use crate::StateScalar;
-use ndarray::ArrayView2;
+use crate::noci::NOCIScalar;
+use ndarray::{Array2, ArrayView2};
+
+/// Calculate a determinant coefficient for an occupation bitstring.
+/// # Arguments:
+/// - `c`: Orbital coefficient matrix in an orthonormal basis.
+/// - `mask`: Occupation bitstring.
+/// - `nel`: Number of occupied orbitals.
+/// # Returns:
+/// - `T`: Determinant coefficient for the occupied rows and first `nel` columns.
+pub(crate) fn det_occupied_minor<T: NOCIScalar>(
+    c: &Array2<T>,
+    mask: u128,
+    nel: usize,
+) -> T {
+    let mut rows = Vec::with_capacity(nel);
+
+    for p in 0..c.nrows() {
+        if ((mask >> p) & 1) == 1 {
+            rows.push(p);
+        }
+    }
+
+    assert_eq!(rows.len(), nel);
+    assert!(nel <= c.ncols());
+
+    let mut minor = Vec::with_capacity(nel * nel);
+    for &r in rows.iter() {
+        for col in 0..nel {
+            minor.push(c[(r, col)]);
+        }
+    }
+
+    det(minor.as_slice(), nel).unwrap_or(<T as From<f64>>::from(0.0))
+}
 
 /// Build the square `l x l` contraction determinant with `x` elements in the
 /// diagonal and lower triangle, and `y` elements in the upper triangle.
