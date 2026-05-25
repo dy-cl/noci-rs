@@ -58,20 +58,22 @@ pub(crate) fn calculate_f_pair<T: NOCIScalar>(
 /// - `pair`: Pair of determinants whose Fock matrix element is to be compared.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `(T, f64)`: Wick's Fock matrix element, and the absolute discrepancy from the naive path.
+/// - `(T, (f64, f64))`: Wick's Fock matrix element, total discrepancy from
+///   the naive path, and max elementwise discrepancy.
 pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     fock: &FockData<'_, T>,
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
-) -> (T, f64) {
+) -> (T, (f64, f64)) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
     let fnv = calculate_f_pair_naive(fock.fa, fock.fb, data.ao, ldet, gdet, data.tol);
     let fw = calculate_f_pair_wicks(ldet, gdet, data.tol, data.wicks.unwrap(), scratch);
 
-    (fw, (fnv - fw).abs())
+    let diff = (fnv - fw).abs();
+    (fw, (diff, diff))
 }
 
 /// Calculate the Fock matrix element between determinants \Lambda and \Gamma using

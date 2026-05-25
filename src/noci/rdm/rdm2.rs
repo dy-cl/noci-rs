@@ -37,6 +37,7 @@ pub(crate) fn rdm2<T: NOCIScalar>(
     };
     let mut scratch = scratch;
     let mut td = 0.0;
+    let mut md = 0.0;
 
     for x in 0..data.basis.len() {
         for w in 0..data.basis.len() {
@@ -44,10 +45,11 @@ pub(crate) fn rdm2<T: NOCIScalar>(
             let weight = coeff_l[x] * coeff_r[w];
 
             let (sxw, gxw) = if data.input.wicks.enabled && data.input.wicks.compare {
-                let ((sxw, gxw), d) =
+                let ((sxw, gxw), (d, m)) =
                     compare_rdm2_pair_wicks_naive(data, pair, scratch.as_deref_mut().unwrap());
 
                 td += d;
+                md = f64::max(md, m);
                 (sxw, gxw)
             } else {
                 rdm2_pair(data, pair, scratch.as_deref_mut())
@@ -63,8 +65,8 @@ pub(crate) fn rdm2<T: NOCIScalar>(
 
     if data.input.wicks.enabled && data.input.wicks.compare {
         println!(
-            "Total naive–wicks discrepancy (spin-free 2-RDM): {:.6e}",
-            td
+            "Total naive–wicks discrepancy (spin-free 2-RDM): {:.6e}; max element: {:.6e}",
+            td, md
         );
     }
 
@@ -107,23 +109,26 @@ fn rdm2_pair<T: NOCIScalar>(
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be compared.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `((T, RDM2<T>), f64)`: Pair overlap and spin-free 2-RDM from Wick's path, and
-///   the total discrepancy from the naive path.
+/// - `((T, RDM2<T>), (f64, f64))`: Pair overlap and spin-free 2-RDM from Wick's
+///   path, total discrepancy from the naive path, and max elementwise discrepancy.
 fn compare_rdm2_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
-) -> ((T, RDM2<T>), f64) {
+) -> ((T, RDM2<T>), (f64, f64)) {
     let (sn, g2n) = rdm2_pair_naive(data, pair);
     let (sw, g2w) = rdm2_pair_wicks(data, pair, scratch);
 
-    let mut diff = (sn - sw).abs();
+    let mut total = (sn - sw).abs();
+    let mut max_element = 0.0;
 
     for (n, w) in g2n.data.iter().zip(g2w.data.iter()) {
-        diff += (*n - *w).abs();
+        let diff = (*n - *w).abs();
+        total += diff;
+        max_element = f64::max(max_element, diff);
     }
 
-    ((sw, g2w), diff)
+    ((sw, g2w), (total, max_element))
 }
 
 /// Calculate spin-free two-body RDM matrix elements using generalised Slater-Condon rules.

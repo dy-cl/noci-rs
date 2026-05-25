@@ -1,5 +1,6 @@
 // noci/mod.rs
 mod cache;
+mod cumulants;
 mod fock;
 mod hs;
 mod m;
@@ -18,10 +19,10 @@ pub(crate) use matrix::build_noci_fock;
 pub use matrix::{build_noci_hs, build_noci_s, calculate_noci_energy};
 pub use naive::noci_density;
 pub(crate) use overlap::calculate_s_pair;
-pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4};
+pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4, RDM1, RDM2, RDM3, RDM4};
+pub(crate) use cumulants::{cumulants, Cumulants};
 pub use types::{FockMOCache, MOCache};
 pub use wicks::{build_wicks_shared, update_wicks_fock};
-
 pub(crate) use naive::occ_coeffs;
 pub(crate) use types::{DetPair, FockData};
 pub use types::{NOCIData, NOCIScalar};

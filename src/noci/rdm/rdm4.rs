@@ -38,6 +38,7 @@ pub(crate) fn rdm4<T: NOCIScalar>(
     };
     let mut scratch = scratch;
     let mut td = 0.0;
+    let mut md = 0.0;
 
     for x in 0..data.basis.len() {
         for w in 0..data.basis.len() {
@@ -45,7 +46,7 @@ pub(crate) fn rdm4<T: NOCIScalar>(
             let weight = coeff_l[x] * coeff_r[w];
 
             let (sxw, gxw) = if data.input.wicks.enabled && data.input.wicks.compare {
-                let ((sxw, gxw), d) = compare_rdm4_pair_wicks_naive(
+                let ((sxw, gxw), (d, m)) = compare_rdm4_pair_wicks_naive(
                     data,
                     pair,
                     active,
@@ -53,6 +54,7 @@ pub(crate) fn rdm4<T: NOCIScalar>(
                 );
 
                 td += d;
+                md = f64::max(md, m);
                 (sxw, gxw)
             } else if data.input.wicks.enabled {
                 rdm4_pair_wicks(data, pair, active, scratch.as_deref_mut().unwrap())
@@ -70,8 +72,8 @@ pub(crate) fn rdm4<T: NOCIScalar>(
 
     if data.input.wicks.enabled && data.input.wicks.compare {
         println!(
-            "Total naive–wicks discrepancy (active spin-free 4-RDM): {:.6e}",
-            td
+            "Total naive–wicks discrepancy (active spin-free 4-RDM): {:.6e}; max element: {:.6e}",
+            td, md
         );
     }
 
@@ -89,24 +91,28 @@ pub(crate) fn rdm4<T: NOCIScalar>(
 /// - `active`: Active orbital indices in the RDM basis.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `((T, RDM4<T>), f64)`: Pair overlap and active-space spin-free 4-RDM from Wick's
-///   path, and the total discrepancy from the naive path.
+/// - `((T, RDM4<T>), (f64, f64))`: Pair overlap and active-space spin-free 4-RDM
+///   from Wick's path, total discrepancy from the naive path, and max elementwise
+///   discrepancy.
 fn compare_rdm4_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
     active: &[usize],
     scratch: &mut WickScratchSpin<T>,
-) -> ((T, RDM4<T>), f64) {
+) -> ((T, RDM4<T>), (f64, f64)) {
     let (sn, g4n) = rdm4_pair_naive(data, pair, active);
     let (sw, g4w) = rdm4_pair_wicks(data, pair, active, scratch);
 
-    let mut diff = (sn - sw).abs();
+    let mut total = (sn - sw).abs();
+    let mut max_element = 0.0;
 
     for (n, w) in g4n.data.iter().zip(g4w.data.iter()) {
-        diff += (*n - *w).abs();
+        let diff = (*n - *w).abs();
+        total += diff;
+        max_element = f64::max(max_element, diff);
     }
 
-    ((sw, g4w), diff)
+    ((sw, g4w), (total, max_element))
 }
 
 /// Calculate active-space spin-free four-body RDM matrix elements by determinant expansion.

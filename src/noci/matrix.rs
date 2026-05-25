@@ -143,12 +143,17 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
             );
 
             let mut td = 0.0;
+            let mut md = 0.0;
             let mut fvals = Vec::with_capacity(vals.len());
-            for (i, j, (f, d)) in vals {
+            for (i, j, (f, (d, m))) in vals {
                 fvals.push((i, j, f));
                 td += d;
+                md = f64::max(md, m);
             }
-            println!("Total naive–wicks discrepancy (Fock): {:.6e}", td);
+            println!(
+                "Total naive–wicks discrepancy (Fock): {:.6e}; max element: {:.6e}",
+                td, md
+            );
             let f = scatter_matrix_elements(fvals, nl, nr, symmetric);
             return (f, dt);
         }
@@ -224,14 +229,16 @@ pub fn build_noci_hs<T: NOCIScalar>(
             );
 
             let mut td = 0.0;
+            let mut md = 0.0;
             let mut hsvals = Vec::with_capacity(vals.len());
-            for (i, j, (hs, d)) in vals {
+            for (i, j, (hs, (d, m))) in vals {
                 hsvals.push((i, j, hs));
                 td += d;
+                md = f64::max(md, m);
             }
             println!(
-                "Total naive–wicks discrepancy (Hamiltonian and overlap): {:.6e}",
-                td
+                "Total naive–wicks discrepancy (Hamiltonian and overlap): {:.6e}; max element: {:.6e}",
+                td, md
             );
             let (h, s) = scatter_matrix_elements(hsvals, nl, nr, symmetric);
             return (h, s, dt);

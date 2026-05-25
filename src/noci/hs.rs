@@ -59,13 +59,14 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 /// - `pair`: Pair of determinants whose matrix elements are to be compared.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `((T, T), f64)`: Hamiltonian and overlap matrix elements between the determinant pair, and
-///   the total discrepancy between the naive and Wick's path.
+/// - `((T, T), (f64, f64))`: Hamiltonian and overlap matrix elements between
+///   the determinant pair, total discrepancy between the naive and Wick's path,
+///   and max elementwise discrepancy.
 pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
-) -> ((T, T), f64) {
+) -> ((T, T), (f64, f64)) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
@@ -73,7 +74,9 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
     let (hw, sw) =
         calculate_hs_pair_wicks(data.ao, ldet, gdet, data.tol, data.wicks.unwrap(), scratch);
 
-    ((hw, sw), (hn - hw).abs() + (sn - sw).abs())
+    let hdiff = (hn - hw).abs();
+    let sdiff = (sn - sw).abs();
+    ((hw, sw), (hdiff + sdiff, f64::max(hdiff, sdiff)))
 }
 
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma using
