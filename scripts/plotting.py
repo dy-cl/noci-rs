@@ -176,6 +176,24 @@ def readEnergy(path: Path) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns = ["R", "idx", "rawLabel", "label", "E"]).sort_values(["label", "R"])
 
+def readEnergyTable(path: Path, label = None) -> pd.DataFrame:
+    """
+    Read a simple energy table with columns E and R.
+    The column order shoule be R E`.
+    """
+    df = pd.read_csv(path, sep = r"\s+|,", engine = "python", comment = "#")
+    cols = {c.strip().lower(): c for c in df.columns}
+
+    if "e" not in cols or "r" not in cols:
+        raise ValueError(f"{path} must contain columns named E and R")
+
+    out = pd.DataFrame({
+        "R": pd.to_numeric(df[cols["r"]]),
+        "E": pd.to_numeric(df[cols["e"]]),
+    })
+    out["label"] = label if label is not None else path.stem
+    return out.sort_values("R")
+
 def createEnergyLabel(idx: str, rawLabel: str) -> str:
     """
     Convert state labels in `noci-rs` to desired form for plotting.
@@ -282,12 +300,61 @@ def plotDeterministicCoefficients(args):
     plt.subplots_adjust(left = 0.15)
     finish(args)
 
+def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25]):
+    """
+    Add an inset showing a zoomed region of the main energy plot.
+
+    `loc` is [left, bottom, width, height] in axes-fraction coordinates.
+    """
+    inset = ax.inset_axes(loc)
+
+    for line in ax.get_lines():
+        inset.plot(
+            line.get_xdata(),
+            line.get_ydata(),
+            linewidth = max(1.5, 0.55 * line.get_linewidth()),
+            linestyle = line.get_linestyle(),
+            marker = line.get_marker(),
+            markersize = max(3, 0.55 * line.get_markersize()),
+            color = line.get_color(),
+            zorder = line.get_zorder(),
+        )
+
+    inset.set_xlim(*xlim)
+    inset.set_ylim(*ylim)
+    inset.tick_params(axis = "both", labelsize = 16)
+    inset.grid(True)
+
+    rect, connectors = ax.indicate_inset_zoom(
+        inset,
+        edgecolor = "black",
+        linewidth = 2,
+    )
+
+    rect.set_linestyle("--")
+
+    for connector in connectors:
+        connector.set_visible(False)
+
+    for connector in (connectors[2], connectors[3]):
+        connector.set_visible(True)
+        connector.set_linestyle("--")
+        connector.set_linewidth(2)
+        connector.set_color("black")
+
+    return inset
 
 def plotEnergy(args):
     """
     Plot energies across a geometry scan.
     """
     df = readEnergy(args.path)
+
+    tablePaths = list(args.tables_pos) + list(args.tables_opt)
+    tableDfs = []
+    for i, path in enumerate(tablePaths):
+        label = args.table_label[i] if i < len(args.table_label) else path.stem
+        tableDfs.append(readEnergyTable(path, label = label))
 
     setStyle()
     fig, ax = plt.subplots()
@@ -389,6 +456,32 @@ def plotEnergy(args):
 
         ax.plot(gPlot["R"], gPlot["E"], linewidth = LINEWIDTH, color = color, linestyle = linestyle, label = label)
 
+    for tableDf in tableDfs:
+        rawLabel = tableDf["label"].iloc[0]
+        display = rf"$|\Psi^{{\mathrm{{{rawLabel}}}}}\rangle$"
+
+        ax.plot(
+            tableDf["R"],
+            tableDf["E"],
+            label = display,
+            linewidth = LINEWIDTH,
+            linestyle = "-",
+            zorder = 1,
+            color = 'tab:orange'
+        )
+   
+    if args.inset is not None:
+        xmin, xmax, ymin, ymax = args.inset
+        left, bottom = args.inset_location
+        width, height = args.inset_size
+
+        addEnergyInset(
+            ax,
+            xlim = (xmin, xmax),
+            ylim = (ymin, ymax),
+            loc = [left, bottom, width, height],
+        )
+    
     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
     plt.grid(True)
     finish(args)
@@ -524,6 +617,33 @@ def buildParser():
 
     p = subparsers.add_parser("energy")
     p.add_argument("path", type = Path)
+    p.add_argument("tables_pos", nargs = "*", type = Path)
+    p.add_argument("--table", dest = "tables_opt", action = "append", type = Path, default = [])
+    p.add_argument("--table-label", action = "append", default = [])
+    p.add_argument(
+        "--inset",
+        nargs = 4,
+        type = float,
+        metavar = ("XMIN", "XMAX", "YMIN", "YMAX"),
+        default = None,
+        help = "Add an inset with zoom limits XMIN XMAX YMIN YMAX.",
+    )
+    p.add_argument(
+        "--inset-location",
+        nargs = 2,
+        type = float,
+        metavar = ("LEFT", "BOTTOM"),
+        default = [0.72, 0.03],
+        help = "Inset lower-left position in axes-fraction coordinates.",
+    )
+    p.add_argument(
+        "--inset-size",
+        nargs = 2,
+        type = float,
+        metavar = ("WIDTH", "HEIGHT"),
+        default = [0.25, 0.25],
+        help = "Inset size in axes-fraction coordinates.",
+    )
     addCommonArgs(p)
     p.set_defaults(func = plotEnergy)
 
