@@ -7,6 +7,7 @@ import re
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.patches import ConnectionPatch, Rectangle
 import numpy as np
 import pandas as pd
 
@@ -325,22 +326,65 @@ def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25]):
     inset.tick_params(axis = "both", labelsize = 16)
     inset.grid(True)
 
-    rect, connectors = ax.indicate_inset_zoom(
-        inset,
-        edgecolor = "black",
+    xmin, xmax = xlim
+    ymin, ymax = ylim
+
+    rect = Rectangle(
+        (xmin, ymin),
+        xmax - xmin,
+        ymax - ymin,
+        fill = False,
+        edgecolor = "0.35",
         linewidth = 2,
+        linestyle = "--",
+        alpha = 0.5,
+        zorder = -100,
     )
+    ax.add_patch(rect)
 
-    rect.set_linestyle("--")
+    # Available connector choices:
+    #
+    # Top-right zoom -> bottom-left inset
+    # Bottom-right zoom -> bottom-right inset
+    connectors = [
+        ((xmax, ymax), (0.0, 0.0)),
+        ((xmax, ymin), (1.0, 0.0)),
+    ]
 
-    for connector in connectors:
-        connector.set_visible(False)
+    # Top-right zoom -> top-left inset
+    # Bottom-right zoom -> bottom-left inset
+    # connectors = [
+    #     ((xmax, ymax), (0.0, 1.0)),
+    #     ((xmax, ymin), (0.0, 0.0)),
+    # ]
 
-    for connector in (connectors[2], connectors[3]):
-        connector.set_visible(True)
-        connector.set_linestyle("--")
-        connector.set_linewidth(2)
-        connector.set_color("black")
+    # Top-left zoom -> bottom-left inset
+    # Top-right zoom -> bottom-right inset
+    # connectors = [
+    #     ((xmin, ymax), (0.0, 0.0)),
+    #     ((xmax, ymax), (1.0, 0.0)),
+    # ]
+
+    # Bottom-left zoom -> top-left inset
+    # Bottom-right zoom -> top-right inset
+    # connectors = [
+    #     ((xmin, ymin), (0.0, 1.0)),
+    #     ((xmax, ymin), (1.0, 1.0)),
+    # ]
+    
+    for xy_data, xy_inset in connectors:
+        con = ConnectionPatch(
+            xyA = xy_data,
+            coordsA = ax.transData,
+            xyB = xy_inset,
+            coordsB = inset.transAxes,
+            color = "0.35",
+            linewidth = 2,
+            linestyle = "--",
+            alpha = 0.5,
+            zorder = -99,
+        )
+        ax.add_artist(con)
 
     return inset
 
@@ -412,7 +456,7 @@ def plotEnergy(args):
             cbar.ax.tick_params(labelsize = 16)
     
     plotLabel("SNOCI", display = r"$|\Psi^{\mathrm{SNOCI}}\rangle$", linewidth = LINEWIDTH, linestyle = ":", zorder = 16, color = "tab:cyan")
-    plotLabel("NOCIQMC", display = r"$|\Psi^{\mathrm{NOCI\!-\!QMC}}\rangle$", linewidth = LINEWIDTH, linestyle = "--", zorder = 20, color = "tab:pink")
+    plotLabel("NOCIQMC", display = r"$|\Psi^{\mathrm{NOCI\!-\!QMC}}\rangle$", linewidth = LINEWIDTH, zorder = 20, color = "tab:pink")
 
     gFCI = df[df["label"] == "FCI"].sort_values("R")
     if not gFCI.empty:
