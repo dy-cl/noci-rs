@@ -3,43 +3,43 @@ use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
 use crate::input::{Input, Propagator};
+use crate::maths::{adjoint, parallel_matvec};
+use crate::noci::NOCIScalar;
 
-use crate::maths::parallel_matvec;
-
-pub struct ProjPropagator {
+pub struct ProjPropagator<T: NOCIScalar> {
     /// Propagator block coupling the relevant subspace to itself.
-    pub urr: Array2<f64>,
+    pub urr: Array2<T>,
     /// Propagator block coupling the null subspace to itself.
-    pub unn: Array2<f64>,
+    pub unn: Array2<T>,
     /// Propagator block coupling the relevant subspace into the null subspace.
-    pub unr: Array2<f64>,
+    pub unr: Array2<T>,
     /// Propagator block coupling the null subspace into the relevant subspace.
-    pub urn: Array2<f64>,
+    pub urn: Array2<T>,
 }
 
-pub struct Projectors {
+pub struct Projectors<T: NOCIScalar> {
     /// Eigenvectors spanning the relevant subspace of the overlap matrix.
-    ur: Array2<f64>,
+    ur: Array2<T>,
     /// Transpose of the relevant-subspace eigenvector matrix.
-    ur_dag: Array2<f64>,
+    ur_dag: Array2<T>,
     /// Eigenvectors spanning the null subspace of the overlap matrix.
-    un: Array2<f64>,
+    un: Array2<T>,
     /// Transpose of the null-subspace eigenvector matrix.
-    un_dag: Array2<f64>,
+    un_dag: Array2<T>,
 }
 
-pub struct Coefficients {
+pub struct Coefficients<T: NOCIScalar> {
     /// Iteration number at which these coefficients were recorded.
     pub iter: usize,
     /// Full coefficient vector in the complete NOCI-QMC basis.
-    pub c_full: Array1<f64>,
+    pub c_full: Array1<T>,
     /// Coefficient vector projected into the relevant subspace.
-    pub c_relevant: Array1<f64>,
+    pub c_relevant: Array1<T>,
     /// Coefficient vector projected into the null subspace.
-    pub c_null: Array1<f64>,
+    pub c_null: Array1<T>,
 }
 
-impl Projectors {
+impl<T: NOCIScalar> Projectors<T> {
     /// Calculate projectors onto the relevant and null subsapces of the overlap matrix S by
     /// diagonalising S as S = U \Lambda U^\dagger and paritioning the eigenvectors by an
     /// eigenvalue threshold. The null subspace is spanned by eigenvectors with \lambda < eps and
@@ -52,7 +52,7 @@ impl Projectors {
     /// # Returns
     /// `Projectors`, projectors onto the relevant and null subspaces of the overlap matrix.
     pub fn calculate_projectors(
-        s: &Array2<f64>,
+        s: &Array2<T>,
         eps: f64,
     ) -> Self {
         // S = U \Lambda U^\dagger
@@ -71,18 +71,18 @@ impl Projectors {
 
         // Construct U_{relevant} and U_{null}, i.e., the eigenvector matrices of S corresponding to
         // the relevant and null subspaces.
-        let mut ur = Array2::<f64>::zeros((lambda.len(), relevant.len()));
+        let mut ur = Array2::<T>::zeros((lambda.len(), relevant.len()));
         for (j, &icol) in relevant.iter().enumerate() {
             let col = u.slice(s![.., icol]);
             ur.slice_mut(s![.., j]).assign(&col);
         }
-        let ur_dag = ur.t().to_owned();
-        let mut un = Array2::<f64>::zeros((lambda.len(), null.len()));
+        let ur_dag = adjoint(&ur);
+        let mut un = Array2::<T>::zeros((lambda.len(), null.len()));
         for (j, &icol) in null.iter().enumerate() {
             let col = u.slice(s![.., icol]);
             un.slice_mut(s![.., j]).assign(&col);
         }
-        let un_dag = un.t().to_owned();
+        let un_dag = adjoint(&un);
 
         println!(
             "Projectors: eps = {:.3e}, dim(S) = {}, relevant = {}, null = {}",
@@ -108,8 +108,8 @@ impl Projectors {
     /// `(Array1<f64>, Array1<f64>)`, coefficients projected into the relevant and null subspaces.
     pub fn project(
         &self,
-        c: &Array1<f64>,
-    ) -> (Array1<f64>, Array1<f64>) {
+        c: &Array1<T>,
+    ) -> (Array1<T>, Array1<T>) {
         // C_r = U_r U_r^\dagger C
         let yr = parallel_matvec(&self.ur_dag, c);
         let c_relevant = parallel_matvec(&self.ur, &yr);
@@ -121,7 +121,7 @@ impl Projectors {
     }
 }
 
-impl ProjPropagator {
+impl<T: NOCIScalar> ProjPropagator<T> {
     /// Express a propjector in the null and relevant subspace basis by forming the matrix (U_{rr},
     /// U_{nr} \\ U_{rn} U_{nn}). All elements of the propragator can be projected by doing for
     /// example: H_{rn} = U_r^\dagger H U_n.
@@ -135,13 +135,16 @@ impl ProjPropagator {
     /// # Returns
     /// `ProjPropagator`, propagator blocks expressed in the relevant and null subspace basis.
     pub fn calculate_projected_propagator(
-        h: &Array2<f64>,
-        s: &Array2<f64>,
-        p: &Projectors,
+        h: &Array2<T>,
+        s: &Array2<T>,
+        p: &Projectors<T>,
         es: f64,
         dt: f64,
         prop: &Propagator,
     ) -> Self {
+        let es = T::from_real(es);
+        let dt = T::from_real(dt);
+
         // H_{ur} = H U_r, H_{un} = H U_n, S_{ur} = S U_r, S_{un} = S U_n.
         let hur = h.dot(&p.ur);
         let hun = h.dot(&p.un);
@@ -157,21 +160,23 @@ impl ProjPropagator {
         let snr = p.un_dag.dot(&sur);
         let srn = p.ur_dag.dot(&sun);
 
-        let identityr = Array2::<f64>::eye(hrr.nrows());
-        let identityn = Array2::<f64>::eye(hnn.nrows());
+        let identityr = Array2::<T>::eye(hrr.nrows());
+        let identityn = Array2::<T>::eye(hnn.nrows());
 
         let identityfac = match prop {
-            Propagator::Unshifted => 1.0,
-            Propagator::Shifted => 1.0 + dt * es,
+            Propagator::Unshifted => T::from_real(1.0),
+            Propagator::Shifted => T::from_real(1.0) + dt * es,
             Propagator::DoublyShifted => unimplemented!(),
             Propagator::DifferenceDoublyShiftedU1 => unimplemented!(),
             Propagator::DifferenceDoublyShiftedU2 => unimplemented!(),
         };
 
-        let urr = &(identityfac * &identityr) - &(dt * (&hrr - &srr.mapv(|z| es * z)));
-        let unn = &(identityfac * &identityn) - &(dt * (&hnn - &snn.mapv(|z| es * z)));
-        let unr = -(dt * (&hnr - &snr.mapv(|z| es * z)));
-        let urn = -(dt * (&hrn - &srn.mapv(|z| es * z)));
+        let urr =
+            identityr.mapv(|z| identityfac * z) - (&hrr - &srr.mapv(|z| es * z)).mapv(|z| dt * z);
+        let unn =
+            identityn.mapv(|z| identityfac * z) - (&hnn - &snn.mapv(|z| es * z)).mapv(|z| dt * z);
+        let unr = (&hnr - &snr.mapv(|z| es * z)).mapv(|z| -dt * z);
+        let urn = (&hrn - &srn.mapv(|z| es * z)).mapv(|z| -dt * z);
 
         ProjPropagator { urr, unn, unr, urn }
     }
@@ -186,13 +191,15 @@ impl ProjPropagator {
 /// - `dt`: Propagation time step.
 /// # Returns
 /// - `Array1<f64>`: Updated NOCI-QMC coefficient vector after one unshifted propagation step.
-pub fn propagate_step_unshifted(
-    h: &Array2<f64>,
-    s: &Array2<f64>,
-    c: &Array1<f64>,
+pub fn propagate_step_unshifted<T: NOCIScalar>(
+    h: &Array2<T>,
+    s: &Array2<T>,
+    c: &Array1<T>,
     esc: f64,
     dt: f64,
-) -> Array1<f64> {
+) -> Array1<T> {
+    let esc = T::from_real(esc);
+    let dt = T::from_real(dt);
     let hc = parallel_matvec(h, c);
     let sc = parallel_matvec(s, c);
     let htildec = hc - sc.mapv(|z| esc * z);
@@ -210,13 +217,15 @@ pub fn propagate_step_unshifted(
 /// - `dt`: Propagation time step.
 /// # Returns
 /// - `Array1<f64>`: Updated NOCI-QMC coefficient vector after one shifted propagation step.
-pub fn propagate_step_shifted(
-    h: &Array2<f64>,
-    s: &Array2<f64>,
-    c: &Array1<f64>,
+pub fn propagate_step_shifted<T: NOCIScalar>(
+    h: &Array2<T>,
+    s: &Array2<T>,
+    c: &Array1<T>,
     esc: f64,
     dt: f64,
-) -> Array1<f64> {
+) -> Array1<T> {
+    let esc = T::from_real(esc);
+    let dt = T::from_real(dt);
     let hc = parallel_matvec(h, c);
     let sc = parallel_matvec(s, c);
     let htildec = hc - sc.mapv(|z| esc * z);
@@ -235,14 +244,14 @@ pub fn propagate_step_shifted(
 /// - `input`: User inputted options.
 /// # Returns
 /// - `Option<Array1<f64>>`: Converged coefficient vector if propagation succeeds, otherwise `None`.
-pub fn propagate(
-    h: &Array2<f64>,
-    s: &Array2<f64>,
-    c0: &Array1<f64>,
+pub fn propagate<T: NOCIScalar>(
+    h: &Array2<T>,
+    s: &Array2<T>,
+    c0: &Array1<T>,
     mut es: f64,
-    history: &mut Vec<Coefficients>,
+    history: &mut Vec<Coefficients<T>>,
     input: &Input,
-) -> Option<Array1<f64>> {
+) -> Option<Array1<T>> {
     let mut c_norm = c0.clone();
     let mut e_prev = projected_energy(h, s, c0);
     let mut logamp: f64 = 0.0;
@@ -255,15 +264,15 @@ pub fn propagate(
     // calculate projectors onto these spaces which involves diagonalising S. Of course for larger
     // systems this should not be done as diagonalising S has equal cost to solving GEVP of full
     // NOCI-QMC basis.
-    let mut projectors: Option<Projectors> = None;
+    let mut projectors: Option<Projectors<T>> = None;
     if input.write.write_deterministic_coeffs {
         let p = Projectors::calculate_projectors(s, 1e-14);
         let (c0_relevant, c0_null) = p.project(&c_norm);
 
         // Calculate diagnostics.
         println!("{}", "=".repeat(100));
-        let sc0n = s.dot(&c0_null);
-        let hc0n = h.dot(&c0_null);
+        let sc0n = parallel_matvec(s, &c0_null);
+        let hc0n = parallel_matvec(h, &c0_null);
         println!(
             "Action of S and H on initial null vector: ||Scn|| = {}, ||Hcn|| = {}.",
             sc0n.norm(),
@@ -310,7 +319,13 @@ pub fn propagate(
     );
     // Print initial.
     let c0_1norm = c0.iter().map(|z| z.abs()).sum::<f64>();
-    let den = c0.dot(&s.dot(c0));
+    let sc0 = parallel_matvec(s, c0);
+    let den = c0
+        .iter()
+        .zip(sc0.iter())
+        .map(|(&ci, &sci)| ci.conj() * sci)
+        .sum::<T>()
+        .re();
     println!(
         "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
         0, e_prev, 0, es, c0_1norm, den
@@ -329,16 +344,23 @@ pub fn propagate(
         };
 
         // Normalise.
-        let sc = s.dot(&c_new_norm);
+        let sc = parallel_matvec(s, &c_new_norm);
         let norm: f64 = c_new_norm
             .iter()
             .zip(sc.iter())
-            .map(|(ci, sci)| ci * sci)
-            .sum::<f64>()
+            .map(|(&ci, &sci)| ci.conj() * sci)
+            .sum::<T>()
+            .re()
             .sqrt();
-        c_new_norm.mapv_inplace(|z| z / norm);
+        c_new_norm.mapv_inplace(|z| z / T::from_real(norm));
         // Calculate C S C^\dagger post normalisation.
-        let den = c_new_norm.dot(&s.dot(&c_new_norm));
+        let sc = parallel_matvec(s, &c_new_norm);
+        let den = c_new_norm
+            .iter()
+            .zip(sc.iter())
+            .map(|(&ci, &sci)| ci.conj() * sci)
+            .sum::<T>()
+            .re();
         // Calculate energy.
         let e = projected_energy(h, s, &c_new_norm);
         let de = (e - e_prev).abs();
@@ -356,7 +378,7 @@ pub fn propagate(
             let scale = logamp.exp();
             // Project coefficients into relevant and null subspaces.
             let (c_relevant, mut c_null) = p.project(&c_new_norm);
-            c_null = c_null.mapv(|z| z * scale);
+            c_null = c_null.mapv(|z| z * T::from_real(scale));
             // Add coefficients to the history.
             history.push(Coefficients {
                 iter: it + 1,
@@ -402,22 +424,22 @@ pub fn propagate(
 /// - `c`: NOCI-QMC coefficient vector.
 /// # Returns
 /// - `f64`: Projected energy corresponding to coefficient vector `c`.
-pub fn projected_energy(
-    h: &Array2<f64>,
-    s: &Array2<f64>,
-    c: &Array1<f64>,
+pub fn projected_energy<T: NOCIScalar>(
+    h: &Array2<T>,
+    s: &Array2<T>,
+    c: &Array1<T>,
 ) -> f64 {
-    let hc = h.dot(c);
+    let hc = parallel_matvec(h, c);
     let num = c
         .iter()
         .zip(hc.iter())
-        .map(|(ci, hci)| ci * hci)
-        .sum::<f64>();
-    let sc = s.dot(c);
+        .map(|(&ci, &hci)| ci.conj() * hci)
+        .sum::<T>();
+    let sc = parallel_matvec(s, c);
     let den = c
         .iter()
         .zip(sc.iter())
-        .map(|(ci, sci)| ci * sci)
-        .sum::<f64>();
-    num / den
+        .map(|(&ci, &sci)| ci.conj() * sci)
+        .sum::<T>();
+    (num / den).re()
 }

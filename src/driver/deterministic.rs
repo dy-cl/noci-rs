@@ -9,7 +9,7 @@ use crate::PostSCFData;
 use crate::basis::generate_excited_basis;
 use crate::deterministic::{projected_energy, propagate};
 use crate::input::Input;
-use crate::noci::{NOCIData, build_noci_hs};
+use crate::noci::{NOCIData, NOCIScalar, build_noci_hs};
 use crate::nonorthogonalwicks::WicksView;
 use crate::time_call;
 use crate::utils::wavefunction_sparsity;
@@ -22,11 +22,12 @@ use crate::utils::wavefunction_sparsity;
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns:
 /// - `f64`: Propagated energy.
-pub fn run_qmc_deterministic_noci(
-    post: &PostSCFData<'_, f64>,
+pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
+    post: &PostSCFData<'_, T>,
     input: &Input,
-    c0: &[f64],
-    wicks: Option<&WicksView<f64>>,
+    c0: &[T],
+    e_shift0: f64,
+    wicks: Option<&WicksView<T>>,
 ) -> f64 {
     time_call!(
         crate::timers::deterministic::add_run_qmc_deterministic_noci,
@@ -55,10 +56,9 @@ pub fn run_qmc_deterministic_noci(
             });
             println!("Finished calculating NOCI-QMC matrix elements.");
 
-            let es = post.states[0].e;
             println!("Running deterministic NOCI-QMC propagation....");
 
-            let mut c0qmc = Array1::<f64>::zeros(n);
+            let mut c0qmc = Array1::<T>::zeros(n);
             if !input.write.write_deterministic_coeffs {
                 for (i, ref_st) in post.noci_reference_basis.iter().enumerate() {
                     let idx = basis
@@ -68,7 +68,7 @@ pub fn run_qmc_deterministic_noci(
                     c0qmc[idx] = c0[i];
                 }
             } else {
-                c0qmc = Array1::from_elem(n, 1.0 / (n as f64).sqrt());
+                c0qmc = Array1::from_elem(n, T::from_real(1.0 / (n as f64).sqrt()));
             };
 
             println!("Initial wavefunction ansatz (C0-QMC): {}", c0qmc);
@@ -87,7 +87,7 @@ pub fn run_qmc_deterministic_noci(
             let mut coefficients = Vec::new();
 
             let c = time_call!(crate::timers::deterministic::add_propagate, {
-                propagate(&h, &s, &c0qmc, es, &mut coefficients, input)
+                propagate(&h, &s, &c0qmc, e_shift0, &mut coefficients, input)
             });
 
             let cfinal = match c {
@@ -110,15 +110,15 @@ pub fn run_qmc_deterministic_noci(
                     writeln!(writer, "iter {}", iter.iter).unwrap();
                     writeln!(writer, "Full coefficients:").unwrap();
                     for (i, z) in iter.c_full.iter().enumerate() {
-                        writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
+                        writeln!(writer, "{:4} {}", i, z).unwrap();
                     }
                     writeln!(writer, "Relevant space coefficients:").unwrap();
                     for (i, z) in iter.c_relevant.iter().enumerate() {
-                        writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
+                        writeln!(writer, "{:4} {}", i, z).unwrap();
                     }
                     writeln!(writer, "Null space coefficients:").unwrap();
                     for (i, z) in iter.c_null.iter().enumerate() {
-                        writeln!(writer, "{:4} {:.8e}", i, z).unwrap();
+                        writeln!(writer, "{:4} {}", i, z).unwrap();
                     }
                     writeln!(writer).unwrap();
                 }

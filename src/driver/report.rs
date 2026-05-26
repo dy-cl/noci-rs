@@ -727,6 +727,15 @@ pub fn print_report(
         res.e_noci_ref - e0
     );
 
+    if let Some(e_det) = res.e_noci_qmc_det {
+        println!(
+            "State(NOCI-qmc-deterministic): E: {}, [E - {}]: {}",
+            e_det,
+            label,
+            e_det - e0
+        );
+    }
+
     if !res.hstates.is_empty() {
         if let Some(e_snoci) = res.e_snoci {
             println!(
@@ -756,15 +765,6 @@ pub fn print_report(
 
         println!("{}", "=".repeat(100));
         return;
-    }
-
-    if let Some(e_det) = res.e_noci_qmc_det {
-        println!(
-            "State(NOCI-qmc-deterministic): E: {}, [E - {}]: {}",
-            e_det,
-            label,
-            e_det - e0
-        );
     }
 
     if res.e_noci_qmc_stoch.is_some() {

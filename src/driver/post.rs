@@ -77,6 +77,7 @@ pub fn run_real_post_reference(
             &post,
             input,
             &reference.c0,
+            reference.e_noci,
             wicks,
         ));
     }
@@ -207,21 +208,32 @@ pub fn run_holomorphic_post_reference(
 ) -> PostReferenceResults {
     let mut out = PostReferenceResults::empty();
 
-    if world.rank() == 0 && warn_qmc && (input.det.is_some() || input.qmc.is_some()) {
+    if world.rank() == 0 && warn_qmc && input.qmc.is_some() {
         println!(
-            "Holomorphic NOCI states not currently supported for deterministic or stochastic propagation. Continuing only with reference NOCI/SNOCI/NOCI-PT2."
+            "Holomorphic NOCI states not currently supported for stochastic propagation. Continuing with reference NOCI/deterministic NOCI-QMC/SNOCI/NOCI-PT2."
         );
     }
 
-    if input.snoci.is_some() {
-        let post = PostSCFData {
-            ao,
-            states: &reference.basis,
-            noci_reference_basis: &reference.basis,
-            mocache: &reference.mocache,
-            tol,
-        };
+    let post = PostSCFData {
+        ao,
+        states: &reference.basis,
+        noci_reference_basis: &reference.basis,
+        mocache: &reference.mocache,
+        tol,
+    };
 
+    if world.rank() == 0 && input.det.is_some() {
+        let wicks = reference.wicks.as_ref().map(|ws| ws.view());
+        out.e_noci_qmc_det = Some(run_qmc_deterministic_noci(
+            &post,
+            input,
+            &reference.c0,
+            reference.e_noci,
+            wicks,
+        ));
+    }
+
+    if input.snoci.is_some() {
         let (e_snoci, e_pt2) = run_snoci(
             &post,
             &reference.basis,

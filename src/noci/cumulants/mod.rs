@@ -1,6 +1,6 @@
 // src/noci/cumulants/mod.rs
 
-mod cumulants;
+mod build;
 mod helpers;
 
-pub(crate) use self::cumulants::{cumulants, Cumulants};
+pub(crate) use self::build::{Cumulants, cumulants};

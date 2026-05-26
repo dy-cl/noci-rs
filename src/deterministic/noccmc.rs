@@ -3,6 +3,7 @@
 use mpi::topology::Communicator;
 use ndarray::Array1;
 
+use crate::PostSCFData;
 use crate::input::Input;
 use crate::maths::general_evp;
 use crate::noci::{
@@ -13,7 +14,6 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::orbitals::{
     NOCINaturalOrbitals, print_noci_natural_orbitals, transform_ao_data, transform_noci_basis,
 };
-use crate::PostSCFData;
 
 /// Run NOCCMC setup work.
 /// # Arguments:
@@ -137,7 +137,12 @@ pub(crate) fn run_noccmc(
 /// - `e_rdm`: NOCI energy reconstructed from the spin-free one- and two-body RDMs.
 /// # Returns:
 /// - `()`: Prints miscellaneous diagnostics.
-fn print_misc_diagnostics(serr: f64, e_coeff: f64, e_gep: f64, e_rdm: f64) {
+fn print_misc_diagnostics(
+    serr: f64,
+    e_coeff: f64,
+    e_gep: f64,
+    e_rdm: f64,
+) {
     println!("{}", "=".repeat(100));
     println!("NOCI NOCCMC miscellaneous diagnostics");
     println!("NOCI natural orbital orthonormality error: {:.6e}", serr);
@@ -186,9 +191,7 @@ fn print_rdm_diagnostics(
     for p in 0..gamma3.n {
         for q in 0..gamma3.n {
             for r in 0..gamma3.n {
-                let i = (((((p * gamma3.n + q) * gamma3.n + r) * gamma3.n + p)
-                    * gamma3.n
-                    + q)
+                let i = (((((p * gamma3.n + q) * gamma3.n + r) * gamma3.n + p) * gamma3.n + q)
                     * gamma3.n)
                     + r;
                 tr3a += gamma3.data[i];
@@ -201,8 +204,7 @@ fn print_rdm_diagnostics(
         for q in 0..gamma4.n {
             for r in 0..gamma4.n {
                 for s in 0..gamma4.n {
-                    let i = (((((((p * gamma4.n + q) * gamma4.n + r) * gamma4.n + s)
-                        * gamma4.n
+                    let i = (((((((p * gamma4.n + q) * gamma4.n + r) * gamma4.n + s) * gamma4.n
                         + p)
                         * gamma4.n
                         + q)
@@ -237,8 +239,7 @@ fn print_rdm_diagnostics(
                 for s in 0..n {
                     let mut lhs = 0.0;
                     for t in 0..n {
-                        let i = (((((p * gamma3.n + q) * gamma3.n + t) * gamma3.n + r)
-                            * gamma3.n
+                        let i = (((((p * gamma3.n + q) * gamma3.n + t) * gamma3.n + r) * gamma3.n
                             + s)
                             * gamma3.n)
                             + t;
@@ -252,8 +253,7 @@ fn print_rdm_diagnostics(
                     let g2i = (((pp * gamma2.n + qq) * gamma2.n + rr) * gamma2.n) + ss;
                     let rhs = (nact - 2.0) * gamma2.data[g2i];
 
-                    g3_active_contract_err =
-                        f64::max(g3_active_contract_err, (lhs - rhs).abs());
+                    g3_active_contract_err = f64::max(g3_active_contract_err, (lhs - rhs).abs());
                 }
             }
         }
@@ -268,8 +268,7 @@ fn print_rdm_diagnostics(
                         for u in 0..n {
                             let mut lhs = 0.0;
                             for v in 0..n {
-                                let i = (((((((p * gamma4.n + q) * gamma4.n + r)
-                                    * gamma4.n
+                                let i = (((((((p * gamma4.n + q) * gamma4.n + r) * gamma4.n
                                     + v)
                                     * gamma4.n
                                     + s)
@@ -282,9 +281,7 @@ fn print_rdm_diagnostics(
                                 lhs += gamma4.data[i];
                             }
 
-                            let g3i = (((((p * gamma3.n + q) * gamma3.n + r)
-                                * gamma3.n
-                                + s)
+                            let g3i = (((((p * gamma3.n + q) * gamma3.n + r) * gamma3.n + s)
                                 * gamma3.n
                                 + t)
                                 * gamma3.n)
@@ -388,10 +385,7 @@ fn print_cumulant_diagnostics(
 
                     let refv = gamma2.data[g2i] - g1pr * g1qs + 0.5 * g1ps * g1qr;
 
-                    l2err = f64::max(
-                        l2err,
-                        (lambda.lambda2.get(&[p, q], &[r, s]) - refv).abs(),
-                    );
+                    l2err = f64::max(l2err, (lambda.lambda2.get(&[p, q], &[r, s]) - refv).abs());
                 }
             }
         }
@@ -400,21 +394,44 @@ fn print_cumulant_diagnostics(
     println!("{}", "=".repeat(100));
     println!("NOCI spin-free cumulant diagnostics");
     println!("Max Lambda1 - active Gamma1 error: {:.6e}", l1err);
-    println!("Max Lambda2 explicit spin-free formula error: {:.6e}", l2err);
+    println!(
+        "Max Lambda2 explicit spin-free formula error: {:.6e}",
+        l2err
+    );
     println!(
         "Max |Lambda1|: {:.6e}",
-        lambda.lambda1.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
+        lambda
+            .lambda1
+            .data
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0, f64::max)
     );
     println!(
         "Max |Lambda2|: {:.6e}",
-        lambda.lambda2.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
+        lambda
+            .lambda2
+            .data
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0, f64::max)
     );
     println!(
         "Max |Lambda3|: {:.6e}",
-        lambda.lambda3.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
+        lambda
+            .lambda3
+            .data
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0, f64::max)
     );
     println!(
         "Max |Lambda4|: {:.6e}",
-        lambda.lambda4.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
+        lambda
+            .lambda4
+            .data
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0, f64::max)
     );
 }

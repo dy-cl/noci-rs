@@ -6,7 +6,12 @@
 /// # Returns:
 /// - `Vec<Vec<Vec<usize>>>`: Unique set partitions.
 pub(super) fn set_partitions(n: usize) -> Vec<Vec<Vec<usize>>> {
-    fn rec(i: usize, n: usize, current: &mut Vec<Vec<usize>>, out: &mut Vec<Vec<Vec<usize>>>) {
+    fn rec(
+        i: usize,
+        n: usize,
+        current: &mut Vec<Vec<usize>>,
+        out: &mut Vec<Vec<Vec<usize>>>,
+    ) {
         if i == n {
             out.push(current.clone());
             return;
@@ -80,7 +85,11 @@ pub(super) fn permutation_cycles(permutation: &[usize]) -> usize {
 /// - `n`: Extent of each slot.
 /// # Returns:
 /// - `Vec<usize>`: Decoded tensor indices.
-pub(super) fn decode_index(mut index: usize, rank: usize, n: usize) -> Vec<usize> {
+pub(super) fn decode_index(
+    mut index: usize,
+    rank: usize,
+    n: usize,
+) -> Vec<usize> {
     let mut out = vec![0; rank];
 
     for i in (0..rank).rev() {

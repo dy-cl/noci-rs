@@ -50,8 +50,15 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `n`: Number of active orbitals.
     /// # Returns:
     /// - `CumulantTensor<T>`: Zero-filled cumulant tensor.
-    fn zeros(rank: usize, n: usize) -> Self {
-        Self { _rank: rank, n, data: vec![<T as From<f64>>::from(0.0); n.pow((2 * rank) as u32)] }
+    fn zeros(
+        rank: usize,
+        n: usize,
+    ) -> Self {
+        Self {
+            _rank: rank,
+            n,
+            data: vec![<T as From<f64>>::from(0.0); n.pow((2 * rank) as u32)],
+        }
     }
 
     /// Return a cumulant element.
@@ -60,7 +67,11 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `lower`: Lower active-space indices.
     /// # Returns:
     /// - `T`: Tensor element.
-    pub(crate) fn get(&self, upper: &[usize], lower: &[usize]) -> T {
+    pub(crate) fn get(
+        &self,
+        upper: &[usize],
+        lower: &[usize],
+    ) -> T {
         self.data[self.index(upper, lower)]
     }
 
@@ -69,7 +80,12 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `upper`: Upper active-space indices.
     /// - `lower`: Lower active-space indices.
     /// - `value`: Tensor element.
-    fn set(&mut self, upper: &[usize], lower: &[usize], value: T) {
+    fn set(
+        &mut self,
+        upper: &[usize],
+        lower: &[usize],
+        value: T,
+    ) {
         let i = self.index(upper, lower);
         self.data[i] = value;
     }
@@ -80,7 +96,11 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `lower`: Lower active-space indices.
     /// # Returns:
     /// - `usize`: Flat tensor index.
-    fn index(&self, upper: &[usize], lower: &[usize]) -> usize {
+    fn index(
+        &self,
+        upper: &[usize],
+        lower: &[usize],
+    ) -> usize {
         let mut i = 0;
         for &p in upper.iter().chain(lower.iter()) {
             i = i * self.n + p;
@@ -169,7 +189,12 @@ pub(crate) fn cumulants<T: NOCIScalar>(
         &products4,
     );
 
-    Cumulants { lambda1, lambda2, lambda3, lambda4 }
+    Cumulants {
+        lambda1,
+        lambda2,
+        lambda3,
+        lambda4,
+    }
 }
 
 /// Build one active-space cumulant rank from the corresponding RDM.
@@ -208,7 +233,11 @@ where
             for block in product.blocks.iter() {
                 let block_rank = block.upper.len();
                 let block_upper = block.upper.iter().map(|&i| upper[i]).collect::<Vec<_>>();
-                let block_lower = block.lower.iter().map(|&i| lower_indices[i]).collect::<Vec<_>>();
+                let block_lower = block
+                    .lower
+                    .iter()
+                    .map(|&i| lower_indices[i])
+                    .collect::<Vec<_>>();
 
                 term *= lower[block_rank - 1].get(&block_upper, &block_lower);
             }

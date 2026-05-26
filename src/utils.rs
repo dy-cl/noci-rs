@@ -5,6 +5,8 @@ use ndarray::{Array2, Array4};
 use rand::Rng;
 use rand::rngs::StdRng;
 
+use crate::noci::NOCIScalar;
+
 /// Print a matrix.
 /// # Arguments:
 /// - `a`: Matrix to print.
@@ -60,8 +62,8 @@ pub fn print_array4(t: &Array4<f64>) {
 ///   `ref_indices`: indices of the reference states in the coefficient vector.
 /// # Returns
 /// - `()`: Prints wavefunction sparsity diagnostics to stdout.
-pub fn wavefunction_sparsity(
-    c: &[f64],
+pub fn wavefunction_sparsity<T: NOCIScalar>(
+    c: &[T],
     ref_indices: &[usize],
 ) {
     // Construct mask for the references.
@@ -73,14 +75,14 @@ pub fn wavefunction_sparsity(
     }
 
     // Exclude references from c.
-    let c_tail: Vec<f64> = c
+    let c_tail: Vec<T> = c
         .iter()
         .enumerate()
         .filter_map(|(i, &ci)| if ref_mask[i] { None } else { Some(ci) })
         .collect();
 
     // w_i = |c_i|^2.
-    let mut w: Vec<f64> = c_tail.iter().map(|&x| x * x).collect();
+    let mut w: Vec<f64> = c_tail.iter().map(|&x| x.abs() * x.abs()).collect();
     // \sum_i w_i = \sum_i |c_i|^2.
     let sum_w: f64 = w.iter().sum();
     // Sort weights by descending, i.e., from most to least important.
