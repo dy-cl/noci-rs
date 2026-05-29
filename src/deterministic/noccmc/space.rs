@@ -130,7 +130,6 @@ pub(crate) fn build_spaces(
         } else if occ.abs() <= virtual_tol {
             virtuals.push(p);
             class_of[p] = OrbitalClass::Virtual;
-            );
         }
     }
 
@@ -447,6 +446,7 @@ fn excitation_class(
             (OrbitalClass::Core, OrbitalClass::Virtual) => ExcitationClass::CToV,
             (OrbitalClass::Active, OrbitalClass::Active) => ExcitationClass::AToA,
             (OrbitalClass::Active, OrbitalClass::Virtual) => ExcitationClass::AToV,
+            _ => todo!(),
         },
         Excitation::Double { p, q, r, s } => match (
             spaces.class_of[r],
@@ -508,6 +508,7 @@ fn excitation_class(
                 OrbitalClass::Virtual,
                 OrbitalClass::Virtual,
             ) => ExcitationClass::AAToVV,
+            _ => todo!(),
         },
     }
 }
@@ -584,6 +585,7 @@ fn overlap_element(
         (ExcitationClass::CAToVA, ExcitationClass::CAToAV) => {
             overlap_ca_to_av_ca_to_va(right, left, spaces, gamma1, lambdas)
         }
+        _ => todo!(),
     }
 }
 
