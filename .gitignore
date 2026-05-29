@@ -8,6 +8,7 @@ tests/fixtures/**/data.h5
 .cargo/
 scaling*
 data.h5
+tools/wick/__pycache__/
 Cargo.lock
 .codex
 
