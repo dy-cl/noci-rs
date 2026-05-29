@@ -1,4 +1,6 @@
-// deterministic/noccmc.rs
+// deterministic/noccmc/mod.rs
+
+mod space;
 
 use mpi::topology::Communicator;
 use ndarray::Array1;
@@ -23,7 +25,7 @@ use crate::orbitals::{
 /// - `no`: NOCI natural orbital basis.
 /// - `world`: MPI communicator object.
 /// # Returns:
-/// - `()`: Builds and checks spin-free RDMs and cumulants in the NOCI natural orbital basis.
+/// - `()`: Builds and checks spin-free RDMs, cumulants, and the first weighted FOIS metric block.
 pub(crate) fn run_noccmc(
     post: &PostSCFData<'_, f64>,
     input: &Input,
@@ -37,9 +39,7 @@ pub(crate) fn run_noccmc(
         print_noci_natural_orbitals("NOCI natural orbitals", no);
     }
 
-    // Transform the NOCI basis using the natural NOCI orbitals.
     let nobasis = transform_noci_basis(post.noci_reference_basis, &no.c, &post.ao.s);
-    // Transform the AO data using the natural NOCI orbitals.
     let noao = transform_ao_data(post.ao, &no.c);
 
     let nowicks = if input.wicks.enabled {
@@ -95,6 +95,7 @@ pub(crate) fn run_noccmc(
         for i in 0..scheck.nrows() {
             scheck[(i, i)] -= 1.0;
         }
+
         let serr = scheck.iter().map(|x| x.abs()).fold(0.0, f64::max);
 
         let (h, s, _) = build_noci_hs(&nodata, nodata.basis, nodata.basis, true);
@@ -126,6 +127,19 @@ pub(crate) fn run_noccmc(
         print_misc_diagnostics(serr, e_coeff, evals[0], erdm);
         print_rdm_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
         print_cumulant_diagnostics(&gamma1, &gamma2, &lambdas, &no.active);
+
+        let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, 1.0e-6, 1.0e-6);
+        let excitations = space::build_excitations(&spaces);
+
+        space::print_space_diagnostics(&spaces, &excitations);
+        space::print_fois_metric_diagnostics(
+            &noao,
+            &gamma1,
+            &lambdas,
+            &spaces,
+            &excitations,
+            post.tol,
+        );
     }
 }
 
@@ -218,26 +232,28 @@ fn print_rdm_diagnostics(
         }
     }
 
-    let mut g2_contract_err = 0.0;
+    let mut g2_contract_err: f64 = 0.0;
     for p in 0..gamma1.n {
         for r in 0..gamma1.n {
             let mut lhs = 0.0;
+
             for q in 0..gamma1.n {
                 let i = (((p * gamma2.n + q) * gamma2.n + r) * gamma2.n) + q;
                 lhs += gamma2.data[i];
             }
 
             let rhs = (nelec - 1.0) * gamma1.data[p * gamma1.n + r];
-            g2_contract_err = f64::max(g2_contract_err, (lhs - rhs).abs());
+            g2_contract_err = g2_contract_err.max((lhs - rhs).abs());
         }
     }
 
-    let mut g3_active_contract_err = 0.0;
+    let mut g3_active_contract_err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {
                 for s in 0..n {
                     let mut lhs = 0.0;
+
                     for t in 0..n {
                         let i = (((((p * gamma3.n + q) * gamma3.n + t) * gamma3.n + r) * gamma3.n
                             + s)
@@ -253,13 +269,13 @@ fn print_rdm_diagnostics(
                     let g2i = (((pp * gamma2.n + qq) * gamma2.n + rr) * gamma2.n) + ss;
                     let rhs = (nact - 2.0) * gamma2.data[g2i];
 
-                    g3_active_contract_err = f64::max(g3_active_contract_err, (lhs - rhs).abs());
+                    g3_active_contract_err = g3_active_contract_err.max((lhs - rhs).abs());
                 }
             }
         }
     }
 
-    let mut g4_active_contract_err = 0.0;
+    let mut g4_active_contract_err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {
@@ -267,6 +283,7 @@ fn print_rdm_diagnostics(
                     for t in 0..n {
                         for u in 0..n {
                             let mut lhs = 0.0;
+
                             for v in 0..n {
                                 let i = (((((((p * gamma4.n + q) * gamma4.n + r) * gamma4.n
                                     + v)
@@ -288,8 +305,7 @@ fn print_rdm_diagnostics(
                                 + u;
                             let rhs = (nact - 3.0) * gamma3.data[g3i];
 
-                            g4_active_contract_err =
-                                f64::max(g4_active_contract_err, (lhs - rhs).abs());
+                            g4_active_contract_err = g4_active_contract_err.max((lhs - rhs).abs());
                         }
                     }
                 }
@@ -302,17 +318,17 @@ fn print_rdm_diagnostics(
     println!("Trace Gamma1: {:.10}", nelec);
     println!("Trace active Gamma1: {:.10}", nact);
     println!(
-        "Trace Gamma2: {:.10}    expected full N(N-1): {:.10}",
+        "Trace Gamma2: {:.10} expected full N(N-1): {:.10}",
         tr2,
         nelec * (nelec - 1.0)
     );
     println!(
-        "Trace active Gamma3: {:.10}    fixed-active estimate: {:.10}",
+        "Trace active Gamma3: {:.10} fixed-active estimate: {:.10}",
         tr3a,
         nact * (nact - 1.0) * (nact - 2.0)
     );
     println!(
-        "Trace active Gamma4: {:.10}    fixed-active estimate: {:.10}",
+        "Trace active Gamma4: {:.10} fixed-active estimate: {:.10}",
         tr4a,
         nact * (nact - 1.0) * (nact - 2.0) * (nact - 3.0)
     );
@@ -359,15 +375,15 @@ fn print_cumulant_diagnostics(
 ) {
     let n = active.len();
 
-    let mut l1err = 0.0;
+    let mut l1err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
             let refv = gamma1.data[active[p] * gamma1.n + active[q]];
-            l1err = f64::max(l1err, (lambda.lambda1.get(&[p], &[q]) - refv).abs());
+            l1err = l1err.max((lambda.lambda1.get(&[p], &[q]) - refv).abs());
         }
     }
 
-    let mut l2err = 0.0;
+    let mut l2err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {
@@ -384,8 +400,7 @@ fn print_cumulant_diagnostics(
                     let g1qr = gamma1.data[qq * gamma1.n + rr];
 
                     let refv = gamma2.data[g2i] - g1pr * g1qs + 0.5 * g1ps * g1qr;
-
-                    l2err = f64::max(l2err, (lambda.lambda2.get(&[p, q], &[r, s]) - refv).abs());
+                    l2err = l2err.max((lambda.lambda2.get(&[p, q], &[r, s]) - refv).abs());
                 }
             }
         }

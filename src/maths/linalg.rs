@@ -112,6 +112,46 @@ pub fn general_evp<T: StateScalar>(
     (epsilon, c)
 }
 
+/// Solve a symmetric positive-semidefinite linear system by eigenvalue projection.
+///
+/// This computes the minimum-norm pseudoinverse solution `x = A^+ b` by
+/// discarding eigenvalues below `tol`.
+///
+/// # Arguments:
+/// - `a`: Real symmetric positive-semidefinite matrix.
+/// - `b`: Right-hand-side vector.
+/// - `tol`: Eigenvalue cutoff for the pseudoinverse.
+///
+/// # Returns:
+/// - `Array1<f64>`: Projected pseudoinverse solution.
+pub fn solve_pseudoinverse(
+    a: &Array2<f64>,
+    b: &Array1<f64>,
+    tol: f64,
+) -> Array1<f64> {
+    let (evals, evecs) = a
+        .clone()
+        .eigh(UPLO::Lower)
+        .expect("PSD pseudoinverse diagonalisation failed");
+
+    let mut x = Array1::zeros(b.len());
+
+    for k in 0..evals.len() {
+        if evals[k] <= tol {
+            continue;
+        }
+
+        let col = evecs.column(k);
+        let coeff = col.dot(b) / evals[k];
+
+        for i in 0..x.len() {
+            x[i] += col[i] * coeff;
+        }
+    }
+
+    x
+}
+
 /// Diagonalise a complex-symmetric matrix and transpose-normalise eigenvectors.
 /// This is for holomorphic SCF blocks, not for Hermitian NOCI matrices.
 /// # Arguments:
