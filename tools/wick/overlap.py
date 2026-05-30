@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 
-from symbols import Expr, mul
+from symbols import Expr, Space, mul
 from generators import tau1, tau2
 from wick import expectation
 from cumulants import rewriteGammaToLambda
+from gno import gnoOverlapBlock
 from latex import latexEquation
 from rust import rustFunction
 from classes import (
@@ -20,8 +21,7 @@ from classes import (
 
 
 def excitationExpr(spec: SingleSpec | DoubleSpec) -> Expr:
-    """Build the raw GNO excitation expression for a spec."""
-
+    """Build the raw expanded GNO excitation expression for a spec."""
     if isinstance(spec, SingleSpec):
         return tau1(
             spec.create,
@@ -38,9 +38,9 @@ def excitationExpr(spec: SingleSpec | DoubleSpec) -> Expr:
 
     raise TypeError(f"Unsupported excitation spec {type(spec)}")
 
+
 def gammaSummary(expr: Expr) -> str:
     """Return a summary of unresolved Gamma tensors."""
-
     counts = {}
 
     for termIn in expr:
@@ -52,7 +52,6 @@ def gammaSummary(expr: Expr) -> str:
                 tuple(i.space.value for i in tensorIn.upper),
                 tuple(i.space.value for i in tensorIn.lower),
             )
-
             key = (tensorIn.name, spaces)
             counts[key] = counts.get(key, 0) + 1
 
@@ -66,18 +65,9 @@ def gammaSummary(expr: Expr) -> str:
 
     return "\n".join(lines)
 
+
 def adjointExcitationExpr(spec: SingleSpec | DoubleSpec) -> Expr:
-    """Build the daggered GNO excitation expression for a raw spec.
-
-    For singles:
-
-        (tau^p_q)^dagger = tau^q_p
-
-    For doubles:
-
-        (tau^{pq}_{rs})^dagger = tau^{rs}_{pq}
-    """
-
+    """Build the daggered expanded GNO excitation expression for a raw spec."""
     if isinstance(spec, SingleSpec):
         return tau1(
             spec.annihilate,
@@ -94,14 +84,9 @@ def adjointExcitationExpr(spec: SingleSpec | DoubleSpec) -> Expr:
 
     raise TypeError(f"Unsupported excitation spec {type(spec)}")
 
+
 def rawOverlapExpr(block: OverlapBlock) -> Expr:
-    """Generate the unreduced overlap expression for a block.
-
-    Computes:
-
-        <Phi | tau_left^dagger tau_right | Phi>
-    """
-
+    """Generate the unreduced expanded Wick-route overlap expression."""
     raw = mul(
         adjointExcitationExpr(block.left),
         excitationExpr(block.right),
@@ -110,20 +95,88 @@ def rawOverlapExpr(block: OverlapBlock) -> Expr:
     return expectation(raw)
 
 
-def overlapExpr(block: OverlapBlock) -> Expr:
-    """Generate the reduced overlap expression for a block."""
+def specIndices(spec: SingleSpec | DoubleSpec) -> tuple:
+    """Return all indices appearing in an excitation spec."""
+    if isinstance(spec, SingleSpec):
+        return (
+            spec.create,
+            spec.annihilate,
+        )
 
-    return rewriteGammaToLambda(
-        rawOverlapExpr(block)
+    return (
+        spec.create1,
+        spec.create2,
+        spec.annihilate1,
+        spec.annihilate2,
     )
+
+
+def blockIndices(block: OverlapBlock) -> tuple:
+    """Return all orbital indices appearing in a block."""
+    return specIndices(block.left) + specIndices(block.right)
+
+
+def allBlockIndicesActive(block: OverlapBlock) -> bool:
+    """Return True if every index in a block is active."""
+    return all(
+        index.space == Space.ACTIVE
+        for index in blockIndices(block)
+    )
+
+
+def overlapExpr(block: OverlapBlock) -> Expr:
+    """Generate the reduced overlap expression for a block.
+
+    All-active blocks still use the older Gamma-to-Lambda route because that
+    route contains the validated Lambda3 spin-free reconstruction. Mixed C/A/V
+    blocks use the grouped GNO evaluator, which keeps normal-order group
+    boundaries and applies generalized Wick algebra directly.
+    """
+    if allBlockIndicesActive(block):
+        return rewriteGammaToLambda(
+            rawOverlapExpr(block)
+        )
+
+    return gnoOverlapBlock(block)
+
 
 def blockLhs(block: OverlapBlock) -> str:
     """Return a simple LaTeX left-hand side for a block."""
-
     return block.name
+
+
+def termOriginLabel(termIn) -> str:
+    """Return a compact label for a raw overlap term."""
+    gens = " ".join(
+        f"E({g.upper.name},{g.lower.name})"
+        for g in termIn.generators
+    )
+    tensors = " ".join(
+        f"{t.name}({''.join(i.name for i in t.upper)};{''.join(i.name for i in t.lower)})"
+        for t in termIn.tensors
+    )
+    deltas = " ".join(
+        f"d({d.left.name},{d.right.name})"
+        for d in termIn.deltas
+    )
+
+    return f"coeff={termIn.coeff} deltas=[{deltas}] tensors=[{tensors}] gens=[{gens}]"
+
+
+def printRawOverlapTerms(block: OverlapBlock) -> str:
+    """Return raw Wick-route terms for debugging algebra rewrites."""
+    lines = []
+
+    for termIn in rawOverlapExpr(block):
+        lines.append(termOriginLabel(termIn))
+
+    return "\n".join(lines)
+
 
 def emitBlock(block: OverlapBlock, mode: str) -> str:
     """Emit a block in the requested format."""
+    if mode == "raw-terms":
+        return printRawOverlapTerms(block)
 
     if mode == "raw-latex":
         return latexEquation(
@@ -154,28 +207,29 @@ def emitBlock(block: OverlapBlock, mode: str) -> str:
     if mode == "expr":
         return str(expr)
 
+    raise ValueError(f"Unsupported emit mode {mode}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description = "Generate spin-free overlap expressions."
     )
-
     parser.add_argument(
         "--block",
         choices = availableBlocks(),
         required = True,
         help = "Overlap block to generate.",
     )
-
     parser.add_argument(
         "--emit",
-        choices = ["latex", "rust", "expr", "raw-latex", "raw-expr", "raw-gammas"],
+        choices = ["latex", "rust", "expr", "raw-latex", "raw-expr", "raw-gammas", "raw-terms"],
         default = "latex",
         help = "Output format.",
     )
 
     args = parser.parse_args()
-
     block = blockByName(args.block)
+
     print(emitBlock(block, args.emit))
 
 
