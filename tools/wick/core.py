@@ -808,7 +808,7 @@ class Ref:
         """Active connected cumulant.
 
         Notation:
-            active \kappa -> spin-orbital cumulant -> spin-free cumulant
+            active \kappa -> spin-orbital RDM/cumulant -> spin-free tensor
 
         Examples:
             \kappa(a^\dagger_{u\alpha}, a_{v\alpha})
@@ -817,21 +817,32 @@ class Ref:
             ->
             (1/2) \Gamma^u_v
 
-            \kappa(a^\dagger_{u\alpha} a^\dagger_{x\beta} a_{w\beta} a_{v\alpha})
+            \kappa(a_{u\alpha}, a^\dagger_{v\alpha})
             =
-            lambda^{u_\alpha x_\beta}_{v_\alpha w_\beta}
+            eta^{v_\alpha}_{u\alpha}
             ->
-            spin-free \Lambda_2 combination
-
-            \kappa(a^\dagger_{p\sigma_1} a^\dagger_{r\sigma_2}
-                   a^\dagger_{t\sigma_3} a^\dagger_{v\sigma_4}
-                   a_{w\sigma_4} a_{u\sigma_3} a_{s\sigma_2} a_{q\sigma_1})
-            =
-            lambda^{p\sigma_1 r\sigma_2 t\sigma_3 v\sigma_4}
-                  _{q\sigma_1 s\sigma_2 u\sigma_3 w\sigma_4}
-            ->
-            spin-free \Lambda_4 combination
+            (1/2) \Theta^v_u
         """
+        if len(ops) == 2:
+            left, right = ops
+
+            if left.spin != right.spin:
+                return zero()
+
+            if left.kind == "create" and right.kind == "annihilate":
+                return scale(
+                    tensor("Gamma1", (left.idx,), (right.idx,)),
+                    Fraction(1, 2),
+                )
+
+            if left.kind == "annihilate" and right.kind == "create":
+                return scale(
+                    tensor("Theta", (right.idx,), (left.idx,)),
+                    Fraction(1, 2),
+                )
+
+            return zero()
+
         normal = self.normalOrder(ops)
 
         if normal is None:

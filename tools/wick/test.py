@@ -9,8 +9,119 @@ def C(name: str) -> Idx:
 def V(name: str) -> Idx:
     return Idx(name, Space.VIRTUAL)
 
+def G(p: Idx, q: Idx) -> Expr:
+    return tensor("Gamma1", (p,), (q,))
+
+def T(p: Idx, q: Idx) -> Expr:
+    return tensor("Theta", (p,), (q,))
+
 def L2(p: Idx, q: Idx, r: Idx, s: Idx) -> Expr:
     return tensor("Lambda2", (p, q), (r, s))
+
+def assertEq(got, want, label: str) -> None:
+    if got != want:
+        print(f"===== {label} got =====")
+        print(got)
+        print(f"===== {label} want =====")
+        print(want)
+        raise SystemExit(1)
+
+def checkCar() -> None:
+    u = A("u")
+    v = A("v")
+
+    assertEq(
+        anticommutator(
+            Op("annihilate", u, ALPHA, 0),
+            Op("create", v, ALPHA, 1),
+        ),
+        delta(u, v),
+        "CAR same spin",
+    )
+
+    assertEq(
+        anticommutator(
+            Op("annihilate", u, ALPHA, 0),
+            Op("create", v, BETA, 1),
+        ),
+        zero(),
+        "CAR opposite spin",
+    )
+
+def checkFrozenReference() -> None:
+    ref = Ref()
+    i = C("i")
+    j = C("j")
+    a = V("a")
+    b = V("b")
+
+    assertEq(
+        ref.frozenPair(
+            Op("create", i, ALPHA, 0),
+            Op("annihilate", j, ALPHA, 1),
+        ),
+        delta(i, j),
+        "core occupied pair",
+    )
+
+    assertEq(
+        ref.frozenPair(
+            Op("annihilate", a, ALPHA, 0),
+            Op("create", b, ALPHA, 1),
+        ),
+        delta(a, b),
+        "virtual empty pair",
+    )
+
+def checkSpinExpansion() -> None:
+    i = C("i")
+    j = C("j")
+    u = A("u")
+    v = A("v")
+
+    assertEq(
+        len(groupE1(u, v, 0).strings),
+        2,
+        "E1 spin expansion length",
+    )
+
+    assertEq(
+        len(groupE2(u, v, i, j, 0).strings),
+        4,
+        "E2 spin expansion length",
+    )
+
+def checkActiveOneBody() -> None:
+    ref = Ref()
+    u = A("u")
+    v = A("v")
+
+    assertEq(
+        ref.kappa((
+            Op("create", u, ALPHA, 0),
+            Op("annihilate", v, ALPHA, 1),
+        )),
+        scale(G(u, v), Fraction(1, 2)),
+        "active particle RDM alpha",
+    )
+
+    assertEq(
+        ref.kappa((
+            Op("annihilate", u, ALPHA, 0),
+            Op("create", v, ALPHA, 1),
+        )),
+        scale(T(v, u), Fraction(1, 2)),
+        "active hole RDM alpha",
+    )
+
+    assertEq(
+        ref.kappa((
+            Op("annihilate", u, ALPHA, 0),
+            Op("create", v, BETA, 1),
+        )),
+        zero(),
+        "active hole RDM opposite spin",
+    )
 
 def checkSpinReplacement() -> None:
     p = A("p")
@@ -26,7 +137,7 @@ def checkSpinReplacement() -> None:
             (ALPHA,),
             (ALPHA,),
         ),
-        scale(tensor("Gamma1", (p,), (r,)), Fraction(1, 2)),
+        scale(G(p, r), Fraction(1, 2)),
         "Gamma1 alpha alpha",
     )
 
@@ -90,7 +201,6 @@ def checkSpinReplacement() -> None:
 def checkWick() -> None:
     ref = Ref()
     wick = Wick(ref)
-
     u = A("u")
     v = A("v")
 
@@ -100,74 +210,34 @@ def checkWick() -> None:
         "single GNO group expectation",
     )
 
-def assertEq(got, want, label: str) -> None:
-    if got != want:
-        print(f"===== {label} got =====")
-        print(got)
-        print(f"===== {label} want =====")
-        print(want)
-        raise SystemExit(1)
-
-def main() -> None:
+def checkC1() -> None:
+    ref = Ref()
+    wick = Wick(ref)
     i = C("i")
     j = C("j")
-    a = V("a")
-    b = V("b")
     u = A("u")
     v = A("v")
 
     assertEq(
-        anticommutator(
-            Op("annihilate", u, ALPHA, 0),
-            Op("create", v, ALPHA, 1),
+        wick.eval(Product((
+            tau1(i, u, 0),
+            tau1(v, j, 1),
+        ))),
+        mul(
+            delta(i, j),
+            T(v, u),
         ),
-        delta(u, v),
-        "CAR same spin",
+        "C1",
     )
 
-    assertEq(
-        anticommutator(
-            Op("annihilate", u, ALPHA, 0),
-            Op("create", v, BETA, 1),
-        ),
-        zero(),
-        "CAR opposite spin",
-    )
-
-    ref = Ref()
-
-    assertEq(
-        ref.frozenPair(
-            Op("create", i, ALPHA, 0),
-            Op("annihilate", j, ALPHA, 1),
-        ),
-        delta(i, j),
-        "core occupied pair",
-    )
-
-    assertEq(
-        ref.frozenPair(
-            Op("annihilate", a, ALPHA, 0),
-            Op("create", b, ALPHA, 1),
-        ),
-        delta(a, b),
-        "virtual empty pair",
-    )
-
-    assertEq(
-        len(groupE1(u, v, 0).strings),
-        2,
-        "E1 spin expansion length",
-    )
-
-    assertEq(
-        len(groupE2(u, v, i, j, 0).strings),
-        4,
-        "E2 spin expansion length",
-    )
-
+def main() -> None:
+    checkCar()
+    checkFrozenReference()
+    checkSpinExpansion()
+    checkActiveOneBody()
     checkSpinReplacement()
     checkWick()
+    checkC1()
     print("Tests pass.")
 
 if __name__ == "__main__":
