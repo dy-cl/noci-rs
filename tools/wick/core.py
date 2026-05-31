@@ -640,7 +640,7 @@ class Spin:
             )
 
         return out
-
+    
     @staticmethod
     def coeffs(
         rank: int,
@@ -670,7 +670,36 @@ class Spin:
                 =
                 (1/6)(2 \Lambda^{pq}_{rs} + \Lambda^{pq}_{sr})
         """
-        raise NotImplementedError("spin projection coefficients go here")
+        if rank == 2:
+            if len(upperSpins) != 2 or len(lowerSpins) != 2:
+                raise ValueError("rank-2 spin replacement requires two upper and two lower spins")
+
+            sameUpper = upperSpins[0] == upperSpins[1]
+
+            if sameUpper:
+                if lowerSpins != upperSpins:
+                    return ()
+
+                return (
+                    ((0, 1), Fraction(1, 6)),
+                    ((1, 0), Fraction(-1, 6)),
+                )
+
+            if lowerSpins == upperSpins:
+                return (
+                    ((0, 1), Fraction(2, 6)),
+                    ((1, 0), Fraction(1, 6)),
+                )
+
+            if lowerSpins == (upperSpins[1], upperSpins[0]):
+                return (
+                    ((0, 1), Fraction(-1, 6)),
+                    ((1, 0), Fraction(-2, 6)),
+                )
+
+            return ()
+
+        raise NotImplementedError(f"rank {rank} spin replacement coefficients are not implemented")
 
 class Ref:
     """Reference-state connected cumulant rules.

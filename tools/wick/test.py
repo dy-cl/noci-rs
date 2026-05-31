@@ -9,6 +9,97 @@ def C(name: str) -> Idx:
 def V(name: str) -> Idx:
     return Idx(name, Space.VIRTUAL)
 
+def L2(p: Idx, q: Idx, r: Idx, s: Idx) -> Expr:
+    return tensor("Lambda2", (p, q), (r, s))
+
+def checkSpinReplacement() -> None:
+    p = A("p")
+    q = A("q")
+    r = A("r")
+    s = A("s")
+
+    assertEq(
+        Spin.projectCumulant(
+            1,
+            (p,),
+            (r,),
+            (ALPHA,),
+            (ALPHA,),
+        ),
+        scale(tensor("Gamma1", (p,), (r,)), Fraction(1, 2)),
+        "Gamma1 alpha alpha",
+    )
+
+    assertEq(
+        Spin.projectCumulant(
+            1,
+            (p,),
+            (r,),
+            (ALPHA,),
+            (BETA,),
+        ),
+        zero(),
+        "Gamma1 alpha beta",
+    )
+
+    assertEq(
+        Spin.projectCumulant(
+            2,
+            (p, q),
+            (r, s),
+            (ALPHA, ALPHA),
+            (ALPHA, ALPHA),
+        ),
+        add(
+            scale(L2(p, q, r, s), Fraction(1, 6)),
+            scale(L2(p, q, s, r), Fraction(-1, 6)),
+        ),
+        "Lambda2 alpha alpha / alpha alpha",
+    )
+
+    assertEq(
+        Spin.projectCumulant(
+            2,
+            (p, q),
+            (r, s),
+            (ALPHA, BETA),
+            (ALPHA, BETA),
+        ),
+        add(
+            scale(L2(p, q, r, s), Fraction(2, 6)),
+            scale(L2(p, q, s, r), Fraction(1, 6)),
+        ),
+        "Lambda2 alpha beta / alpha beta",
+    )
+
+    assertEq(
+        Spin.projectCumulant(
+            2,
+            (p, q),
+            (r, s),
+            (ALPHA, BETA),
+            (BETA, ALPHA),
+        ),
+        add(
+            scale(L2(p, q, r, s), Fraction(-1, 6)),
+            scale(L2(p, q, s, r), Fraction(-2, 6)),
+        ),
+        "Lambda2 alpha beta / beta alpha",
+    )
+
+def checkWick() -> None:
+    ref = Ref()
+    wick = Wick(ref)
+
+    u = A("u")
+    v = A("v")
+
+    assertEq(
+        wick.eval(Product((tau1(u, v, 0),))),
+        zero(),
+        "single GNO group expectation",
+    )
+
 def assertEq(got, want, label: str) -> None:
     if got != want:
         print(f"===== {label} got =====")
@@ -75,6 +166,8 @@ def main() -> None:
         "E2 spin expansion length",
     )
 
+    checkSpinReplacement()
+    checkWick()
     print("Tests pass.")
 
 if __name__ == "__main__":
