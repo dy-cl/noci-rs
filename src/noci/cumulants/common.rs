@@ -37,7 +37,7 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `n`: Number of active orbitals.
     /// # Returns:
     /// - `CumulantTensor<T>`: Zero-filled cumulant tensor.
-    fn zeros(
+    pub(super) fn zeros(
         rank: usize,
         n: usize,
     ) -> Self {
@@ -67,7 +67,7 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `upper`: Upper active-space indices.
     /// - `lower`: Lower active-space indices.
     /// - `value`: Tensor element.
-    fn set(
+    pub(super) fn set(
         &mut self,
         upper: &[usize],
         lower: &[usize],

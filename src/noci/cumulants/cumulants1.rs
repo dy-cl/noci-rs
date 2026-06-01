@@ -1,6 +1,6 @@
 // noci/cumulants/cumulants1.rs
 
-use super::common::{CumulantTensor, build_cumulant};
+use super::common::CumulantTensor;
 use crate::noci::rdm::RDM1;
 use crate::noci::types::NOCIScalar;
 
@@ -17,17 +17,16 @@ pub(crate) fn cumulants1<T: NOCIScalar>(
     active: &[usize],
 ) -> Cumulant1<T> {
     let n = active.len();
+    let mut lambda = CumulantTensor::zeros(1, n);
 
-    build_cumulant(
-        1,
-        n,
-        |upper, lower| {
-            let p = active[upper[0]];
-            let q = active[lower[0]];
+    for p in 0..n {
+        for q in 0..n {
+            let pp = active[p];
+            let qq = active[q];
 
-            gamma1.data[p * gamma1.n + q]
-        },
-        &[],
-        &[],
-    )
+            lambda.set(&[p], &[q], gamma1.data[pp * gamma1.n + qq]);
+        }
+    }
+
+    lambda
 }

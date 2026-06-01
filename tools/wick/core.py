@@ -1241,18 +1241,21 @@ def groupE2(p: Idx, q: Idx, r: Idx, s: Idx, groupId: int) -> Group:
 
         If used as a GNO group, this is \{E^{ua}_{iv}\}.
     """
-    return Group(
-        tuple(
-            (
+    strings = []
+
+    for sigma in SPINS:
+        for tau in SPINS:
+            ops = (
                 Op("create", p, sigma, groupId),
                 Op("create", q, tau, groupId),
                 Op("annihilate", s, tau, groupId),
                 Op("annihilate", r, sigma, groupId),
             )
-            for sigma in SPINS
-            for tau in SPINS
-        )
-    )
+
+            if len(set(ops)) == len(ops):
+                strings.append(ops)
+
+    return Group(tuple(strings))
 
 def tau1(create: Idx, annihilate: Idx, groupId: int) -> Group:
     """One-body GNO excitation.

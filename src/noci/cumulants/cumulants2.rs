@@ -1,6 +1,6 @@
 // noci/cumulants/cumulants2.rs
 
-use super::common::{CumulantTensor, build_cumulant, disconnected};
+use super::common::CumulantTensor;
 use super::cumulants1::Cumulant1;
 use crate::noci::rdm::RDM2;
 use crate::noci::types::NOCIScalar;
@@ -20,20 +20,28 @@ pub(crate) fn cumulants2<T: NOCIScalar>(
     active: &[usize],
 ) -> Cumulant2<T> {
     let n = active.len();
-    let products = disconnected(2);
+    let half = <T as From<f64>>::from(0.5);
+    let mut lambda = CumulantTensor::zeros(2, n);
 
-    build_cumulant(
-        2,
-        n,
-        |upper, lower| {
-            let p = active[upper[0]];
-            let q = active[upper[1]];
-            let r = active[lower[0]];
-            let s = active[lower[1]];
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for s in 0..n {
+                    let pp = active[p];
+                    let qq = active[q];
+                    let rr = active[r];
+                    let ss = active[s];
 
-            gamma2.data[(((p * gamma2.n + q) * gamma2.n + r) * gamma2.n) + s]
-        },
-        &[lambda1],
-        &products,
-    )
+                    let g2 = gamma2.data[(((pp * gamma2.n + qq) * gamma2.n + rr) * gamma2.n) + ss];
+
+                    let value = g2 - lambda1.get(&[p], &[r]) * lambda1.get(&[q], &[s])
+                        + half * lambda1.get(&[p], &[s]) * lambda1.get(&[q], &[r]);
+
+                    lambda.set(&[p, q], &[r, s], value);
+                }
+            }
+        }
+    }
+
+    lambda
 }

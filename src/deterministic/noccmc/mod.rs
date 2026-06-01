@@ -1,5 +1,6 @@
 // deterministic/noccmc/mod.rs
 
+mod overlap;
 mod space;
 
 use mpi::topology::Communicator;
@@ -126,7 +127,7 @@ pub(crate) fn run_noccmc(
 
         print_misc_diagnostics(serr, e_coeff, evals[0], erdm);
         print_rdm_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
-        print_cumulant_diagnostics(&gamma1, &gamma2, &lambdas, &no.active);
+        print_cumulant_diagnostics(&gamma1, &gamma2, &gamma3, &lambdas, &no.active);
 
         let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, 1.0e-6, 1.0e-6);
         let excitations = space::build_excitations(&spaces);
@@ -370,6 +371,7 @@ fn print_rdm_diagnostics(
 fn print_cumulant_diagnostics(
     gamma1: &RDM1<f64>,
     gamma2: &RDM2<f64>,
+    gamma3: &RDM3<f64>,
     lambda: &Cumulants<f64>,
     active: &[usize],
 ) {
@@ -406,13 +408,81 @@ fn print_cumulant_diagnostics(
         }
     }
 
+    let mut l3err: f64 = 0.0;
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for s in 0..n {
+                    for t in 0..n {
+                        for u in 0..n {
+                            let pp = active[p];
+                            let qq = active[q];
+                            let rr = active[r];
+                            let ss = active[s];
+                            let tt = active[t];
+                            let uu = active[u];
+
+                            let g3i = (((((p * gamma3.n + q) * gamma3.n + r) * gamma3.n + s)
+                                * gamma3.n
+                                + t)
+                                * gamma3.n)
+                                + u;
+
+                            let g1ps = gamma1.data[pp * gamma1.n + ss];
+                            let g1pt = gamma1.data[pp * gamma1.n + tt];
+                            let g1pu = gamma1.data[pp * gamma1.n + uu];
+
+                            let g1qs = gamma1.data[qq * gamma1.n + ss];
+                            let g1qt = gamma1.data[qq * gamma1.n + tt];
+                            let g1qu = gamma1.data[qq * gamma1.n + uu];
+
+                            let g1rs = gamma1.data[rr * gamma1.n + ss];
+                            let g1rt = gamma1.data[rr * gamma1.n + tt];
+                            let g1ru = gamma1.data[rr * gamma1.n + uu];
+
+                            let disconnected = g1ps * g1qt * g1ru
+                                - 0.5 * g1ps * g1qu * g1rt
+                                - 0.5 * g1pt * g1qs * g1ru
+                                - 0.5 * g1pu * g1qt * g1rs
+                                + 0.25 * g1pt * g1qu * g1rs
+                                + 0.25 * g1pu * g1qs * g1rt
+                                + g1ps * lambda.lambda2.get(&[q, r], &[t, u])
+                                - 0.5 * g1pt * lambda.lambda2.get(&[q, r], &[s, u])
+                                - 0.5 * g1pu * lambda.lambda2.get(&[q, r], &[t, s])
+                                + g1qt * lambda.lambda2.get(&[p, r], &[s, u])
+                                - 0.5 * g1qs * lambda.lambda2.get(&[p, r], &[t, u])
+                                - 0.5 * g1qu * lambda.lambda2.get(&[p, r], &[s, t])
+                                + g1ru * lambda.lambda2.get(&[p, q], &[s, t])
+                                - 0.5 * g1rs * lambda.lambda2.get(&[p, q], &[u, t])
+                                - 0.5 * g1rt * lambda.lambda2.get(&[p, q], &[s, u]);
+
+                            let refv = gamma3.data[g3i] - disconnected;
+
+                            let stored = lambda.lambda3.get(&[p, q, r], &[s, t, u]);
+                            l3err += (stored - refv).abs();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     println!("{}", "=".repeat(100));
+
     println!("NOCI spin-free cumulant diagnostics");
+
     println!("Max Lambda1 - active Gamma1 error: {:.6e}", l1err);
+
     println!(
         "Max Lambda2 explicit spin-free formula error: {:.6e}",
         l2err
     );
+
+    println!(
+        "Max Lambda3 explicit spin-free formula error: {:.6e}",
+        l3err
+    );
+
     println!(
         "Max |Lambda1|: {:.6e}",
         lambda
