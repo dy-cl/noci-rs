@@ -1,22 +1,9 @@
-// noci/cumulants/cumulants.rs
+// noci/cumulants/common.rs
 
 use itertools::Itertools;
 
 use super::helpers::{decode_index, permutation_cycles, permutation_sign, set_partitions};
-use crate::noci::rdm::{RDM1, RDM2, RDM3, RDM4};
 use crate::noci::types::NOCIScalar;
-
-/// Spin-free cumulants through rank four.
-pub(crate) struct Cumulants<T: NOCIScalar> {
-    /// Active-space one-cumulant Λ[p, q].
-    pub lambda1: CumulantTensor<T>,
-    /// Active-space two-cumulant Λ[p, q, r, s].
-    pub lambda2: CumulantTensor<T>,
-    /// Active-space three-cumulant Λ[p, q, r, s, t, u].
-    pub lambda3: CumulantTensor<T>,
-    /// Active-space four-cumulant Λ[p, q, r, s, t, u, v, w].
-    pub lambda4: CumulantTensor<T>,
-}
 
 /// Active-space spin-free cumulant tensor stored in upper-then-lower index order.
 pub(crate) struct CumulantTensor<T: NOCIScalar> {
@@ -29,7 +16,7 @@ pub(crate) struct CumulantTensor<T: NOCIScalar> {
 }
 
 /// Disconnected product used in the cumulant recursion.
-struct Product {
+pub(super) struct Product {
     /// Spin-free permutation coefficient.
     coeff: f64,
     /// Cumulant factors in the product.
@@ -110,93 +97,6 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     }
 }
 
-/// Build spin-free cumulants from one- to four-body spin-free RDMs.
-/// # Arguments:
-/// - `gamma1`: Full-space spin-free one-body RDM.
-/// - `gamma2`: Full-space spin-free two-body RDM.
-/// - `gamma3`: Active-space spin-free three-body RDM.
-/// - `gamma4`: Active-space spin-free four-body RDM.
-/// - `active`: Active orbital indices used to build `gamma3` and `gamma4`.
-/// # Returns:
-/// - `Cumulants<T>`: Active-space spin-free cumulants through rank four.
-pub(crate) fn cumulants<T: NOCIScalar>(
-    gamma1: &RDM1<T>,
-    gamma2: &RDM2<T>,
-    gamma3: &RDM3<T>,
-    gamma4: &RDM4<T>,
-    active: &[usize],
-) -> Cumulants<T> {
-    let n = active.len();
-
-    let lambda1 = build_cumulant(
-        1,
-        n,
-        |upper, lower| {
-            let p = active[upper[0]];
-            let q = active[lower[0]];
-
-            gamma1.data[p * gamma1.n + q]
-        },
-        &[],
-        &[],
-    );
-
-    let products2 = disconnected(2);
-    let lambda2 = build_cumulant(
-        2,
-        n,
-        |upper, lower| {
-            let p = active[upper[0]];
-            let q = active[upper[1]];
-            let r = active[lower[0]];
-            let s = active[lower[1]];
-
-            gamma2.data[(((p * gamma2.n + q) * gamma2.n + r) * gamma2.n) + s]
-        },
-        &[&lambda1],
-        &products2,
-    );
-
-    let products3 = disconnected(3);
-    let lambda3 = build_cumulant(
-        3,
-        n,
-        |upper, lower| {
-            let i = upper
-                .iter()
-                .chain(lower.iter())
-                .fold(0, |acc, &p| acc * gamma3.n + p);
-
-            gamma3.data[i]
-        },
-        &[&lambda1, &lambda2],
-        &products3,
-    );
-
-    let products4 = disconnected(4);
-    let lambda4 = build_cumulant(
-        4,
-        n,
-        |upper, lower| {
-            let i = upper
-                .iter()
-                .chain(lower.iter())
-                .fold(0, |acc, &p| acc * gamma4.n + p);
-
-            gamma4.data[i]
-        },
-        &[&lambda1, &lambda2, &lambda3],
-        &products4,
-    );
-
-    Cumulants {
-        lambda1,
-        lambda2,
-        lambda3,
-        lambda4,
-    }
-}
-
 /// Build one active-space cumulant rank from the corresponding RDM.
 /// # Arguments:
 /// - `rank`: Cumulant rank.
@@ -206,7 +106,7 @@ pub(crate) fn cumulants<T: NOCIScalar>(
 /// - `products`: Disconnected products for this rank.
 /// # Returns:
 /// - `CumulantTensor<T>`: Active-space cumulant tensor.
-fn build_cumulant<T, F>(
+pub(super) fn build_cumulant<T, F>(
     rank: usize,
     n: usize,
     moment: F,
@@ -256,7 +156,7 @@ where
 /// - `rank`: Cumulant rank.
 /// # Returns:
 /// - `Vec<Product>`: Disconnected products.
-fn disconnected(rank: usize) -> Vec<Product> {
+pub(super) fn disconnected(rank: usize) -> Vec<Product> {
     let partitions = set_partitions(rank);
     let permutations = (0..rank).permutations(rank).collect::<Vec<_>>();
     let mut products = Vec::new();
