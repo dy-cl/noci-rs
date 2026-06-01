@@ -640,7 +640,7 @@ class Spin:
             )
 
         return out
-    
+
     @staticmethod
     def coeffs(
         rank: int,
@@ -650,56 +650,157 @@ class Spin:
         """Return lower-permutation spin-replacement coefficients.
 
         Notation:
-            lambda^{p_sigma q_tau ...}_{r_mu s_nu ...}
+            lambda^{p_1 sigma_1 ... p_k sigma_k}_{q_1 tau_1 ... q_k tau_k}
             =
-            sum_{\pi in S_k} c_\pi \Lambda^{pq...}_{\pi(rs...)}
+            sum_{\pi in S_k} c_\pi Lambda^{p_1...p_k}_{q_{\pi(1)}...q_{\pi(k)}}
 
         Examples:
-            rank = 2
-            upperSpins = ("alpha", "beta")
-            lowerSpins = ("alpha", "beta")
-
-            gives
-
-                c_id = 2/6
-                c_swap = 1/6
-
-            because
+            rank = 2 reproduces
 
                 lambda^{p_\alpha q_\beta}_{r_\alpha s_\beta}
                 =
-                (1/6)(2 \Lambda^{pq}_{rs} + \Lambda^{pq}_{sr})
+                (1/6)(2 Lambda^{pq}_{rs} + Lambda^{pq}_{sr})
+
+            rank = 3 gives one deterministic gauge representative for
+
+                lambda^{p_\sigma q_\tau r_\mu}_{s_\nu t_\rho u_\eta}
+                =
+                sum_{\pi in S_3} c_\pi Lambda^{pqr}_{\pi(stu)}
+
+        The rank-3 system is singular because the spin space has only two
+        spin functions. Free variables are set to zero, which fixes a gauge.
         """
-        if rank == 2:
-            if len(upperSpins) != 2 or len(lowerSpins) != 2:
-                raise ValueError("rank-2 spin replacement requires two upper and two lower spins")
+        if rank not in (2, 3, 4):
+            raise NotImplementedError(f"rank {rank} spin replacement coefficients are not implemented")
 
-            sameUpper = upperSpins[0] == upperSpins[1]
+        if len(upperSpins) != rank or len(lowerSpins) != rank:
+            raise ValueError("spin tuples do not match cumulant rank")
 
-            if sameUpper:
-                if lowerSpins != upperSpins:
-                    return ()
+        perms = tuple(permutations(range(rank)))
 
-                return (
-                    ((0, 1), Fraction(1, 6)),
-                    ((1, 0), Fraction(-1, 6)),
+        def invPerm(p: tuple[int, ...]) -> tuple[int, ...]:
+            out = [0] * len(p)
+
+            for i, x in enumerate(p):
+                out[x] = i
+
+            return tuple(out)
+
+        def compose(p: tuple[int, ...], q: tuple[int, ...]) -> tuple[int, ...]:
+            return tuple(p[q[i]] for i in range(len(p)))
+
+        def cycleCount(p: tuple[int, ...]) -> int:
+            seen = [False] * len(p)
+            cycles = 0
+
+            for i in range(len(p)):
+                if seen[i]:
+                    continue
+
+                cycles += 1
+                j = i
+
+                while not seen[j]:
+                    seen[j] = True
+                    j = p[j]
+
+            return cycles
+
+        def solveConsistent(mat: list[list[Fraction]], rhs: list[Fraction]) -> list[Fraction]:
+            nRows = len(mat)
+            nCols = len(mat[0])
+            aug = [row[:] + [rhs[i]] for i, row in enumerate(mat)]
+
+            pivotCols = []
+            row = 0
+
+            for col in range(nCols):
+                pivot = None
+
+                for r in range(row, nRows):
+                    if aug[r][col] != 0:
+                        pivot = r
+                        break
+
+                if pivot is None:
+                    continue
+
+                if pivot != row:
+                    aug[row], aug[pivot] = aug[pivot], aug[row]
+
+                scaleFactor = aug[row][col]
+                aug[row] = [x / scaleFactor for x in aug[row]]
+
+                for r in range(nRows):
+                    if r == row:
+                        continue
+
+                    factor = aug[r][col]
+
+                    if factor == 0:
+                        continue
+
+                    aug[r] = [
+                        aug[r][i] - factor * aug[row][i]
+                        for i in range(nCols + 1)
+                    ]
+
+                pivotCols.append(col)
+                row += 1
+
+                if row == nRows:
+                    break
+
+            for r in range(row, nRows):
+                if all(aug[r][c] == 0 for c in range(nCols)) and aug[r][-1] != 0:
+                    raise ValueError("inconsistent spin-projection system")
+
+            sol = [Fraction(0) for _ in range(nCols)]
+
+            for r, col in enumerate(pivotCols):
+                sol[col] = aug[r][-1]
+
+            return sol
+
+        gram = []
+
+        for p in perms:
+            row = []
+
+            for q in perms:
+                rel = compose(invPerm(p), q)
+                row.append(
+                    Fraction(
+                        permutationSign(p)
+                        * permutationSign(q)
+                        * (2 ** cycleCount(rel)),
+                        1,
+                    )
                 )
 
-            if lowerSpins == upperSpins:
-                return (
-                    ((0, 1), Fraction(2, 6)),
-                    ((1, 0), Fraction(1, 6)),
-                )
+            gram.append(row)
 
-            if lowerSpins == (upperSpins[1], upperSpins[0]):
-                return (
-                    ((0, 1), Fraction(-1, 6)),
-                    ((1, 0), Fraction(-2, 6)),
-                )
+        rhs = []
 
-            return ()
+        for p in perms:
+            allowed = all(
+                upperSpins[i] == lowerSpins[p[i]]
+                for i in range(rank)
+            )
 
-        raise NotImplementedError(f"rank {rank} spin replacement coefficients are not implemented")
+            rhs.append(
+                Fraction(permutationSign(p), 1)
+                if allowed
+                else Fraction(0)
+            )
+
+        sol = solveConsistent(gram, rhs)
+
+        return tuple(
+            (p, c)
+            for p, c in zip(perms, sol)
+            if c != 0
+        )
 
 class Ref:
     """Reference-state connected cumulant rules.
@@ -878,27 +979,24 @@ class Ref:
             a_{u\alpha} a^\dagger_{v\alpha}
             =
             \delta^u_v - a^\dagger_{v\alpha} a_{u\alpha}
-
-        Examples:
-            <a_{u\alpha} a^\dagger_{v\alpha}>
-            =
-            \delta^u_v - gamma^{v_\alpha}_{u_\alpha}
-
-            This is the source of active hole objects such as
-
-                \Theta^v_u = \delta^v_u - \Gamma^v_u
-
-            up to the spin-free convention used by the code.
         """
         creators = tuple(op for op in ops if op.kind == "create")
         annihilators = tuple(op for op in ops if op.kind == "annihilate")
-        ordered = creators + annihilators
 
-        if sorted(ordered) != sorted(ops):
+        if len(creators) + len(annihilators) != len(ops):
             return None
 
-        sequence = tuple(ordered.index(op) for op in ops)
-        sign = permutationSign(sequence)
+        inversions = 0
+
+        for i, left in enumerate(ops):
+            if left.kind != "annihilate":
+                continue
+
+            for right in ops[i + 1:]:
+                if right.kind == "create":
+                    inversions += 1
+
+        sign = -1 if inversions % 2 else 1
 
         return sign, creators, annihilators
 
