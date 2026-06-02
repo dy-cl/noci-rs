@@ -5,7 +5,6 @@ mod cumulants1;
 mod cumulants2;
 mod cumulants3;
 mod cumulants4;
-mod helpers;
 
 pub(crate) use self::cumulants1::{Cumulant1, cumulants1};
 pub(crate) use self::cumulants2::{Cumulant2, cumulants2};
