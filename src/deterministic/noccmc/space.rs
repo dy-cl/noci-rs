@@ -49,6 +49,8 @@ pub(crate) enum ExcitationClass {
     AAToAV,
     /// AA -> VV double excitation.
     AAToVV,
+    /// C -> V single excitation.
+    CToV,
 }
 
 /// Spin-free GNOCC excitation operator.
@@ -166,6 +168,7 @@ fn single_excitation_class(
         (OrbitalClass::Core, OrbitalClass::Active) => Some(ExcitationClass::CToA),
         (OrbitalClass::Active, OrbitalClass::Active) => Some(ExcitationClass::AToA),
         (OrbitalClass::Active, OrbitalClass::Virtual) => Some(ExcitationClass::AToV),
+        (OrbitalClass::Core, OrbitalClass::Virtual) => Some(ExcitationClass::CToV),
         _ => None,
     }
 }

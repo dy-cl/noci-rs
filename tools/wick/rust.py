@@ -146,6 +146,30 @@ BLOCKS = (
         ("w", "a", "i", "u"),
         ("b", "y", "j", "x"),
     ),
+    RustBlock(
+        "C17",
+        "overlap_c_to_v_c_to_v",
+        "CToV",
+        "CToV",
+        ("a", "i"),
+        ("b", "j"),
+    ),
+    RustBlock(
+        "C18",
+        "overlap_c_to_v_ca_to_av",
+        "CToV",
+        "CAToAV",
+        ("a", "i"),
+        ("x", "b", "j", "w"),
+    ),
+    RustBlock(
+        "C19",
+        "overlap_c_to_v_ca_to_va",
+        "CToV",
+        "CAToVA",
+        ("a", "i"),
+        ("b", "x", "j", "w"),
+    ),
 )
 
 def rustFunctionDoc(block: RustBlock) -> list[str]:

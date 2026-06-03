@@ -150,6 +150,21 @@ pub(crate) fn overlap_element(
         (ExcitationClass::CAToVA, ExcitationClass::CAToAV) => {
             overlap_ca_to_av_ca_to_va(right, left, spaces, gamma1, lambdas)
         }
+        (ExcitationClass::CToV, ExcitationClass::CToV) => {
+            overlap_c_to_v_c_to_v(left, right, spaces, gamma1, lambdas)
+        }
+        (ExcitationClass::CToV, ExcitationClass::CAToAV) => {
+            overlap_c_to_v_ca_to_av(left, right, spaces, gamma1, lambdas)
+        }
+        (ExcitationClass::CAToAV, ExcitationClass::CToV) => {
+            overlap_c_to_v_ca_to_av(right, left, spaces, gamma1, lambdas)
+        }
+        (ExcitationClass::CToV, ExcitationClass::CAToVA) => {
+            overlap_c_to_v_ca_to_va(left, right, spaces, gamma1, lambdas)
+        }
+        (ExcitationClass::CAToVA, ExcitationClass::CToV) => {
+            overlap_c_to_v_ca_to_va(right, left, spaces, gamma1, lambdas)
+        }
         _ => 0.0,
     }
 }
@@ -1190,5 +1205,75 @@ pub(crate) fn overlap_ca_to_av_ca_to_va(
             &[active(spaces, u), active(spaces, y)],
             &[active(spaces, w), active(spaces, x)],
         );
+    out
+}
+
+/// Evaluate generated Appendix-C overlap block `C17`.
+/// # Arguments:
+/// - `left`: Left excitation operator, daggered in the metric element.
+/// - `right`: Right excitation operator.
+/// - `spaces`: Core, active, and virtual orbital-space maps.
+/// - `gamma1`: Spin-free one-particle RDM.
+/// - `lambdas`: Spin-free active-space cumulants.
+/// # Returns:
+/// - `f64`: Raw FOIS overlap metric element.
+#[allow(unused_variables)]
+pub(crate) fn overlap_c_to_v_c_to_v(
+    left: Excitation,
+    right: Excitation,
+    spaces: &Spaces,
+    gamma1: &RDM1<f64>,
+    lambdas: &Cumulants<f64>,
+) -> f64 {
+    let (a, i) = single(left);
+    let (b, j) = single(right);
+    let mut out = 0.0;
+    out += 2.0 * delta(a, b) * delta(i, j);
+    out
+}
+
+/// Evaluate generated Appendix-C overlap block `C18`.
+/// # Arguments:
+/// - `left`: Left excitation operator, daggered in the metric element.
+/// - `right`: Right excitation operator.
+/// - `spaces`: Core, active, and virtual orbital-space maps.
+/// - `gamma1`: Spin-free one-particle RDM.
+/// - `lambdas`: Spin-free active-space cumulants.
+/// # Returns:
+/// - `f64`: Raw FOIS overlap metric element.
+#[allow(unused_variables)]
+pub(crate) fn overlap_c_to_v_ca_to_av(
+    left: Excitation,
+    right: Excitation,
+    spaces: &Spaces,
+    gamma1: &RDM1<f64>,
+    lambdas: &Cumulants<f64>,
+) -> f64 {
+    let (a, i) = single(left);
+    let (x, b, j, w) = double(right);
+    let mut out = 0.0;
+    out
+}
+
+/// Evaluate generated Appendix-C overlap block `C19`.
+/// # Arguments:
+/// - `left`: Left excitation operator, daggered in the metric element.
+/// - `right`: Right excitation operator.
+/// - `spaces`: Core, active, and virtual orbital-space maps.
+/// - `gamma1`: Spin-free one-particle RDM.
+/// - `lambdas`: Spin-free active-space cumulants.
+/// # Returns:
+/// - `f64`: Raw FOIS overlap metric element.
+#[allow(unused_variables)]
+pub(crate) fn overlap_c_to_v_ca_to_va(
+    left: Excitation,
+    right: Excitation,
+    spaces: &Spaces,
+    gamma1: &RDM1<f64>,
+    lambdas: &Cumulants<f64>,
+) -> f64 {
+    let (a, i) = single(left);
+    let (b, x, j, w) = double(right);
+    let mut out = 0.0;
     out
 }

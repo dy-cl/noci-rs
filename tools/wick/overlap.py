@@ -28,7 +28,7 @@ def V(name: str) -> Idx:
 def availableBlocks() -> tuple[str, ...]:
     return tuple(
         f"C{i}"
-        for i in range(1, 17)
+        for i in range(1, 20)
     )
 
 def availableBlockArgs() -> tuple[str, ...]:
@@ -62,6 +62,7 @@ def blockLatexName(name: str) -> str:
         "C10": ("AA", "AV"),
         "C11": ("AA", "VV"),
         "C12": ("AA", "AA"),
+        "C17": ("C", "V"),
     }
 
     mixedLabels = {
@@ -69,6 +70,8 @@ def blockLatexName(name: str) -> str:
         "C14": (("C", "A"), ("CA", "AA")),
         "C15": (("A", "A"), ("AA", "AA")),
         "C16": (("CA", "AV"), ("CA", "VA")),
+        "C18": (("C", "V"), ("CA", "AV")),
+        "C19": (("C", "V"), ("CA", "VA")),
     }
 
     if name in labels:
@@ -317,6 +320,43 @@ def blockProduct(name: str) -> Product:
         return Product((
             groupE2(i, u, w, a, 0),
             groupE2(b, y, j, x, 1),
+        ))
+
+    if name == "C17":
+        i = C("i")
+        j = C("j")
+        a = V("a")
+        b = V("b")
+
+        return Product((
+            tau1(i, a, 0),
+            tau1(b, j, 1),
+        ))
+
+    if name == "C18":
+        i = C("i")
+        j = C("j")
+        a = V("a")
+        b = V("b")
+        w = A("w")
+        x = A("x")
+
+        return Product((
+            tau1(i, a, 0),
+            groupE2(x, b, j, w, 1),
+        ))
+
+    if name == "C19":
+        i = C("i")
+        j = C("j")
+        a = V("a")
+        b = V("b")
+        w = A("w")
+        x = A("x")
+
+        return Product((
+            tau1(i, a, 0),
+            groupE2(b, x, j, w, 1),
         ))
 
     raise ValueError(f"unknown overlap block {name}")

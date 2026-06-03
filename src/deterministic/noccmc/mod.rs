@@ -1,14 +1,16 @@
 // deterministic/noccmc/mod.rs
 
 mod overlap;
+mod residual;
 mod space;
 
 use mpi::topology::Communicator;
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 
+use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;
-use crate::maths::general_evp;
+use crate::maths::{general_evp, loewdin_x};
 use crate::noci::{
     Cumulants, NOCIData, RDM1, RDM2, RDM3, RDM4, build_noci_hs, build_wicks_shared, cumulants,
     rdm1, rdm2, rdm3, rdm4,
@@ -17,6 +19,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::orbitals::{
     NOCINaturalOrbitals, print_noci_natural_orbitals, transform_ao_data, transform_noci_basis,
 };
+use crate::scf::fock;
 
 /// Run NOCCMC setup work.
 /// # Arguments:
@@ -134,6 +137,15 @@ pub(crate) fn run_noccmc(
 
         space::print_space_diagnostics(&spaces, &excitations);
         space::print_fois_metric_diagnostics(
+            &noao,
+            &gamma1,
+            &lambdas,
+            &spaces,
+            &excitations,
+            post.tol,
+        );
+        
+        print_r0_diagnostics(
             &noao,
             &gamma1,
             &lambdas,
@@ -709,4 +721,138 @@ fn print_cumulant_diagnostics(
             .map(|x| x.abs())
             .fold(0.0, f64::max)
     );
+}
+
+/// Print the zeroth-order residual projection diagnostic.
+/// # Arguments:
+/// - `ao`: Integrals in the NOCI natural-orbital basis.
+/// - `gamma1`: Spin-free one-particle RDM.
+/// - `lambdas`: Spin-free active-space cumulants.
+/// - `spaces`: Core, active, and virtual orbital-space maps.
+/// - `excitations`: Raw spin-free excitation list.
+/// - `tol`: Weighted overlap eigenvalue threshold.
+/// # Returns:
+/// - `()`: Prints projected full and retained zeroth-order residual diagnostics.
+fn print_r0_diagnostics(
+    ao: &AoData,
+    gamma1: &RDM1<f64>,
+    lambdas: &Cumulants<f64>,
+    spaces: &space::Spaces,
+    excitations: &[space::Excitation],
+    tol: f64,
+) {
+    let nmo = gamma1.n;
+    let nexc = excitations.len();
+
+    let mut metric = Array2::<f64>::zeros((nexc, nexc));
+    for mu in 0..nexc {
+        for nu in 0..nexc {
+            metric[(mu, nu)] = overlap::overlap_element(
+                excitations[mu],
+                excitations[nu],
+                spaces,
+                gamma1,
+                lambdas,
+            );
+        }
+    }
+
+    let mut da = Array2::<f64>::zeros((nmo, nmo));
+    let mut db = Array2::<f64>::zeros((nmo, nmo));
+
+    for p in 0..nmo {
+        for q in 0..nmo {
+            let value = 0.5 * gamma1.data[p * nmo + q];
+            da[(p, q)] = value;
+            db[(p, q)] = value;
+        }
+    }
+
+    let (f, _fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+
+    let mut h = Array1::<f64>::zeros(nexc);
+    for (mu, &ex) in excitations.iter().enumerate() {
+        h[mu] = match ex {
+            space::Excitation::Single { p, q } => f[(q, p)],
+            space::Excitation::Double { p, q, r, s } => 0.5 * ao.eri_coul[(r, s, p, q)],
+        };
+    }
+
+    let mut weighted_metric = Array2::<f64>::zeros((nexc, nexc));
+    for mu in 0..nexc {
+        for nu in 0..nexc {
+            weighted_metric[(mu, nu)] = h[mu] * metric[(mu, nu)] * h[nu];
+        }
+    }
+
+    let xtilde = loewdin_x(&weighted_metric, true, tol);
+
+    let mut y = xtilde.clone();
+    for mu in 0..nexc {
+        for i in 0..y.ncols() {
+            y[(mu, i)] *= h[mu];
+        }
+    }
+
+    let r0_full_raw = residual::r0(
+        ao,
+        gamma1,
+        lambdas,
+        spaces,
+        excitations,
+    );
+
+    let r0_retained_raw = metric.dot(&h);
+
+    let r0_full_fois = y.t().dot(&r0_full_raw);
+    let r0_retained_fois = y.t().dot(&r0_retained_raw);
+
+    let mut full_norm2 = 0.0;
+    let mut retained_norm2 = 0.0;
+    let mut diff_norm2 = 0.0;
+    let mut max_diff: f64 = 0.0;
+    let mut worst = 0usize;
+
+    for i in 0..r0_full_fois.len() {
+        let diff = r0_full_fois[i] - r0_retained_fois[i];
+
+        full_norm2 += r0_full_fois[i] * r0_full_fois[i];
+        retained_norm2 += r0_retained_fois[i] * r0_retained_fois[i];
+        diff_norm2 += diff * diff;
+
+        if diff.abs() > max_diff {
+            max_diff = diff.abs();
+            worst = i;
+        }
+    }
+
+    let rel_diff = if retained_norm2 > 0.0 {
+        diff_norm2.sqrt() / retained_norm2.sqrt()
+    } else {
+        diff_norm2.sqrt()
+    };
+
+    let ytsy = y.t().dot(&metric).dot(&y);
+    let mut orth_err: f64 = 0.0;
+    for i in 0..ytsy.nrows() {
+        for j in 0..ytsy.ncols() {
+            let target = if i == j { 1.0 } else { 0.0 };
+            orth_err = orth_err.max((ytsy[(i, j)] - target).abs());
+        }
+    }
+
+    println!("{}", "=".repeat(100));
+    println!("GNOCC zeroth-order residual diagnostics");
+    println!("Raw excitation dimension: {}", nexc);
+    println!("FOIS retained dimension: {}", y.ncols());
+    println!("Max |Y^T S Y - I|: {:.6e}", orth_err);
+    println!("||Y^T R0_full||: {:.6e}", full_norm2.sqrt());
+    println!("||Y^T S h||: {:.6e}", retained_norm2.sqrt());
+    println!("||Y^T R0_full - Y^T S h||: {:.6e}", diff_norm2.sqrt());
+    println!("Relative projected difference: {:.6e}", rel_diff);
+    println!("Max projected difference: {:.6e}", max_diff);
+    println!("Worst projected FOIS index: {}", worst);
+    println!("Y^T R0_full: {:.12e}", r0_full_fois[worst]);
+    println!("Y^T S h:     {:.12e}", r0_retained_fois[worst]);
+    println!("Difference: {:.12e}", r0_full_fois[worst] - r0_retained_fois[worst]);
 }
