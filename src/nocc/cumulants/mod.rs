@@ -1,4 +1,4 @@
-// noci/cumulants/mod.rs
+// nocc/cumulants/mod.rs
 
 mod common;
 mod cumulants1;
@@ -11,8 +11,8 @@ pub(crate) use self::cumulants2::{Cumulant2, cumulants2};
 pub(crate) use self::cumulants3::{Cumulant3, cumulants3};
 pub(crate) use self::cumulants4::{Cumulant4, cumulants4};
 
-use crate::noci::rdm::{RDM1, RDM2, RDM3, RDM4};
-use crate::noci::types::NOCIScalar;
+use crate::nocc::rdm::{RDM1, RDM2, RDM3, RDM4};
+use crate::noci::NOCIScalar;
 
 /// Spin-free cumulants through rank four.
 pub(crate) struct Cumulants<T: NOCIScalar> {

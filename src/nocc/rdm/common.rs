@@ -1,10 +1,9 @@
-// noci/rdm/common.rs
+// nocc/rdm/common.rs
 
 use ndarray::Array2;
 
 use crate::maths::det_occupied_minor;
-use crate::noci::naive::occ_coeffs;
-use crate::noci::types::{DetPair, NOCIData, NOCIScalar};
+use crate::noci::{DetPair, NOCIData, NOCIScalar, occ_coeffs};
 use crate::nonorthogonalwicks::{WickScratchSpin, lg_rdm_same_element};
 
 /// Split creation and annihilation indices by spin assignment mask.

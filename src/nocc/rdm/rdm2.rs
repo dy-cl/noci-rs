@@ -1,4 +1,4 @@
-// noci/rdm/rdm2.rs
+// nocc/rdm/rdm2.rs
 
 use ndarray::Array1;
 
@@ -6,8 +6,7 @@ use crate::nonorthogonalwicks::{
     WickScratchSpin, lg_overlap, lg_rdm1, lg_rdm2_diff, lg_rdm2_same, prepare_same,
 };
 
-use crate::noci::naive::{build_s_pair, occ_coeffs, pair_density};
-use crate::noci::types::{DetPair, NOCIData, NOCIScalar};
+use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
 
 /// Spin-free two-body RDM stored as \Gamma[p, q, r, s].
 pub(crate) struct RDM2<T> {

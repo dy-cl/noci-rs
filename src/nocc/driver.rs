@@ -1,8 +1,4 @@
-// deterministic/noccmc/mod.rs
-
-mod overlap;
-mod residual;
-mod space;
+// nocc/driver.rs
 
 use mpi::topology::Communicator;
 use ndarray::Array1;
@@ -11,10 +7,9 @@ use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;
 use crate::maths::general_evp;
-use crate::noci::{
-    Cumulants, NOCIData, RDM1, RDM2, RDM3, RDM4, build_noci_hs, build_wicks_shared, cumulants,
-    rdm1, rdm2, rdm3, rdm4,
-};
+use crate::nocc::{Cumulants, RDM1, RDM2, RDM3, RDM4, cumulants, rdm1, rdm2, rdm3, rdm4};
+use crate::nocc::{residual, space};
+use crate::noci::{NOCIData, build_noci_hs, build_wicks_shared};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::orbitals::{
     NOCINaturalOrbitals, print_noci_natural_orbitals, transform_ao_data, transform_noci_basis,
@@ -784,8 +779,5 @@ fn print_r0_diagnostics(
     println!("||R0 - S h||: {:.6e}", raw_diff_norm2.sqrt());
     println!("||Y^T R0||: {:.6e}", fois_norm2.sqrt());
     println!("||Y^T Sh||: {:.6e}", fois_sh_norm2.sqrt());
-    println!(
-        "||Y^T R0 - Y^T Sh||: {:.6e}",
-        fois_diff_norm2.sqrt()
-    );
+    println!("||Y^T R0 - Y^T Sh||: {:.6e}", fois_diff_norm2.sqrt());
 }

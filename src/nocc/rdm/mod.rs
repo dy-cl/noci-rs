@@ -1,4 +1,4 @@
-// noci/rdm/mod.rs
+// nocc/rdm/mod.rs
 
 mod common;
 mod rdm1;

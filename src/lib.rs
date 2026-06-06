@@ -5,6 +5,7 @@ pub mod driver;
 pub mod input;
 pub mod maths;
 pub mod mpiutils;
+pub mod nocc;
 pub mod noci;
 pub mod nonorthogonalwicks;
 pub mod orbitals;

@@ -1,6 +1,6 @@
-// noci/cumulants/common.rs
+// nocc/cumulants/common.rs
 
-use crate::noci::types::NOCIScalar;
+use crate::noci::NOCIScalar;
 
 /// Active-space spin-free cumulant tensor stored in upper-then-lower index order.
 pub(crate) struct CumulantTensor<T: NOCIScalar> {

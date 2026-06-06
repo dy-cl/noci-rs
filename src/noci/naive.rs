@@ -67,7 +67,7 @@ fn calculate_s_red(
 /// # Returns:
 /// # Returns:
 /// - `Pair<T>`: Overlap-related intermediates for this determinant pair.
-pub(in crate::noci) fn build_s_pair<T: NOCIScalar>(
+pub(crate) fn build_s_pair<T: NOCIScalar>(
     l_c_occ: &Array2<T>,
     g_c_occ: &Array2<T>,
     s_munu: &Array2<f64>,
@@ -205,7 +205,7 @@ fn calculate_codensity_w_pair<T: NOCIScalar>(
 /// - `nao`: Number of AOs.
 /// # Returns:
 /// - `Array2<T>`: AO-basis pair density matrix for the determinant pair.
-pub(in crate::noci) fn pair_density<T: NOCIScalar>(
+pub(crate) fn pair_density<T: NOCIScalar>(
     pair: &Pair<T>,
     nao: usize,
 ) -> Array2<T> {

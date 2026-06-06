@@ -446,21 +446,21 @@ impl<T: NOCIScalar> ScatterValue for (T, T) {
 }
 
 /// Storage of quantities required to compute matrix elements between determinant pairs in the naive fashion.
-pub(in crate::noci) struct Pair<T: NOCIScalar> {
+pub(crate) struct Pair<T: NOCIScalar> {
     /// Full overlap matrix element for the determinant pair.
-    pub(in crate::noci) s: T,
+    pub(crate) s: T,
     /// Product of the non-zero singular values of the occupied-overlap matrix.
-    pub(in crate::noci) s_red: f64,
+    pub(crate) s_red: f64,
     /// Indices of singular values treated as zero.
-    pub(in crate::noci) zeros: Vec<usize>,
+    pub(crate) zeros: Vec<usize>,
     /// Weighted co-density matrix used when no singular values are zero.
-    pub(in crate::noci) w: Option<Array2<T>>,
+    pub(crate) w: Option<Array2<T>>,
     /// Co-density matrix associated with the first zero singular value.
-    pub(in crate::noci) p_i: Option<Array2<T>>,
+    pub(crate) p_i: Option<Array2<T>>,
     /// Co-density matrix associated with the second zero singular value.
-    pub(in crate::noci) p_j: Option<Array2<T>>,
+    pub(crate) p_j: Option<Array2<T>>,
     /// Overall phase from the SVD rotations of the occupied-overlap matrix.
-    pub(in crate::noci) phase: T,
+    pub(crate) phase: T,
 }
 
 /// MO-basis caches for orthogonal-parent matrix elements.

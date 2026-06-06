@@ -4,12 +4,12 @@ use mpi::topology::Communicator;
 use ndarray::Array1;
 use num_complex::Complex64;
 
-use crate::deterministic::run_noccmc;
 use crate::driver::deterministic::run_qmc_deterministic_noci;
 use crate::driver::reference::ReferenceRun;
 use crate::driver::snoci::run_snoci;
 use crate::driver::stochastic::run_qmc_stochastic_noci;
 use crate::input::Input;
+use crate::nocc::run_noccmc;
 use crate::noci::NOCIData;
 use crate::noci::{build_mo_cache, build_wicks_shared};
 use crate::nonorthogonalwicks::WicksShared;

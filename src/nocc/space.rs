@@ -1,4 +1,4 @@
-// deterministic/noccmc/space.rs
+// nocc/space.rs
 
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use super::overlap;
 use crate::AoData;
 use crate::maths::linalg::loewdin_x;
-use crate::noci::{Cumulants, RDM1};
+use crate::nocc::{Cumulants, RDM1};
 use crate::scf::fock;
 use crate::utils::print_array2;
 
@@ -287,7 +287,7 @@ pub(crate) fn build_excitations(spaces: &Spaces) -> Vec<Excitation> {
 /// - `ex`: Spin-free excitation.
 /// # Returns:
 /// - `ExcitationClass`: Excitation class used for overlap dispatch.
-pub(in crate::deterministic::noccmc) fn excitation_class(
+pub(in crate::nocc) fn excitation_class(
     spaces: &Spaces,
     ex: Excitation,
 ) -> ExcitationClass {

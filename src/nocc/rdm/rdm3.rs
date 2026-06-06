@@ -1,12 +1,11 @@
-// noci/rdm/rdm3.rs
+// nocc/rdm/rdm3.rs
 
 use ndarray::Array1;
 
 use crate::nonorthogonalwicks::{WickScratchSpin, lg_overlap, prepare_same};
 
 use super::common::{spin_assignment_rdm_element, spin_assignment_rdm_element_naive};
-use crate::noci::naive::{build_s_pair, occ_coeffs};
-use crate::noci::types::{DetPair, NOCIData, NOCIScalar};
+use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs};
 
 /// Active-space spin-free three-body RDM stored as \Gamma[p, q, r, s, t, u].
 pub(crate) struct RDM3<T> {

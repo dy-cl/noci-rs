@@ -1,11 +1,10 @@
-// noci/rdm/rdm1.rs
+// nocc/rdm/rdm1.rs
 
 use ndarray::Array1;
 
 use crate::nonorthogonalwicks::{WickScratchSpin, lg_overlap, lg_rdm1, prepare_same};
 
-use super::super::naive::{build_s_pair, occ_coeffs, pair_density};
-use super::super::types::{DetPair, NOCIData, NOCIScalar};
+use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
 
 /// Spin-free one-body RDM stored as \Gamma[p, q].
 pub(crate) struct RDM1<T> {
