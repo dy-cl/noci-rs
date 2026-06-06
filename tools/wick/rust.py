@@ -234,9 +234,6 @@ def rustTensor(tensor: Tensor) -> str:
 def rustTerm(term: Term) -> str:
     factors = []
 
-    if term.coeff != 1:
-        factors.append(rustCoeff(term.coeff))
-
     factors.extend(
         rustDelta(delta)
         for delta in term.deltas
@@ -247,10 +244,18 @@ def rustTerm(term: Term) -> str:
         for tensor in term.tensors
     )
 
-    if not factors:
-        return "1.0"
+    body = " * ".join(factors) if factors else "1.0"
 
-    return " * ".join(factors)
+    if term.coeff == 1:
+        return body
+
+    if term.coeff == -1:
+        return f"-({body})"
+
+    if term.coeff < 0:
+        return f"-({rustCoeff(-term.coeff)} * {body})"
+
+    return f"{rustCoeff(term.coeff)} * {body}"
 
 def rustUnpack(names: tuple[str, ...], side: str) -> str:
     lhs = ", ".join(names)
@@ -264,7 +269,7 @@ def rustUnpack(names: tuple[str, ...], side: str) -> str:
     raise ValueError(f"unsupported unpack size {len(names)}")
 
 def rustFunction(block: RustBlock, debug: bool = False) -> str:
-    expr = outputExpr(block.block)
+    expr = list(outputExpr(block.block))
 
     lines = rustFunctionDoc(block) + [
         "#[allow(unused_variables)]",
@@ -280,6 +285,14 @@ def rustFunction(block: RustBlock, debug: bool = False) -> str:
     ]
 
     if not debug:
+        if not expr:
+            lines.extend([
+                "    0.0",
+                "}",
+            ])
+
+            return "\n".join(lines)
+
         lines.append("    let mut out = 0.0;")
 
         for term in expr:

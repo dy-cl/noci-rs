@@ -119,43 +119,41 @@ def hidx(space: Space, slot: int) -> Idx:
     return Idx(f"{prefixes[space]}{slot}", space)
 
 def allH1Indices() -> tuple[tuple[Idx, Idx], ...]:
-    """Return all one-body Hamiltonian index space assignments.
+    """Return supported one-body Hamiltonian index space assignments.
 
     Notation:
-        p,q in C union A union V
+        E^p_q follows the supported single-excitation table.
 
     Examples:
-        One element corresponds to p in A and q in V.
+        One element corresponds to A -> V.
     """
-    spaces = (Space.CORE, Space.ACTIVE, Space.VIRTUAL)
-
     return tuple(
         (
-            hidx(pSpace, 0),
-            hidx(qSpace, 1),
+            hidx(spec.creators[0].space, 0),
+            hidx(spec.annihilators[0].space, 1),
         )
-        for pSpace, qSpace in cartesianProduct(spaces, repeat = 2)
+        for spec in EXCITATIONS.values()
+        if len(spec.creators) == 1
     )
 
 def allH2Indices() -> tuple[tuple[Idx, Idx, Idx, Idx], ...]:
-    """Return all two-body Hamiltonian index space assignments.
+    """Return supported two-body Hamiltonian index space assignments.
 
     Notation:
-        p,q,r,s in C union A union V
+        E^{pq}_{rs} follows the supported double-excitation table.
 
     Examples:
-        One element corresponds to E^{pq}_{rs} with p,q,r,s in arbitrary spaces.
+        One element corresponds to AA -> AV.
     """
-    spaces = (Space.CORE, Space.ACTIVE, Space.VIRTUAL)
-
     return tuple(
         (
-            hidx(pSpace, 0),
-            hidx(qSpace, 1),
-            hidx(rSpace, 2),
-            hidx(sSpace, 3),
+            hidx(spec.creators[0].space, 0),
+            hidx(spec.creators[1].space, 1),
+            hidx(spec.annihilators[0].space, 2),
+            hidx(spec.annihilators[1].space, 3),
         )
-        for pSpace, qSpace, rSpace, sSpace in cartesianProduct(spaces, repeat = 4)
+        for spec in EXCITATIONS.values()
+        if len(spec.creators) == 2
     )
 
 def braGroup(spec: ExcitationSpec, groupId: int) -> Group:
@@ -399,9 +397,6 @@ def rustTermFactors(term) -> str:
     """
     factors = []
 
-    if term.coeff != 1:
-        factors.append(rustCoeff(term.coeff))
-
     factors.extend(
         rustDelta(delta)
         for delta in term.deltas
@@ -412,10 +407,15 @@ def rustTermFactors(term) -> str:
         for tensor in term.tensors
     )
 
-    if not factors:
-        return "1.0"
+    body = " * ".join(factors) if factors else "1.0"
 
-    return " * ".join(factors)
+    if term.coeff == 1:
+        return body
+
+    if term.coeff == -1:
+        return f"-({body})"
+
+    return f"{rustCoeff(term.coeff)} * {body}"
 
 def freeIndexNames(spec: ExcitationSpec) -> set[str]:
     """Return free residual index names.

@@ -266,13 +266,12 @@ pub(crate) fn overlap_ca_to_av_ca_to_av(
     let (x, b, j, w) = double(right);
     let mut out = 0.0;
     out += delta(a, b) * delta(i, j) * gamma1.data[u * gamma1.n + w] * theta(gamma1, x, v);
-    out += -1.0
-        * delta(a, b)
+    out += -(delta(a, b)
         * delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, x)],
             &[active(spaces, w), active(spaces, v)],
-        );
+        ));
     out
 }
 
@@ -328,7 +327,7 @@ pub(crate) fn overlap_ca_to_vv_ca_to_vv(
     let (c, d, j, v) = double(right);
     let mut out = 0.0;
     out += 2.0 * delta(a, c) * delta(b, d) * delta(i, j) * gamma1.data[u * gamma1.n + v];
-    out += -1.0 * delta(a, d) * delta(b, c) * delta(i, j) * gamma1.data[u * gamma1.n + v];
+    out += -(delta(a, d) * delta(b, c) * delta(i, j) * gamma1.data[u * gamma1.n + v]);
     out
 }
 
@@ -353,7 +352,7 @@ pub(crate) fn overlap_cc_to_av_cc_to_av(
     let (v, b, k, l) = double(right);
     let mut out = 0.0;
     out += 2.0 * delta(a, b) * delta(i, k) * delta(j, l) * theta(gamma1, v, u);
-    out += -1.0 * delta(a, b) * delta(i, l) * delta(j, k) * theta(gamma1, v, u);
+    out += -(delta(a, b) * delta(i, l) * delta(j, k) * theta(gamma1, v, u));
     out
 }
 
@@ -384,14 +383,14 @@ pub(crate) fn overlap_cc_to_aa_cc_to_aa(
             &[active(spaces, u), active(spaces, v)],
         );
     out += delta(i, k) * delta(j, l) * theta(gamma1, w, u) * theta(gamma1, x, v);
-    out += (-1.0 / 2.0) * delta(i, k) * delta(j, l) * theta(gamma1, w, v) * theta(gamma1, x, u);
+    out += -((1.0 / 2.0) * delta(i, k) * delta(j, l) * theta(gamma1, w, v) * theta(gamma1, x, u));
     out += delta(i, l)
         * delta(j, k)
         * lambdas.lambda2.get(
             &[active(spaces, w), active(spaces, x)],
             &[active(spaces, v), active(spaces, u)],
         );
-    out += (-1.0 / 2.0) * delta(i, l) * delta(j, k) * theta(gamma1, w, u) * theta(gamma1, x, v);
+    out += -((1.0 / 2.0) * delta(i, l) * delta(j, k) * theta(gamma1, w, u) * theta(gamma1, x, v));
     out += delta(i, l) * delta(j, k) * theta(gamma1, w, v) * theta(gamma1, x, u);
     out
 }
@@ -428,44 +427,43 @@ pub(crate) fn overlap_ca_to_aa_ca_to_aa(
         * gamma1.data[u * gamma1.n + x]
         * theta(gamma1, y, v)
         * theta(gamma1, z, w);
-    out += (-1.0 / 4.0)
+    out += -((1.0 / 4.0)
         * delta(i, j)
         * gamma1.data[u * gamma1.n + x]
         * theta(gamma1, y, w)
-        * theta(gamma1, z, v);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, z, v));
+    out += -((1.0 / 2.0)
         * delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, y)],
             &[active(spaces, w), active(spaces, x)],
         )
-        * theta(gamma1, z, v);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, z, v));
+    out += -((1.0 / 2.0)
         * delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, y)],
             &[active(spaces, x), active(spaces, v)],
         )
-        * theta(gamma1, z, w);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, z, w));
+    out += -((1.0 / 2.0)
         * delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, z)],
             &[active(spaces, v), active(spaces, x)],
         )
-        * theta(gamma1, y, w);
+        * theta(gamma1, y, w));
     out += delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, z)],
             &[active(spaces, w), active(spaces, x)],
         )
         * theta(gamma1, y, v);
-    out += -1.0
-        * delta(i, j)
+    out += -(delta(i, j)
         * lambdas.lambda3.get(
             &[active(spaces, u), active(spaces, y), active(spaces, z)],
             &[active(spaces, w), active(spaces, v), active(spaces, x)],
-        );
+        ));
     out
 }
 
@@ -494,32 +492,32 @@ pub(crate) fn overlap_aa_to_av_aa_to_av(
         * gamma1.data[t * gamma1.n + x]
         * gamma1.data[u * gamma1.n + y]
         * theta(gamma1, z, v);
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * delta(a, b)
         * gamma1.data[t * gamma1.n + x]
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, z)],
             &[active(spaces, y), active(spaces, v)],
-        );
-    out += (-1.0 / 4.0)
+        ));
+    out += -((1.0 / 4.0)
         * delta(a, b)
         * gamma1.data[t * gamma1.n + y]
         * gamma1.data[u * gamma1.n + x]
-        * theta(gamma1, z, v);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, z, v));
+    out += -((1.0 / 2.0)
         * delta(a, b)
         * gamma1.data[t * gamma1.n + y]
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, z)],
             &[active(spaces, v), active(spaces, x)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * delta(a, b)
         * gamma1.data[u * gamma1.n + x]
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, z)],
             &[active(spaces, v), active(spaces, y)],
-        );
+        ));
     out += delta(a, b)
         * gamma1.data[u * gamma1.n + y]
         * lambdas.lambda2.get(
@@ -563,22 +561,22 @@ pub(crate) fn overlap_aa_to_vv_aa_to_vv(
     let mut out = 0.0;
     out +=
         delta(a, c) * delta(b, d) * gamma1.data[t * gamma1.n + v] * gamma1.data[u * gamma1.n + w];
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * delta(a, c)
         * delta(b, d)
         * gamma1.data[t * gamma1.n + w]
-        * gamma1.data[u * gamma1.n + v];
+        * gamma1.data[u * gamma1.n + v]);
     out += delta(a, c)
         * delta(b, d)
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, u)],
             &[active(spaces, v), active(spaces, w)],
         );
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * delta(a, d)
         * delta(b, c)
         * gamma1.data[t * gamma1.n + v]
-        * gamma1.data[u * gamma1.n + w];
+        * gamma1.data[u * gamma1.n + w]);
     out +=
         delta(a, d) * delta(b, c) * gamma1.data[t * gamma1.n + w] * gamma1.data[u * gamma1.n + v];
     out += delta(a, d)
@@ -622,32 +620,32 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * gamma1.data[r * gamma1.n + w]
         * theta(gamma1, t, q)
         * theta(gamma1, v, s);
-    out += (-1.0 / 8.0)
+    out += -((1.0 / 8.0)
         * gamma1.data[p * gamma1.n + u]
         * gamma1.data[r * gamma1.n + w]
         * theta(gamma1, t, s)
-        * theta(gamma1, v, q);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, v, q));
+    out += -((1.0 / 4.0)
         * gamma1.data[p * gamma1.n + u]
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, s), active(spaces, w)],
         )
-        * theta(gamma1, v, q);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, v, q));
+    out += -((1.0 / 4.0)
         * gamma1.data[p * gamma1.n + u]
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, w), active(spaces, q)],
         )
-        * theta(gamma1, v, s);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, v, s));
+    out += -((1.0 / 4.0)
         * gamma1.data[p * gamma1.n + u]
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, q), active(spaces, w)],
         )
-        * theta(gamma1, t, s);
+        * theta(gamma1, t, s));
     out += (1.0 / 2.0)
         * gamma1.data[p * gamma1.n + u]
         * lambdas.lambda2.get(
@@ -655,12 +653,12 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, s), active(spaces, w)],
         )
         * theta(gamma1, t, q);
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * gamma1.data[p * gamma1.n + u]
         * lambdas.lambda3.get(
             &[active(spaces, r), active(spaces, t), active(spaces, v)],
             &[active(spaces, s), active(spaces, q), active(spaces, w)],
-        );
+        ));
     out += (1.0 / 4.0)
         * gamma1.data[p * gamma1.n + w]
         * gamma1.data[r * gamma1.n + u]
@@ -668,23 +666,23 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, t), active(spaces, v)],
             &[active(spaces, s), active(spaces, q)],
         );
-    out += (-1.0 / 8.0)
+    out += -((1.0 / 8.0)
         * gamma1.data[p * gamma1.n + w]
         * gamma1.data[r * gamma1.n + u]
         * theta(gamma1, t, q)
-        * theta(gamma1, v, s);
+        * theta(gamma1, v, s));
     out += (1.0 / 4.0)
         * gamma1.data[p * gamma1.n + w]
         * gamma1.data[r * gamma1.n + u]
         * theta(gamma1, t, s)
         * theta(gamma1, v, q);
-    out += (-1.0 / 4.0)
+    out += -((1.0 / 4.0)
         * gamma1.data[p * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, q), active(spaces, u)],
         )
-        * theta(gamma1, v, s);
+        * theta(gamma1, v, s));
     out += (1.0 / 2.0)
         * gamma1.data[p * gamma1.n + w]
         * lambdas.lambda2.get(
@@ -692,40 +690,40 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, s), active(spaces, u)],
         )
         * theta(gamma1, v, q);
-    out += (-1.0 / 4.0)
+    out += -((1.0 / 4.0)
         * gamma1.data[p * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, s), active(spaces, u)],
         )
-        * theta(gamma1, t, q);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, t, q));
+    out += -((1.0 / 4.0)
         * gamma1.data[p * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, u), active(spaces, q)],
         )
-        * theta(gamma1, t, s);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, t, s));
+    out += -((1.0 / 2.0)
         * gamma1.data[p * gamma1.n + w]
         * lambdas.lambda3.get(
             &[active(spaces, r), active(spaces, t), active(spaces, v)],
             &[active(spaces, s), active(spaces, u), active(spaces, q)],
-        );
-    out += (-1.0 / 4.0)
+        ));
+    out += -((1.0 / 4.0)
         * gamma1.data[r * gamma1.n + u]
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, q), active(spaces, w)],
         )
-        * theta(gamma1, v, s);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, v, s));
+    out += -((1.0 / 4.0)
         * gamma1.data[r * gamma1.n + u]
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, w), active(spaces, s)],
         )
-        * theta(gamma1, v, q);
+        * theta(gamma1, v, q));
     out += (1.0 / 2.0)
         * gamma1.data[r * gamma1.n + u]
         * lambdas.lambda2.get(
@@ -733,19 +731,19 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, q), active(spaces, w)],
         )
         * theta(gamma1, t, s);
-    out += (-1.0 / 4.0)
+    out += -((1.0 / 4.0)
         * gamma1.data[r * gamma1.n + u]
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, s), active(spaces, w)],
         )
-        * theta(gamma1, t, q);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, t, q));
+    out += -((1.0 / 2.0)
         * gamma1.data[r * gamma1.n + u]
         * lambdas.lambda3.get(
             &[active(spaces, p), active(spaces, t), active(spaces, v)],
             &[active(spaces, q), active(spaces, s), active(spaces, w)],
-        );
+        ));
     out += (1.0 / 2.0)
         * gamma1.data[r * gamma1.n + w]
         * lambdas.lambda2.get(
@@ -753,34 +751,34 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, q), active(spaces, u)],
         )
         * theta(gamma1, v, s);
-    out += (-1.0 / 4.0)
+    out += -((1.0 / 4.0)
         * gamma1.data[r * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, s), active(spaces, u)],
         )
-        * theta(gamma1, v, q);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, v, q));
+    out += -((1.0 / 4.0)
         * gamma1.data[r * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, q), active(spaces, u)],
         )
-        * theta(gamma1, t, s);
-    out += (-1.0 / 4.0)
+        * theta(gamma1, t, s));
+    out += -((1.0 / 4.0)
         * gamma1.data[r * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, u), active(spaces, s)],
         )
-        * theta(gamma1, t, q);
-    out += (-1.0 / 2.0)
+        * theta(gamma1, t, q));
+    out += -((1.0 / 2.0)
         * gamma1.data[r * gamma1.n + w]
         * lambdas.lambda3.get(
             &[active(spaces, p), active(spaces, t), active(spaces, v)],
             &[active(spaces, q), active(spaces, u), active(spaces, s)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, r)],
             &[active(spaces, q), active(spaces, u)],
@@ -788,8 +786,8 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, v)],
             &[active(spaces, s), active(spaces, w)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, r)],
             &[active(spaces, q), active(spaces, w)],
@@ -797,8 +795,8 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, v)],
             &[active(spaces, u), active(spaces, s)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, r)],
             &[active(spaces, u), active(spaces, s)],
@@ -806,7 +804,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, v)],
             &[active(spaces, q), active(spaces, w)],
-        );
+        ));
     out += (1.0 / 3.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, r)],
@@ -832,7 +830,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         )
         * theta(gamma1, t, q)
         * theta(gamma1, v, s);
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, r)],
             &[active(spaces, w), active(spaces, s)],
@@ -840,7 +838,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, v)],
             &[active(spaces, u), active(spaces, q)],
-        );
+        ));
     out += (1.0 / 6.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, r)],
@@ -866,7 +864,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         )
         * theta(gamma1, t, s)
         * theta(gamma1, v, q);
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, q), active(spaces, s)],
@@ -874,7 +872,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, u), active(spaces, w)],
-        );
+        ));
     out += lambdas.lambda2.get(
         &[active(spaces, p), active(spaces, t)],
         &[active(spaces, q), active(spaces, u)],
@@ -882,7 +880,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         &[active(spaces, r), active(spaces, v)],
         &[active(spaces, s), active(spaces, w)],
     );
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, q), active(spaces, w)],
@@ -890,8 +888,8 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, s), active(spaces, u)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, s), active(spaces, u)],
@@ -899,7 +897,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, q), active(spaces, w)],
-        );
+        ));
     out += (1.0 / 3.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
@@ -936,7 +934,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, u), active(spaces, q)],
         );
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, t)],
             &[active(spaces, w), active(spaces, u)],
@@ -944,8 +942,8 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, v)],
             &[active(spaces, s), active(spaces, q)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, q), active(spaces, s)],
@@ -953,8 +951,8 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, w), active(spaces, u)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, q), active(spaces, u)],
@@ -962,7 +960,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, s), active(spaces, w)],
-        );
+        ));
     out += lambdas.lambda2.get(
         &[active(spaces, p), active(spaces, v)],
         &[active(spaces, q), active(spaces, w)],
@@ -988,7 +986,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, w), active(spaces, q)],
         );
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, s), active(spaces, w)],
@@ -996,7 +994,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, q), active(spaces, u)],
-        );
+        ));
     out += (1.0 / 6.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
@@ -1015,7 +1013,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, w), active(spaces, q)],
         );
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, p), active(spaces, v)],
             &[active(spaces, u), active(spaces, w)],
@@ -1023,7 +1021,7 @@ pub(crate) fn overlap_aa_to_aa_aa_to_aa(
         * lambdas.lambda2.get(
             &[active(spaces, r), active(spaces, t)],
             &[active(spaces, s), active(spaces, q)],
-        );
+        ));
     out += (1.0 / 2.0)
         * lambdas.lambda3.get(
             &[active(spaces, p), active(spaces, r), active(spaces, t)],
@@ -1113,12 +1111,11 @@ pub(crate) fn overlap_c_to_a_ca_to_aa(
     let (u, i) = single(left);
     let (w, x, j, v) = double(right);
     let mut out = 0.0;
-    out += -1.0
-        * delta(i, j)
+    out += -(delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, w), active(spaces, x)],
             &[active(spaces, u), active(spaces, v)],
-        );
+        ));
     out
 }
 
@@ -1142,18 +1139,18 @@ pub(crate) fn overlap_a_to_a_aa_to_aa(
     let (u, t) = single(left);
     let (y, z, w, x) = double(right);
     let mut out = 0.0;
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * gamma1.data[t * gamma1.n + w]
         * lambdas.lambda2.get(
             &[active(spaces, y), active(spaces, z)],
             &[active(spaces, u), active(spaces, x)],
-        );
-    out += (-1.0 / 2.0)
+        ));
+    out += -((1.0 / 2.0)
         * gamma1.data[t * gamma1.n + x]
         * lambdas.lambda2.get(
             &[active(spaces, y), active(spaces, z)],
             &[active(spaces, w), active(spaces, u)],
-        );
+        ));
     out += (1.0 / 2.0)
         * lambdas.lambda2.get(
             &[active(spaces, t), active(spaces, y)],
@@ -1193,18 +1190,17 @@ pub(crate) fn overlap_ca_to_av_ca_to_va(
     let (w, a, i, u) = double(left);
     let (b, y, j, x) = double(right);
     let mut out = 0.0;
-    out += (-1.0 / 2.0)
+    out += -((1.0 / 2.0)
         * delta(a, b)
         * delta(i, j)
         * gamma1.data[u * gamma1.n + x]
-        * theta(gamma1, y, w);
-    out += -1.0
-        * delta(a, b)
+        * theta(gamma1, y, w));
+    out += -(delta(a, b)
         * delta(i, j)
         * lambdas.lambda2.get(
             &[active(spaces, u), active(spaces, y)],
             &[active(spaces, w), active(spaces, x)],
-        );
+        ));
     out
 }
 
@@ -1251,8 +1247,7 @@ pub(crate) fn overlap_c_to_v_ca_to_av(
 ) -> f64 {
     let (a, i) = single(left);
     let (x, b, j, w) = double(right);
-    let mut out = 0.0;
-    out
+    0.0
 }
 
 /// Evaluate generated Appendix-C overlap block `C19`.
@@ -1274,6 +1269,5 @@ pub(crate) fn overlap_c_to_v_ca_to_va(
 ) -> f64 {
     let (a, i) = single(left);
     let (b, x, j, w) = double(right);
-    let mut out = 0.0;
-    out
+    0.0
 }

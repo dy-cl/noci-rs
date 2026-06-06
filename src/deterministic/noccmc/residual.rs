@@ -188,21 +188,6 @@ fn r0_c_to_a(
             }
         }
     }
-    for &hc3 in spaces.core.iter() {
-        for &ha0 in spaces.active.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha0), active(spaces, ha1)],
-                            &[active(spaces, ha2), active(spaces, u)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
     out
 }
 
@@ -375,21 +360,6 @@ fn r0_a_to_v(
             out += delta(a, hv0) * gamma1.data[u * gamma1.n + ha1] * f[(ha1, hv0)];
         }
     }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha1 in spaces.active.iter() {
-            for &ha3 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (1.0 / 2.0)
-                        * delta(a, hv0)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, ha3), active(spaces, ha2)],
-                        )
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
     for &hv1 in spaces.virtuals.iter() {
         for &ha0 in spaces.active.iter() {
             for &ha2 in spaces.active.iter() {
@@ -541,33 +511,6 @@ fn r0_c_c_to_a_v(
 ) -> f64 {
     let (u, a, i, j) = double(ex);
     let mut out = 0.0;
-    for &hv0 in spaces.virtuals.iter() {
-        for &hc2 in spaces.core.iter() {
-            for &hc3 in spaces.core.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(a, hv0)
-                        * delta(i, hc2)
-                        * delta(j, hc3)
-                        * theta(gamma1, ha1, u)
-                        * ao.eri_coul[(hc2, hc3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &hc2 in spaces.core.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += delta(a, hv0)
-                        * delta(i, hc3)
-                        * delta(j, hc2)
-                        * theta(gamma1, ha1, u)
-                        * ao.eri_coul[(hc2, hc3, hv0, ha1)];
-                }
-            }
-        }
-    }
     for &hv1 in spaces.virtuals.iter() {
         for &hc2 in spaces.core.iter() {
             for &hc3 in spaces.core.iter() {
@@ -621,13 +564,12 @@ fn r0_c_a_to_a_a(
     let mut out = 0.0;
     for &hc1 in spaces.core.iter() {
         for &ha0 in spaces.active.iter() {
-            out += -1.0
-                * delta(i, hc1)
+            out += -(delta(i, hc1)
                 * lambdas.lambda2.get(
                     &[active(spaces, ha0), active(spaces, u)],
                     &[active(spaces, v), active(spaces, w)],
                 )
-                * f[(hc1, ha0)];
+                * f[(hc1, ha0)]);
         }
     }
     for &hc2 in spaces.core.iter() {
@@ -753,129 +695,6 @@ fn r0_c_a_to_a_a(
             }
         }
     }
-    for &hc3 in spaces.core.iter() {
-        for &ha2 in spaces.active.iter() {
-            for &ha0 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (1.0 / 4.0)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha0), active(spaces, ha1)],
-                            &[active(spaces, w), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha2 in spaces.active.iter() {
-            for &ha0 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (-1.0 / 8.0)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha0, v)
-                        * theta(gamma1, ha1, w)
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha2 in spaces.active.iter() {
-            for &ha0 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (1.0 / 4.0)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha0, w)
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha0 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha0), active(spaces, u)],
-                            &[active(spaces, ha2), active(spaces, v)],
-                        )
-                        * theta(gamma1, ha1, w)
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha0 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (1.0 / 2.0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha0), active(spaces, u)],
-                            &[active(spaces, ha2), active(spaces, w)],
-                        )
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha1 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha0 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, ha2), active(spaces, w)],
-                        )
-                        * theta(gamma1, ha0, v)
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha1 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha0 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, v), active(spaces, ha2)],
-                        )
-                        * theta(gamma1, ha0, w)
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
-    for &hc3 in spaces.core.iter() {
-        for &ha0 in spaces.active.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(i, hc3)
-                        * lambdas.lambda3.get(
-                            &[active(spaces, u), active(spaces, ha0), active(spaces, ha1)],
-                            &[active(spaces, w), active(spaces, ha2), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, ha0, ha1)];
-                }
-            }
-        }
-    }
     out
 }
 
@@ -930,36 +749,6 @@ fn r0_c_a_to_a_v(
             }
         }
     }
-    for &hv0 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (1.0 / 2.0)
-                        * delta(a, hv0)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, hc3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(a, hv0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, v), active(spaces, ha2)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, hv0, ha1)];
-                }
-            }
-        }
-    }
     for &hv1 in spaces.virtuals.iter() {
         for &hc2 in spaces.core.iter() {
             for &ha3 in spaces.active.iter() {
@@ -986,36 +775,6 @@ fn r0_c_a_to_a_v(
                             &[active(spaces, v), active(spaces, ha3)],
                         )
                         * ao.eri_coul[(hc2, ha3, ha0, hv1)];
-                }
-            }
-        }
-    }
-    for &hv1 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha0 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(a, hv1)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha0, v)
-                        * ao.eri_coul[(ha2, hc3, ha0, hv1)];
-                }
-            }
-        }
-    }
-    for &hv1 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha0 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(a, hv1)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha0), active(spaces, u)],
-                            &[active(spaces, ha2), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, ha0, hv1)];
                 }
             }
         }
@@ -1073,36 +832,6 @@ fn r0_c_a_to_v_a(
             }
         }
     }
-    for &hv0 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(a, hv0)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, hc3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(a, hv0)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, ha2), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, hv0, ha1)];
-                }
-            }
-        }
-    }
     for &hv1 in spaces.virtuals.iter() {
         for &hc2 in spaces.core.iter() {
             for &ha3 in spaces.active.iter() {
@@ -1129,35 +858,6 @@ fn r0_c_a_to_v_a(
                             &[active(spaces, ha3), active(spaces, v)],
                         )
                         * ao.eri_coul[(hc2, ha3, ha0, hv1)];
-                }
-            }
-        }
-    }
-    for &hv1 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha0 in spaces.active.iter() {
-                    out += (1.0 / 2.0)
-                        * delta(a, hv1)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha0, v)
-                        * ao.eri_coul[(ha2, hc3, ha0, hv1)];
-                }
-            }
-        }
-    }
-    for &hv1 in spaces.virtuals.iter() {
-        for &hc3 in spaces.core.iter() {
-            for &ha0 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += delta(a, hv1)
-                        * delta(i, hc3)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha0), active(spaces, u)],
-                            &[active(spaces, ha2), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, hc3, ha0, hv1)];
                 }
             }
         }
@@ -1199,20 +899,6 @@ fn r0_c_a_to_v_v(
             }
         }
     }
-    for &hv0 in spaces.virtuals.iter() {
-        for &hv1 in spaces.virtuals.iter() {
-            for &hc3 in spaces.core.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 2.0)
-                        * delta(a, hv0)
-                        * delta(b, hv1)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * ao.eri_coul[(ha2, hc3, hv0, hv1)];
-                }
-            }
-        }
-    }
     for &hv1 in spaces.virtuals.iter() {
         for &hv0 in spaces.virtuals.iter() {
             for &hc2 in spaces.core.iter() {
@@ -1223,19 +909,6 @@ fn r0_c_a_to_v_v(
                         * delta(i, hc2)
                         * gamma1.data[u * gamma1.n + ha3]
                         * ao.eri_coul[(hc2, ha3, hv0, hv1)];
-                }
-            }
-        }
-    }
-    for &hv1 in spaces.virtuals.iter() {
-        for &hv0 in spaces.virtuals.iter() {
-            for &hc3 in spaces.core.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += delta(a, hv1)
-                        * delta(b, hv0)
-                        * delta(i, hc3)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * ao.eri_coul[(ha2, hc3, hv0, hv1)];
                 }
             }
         }
@@ -2329,114 +2002,6 @@ fn r0_a_a_to_a_v(
     let (v, a, t, u) = double(ex);
     let mut out = 0.0;
     for &hv0 in spaces.virtuals.iter() {
-        for &ha2 in spaces.active.iter() {
-            for &ha3 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (-1.0 / 8.0)
-                        * delta(a, hv0)
-                        * gamma1.data[t * gamma1.n + ha2]
-                        * gamma1.data[u * gamma1.n + ha3]
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha2 in spaces.active.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha3 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(a, hv0)
-                        * gamma1.data[t * gamma1.n + ha2]
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, ha3), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha3 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (1.0 / 4.0)
-                        * delta(a, hv0)
-                        * gamma1.data[t * gamma1.n + ha3]
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha3 in spaces.active.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(a, hv0)
-                        * gamma1.data[t * gamma1.n + ha3]
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, u)],
-                            &[active(spaces, v), active(spaces, ha2)],
-                        )
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha2 in spaces.active.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha3 in spaces.active.iter() {
-                    out += (1.0 / 2.0)
-                        * delta(a, hv0)
-                        * gamma1.data[u * gamma1.n + ha2]
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, t)],
-                            &[active(spaces, ha3), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha3 in spaces.active.iter() {
-            for &ha1 in spaces.active.iter() {
-                for &ha2 in spaces.active.iter() {
-                    out += (-1.0 / 4.0)
-                        * delta(a, hv0)
-                        * gamma1.data[u * gamma1.n + ha3]
-                        * lambdas.lambda2.get(
-                            &[active(spaces, ha1), active(spaces, t)],
-                            &[active(spaces, ha2), active(spaces, v)],
-                        )
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha3 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha1 in spaces.active.iter() {
-                    out += (1.0 / 4.0)
-                        * delta(a, hv0)
-                        * lambdas.lambda2.get(
-                            &[active(spaces, t), active(spaces, u)],
-                            &[active(spaces, ha3), active(spaces, ha2)],
-                        )
-                        * theta(gamma1, ha1, v)
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
         for &ha1 in spaces.active.iter() {
             out += delta(a, hv0)
                 * lambdas.lambda2.get(
@@ -2444,21 +2009,6 @@ fn r0_a_a_to_a_v(
                     &[active(spaces, v), active(spaces, ha1)],
                 )
                 * f[(ha1, hv0)];
-        }
-    }
-    for &hv0 in spaces.virtuals.iter() {
-        for &ha1 in spaces.active.iter() {
-            for &ha2 in spaces.active.iter() {
-                for &ha3 in spaces.active.iter() {
-                    out += (1.0 / 2.0)
-                        * delta(a, hv0)
-                        * lambdas.lambda3.get(
-                            &[active(spaces, t), active(spaces, u), active(spaces, ha1)],
-                            &[active(spaces, v), active(spaces, ha2), active(spaces, ha3)],
-                        )
-                        * ao.eri_coul[(ha2, ha3, hv0, ha1)];
-                }
-            }
         }
     }
     for &hv1 in spaces.virtuals.iter() {

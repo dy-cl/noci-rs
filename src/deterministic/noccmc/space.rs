@@ -88,6 +88,18 @@ pub(crate) struct Spaces {
     pub active_map: Vec<Option<usize>>,
 }
 
+/// Reusable raw and orthogonalized FOIS basis data.
+pub(crate) struct FoisBasis {
+    /// Raw spin-free FOIS metric S.
+    pub metric: Array2<f64>,
+    /// Hamiltonian coupling weights h.
+    pub h: Array1<f64>,
+    /// Weighted metric h S h.
+    pub weighted_metric: Array2<f64>,
+    /// Canonical FOIS transformation Y = h X.
+    pub y: Array2<f64>,
+}
+
 /// Build NOCC orbital spaces.
 /// # Arguments:
 /// - `nmo`: Number of molecular orbitals.
@@ -238,85 +250,6 @@ fn double_excitation_class(
     }
 }
 
-/// Check whether an orbital index belongs to the active space.
-/// # Arguments:
-/// - `spaces`: NOCC orbital spaces.
-/// - `p`: Orbital index.
-/// # Returns:
-/// - `bool`: `true` if `p` is active, otherwise `false`.
-fn is_active(
-    spaces: &Spaces,
-    p: usize,
-) -> bool {
-    spaces.class_of[p] == OrbitalClass::Active
-}
-
-/// Check whether a double excitation contains an active spectator index.
-/// # Arguments:
-/// - `spaces`: NOCC orbital spaces.
-/// - `p`: First creator-side orbital index.
-/// - `q`: Second creator-side orbital index.
-/// - `r`: First annihilator-side orbital index.
-/// - `s`: Second annihilator-side orbital index.
-/// # Returns:
-/// - `bool`: `true` if an active creator also appears on the annihilator side.
-fn has_active_spectator(
-    spaces: &Spaces,
-    p: usize,
-    q: usize,
-    r: usize,
-    s: usize,
-) -> bool {
-    (is_active(spaces, p) && (p == r || p == s)) || (is_active(spaces, q) && (q == r || q == s))
-}
-
-/// Check whether a double excitation has a repeated same-side active pair.
-/// # Arguments:
-/// - `spaces`: NOCC orbital spaces.
-/// - `p`: First creator-side orbital index.
-/// - `q`: Second creator-side orbital index.
-/// - `r`: First annihilator-side orbital index.
-/// - `s`: Second annihilator-side orbital index.
-/// # Returns:
-/// - `bool`: `true` if either active creator pair or active annihilator pair is repeated.
-fn has_repeated_same_side_active_pair(
-    spaces: &Spaces,
-    p: usize,
-    q: usize,
-    r: usize,
-    s: usize,
-) -> bool {
-    (is_active(spaces, p) && is_active(spaces, q) && p == q)
-        || (is_active(spaces, r) && is_active(spaces, s) && r == s)
-}
-
-/// Check whether a supported double excitation is retained as a representative direction.
-/// # Arguments:
-/// - `spaces`: NOCC orbital spaces.
-/// - `p`: First creator-side orbital index.
-/// - `q`: Second creator-side orbital index.
-/// - `r`: First annihilator-side orbital index.
-/// - `s`: Second annihilator-side orbital index.
-/// # Returns:
-/// - `bool`: `true` if the excitation should be retained in the FOIS basis.
-fn is_representative_double(
-    spaces: &Spaces,
-    p: usize,
-    q: usize,
-    r: usize,
-    s: usize,
-) -> bool {
-    if has_repeated_same_side_active_pair(spaces, p, q, r, s) {
-        return false;
-    }
-
-    if has_active_spectator(spaces, p, q, r, s) {
-        return false;
-    }
-
-    true
-}
-
 /// Build the raw spin-free singles and doubles excitation list.
 /// # Arguments:
 /// - `spaces`: NOCC orbital spaces.
@@ -327,15 +260,9 @@ pub(crate) fn build_excitations(spaces: &Spaces) -> Vec<Excitation> {
 
     for &p in spaces.creators.iter() {
         for &q in spaces.annihilators.iter() {
-            if p == q {
-                continue;
+            if single_excitation_class(spaces, p, q).is_some() {
+                out.push(Excitation::Single { p, q });
             }
-
-            if single_excitation_class(spaces, p, q).is_none() {
-                continue;
-            }
-
-            out.push(Excitation::Single { p, q });
         }
     }
 
@@ -343,19 +270,9 @@ pub(crate) fn build_excitations(spaces: &Spaces) -> Vec<Excitation> {
         for &q in spaces.creators.iter() {
             for &r in spaces.annihilators.iter() {
                 for &s in spaces.annihilators.iter() {
-                    if p == r && q == s {
-                        continue;
+                    if double_excitation_class(spaces, p, q, r, s).is_some() {
+                        out.push(Excitation::Double { p, q, r, s });
                     }
-
-                    if double_excitation_class(spaces, p, q, r, s).is_none() {
-                        continue;
-                    }
-
-                    if !is_representative_double(spaces, p, q, r, s) {
-                        continue;
-                    }
-
-                    out.push(Excitation::Double { p, q, r, s });
                 }
             }
         }
@@ -431,14 +348,14 @@ pub(crate) fn print_space_diagnostics(
         spaces.annihilators.len()
     );
     println!("Total raw spin-free excitations: {}", excitations.len());
-    println!("Repeated-side spin-free doubles retained: {}", nrepeated);
+    println!("Repeated-side spin-free doubles present: {}", nrepeated);
 
     for (class, count) in counts.iter() {
         println!("{:?}: {}", class, count);
     }
 }
 
-/// Print the weighted FOIS metric diagnostics.
+/// Build the weighted FOIS basis from the full raw excitation list.
 /// # Arguments:
 /// - `ao`: Integrals transformed to the NOCI natural-orbital basis.
 /// - `gamma1`: Full-space spin-free one-body RDM.
@@ -447,15 +364,15 @@ pub(crate) fn print_space_diagnostics(
 /// - `excitations`: Raw spin-free excitation list.
 /// - `tol`: Weighted overlap eigenvalue threshold.
 /// # Returns:
-/// - `()`: Prints raw and weighted FOIS metric diagnostics.
-pub(crate) fn print_fois_metric_diagnostics(
+/// - `FoisBasis`: Raw metric, Hamiltonian weights, weighted metric, and Y.
+pub(crate) fn build_fois_basis(
     ao: &AoData,
     gamma1: &RDM1<f64>,
     lambdas: &Cumulants<f64>,
     spaces: &Spaces,
     excitations: &[Excitation],
     tol: f64,
-) {
+) -> FoisBasis {
     let mut s: Array2<f64> = Array2::zeros((excitations.len(), excitations.len()));
 
     for (i, &left) in excitations.iter().enumerate() {
@@ -463,6 +380,49 @@ pub(crate) fn print_fois_metric_diagnostics(
             s[(i, j)] = overlap::overlap_element(left, right, spaces, gamma1, lambdas);
         }
     }
+
+    let h = hamiltonian_weights(ao, gamma1, excitations);
+    let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
+
+    for i in 0..s.nrows() {
+        for j in 0..s.ncols() {
+            stilde[(i, j)] = h[i] * s[(i, j)] * h[j];
+        }
+    }
+
+    let xtilde = loewdin_x(&stilde, true, tol);
+    let mut y = xtilde.clone();
+
+    for mu in 0..h.len() {
+        for col in 0..y.ncols() {
+            y[(mu, col)] *= h[mu];
+        }
+    }
+
+    FoisBasis {
+        metric: s,
+        h,
+        weighted_metric: stilde,
+        y,
+    }
+}
+
+/// Print the weighted FOIS metric diagnostics.
+/// # Arguments:
+/// - `spaces`: NOCC orbital spaces.
+/// - `excitations`: Raw spin-free excitation list.
+/// - `fois`: Reusable weighted FOIS basis data.
+/// # Returns:
+/// - `()`: Prints raw and weighted FOIS metric diagnostics.
+pub(crate) fn print_fois_metric_diagnostics(
+    spaces: &Spaces,
+    excitations: &[Excitation],
+    fois: &FoisBasis,
+) {
+    let s = &fois.metric;
+    let h = &fois.h;
+    let stilde = &fois.weighted_metric;
+    let y = &fois.y;
 
     let mut asym: f64 = 0.0;
     for i in 0..s.nrows() {
@@ -476,32 +436,14 @@ pub(crate) fn print_fois_metric_diagnostics(
         .eigh(UPLO::Upper)
         .expect("raw FOIS overlap diagonalisation failed");
 
-    let h = hamiltonian_weights(ao, gamma1, excitations);
-    let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
-
-    for i in 0..s.nrows() {
-        for j in 0..s.ncols() {
-            stilde[(i, j)] = h[i] * s[(i, j)] * h[j];
-        }
-    }
-
     let (stilde_evals, _) = stilde
         .clone()
         .eigh(UPLO::Upper)
         .expect("weighted FOIS overlap diagonalisation failed");
 
-    let xtilde = loewdin_x(&stilde, true, tol);
-    let mut y = xtilde.clone();
-
-    for mu in 0..h.len() {
-        for col in 0..y.ncols() {
-            y[(mu, col)] *= h[mu];
-        }
-    }
-
     let nkeep = y.ncols();
     let nnull = h.len() - nkeep;
-    let ytsy = y.t().dot(&s).dot(&y);
+    let ytsy = y.t().dot(s).dot(y);
     let mut orth_err: f64 = 0.0;
 
     for i in 0..ytsy.nrows() {
@@ -538,13 +480,13 @@ pub(crate) fn print_fois_metric_diagnostics(
     println!("Weighted FOIS near-null directions: {}", nnull);
     println!("Max Y^T S Y - I error: {:.6e}", orth_err);
 
-    print_block_diagnostics(&s, spaces, excitations);
-    print_diagonal_diagnostics(&s, spaces, excitations);
+    print_block_diagnostics(s, spaces, excitations);
+    print_diagonal_diagnostics(s, spaces, excitations);
 
     if excitations.len() <= 16 {
         println!("{}", "-".repeat(100));
         println!("Raw FOIS metric:");
-        print_array2(&s);
+        print_array2(s);
     }
 
     println!("{}", "-".repeat(100));
