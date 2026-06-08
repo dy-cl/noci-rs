@@ -3,7 +3,7 @@ from __future__ import annotations
 from fractions import Fraction
 
 from core import Delta, Expr, Idx, Tensor, Term
-
+from specs import EXCITATIONS, overlapBlock
 
 def latexIndex(idx: Idx) -> str:
     """Render one orbital index.
@@ -12,7 +12,6 @@ def latexIndex(idx: Idx) -> str:
         i, u, a
     """
     return idx.name
-
 
 def latexIndexTuple(indices: tuple[Idx, ...]) -> str:
     """Render an upper or lower tensor index tuple.
@@ -25,7 +24,6 @@ def latexIndexTuple(indices: tuple[Idx, ...]) -> str:
         for idx in indices
     )
 
-
 def latexDelta(delta: Delta) -> str:
     """Render a Kronecker delta.
 
@@ -37,7 +35,6 @@ def latexDelta(delta: Delta) -> str:
         + f"^{{{latexIndex(delta.left)}}}"
         + f"_{{{latexIndex(delta.right)}}}"
     )
-
 
 def latexTensor(tensor: Tensor) -> str:
     """Render a spin-free tensor.
@@ -64,7 +61,6 @@ def latexTensor(tensor: Tensor) -> str:
         + f"_{{{latexIndexTuple(tensor.lower)}}}"
     )
 
-
 def latexCoeff(coeff: Fraction, hasFactors: bool) -> str:
     """Render an absolute coefficient.
 
@@ -82,7 +78,6 @@ def latexCoeff(coeff: Fraction, hasFactors: bool) -> str:
         return str(c.numerator)
 
     return f"\\frac{{{c.numerator}}}{{{c.denominator}}}"
-
 
 def latexTermBody(term: Term) -> str:
     """Render one term without leading sign.
@@ -111,7 +106,6 @@ def latexTermBody(term: Term) -> str:
 
     return " ".join(factors)
 
-
 def latexTermSigned(term: Term, first: bool) -> str:
     """Render one signed term.
 
@@ -131,7 +125,6 @@ def latexTermSigned(term: Term, first: bool) -> str:
 
     return " + " + body
 
-
 def sortedTerms(expr: Expr) -> tuple[Term, ...]:
     """Stable display ordering.
 
@@ -146,7 +139,6 @@ def sortedTerms(expr: Expr) -> tuple[Term, ...]:
             term.coeff,
         ),
     ))
-
 
 def latexExpr(expr: Expr) -> str:
     """Render a complete expression on one line.
@@ -231,3 +223,15 @@ def latexEquation(lhs: str, expr: Expr, lineWidth: int | None = None) -> str:
         "\\end{split}\n"
         "\\end{equation}"
     )
+
+def overlapLatexName(name: str) -> str:
+    """Return printed overlap-metric label."""
+    return overlapBlock(name).latex_name
+
+def residualLatexName(name: str) -> str:
+    """Return printed zeroth-order residual label."""
+    spec = EXCITATIONS[name]
+    upper = latexIndexTuple(spec.creators)
+    lower = latexIndexTuple(spec.annihilators)
+
+    return rf"R^{{{upper}}}_{{{lower},(0)}}"
