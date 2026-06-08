@@ -3,121 +3,8 @@ from __future__ import annotations
 from fractions import Fraction
 from itertools import combinations, permutations
 
-from core import Expr, Tensor, Term, combine, permutationSign
-
-
-def invPerm(p: tuple[int, ...]) -> tuple[int, ...]:
-    out = [0] * len(p)
-
-    for i, x in enumerate(p):
-        out[x] = i
-
-    return tuple(out)
-
-
-def composePerm(p: tuple[int, ...], q: tuple[int, ...]) -> tuple[int, ...]:
-    return tuple(p[q[i]] for i in range(len(p)))
-
-
-def cycleCountPerm(p: tuple[int, ...]) -> int:
-    seen = [False] * len(p)
-    cycles = 0
-
-    for i in range(len(p)):
-        if seen[i]:
-            continue
-
-        cycles += 1
-        j = i
-
-        while not seen[j]:
-            seen[j] = True
-            j = p[j]
-
-    return cycles
-
-
-def spinGram(rank: int) -> list[list[Fraction]]:
-    perms = tuple(permutations(range(rank)))
-    out = []
-
-    for p in perms:
-        row = []
-
-        for q in perms:
-            rel = composePerm(invPerm(p), q)
-            row.append(
-                Fraction(
-                    permutationSign(p)
-                    * permutationSign(q)
-                    * (2 ** cycleCountPerm(rel)),
-                    1,
-                )
-            )
-
-        out.append(row)
-
-    return out
-
-
-def solveConsistent(mat: list[list[Fraction]], rhs: list[Fraction]) -> list[Fraction] | None:
-    if not mat:
-        return [] if all(x == 0 for x in rhs) else None
-
-    nRows = len(mat)
-    nCols = len(mat[0])
-    aug = [row[:] + [rhs[i]] for i, row in enumerate(mat)]
-
-    pivotCols = []
-    row = 0
-
-    for col in range(nCols):
-        pivot = None
-
-        for r in range(row, nRows):
-            if aug[r][col] != 0:
-                pivot = r
-                break
-
-        if pivot is None:
-            continue
-
-        if pivot != row:
-            aug[row], aug[pivot] = aug[pivot], aug[row]
-
-        scaleFactor = aug[row][col]
-        aug[row] = [x / scaleFactor for x in aug[row]]
-
-        for r in range(nRows):
-            if r == row:
-                continue
-
-            factor = aug[r][col]
-
-            if factor == 0:
-                continue
-
-            aug[r] = [
-                aug[r][i] - factor * aug[row][i]
-                for i in range(nCols + 1)
-            ]
-
-        pivotCols.append(col)
-        row += 1
-
-        if row == nRows:
-            break
-
-    for r in range(row, nRows):
-        if all(aug[r][c] == 0 for c in range(nCols)) and aug[r][-1] != 0:
-            return None
-
-    sol = [Fraction(0) for _ in range(nCols)]
-
-    for r, col in enumerate(pivotCols):
-        sol[col] = aug[r][-1]
-
-    return sol
+from core import Expr, Tensor, Term, combine
+from spinsum import solveConsistent, spinGram
 
 
 def lambdaRank(name: str) -> int | None:
@@ -225,9 +112,9 @@ def sparsestEquivalentOrbit(
                 for row in range(len(perms))
             ]
 
-            sol = solveConsistent(mat, target)
-
-            if sol is None:
+            try:
+                sol = solveConsistent(mat, target)
+            except ValueError:
                 continue
 
             candidate = {

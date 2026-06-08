@@ -116,7 +116,7 @@ def rustFunction(block: OverlapBlockSpec, debug: bool = False) -> str:
 
     lines = rustFunctionDoc(block) + [
         "#[allow(unused_variables)]",
-        f"pub(crate) fn {block.rust_name}(",
+        f"pub(crate) fn {block.rustName}(",
         "    left: Excitation,",
         "    right: Excitation,",
         "    spaces: &Spaces,",
@@ -184,7 +184,7 @@ def rustFunctionDebugTerms(block: OverlapBlockSpec) -> str:
 
     lines = rustFunctionDoc(block) + [
         "#[allow(unused_variables)]",
-        f"pub(crate) fn {block.rust_name}(",
+        f"pub(crate) fn {block.rustName}(",
         "    left: Excitation,",
         "    right: Excitation,",
         "    spaces: &Spaces,",
@@ -248,14 +248,14 @@ def rustDispatcher() -> str:
         lines.append(
             "        "
             + f"(ExcitationClass::{block.left}, ExcitationClass::{block.right}) => "
-            + f"{block.rust_name}(left, right, spaces, gamma1, lambdas),"
+            + f"{block.rustName}(left, right, spaces, gamma1, lambdas),"
         )
 
         if block.left != block.right:
             lines.append(
                 "        "
                 + f"(ExcitationClass::{block.right}, ExcitationClass::{block.left}) => "
-                + f"{block.rust_name}(right, left, spaces, gamma1, lambdas),"
+                + f"{block.rustName}(right, left, spaces, gamma1, lambdas),"
             )
 
     lines.extend([
@@ -476,7 +476,7 @@ def rustResidualFunction(name: str) -> str:
         "/// # Returns:",
         "/// - `f64`: Direct zeroth-order residual element.",
         "#[allow(unused_variables)]",
-        f"fn r0_{spec.rust_name}(",
+        f"fn r0_{spec.rustName}(",
         "    ex: Excitation,",
         "    ao: &AoData,",
         "    f: &Array2<f64>,",
@@ -525,7 +525,7 @@ def rustResidualDispatcher() -> str:
         spec = EXCITATIONS[name]
         lines.append(
             f"        ExcitationClass::{name} => "
-            f"r0_{spec.rust_name}(ex, ao, f, spaces, gamma1, lambdas),"
+            f"r0_{spec.rustName}(ex, ao, f, spaces, gamma1, lambdas),"
         )
 
     lines.extend([

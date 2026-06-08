@@ -226,7 +226,7 @@ def latexEquation(lhs: str, expr: Expr, lineWidth: int | None = None) -> str:
 
 def overlapLatexName(name: str) -> str:
     """Return printed overlap-metric label."""
-    return overlapBlock(name).latex_name
+    return overlapBlock(name).latexName
 
 def residualLatexName(name: str) -> str:
     """Return printed zeroth-order residual label."""
