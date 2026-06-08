@@ -6,33 +6,93 @@ from core import Idx, Space
 
 @dataclass(frozen = True)
 class ExcitationSpec:
-    """One raw GNOCCSD excitation type."""
+    """
+    One GNOCCSD excitation type.
 
+    Notation:
+        \hat \tau_\mu = \hat E_{q_1 \cdots q_k}^{p_1 \cdots p_k},
+        where k is 1 or 2.
+
+    Examples:
+        i \in C, u \in A ---> \hat t_\mu = \hat E_i^u 
+        t, u in A, a, b in V ---> \hat t_\mu = \hat E_{tu}^{ab}
+    """
+    
+    # Symbolic name for this excitation class.
     name: str
+    # Upper indices of \hat E_{q_1 \cdots q_k}^{p_1 \cdots p_k}. 
     creators: tuple[Idx, ...]
+    # Lower indices of \hat E_{q_1 \cdots q_k}^{p_1 \cdots p_k}.
     annihilators: tuple[Idx, ...]
-    rust_name: str
-    latex_name: str
+    # Name used for emission of Rust functions.
+    rustName: str
+    # Name used for emission of Latex expressions. 
+    latexName: str
+    # Variable names used to unpack this excitation's indices.
     unpack: tuple[str, ...]
 
 @dataclass(frozen = True)
 class OverlapBlockSpec:
-    """One generated overlap block."""
+    """
+    One generated overlap block. Left excitation stored in daggered form.
 
+    Notation:
+        S_{\mu\nu} = \langle \Phi| \hat \tau_\mu^\dagger \hat \tau_\nu | \Phi \rangle.
+
+    Examples:
+        Left: CA ---> AV with w \in A, a \in V, i \in C, u \in A ---> \hat E_{iu}^{wa}
+        Right: CA ---> VA with b \in V, y \in A, j \in C, x \in A ---> \hat E_{jx}^{by}
+        ---> S_{\mu\nu} = \langle \Phi | \hat E_{iu}^{wa} \hat E_{jx}^{by} | \Phi \rangle.
+
+    """
+    
+    # Label of the overlap block.
     name: str
+    # Name of left excitation class.
     left: str
+    # Name of right excitation class.
     right: str
-    rust_name: str
-    latex_name: str
+    # Name of generated Rust function for this overlap block.
+    rustName: str
+    # Name of Latex label used when emitting Latex.
+    latexName: str
+    # Variable names used to unpack left and right excitation indices.
     unpack: tuple[tuple[str, ...], tuple[str, ...]]
 
 def C(name: str) -> Idx:
+    """
+    Construct a core orbital index.
+
+    Notation:
+        i, j, k, l, ... \in C.
+
+    Example:
+        C("i") represents i \in C.
+    """
     return Idx(name, Space.CORE)
 
 def A(name: str) -> Idx:
+    """
+    Construct an active orbital index.
+
+    Notation:
+        t, u, v, w, ... \in A.
+    
+    Example:
+        A("u") represents u \in A.
+    """
     return Idx(name, Space.ACTIVE)
 
 def V(name: str) -> Idx:
+    """
+    Construct a virtual orbital index.
+
+    Notation:
+        a, b, c, d, ... \in V.
+
+    Example:
+        V("a") represents a \in V.
+    """
     return Idx(name, Space.VIRTUAL)
 
 EXCITATIONS = {
@@ -74,12 +134,21 @@ OVERLAP_BLOCKS = (
 )
 
 def availableExcitations() -> tuple[str, ...]:
+    """
+    Return the names of all excitation classes known.
+    """
     return tuple(EXCITATIONS.keys())
 
 def availableBlocks() -> tuple[str, ...]:
+    """
+    Return the names of all overlap blocks known.
+    """
     return tuple(block.name for block in OVERLAP_BLOCKS)
 
 def overlapBlock(name: str) -> OverlapBlockSpec:
+    """
+    Look up an overlap block by its name.
+    """
     for block in OVERLAP_BLOCKS:
         if block.name == name:
             return block
