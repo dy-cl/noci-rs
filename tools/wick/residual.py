@@ -18,11 +18,7 @@ def emitResidual(name: str, emit: str, order: int = 0, lineWidth: int | None = N
         emitResidual("CToA", "expr", order = 1) emits the first-order residual.
     """
     if emit == "rust":
-        if order != 0:
-            raise ValueError("Rust emission is currently only implemented for zeroth-order residuals")
-
         from rust import rustResidualFunction
-
         return rustResidualFunction(name)
 
     expr = residualExpr(
@@ -42,7 +38,7 @@ def emitResidual(name: str, emit: str, order: int = 0, lineWidth: int | None = N
 
     raise ValueError(f"unknown emit mode {emit}")
 
-def emitResiduals(name: str, emit: str, order: int = 0, lineWidth: int | None = None) -> str:
+def emitResiduals(name: str, emit: str, order: int = 0, rustPart: str | None = None, lineWidth: int | None = None) -> str:
     """
     Emit one residual expression or all residual expressions.
 
@@ -53,13 +49,27 @@ def emitResiduals(name: str, emit: str, order: int = 0, lineWidth: int | None = 
         emitResiduals("all", "latex") emits all residual equations.
         emitResiduals("all", "rust") emits the complete generated Rust module.
     """
+
     if name == "all" and emit == "rust":
-        from rust import rustResidualModule
+        from rust import (
+            rustResidualCommonModule,
+            rustResidualModModule,
+            rustResidualOrderModule,
+        )
 
-        if order != 0:
-            raise ValueError("Rust emission is currently only implemented for zeroth-order residuals")
+        if rustPart == "mod":
+            return rustResidualModModule(maxOrder = order)
 
-        return rustResidualModule()
+        if rustPart == "common":
+            return rustResidualCommonModule()
+
+        if rustPart == "r0":
+            return rustResidualOrderModule(order = 0)
+
+        if rustPart == "r1":
+            return rustResidualOrderModule(order = 1)
+
+        raise ValueError("--emit rust with --class all requires --rust-part")
 
     if name == "all":
         return "\n\n".join(
@@ -113,6 +123,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--rust-part",
+        dest = "rustPart",
+        choices = ("mod", "common", "r0", "r1"),
+        default = None,
+    )
+
+    parser.add_argument(
         "--line-width",
         type = int,
         default = 120,
@@ -127,6 +144,7 @@ def main() -> None:
             args.excitation,
             args.emit,
             order = args.order,
+            rustPart = args.rustPart,
             lineWidth = lineWidth,
         ),
         end = "" if args.emit == "rust" and args.excitation == "all" else "\n",

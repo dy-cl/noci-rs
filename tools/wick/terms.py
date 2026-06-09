@@ -1,0 +1,562 @@
+from __future__ import annotations
+
+import argparse
+import json
+from fractions import Fraction
+from typing import Any
+import sys
+import signal
+
+from core import Idx, Space, Term
+from equations import residualExpr
+from specs import EXCITATIONS, ExcitationSpec, availableExcitations
+
+SPACE_KIND = {
+    Space.CORE: 0,
+    Space.ACTIVE: 1,
+    Space.VIRTUAL: 2,
+}
+
+SPACE_NAMES = {
+    "core": 0,
+    "active": 1,
+    "virtual": 2,
+}
+
+TENSOR_KIND = {
+    "Gamma1": 0,
+    "Theta": 1,
+    "f": 2,
+    "g": 3,
+    "Lambda2": 4,
+    "Lambda3": 5,
+    "Lambda4": 6,
+    "t1": 8,
+    "t2": 9,
+}
+
+def indexKey(idx: Idx) -> tuple[str, Space]:
+    """
+    Return the local key for one symbolic orbital index.
+
+    Notation:
+        p in C/A/V -> (name, space)
+
+    Examples:
+        A("u") and C("u") would be different keys, and are rejected later
+        because the compact JSON representation addresses indices by name.
+    """
+    return (
+        idx.name,
+        idx.space,
+    )
+
+def encodeSpace(space: Space) -> int:
+    """
+    Encode one orbital space.
+
+    Notation:
+        C -> 0, A -> 1, V -> 2
+
+    Examples:
+        Space.ACTIVE becomes 1.
+    """
+    if space not in SPACE_KIND:
+        raise ValueError(f"unknown space {space}")
+
+    return SPACE_KIND[space]
+
+def freeIndices(spec: ExcitationSpec) -> tuple[Idx, ...]:
+    """
+    Return residual free indices in unpacking order.
+
+    Notation:
+        R^{creators}_{annihilators}
+
+    Examples:
+        CToA gives (u, i).
+    """
+    return spec.creators + spec.annihilators
+
+def termIndices(term: Term) -> tuple[Idx, ...]:
+    """
+    Return every index occurrence in one symbolic term.
+
+    Notation:
+        c delta tensor tensor -> all indices appearing in those factors
+
+    Examples:
+        A Lambda2 factor contributes its upper and lower indices.
+    """
+    out = []
+
+    for delta in term.deltas:
+        out.append(delta.left)
+        out.append(delta.right)
+
+    for tensor in term.tensors:
+        out.extend(tensor.upper)
+        out.extend(tensor.lower)
+
+    return tuple(out)
+
+def addIndex(
+    indices: list[Idx],
+    indexIds: dict[tuple[str, Space], int],
+    spacesByName: dict[str, Space],
+    idx: Idx,
+) -> None:
+    """
+    Add one index to the class-local index table.
+
+    Notation:
+        index id = position in class-local index list
+
+    Examples:
+        The first free index gets id 0.
+    """
+    oldSpace = spacesByName.get(idx.name)
+
+    if oldSpace is not None and oldSpace != idx.space:
+        raise ValueError(
+            f"index name {idx.name!r} occurs in both {oldSpace} and {idx.space}"
+        )
+
+    spacesByName[idx.name] = idx.space
+    key = indexKey(idx)
+
+    if key in indexIds:
+        return
+
+    indexIds[key] = len(indices)
+    indices.append(idx)
+
+def classIndexTable(
+    spec: ExcitationSpec,
+    expr: tuple[Term, ...],
+) -> tuple[tuple[Idx, ...], dict[tuple[str, Space], int]]:
+    """
+    Build one residual-class index table.
+
+    Free indices are placed first. Dummy indices are then added in first
+    occurrence order over the generated symbolic terms.
+
+    Notation:
+        indices = free + dummies
+
+    Examples:
+        CToA starts with u, i before any Hamiltonian or amplitude dummies.
+    """
+    indices: list[Idx] = []
+    indexIds: dict[tuple[str, Space], int] = {}
+    spacesByName: dict[str, Space] = {}
+
+    for idx in freeIndices(spec):
+        addIndex(
+            indices,
+            indexIds,
+            spacesByName,
+            idx,
+        )
+
+    for term in expr:
+        for idx in termIndices(term):
+            addIndex(
+                indices,
+                indexIds,
+                spacesByName,
+                idx,
+            )
+
+    return (
+        tuple(indices),
+        indexIds,
+    )
+
+def indexId(
+    idx: Idx,
+    indexIds: dict[tuple[str, Space], int],
+) -> int:
+    """
+    Return the encoded integer id for one symbolic index.
+
+    Notation:
+        u -> 0, i -> 1, ...
+
+    Examples:
+        Tensor indices are encoded by class-local ids.
+    """
+    return indexIds[indexKey(idx)]
+
+def encodeCoeff(coeff) -> list[int]:
+    """
+    Encode one rational coefficient.
+
+    Notation:
+        a / b -> [a, b]
+
+    Examples:
+        Fraction(-1, 2) becomes [-1, 2].
+    """
+    value = Fraction(coeff)
+
+    return [
+        value.numerator,
+        value.denominator,
+    ]
+
+def encodeLoops(
+    term: Term,
+    indexIds: dict[tuple[str, Space], int],
+    freeIds: set[int],
+) -> list[int]:
+    """
+    Encode the dummy-loop indices for one term.
+
+    Notation:
+        loops = term indices minus residual free indices
+
+    Examples:
+        A dummy active index x becomes its class-local integer id.
+    """
+    seen = set()
+    loops = []
+
+    for idx in termIndices(term):
+        encoded = indexId(
+            idx,
+            indexIds,
+        )
+
+        if encoded in freeIds or encoded in seen:
+            continue
+
+        seen.add(encoded)
+        loops.append(encoded)
+
+    return loops
+
+def encodeDelta(
+    delta,
+    indexIds: dict[tuple[str, Space], int],
+) -> list[int]:
+    """
+    Encode one Kronecker delta.
+
+    Notation:
+        delta^p_q -> [p, q]
+
+    Examples:
+        delta(i, j) becomes [id(i), id(j)].
+    """
+    return [
+        indexId(delta.left, indexIds),
+        indexId(delta.right, indexIds),
+    ]
+
+def encodeTensor(
+    tensor,
+    indexIds: dict[tuple[str, Space], int],
+) -> list[Any]:
+    """
+    Encode one tensor factor.
+
+    Notation:
+        tensor -> [kind, upper_ids, lower_ids]
+
+    Examples:
+        Lambda2^{ux}_{vw} becomes [4, [u, x], [v, w]].
+        t1^q_p becomes [8, [q], [p]].
+    """
+    if tensor.name not in TENSOR_KIND:
+        raise ValueError(f"unknown tensor {tensor.name}")
+
+    return [
+        TENSOR_KIND[tensor.name],
+        [
+            indexId(
+                idx,
+                indexIds,
+            )
+            for idx in tensor.upper
+        ],
+        [
+            indexId(
+                idx,
+                indexIds,
+            )
+            for idx in tensor.lower
+        ],
+    ]
+
+def encodeTerm(
+    term: Term,
+    indexIds: dict[tuple[str, Space], int],
+    freeIds: set[int],
+) -> list[Any]:
+    """
+    Encode one symbolic term.
+
+    Layout:
+        [coeff, loops, deltas, tensors]
+
+    Examples:
+        [[1, 2], [2, 3], [], [[4, [0, 2], [3, 1]], [8, [2], [0]]]]
+    """
+    return [
+        encodeCoeff(term.coeff),
+        encodeLoops(
+            term,
+            indexIds,
+            freeIds,
+        ),
+        [
+            encodeDelta(
+                delta,
+                indexIds,
+            )
+            for delta in term.deltas
+        ],
+        [
+            encodeTensor(
+                tensor,
+                indexIds,
+            )
+            for tensor in term.tensors
+        ],
+    ]
+
+def residualClassTerms(name: str, order: int) -> dict[str, Any]:
+    """
+    Encode one residual class as compact JSON data.
+
+    Notation:
+        R_mu^(order) for one ExcitationClass
+
+    Examples:
+        residualClassTerms("CToA", 1) emits the first-order CToA term table.
+    """
+    spec = EXCITATIONS[name]
+    expr = tuple(
+        residualExpr(
+            name,
+            order = order,
+        )
+    )
+
+    indices, indexIds = classIndexTable(
+        spec,
+        expr,
+    )
+
+    free = [
+        indexId(
+            idx,
+            indexIds,
+        )
+        for idx in freeIndices(spec)
+    ]
+
+    freeIds = set(free)
+
+    return {
+        "indices": [
+            [
+                idx.name,
+                encodeSpace(idx.space),
+            ]
+            for idx in indices
+        ],
+        "free": free,
+        "terms": [
+            encodeTerm(
+                term,
+                indexIds,
+                freeIds,
+            )
+            for term in expr
+        ],
+    }
+
+def residualTermsData(name: str, order: int) -> dict[str, Any]:
+    """
+    Encode residual term data for one class or all classes.
+
+    Notation:
+        --class all -> every ExcitationClass
+
+    Examples:
+        residualTermsData("all", 1) emits all first-order residual term data.
+    """
+    if order not in (0, 1):
+        raise ValueError(f"unsupported residual order {order}")
+
+    if name == "all":
+        names = availableExcitations()
+    else:
+        if name not in EXCITATIONS:
+            raise ValueError(f"unknown excitation class {name}")
+
+        names = (name,)
+
+    return {
+        "version": 1,
+        "order": order,
+        "spaceKinds": SPACE_NAMES,
+        "tensorKinds": TENSOR_KIND,
+        "classes": {
+            className: residualClassTerms(
+                className,
+                order,
+            )
+            for className in names
+        },
+    }
+
+def residualTermsJson(
+    name: str,
+    order: int,
+    pretty: bool = False,
+) -> str:
+    """
+    Emit residual term data as JSON.
+
+    Notation:
+        residual expression -> compact class-local term IR
+
+    Examples:
+        residualTermsJson("all", 1) emits r1terms.json.
+    """
+    data = residualTermsData(
+        name,
+        order,
+    )
+
+    if pretty:
+        return json.dumps(
+            data,
+            indent = 2,
+        ) + "\n"
+
+    return json.dumps(
+        data,
+        separators = (
+            ",",
+            ":",
+        ),
+    ) + "\n"
+
+def writeResidualTermsJson(
+    name: str,
+    order: int,
+    out,
+    pretty: bool = False,
+) -> None:
+    """
+    Write residual term data as JSON.
+
+    For --class all this streams one excitation class at a time so large first-
+    and second-order residual files do not need to be materialised as one Python
+    dictionary before output.
+    """
+    if name != "all" or pretty:
+        out.write(
+            residualTermsJson(
+                name,
+                order,
+                pretty = pretty,
+            )
+        )
+        return
+
+    out.write("{")
+    out.write('"version":1,')
+    out.write(f'"order":{order},')
+    out.write('"spaceKinds":')
+    json.dump(
+        SPACE_NAMES,
+        out,
+        separators = (",", ":"),
+    )
+    out.write(",")
+    out.write('"tensorKinds":')
+    json.dump(
+        TENSOR_KIND,
+        out,
+        separators = (",", ":"),
+    )
+    out.write(",")
+    out.write('"classes":{')
+
+    for i, className in enumerate(availableExcitations()):
+        print(
+            f"generating {className}",
+            file = sys.stderr,
+            flush = True,
+        )
+
+        if i:
+            out.write(",")
+
+        json.dump(
+            className,
+            out,
+            separators = (",", ":"),
+        )
+        out.write(":")
+
+        json.dump(
+            residualClassTerms(
+                className,
+                order,
+            ),
+            out,
+            separators = (",", ":"),
+        )
+
+        out.flush()
+
+    out.write("}}\n")
+
+def main() -> None:
+    """
+    Run the residual term JSON emitter.
+
+    Notation:
+        python tools/wick/termjson.py --class all --order 1
+
+    Examples:
+        python tools/wick/termjson.py --class CToA --order 1 --pretty
+    """
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--class",
+        dest = "name",
+        choices = availableExcitations() + ("all",),
+        default = "all",
+    )
+
+    parser.add_argument(
+        "--order",
+        type = int,
+        choices = (0, 1),
+        default = 0,
+    )
+
+    parser.add_argument(
+        "--pretty",
+        action = "store_true",
+    )
+
+    args = parser.parse_args()
+
+    writeResidualTermsJson(
+        args.name,
+        args.order,
+        sys.stdout,
+        pretty = args.pretty,
+    )
+
+if __name__ == "__main__":
+    main()
