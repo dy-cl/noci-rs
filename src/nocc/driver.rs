@@ -135,6 +135,7 @@ pub(crate) fn run_noccmc(
         space::print_fois_metric_diagnostics(&spaces, &excitations, &fois);
 
         print_r0_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
+        print_r1_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
     }
 }
 
@@ -780,4 +781,109 @@ fn print_r0_diagnostics(
     println!("||Y^T R0||: {:.6e}", fois_norm2.sqrt());
     println!("||Y^T Sh||: {:.6e}", fois_sh_norm2.sqrt());
     println!("||Y^T R0 - Y^T Sh||: {:.6e}", fois_diff_norm2.sqrt());
+}
+
+/// Print the first-order residual action diagnostic.
+/// # Arguments:
+/// - `ao`: Integrals in the NOCI natural-orbital basis.
+/// - `gamma1`: Spin-free one-particle RDM.
+/// - `lambdas`: Spin-free active-space cumulants.
+/// - `spaces`: Core, active, and virtual orbital-space maps.
+/// - `excitations`: Raw spin-free excitation list.
+/// - `fois`: Reusable weighted FOIS basis data.
+/// # Returns:
+/// - `()`: Prints raw and projected first-order residual diagnostics.
+fn print_r1_diagnostics(
+    ao: &AoData,
+    gamma1: &RDM1<f64>,
+    lambdas: &Cumulants<f64>,
+    spaces: &space::Spaces,
+    excitations: &[space::Excitation],
+    fois: &space::FoisBasis,
+) {
+    let nexc = excitations.len();
+    let nfois = fois.y.ncols();
+
+    let mut t_fois = Array1::<f64>::zeros(nfois);
+
+    for i in 0..nfois {
+        t_fois[i] = 1.0e-3 / ((i + 1) as f64);
+    }
+
+    let t_raw = fois.y.dot(&t_fois);
+    let r1_direct = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw);
+    let r1_direct_fois = fois.y.t().dot(&r1_direct);
+
+    let mut t_raw_norm2 = 0.0;
+    let mut t_fois_norm2 = 0.0;
+    let mut r1_norm2 = 0.0;
+    let mut r1_fois_norm2 = 0.0;
+    let mut r1_max: f64 = 0.0;
+    let mut r1_fois_max: f64 = 0.0;
+
+    for i in 0..nexc {
+        t_raw_norm2 += t_raw[i] * t_raw[i];
+        r1_norm2 += r1_direct[i] * r1_direct[i];
+        r1_max = r1_max.max(r1_direct[i].abs());
+    }
+
+    for i in 0..nfois {
+        t_fois_norm2 += t_fois[i] * t_fois[i];
+        r1_fois_norm2 += r1_direct_fois[i] * r1_direct_fois[i];
+        r1_fois_max = r1_fois_max.max(r1_direct_fois[i].abs());
+    }
+
+    let mut t_fois_b = Array1::<f64>::zeros(nfois);
+
+    for i in 0..nfois {
+        t_fois_b[i] = if i % 2 == 0 {
+            5.0e-4 / ((i + 1) as f64)
+        } else {
+            -2.5e-4 / ((i + 1) as f64)
+        };
+    }
+
+    let t_raw_b = fois.y.dot(&t_fois_b);
+    let t_raw_sum = &t_raw + &t_raw_b;
+    let t_raw_scaled = t_raw.mapv(|x| 2.0 * x);
+
+    let r1_b = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw_b);
+    let r1_sum = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw_sum);
+    let r1_scaled = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw_scaled);
+
+    let mut linearity_norm2 = 0.0;
+    let mut scaling_norm2 = 0.0;
+    let mut linearity_max: f64 = 0.0;
+    let mut scaling_max: f64 = 0.0;
+
+    for i in 0..nexc {
+        let linearity = r1_sum[i] - r1_direct[i] - r1_b[i];
+        let scaling = r1_scaled[i] - 2.0 * r1_direct[i];
+
+        linearity_norm2 += linearity * linearity;
+        scaling_norm2 += scaling * scaling;
+        linearity_max = linearity_max.max(linearity.abs());
+        scaling_max = scaling_max.max(scaling.abs());
+    }
+
+    println!("{}", "=".repeat(100));
+    println!("GNOCC first-order residual diagnostics");
+    println!("Raw excitation dimension: {}", nexc);
+    println!("FOIS retained dimension: {}", nfois);
+    println!("||t raw||: {:.6e}", t_raw_norm2.sqrt());
+    println!("||t FOIS||: {:.6e}", t_fois_norm2.sqrt());
+    println!("||R1[t]||: {:.6e}", r1_norm2.sqrt());
+    println!("max |R1[t]|: {:.6e}", r1_max);
+    println!("||Y^T R1[t]||: {:.6e}", r1_fois_norm2.sqrt());
+    println!("max |Y^T R1[t]|: {:.6e}", r1_fois_max);
+    println!(
+        "||R1[t + u] - R1[t] - R1[u]||: {:.6e}",
+        linearity_norm2.sqrt()
+    );
+    println!(
+        "max |R1[t + u] - R1[t] - R1[u]|: {:.6e}",
+        linearity_max
+    );
+    println!("||R1[2t] - 2 R1[t]||: {:.6e}", scaling_norm2.sqrt());
+    println!("max |R1[2t] - 2 R1[t]|: {:.6e}", scaling_max);
 }

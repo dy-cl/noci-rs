@@ -3,6 +3,11 @@ name = "noci-rs"
 version = "0.1.1"
 edition = "2024"
 
+[build-dependencies]
+bincode = {version = "1"}
+serde = {version = "1", features = ["derive", "rc"]}
+serde_json = {version = "1", features = ["std"], default-features = false}
+
 [dependencies]
 rlua = {version = "0.20.1"}
 rand = {version = "0.8", features = ["small_rng"], default-features = false}

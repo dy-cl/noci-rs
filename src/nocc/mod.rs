@@ -1,10 +1,12 @@
 // nocc/mod.rs
 mod cumulants;
 mod driver;
+mod loader;
 mod overlap;
 mod rdm;
 mod residual;
 mod space;
+mod terms;
 
 pub(crate) use cumulants::{Cumulants, cumulants};
 pub(crate) use driver::run_noccmc;
