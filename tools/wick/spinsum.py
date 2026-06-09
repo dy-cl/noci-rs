@@ -3,7 +3,6 @@ from __future__ import annotations
 from fractions import Fraction
 from itertools import permutations
 
-
 def permutationSign(sequence: tuple[int, ...]) -> int:
     """
     Return fermionic parity of a permutation.
@@ -26,7 +25,6 @@ def permutationSign(sequence: tuple[int, ...]) -> int:
 
     return -1 if inversions % 2 else 1
 
-
 def invPerm(p: tuple[int, ...]) -> tuple[int, ...]:
     """
     Return the inverse of a permutation. 
@@ -47,7 +45,6 @@ def invPerm(p: tuple[int, ...]) -> tuple[int, ...]:
         out[x] = i
 
     return tuple(out)
-
 
 def composePerm(p: tuple[int, ...], q: tuple[int, ...]) -> tuple[int, ...]:
     """
@@ -83,7 +80,6 @@ def composePerm(p: tuple[int, ...], q: tuple[int, ...]) -> tuple[int, ...]:
 
     """
     return tuple(p[q[i]] for i in range(len(p)))
-
 
 def cycleCountPerm(p: tuple[int, ...]) -> int:
     """
@@ -127,8 +123,19 @@ def cycleCountPerm(p: tuple[int, ...]) -> int:
 
     return cycles
 
-
 def spinGram(rank: int) -> list[list[Fraction]]:
+    """
+    Build the spin-projection Gram matrix for lower-index permutations.
+
+    Notation:
+        G_{pq} = \operatorname{sgn}(p) \operatorname{sgn}(q) 2^{c(p^{-1}q)},
+        where c(p^{-1}q) is the number of cycles in the relative permutation.
+
+    Examples:
+        For rank 2, the permutations are (0, 1), (1, 0)
+        and this returns the 2 by 2 Gram matrix relating the two possible
+        lower-index orderings of \Lambda^{pq}_{rs}.
+    """
     perms = tuple(permutations(range(rank)))
     gram = []
 
@@ -149,7 +156,6 @@ def spinGram(rank: int) -> list[list[Fraction]]:
         gram.append(row)
 
     return gram
-
 
 def solveConsistent(mat: list[list[Fraction]], rhs: list[Fraction]) -> list[Fraction]:
     """

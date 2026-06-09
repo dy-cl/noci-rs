@@ -25,14 +25,15 @@ from core import (
 
 @dataclass(frozen = True)
 class CumulantRank:
-    """One generated spin-free cumulant module.
+    """
+    One generated spin-free cumulant. Stores rank and symbolic index names 
+    used to generate the Rust cumulants builder.
 
     Notation:
-        Lambda_k = Gamma_k - disconnected_k
+        \Lambda_k = \Gamma_k - D_k (disconnected).
 
     Examples:
-        CumulantRank(3, ("p", "q", "r"), ("s", "t", "u"))
-        represents generation of cumulants3.rs.
+        CumulantRank(3, ("p", "q", "r"), ("s", "t", "u")) represents generation of cumulants3.rs.
     """
     rank: int
     upper: tuple[str, ...]
@@ -46,10 +47,11 @@ RANKS = {
 }
 
 def activeIdx(name: str) -> Idx:
-    """Build one active orbital index.
+    """
+    Build one active orbital index.
 
     Notation:
-        p in A
+        p \in in A
 
     Examples:
         activeIdx("p") returns the active index p.
@@ -57,18 +59,15 @@ def activeIdx(name: str) -> Idx:
     return Idx(name, Space.ACTIVE)
 
 def gammaSpinString(rank: CumulantRank, spins: tuple[str, ...]) -> tuple[Op, ...]:
-    """Build one spin-orbital component of a spin-free k-RDM.
+    """
+    Build one spin-orbital component of a spin-free k-RDM.
 
     Notation:
-        Gamma^{p q ...}_{r s ...}
-        =
-        sum_{sigma tau ...}
-        < a^dagger_{p sigma} a^dagger_{q tau} ... a_{s tau} a_{r sigma} >
+        Gamma^{p q ...}_{r s ...} 
+        = sum_{\sigma \tau \cdots} \langle \Phi | a^dagger_{p \sigma} a^dagger_{q \tau} \cdots a_{s tau} a_{r sigma} | \Phi \rangle
 
     Examples:
-        For rank 2, this returns
-
-            a^dagger_{p sigma} a^dagger_{q tau} a_{s tau} a_{r sigma}.
+        For rank 2, this returns a^dagger_{p \sigma} a^dagger_{q \tau} a_{s \tau} a_{r \sigma}.
     """
     upper = tuple(activeIdx(name) for name in rank.upper)
     lower = tuple(activeIdx(name) for name in rank.lower)
@@ -86,36 +85,45 @@ def gammaSpinString(rank: CumulantRank, spins: tuple[str, ...]) -> tuple[Op, ...
     return creators + annihilators
 
 def gammaDisconnectedExpr(rank: CumulantRank) -> Expr:
-    """Build the disconnected part of a spin-free k-RDM.
+    """
+    Build the disconnected part of a spin-free k-RDM.
 
     Notation:
-        Gamma_k = Lambda_k + disconnected_k
+        \Gamma_k = \Lambda_k + D_k (disconnected)
+        D_k = \sum_{P, P > 1} \sign(P) \prod_{B \in P} \kappa(B).
 
     Examples:
         For rank 3, this generates the expression subtracted in cumulants3.rs.
     """
+    # One-body cumulant is just the one-body RDM thus no disconnected part.
     if rank.rank == 1:
         return zero()
 
     ref = Ref()
     out = zero()
-
+    
+    # Sum over alpha and beta spins. 
     for spins in cartesianProduct(SPINS, repeat = rank.rank):
+        # Construct spin-orbital string a_{p \sigma}^\dagger, a_{q \tau}^\dagger \cdots a_{s \tau} a_{r \sigma}.
         ops = gammaSpinString(rank, spins)
+        
+        # Get and enumerate all paritions.
         positions = tuple(range(len(ops)))
-
         for partition in partitions(positions):
+            # Skip full connected partition as this is \Lambda_k and we want only D_k.
             if len(partition) == 1:
                 continue
 
             factors = []
             valid = True
-
+            
+            # Evaluate all blocks B in \kappa(B) belonging to parition P.
             for block in partition:
                 value = ref.kappa(
                     tuple(ops[i] for i in block)
                 )
-
+                
+                # For a zero block we can skip the whole partition.
                 if not value:
                     valid = False
                     break
@@ -124,7 +132,8 @@ def gammaDisconnectedExpr(rank: CumulantRank) -> Expr:
 
             if not valid:
                 continue
-
+            
+            # Perform sum \sum_{P, P > 1} \sign(P) \prod_{B \in P} \kappa(B). 
             out = add(
                 out,
                 scale(
@@ -136,7 +145,8 @@ def gammaDisconnectedExpr(rank: CumulantRank) -> Expr:
     return combine(out)
 
 def rustCoeff(coeff) -> str:
-    """Emit one Rust scalar coefficient.
+    """
+    Emit one Rust scalar coefficient.
 
     Notation:
         <T as From<f64>>::from(a / b)
@@ -150,7 +160,8 @@ def rustCoeff(coeff) -> str:
     return f"<T as From<f64>>::from({coeff.numerator}.0 / {coeff.denominator}.0)"
 
 def rustTensor(tensor: Tensor) -> str:
-    """Emit one inline Rust tensor access for generated cumulant code.
+    """
+    Emit one inline Rust tensor access for generated cumulant code.
 
     Notation:
         Gamma1 -> lambda1.get(...)
@@ -158,8 +169,7 @@ def rustTensor(tensor: Tensor) -> str:
         Lambda3 -> lambda3.get(...)
 
     Examples:
-        Tensor("Lambda2", (p, q), (r, s)) becomes
-        lambda2.get(&[p, q], &[r, s]).
+        Tensor("Lambda2", (p, q), (r, s)) becomes lambda2.get(&[p, q], &[r, s]).
     """
     upper = ", ".join(idx.name for idx in tensor.upper)
     lower = ", ".join(idx.name for idx in tensor.lower)
@@ -182,7 +192,8 @@ def rustTensor(tensor: Tensor) -> str:
     raise ValueError(f"unknown tensor {tensor.name}")
 
 def rustTermBody(term: Term) -> str:
-    """Emit the body of one Rust product term.
+    """
+    Emit the body of one Rust product term.
 
     Notation:
         c A B C
@@ -210,10 +221,11 @@ def rustTermBody(term: Term) -> str:
     return " * ".join(factors)
 
 def rustExpr(expr: Expr, indent: str) -> str:
-    """Emit one Rust expression from symbolic terms.
+    """
+    Emit one Rust expression from symbolic terms.
 
     Notation:
-        sum_i c_i term_i
+        \sum_i c_i t_i
 
     Examples:
         Gamma1 Gamma1 - (1/2) Gamma1 Gamma1 is emitted as a multiline Rust expression.
@@ -226,7 +238,8 @@ def rustExpr(expr: Expr, indent: str) -> str:
     for i, term in enumerate(expr):
         sign = "-" if term.coeff < 0 else "+"
         body = rustTermBody(term)
-
+        
+        # No leading plus on first line.
         if i == 0:
             lines.append(f"{indent}- {body}" if sign == "-" else f"{indent}{body}")
         else:
@@ -235,7 +248,8 @@ def rustExpr(expr: Expr, indent: str) -> str:
     return "\n".join(lines)
 
 def flatIndex(names: tuple[str, ...], gammaName: str) -> str:
-    """Emit a flat tensor index without pointless outer parentheses.
+    """
+    Emit a flat tensor index without pointless outer parentheses.
 
     Notation:
         ((p * n + q) * n + r) ...
@@ -251,7 +265,8 @@ def flatIndex(names: tuple[str, ...], gammaName: str) -> str:
     return expr
 
 def rustDataNames(rank: CumulantRank) -> tuple[str, ...]:
-    """Return names used to index the input RDM.
+    """
+    Return names used to index the input RDM.
 
     Notation:
         ranks 1 and 2 use full-space active-mapped indices.
@@ -260,14 +275,17 @@ def rustDataNames(rank: CumulantRank) -> tuple[str, ...]:
         rank 2 returns pp, qq, rr, ss.
     """
     names = rank.upper + rank.lower
-
+    
+    # Rank 1 and 2 RDMs stored in full NO basis.
     if rank.rank <= 2:
         return tuple(name + name for name in names)
-
+    
+    # Rank 3 and 4 RDMs already active space tensors.
     return names
 
 def rustIndex(rank: CumulantRank) -> str:
-    """Emit the flat Rust index into an RDM tensor.
+    """
+    Emit the flat Rust index into an RDM tensor.
 
     Notation:
         gamma.data[p * n + q]
@@ -281,7 +299,8 @@ def rustIndex(rank: CumulantRank) -> str:
     )
 
 def rustActiveIndexLocals(rank: CumulantRank, indent: str) -> list[str]:
-    """Emit full-space active index conversions for rank 1 and rank 2.
+    """
+    Emit full-space active index conversions for rank 1 and rank 2.
 
     Notation:
         pp = active[p]
@@ -300,7 +319,8 @@ def rustActiveIndexLocals(rank: CumulantRank, indent: str) -> list[str]:
     return lines
 
 def rustLoopOpen(rank: CumulantRank) -> list[str]:
-    """Emit nested Rust loops over all cumulant indices.
+    """
+    Emit nested Rust loops over all cumulant indices.
 
     Notation:
         for p in 0..n { ... }
@@ -316,7 +336,8 @@ def rustLoopOpen(rank: CumulantRank) -> list[str]:
     return lines
 
 def rustLoopClose(rank: CumulantRank) -> list[str]:
-    """Emit closing braces for nested Rust loops.
+    """
+    Emit closing braces for nested Rust loops.
 
     Notation:
         }
@@ -332,7 +353,8 @@ def rustLoopClose(rank: CumulantRank) -> list[str]:
     return lines
 
 def rustSet(rank: CumulantRank, value: str) -> str:
-    """Emit one Rust cumulant tensor assignment.
+    """
+    Emit one Rust cumulant tensor assignment.
 
     Notation:
         lambda.set(&[upper], &[lower], value)
@@ -346,7 +368,8 @@ def rustSet(rank: CumulantRank, value: str) -> str:
     return f"lambda.set(&[{upper}], &[{lower}], {value});"
 
 def rustUses(rank: CumulantRank) -> list[str]:
-    """Emit Rust imports for one cumulant module.
+    """
+    Emit Rust imports for one cumulant module.
 
     Notation:
         use ...
@@ -375,7 +398,8 @@ def rustUses(rank: CumulantRank) -> list[str]:
     return lines
 
 def rustSignature(rank: CumulantRank) -> list[str]:
-    """Emit the existing Rust cumulant function signature.
+    """
+    Emit the existing Rust cumulant function signature.
 
     Notation:
         pub(crate) fn cumulantsK(...)
@@ -422,7 +446,8 @@ def rustSignature(rank: CumulantRank) -> list[str]:
     raise ValueError(f"unsupported cumulant rank {rank.rank}")
 
 def rustDoc(rank: CumulantRank) -> list[str]:
-    """Emit the Rust doc comment for one cumulant builder.
+    """
+    Emit the Rust doc comment for one cumulant builder.
 
     Notation:
         /// Build ...
@@ -466,7 +491,8 @@ def rustDoc(rank: CumulantRank) -> list[str]:
     return lines
 
 def rustBodyIndent(rank: CumulantRank) -> str:
-    """Return the indentation inside all generated index loops.
+    """
+    Return the indentation inside all generated index loops.
 
     Notation:
         one extra level inside all loops
@@ -477,7 +503,8 @@ def rustBodyIndent(rank: CumulantRank) -> str:
     return "    " * (1 + 2 * rank.rank)
 
 def emitCumulant(rank: CumulantRank) -> str:
-    """Emit one complete Rust cumulant module.
+    """
+    Emit one complete Rust cumulant module.
 
     Notation:
         cumulantsK.rs
@@ -531,7 +558,8 @@ def emitCumulant(rank: CumulantRank) -> str:
     return "\n".join(lines) + "\n"
 
 def main() -> None:
-    """Run the cumulant Rust generator.
+    """
+    Run the cumulant Rust generator.
 
     Notation:
         python tools/wick/cumulants.py --rank 4
