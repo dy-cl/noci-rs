@@ -621,8 +621,8 @@ class Spin:
             lambda^{p_\alpha r_\beta t_\alpha v_\beta}_{q_\alpha s_\beta u_\alpha w_\beta}
             = \sum_{\pi in S_4} c_\pi \Lambda^{prtv}_{\pi(qsuw)}
         """
-        # Begin with zero expression.
-        out = zero()
+        # Accumulate tensor terms and combine once at the end.
+        terms = []
         
         # Loop over every non-zero permutation coefficient c_\pi of the lower spin indices.
         for lowerPerm, coeff in Spin.coeffs(
@@ -630,9 +630,7 @@ class Spin:
             upperSpins,
             lowerSpins,
         ):
-            # Add to previous elements of the sum with scale c_\pi.
-            out = add(
-                out,
+            terms.extend(
                 scale(
                     # Construct the tensor \Lambda^{p_1 \cdots p_k}_{q_{\pi(1)} \cdots q_{\pi(k)}}
                     tensor(
@@ -644,9 +642,10 @@ class Spin:
                 ),
             )
 
-        return out
+        return combine(tuple(terms))
 
     @staticmethod
+    @cache
     def coeffs(
         rank: int,
         upperSpins: tuple[str, ...],
@@ -733,6 +732,7 @@ class Ref:
             Ref(maxActiveCumulantRank = None) disables active-rank truncation.
         """
         self.maxActiveCumulantRank = maxActiveCumulantRank
+        self.activeKappaCache: dict[tuple[tuple[str, Idx, str], ...], Expr] = {}
 
     def mayHaveNonzeroKappa(self, ops: tuple[Op, ...]) -> bool:
         """
@@ -848,7 +848,7 @@ class Ref:
         
         # Go to active cumulant rules.
         if spaces == {Space.ACTIVE}:
-            return self.activeKappa(ops)
+            return self.activeKappaCached(ops)
         
         # If the block is not active only the only non-zero term are two operator 
         # contractions in core or virtual spaces.
@@ -856,6 +856,43 @@ class Ref:
             return self.frozenPair(ops[0], ops[1])
 
         return zero()
+
+    def activeKappaKey(self, ops: tuple[Op, ...]) -> tuple[tuple[str, Idx, str], ...]:
+        """
+        Return the group-independent cache key for one active cumulant block.
+
+        Notation:
+            (a^\dagger_{p\sigma}, a_{q\tau}) -> ((create, p, sigma), (annihilate, q, tau))
+
+        Examples:
+            The same active block in different normal-ordered groups shares
+            one projected spin-free cumulant.
+        """
+        return tuple(
+            (
+                op.kind,
+                op.idx,
+                op.spin,
+            )
+            for op in ops
+        )
+
+    def activeKappaCached(self, ops: tuple[Op, ...]) -> Expr:
+        """
+        Evaluate one active cumulant block with memoisation.
+
+        Notation:
+            \kappa_A(B)
+
+        Examples:
+            Repeated active blocks reuse the first spin-free cumulant projection.
+        """
+        key = self.activeKappaKey(ops)
+
+        if key not in self.activeKappaCache:
+            self.activeKappaCache[key] = self.activeKappa(ops)
+
+        return self.activeKappaCache[key]
 
     def frozenPair(self, left: Op, right: Op) -> Expr:
         """
@@ -1091,8 +1128,59 @@ class Wick:
 
     def __init__(self, ref: Ref):
         self.ref = ref
-        self.kappaCache: dict[tuple[Op, ...], Expr] = {}
-        self.blockCache: dict[tuple[Op, ...], tuple[tuple[tuple[int, ...], Expr], ...]] = {}
+        self.kappaCache: dict[tuple[tuple[str, Idx, str], ...], Expr] = {}
+        self.blockCache: dict[
+            tuple[tuple[str, Idx, str, int], ...],
+            tuple[tuple[tuple[int, ...], Expr], ...],
+        ] = {}
+        self.partitionCache: dict[
+            tuple[tuple[str, Idx, str, int], ...],
+            tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...],
+        ] = {}
+        self.spinStringCache: dict[tuple[tuple[str, Idx, str, int], ...], Expr] = {}
+
+    def kappaKey(self, ops: tuple[Op, ...]) -> tuple[tuple[str, Idx, str], ...]:
+        """
+        Return the group-independent cache key for one Wick cumulant block.
+
+        Notation:
+            B -> B without normal-order group labels
+
+        Examples:
+            The same cumulant block reached from different products reuses the
+            first evaluated Ref.kappa value.
+        """
+        return tuple(
+            (
+                op.kind,
+                op.idx,
+                op.spin,
+            )
+            for op in ops
+        )
+
+    def spinStringKey(self, ops: tuple[Op, ...]) -> tuple[tuple[str, Idx, str, int], ...]:
+        """
+        Return the cache key for one spin string with normalised group labels.
+
+        Notation:
+            (g_5, g_5, g_9) -> (g_0, g_0, g_1)
+
+        Examples:
+            Spin strings that differ only by group numbering share nonzero
+            blocks, viable partitions, and evaluated expressions.
+        """
+        groups = {}
+
+        return tuple(
+            (
+                op.kind,
+                op.idx,
+                op.spin,
+                groups.setdefault(op.group, len(groups)),
+            )
+            for op in ops
+        )
 
     def kappaCached(self, ops: tuple[Op, ...]) -> Expr:
         """
@@ -1104,10 +1192,12 @@ class Wick:
         Examples:
             Repeated Wick blocks reuse the first computed cumulant.
         """
-        if ops not in self.kappaCache:
-            self.kappaCache[ops] = self.ref.kappa(ops)
+        key = self.kappaKey(ops)
 
-        return self.kappaCache[ops]
+        if key not in self.kappaCache:
+            self.kappaCache[key] = self.ref.kappa(ops)
+
+        return self.kappaCache[key]
 
     def eval(self, product: Product) -> Expr:
         """
@@ -1184,38 +1274,160 @@ class Wick:
             Core and virtual pair contractions are retained.
             Active cumulant blocks above the rank cap are rejected.
         """
-        if ops in self.blockCache:
-            return self.blockCache[ops]
+        key = self.spinStringKey(ops)
+
+        if key in self.blockCache:
+            return self.blockCache[key]
 
         out = []
+
+        for block in self.candidateBlocks(ops):
+            if self.internal(ops, block):
+                continue
+
+            blockOps = tuple(
+                ops[i]
+                for i in block
+            )
+
+            value = self.kappaCached(blockOps)
+
+            if not value:
+                continue
+
+            out.append((
+                block,
+                value,
+            ))
+
+        self.blockCache[key] = tuple(out)
+
+        return self.blockCache[key]
+
+    def candidateBlocks(self, ops: tuple[Op, ...]) -> tuple[tuple[int, ...], ...]:
+        """
+        Generate Wick blocks that can have nonzero cumulants.
+
+        Notation:
+            B such that \kappa(B) \ne 0 is structurally possible
+
+        Examples:
+            Core and virtual candidates are two-operator contractions.
+            Active candidates are balanced creator-annihilator blocks up to the
+            active cumulant rank cap.
+        """
         positions = tuple(range(len(ops)))
+        out = []
 
-        for size in range(2, len(positions) + 1):
-            for block in combinations(positions, size):
-                if self.internal(ops, block):
-                    continue
+        out.extend(self.frozenCandidateBlocks(ops, positions))
+        out.extend(self.activeCandidateBlocks(ops, positions))
 
-                blockOps = tuple(
-                    ops[i]
-                    for i in block
-                )
+        return tuple(out)
 
-                if not self.ref.mayHaveNonzeroKappa(blockOps):
-                    continue
+    def frozenCandidateBlocks(
+        self,
+        ops: tuple[Op, ...],
+        positions: tuple[int, ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        """
+        Generate core and virtual two-operator cumulant candidates.
 
-                value = self.kappaCached(blockOps)
+        Notation:
+            \kappa(a^\dagger_i, a_j), \kappa(a_a, a^\dagger_b)
 
-                if not value:
-                    continue
+        Examples:
+            Core create-annihilate pairs and virtual annihilate-create pairs
+            with equal spin are retained.
+        """
+        out = []
 
-                out.append((
-                    block,
-                    value,
-                ))
+        for left, right in combinations(positions, 2):
+            leftOp = ops[left]
+            rightOp = ops[right]
 
-        self.blockCache[ops] = tuple(out)
+            if leftOp.spin != rightOp.spin:
+                continue
 
-        return self.blockCache[ops]
+            if leftOp.idx.space != rightOp.idx.space:
+                continue
+
+            if (
+                leftOp.idx.space == Space.CORE
+                and leftOp.kind == "create"
+                and rightOp.kind == "annihilate"
+            ):
+                out.append((left, right))
+                continue
+
+            if (
+                leftOp.idx.space == Space.VIRTUAL
+                and leftOp.kind == "annihilate"
+                and rightOp.kind == "create"
+            ):
+                out.append((left, right))
+
+        return tuple(out)
+
+    def activeCandidateBlocks(
+        self,
+        ops: tuple[Op, ...],
+        positions: tuple[int, ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        """
+        Generate active-space cumulant candidates.
+
+        Notation:
+            \kappa_A(a^\dagger_{p_1}...a^\dagger_{p_k}a_{q_k}...a_{q_1})
+
+        Examples:
+            Active candidates have the same number of creators and
+            annihilators and do not exceed the active cumulant rank cap.
+        """
+        activeCreators = tuple(
+            position
+            for position in positions
+            if (
+                ops[position].idx.space == Space.ACTIVE
+                and ops[position].kind == "create"
+            )
+        )
+        activeAnnihilators = tuple(
+            position
+            for position in positions
+            if (
+                ops[position].idx.space == Space.ACTIVE
+                and ops[position].kind == "annihilate"
+            )
+        )
+        maxRank = min(
+            len(activeCreators),
+            len(activeAnnihilators),
+        )
+
+        if self.ref.maxActiveCumulantRank is not None:
+            maxRank = min(
+                maxRank,
+                self.ref.maxActiveCumulantRank,
+            )
+
+        out = []
+
+        for rank in range(1, maxRank + 1):
+            for creators in combinations(activeCreators, rank):
+                for annihilators in combinations(activeAnnihilators, rank):
+                    block = tuple(sorted(creators + annihilators))
+
+                    if not self.ref.mayHaveNonzeroKappa(
+                        tuple(
+                            ops[position]
+                            for position in block
+                        )
+                    ):
+                        continue
+
+                    out.append(block)
+
+        return tuple(out)
 
     def viablePartitions(
         self,
@@ -1231,6 +1443,11 @@ class Wick:
             A ten-operator spin string no longer traverses all 115975
             set partitions before rejecting zero blocks.
         """
+        key = self.spinStringKey(ops)
+
+        if key in self.partitionCache:
+            return self.partitionCache[key]
+
         blocks = self.nonzeroBlocks(ops)
         byPosition: dict[int, list[tuple[tuple[int, ...], Expr]]] = {}
 
@@ -1274,7 +1491,9 @@ class Wick:
 
             return tuple(out)
 
-        return cover(tuple(range(len(ops))))
+        self.partitionCache[key] = cover(tuple(range(len(ops))))
+
+        return self.partitionCache[key]
 
     def evalSpinString(self, ops: tuple[Op, ...]) -> Expr:
         """
@@ -1296,7 +1515,12 @@ class Wick:
             \kappa(a_{u\alpha}, a^\dagger_{x\alpha}) is allowed if it
             connects different groups.
         """
-        out = zero()
+        key = self.spinStringKey(ops)
+
+        if key in self.spinStringCache:
+            return self.spinStringCache[key]
+
+        terms = []
 
         for partition in self.viablePartitions(ops):
             blocks = tuple(
@@ -1308,15 +1532,16 @@ class Wick:
                 for _, value in partition
             )
 
-            out = add(
-                out,
+            terms.extend(
                 scale(
                     prod(factors),
                     self.sign(blocks),
-                ),
+                )
             )
 
-        return out
+        self.spinStringCache[key] = combine(tuple(terms))
+
+        return self.spinStringCache[key]
 
     def internal(self, ops: tuple[Op, ...], block: tuple[int, ...]) -> bool:
         """
