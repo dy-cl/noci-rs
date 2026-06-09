@@ -81,6 +81,13 @@ def latexTensor(tensor: Tensor) -> str:
     else:
         symbol = tensor.name
 
+    if tensor.name in ("t1", "t2"):
+        return (
+            "t"
+            + f"^{{{latexIndexTuple(tensor.upper)}}}"
+            + f"_{{{latexIndexTuple(tensor.lower)}}}"
+        )
+
     return (
         symbol
         + f"^{{{latexIndexTuple(tensor.upper)}}}"
@@ -302,7 +309,7 @@ def overlapLatexName(name: str) -> str:
     """
     return overlapBlock(name).latexName
 
-def residualLatexName(name: str) -> str:
+def residualLatexName(name: str, order: int = 0) -> str:
     """
     Return the printed zeroth-order residual label.
 
@@ -320,4 +327,4 @@ def residualLatexName(name: str) -> str:
     upper = latexIndexTuple(spec.creators)
     lower = latexIndexTuple(spec.annihilators)
 
-    return rf"R^{{{upper}}}_{{{lower},(0)}}"
+    return rf"R^{{{upper}}}_{{{lower},({order})}}"

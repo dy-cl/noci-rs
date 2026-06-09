@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
 from functools import cache
-from itertools import permutations, product as cartesianProduct
+from itertools import combinations, permutations, product as cartesianProduct
 
 from spinsum import permutationSign, spinGram, solveConsistent
 
@@ -721,6 +721,100 @@ class Ref:
         \kappa(a_{a\alpha}, a^\dagger_{b\alpha}) = \delta^a_b
     """
 
+    def __init__(self, maxActiveCumulantRank: int | None = 4):
+        """
+        Build reference cumulant rules.
+
+        Notation:
+            \Lambda_k = 0 for k > maxActiveCumulantRank
+
+        Examples:
+            Ref() keeps active cumulants through \Lambda_4.
+            Ref(maxActiveCumulantRank = None) disables active-rank truncation.
+        """
+        self.maxActiveCumulantRank = maxActiveCumulantRank
+
+    def mayHaveNonzeroKappa(self, ops: tuple[Op, ...]) -> bool:
+        """
+        Test whether a Wick block can have a nonzero cumulant.
+
+        Notation:
+            \kappa(B) \ne 0 is possible
+
+        Examples:
+            A singleton block is impossible.
+            A core create-annihilate pair with equal spin is possible.
+            An active rank-5 cumulant is discarded when the rank cap is 4.
+        """
+        if not ops:
+            return False
+
+        spaces = {
+            op.idx.space
+            for op in ops
+        }
+
+        if spaces == {Space.ACTIVE}:
+            creators = tuple(
+                op
+                for op in ops
+                if op.kind == "create"
+            )
+            annihilators = tuple(
+                op
+                for op in ops
+                if op.kind == "annihilate"
+            )
+
+            if len(ops) == 2:
+                left, right = ops
+
+                return (
+                    left.spin == right.spin
+                    and left.kind != right.kind
+                )
+
+            if len(creators) != len(annihilators):
+                return False
+
+            rank = len(creators)
+
+            if rank == 0:
+                return False
+
+            if (
+                self.maxActiveCumulantRank is not None
+                and rank > self.maxActiveCumulantRank
+            ):
+                return False
+
+            return True
+
+        if len(ops) != 2:
+            return False
+
+        left, right = ops
+
+        if left.spin != right.spin:
+            return False
+
+        if left.idx.space != right.idx.space:
+            return False
+
+        if left.idx.space == Space.CORE:
+            return (
+                left.kind == "create"
+                and right.kind == "annihilate"
+            )
+
+        if left.idx.space == Space.VIRTUAL:
+            return (
+                left.kind == "annihilate"
+                and right.kind == "create"
+            )
+
+        return False
+
     def kappa(self, ops: tuple[Op, ...]) -> Expr:
         """
         Connected cumulant of one Wick block.
@@ -744,6 +838,9 @@ class Ref:
 
         # If there's no operators return zero.
         if not ops:
+            return zero()
+
+        if not self.mayHaveNonzeroKappa(ops):
             return zero()
         
         # Get the orbital spaces in this cumulant block.
@@ -913,6 +1010,12 @@ class Ref:
         # Make sure we are number conserving.
         if rank != len(annihilators):
             return zero()
+
+        if (
+            self.maxActiveCumulantRank is not None
+            and rank > self.maxActiveCumulantRank
+        ):
+            return zero()
         
         # Get upper indices and their spins.
         upper = tuple(op.idx for op in creators)
@@ -988,6 +1091,23 @@ class Wick:
 
     def __init__(self, ref: Ref):
         self.ref = ref
+        self.kappaCache: dict[tuple[Op, ...], Expr] = {}
+        self.blockCache: dict[tuple[Op, ...], tuple[tuple[tuple[int, ...], Expr], ...]] = {}
+
+    def kappaCached(self, ops: tuple[Op, ...]) -> Expr:
+        """
+        Evaluate one reference cumulant with memoisation.
+
+        Notation:
+            \kappa(B)
+
+        Examples:
+            Repeated Wick blocks reuse the first computed cumulant.
+        """
+        if ops not in self.kappaCache:
+            self.kappaCache[ops] = self.ref.kappa(ops)
+
+        return self.kappaCache[ops]
 
     def eval(self, product: Product) -> Expr:
         """
@@ -1050,70 +1170,149 @@ class Wick:
 
         return strings
 
+    def nonzeroBlocks(
+        self,
+        ops: tuple[Op, ...],
+    ) -> tuple[tuple[tuple[int, ...], Expr], ...]:
+        """
+        Return non-internal Wick blocks with nonzero cumulants.
+
+        Notation:
+            B such that \kappa(B) \ne 0
+
+        Examples:
+            Core and virtual pair contractions are retained.
+            Active cumulant blocks above the rank cap are rejected.
+        """
+        if ops in self.blockCache:
+            return self.blockCache[ops]
+
+        out = []
+        positions = tuple(range(len(ops)))
+
+        for size in range(2, len(positions) + 1):
+            for block in combinations(positions, size):
+                if self.internal(ops, block):
+                    continue
+
+                blockOps = tuple(
+                    ops[i]
+                    for i in block
+                )
+
+                if not self.ref.mayHaveNonzeroKappa(blockOps):
+                    continue
+
+                value = self.kappaCached(blockOps)
+
+                if not value:
+                    continue
+
+                out.append((
+                    block,
+                    value,
+                ))
+
+        self.blockCache[ops] = tuple(out)
+
+        return self.blockCache[ops]
+
+    def viablePartitions(
+        self,
+        ops: tuple[Op, ...],
+    ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
+        """
+        Generate Wick partitions made only from nonzero blocks.
+
+        Notation:
+            P = \{B_1, B_2, \cdots\}, with \kappa(B_i) \ne 0
+
+        Examples:
+            A ten-operator spin string no longer traverses all 115975
+            set partitions before rejecting zero blocks.
+        """
+        blocks = self.nonzeroBlocks(ops)
+        byPosition: dict[int, list[tuple[tuple[int, ...], Expr]]] = {}
+
+        for block, value in blocks:
+            for position in block:
+                byPosition.setdefault(position, []).append((
+                    block,
+                    value,
+                ))
+
+        @cache
+        def cover(
+            remaining: tuple[int, ...],
+        ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
+            if not remaining:
+                return ((),)
+
+            first = remaining[0]
+            remainingSet = set(remaining)
+            out = []
+
+            for block, value in byPosition.get(first, ()):
+                blockSet = set(block)
+
+                if not blockSet <= remainingSet:
+                    continue
+
+                rest = tuple(
+                    position
+                    for position in remaining
+                    if position not in blockSet
+                )
+
+                for suffix in cover(rest):
+                    out.append((
+                        (
+                            block,
+                            value,
+                        ),
+                    ) + suffix)
+
+            return tuple(out)
+
+        return cover(tuple(range(len(ops))))
+
     def evalSpinString(self, ops: tuple[Op, ...]) -> Expr:
         """
-        Evaluate one spin-orbital string by generalised Wick's theorem. A parition is rejected 
-        if any block is internal to one normal-ordered group due to the normal ordering 
-        or if Ref.kappa(block) is zero.
+        Evaluate one spin-orbital string by generalised Wick's theorem.
+
+        A partition is rejected if any block is internal to one normal-ordered
+        group due to normal ordering or if Ref.kappa(block) is zero.
 
         Notation:
             \sum_P \sign(P) \prod_{B \in P} \kappa(B)
 
         Examples:
             Input string:
+            \{a^\dagger_{i\alpha}a_{u\alpha}\}
+            \{a^\dagger_{x\alpha}a_{a\alpha}\}
 
-                \{a^\dagger_{i\alpha}a_{u\alpha}\}
-                \{a^\dagger_{x\alpha}a_{a\alpha}\}
-
-            The block
-
-                \kappa(a^\dagger_{i\alpha}, a_{u\alpha})
-
-            is rejected because it is internal to one group.
-
-            The block
-
-                \kappa(a_{u\alpha}, a^\dagger_{x\alpha})
-
-            is allowed if it connects different groups.
+            The block \kappa(a^\dagger_{i\alpha}, a_{u\alpha}) is
+            rejected because it is internal to one group. The block
+            \kappa(a_{u\alpha}, a^\dagger_{x\alpha}) is allowed if it
+            connects different groups.
         """
         out = zero()
-        # Operator positions labelled by ints.
-        positions = tuple(range(len(ops)))
-        
-        # Enumerate every set partition of operator positions.
-        for partition in partitions(positions):
 
-            # Evaluated cumulant factors.
-            factors = []
-            valid = True
-            
-            # For every block in parition, reject internal contractions,
-            # evaluate connected cumulant and keep non-zero block factor.
-            for block in partition:
-                if self.internal(ops, block):
-                    valid = False
-                    break
+        for partition in self.viablePartitions(ops):
+            blocks = tuple(
+                block
+                for block, _ in partition
+            )
+            factors = tuple(
+                value
+                for _, value in partition
+            )
 
-                value = self.ref.kappa(
-                    tuple(ops[i] for i in block)
-                )
-
-                if not value:
-                    valid = False
-                    break
-
-                factors.append(value)
-
-            if not valid:
-                continue
-            
-            # Contribution from a given parition is \sign(P) \prod_B \kappa(B).
             out = add(
                 out,
                 scale(
-                    prod(tuple(factors)),
-                    self.sign(partition),
+                    prod(factors),
+                    self.sign(blocks),
                 ),
             )
 

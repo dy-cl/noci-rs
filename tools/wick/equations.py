@@ -12,6 +12,7 @@ from core import (
     Space,
     Wick,
     add,
+    combine,
     daggerTau1,
     daggerTau2,
     groupE1,
@@ -430,6 +431,78 @@ def allH2Indices() -> tuple[tuple[Idx, Idx, Idx, Idx], ...]:
         if len(spec.creators) == 2
     )
 
+def allOrbitalSpaces() -> tuple[Space, ...]:
+    """
+    Return all orbital spaces used in generated Hamiltonian insertions.
+
+    Notation:
+        X in {C, A, V}
+
+    Examples:
+        allOrbitalSpaces() returns the core, active, and virtual spaces.
+    """
+    return (
+        Space.CORE,
+        Space.ACTIVE,
+        Space.VIRTUAL,
+    )
+
+def allGeneralH1Indices() -> tuple[tuple[Idx, Idx], ...]:
+    """
+    Return all one-body Hamiltonian index space assignments.
+
+    This is the general Hamiltonian enumeration used beyond zeroth order.
+    Unlike allH1Indices(), this includes blocks such as C -> C and V -> V,
+    which can contribute after a cluster excitation has acted.
+
+    Notation:
+        H_1 = \\sum_{p,q \\in C \\cup A \\cup V} f^q_p \\{E^p_q\\}
+
+    Examples:
+        Includes p in V, q in V for virtual-virtual Fock couplings.
+        Includes p in C, q in C for core-core Fock couplings.
+    """
+    return tuple(
+        (
+            hidx(pSpace, 0),
+            hidx(qSpace, 1),
+        )
+        for pSpace in allOrbitalSpaces()
+        for qSpace in allOrbitalSpaces()
+    )
+
+def allGeneralH2Indices() -> tuple[tuple[Idx, Idx, Idx, Idx], ...]:
+    """
+    Return all two-body Hamiltonian index space assignments.
+
+    This is the general two-body Hamiltonian enumeration used beyond
+    zeroth order. It intentionally covers all ordered C/A/V assignments
+    before Wick contraction and canonical simplification remove vanishing
+    terms.
+
+    Notation:
+        H_2 =
+        \\frac{1}{2}
+        \\sum_{p,q,r,s \\in C \\cup A \\cup V}
+        g^{rs}_{pq} \\{E^{pq}_{rs}\\}
+
+    Examples:
+        Includes VV -> CC, AV -> CA, AA -> AA, and all other ordered
+        space assignments.
+    """
+    return tuple(
+        (
+            hidx(pSpace, 0),
+            hidx(qSpace, 1),
+            hidx(rSpace, 2),
+            hidx(sSpace, 3),
+        )
+        for pSpace in allOrbitalSpaces()
+        for qSpace in allOrbitalSpaces()
+        for rSpace in allOrbitalSpaces()
+        for sSpace in allOrbitalSpaces()
+    )
+
 def braGroup(spec: ExcitationSpec, groupId: int) -> Group:
     """
     Build the daggered residual projector group. Converts an excitation specfication 
@@ -464,6 +537,251 @@ def braGroup(spec: ExcitationSpec, groupId: int) -> Group:
 
     raise ValueError(f"unsupported excitation rank {len(spec.creators)}")
 
+def ketGroup(spec: ExcitationSpec, groupId: int) -> Group:
+    """
+    Build a non-daggered cluster excitation group.
+
+    Notation:
+        \\tau_\\nu = \\{E^p_q\\}
+        \\tau_\\nu = \\{E^{pq}_{rs}\\}
+
+    Examples:
+        For a one-body C -> A excitation, this returns \\{E^u_i\\}.
+        For a two-body CA -> AV excitation, this returns \\{E^{va}_{iu}\\}.
+    """
+    if len(spec.creators) == 1:
+        return tau1(
+            spec.creators[0],
+            spec.annihilators[0],
+            groupId,
+        )
+
+    if len(spec.creators) == 2:
+        return groupE2(
+            spec.creators[0],
+            spec.creators[1],
+            spec.annihilators[0],
+            spec.annihilators[1],
+            groupId,
+        )
+
+    raise ValueError(f"unsupported excitation rank {len(spec.creators)}")
+
+def h1Terms(groupId: int, general: bool = False) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build one-body Hamiltonian terms.
+
+    Notation:
+        f^q_p \\{E^p_q\\}
+
+    Examples:
+        h1Terms(1, general = False) gives the restricted zeroth-order
+        Hamiltonian insertions.
+        h1Terms(1, general = True) gives all one-body Hamiltonian
+        insertions for amplitude-dependent residual terms.
+    """
+    indices = allGeneralH1Indices() if general else allH1Indices()
+
+    return tuple(
+        (
+            h1Coeff(p, q),
+            groupE1(p, q, groupId),
+        )
+        for p, q in indices
+    )
+
+def h2Terms(groupId: int, general: bool = False) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build two-body Hamiltonian terms.
+
+    Notation:
+        \\frac{1}{2} g^{rs}_{pq} \\{E^{pq}_{rs}\\}
+
+    Examples:
+        h2Terms(1, general = False) gives the restricted zeroth-order
+        Hamiltonian insertions.
+        h2Terms(1, general = True) gives all two-body Hamiltonian
+        insertions for amplitude-dependent residual terms.
+    """
+    indices = allGeneralH2Indices() if general else allH2Indices()
+
+    return tuple(
+        (
+            scale(
+                h2Coeff(p, q, r, s),
+                Fraction(1, 2),
+            ),
+            groupE2(p, q, r, s, groupId),
+        )
+        for p, q, r, s in indices
+    )
+
+def hTerms(groupId: int, general: bool = False) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build all normal-ordered Hamiltonian terms.
+
+    Notation:
+        H = H_1 + H_2
+
+    Examples:
+        hTerms(1) is suitable for R_mu^(0).
+        hTerms(1, general = True) is suitable for R_mu^(1).
+    """
+    return h1Terms(groupId, general = general) + h2Terms(groupId, general = general)
+
+def addSpaceBalance(
+    balance: dict[Space, int],
+    creators: tuple[Idx, ...],
+    annihilators: tuple[Idx, ...],
+) -> dict[Space, int]:
+    """
+    Add one operator space balance.
+
+    Notation:
+        B_X = n_create(X) - n_annihilate(X)
+
+    Examples:
+        E^u_i adds +1 to active and -1 to core.
+    """
+    out = dict(balance)
+
+    for idx in creators:
+        out[idx.space] = out.get(idx.space, 0) + 1
+
+    for idx in annihilators:
+        out[idx.space] = out.get(idx.space, 0) - 1
+
+    return out
+
+def excitationBalance(
+    spec: ExcitationSpec,
+    daggered: bool = False,
+) -> dict[Space, int]:
+    """
+    Return the orbital-space balance of one excitation operator.
+
+    Notation:
+        \tau = E^{p\cdots}_{q\cdots}
+
+    Examples:
+        C -> A has active:+1 and core:-1.
+        The daggered C -> A operator has core:+1 and active:-1.
+    """
+    if daggered:
+        return addSpaceBalance(
+            {},
+            spec.annihilators,
+            spec.creators,
+        )
+
+    return addSpaceBalance(
+        {},
+        spec.creators,
+        spec.annihilators,
+    )
+
+def h1Balance(p: Idx, q: Idx) -> dict[Space, int]:
+    """
+    Return the orbital-space balance of one one-body Hamiltonian operator.
+
+    Notation:
+        E^p_q
+
+    Examples:
+        E^a_i has virtual:+1 and core:-1.
+    """
+    return addSpaceBalance(
+        {},
+        (p,),
+        (q,),
+    )
+
+def h2Balance(
+    p: Idx,
+    q: Idx,
+    r: Idx,
+    s: Idx,
+) -> dict[Space, int]:
+    """
+    Return the orbital-space balance of one two-body Hamiltonian operator.
+
+    Notation:
+        E^{pq}_{rs}
+
+    Examples:
+        E^{ab}_{ij} has virtual:+2 and core:-2.
+    """
+    return addSpaceBalance(
+        {},
+        (
+            p,
+            q,
+        ),
+        (
+            r,
+            s,
+        ),
+    )
+
+def mergeBalances(*balances: dict[Space, int]) -> dict[Space, int]:
+    """
+    Add several orbital-space balances.
+
+    Notation:
+        B = B_1 + B_2 + \cdots
+
+    Examples:
+        mergeBalances(braBalance, hBalance, tBalance) gives the
+        total balance of one residual Wick product.
+    """
+    out: dict[Space, int] = {}
+
+    for balance in balances:
+        for space, value in balance.items():
+            out[space] = out.get(space, 0) + value
+
+    return {
+        space: value
+        for space, value in out.items()
+        if value != 0
+    }
+
+def negateBalance(balance: dict[Space, int]) -> dict[Space, int]:
+    """
+    Negate an orbital-space balance.
+
+    Notation:
+        -B
+
+    Examples:
+        If B has active:+1, the negated balance has active:-1.
+    """
+    return {
+        space: -value
+        for space, value in balance.items()
+        if value != 0
+    }
+
+def sameBalance(
+    left: dict[Space, int],
+    right: dict[Space, int],
+) -> bool:
+    """
+    Compare two orbital-space balances.
+
+    Notation:
+        B_left = B_right
+
+    Examples:
+        Missing zero-valued spaces are ignored.
+    """
+    spaces = set(left) | set(right)
+
+    return all(
+        left.get(space, 0) == right.get(space, 0)
+        for space in spaces
+    )
+
 def h1Coeff(p: Idx, q: Idx) -> Expr:
     """
     Build the one-body Hamiltonian coefficient. Returns only the scalar coefficient attatched to \{E^p_q\}.
@@ -489,6 +807,218 @@ def h2Coeff(p: Idx, q: Idx, r: Idx, s: Idx) -> Expr:
         h2Coeff(p, q, r, s) returns the tensor g^{rs}_{pq}.
     """
     return tensor("g", (r, s), (p, q))
+
+def h1TermsWithBalance(
+    groupId: int,
+    required: dict[Space, int],
+) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build one-body Hamiltonian terms with a required balance.
+
+    Notation:
+        f^q_p \{E^p_q\}
+
+    Examples:
+        If required is virtual:+1 and core:-1, this keeps C -> V-like
+        one-body Hamiltonian insertions.
+    """
+    out = []
+
+    for p, q in allGeneralH1Indices():
+        if not sameBalance(
+            h1Balance(p, q),
+            required,
+        ):
+            continue
+
+        out.append((
+            h1Coeff(p, q),
+            groupE1(p, q, groupId),
+        ))
+
+    return tuple(out)
+
+def h2TermsWithBalance(
+    groupId: int,
+    required: dict[Space, int],
+) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build two-body Hamiltonian terms with a required balance.
+
+    Notation:
+        \frac{1}{2} g^{rs}_{pq} \{E^{pq}_{rs}\}
+
+    Examples:
+        If required is active:+1 and virtual:-1, this keeps only
+        two-body Hamiltonian insertions whose net action supplies that
+        balance.
+    """
+    out = []
+
+    for p, q, r, s in allGeneralH2Indices():
+        if not sameBalance(
+            h2Balance(p, q, r, s),
+            required,
+        ):
+            continue
+
+        out.append((
+            scale(
+                h2Coeff(p, q, r, s),
+                Fraction(1, 2),
+            ),
+            groupE2(p, q, r, s, groupId),
+        ))
+
+    return tuple(out)
+
+def hTermsWithBalance(
+    groupId: int,
+    required: dict[Space, int],
+) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build Hamiltonian terms with a required balance.
+
+    Notation:
+        H = H_1 + H_2
+
+    Examples:
+        hTermsWithBalance(1, required) returns only Hamiltonian terms
+        that can make the residual Wick product fully contractible.
+    """
+    return (
+        h1TermsWithBalance(
+            groupId,
+            required,
+        )
+        + h2TermsWithBalance(
+            groupId,
+            required,
+        )
+    )
+
+def tCoeff(spec: ExcitationSpec) -> Expr:
+    """
+    Build the cluster-amplitude coefficient for one excitation class.
+
+    Notation:
+        t^q_p \\{E^p_q\\}
+        t^{rs}_{pq} \\{E^{pq}_{rs}\\}
+
+    Examples:
+        For C -> A, returns t^i_u.
+        For CA -> AV, returns t^{iu}_{va}.
+    """
+    if len(spec.creators) == 1:
+        return tensor(
+            "t1",
+            spec.annihilators,
+            spec.creators,
+        )
+
+    if len(spec.creators) == 2:
+        return tensor(
+            "t2",
+            spec.annihilators,
+            spec.creators,
+        )
+
+    raise ValueError(f"unsupported excitation rank {len(spec.creators)}")
+
+def tTerms(groupId: int) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Build all cluster-operator terms.
+
+    Notation:
+        T =
+        \sum_\nu t_\nu \tau_\nu = T_1 + T_2
+
+    Examples:
+        One-body excitation classes contribute t1 amplitudes.
+        Two-body excitation classes contribute amplitudes with the
+        cluster prefactor 1/2.
+    """
+    out = []
+
+    for spec in EXCITATIONS.values():
+        coeff = tCoeff(spec)
+
+        if len(spec.creators) == 2:
+            coeff = scale(
+                coeff,
+                Fraction(1, 2),
+            )
+
+        out.append((
+            coeff,
+            ketGroup(spec, groupId),
+        ))
+
+    return tuple(out)
+
+def tTermsWithBalance(
+    groupId: int,
+) -> tuple[tuple[Expr, Group, dict[Space, int]], ...]:
+    """
+    Build all cluster-operator terms with orbital-space balances.
+
+    Notation:
+        T = \sum_\nu t_\nu \tau_\nu
+
+    Examples:
+        C -> A contributes t^i_u \{E^u_i\} with active:+1 and core:-1.
+        Double excitations carry the cluster prefactor 1/2.
+    """
+    out = []
+
+    for spec in EXCITATIONS.values():
+        coeff = tCoeff(spec)
+
+        if len(spec.creators) == 2:
+            coeff = scale(
+                coeff,
+                Fraction(1, 2),
+            )
+
+        out.append((
+            coeff,
+            ketGroup(spec, groupId),
+            excitationBalance(spec),
+        ))
+
+    return tuple(out)
+
+def contractedContribution(
+    wick: Wick,
+    coeffs: tuple[Expr, ...],
+    groups: tuple[Group, ...],
+) -> Expr:
+    """
+    Evaluate one coefficient-weighted Wick product.
+
+    Notation:
+        c_1 c_2 ... c_n = \langle \Phi | \{G_1\}\{G_2\} \cdots \{G_n\} | \Phi \rangle
+
+    Examples:
+        contractedContribution(wick, (f, t), (bra, h, tau))
+        evaluates one first-order residual contribution.
+    """
+    value = wick.eval(
+        Product(groups)
+    )
+
+    if not value:
+        return ()
+
+    out = value
+
+    for coeff in reversed(coeffs):
+        out = mul(
+            coeff,
+            out,
+        )
+
+    return out
 
 def h1Contribution(bra: Group, wick: Wick) -> Expr:
     """
@@ -571,7 +1101,7 @@ def r0Expr(name: str) -> Expr:
 
     Notation:
         R_\mu^{(0)}
-        = \langle \Phi | \tau_\mu^\dagger H | \Phi \rangle
+        = \langle \Phi | \tau_\mu^\dagger H | \Phi \rangle_c
 
         H = \sum_{p \in A \cup V} \sum_{q \in C \cup A} f^q_p \{E^p_q\}
         + \frac{1}{2} \sum_{p,q \in A \cup V} \sum_{r,s \in C \cup A} g^{rs}_{pq} \{E^{pq}_{rs}\}
@@ -581,7 +1111,7 @@ def r0Expr(name: str) -> Expr:
         excitation class, if "CtoA" is present in EXCITATIONS.
     """
     spec = EXCITATIONS[name]
-    wick = Wick(Ref())
+    wick = Wick(Ref(maxActiveCumulantRank = 4))
 
     return canonicaliseForOutput(
         add(
@@ -595,3 +1125,72 @@ def r0Expr(name: str) -> Expr:
             ),
         )
     )
+
+def r1Expr(name: str) -> Expr:
+    """
+    Evaluate one first-order residual contribution.
+
+    Notation:
+        R_mu^{(1)}
+        =
+        \langle \Phi | \tau_mu^\dagger H T | \Phi \rangle_c
+
+    Examples:
+        r1Expr("CToA") evaluates the terms linear in the cluster amplitudes
+        for the C -> A residual.
+    """
+    spec = EXCITATIONS[name]
+    wick = Wick(Ref(maxActiveCumulantRank = 4))
+    bra = braGroup(spec, 0)
+    braBalance = excitationBalance(
+        spec,
+        daggered = True,
+    )
+    terms = []
+
+    for tCoeffExpr, tGroup, tBalance in tTermsWithBalance(2):
+        required = negateBalance(
+            mergeBalances(
+                braBalance,
+                tBalance,
+            )
+        )
+
+        for hCoeffExpr, hGroup in hTermsWithBalance(1, required):
+            contribution = contractedContribution(
+                wick,
+                (
+                    hCoeffExpr,
+                    tCoeffExpr,
+                ),
+                (
+                    bra,
+                    hGroup,
+                    tGroup,
+                ),
+            )
+
+            terms.extend(contribution)
+
+    return canonicaliseForOutput(
+        combine(tuple(terms))
+    )
+
+def residualExpr(name: str, order: int = 0) -> Expr:
+    """
+    Evaluate one residual contribution by cluster-amplitude order.
+
+    Notation:
+        R_mu = R_mu^{(0)} + R_mu^{(1)} + R_mu^{(2)}
+
+    Examples:
+        residualExpr("CToA", 0) evaluates the direct residual.
+        residualExpr("CToA", 1) evaluates terms linear in T.
+    """
+    if order == 0:
+        return r0Expr(name)
+
+    if order == 1:
+        return r1Expr(name)
+
+    raise ValueError(f"unsupported residual order {order}")

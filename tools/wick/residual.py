@@ -2,35 +2,37 @@ from __future__ import annotations
 
 import argparse
 
-from equations import r0Expr
+from equations import residualExpr
 from latex import latexEquation, residualLatexName
 from specs import availableExcitations
 
-def emitResidual(name: str, emit: str, lineWidth: int | None = None) -> str:
+def emitResidual(name: str, emit: str, order: int = 0, lineWidth: int | None = None) -> str:
     """
-    Emit one zeroth-order residual expression.
+    Emit one residual contribution.
 
     Notation:
-        R_\mu^{(0)} =
-        \langle \Phi | \tau_\mu^\dagger H | \Phi \rangle
+        R_mu^{(n)}
 
     Examples:
-        emitResidual("CtoA", "latex") emits the LaTeX equation for the C -> A
-        zeroth-order residual.
-        emitResidual("CtoA", "expr") emits the Python repr of the symbolic Expr.
-        emitResidual("CtoA", "rust") emits the Rust function for the C -> A
-        zeroth-order residual.
+        emitResidual("CToA", "expr", order = 0) emits the direct residual.
+        emitResidual("CToA", "expr", order = 1) emits the first-order residual.
     """
     if emit == "rust":
+        if order != 0:
+            raise ValueError("Rust emission is currently only implemented for zeroth-order residuals")
+
         from rust import rustResidualFunction
 
         return rustResidualFunction(name)
 
-    expr = r0Expr(name)
+    expr = residualExpr(
+        name,
+        order = order,
+    )
 
     if emit == "latex":
         return latexEquation(
-            residualLatexName(name),
+            residualLatexName(name, order = order),
             expr,
             lineWidth = lineWidth,
         )
@@ -40,7 +42,7 @@ def emitResidual(name: str, emit: str, lineWidth: int | None = None) -> str:
 
     raise ValueError(f"unknown emit mode {emit}")
 
-def emitResiduals(name: str, emit: str, lineWidth: int | None = None) -> str:
+def emitResiduals(name: str, emit: str, order: int = 0, lineWidth: int | None = None) -> str:
     """
     Emit one residual expression or all residual expressions.
 
@@ -54,6 +56,9 @@ def emitResiduals(name: str, emit: str, lineWidth: int | None = None) -> str:
     if name == "all" and emit == "rust":
         from rust import rustResidualModule
 
+        if order != 0:
+            raise ValueError("Rust emission is currently only implemented for zeroth-order residuals")
+
         return rustResidualModule()
 
     if name == "all":
@@ -61,6 +66,7 @@ def emitResiduals(name: str, emit: str, lineWidth: int | None = None) -> str:
             emitResidual(
                 excitation,
                 emit,
+                order = order,
                 lineWidth = lineWidth,
             )
             for excitation in availableExcitations()
@@ -69,6 +75,7 @@ def emitResiduals(name: str, emit: str, lineWidth: int | None = None) -> str:
     return emitResidual(
         name,
         emit,
+        order = order,
         lineWidth = lineWidth,
     )
 
@@ -99,6 +106,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--order",
+        type = int,
+        choices = (0, 1),
+        default = 0,
+    )
+
+    parser.add_argument(
         "--line-width",
         type = int,
         default = 120,
@@ -112,6 +126,7 @@ def main() -> None:
         emitResiduals(
             args.excitation,
             args.emit,
+            order = args.order,
             lineWidth = lineWidth,
         ),
         end = "" if args.emit == "rust" and args.excitation == "all" else "\n",
