@@ -279,15 +279,14 @@ def add(*exprs: Expr) -> Expr:
         represents \Gamma^u_v + \Lambda^{ux}_{vw}
     """
 
-    # Collect all terms into list.
-    terms = []
+    # Accumulate coefficients by symbolic product.
+    acc = {}
 
     for expr in exprs:
-        # Add each expression to the list.
-        terms.extend(expr)
+        accumulateTerms(acc, expr)
     
-    # Convert to tuple and simply with merging of terms.
-    return combine(tuple(terms))
+    # Convert accumulator back to sorted terms.
+    return accumulatedExpr(acc)
 
 def mul(left: Expr, right: Expr) -> Expr:
     """
@@ -315,9 +314,34 @@ def mul(left: Expr, right: Expr) -> Expr:
     # Covert to tuple and simplify with merging of terms.
     return combine(tuple(out))
 
+def mulRaw(left: Expr, right: Expr) -> Expr:
+    """
+    Multiply scalar expressions without combining like terms.
+
+    Notation:
+        A B
+
+    Examples:
+        mulRaw(delta(i, j), tensor("Gamma1", (u,), (w,)))
+        returns raw product terms before coefficient collection.
+    """
+    out = []
+
+    for a in left:
+        for b in right:
+            out.append(
+                Term(
+                    coeff = a.coeff * b.coeff,
+                    deltas = tuple(sorted(a.deltas + b.deltas)),
+                    tensors = tuple(sorted(a.tensors + b.tensors)),
+                )
+            )
+
+    return tuple(out)
+
 def prod(exprs: tuple[Expr, ...]) -> Expr:
     """
-    Multiply many scalar expressions by repeatedly multiplying.
+    Multiply many scalar expressions.
 
     Notation:
         \prod A_k
@@ -335,9 +359,10 @@ def prod(exprs: tuple[Expr, ...]) -> Expr:
     
     # For each expression multiply it by the accumulated product.
     for expr in exprs:
-        out = mul(out, expr)
+        out = mulRaw(out, expr)
 
-    return out
+    return combine(out)
+
 
 def combine(expr: Expr) -> Expr:
     """
@@ -350,18 +375,35 @@ def combine(expr: Expr) -> Expr:
         (1/2) \Gamma^u_v + (1/2) \Gamma^u_v
         becomes \Gamma^u_v
     """
-    # Accumulated coefficient dictionary with key (term.deltas, term.tensors) 
-    # and value total accumulated coefficient thus far.
-    acc: dict[tuple, Fraction] = {}
+    acc = {}
+    accumulateTerms(acc, expr)
+    
+    return accumulatedExpr(acc)
 
-    # For every term in the expression form a key and add its coefficient 
-    # to the running accumulation for that key. If the key is new acc.get
-    # will correctly return zero.
+def accumulateTerms(acc: dict[tuple, Fraction], expr: Expr) -> None:
+    """
+    Accumulate scalar expression coefficients by symbolic product.
+
+    Notation:
+        c A + d A -> acc[A] = c + d
+
+    Examples:
+        Two terms with the same deltas and tensors update one dictionary entry.
+    """
     for term in expr:
         key = (term.deltas, term.tensors)
         acc[key] = acc.get(key, Fraction(0)) + term.coeff
-    
-    # Convert accumulator dictionary back into tuple of Term objects.
+
+def accumulatedExpr(acc: dict[tuple, Fraction]) -> Expr:
+    """
+    Emit a sorted scalar expression from an accumulated coefficient dictionary.
+
+    Notation:
+        acc[A] = c -> c A
+
+    Examples:
+        Zero coefficients are discarded and remaining terms are sorted.
+    """
     return tuple(
         Term(
             coeff = coeff,
@@ -622,7 +664,7 @@ class Spin:
             = \sum_{\pi in S_4} c_\pi \Lambda^{prtv}_{\pi(qsuw)}
         """
         # Accumulate tensor terms and combine once at the end.
-        terms = []
+        acc = {}
         
         # Loop over every non-zero permutation coefficient c_\pi of the lower spin indices.
         for lowerPerm, coeff in Spin.coeffs(
@@ -630,7 +672,8 @@ class Spin:
             upperSpins,
             lowerSpins,
         ):
-            terms.extend(
+            accumulateTerms(
+                acc,
                 scale(
                     # Construct the tensor \Lambda^{p_1 \cdots p_k}_{q_{\pi(1)} \cdots q_{\pi(k)}}
                     tensor(
@@ -642,7 +685,7 @@ class Spin:
                 ),
             )
 
-        return combine(tuple(terms))
+        return accumulatedExpr(acc)
 
     @staticmethod
     @cache
@@ -1129,6 +1172,8 @@ class Wick:
     def __init__(self, ref: Ref):
         self.ref = ref
         self.kappaCache: dict[tuple[tuple[str, Idx, str], ...], Expr] = {}
+        self.prodCache: dict[tuple[Expr, ...], Expr] = {}
+        self.signCache: dict[tuple[tuple[int, ...], ...], int] = {}
         self.blockCache: dict[
             tuple[tuple[str, Idx, str, int], ...],
             tuple[tuple[tuple[int, ...], Expr], ...],
@@ -1199,6 +1244,22 @@ class Wick:
 
         return self.kappaCache[key]
 
+    def prodCached(self, factors: tuple[Expr, ...]) -> Expr:
+        """
+        Multiply Wick partition factors with memoisation.
+
+        Notation:
+            \prod_B \kappa(B)
+
+        Examples:
+            Repeated Wick partitions with the same cumulant factors reuse the
+            first scalar product expression.
+        """
+        if factors not in self.prodCache:
+            self.prodCache[factors] = prod(factors)
+
+        return self.prodCache[factors]
+
     def eval(self, product: Product) -> Expr:
         """
         Evaluate a product of normal ordered groups.
@@ -1216,18 +1277,15 @@ class Wick:
             applies Ref.kappa to each block, and sums the result.
         """
 
-        # Accumulator.
-        out = zero()
+        # Accumulate spin-string terms and combine once.
+        acc = {}
         
         # Expand spin-free groups into spin-orbital strings.
         for ops in self.expand(product):
-            out = add(
-                out,
-                self.evalSpinString(ops),
-            )
+            accumulateTerms(acc, self.evalSpinString(ops))
         
         # Simplify terms.
-        return simplify(out)
+        return accumulatedExpr(acc)
 
     def expand(self, product: Product) -> tuple[tuple[Op, ...], ...]:
         """
@@ -1520,7 +1578,7 @@ class Wick:
         if key in self.spinStringCache:
             return self.spinStringCache[key]
 
-        terms = []
+        acc = {}
 
         for partition in self.viablePartitions(ops):
             blocks = tuple(
@@ -1532,14 +1590,15 @@ class Wick:
                 for _, value in partition
             )
 
-            terms.extend(
+            accumulateTerms(
+                acc,
                 scale(
-                    prod(factors),
+                    self.prodCached(factors),
                     self.sign(blocks),
                 )
             )
 
-        self.spinStringCache[key] = combine(tuple(terms))
+        self.spinStringCache[key] = accumulatedExpr(acc)
 
         return self.spinStringCache[key]
 
@@ -1578,7 +1637,10 @@ class Wick:
 
             which has one inversion from (0, 1, 2, 3), so sign(P) = -1.
         """
-        return partitionSign(partition)
+        if partition not in self.signCache:
+            self.signCache[partition] = partitionSign(partition)
+
+        return self.signCache[partition]
 
 def groupE1(p: Idx, q: Idx, groupId: int) -> Group:
     """
