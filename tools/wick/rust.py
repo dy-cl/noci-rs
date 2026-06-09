@@ -14,7 +14,7 @@ def rustFunctionDoc(block: OverlapBlockSpec) -> list[str]:
         S_{\mu\nu} = \langle \Phi | \tau_\mu^\dagger \tau_\nu | \Phi \rangle
 
     Examples:
-        rustFunctionDoc(blockByName("C4")) emits the Rust documentation for
+        rustFunctionDoc(overlapBlock("C4")) emits the Rust documentation for
         the C4 overlap block.
     """
     return [
@@ -28,19 +28,6 @@ def rustFunctionDoc(block: OverlapBlockSpec) -> list[str]:
         "/// # Returns:",
         "/// - `f64`: Raw FOIS overlap metric element.",
     ]
-
-def blockByName(name: str) -> OverlapBlockSpec:
-    """
-    Return one overlap block specification. This is currently just a wrapper.
-    Candidate for deletion.
-
-    Notation:
-        C_k -> OverlapBlockSpec(C_k)
-
-    Examples:
-        blockByName("C4") returns the specification for overlap block C4.
-    """
-    return overlapBlock(name)
 
 def rustCoeff(coeff) -> str:
     """
@@ -72,6 +59,21 @@ def rustDelta(delta: Delta) -> str:
     """
     return f"delta({delta.left.name}, {delta.right.name})"
 
+def rustActiveCumulant(tensor: Tensor, field: str) -> str:
+    """
+    Emit one Rust active-space cumulant access.
+
+    Notation:
+        \Lambda^{pq}_{rs} ---> lambdas.lambda2.get(...)
+
+    Examples:
+        Tensor("Lambda2", (u, x), (v, w)) with field "lambda2" becomes
+        a lambda2.get(...) call with active-space indices.
+    """
+    upper = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.upper)
+    lower = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.lower)
+    return f"lambdas.{field}.get(&[{upper}], &[{lower}])"
+
 def rustTensor(tensor: Tensor) -> str:
     """
     Emit one Rust tensor access.
@@ -88,8 +90,6 @@ def rustTensor(tensor: Tensor) -> str:
         Tensor("Lambda2", (u, x), (v, w)) becomes a lambda2.get(...) call
         after converting global active orbital indices to active-space indices.
     """
-    args = ", ".join(idx.name for idx in tensor.upper + tensor.lower)
-
     if tensor.name == "Gamma1":
         p = tensor.upper[0].name
         q = tensor.lower[0].name
@@ -101,19 +101,13 @@ def rustTensor(tensor: Tensor) -> str:
         return f"theta(gamma1, {p}, {q})"
 
     if tensor.name == "Lambda2":
-        upper = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.upper)
-        lower = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.lower)
-        return f"lambdas.lambda2.get(&[{upper}], &[{lower}])"
+        return rustActiveCumulant(tensor, "lambda2")
 
     if tensor.name == "Lambda3":
-        upper = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.upper)
-        lower = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.lower)
-        return f"lambdas.lambda3.get(&[{upper}], &[{lower}])"
+        return rustActiveCumulant(tensor, "lambda3")
 
     if tensor.name == "Lambda4":
-        upper = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.upper)
-        lower = ", ".join(f"active(spaces, {idx.name})" for idx in tensor.lower)
-        return f"lambdas.lambda4.get(&[{upper}], &[{lower}])"
+        return rustActiveCumulant(tensor, "lambda4")
 
     if tensor.name == "f":
         q = tensor.upper[0].name
@@ -129,16 +123,16 @@ def rustTensor(tensor: Tensor) -> str:
 
     raise ValueError(f"unknown tensor {tensor.name}")
 
-def rustTerm(term: Term) -> str:
+def rustTermFactors(term: Term) -> list[str]:
     """
-    Emit one Rust expression term.
+    Emit Rust factors for deltas and tensors in one symbolic term.
 
     Notation:
-        c \delta \Gamma \Lambda
+        \delta \Gamma \Lambda ---> [delta(...), gamma1.data[...], lambdas.lambda2.get(...)]
 
     Examples:
-        \frac{1}{2}\delta^i_j\Gamma^u_w\Theta^x_v
-        becomes (1.0 / 2.0) * delta(i, j) * gamma1.data[...] * theta(...).
+        A term with one delta and one tensor emits two multiplicative Rust
+        factors without coefficient handling.
     """
     factors = []
 
@@ -152,7 +146,33 @@ def rustTerm(term: Term) -> str:
         for tensor in term.tensors
     )
 
-    body = " * ".join(factors) if factors else "1.0"
+    return factors
+
+def rustTermBody(term: Term) -> str:
+    """
+    Emit the multiplicative body of one Rust term without its coefficient sign handling.
+
+    Notation:
+        \delta \Gamma \Lambda ---> delta(...) * gamma1.data[...] * lambdas.lambda2.get(...)
+
+    Examples:
+        A term with no factors emits 1.0.
+    """
+    factors = rustTermFactors(term)
+    return " * ".join(factors) if factors else "1.0"
+
+def rustTerm(term: Term) -> str:
+    """
+    Emit one Rust expression term.
+
+    Notation:
+        c \delta \Gamma \Lambda
+
+    Examples:
+        \frac{1}{2}\delta^i_j\Gamma^u_w\Theta^x_v
+        becomes (1.0 / 2.0) * delta(i, j) * gamma1.data[...] * theta(...).
+    """
+    body = rustTermBody(term)
 
     if term.coeff == 1:
         return body
@@ -164,6 +184,28 @@ def rustTerm(term: Term) -> str:
         return f"-({rustCoeff(-term.coeff)} * {body})"
 
     return f"{rustCoeff(term.coeff)} * {body}"
+
+def rustUnpack(names: tuple[str, ...], source: str, indent: str = "    ") -> str:
+    """
+    Emit Rust code to unpack one single or double excitation.
+
+    Notation:
+        Single(p, q) ---> (p, q)
+        Double(p, q, r, s) ---> (p, q, r, s)
+
+    Examples:
+        rustUnpack(("i", "u"), "left") gives let (i, u) = single(left);
+        rustUnpack(("i", "u", "v", "a"), "right") gives let (i, u, v, a) = double(right);
+    """
+    lhs = ", ".join(names)
+
+    if len(names) == 2:
+        return f"{indent}let ({lhs}) = single({source});"
+
+    if len(names) == 4:
+        return f"{indent}let ({lhs}) = double({source});"
+
+    raise ValueError(f"unsupported unpack size {len(names)}")
 
 def rustOverlapUnpack(names: tuple[str, ...], side: str) -> str:
     """
@@ -177,15 +219,7 @@ def rustOverlapUnpack(names: tuple[str, ...], side: str) -> str:
         rustOverlapUnpack(("i", "u"), "left") gives let (i, u) = single(left);
         rustOverlapUnpack(("i", "u", "v", "a"), "right") gives let (i, u, v, a) = double(right);
     """
-    lhs = ", ".join(names)
-
-    if len(names) == 2:
-        return f"    let ({lhs}) = single({side});"
-
-    if len(names) == 4:
-        return f"    let ({lhs}) = double({side});"
-
-    raise ValueError(f"unsupported unpack size {len(names)}")
+    return rustUnpack(names, side)
 
 def rustFunction(block: OverlapBlockSpec, debug: bool = False) -> str:
     """
@@ -195,9 +229,9 @@ def rustFunction(block: OverlapBlockSpec, debug: bool = False) -> str:
         S_{\mu\nu} = \langle \Phi | \tau_\mu^\dagger \tau_\nu | \Phi \rangle
 
     Examples:
-        rustFunction(blockByName("C4")) emits the generated Rust kernel for
+        rustFunction(overlapBlock("C4")) emits the generated Rust kernel for
         the C4 overlap block.
-        rustFunction(blockByName("C4"), debug = True) emits the same kernel
+        rustFunction(overlapBlock("C4"), debug = True) emits the same kernel
         with term-level debug printing.
     """
     expr = list(outputExpr(block.name))
@@ -399,7 +433,19 @@ use crate::noci::{
     RDM1,
 };
 
-/// Unpack one single excitation.
+""" + rustSharedHelpers()
+
+def rustSharedHelpers() -> str:
+    """
+    Emit Rust helper functions shared by generated overlap and residual modules.
+
+    Notation:
+
+    Examples:
+        rustSharedHelpers() emits Rust definitions for single(...), double(...),
+        delta(...), theta(...), and active(...).
+    """
+    return """/// Unpack one single excitation.
 /// # Arguments:
 /// - `ex`: Excitation expected to be a single excitation.
 /// # Returns:
@@ -459,6 +505,19 @@ fn active(spaces: &Spaces, p: usize) -> usize {
 }
 """
 
+def rustJoinParts(parts: list[str]) -> str:
+    """
+    Join generated Rust module parts with the standard spacing.
+
+    Notation:
+        module = part_1 + blank line + part_2 + ...
+
+    Examples:
+        rustJoinParts([rustHeader(), rustDispatcher()]) emits two parts and
+        one trailing newline.
+    """
+    return "\n\n".join(parts) + "\n"
+
 def rustOverlapFunction(name: str, debug: bool = False) -> str:
     """
     Emit one named overlap block Rust function.
@@ -498,7 +557,7 @@ def rustModule(debugBlock: str | None = None) -> str:
         for block in OVERLAP_BLOCKS
     )
 
-    return "\n\n".join(parts) + "\n"
+    return rustJoinParts(parts)
 
 def freeIndexNames(spec: ExcitationSpec) -> set[str]:
     """
@@ -586,7 +645,7 @@ def rustLoopOpen(idx: Idx, indent: str) -> str:
 
 def rustResidualTermFactors(term) -> str:
     """
-    Emit one residual term product. Analogous to rustTerm() so may be generalised.
+    Emit one residual term product.
 
     Notation:
         c \delta f g \Gamma \Lambda
@@ -594,19 +653,7 @@ def rustResidualTermFactors(term) -> str:
     Examples:
         f^q_p \Lambda^{ux}_{vw} becomes f[(q, p)] * lambdas.lambda2.get(...).
     """
-    factors = []
-
-    factors.extend(
-        rustDelta(delta)
-        for delta in term.deltas
-    )
-
-    factors.extend(
-        rustTensor(tensor)
-        for tensor in term.tensors
-    )
-
-    body = " * ".join(factors) if factors else "1.0"
+    body = rustTermBody(term)
 
     if term.coeff == 1:
         return body
@@ -646,8 +693,7 @@ def rustTermAccumulation(term, spec: ExcitationSpec) -> list[str]:
 
 def rustResidualUnpack(spec: ExcitationSpec) -> str:
     """
-    Emit Rust code to unpack one residual excitation. Potential duplication of rustOverlapUnpack().
-    Candidate for deletion or generalisation.
+    Emit Rust code to unpack one residual excitation.
 
     Notation:
         \tau^p_q ---> let (p, q) = single(ex)
@@ -656,15 +702,8 @@ def rustResidualUnpack(spec: ExcitationSpec) -> str:
     Examples:
         For C ---> A with creators (u,) and annihilators (i,), this emits let (u, i) = single(ex);
     """
-    names = ", ".join(idx.name for idx in spec.creators + spec.annihilators)
-
-    if len(spec.creators) == 1:
-        return f"    let ({names}) = single(ex);"
-
-    if len(spec.creators) == 2:
-        return f"    let ({names}) = double(ex);"
-
-    raise ValueError(f"unsupported excitation rank {len(spec.creators)}")
+    names = tuple(idx.name for idx in spec.creators + spec.annihilators)
+    return rustUnpack(names, "ex")
 
 def rustResidualFunction(name: str) -> str:
     """
@@ -762,7 +801,6 @@ def rustResidualDispatcher() -> str:
 def rustResidualBuilder() -> str:
     """
     Emit the fixed Rust wrapper that builds the full zeroth-order residual vector.
-    Possible duplication here with other Fock functions in the code (see SCF).
 
     Notation:
         r_\mu^{(0)} = r0e(\tau_\mu)
@@ -811,8 +849,7 @@ pub(crate) fn r0(
 
 def rustResidualHeader() -> str:
     """
-    Emit the fixed Rust header for the residual module. Potential duplication with 
-    rustHeader(). Candidate for deletion or generalisation. 
+    Emit the fixed Rust header for the residual module.
 
     Notation:
 
@@ -839,70 +876,11 @@ use crate::noci::{
 };
 use crate::scf::fock;
 
-/// Unpack one single excitation.
-/// # Arguments:
-/// - `ex`: Excitation expected to be a single excitation.
-/// # Returns:
-/// - `(usize, usize)`: Creation and annihilation orbital indices.
-fn single(ex: Excitation) -> (usize, usize) {
-    match ex {
-        Excitation::Single { p, q } => (p, q),
-        _ => panic!("expected single excitation"),
-    }
-}
-
-/// Unpack one double excitation.
-/// # Arguments:
-/// - `ex`: Excitation expected to be a double excitation.
-/// # Returns:
-/// - `(usize, usize, usize, usize)`: Two creation and two annihilation orbital indices.
-fn double(ex: Excitation) -> (usize, usize, usize, usize) {
-    match ex {
-        Excitation::Double { p, q, r, s } => (p, q, r, s),
-        _ => panic!("expected double excitation"),
-    }
-}
-
-/// Evaluate a Kronecker delta.
-/// # Arguments:
-/// - `p`: Left orbital index.
-/// - `q`: Right orbital index.
-/// # Returns:
-/// - `f64`: `1.0` if the indices are equal, otherwise `0.0`.
-fn delta(p: usize, q: usize) -> f64 {
-    if p == q {
-        1.0
-    } else {
-        0.0
-    }
-}
-
-/// Evaluate an active-space hole density.
-/// # Arguments:
-/// - `gamma1`: Spin-free one-particle RDM.
-/// - `p`: Upper orbital index.
-/// - `q`: Lower orbital index.
-/// # Returns:
-/// - `f64`: `Theta^p_q = 2 delta^p_q - Gamma^p_q`.
-fn theta(gamma1: &RDM1<f64>, p: usize, q: usize) -> f64 {
-    2.0 * delta(p, q) - gamma1.data[p * gamma1.n + q]
-}
-
-/// Convert a global orbital index to an active-space index.
-/// # Arguments:
-/// - `spaces`: Orbital-space partitioning and index maps.
-/// - `p`: Global orbital index.
-/// # Returns:
-/// - `usize`: Active-space index corresponding to `p`.
-fn active(spaces: &Spaces, p: usize) -> usize {
-    spaces.active_map[p].expect("expected active orbital index")
-}
-"""
+""" + rustSharedHelpers()
 
 def rustResidualModule() -> str:
     """
-    Emit the complete Rust residual module. Potential duplication with rustModule.
-    Candidate for deletion or generalisation.
+    Emit the complete Rust residual module.
 
     Notation:
 
@@ -920,13 +898,12 @@ def rustResidualModule() -> str:
         for name in availableExcitations()
     )
 
-    return "\n\n".join(parts) + "\n"
+    return rustJoinParts(parts)
 
 def main() -> None:
     """
     Run the Rust overlap module generator CLI. This command emits the generated overlap module to stdout. 
-    It is mainly used when regenerating deterministic/noccmc/overlap.rs, but the residual emission 
-    logic should also be moved here.
+    It is mainly used when regenerating deterministic/noccmc/overlap.rs.
 
     Notation:
 
