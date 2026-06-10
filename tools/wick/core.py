@@ -1680,6 +1680,24 @@ class Wick:
 
         return tuple(out)
 
+    def candidateBlocksByShape(
+        self,
+        ops: tuple[Op, ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        """
+        Generate candidate Wick blocks using only operator shape.
+
+        Notation:
+
+        Examples:
+        """
+        key = self.spinStringShapeKey(ops)
+
+        if key not in self.shapeBlockCache:
+            self.shapeBlockCache[key] = self.candidateBlocks(ops)
+
+        return self.shapeBlockCache[key]
+
     def activeCandidateBlocks(
         self,
         ops: tuple[Op, ...],
@@ -1752,80 +1770,112 @@ class Wick:
                     out.append(block)
 
         return tuple(out)
-
-    def viablePartitions(
+    
+    def viablePartitionPatterns(
         self,
         ops: tuple[Op, ...],
-    ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
+        connected: bool = False,
+    ) -> tuple[tuple[int, tuple[tuple[int, ...], ...]], ...]:
         """
-        Generate Wick partitions made only from nonzero blocks.
+        Generate viable Wick partition patterns and signs.
+
+        This caches by spin/operator shape rather than concrete index names. The
+        cached result contains only block positions and fermion signs, not tensor
+        expressions.
 
         Notation:
-            P = \{B_1, B_2, \cdots\}, with \kappa(B_i) \ne 0
+            shape -> {(sign(P), P)}
 
         Examples:
-            A ten-operator spin string no longer traverses all 115975
-            set partitions before rejecting zero blocks.
+            R2 products with the same operator shape but different dummy labels
+            reuse the same connected partition patterns.
         """
-        with timed("Wick.viablePartitions"):
-            return self._viablePartitions(ops)
-
-    def _viablePartitions(
-        self,
-        ops: tuple[Op, ...],
-    ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
-        key = self.spinStringKey(ops)
-
-        if key in self.partitionCache:
-            return self.partitionCache[key]
-
-        blocks = tuple(
-            (
-                block,
-                value,
-                sum(1 << position for position in block),
+        with timed("Wick.viablePartitionPatterns"):
+            key = (
+                self.spinStringShapeKey(ops),
+                connected,
             )
-            for block, value in self.nonzeroBlocks(ops)
-        )
-        byPosition: dict[int, list[tuple[tuple[int, ...], Expr, int]]] = {}
 
-        for block, value, mask in blocks:
-            for position in block:
-                byPosition.setdefault(position, []).append((
+            if key in self.partitionPatternCache:
+                return self.partitionPatternCache[key]
+
+            groups = tuple(sorted({op.group for op in ops}))
+
+            blocks = tuple(
+                (
                     block,
-                    value,
-                    mask,
-                ))
+                    sum(1 << position for position in block),
+                    self.blockEdgeMask(
+                        ops,
+                        block,
+                        groups,
+                    ),
+                )
+                for block in self.candidateBlocksByShape(ops)
+            )
 
-        @cache
-        def cover(
-            remainingMask: int,
-        ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
-            if remainingMask == 0:
-                return ((),)
+            byPosition: dict[int, list[tuple[tuple[int, ...], int, int]]] = {}
 
-            first = (remainingMask & -remainingMask).bit_length() - 1
-            out = []
+            for block, blockMask, edgeMask in blocks:
+                for position in block:
+                    byPosition.setdefault(position, []).append((
+                        block,
+                        blockMask,
+                        edgeMask,
+                    ))
 
-            for block, value, blockMask in byPosition.get(first, ()):
-                if blockMask & remainingMask != blockMask:
-                    continue
+            fullMask = (1 << len(ops)) - 1
+            out: list[tuple[int, tuple[tuple[int, ...], ...]]] = []
 
-                restMask = remainingMask & ~blockMask
+            @cache
+            def cover(
+                remainingMask: int,
+                edgeMask: int,
+            ) -> tuple[tuple[int, tuple[tuple[int, ...], ...]], ...]:
+                if remainingMask == 0:
+                    if connected and not self.edgeMaskConnected(
+                        groups,
+                        edgeMask,
+                    ):
+                        return ()
 
-                for suffix in cover(restMask):
-                    out.append((
-                        (
-                            block,
-                            value,
-                        ),
-                    ) + suffix)
+                    return ((
+                        1,
+                        (),
+                    ),)
 
-            return tuple(out)
+                first = (remainingMask & -remainingMask).bit_length() - 1
+                local = []
 
-        self.partitionCache[key] = cover((1 << len(ops)) - 1)
+                for block, blockMask, blockEdgeMask in byPosition.get(first, ()):
+                    if blockMask & remainingMask != blockMask:
+                        continue
 
-        return self.partitionCache[key]
+                    restMask = remainingMask & ~blockMask
+                    nextEdgeMask = edgeMask | blockEdgeMask
+
+                    for _, suffix in cover(
+                        restMask,
+                        nextEdgeMask,
+                    ):
+                        partition = (block,) + suffix
+                        local.append((
+                            partitionSign(partition),
+                            partition,
+                        ))
+
+                return tuple(local)
+
+            out.extend(
+                cover(
+                    fullMask,
+                    0,
+                )
+            )
+
+            self.partitionPatternCache[key] = tuple(out)
+
+            return self.partitionPatternCache[key]
 
     def evalSpinString(self, ops: tuple[Op, ...], connected: bool = False,) -> Expr:
         """
@@ -1866,16 +1916,25 @@ class Wick:
                 return ()
 
             acc = {}
-            for partition in self.viablePartitions(ops):
-                blocks = tuple(block for block, _ in partition)
-                if connected and not self.connected(ops, blocks):
-                    continue
 
-                factors = tuple(value for _, value in partition)
+            for sign, blocks in self.viablePartitionPatterns(
+                ops,
+                connected = connected,
+            ):
+                factors = tuple(
+                    self.kappaCached(
+                        tuple(
+                            ops[i]
+                            for i in block
+                        )
+                    )
+                    for block in blocks
+                )
+
                 accumulateProductTerms(
                     acc,
                     factors,
-                    self.sign(blocks),
+                    sign,
                 )
 
             self.spinStringCache[key] = accumulatedExpr(
@@ -1965,11 +2024,8 @@ class Wick:
         connected partition exists.
 
         Notation:
-            possible contraction graph over GNO groups must be connected.
 
         Examples:
-            If no operator in group 0 can contract with any operator outside
-            group 0, a connected residual contribution is impossible.
         """
         groups = tuple(sorted({op.group for op in ops}))
         if len(groups) <= 1:
@@ -1996,6 +2052,94 @@ class Wick:
 
         root = find(groups[0])
         return all(find(group) == root for group in groups)
+
+    def blockEdgeMask(
+        self,
+        ops: tuple[Op, ...],
+        block: tuple[int, ...],
+        groups: tuple[int, ...],
+    ) -> int:
+        """
+        Return the group-connectivity edge mask for one Wick block.
+
+        Notation:
+
+        Examples:
+        """
+        blockGroups = tuple(sorted({ops[i].group for i in block}))
+
+        if len(blockGroups) <= 1:
+            return 0
+
+        groupPairs = []
+        for i, left in enumerate(groups):
+            for right in groups[i + 1:]:
+                groupPairs.append((
+                    left,
+                    right,
+                ))
+
+        out = 0
+
+        for i, pair in enumerate(groupPairs):
+            if pair[0] in blockGroups and pair[1] in blockGroups:
+                out |= 1 << i
+
+        return out
+
+    def edgeMaskConnected(
+        self,
+        groups: tuple[int, ...],
+        edgeMask: int,
+    ) -> bool:
+        """
+        Test whether a group-edge mask connects all normal-ordered groups.
+
+        Notation:
+
+        Examples:
+            For groups (0, 1, 2), edges 0-1 and 1-2 are connected.
+        """
+        if len(groups) <= 1:
+            return True
+
+        parent = {
+            group: group
+            for group in groups
+        }
+
+        def find(group: int) -> int:
+            while parent[group] != group:
+                parent[group] = parent[parent[group]]
+                group = parent[group]
+
+            return group
+
+        def union(left: int, right: int) -> None:
+            leftRoot = find(left)
+            rightRoot = find(right)
+
+            if leftRoot != rightRoot:
+                parent[rightRoot] = leftRoot
+
+        bit = 0
+
+        for i, left in enumerate(groups):
+            for right in groups[i + 1:]:
+                if edgeMask & (1 << bit):
+                    union(
+                        left,
+                        right,
+                    )
+
+                bit += 1
+
+        root = find(groups[0])
+
+        return all(
+            find(group) == root
+            for group in groups
+        )
 
     def internal(self, ops: tuple[Op, ...], block: tuple[int, ...]) -> bool:
         """
