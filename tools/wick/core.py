@@ -509,6 +509,64 @@ def accumulateScaledTerms(acc: dict[tuple, Fraction], expr: Expr, coeff: int | F
         key = (term.deltas, term.tensors)
         acc[key] = acc.get(key, ZERO_FRACTION) + c * term.coeff
 
+def accumulateProductTerms(
+    acc: dict[tuple, Fraction],
+    factors: tuple[Expr, ...],
+    coeff: int | Fraction,
+) -> None:
+    """
+    Accumulate a product of expressions without materialising an intermediate
+    expression.
+
+    Notation:
+        \text{Accumulator} += c \prod_k E_k
+
+    Examples:
+        Used inside Wick partition evaluation to avoid building one Expr per
+        Wick partition.
+    """
+    c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
+
+    if c == 0:
+        return
+
+    partial = [(
+        c,
+        (),
+        (),
+    )]
+
+    for expr in factors:
+        if not expr:
+            return
+
+        nextPartial = []
+
+        for leftCoeff, leftDeltas, leftTensors in partial:
+            for term in expr:
+                value = leftCoeff * term.coeff
+
+                if value == 0:
+                    continue
+
+                nextPartial.append((
+                    value,
+                    leftDeltas + term.deltas,
+                    leftTensors + term.tensors,
+                ))
+
+        partial = nextPartial
+
+        if not partial:
+            return
+
+    for coeffOut, deltas, tensors in partial:
+        key = (
+            tuple(sorted(deltas)),
+            tuple(sorted(tensors)),
+        )
+        acc[key] = acc.get(key, ZERO_FRACTION) + coeffOut
+
 def accumulatedExpr(acc: dict[tuple, Fraction], sort: bool = True) -> Expr:
     """
     Emit a sorted scalar expression from an accumulated coefficient dictionary.
@@ -1330,6 +1388,15 @@ class Wick:
             tuple[tuple[tuple[str, Idx, str, int], ...], bool],
             Expr,
         ] = {}
+        self.shapeBlockCache: dict[
+            tuple[tuple[str, Space, str, int], ...],
+            tuple[tuple[int, ...], ...],
+        ] = {}
+
+        self.partitionPatternCache: dict[
+            tuple[tuple[tuple[str, Space, str, int], ...], bool],
+            tuple[tuple[int, tuple[tuple[int, ...], ...]], ...],
+        ] = {}
 
     def kappaKey(self, ops: tuple[Op, ...]) -> tuple[tuple[str, Idx, str], ...]:
         """
@@ -1368,6 +1435,31 @@ class Wick:
             (
                 op.kind,
                 op.idx,
+                op.spin,
+                groups.setdefault(op.group, len(groups)),
+            )
+            for op in ops
+        )
+
+    def spinStringShapeKey(
+        self,
+        ops: tuple[Op, ...],
+    ) -> tuple[tuple[str, Space, str, int], ...]:
+        """
+        Return a structural key for one spin string.
+
+        Notation:
+            a^\dagger_{p \sigma} -> (create, space(p), \sigma, group)
+
+        Examples:
+            u_l and u_r both become active-space labels in this key.
+        """
+        groups = {}
+
+        return tuple(
+            (
+                op.kind,
+                op.idx.space,
                 op.spin,
                 groups.setdefault(op.group, len(groups)),
             )
@@ -1780,9 +1872,9 @@ class Wick:
                     continue
 
                 factors = tuple(value for _, value in partition)
-                accumulateScaledTerms(
+                accumulateProductTerms(
                     acc,
-                    self.prodCached(factors),
+                    factors,
                     self.sign(blocks),
                 )
 
