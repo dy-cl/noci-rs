@@ -25,6 +25,7 @@ from core import (
     groupE2,
     mul,
     prewarmSpinCoeffs,
+    prod,
     profileSnapshot,
     resetProfile,
     scale,
@@ -1100,16 +1101,12 @@ def evalR2WorkItem(
     if not value:
         return item.index, ()
 
-    out = value
-    for coeff in (
+    out = prod((
         item.rightCoeff,
         item.leftCoeff,
         item.hCoeff,
-    ):
-        out = mul(
-            coeff,
-            out,
-        )
+        value,
+    ))
 
     out = scale(
         out,
@@ -1692,16 +1689,12 @@ def r2Expr(name: str) -> Expr:
         if not value:
             return item.index, ()
 
-        out = value
-        for coeff in (
+        out = prod((
             item.rightCoeff,
             item.leftCoeff,
             item.hCoeff,
-        ):
-            out = mul(
-                coeff,
-                out,
-            )
+            value,
+        ))
 
         return (
             item.index,

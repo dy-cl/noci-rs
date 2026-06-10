@@ -20,6 +20,8 @@ from time import perf_counter
 
 from spinsum import permutationSign, spinGram, solveConsistent
 
+ZERO_FRACTION = Fraction(0)
+
 PROFILE_ENABLED = False
 PROFILE_TIMES: dict[str, float] = {}
 PROFILE_COUNTS: dict[str, int] = {}
@@ -307,6 +309,20 @@ def scale(expr: Expr, coeff: int | Fraction) -> Expr:
         represents -1/2 \Lambda^{ux}_{vw}
     """
     
+    if coeff == 1:
+        return expr
+
+    if coeff == -1:
+        return tuple(
+            Term(
+                coeff = -term.coeff,
+                deltas = term.deltas,
+                tensors = term.tensors,
+            )
+            for term in expr
+            if term.coeff != 0
+        )
+
     # Normalise input coefficient to a Fraction.
     c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
     
@@ -314,21 +330,23 @@ def scale(expr: Expr, coeff: int | Fraction) -> Expr:
     if c == 0:
         return zero()
 
-    return tuple(
-        Term(
-            # New coefficient after scaling.
-            coeff = c * term.coeff,
-            # Delta factors symbolic so unchanged.
-            deltas = term.deltas,
-            # Tensors symbolic so unchanged.
-            tensors = term.tensors,
+    out = []
+    for term in expr:
+        coeff = c * term.coeff
+        if coeff == 0:
+            continue
+        out.append(
+            Term(
+                # New coefficient after scaling.
+                coeff = coeff,
+                # Delta factors symbolic so unchanged.
+                deltas = term.deltas,
+                # Tensors symbolic so unchanged.
+                tensors = term.tensors,
+            )
         )
-        # Do this for every term in the expression.
-        for term in expr
-        # Provided the scaling does not give a zero.
-        # If it does give a zero the scaled term is simply ignored.
-        if c * term.coeff != 0
-    )
+
+    return tuple(out)
 
 def add(*exprs: Expr) -> Expr:
     """
@@ -429,7 +447,12 @@ def prod(exprs: tuple[Expr, ...]) -> Expr:
         for expr in exprs:
             out = mulRaw(out, expr)
 
-        return combine(out)
+        acc = {}
+        accumulateTerms(acc, out)
+        return accumulatedExpr(
+            acc,
+            sort = False,
+        )
 
 
 def combine(expr: Expr) -> Expr:
@@ -461,9 +484,32 @@ def accumulateTerms(acc: dict[tuple, Fraction], expr: Expr) -> None:
     """
     for term in expr:
         key = (term.deltas, term.tensors)
-        acc[key] = acc.get(key, Fraction(0)) + term.coeff
+        acc[key] = acc.get(key, ZERO_FRACTION) + term.coeff
 
-def accumulatedExpr(acc: dict[tuple, Fraction]) -> Expr:
+def accumulateScaledTerms(acc: dict[tuple, Fraction], expr: Expr, coeff: int | Fraction) -> None:
+    """
+    Accumulate scaled expression coefficients by symbolic product.
+
+    Notation:
+        acc[A] \leftarrow acc[A] + c e_A
+
+    Examples:
+        Wick partition signs are folded into the accumulator without building
+        a temporary scaled expression.
+    """
+    if coeff == 1:
+        accumulateTerms(acc, expr)
+        return
+
+    c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
+    if c == 0:
+        return
+
+    for term in expr:
+        key = (term.deltas, term.tensors)
+        acc[key] = acc.get(key, ZERO_FRACTION) + c * term.coeff
+
+def accumulatedExpr(acc: dict[tuple, Fraction], sort: bool = True) -> Expr:
     """
     Emit a sorted scalar expression from an accumulated coefficient dictionary.
 
@@ -473,6 +519,8 @@ def accumulatedExpr(acc: dict[tuple, Fraction]) -> Expr:
     Examples:
         Zero coefficients are discarded and remaining terms are sorted.
     """
+    items = sorted(acc.items()) if sort else acc.items()
+
     return tuple(
         Term(
             coeff = coeff,
@@ -480,7 +528,7 @@ def accumulatedExpr(acc: dict[tuple, Fraction]) -> Expr:
             tensors = tensors,
         )
         # Do it for each unique symbolic product and coefficient in dictionary.
-        for (deltas, tensors), coeff in sorted(acc.items())
+        for (deltas, tensors), coeff in items
         # Provided that coefficient is not zero, otherwise ignore.
         if coeff != 0
     )
@@ -1355,10 +1403,12 @@ class Wick:
             Repeated Wick partitions with the same cumulant factors reuse the
             first scalar product expression.
         """
-        if factors not in self.prodCache:
-            self.prodCache[factors] = prod(factors)
+        key = tuple(id(factor) for factor in factors)
 
-        return self.prodCache[factors]
+        if key not in self.prodCache:
+            self.prodCache[key] = prod(factors)
+
+        return self.prodCache[key]
 
     def eval(self, product: Product, connected: bool = False,) -> Expr:
         """
@@ -1390,8 +1440,11 @@ class Wick:
         for ops in spinStrings:
             accumulateTerms(acc, self.evalSpinString(ops, connected = connected))
         
-        # Simplify terms.
-        return accumulatedExpr(acc)
+        # Simplify terms. Final emission canonicalises separately.
+        return accumulatedExpr(
+            acc,
+            sort = False,
+        )
 
     def expand(self, product: Product) -> tuple[tuple[Op, ...], ...]:
         """
@@ -1604,14 +1657,6 @@ class Wick:
                     if creatorAlpha != annihilatorAlpha:
                         continue
 
-                    if not self.ref.mayHaveNonzeroKappa(
-                        tuple(
-                            ops[position]
-                            for position in block
-                        )
-                    ):
-                        continue
-
                     out.append(block)
 
         return tuple(out)
@@ -1642,40 +1687,41 @@ class Wick:
         if key in self.partitionCache:
             return self.partitionCache[key]
 
-        blocks = self.nonzeroBlocks(ops)
-        byPosition: dict[int, list[tuple[tuple[int, ...], Expr]]] = {}
+        blocks = tuple(
+            (
+                block,
+                value,
+                sum(1 << position for position in block),
+            )
+            for block, value in self.nonzeroBlocks(ops)
+        )
+        byPosition: dict[int, list[tuple[tuple[int, ...], Expr, int]]] = {}
 
-        for block, value in blocks:
+        for block, value, mask in blocks:
             for position in block:
                 byPosition.setdefault(position, []).append((
                     block,
                     value,
+                    mask,
                 ))
 
         @cache
         def cover(
-            remaining: tuple[int, ...],
+            remainingMask: int,
         ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
-            if not remaining:
+            if remainingMask == 0:
                 return ((),)
 
-            first = remaining[0]
-            remainingSet = set(remaining)
+            first = (remainingMask & -remainingMask).bit_length() - 1
             out = []
 
-            for block, value in byPosition.get(first, ()):
-                blockSet = set(block)
-
-                if not blockSet <= remainingSet:
+            for block, value, blockMask in byPosition.get(first, ()):
+                if blockMask & remainingMask != blockMask:
                     continue
 
-                rest = tuple(
-                    position
-                    for position in remaining
-                    if position not in blockSet
-                )
+                restMask = remainingMask & ~blockMask
 
-                for suffix in cover(rest):
+                for suffix in cover(restMask):
                     out.append((
                         (
                             block,
@@ -1685,7 +1731,7 @@ class Wick:
 
             return tuple(out)
 
-        self.partitionCache[key] = cover(tuple(range(len(ops))))
+        self.partitionCache[key] = cover((1 << len(ops)) - 1)
 
         return self.partitionCache[key]
 
@@ -1734,15 +1780,16 @@ class Wick:
                     continue
 
                 factors = tuple(value for _, value in partition)
-                accumulateTerms(
+                accumulateScaledTerms(
                     acc,
-                    scale(
-                        self.prodCached(factors),
-                        self.sign(blocks),
-                    ),
+                    self.prodCached(factors),
+                    self.sign(blocks),
                 )
 
-            self.spinStringCache[key] = accumulatedExpr(acc)
+            self.spinStringCache[key] = accumulatedExpr(
+                acc,
+                sort = False,
+            )
             return self.spinStringCache[key]
 
     def maybeSpinBalanced(

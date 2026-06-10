@@ -1,10 +1,42 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from functools import cache
 from itertools import combinations, permutations
 
 from core import Expr, Tensor, Term, combine
 from spinsum import solveConsistent, spinGram
+
+ZERO_FRACTION = Fraction(0)
+
+@cache
+def lowerPermutations(rank: int) -> tuple[tuple[int, ...], ...]:
+    """
+    Return lower-index permutations for one cumulant rank.
+
+    Notation:
+        S_k
+
+    Examples:
+        rank 3 returns all elements of S_3 in deterministic order.
+    """
+    return tuple(permutations(range(rank)))
+
+@cache
+def lowerPermutationIndex(rank: int) -> dict[tuple[int, ...], int]:
+    """
+    Return column indices for lower-index permutations.
+
+    Notation:
+        \pi \in S_k \mapsto j
+
+    Examples:
+        Used to build spin-projection systems without repeated linear searches.
+    """
+    return {
+        perm: index
+        for index, perm in enumerate(lowerPermutations(rank))
+    }
 
 def lambdaRank(name: str) -> int | None:
     """
@@ -99,18 +131,18 @@ def projectedVector(rank: int, coeffs: dict[tuple[int, ...], Fraction]) -> list[
     """
 
     # All lower index permutations.
-    perms = tuple(permutations(range(rank)))
+    perms = lowerPermutations(rank)
 
     # Spin-projection Gram matrix.
     gram = spinGram(rank)
     out = []
     
     for i, _ in enumerate(perms):
-        value = Fraction(0)
+        value = ZERO_FRACTION
     
         # Calculate value_i = \sum_j G_{ij} c_j.
         for j, perm in enumerate(perms):
-            value += gram[i][j] * coeffs.get(perm, Fraction(0))
+            value += gram[i][j] * coeffs.get(perm, ZERO_FRACTION)
 
         out.append(value)
 
@@ -152,7 +184,8 @@ def sparsestEquivalentOrbit(
             -\Lambda_{3, cba}
     """
     # All lower-index permutations.
-    perms = tuple(permutations(range(rank)))
+    perms = lowerPermutations(rank)
+    permIndex = lowerPermutationIndex(rank)
     # Vector G c.
     target = projectedVector(rank, coeffs)
     # Gram matrix for equivalence test.
@@ -177,7 +210,7 @@ def sparsestEquivalentOrbit(
         for support in combinations(perms, supportSize):
             # Build subset linear system G_s x = t (target).
             mat = [
-                [gram[row][perms.index(perm)] for perm in support]
+                [gram[row][permIndex[perm]] for perm in support]
                 for row in range(len(perms))
             ]
             
@@ -200,6 +233,30 @@ def sparsestEquivalentOrbit(
     
     # Otherwise return the original expression.
     return nonzero
+
+@cache
+def cachedSparsestEquivalentOrbit(
+    rank: int,
+    coeffItems: tuple[tuple[tuple[int, ...], Fraction], ...],
+) -> tuple[tuple[tuple[int, ...], Fraction], ...]:
+    """
+    Return a cached sparsest lower-permutation representative.
+
+    Notation:
+        G c = G d
+
+    Examples:
+        Many generated terms share the same coefficient vector and reuse one
+        solved gauge representative.
+    """
+    return tuple(
+        sorted(
+            sparsestEquivalentOrbit(
+                rank,
+                dict(coeffItems),
+            ).items()
+        )
+    )
 
 def sparsifyHighRankCumulantOrbits(expr: Expr) -> Expr:
     """
@@ -294,7 +351,7 @@ def sparsifyHighRankCumulantOrbits(expr: Expr) -> Expr:
             grouped[key] = {}
         
         # Accumulate coefficient for this lower-permutation.
-        grouped[key][lowerPerm] = grouped[key].get(lowerPerm, Fraction(0)) + term.coeff
+        grouped[key][lowerPerm] = grouped[key].get(lowerPerm, ZERO_FRACTION) + term.coeff
 
     out = list(passthrough)
     
@@ -303,7 +360,12 @@ def sparsifyHighRankCumulantOrbits(expr: Expr) -> Expr:
         rank, deltas, otherTensors, name, upper, lowerBase = key
 
         # Replace coeff vector by a sparser equivalent.
-        sparse = sparsestEquivalentOrbit(rank, coeffs)
+        sparse = dict(
+            cachedSparsestEquivalentOrbit(
+                rank,
+                tuple(sorted(coeffs.items())),
+            )
+        )
 
         for perm, coeff in sorted(sparse.items()):
             if coeff == 0:

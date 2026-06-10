@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fractions import Fraction
+from functools import cache
 from itertools import permutations
 
 def permutationSign(sequence: tuple[int, ...]) -> int:
@@ -123,7 +124,8 @@ def cycleCountPerm(p: tuple[int, ...]) -> int:
 
     return cycles
 
-def spinGram(rank: int) -> list[list[Fraction]]:
+@cache
+def spinGram(rank: int) -> tuple[tuple[Fraction, ...], ...]:
     """
     Build the spin-projection Gram matrix for lower-index permutations.
 
@@ -155,7 +157,7 @@ def spinGram(rank: int) -> list[list[Fraction]]:
 
         gram.append(row)
 
-    return gram
+    return tuple(tuple(row) for row in gram)
 
 def solveConsistent(mat: list[list[Fraction]], rhs: list[Fraction]) -> list[Fraction]:
     """
@@ -174,7 +176,7 @@ def solveConsistent(mat: list[list[Fraction]], rhs: list[Fraction]) -> list[Frac
     # Number of unknowns (number of lower-permutations).
     nCols = len(mat[0])
     # Combine A and b into one matrix for Gaussian elimination.
-    aug = [row[:] + [rhs[i]] for i, row in enumerate(mat)]
+    aug = [list(row) + [rhs[i]] for i, row in enumerate(mat)]
     
     # Record pivot columns, those which correspond to determined variables.
     pivotCols = []
