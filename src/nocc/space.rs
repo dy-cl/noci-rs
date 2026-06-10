@@ -1,15 +1,12 @@
 // nocc/space.rs
 
 use ndarray::{Array1, Array2};
-use ndarray_linalg::{Eigh, UPLO};
-use std::collections::BTreeMap;
 
 use super::overlap;
 use crate::AoData;
 use crate::maths::linalg::loewdin_x;
 use crate::nocc::{Cumulants, RDM1};
 use crate::scf::fock;
-use crate::utils::print_array2;
 
 /// NOCC orbital class in the NOCI natural-orbital basis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -315,46 +312,6 @@ pub(in crate::nocc) fn excitation_class(
     }
 }
 
-/// Print NOCC excitation-space diagnostics.
-/// # Arguments:
-/// - `spaces`: NOCC orbital spaces.
-/// - `excitations`: Raw excitation list.
-/// # Returns:
-/// - `()`: Prints counts by class.
-pub(crate) fn print_space_diagnostics(
-    spaces: &Spaces,
-    excitations: &[Excitation],
-) {
-    let mut counts = BTreeMap::new();
-    let mut nrepeated = 0;
-
-    for &ex in excitations.iter() {
-        *counts.entry(excitation_class(spaces, ex)).or_insert(0usize) += 1;
-
-        if matches!(ex, Excitation::Double { p, q, r, s } if p == q || r == s) {
-            nrepeated += 1;
-        }
-    }
-
-    println!("{}", "=".repeat(100));
-    println!("GNOCC FOIS excitation-space diagnostics");
-    println!("Number of MOs: {}", spaces.nmo);
-    println!("Core orbitals: {}", spaces.core.len());
-    println!("Active orbitals: {}", spaces.active.len());
-    println!("Virtual orbitals: {}", spaces.virtuals.len());
-    println!("Creator-side orbitals A ∪ V: {}", spaces.creators.len());
-    println!(
-        "Annihilator-side orbitals C ∪ A: {}",
-        spaces.annihilators.len()
-    );
-    println!("Total raw spin-free excitations: {}", excitations.len());
-    println!("Repeated-side spin-free doubles present: {}", nrepeated);
-
-    for (class, count) in counts.iter() {
-        println!("{:?}: {}", class, count);
-    }
-}
-
 /// Build the weighted FOIS basis from the full raw excitation list.
 /// # Arguments:
 /// - `ao`: Integrals transformed to the NOCI natural-orbital basis.
@@ -407,185 +364,6 @@ pub(crate) fn build_fois_basis(
     }
 }
 
-/// Print the weighted FOIS metric diagnostics.
-/// # Arguments:
-/// - `spaces`: NOCC orbital spaces.
-/// - `excitations`: Raw spin-free excitation list.
-/// - `fois`: Reusable weighted FOIS basis data.
-/// # Returns:
-/// - `()`: Prints raw and weighted FOIS metric diagnostics.
-pub(crate) fn print_fois_metric_diagnostics(
-    spaces: &Spaces,
-    excitations: &[Excitation],
-    fois: &FoisBasis,
-) {
-    let s = &fois.metric;
-    let h = &fois.h;
-    let stilde = &fois.weighted_metric;
-    let y = &fois.y;
-
-    let mut asym: f64 = 0.0;
-    for i in 0..s.nrows() {
-        for j in 0..s.ncols() {
-            asym = asym.max((s[(i, j)] - s[(j, i)]).abs());
-        }
-    }
-
-    let (s_evals, _) = s
-        .clone()
-        .eigh(UPLO::Upper)
-        .expect("raw FOIS overlap diagonalisation failed");
-
-    let (stilde_evals, _) = stilde
-        .clone()
-        .eigh(UPLO::Upper)
-        .expect("weighted FOIS overlap diagonalisation failed");
-
-    let nkeep = y.ncols();
-    let nnull = h.len() - nkeep;
-    let ytsy = y.t().dot(s).dot(y);
-    let mut orth_err: f64 = 0.0;
-
-    for i in 0..ytsy.nrows() {
-        for j in 0..ytsy.ncols() {
-            let target = if i == j { 1.0 } else { 0.0 };
-            orth_err = orth_err.max((ytsy[(i, j)] - target).abs());
-        }
-    }
-
-    println!("{}", "=".repeat(100));
-    println!("GNOCC weighted FOIS metric diagnostics");
-    println!("Raw metric dimension: {}", s.nrows());
-    println!("Raw metric max asymmetry: {:.6e}", asym);
-    println!(
-        "Raw metric min eigenvalue: {:.6e}",
-        s_evals.iter().copied().fold(f64::INFINITY, f64::min)
-    );
-    println!(
-        "Raw metric max eigenvalue: {:.6e}",
-        s_evals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-    );
-    println!(
-        "Weighted metric min eigenvalue: {:.6e}",
-        stilde_evals.iter().copied().fold(f64::INFINITY, f64::min)
-    );
-    println!(
-        "Weighted metric max eigenvalue: {:.6e}",
-        stilde_evals
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max)
-    );
-    println!("Weighted FOIS kept directions: {}", nkeep);
-    println!("Weighted FOIS near-null directions: {}", nnull);
-    println!("Max Y^T S Y - I error: {:.6e}", orth_err);
-
-    print_block_diagnostics(s, spaces, excitations);
-    print_diagonal_diagnostics(s, spaces, excitations);
-
-    if excitations.len() <= 16 {
-        println!("{}", "-".repeat(100));
-        println!("Raw FOIS metric:");
-        print_array2(s);
-    }
-
-    println!("{}", "-".repeat(100));
-    println!("Hamiltonian weights:");
-    for (i, &hi) in h.iter().enumerate() {
-        println!("{:4}: {:.12e} {}", i, hi, excitation_label(excitations[i]));
-    }
-}
-
-/// Print per-excitation-class raw metric block diagnostics.
-/// # Arguments:
-/// - `s`: Raw FOIS metric.
-/// - `spaces`: NOCC orbital spaces.
-/// - `excitations`: Raw spin-free excitation list.
-/// # Returns:
-/// - `()`: Prints block dimensions, asymmetries, and eigenvalue ranges.
-fn print_block_diagnostics(
-    s: &Array2<f64>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
-) {
-    let mut blocks = BTreeMap::new();
-
-    for (i, &left) in excitations.iter().enumerate() {
-        blocks
-            .entry(excitation_class(spaces, left))
-            .or_insert_with(Vec::new)
-            .push(i);
-    }
-
-    println!("{}", "-".repeat(100));
-    println!("Raw metric block diagnostics");
-
-    for (class, indices) in blocks.iter() {
-        let mut block: Array2<f64> = Array2::zeros((indices.len(), indices.len()));
-
-        for (ii, &i) in indices.iter().enumerate() {
-            for (jj, &j) in indices.iter().enumerate() {
-                block[(ii, jj)] = s[(i, j)];
-            }
-        }
-
-        let mut asym: f64 = 0.0;
-        for i in 0..block.nrows() {
-            for j in 0..block.ncols() {
-                asym = asym.max((block[(i, j)] - block[(j, i)]).abs());
-            }
-        }
-
-        let (evals, _) = block
-            .clone()
-            .eigh(UPLO::Upper)
-            .expect("raw FOIS block diagonalisation failed");
-
-        println!(
-            "{:?}: dim: {}, asym: {:.6e}, raw evals: [{:.6e}, {:.6e}]",
-            class,
-            indices.len(),
-            asym,
-            evals.iter().copied().fold(f64::INFINITY, f64::min),
-            evals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-        );
-    }
-}
-
-/// Print negative raw metric diagonal diagnostics.
-/// # Arguments:
-/// - `s`: Raw FOIS metric.
-/// - `spaces`: NOCC orbital spaces.
-/// - `excitations`: Raw spin-free excitation list.
-/// # Returns:
-/// - `()`: Prints all diagonal elements below tolerance.
-fn print_diagonal_diagnostics(
-    s: &Array2<f64>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
-) {
-    println!("{}", "-".repeat(100));
-    println!("Negative raw metric diagonal diagnostics");
-
-    let mut nbad = 0;
-
-    for (i, &ex) in excitations.iter().enumerate() {
-        if s[(i, i)] < -1.0e-10 {
-            nbad += 1;
-
-            println!(
-                "{:4}: diag: {:.12e}, class: {:?}, {}",
-                i,
-                s[(i, i)],
-                excitation_class(spaces, ex),
-                excitation_label(ex)
-            );
-        }
-    }
-
-    println!("Negative raw metric diagonals: {}", nbad);
-}
-
 /// Build Hamiltonian coupling weights used for the weighted FOIS metric.
 /// # Arguments:
 /// - `ao`: Integrals transformed to the NOCI natural-orbital basis.
@@ -623,16 +401,4 @@ fn hamiltonian_weights(
     h
 }
 
-/// Format an excitation for diagnostics.
-/// # Arguments:
-/// - `ex`: Spin-free excitation.
-/// # Returns:
-/// - `String`: Human-readable excitation label.
-fn excitation_label(ex: Excitation) -> String {
-    match ex {
-        Excitation::Single { p, q } => format!("single p: {}, q: {}", p, q),
-        Excitation::Double { p, q, r, s } => {
-            format!("double p: {}, q: {}, r: {}, s: {}", p, q, r, s)
-        }
-    }
-}
+

@@ -1,7 +1,10 @@
 // nocc/driver.rs
 
+use std::collections::BTreeMap;
+
+use ndarray::{Array1, Array2};
+use ndarray_linalg::{Eigh, UPLO};
 use mpi::topology::Communicator;
-use ndarray::Array1;
 
 use crate::AoData;
 use crate::PostSCFData;
@@ -13,6 +16,10 @@ use crate::noci::{NOCIData, build_noci_hs, build_wicks_shared};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::orbitals::{
     NOCINaturalOrbitals, print_noci_natural_orbitals, transform_ao_data, transform_noci_basis,
+};
+use crate::utils::print_array2;
+use crate::nocc::space::{
+    Excitation, FoisBasis, Spaces, excitation_class,
 };
 
 /// Run NOCCMC setup work.
@@ -85,80 +92,94 @@ pub(crate) fn run_noccmc(
         None
     };
     let (_, gamma4) = rdm4(&nodata, &coeffs, &coeffs, &no.active, scratch4);
+    
+    let lambdas = cumulants(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
+    
+    let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, 1.0e-6, 1.0e-6);
+    let excitations = space::build_excitations(&spaces);
+    let fois =
+        space::build_fois_basis(&noao, &gamma1, &lambdas, &spaces, &excitations, post.tol);
 
     if world.rank() == 0 {
-        let lambdas = cumulants(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
-
-        let mut scheck = no.c.t().dot(&post.ao.s).dot(&no.c);
-        for i in 0..scheck.nrows() {
-            scheck[(i, i)] -= 1.0;
-        }
-
-        let serr = scheck.iter().map(|x| x.abs()).fold(0.0, f64::max);
-
-        let (h, s, _) = build_noci_hs(&nodata, nodata.basis, nodata.basis, true);
-        let e_coeff = coeffs.dot(&h.dot(&coeffs)) / coeffs.dot(&s.dot(&coeffs));
-        let (evals, _) = general_evp(&h, &s, true, post.tol);
-
-        let mut e1 = 0.0;
-        for a in 0..gamma1.n {
-            for b in 0..gamma1.n {
-                let i = b * gamma1.n + a;
-                e1 += noao.h[(a, b)] * gamma1.data[i];
-            }
-        }
-
-        let mut e2 = 0.0;
-        for a in 0..gamma2.n {
-            for b in 0..gamma2.n {
-                for c in 0..gamma2.n {
-                    for d in 0..gamma2.n {
-                        let i = (((b * gamma2.n + c) * gamma2.n + a) * gamma2.n) + d;
-                        e2 += noao.eri_coul[(a, b, c, d)] * gamma2.data[i];
-                    }
-                }
-            }
-        }
-
-        let erdm = noao.enuc + e1 + 0.5 * e2;
-
-        print_misc_diagnostics(serr, e_coeff, evals[0], erdm);
+        
+        // Check orthonormality of NOCI natural orbitals and energy from RDMs.
+        print_misc_diagnostics(post, &nodata, &noao, no, &coeffs, &gamma1, &gamma2);
+        // Check trace of 1RDM is electron number N, 2RDM is N(N-1), and higher rank identities.
         print_rdm_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
+        // Check 1Cumulant is 1RDM and verify higher ranks according to known definitions.
         print_cumulant_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &lambdas, &no.active);
-
-        let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, 1.0e-6, 1.0e-6);
-        let excitations = space::build_excitations(&spaces);
-        let fois =
-            space::build_fois_basis(&noao, &gamma1, &lambdas, &spaces, &excitations, post.tol);
-
-        space::print_space_diagnostics(&spaces, &excitations);
-        space::print_fois_metric_diagnostics(&spaces, &excitations, &fois);
-
+        
+        // Check orbital counts for each type of space.
+        print_space_diagnostics(&spaces, &excitations);
+        // Check orthnormalisation of FOIS metric.
+        print_fois_metric_diagnostics(&spaces, &excitations, &fois);
+        
+        // Check known equality for zeroth order residual.
         print_r0_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
+        // Check linearity of first-order residual.
         print_r1_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
     }
 }
 
 /// Print miscellaneous NOCCMC setup diagnostics.
 /// # Arguments:
-/// - `serr`: NOCI natural orbital orthonormality error.
-/// - `e_coeff`: NOCI energy evaluated from the supplied coefficient vector.
-/// - `e_gep`: Lowest NOCI generalized eigenvalue.
-/// - `e_rdm`: NOCI energy reconstructed from the spin-free one- and two-body RDMs.
+/// - `post`: Data shared by post-SCF methods.
+/// - `nodata`: NOCI data in the NOCI natural-orbital basis.
+/// - `noao`: AO data transformed to the NOCI natural-orbital basis.
+/// - `no`: NOCI natural-orbital basis.
+/// - `coeffs`: Reference NOCI coefficient vector.
+/// - `gamma1`: Full-space spin-free one-body RDM.
+/// - `gamma2`: Full-space spin-free two-body RDM.
 /// # Returns:
 /// - `()`: Prints miscellaneous diagnostics.
 fn print_misc_diagnostics(
-    serr: f64,
-    e_coeff: f64,
-    e_gep: f64,
-    e_rdm: f64,
+    post: &PostSCFData<'_, f64>,
+    nodata: &NOCIData<'_, f64>,
+    noao: &AoData,
+    no: &NOCINaturalOrbitals,
+    coeffs: &Array1<f64>,
+    gamma1: &RDM1<f64>,
+    gamma2: &RDM2<f64>,
 ) {
+    let mut scheck = no.c.t().dot(&post.ao.s).dot(&no.c);
+    for i in 0..scheck.nrows() {
+        scheck[(i, i)] -= 1.0;
+    }
+
+    let serr = scheck.iter().map(|x| x.abs()).fold(0.0, f64::max);
+
+    let (h, s, _) = build_noci_hs(nodata, nodata.basis, nodata.basis, true);
+    let e_coeff = coeffs.dot(&h.dot(coeffs)) / coeffs.dot(&s.dot(coeffs));
+    let (evals, _) = general_evp(&h, &s, true, post.tol);
+
+    let mut e1 = 0.0;
+    for a in 0..gamma1.n {
+        for b in 0..gamma1.n {
+            let i = b * gamma1.n + a;
+            e1 += noao.h[(a, b)] * gamma1.data[i];
+        }
+    }
+
+    let mut e2 = 0.0;
+    for a in 0..gamma2.n {
+        for b in 0..gamma2.n {
+            for c in 0..gamma2.n {
+                for d in 0..gamma2.n {
+                    let i = (((b * gamma2.n + c) * gamma2.n + a) * gamma2.n) + d;
+                    e2 += noao.eri_coul[(a, b, c, d)] * gamma2.data[i];
+                }
+            }
+        }
+    }
+
+    let erdm = noao.enuc + e1 + 0.5 * e2;
+
     println!("{}", "=".repeat(100));
     println!("NOCI NOCCMC miscellaneous diagnostics");
     println!("NOCI natural orbital orthonormality error: {:.6e}", serr);
     println!("NOCI energy in NO basis: {:.12}", e_coeff);
-    println!("Lowest NOCI GEVP energy in NO basis: {:.12}", e_gep);
-    println!("NOCI energy from RDMs in NO basis: {:.12}", e_rdm);
+    println!("Lowest NOCI GEVP energy in NO basis: {:.12}", evals[0]);
+    println!("NOCI energy from RDMs in NO basis: {:.12}", erdm);
 }
 
 /// Print spin-free RDM consistency diagnostics.
@@ -336,22 +357,6 @@ fn print_rdm_diagnostics(
     println!(
         "Max active Gamma4 -> Gamma3 contraction error: {:.6e}",
         g4_active_contract_err
-    );
-    println!(
-        "Max |Gamma1|: {:.6e}",
-        gamma1.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
-    );
-    println!(
-        "Max |Gamma2|: {:.6e}",
-        gamma2.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
-    );
-    println!(
-        "Max active |Gamma3|: {:.6e}",
-        gamma3.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
-    );
-    println!(
-        "Max active |Gamma4|: {:.6e}",
-        gamma4.data.iter().map(|x| x.abs()).fold(0.0, f64::max)
     );
 }
 
@@ -667,43 +672,224 @@ fn print_cumulant_diagnostics(
         "Max Lambda4 explicit spin-free formula error: {:.6e}",
         l4err
     );
+}
 
+/// Print NOCC excitation-space diagnostics.
+/// # Arguments:
+/// - `spaces`: NOCC orbital spaces.
+/// - `excitations`: Raw excitation list.
+/// # Returns:
+/// - `()`: Prints counts by class.
+pub(crate) fn print_space_diagnostics(
+    spaces: &Spaces,
+    excitations: &[Excitation],
+) {
+    let mut counts = BTreeMap::new();
+    let mut nrepeated = 0;
+
+    for &ex in excitations.iter() {
+        *counts.entry(excitation_class(spaces, ex)).or_insert(0usize) += 1;
+
+        if matches!(ex, Excitation::Double { p, q, r, s } if p == q || r == s) {
+            nrepeated += 1;
+        }
+    }
+
+    println!("{}", "=".repeat(100));
+    println!("GNOCC FOIS excitation-space diagnostics");
+    println!("Number of MOs: {}", spaces.nmo);
+    println!("Core orbitals: {}", spaces.core.len());
+    println!("Active orbitals: {}", spaces.active.len());
+    println!("Virtual orbitals: {}", spaces.virtuals.len());
+    println!("Creator-side orbitals A ∪ V: {}", spaces.creators.len());
     println!(
-        "Max |Lambda1|: {:.6e}",
-        lambda
-            .lambda1
-            .data
-            .iter()
-            .map(|x| x.abs())
-            .fold(0.0, f64::max)
+        "Annihilator-side orbitals C ∪ A: {}",
+        spaces.annihilators.len()
+    );
+    println!("Total raw spin-free excitations: {}", excitations.len());
+    println!("Repeated-side spin-free doubles present: {}", nrepeated);
+
+    for (class, count) in counts.iter() {
+        println!("{:?}: {}", class, count);
+    }
+}
+
+/// Print the weighted FOIS metric diagnostics.
+/// # Arguments:
+/// - `spaces`: NOCC orbital spaces.
+/// - `excitations`: Raw spin-free excitation list.
+/// - `fois`: Reusable weighted FOIS basis data.
+/// # Returns:
+/// - `()`: Prints raw and weighted FOIS metric diagnostics.
+pub(crate) fn print_fois_metric_diagnostics(
+    spaces: &Spaces,
+    excitations: &[Excitation],
+    fois: &FoisBasis,
+) {
+    let s = &fois.metric;
+    let h = &fois.h;
+    let stilde = &fois.weighted_metric;
+    let y = &fois.y;
+
+    let mut asym: f64 = 0.0;
+    for i in 0..s.nrows() {
+        for j in 0..s.ncols() {
+            asym = asym.max((s[(i, j)] - s[(j, i)]).abs());
+        }
+    }
+
+    let (s_evals, _) = s
+        .clone()
+        .eigh(UPLO::Upper)
+        .expect("raw FOIS overlap diagonalisation failed");
+
+    let (stilde_evals, _) = stilde
+        .clone()
+        .eigh(UPLO::Upper)
+        .expect("weighted FOIS overlap diagonalisation failed");
+
+    let nkeep = y.ncols();
+    let nnull = h.len() - nkeep;
+    let ytsy = y.t().dot(s).dot(y);
+    let mut orth_err: f64 = 0.0;
+
+    for i in 0..ytsy.nrows() {
+        for j in 0..ytsy.ncols() {
+            let target = if i == j { 1.0 } else { 0.0 };
+            orth_err = orth_err.max((ytsy[(i, j)] - target).abs());
+        }
+    }
+
+    println!("{}", "=".repeat(100));
+    println!("GNOCC weighted FOIS metric diagnostics");
+    println!("Raw metric dimension: {}", s.nrows());
+    println!("Raw metric max asymmetry: {:.6e}", asym);
+    println!(
+        "Raw metric min eigenvalue: {:.6e}",
+        s_evals.iter().copied().fold(f64::INFINITY, f64::min)
     );
     println!(
-        "Max |Lambda2|: {:.6e}",
-        lambda
-            .lambda2
-            .data
-            .iter()
-            .map(|x| x.abs())
-            .fold(0.0, f64::max)
+        "Weighted metric min eigenvalue: {:.6e}",
+        stilde_evals.iter().copied().fold(f64::INFINITY, f64::min)
     );
-    println!(
-        "Max |Lambda3|: {:.6e}",
-        lambda
-            .lambda3
-            .data
-            .iter()
-            .map(|x| x.abs())
-            .fold(0.0, f64::max)
-    );
-    println!(
-        "Max |Lambda4|: {:.6e}",
-        lambda
-            .lambda4
-            .data
-            .iter()
-            .map(|x| x.abs())
-            .fold(0.0, f64::max)
-    );
+    println!("Weighted FOIS kept directions: {}", nkeep);
+    println!("Weighted FOIS near-null directions: {}", nnull);
+    println!("Max Y^T S Y - I error: {:.6e}", orth_err);
+
+    print_block_diagnostics(s, spaces, excitations);
+    print_diagonal_diagnostics(s, spaces, excitations);
+
+    if excitations.len() <= 16 {
+        println!("{}", "-".repeat(100));
+        println!("Raw FOIS metric:");
+        print_array2(s);
+    }
+
+    println!("{}", "-".repeat(100));
+}
+
+/// Print per-excitation-class raw metric block diagnostics.
+/// # Arguments:
+/// - `s`: Raw FOIS metric.
+/// - `spaces`: NOCC orbital spaces.
+/// - `excitations`: Raw spin-free excitation list.
+/// # Returns:
+/// - `()`: Prints block dimensions, asymmetries, and eigenvalue ranges.
+fn print_block_diagnostics(
+    s: &Array2<f64>,
+    spaces: &Spaces,
+    excitations: &[Excitation],
+) {
+    let mut blocks = BTreeMap::new();
+
+    for (i, &left) in excitations.iter().enumerate() {
+        blocks
+            .entry(excitation_class(spaces, left))
+            .or_insert_with(Vec::new)
+            .push(i);
+    }
+
+    println!("{}", "-".repeat(100));
+    println!("Raw metric block diagnostics");
+
+    for (class, indices) in blocks.iter() {
+        let mut block: Array2<f64> = Array2::zeros((indices.len(), indices.len()));
+
+        for (ii, &i) in indices.iter().enumerate() {
+            for (jj, &j) in indices.iter().enumerate() {
+                block[(ii, jj)] = s[(i, j)];
+            }
+        }
+
+        let mut asym: f64 = 0.0;
+        for i in 0..block.nrows() {
+            for j in 0..block.ncols() {
+                asym = asym.max((block[(i, j)] - block[(j, i)]).abs());
+            }
+        }
+
+        let (evals, _) = block
+            .clone()
+            .eigh(UPLO::Upper)
+            .expect("raw FOIS block diagonalisation failed");
+
+        println!(
+            "{:?}: dim: {}, asym: {:.6e}, raw evals: [{:.6e}, {:.6e}]",
+            class,
+            indices.len(),
+            asym,
+            evals.iter().copied().fold(f64::INFINITY, f64::min),
+            evals.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        );
+    }
+}
+
+/// Print negative raw metric diagonal diagnostics.
+/// # Arguments:
+/// - `s`: Raw FOIS metric.
+/// - `spaces`: NOCC orbital spaces.
+/// - `excitations`: Raw spin-free excitation list.
+/// # Returns:
+/// - `()`: Prints all diagonal elements below tolerance.
+fn print_diagonal_diagnostics(
+    s: &Array2<f64>,
+    spaces: &Spaces,
+    excitations: &[Excitation],
+) {
+    println!("{}", "-".repeat(100));
+    println!("Negative raw metric diagonal diagnostics");
+
+    let mut nbad = 0;
+
+    for (i, &ex) in excitations.iter().enumerate() {
+        if s[(i, i)] < -1.0e-10 {
+            nbad += 1;
+
+            println!(
+                "{:4}: diag: {:.12e}, class: {:?}, {}",
+                i,
+                s[(i, i)],
+                excitation_class(spaces, ex),
+                excitation_label(ex)
+            );
+        }
+    }
+
+    println!("Negative raw metric diagonals: {}", nbad);
+}
+
+/// Format an excitation for diagnostics.
+/// # Arguments:
+/// - `ex`: Spin-free excitation.
+/// # Returns:
+/// - `String`: Human-readable excitation label.
+fn excitation_label(ex: Excitation) -> String {
+    match ex {
+        Excitation::Single { p, q } => format!("single p: {}, q: {}", p, q),
+        Excitation::Double { p, q, r, s } => {
+            format!("double p: {}, q: {}, r: {}, s: {}", p, q, r, s)
+        }
+    }
 }
 
 /// Print the zeroth-order residual projection diagnostic.
@@ -734,14 +920,10 @@ fn print_r0_diagnostics(
     let r0_sh_fois = fois.y.t().dot(&r0_sh);
     let diff_fois = &r0_direct_fois - &r0_sh_fois;
 
-    let mut raw_norm2 = 0.0;
-    let mut sh_norm2 = 0.0;
     let mut raw_diff_norm2 = 0.0;
     let mut raw_max_diff: f64 = 0.0;
 
     for i in 0..nexc {
-        raw_norm2 += r0_direct[i] * r0_direct[i];
-        sh_norm2 += r0_sh[i] * r0_sh[i];
         raw_diff_norm2 += diff_raw[i] * diff_raw[i];
 
         if diff_raw[i].abs() > raw_max_diff {
@@ -749,14 +931,10 @@ fn print_r0_diagnostics(
         }
     }
 
-    let mut fois_norm2 = 0.0;
-    let mut fois_sh_norm2 = 0.0;
     let mut fois_diff_norm2 = 0.0;
     let mut fois_max_diff: f64 = 0.0;
 
     for i in 0..diff_fois.len() {
-        fois_norm2 += r0_direct_fois[i] * r0_direct_fois[i];
-        fois_sh_norm2 += r0_sh_fois[i] * r0_sh_fois[i];
         fois_diff_norm2 += diff_fois[i] * diff_fois[i];
         fois_max_diff = fois_max_diff.max(diff_fois[i].abs());
     }
@@ -775,11 +953,7 @@ fn print_r0_diagnostics(
     println!("Raw excitation dimension: {}", nexc);
     println!("FOIS retained dimension: {}", fois.y.ncols());
     println!("Max |Y^T S Y - I|: {:.6e}", orth_err);
-    println!("||R0||: {:.6e}", raw_norm2.sqrt());
-    println!("||Sh||: {:.6e}", sh_norm2.sqrt());
     println!("||R0 - S h||: {:.6e}", raw_diff_norm2.sqrt());
-    println!("||Y^T R0||: {:.6e}", fois_norm2.sqrt());
-    println!("||Y^T Sh||: {:.6e}", fois_sh_norm2.sqrt());
     println!("||Y^T R0 - Y^T Sh||: {:.6e}", fois_diff_norm2.sqrt());
 }
 
@@ -814,22 +988,14 @@ fn print_r1_diagnostics(
     let r1_direct = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw);
     let r1_direct_fois = fois.y.t().dot(&r1_direct);
 
-    let mut t_raw_norm2 = 0.0;
-    let mut t_fois_norm2 = 0.0;
-    let mut r1_norm2 = 0.0;
-    let mut r1_fois_norm2 = 0.0;
     let mut r1_max: f64 = 0.0;
     let mut r1_fois_max: f64 = 0.0;
 
     for i in 0..nexc {
-        t_raw_norm2 += t_raw[i] * t_raw[i];
-        r1_norm2 += r1_direct[i] * r1_direct[i];
         r1_max = r1_max.max(r1_direct[i].abs());
     }
 
     for i in 0..nfois {
-        t_fois_norm2 += t_fois[i] * t_fois[i];
-        r1_fois_norm2 += r1_direct_fois[i] * r1_direct_fois[i];
         r1_fois_max = r1_fois_max.max(r1_direct_fois[i].abs());
     }
 
@@ -870,12 +1036,6 @@ fn print_r1_diagnostics(
     println!("GNOCC first-order residual diagnostics");
     println!("Raw excitation dimension: {}", nexc);
     println!("FOIS retained dimension: {}", nfois);
-    println!("||t raw||: {:.6e}", t_raw_norm2.sqrt());
-    println!("||t FOIS||: {:.6e}", t_fois_norm2.sqrt());
-    println!("||R1[t]||: {:.6e}", r1_norm2.sqrt());
-    println!("max |R1[t]|: {:.6e}", r1_max);
-    println!("||Y^T R1[t]||: {:.6e}", r1_fois_norm2.sqrt());
-    println!("max |Y^T R1[t]|: {:.6e}", r1_fois_max);
     println!(
         "||R1[t + u] - R1[t] - R1[u]||: {:.6e}",
         linearity_norm2.sqrt()
