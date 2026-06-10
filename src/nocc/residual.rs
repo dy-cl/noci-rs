@@ -1,9 +1,10 @@
 // nocc/residual.rs
 //
 use ndarray::{Array1, Array2, Array4};
+use rayon::prelude::*;
 
 use crate::AoData;
-use crate::nocc::common::{class_name, eval, Tensors};
+use crate::nocc::common::{Tensors, class_name, eval};
 use crate::nocc::loader::{r0_terms, r1_terms};
 use crate::nocc::space::{Excitation, ExcitationClass, Spaces, excitation_class};
 use crate::nocc::terms::{ResidualClassTerms, ResidualTermSet};
@@ -150,13 +151,12 @@ pub(crate) fn r0(
         t2: None,
     };
 
-    let mut out = Array1::<f64>::zeros(excitations.len());
+    let out: Vec<f64> = excitations
+        .par_iter()
+        .map(|&ex| r0e(ex, &tensors))
+        .collect();
 
-    for (mu, &ex) in excitations.iter().enumerate() {
-        out[mu] = r0e(ex, &tensors);
-    }
-
-    out
+    Array1::from_vec(out)
 }
 
 /// Build the first-order residual vector, linear in the supplied amplitudes.
@@ -191,11 +191,10 @@ pub(crate) fn r1(
         t2: Some(&t2),
     };
 
-    let mut out = Array1::<f64>::zeros(excitations.len());
+    let out: Vec<f64> = excitations
+        .par_iter()
+        .map(|&ex| r1e(ex, &tensors))
+        .collect();
 
-    for (mu, &ex) in excitations.iter().enumerate() {
-        out[mu] = r1e(ex, &tensors);
-    }
-
-    out
+    Array1::from_vec(out)
 }

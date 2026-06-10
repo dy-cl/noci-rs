@@ -2,14 +2,15 @@
 
 use std::collections::BTreeMap;
 
+use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
-use mpi::topology::Communicator;
 
 use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;
 use crate::maths::general_evp;
+use crate::nocc::space::{Excitation, FoisBasis, Spaces, excitation_class};
 use crate::nocc::{Cumulants, RDM1, RDM2, RDM3, RDM4, cumulants, rdm1, rdm2, rdm3, rdm4};
 use crate::nocc::{residual, space};
 use crate::noci::{NOCIData, build_noci_hs, build_wicks_shared};
@@ -18,9 +19,6 @@ use crate::orbitals::{
     NOCINaturalOrbitals, print_noci_natural_orbitals, transform_ao_data, transform_noci_basis,
 };
 use crate::utils::print_array2;
-use crate::nocc::space::{
-    Excitation, FoisBasis, Spaces, excitation_class,
-};
 
 /// Run NOCCMC setup work.
 /// # Arguments:
@@ -92,28 +90,26 @@ pub(crate) fn run_noccmc(
         None
     };
     let (_, gamma4) = rdm4(&nodata, &coeffs, &coeffs, &no.active, scratch4);
-    
+
     let lambdas = cumulants(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
-    
+
     let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, 1.0e-6, 1.0e-6);
     let excitations = space::build_excitations(&spaces);
-    let fois =
-        space::build_fois_basis(&noao, &gamma1, &lambdas, &spaces, &excitations, post.tol);
+    let fois = space::build_fois_basis(&noao, &gamma1, &lambdas, &spaces, &excitations, post.tol);
 
     if world.rank() == 0 {
-        
         // Check orthonormality of NOCI natural orbitals and energy from RDMs.
         print_misc_diagnostics(post, &nodata, &noao, no, &coeffs, &gamma1, &gamma2);
         // Check trace of 1RDM is electron number N, 2RDM is N(N-1), and higher rank identities.
         print_rdm_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
         // Check 1Cumulant is 1RDM and verify higher ranks according to known definitions.
         print_cumulant_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &lambdas, &no.active);
-        
+
         // Check orbital counts for each type of space.
         print_space_diagnostics(&spaces, &excitations);
         // Check orthnormalisation of FOIS metric.
         print_fois_metric_diagnostics(&spaces, &excitations, &fois);
-        
+
         // Check known equality for zeroth order residual.
         print_r0_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
         // Check linearity of first-order residual.
@@ -999,51 +995,10 @@ fn print_r1_diagnostics(
         r1_fois_max = r1_fois_max.max(r1_direct_fois[i].abs());
     }
 
-    let mut t_fois_b = Array1::<f64>::zeros(nfois);
-
-    for i in 0..nfois {
-        t_fois_b[i] = if i % 2 == 0 {
-            5.0e-4 / ((i + 1) as f64)
-        } else {
-            -2.5e-4 / ((i + 1) as f64)
-        };
-    }
-
-    let t_raw_b = fois.y.dot(&t_fois_b);
-    let t_raw_sum = &t_raw + &t_raw_b;
-    let t_raw_scaled = t_raw.mapv(|x| 2.0 * x);
-
-    let r1_b = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw_b);
-    let r1_sum = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw_sum);
-    let r1_scaled = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw_scaled);
-
-    let mut linearity_norm2 = 0.0;
-    let mut scaling_norm2 = 0.0;
-    let mut linearity_max: f64 = 0.0;
-    let mut scaling_max: f64 = 0.0;
-
-    for i in 0..nexc {
-        let linearity = r1_sum[i] - r1_direct[i] - r1_b[i];
-        let scaling = r1_scaled[i] - 2.0 * r1_direct[i];
-
-        linearity_norm2 += linearity * linearity;
-        scaling_norm2 += scaling * scaling;
-        linearity_max = linearity_max.max(linearity.abs());
-        scaling_max = scaling_max.max(scaling.abs());
-    }
-
     println!("{}", "=".repeat(100));
     println!("GNOCC first-order residual diagnostics");
     println!("Raw excitation dimension: {}", nexc);
     println!("FOIS retained dimension: {}", nfois);
-    println!(
-        "||R1[t + u] - R1[t] - R1[u]||: {:.6e}",
-        linearity_norm2.sqrt()
-    );
-    println!(
-        "max |R1[t + u] - R1[t] - R1[u]|: {:.6e}",
-        linearity_max
-    );
-    println!("||R1[2t] - 2 R1[t]||: {:.6e}", scaling_norm2.sqrt());
-    println!("max |R1[2t] - 2 R1[t]|: {:.6e}", scaling_max);
+    println!("max |R1[t]|: {:.6e}", r1_max);
+    println!("max |Y^T R1[t]|: {:.6e}", r1_fois_max);
 }

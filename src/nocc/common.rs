@@ -3,9 +3,9 @@
 use ndarray::{Array2, Array4};
 
 use crate::AoData;
-use crate::nocc::{Cumulants, RDM1};
 use crate::nocc::space::{Excitation, ExcitationClass, Spaces};
 use crate::nocc::terms::{GeneratedTerm, TensorFactor};
+use crate::nocc::{Cumulants, RDM1};
 
 /// Reference tensors needed to evaluate generated term tables.
 pub(super) struct Tensors<'a> {
@@ -90,26 +90,28 @@ pub(super) fn orbs(
 /// - `raw`: Class-local index ids.
 /// - `idx`: Class-local orbital index values.
 /// # Returns:
-/// - `Vec<usize>`: Active-space tensor indices.
-pub(super) fn ids(
+/// - `([usize; 4], usize)`: Active-space tensor indices and active length.
+fn ids(
     spaces: &Spaces,
     raw: &[u16],
     idx: &[usize],
-) -> Vec<usize> {
-    raw.iter()
-        .map(|&id| active(spaces, idx[id as usize]))
-        .collect()
+) -> ([usize; 4], usize) {
+    let mut out = [0; 4];
+    for (i, &id) in raw.iter().enumerate() {
+        out[i] = active(spaces, idx[id as usize]);
+    }
+    (out, raw.len())
 }
 
 /// Return excitation indices in generated free-index order.
 /// # Arguments:
 /// - `ex`: Raw spin-free excitation.
 /// # Returns:
-/// - `Vec<usize>`: Creation indices followed by annihilation indices.
-pub(super) fn unpack(ex: Excitation) -> Vec<usize> {
+/// - `([usize; 4], usize)`: Creation indices followed by annihilation indices and active length.
+fn unpack(ex: Excitation) -> ([usize; 4], usize) {
     match ex {
-        Excitation::Single { p, q } => vec![p, q],
-        Excitation::Double { p, q, r, s } => vec![p, q, r, s],
+        Excitation::Single { p, q } => ([p, q, 0, 0], 2),
+        Excitation::Double { p, q, r, s } => ([p, q, r, s], 4),
     }
 }
 
@@ -147,9 +149,9 @@ fn fill(
     sources: &[(&[u16], Excitation)],
 ) {
     for &(free, ex) in sources.iter() {
-        let values = unpack(ex);
+        let (values, nvalue) = unpack(ex);
 
-        for (&id, value) in free.iter().zip(values) {
+        for (&id, &value) in free.iter().zip(values[..nvalue].iter()) {
             idx[id as usize] = value;
         }
     }
@@ -174,7 +176,7 @@ fn term(
 ) -> f64 {
     // Begin with coefficient c_a.
     let mut out = item.0[0] as f64 / item.0[1] as f64;
-    
+
     // Multiply by all deltas \delta_{i_r, i_s}.
     for pair in item.2.iter() {
         out *= delta(idx[pair[0] as usize], idx[pair[1] as usize]);
@@ -183,7 +185,7 @@ fn term(
             return 0.0;
         }
     }
-    
+
     // Multiply by all tensors F(i) \in \mathcal{F}_a.
     for tensor in item.3.iter() {
         out *= factor(tensor, idx, tensors);
@@ -196,7 +198,7 @@ fn term(
     out
 }
 
-/// Sum one generated term over its dummy indices. This is a sum over all the 
+/// Sum one generated term over its dummy indices. This is a sum over all the
 /// terms T_a(i) generated in the above function:
 /// \sum_{i_d_0 \in \Omega_d_0} \sum_{i_d_1 \in \Omega_d_1} \cdots \sum_{i_d_k \in \Omega_d_k} T_a(i)
 /// where each \Omega_d_k is an allowed orbital space for the given dummy index.
@@ -219,13 +221,13 @@ fn sum(
     if depth == item.1.len() {
         return term(item, idx, tensors);
     }
-    
+
     // Pick next dummy index to assign.
     let id = item.1[depth] as usize;
     let kind = indices[id].1;
 
     let mut out = 0.0;
-    
+
     // Single summation loop \sum_{i_d_k}, call recursively for deeper loops.
     for &p in orbs(tensors.spaces, kind).iter() {
         idx[id] = p;
@@ -263,9 +265,7 @@ pub(super) fn factor(
             idx[lower[0] as usize],
         ),
         // f_{i_l}^{i_u}.
-        2 => {
-            tensors.f.unwrap()[(idx[upper[0] as usize], idx[lower[0] as usize])]
-        }
+        2 => tensors.f.unwrap()[(idx[upper[0] as usize], idx[lower[0] as usize])],
         // g_{i_l_1, i_l_2}^{i_u_1, i_u_2}.
         3 => {
             tensors.ao.unwrap().eri_coul[(
@@ -277,38 +277,34 @@ pub(super) fn factor(
         }
         // Lambda_{i_l_1, i_l_2}^{i_u_1, i_u_2}.
         4 => {
-            let u = ids(tensors.spaces, upper, idx);
-            let l = ids(tensors.spaces, lower, idx);
+            let (u, nu) = ids(tensors.spaces, upper, idx);
+            let (l, nl) = ids(tensors.spaces, lower, idx);
 
-            tensors.lambdas.lambda2.get(&u, &l)
+            tensors.lambdas.lambda2.get(&u[..nu], &l[..nl])
         }
         // Lambda_{i_l_1, i_l_2, i_l_3}^{i_u_1, i_u_2, i_u_3}.
         5 => {
-            let u = ids(tensors.spaces, upper, idx);
-            let l = ids(tensors.spaces, lower, idx);
+            let (u, nu) = ids(tensors.spaces, upper, idx);
+            let (l, nl) = ids(tensors.spaces, lower, idx);
 
-            tensors.lambdas.lambda3.get(&u, &l)
+            tensors.lambdas.lambda3.get(&u[..nu], &l[..nl])
         }
         // Lambda_{i_l_1, i_l_2, i_l_3, i_l_4}^{i_u_1, i_u_2, i_u_3, i_u_4}.
         6 => {
-            let u = ids(tensors.spaces, upper, idx);
-            let l = ids(tensors.spaces, lower, idx);
+            let (u, nu) = ids(tensors.spaces, upper, idx);
+            let (l, nl) = ids(tensors.spaces, lower, idx);
 
-            tensors.lambdas.lambda4.get(&u, &l)
+            tensors.lambdas.lambda4.get(&u[..nu], &l[..nl])
         }
         // t_{i_l}^{i_u}.
-        8 => {
-            tensors.t1.unwrap()[(idx[upper[0] as usize], idx[lower[0] as usize])]
-        }
+        8 => tensors.t1.unwrap()[(idx[upper[0] as usize], idx[lower[0] as usize])],
         // t_{i_l_1, i_l_2}^{i_u_1, i_u_2}.
-        9 => {
-            tensors.t2.unwrap()[(
-                idx[upper[0] as usize],
-                idx[upper[1] as usize],
-                idx[lower[0] as usize],
-                idx[lower[1] as usize],
-            )]
-        }
+        9 => tensors.t2.unwrap()[(
+            idx[upper[0] as usize],
+            idx[upper[1] as usize],
+            idx[lower[0] as usize],
+            idx[lower[1] as usize],
+        )],
         _ => panic!("unknown tensor kind {}", tensor.0),
     }
 }

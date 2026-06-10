@@ -1,6 +1,7 @@
 // nocc/space.rs
 
 use ndarray::{Array1, Array2};
+use rayon::prelude::*;
 
 use super::overlap;
 use crate::AoData;
@@ -330,11 +331,23 @@ pub(crate) fn build_fois_basis(
     excitations: &[Excitation],
     tol: f64,
 ) -> FoisBasis {
-    let mut s: Array2<f64> = Array2::zeros((excitations.len(), excitations.len()));
+    let nexc = excitations.len();
+    let upper_rows: Vec<Vec<f64>> = (0..nexc)
+        .into_par_iter()
+        .map(|i| {
+            let left = excitations[i];
+            (i..nexc)
+                .map(|j| overlap::overlap_element(left, excitations[j], spaces, gamma1, lambdas))
+                .collect()
+        })
+        .collect();
+    let mut s = Array2::zeros((nexc, nexc));
 
-    for (i, &left) in excitations.iter().enumerate() {
-        for (j, &right) in excitations.iter().enumerate() {
-            s[(i, j)] = overlap::overlap_element(left, right, spaces, gamma1, lambdas);
+    for (i, row) in upper_rows.iter().enumerate() {
+        for (offset, &value) in row.iter().enumerate() {
+            let j = i + offset;
+            s[(i, j)] = value;
+            s[(j, i)] = value;
         }
     }
 
@@ -400,5 +413,3 @@ fn hamiltonian_weights(
 
     h
 }
-
-
