@@ -1,4 +1,5 @@
 // nocc/mod.rs
+mod common;
 mod cumulants;
 mod driver;
 mod loader;

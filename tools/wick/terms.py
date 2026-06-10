@@ -8,8 +8,8 @@ import sys
 import signal
 
 from core import Idx, Space, Term
-from equations import residualExpr
-from specs import EXCITATIONS, ExcitationSpec, availableExcitations
+from equations import outputExpr, residualExpr
+from specs import EXCITATIONS, ExcitationSpec, OverlapBlockSpec, availableBlocks, availableExcitations, overlapBlock
 
 SPACE_KIND = {
     Space.CORE: 0,
@@ -77,6 +77,35 @@ def freeIndices(spec: ExcitationSpec) -> tuple[Idx, ...]:
         CToA gives (u, i).
     """
     return spec.creators + spec.annihilators
+
+def renamedFreeIndices(
+    spec: ExcitationSpec,
+    names: tuple[str, ...],
+) -> tuple[Idx, ...]:
+    """
+    Return one excitation's free indices with overlap-block names.
+
+    Notation: class spaces + block-local names -> block-local free indices
+    Examples: AAToAV with names ("x", "b", "v", "w") gives x in A, b in V, v in A, w in A.
+    """
+    base = spec.creators + spec.annihilators
+
+    if len(base) != len(names):
+        raise ValueError(f"wrong number of free-index names for {spec.name}")
+
+    return tuple(Idx(name, idx.space) for name, idx in zip(names, base))
+
+def overlapFreeIndices(block: OverlapBlockSpec) -> tuple[Idx, ...]:
+    """
+    Return overlap free indices in left-then-right unpacking order.
+
+    Notation: <tau_L | tau_R> -> L creators, L annihilators, R creators, R annihilators
+    Examples: C1 gives u, i, v, j.
+    """
+    left = EXCITATIONS[block.left]
+    right = EXCITATIONS[block.right]
+
+    return renamedFreeIndices(left, block.unpack[0]) + renamedFreeIndices(right, block.unpack[1])
 
 def termIndices(term: Term) -> tuple[Idx, ...]:
     """
@@ -152,6 +181,45 @@ def classIndexTable(
     spacesByName: dict[str, Space] = {}
 
     for idx in freeIndices(spec):
+        addIndex(
+            indices,
+            indexIds,
+            spacesByName,
+            idx,
+        )
+
+    for term in expr:
+        for idx in termIndices(term):
+            addIndex(
+                indices,
+                indexIds,
+                spacesByName,
+                idx,
+            )
+
+    return (
+        tuple(indices),
+        indexIds,
+    )
+
+def overlapIndexTable(
+    block: OverlapBlockSpec,
+    expr: tuple[Term, ...],
+) -> tuple[tuple[Idx, ...], dict[tuple[str, Space], int]]:
+    """
+    Build one overlap-block index table.
+
+    Free indices are placed first. Dummy indices are then added in first occurrence order over the
+    generated symbolic terms.
+
+    Notation: indices = left free + right free + dummies
+    Examples: C1 starts with u, i, v, j before any dummy indices.
+    """
+    indices: list[Idx] = []
+    indexIds: dict[tuple[str, Space], int] = {}
+    spacesByName: dict[str, Space] = {}
+
+    for idx in overlapFreeIndices(block):
         addIndex(
             indices,
             indexIds,
@@ -378,6 +446,50 @@ def residualClassTerms(name: str, order: int) -> dict[str, Any]:
         ],
     }
 
+def overlapBlockTerms(name: str) -> dict[str, Any]:
+    """
+    Encode one overlap block as compact JSON data.
+
+    Notation: C_n -> {left, right, indices, leftFree, rightFree, terms}
+    Examples: overlapBlockTerms("C1") emits the compact term table for block C1.
+    """
+    block = overlapBlock(name)
+    expr = tuple(outputExpr(name))
+    indices, indexIds = overlapIndexTable(
+        block,
+        expr,
+    )
+
+    left = EXCITATIONS[block.left]
+    right = EXCITATIONS[block.right]
+    leftFreeIndices = renamedFreeIndices(left, block.unpack[0])
+    rightFreeIndices = renamedFreeIndices(right, block.unpack[1])
+    leftFree = [indexId(idx, indexIds) for idx in leftFreeIndices]
+    rightFree = [indexId(idx, indexIds) for idx in rightFreeIndices]
+    freeIds = set(leftFree + rightFree)
+
+    return {
+        "left": block.left,
+        "right": block.right,
+        "indices": [
+            [
+                idx.name,
+                encodeSpace(idx.space),
+            ]
+            for idx in indices
+        ],
+        "leftFree": leftFree,
+        "rightFree": rightFree,
+        "terms": [
+            encodeTerm(
+                term,
+                indexIds,
+                freeIds,
+            )
+            for term in expr
+        ],
+    }
+
 def residualTermsData(name: str, order: int) -> dict[str, Any]:
     """
     Encode residual term data for one class or all classes.
@@ -413,6 +525,31 @@ def residualTermsData(name: str, order: int) -> dict[str, Any]:
         },
     }
 
+def overlapTermsData(name: str) -> dict[str, Any]:
+    """
+    Encode overlap term data for one block or all blocks.
+
+    Notation: --block all -> every generated overlap block
+    Examples: overlapTermsData("all") emits all compact overlap term data.
+    """
+    if name == "all":
+        names = availableBlocks()
+    else:
+        if name not in availableBlocks():
+            raise ValueError(f"unknown overlap block {name}")
+
+        names = (name,)
+
+    return {
+        "version": 1,
+        "spaceKinds": SPACE_NAMES,
+        "tensorKinds": TENSOR_KIND,
+        "blocks": {
+            block: overlapBlockTerms(block)
+            for block in names
+        },
+    }
+
 def residualTermsJson(
     name: str,
     order: int,
@@ -431,6 +568,32 @@ def residualTermsJson(
         name,
         order,
     )
+
+    if pretty:
+        return json.dumps(
+            data,
+            indent = 2,
+        ) + "\n"
+
+    return json.dumps(
+        data,
+        separators = (
+            ",",
+            ":",
+        ),
+    ) + "\n"
+
+def overlapTermsJson(
+    name: str,
+    pretty: bool = False,
+) -> str:
+    """
+    Emit overlap term data as JSON.
+
+    Notation: overlap expression -> compact block-local term IR
+    Examples: overlapTermsJson("all") emits overlapterms.json.
+    """
+    data = overlapTermsData(name)
 
     if pretty:
         return json.dumps(
@@ -518,17 +681,90 @@ def writeResidualTermsJson(
 
     out.write("}}\n")
 
+def writeOverlapTermsJson(
+    name: str,
+    out,
+    pretty: bool = False,
+) -> None:
+    """
+    Write overlap term data as JSON.
+
+    For --block all this streams one overlap block at a time so the full overlap term file does not
+    need to be materialised as one Python dictionary before output.
+    """
+    if name != "all" or pretty:
+        out.write(
+            overlapTermsJson(
+                name,
+                pretty = pretty,
+            )
+        )
+        return
+
+    out.write("{")
+    out.write('"version":1,')
+    out.write('"spaceKinds":')
+    json.dump(
+        SPACE_NAMES,
+        out,
+        separators = (",", ":"),
+    )
+    out.write(",")
+    out.write('"tensorKinds":')
+    json.dump(
+        TENSOR_KIND,
+        out,
+        separators = (",", ":"),
+    )
+    out.write(",")
+    out.write('"blocks":{')
+
+    for i, block in enumerate(availableBlocks()):
+        print(
+            f"generating {block}",
+            file = sys.stderr,
+            flush = True,
+        )
+
+        if i:
+            out.write(",")
+
+        json.dump(
+            block,
+            out,
+            separators = (",", ":"),
+        )
+        out.write(":")
+
+        json.dump(
+            overlapBlockTerms(block),
+            out,
+            separators = (",", ":"),
+        )
+
+        out.flush()
+
+    out.write("}}\n")
+
 def main() -> None:
     """
-    Run the residual term JSON emitter.
+    Run the term JSON emitter.
 
     Notation:
-        python tools/wick/termjson.py --class all --order 1
+        python tools/wick/terms.py --class all --order 1
+        python tools/wick/terms.py --kind overlap --block all
 
     Examples:
-        python tools/wick/termjson.py --class CToA --order 1 --pretty
+        python tools/wick/terms.py --class CToA --order 1 --pretty
+        python tools/wick/terms.py --kind overlap --block C4 --pretty
     """
     parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--kind",
+        choices = ("residual", "overlap"),
+        default = "residual",
+    )
 
     parser.add_argument(
         "--class",
@@ -549,14 +785,27 @@ def main() -> None:
         action = "store_true",
     )
 
+    parser.add_argument(
+        "--block",
+        choices = availableBlocks() + ("all",),
+        default = "all",
+    )
+
     args = parser.parse_args()
 
-    writeResidualTermsJson(
-        args.name,
-        args.order,
-        sys.stdout,
-        pretty = args.pretty,
-    )
+    if args.kind == "overlap":
+        writeOverlapTermsJson(
+            args.block,
+            sys.stdout,
+            pretty = args.pretty,
+        )
+    else:
+        writeResidualTermsJson(
+            args.name,
+            args.order,
+            sys.stdout,
+            pretty = args.pretty,
+        )
 
 if __name__ == "__main__":
     main()

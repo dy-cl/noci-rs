@@ -38,6 +38,11 @@ def emitBlock(name: str, emit: str, lineWidth: int | None = None) -> str:
 
         return rustOverlapFunction(name)
 
+    if emit == "json":
+        from terms import overlapTermsJson
+
+        return overlapTermsJson(name)
+
     expr = outputExpr(name)
 
     if emit == "latex":
@@ -68,6 +73,11 @@ def emitBlocks(name: str, emit: str, lineWidth: int | None = None) -> str:
         from rust import rustModule
 
         return rustModule()
+
+    if name == "all" and emit == "json":
+        from terms import overlapTermsJson
+
+        return overlapTermsJson(name)
 
     if name == "all":
         return "\n\n".join(
@@ -106,7 +116,7 @@ def main() -> None:
 
     parser.add_argument(
         "--emit",
-        choices = ("latex", "expr", "rust"),
+        choices = ("latex", "expr", "rust", "json"),
         default = "latex",
     )
 
@@ -126,7 +136,7 @@ def main() -> None:
             args.emit,
             lineWidth = lineWidth,
         ),
-        end = "" if args.emit == "rust" and args.block == "all" else "\n",
+        end = "" if args.emit in ("rust", "json") and args.block == "all" else "\n",
     )
 
 if __name__ == "__main__":

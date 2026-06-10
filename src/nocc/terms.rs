@@ -35,12 +35,46 @@ pub(crate) struct ResidualClassTerms {
     /// Class-local ids of the residual free indices.
     pub(crate) free: Vec<u16>,
     /// Symbolic residual terms for this excitation class.
-    pub(crate) terms: Vec<ResidualTerm>,
+    pub(crate) terms: Vec<GeneratedTerm>,
 }
 
-/// One symbolic residual term.
+/// Compact overlap term table generated from spin-free Wick expressions.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct ResidualTerm(
+pub(crate) struct OverlapTermSet {
+    /// JSON/bincode scheme version.
+    pub(crate) version: u32,
+    /// Orbital-space enum values used by the generated term table.
+    #[serde(rename = "spaceKinds")]
+    pub(crate) space_kinds: BTreeMap<String, u8>,
+    /// Tensor enum values used by the generated term table.
+    #[serde(rename = "tensorKinds")]
+    pub(crate) tensor_kinds: BTreeMap<String, u8>,
+    /// Overlap terms grouped by Appendix-C block.
+    pub(crate) blocks: BTreeMap<String, OverlapBlockTerms>,
+}
+
+/// Compact overlap terms for one Appendix-C block.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct OverlapBlockTerms {
+    /// Left excitation class name.
+    pub(crate) left: String,
+    /// Right excitation class name.
+    pub(crate) right: String,
+    /// Block-local symbolic indices stored as `(name, space)`.
+    pub(crate) indices: Vec<(String, u8)>,
+    /// Block-local ids of the left excitation free indices.
+    #[serde(rename = "leftFree")]
+    pub(crate) left_free: Vec<u16>,
+    /// Block-local ids of the right excitation free indices.
+    #[serde(rename = "rightFree")]
+    pub(crate) right_free: Vec<u16>,
+    /// Symbolic overlap terms for this block.
+    pub(crate) terms: Vec<GeneratedTerm>,
+}
+
+/// One generated symbolic term.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub(crate) struct GeneratedTerm(
     /// Rational prefactor.
     pub(crate) Coeff,
     /// Class-local dummy indices to sum over.
