@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from dataclasses import dataclass
 from fractions import Fraction
+import os
+import sys
+from time import perf_counter
+import threading
 
 from canonical import canonicaliseForOutput
 from core import (
@@ -18,11 +24,50 @@ from core import (
     groupE1,
     groupE2,
     mul,
+    prewarmSpinCoeffs,
+    profileSnapshot,
+    resetProfile,
     scale,
+    setProfiling,
     tau1,
     tensor,
+    timed,
 )
-from specs import A, C, EXCITATIONS, ExcitationSpec, V
+from specs import A, C, EXCITATIONS, ExcitationSpec, V, availableExcitations
+
+WICK_JOBS = int(os.environ.get("WICK_JOBS", "1"))
+WICK_EXECUTOR = os.environ.get("WICK_EXECUTOR", "serial")
+WICK_PROFILE = os.environ.get("WICK_PROFILE", "") not in ("", "0", "false", "False")
+WICK_PROFILE_PAIRS = os.environ.get("WICK_PROFILE_PAIRS", "") not in ("", "0", "false", "False")
+WICK_R2_CHUNK_SIZE = int(os.environ.get("WICK_R2_CHUNK_SIZE", "256"))
+WICK_R2_BATCH_SIZE = int(os.environ.get("WICK_R2_BATCH_SIZE", "16"))
+WICK_R2_PAIR_SYMMETRY = os.environ.get("WICK_R2_PAIR_SYMMETRY", "") not in ("", "0", "false", "False")
+
+setProfiling(WICK_PROFILE)
+
+def configureWick(
+    jobs: int | None = None,
+    executor: str | None = None,
+    profile: bool | None = None,
+) -> None:
+    """
+    Configure Wick generation runtime options.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    global WICK_JOBS, WICK_EXECUTOR, WICK_PROFILE
+
+    if jobs is not None:
+        WICK_JOBS = jobs
+    if executor is not None:
+        WICK_EXECUTOR = executor
+    if profile is not None:
+        WICK_PROFILE = profile
+        setProfiling(profile)
 
 def blockProduct(name: str) -> Product:
     """
@@ -897,6 +942,335 @@ def hTermsWithBalance(
         )
     )
 
+def balanceKey(balance: dict[Space, int]) -> tuple[tuple[Space, int], ...]:
+    """
+    Return a hashable key for an orbital-space balance.
+
+    Notation:
+        {C: n_C, A: n_A, V: n_V} ---> sorted tuple
+
+    Examples:
+        Empty or zero balances produce an empty tuple.
+    """
+    return tuple(
+        sorted(
+            (
+                (
+                    space,
+                    value,
+                )
+                for space, value in balance.items()
+                if value != 0
+            ),
+            key = lambda item: item[0].value,
+        )
+    )
+
+def cachedHTermsByBalance(
+    cache: dict[tuple[tuple[Space, int], ...], tuple[tuple[Expr, Group], ...]],
+    groupId: int,
+    balance: dict[Space, int],
+) -> tuple[tuple[Expr, Group], ...]:
+    """
+    Return Hamiltonian terms for one required orbital-space balance.
+
+    Notation:
+        balance(T_left T_right tau_mu^dagger) + balance(H) = 0
+
+    Examples:
+        If the residual/T pair requires one core annihilation and one virtual
+        creation, this returns only the Hamiltonian terms with the opposite
+        balance.
+    """
+    key = balanceKey(balance)
+
+    if key not in cache:
+        cache[key] = hTermsWithBalance(
+            groupId,
+            balance,
+        )
+
+    return cache[key]
+
+def groupKey(group: Group) -> tuple:
+    """
+    Return a stable structural key for one normal-ordered group.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    return tuple(
+        tuple(
+            (
+                op.kind,
+                op.idx,
+                op.spin,
+                op.group,
+            )
+            for op in string
+        )
+        for string in group.strings
+    )
+
+def productKey(groups: tuple[Group, ...]) -> tuple:
+    """
+    Return a stable structural key for a Wick product.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    return tuple(groupKey(group) for group in groups)
+
+@dataclass(frozen = True)
+class R2WorkItem:
+    """
+    Store one second-order residual Wick product to evaluate.
+
+    Notation:
+        h * t_l * t_r * <tau_mu^dagger H T_l T_r>_c
+
+    Examples:
+        One item may represent a CToA residual with one f Hamiltonian factor,
+        one T1 insertion, and one T2 insertion.
+    """
+    index: int
+    hCoeff: Expr
+    hGroup: Group
+    leftCoeff: Expr
+    leftGroup: Group
+    rightCoeff: Expr
+    rightGroup: Group
+    pairFactor: Fraction = Fraction(1)
+
+_workerLocal = threading.local()
+_processBra: Group | None = None
+_processItems: tuple[R2WorkItem, ...] = ()
+
+def workerWick() -> Wick:
+    """
+    Return a worker-local Wick evaluator.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    wick = getattr(_workerLocal, "wick", None)
+    if wick is None:
+        prewarmSpinCoeffs(4)
+        wick = Wick(Ref(maxActiveCumulantRank = 4))
+        _workerLocal.wick = wick
+    return wick
+
+def evalR2WorkItem(
+    wick: Wick | None,
+    bra: Group,
+    item: R2WorkItem,
+) -> tuple[int, Expr]:
+    """
+    Evaluate one filtered second-order residual work item.
+
+    Notation:
+        1/2 h t_l t_r <tau_mu^dagger H T_l T_r>_c
+
+    Examples:
+        Returns `(item.index, expr)` so the caller can restore deterministic
+        ordering after threaded execution.
+    """
+    if wick is None:
+        wick = workerWick()
+
+    value = wick.eval(
+        Product((
+            bra,
+            item.hGroup,
+            item.leftGroup,
+            item.rightGroup,
+        )),
+        connected = True,
+    )
+
+    if not value:
+        return item.index, ()
+
+    out = value
+    for coeff in (
+        item.rightCoeff,
+        item.leftCoeff,
+        item.hCoeff,
+    ):
+        out = mul(
+            coeff,
+            out,
+        )
+
+    out = scale(
+        out,
+        Fraction(1, 2) * item.pairFactor,
+    )
+
+    return item.index, out
+
+def _evalR2WorkItemProcess(args) -> tuple[int, Expr]:
+    """
+    Process-pool wrapper for one R2 work item.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    bra, item = args
+    return evalR2WorkItem(
+        None,
+        bra,
+        item,
+    )
+
+def evalR2WorkBatch(args) -> tuple[tuple[int, Expr], ...]:
+    """
+    Evaluate one batch of filtered second-order residual work items.
+
+    Notation:
+        R_\mu^{(2)} \leftarrow \{W_i\}_{i=1}^{N}
+
+    Examples:
+        Process-pool R2 generation uses this to amortize worker startup,
+        pickling, and local Wick cache setup.
+    """
+    bra, items = args
+    wick = workerWick()
+    return tuple(
+        evalR2WorkItem(
+            wick,
+            bra,
+            item,
+        )
+        for item in items
+    )
+
+def initR2Process(
+    bra: Group,
+    items: tuple[R2WorkItem, ...],
+) -> None:
+    """
+    Initialise process-local R2 work state.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    global _processBra, _processItems
+    _processBra = bra
+    _processItems = items
+    prewarmSpinCoeffs(4)
+    _workerLocal.wick = Wick(Ref(maxActiveCumulantRank = 4))
+
+def evalR2IndexBatch(indices: tuple[int, ...]) -> tuple[tuple[int, Expr], ...]:
+    """
+    Evaluate one process-local batch of R2 work item indices.
+
+    Notation:
+        R_\mu^{(2)} \leftarrow \{i_k\}_{k=1}^{N}
+
+    Examples:
+        Process-pool R2 generation sends compact integer batches instead of
+        pickling symbolic work items repeatedly.
+    """
+    if _processBra is None:
+        raise RuntimeError("R2 process worker not initialised")
+
+    wick = workerWick()
+    return tuple(
+        evalR2WorkItem(
+            wick,
+            _processBra,
+            _processItems[index],
+        )
+        for index in indices
+    )
+
+def batches(items: tuple, batchSize: int) -> tuple[tuple, ...]:
+    """
+    Split work into deterministic batches.
+
+    Notation:
+        
+
+    Examples:
+        
+    """
+    return tuple(
+        items[start:start + batchSize]
+        for start in range(0, len(items), batchSize)
+    )
+
+def mapWork(
+    fn,
+    work: tuple,
+    jobs: int = 1,
+    executor: str = "serial",
+):
+    """
+    Evaluate independent symbolic work items.
+
+    Results are returned in input order so emitted JSON remains deterministic.
+
+    Notation:
+        
+
+    Examples:
+        mapWork(evalR2WorkItem, items, jobs = 8, executor = "thread")
+        evaluates R2 Wick products concurrently within one residual class.
+    """
+    if jobs <= 1 or executor == "serial" or not work:
+        return tuple(fn(item) for item in work)
+
+    if executor == "thread":
+        with ThreadPoolExecutor(max_workers = jobs) as pool:
+            return tuple(pool.map(fn, work))
+
+    if executor == "process":
+        with ProcessPoolExecutor(max_workers = jobs) as pool:
+            return tuple(pool.map(fn, work))
+
+    raise ValueError(f"unknown Wick executor {executor!r}")
+
+def chunkedCombine(
+    exprs: list[Expr],
+    chunkSize: int = 256,
+) -> Expr:
+    """
+    Combine many expressions without repeatedly canonicalising the whole class.
+
+    Notation:
+        combine(E_1, ..., E_n)
+
+    Examples:
+        Used by R2 generation to limit peak expression-list size.
+    """
+    if not exprs:
+        return ()
+
+    chunks = []
+    for start in range(0, len(exprs), chunkSize):
+        terms = []
+        for expr in exprs[start:start + chunkSize]:
+            terms.extend(expr)
+        chunks.extend(combine(tuple(terms)))
+
+    return combine(tuple(chunks))
+
 def tCoeff(spec: ExcitationSpec) -> Expr:
     """
     Build the cluster-amplitude coefficient for one excitation class.
@@ -958,20 +1332,24 @@ def tTerms(groupId: int) -> tuple[tuple[Expr, Group], ...]:
 
 def tTermsWithBalance(
     groupId: int,
+    tag: str = "",
 ) -> tuple[tuple[Expr, Group, dict[Space, int]], ...]:
-    """
+    """ 
     Build all cluster-operator terms with orbital-space balances.
 
-    Notation:
-        T = \sum_\nu t_\nu \tau_\nu
+    The optional tag renames the excitation dummy indices. 
 
+    Notation:
+        \T = \sum_\nu t_\nu \tau_\nu = T_1 + T_2
+    
     Examples:
         C -> A contributes t^i_u \{E^u_i\} with active:+1 and core:-1.
         Double excitations carry the cluster prefactor 1/2.
     """
     out = []
 
-    for spec in EXCITATIONS.values():
+    for base in EXCITATIONS.values():
+        spec = freshSpec(base, tag) if tag else base
         coeff = tCoeff(spec)
 
         if len(spec.creators) == 2:
@@ -992,6 +1370,7 @@ def contractedContribution(
     wick: Wick,
     coeffs: tuple[Expr, ...],
     groups: tuple[Group, ...],
+    connected: bool = True,
 ) -> Expr:
     """
     Evaluate one coefficient-weighted Wick product.
@@ -1004,20 +1383,18 @@ def contractedContribution(
         evaluates one first-order residual contribution.
     """
     value = wick.eval(
-        Product(groups)
+        Product(groups),
+        connected = connected,
     )
-
     if not value:
         return ()
 
     out = value
-
     for coeff in reversed(coeffs):
         out = mul(
             coeff,
             out,
         )
-
     return out
 
 def h1Contribution(bra: Group, wick: Wick) -> Expr:
@@ -1042,7 +1419,8 @@ def h1Contribution(bra: Group, wick: Wick) -> Expr:
             Product((
                 bra,
                 groupE1(p, q, 1),
-            ))
+            )),
+            connected = True,
         )
 
         if value:
@@ -1078,7 +1456,8 @@ def h2Contribution(bra: Group, wick: Wick) -> Expr:
             Product((
                 bra,
                 groupE2(p, q, r, s, 1),
-            ))
+            )),
+            connected = True,
         )
 
         if value:
@@ -1176,21 +1555,311 @@ def r1Expr(name: str) -> Expr:
         combine(tuple(terms))
     )
 
-def residualExpr(name: str, order: int = 0) -> Expr:
-    """
-    Evaluate one residual contribution by cluster-amplitude order.
+def r2Expr(name: str) -> Expr:
+    """ 
+    Evaluate one second-order residual contribution.
 
     Notation:
-        R_mu = R_mu^{(0)} + R_mu^{(1)} + R_mu^{(2)}
+        R_mu^(2)[T,T] = 1/2 \langle \Phi | \tau_\mu^\dagger H {T T} | \Phi \rangle_c
+
+    Examples:
+        r2Expr("CToA") evaluates the terms quadratic in the cluster amplitudes
+        for the C -> A residual.
+    """
+    resetProfile()
+    classStart = perf_counter()
+    prewarmSpinCoeffs(4)
+    spec = EXCITATIONS[name]
+    wick = Wick(Ref(maxActiveCumulantRank = 4))
+
+    bra = braGroup(spec, 0)
+    braBalance = excitationBalance(
+        spec,
+        daggered = True,
+    )
+
+    leftTerms = tTermsWithBalance(
+        2,
+        tag = "_l",
+    )
+    rightTerms = tTermsWithBalance(
+        2,
+        tag = "_r",
+    )
+
+    pairs = []
+    for leftIndex, (leftCoeff, leftGroup, leftBalance) in enumerate(leftTerms):
+        start = leftIndex if WICK_R2_PAIR_SYMMETRY else 0
+        for rightIndex, (rightCoeff, rightGroup, rightBalance) in enumerate(rightTerms[start:], start):
+            pairFactor = Fraction(2) if WICK_R2_PAIR_SYMMETRY and rightIndex != leftIndex else Fraction(1)
+            ttBalance = mergeBalances(
+                leftBalance,
+                rightBalance,
+            )
+            pairs.append((
+                leftCoeff,
+                leftGroup,
+                rightCoeff,
+                rightGroup,
+                ttBalance,
+                pairFactor,
+            ))
+
+    hCache: dict[tuple[tuple[Space, int], ...], tuple[tuple[Expr, Group], ...]] = {}
+    workItems = []
+    skippedByBalance = 0
+    candidateCount = 0
+    workIndex = 0
+    pairTimes: list[float] = []
+
+    for leftCoeff, leftGroup, rightCoeff, rightGroup, ttBalance, pairFactor in pairs:
+        pairStart = perf_counter()
+        required = negateBalance(
+            mergeBalances(
+                braBalance,
+                ttBalance,
+            )
+        )
+        hTerms = cachedHTermsByBalance(
+            hCache,
+            1,
+            required,
+        )
+
+        if not hTerms:
+            skippedByBalance += 1
+            pairTime = perf_counter() - pairStart
+            pairTimes.append(pairTime)
+            if WICK_PROFILE:
+                if WICK_PROFILE_PAIRS:
+                    print(
+                        f"R2 pair profile for {name}: Hamiltonian terms: 0; Time: {pairTime:.6f} s",
+                        file = sys.stderr,
+                        flush = True,
+                    )
+            continue
+
+        candidateCount += len(hTerms)
+
+        for hCoeffExpr, hGroup in hTerms:
+            workItems.append(
+                R2WorkItem(
+                    index = workIndex,
+                    hCoeff = hCoeffExpr,
+                    hGroup = hGroup,
+                    leftCoeff = leftCoeff,
+                    leftGroup = leftGroup,
+                    rightCoeff = rightCoeff,
+                    rightGroup = rightGroup,
+                    pairFactor = pairFactor,
+                )
+            )
+            workIndex += 1
+
+        if WICK_PROFILE:
+            pairTime = perf_counter() - pairStart
+            pairTimes.append(pairTime)
+            if WICK_PROFILE_PAIRS:
+                print(
+                    f"R2 pair profile for {name}: Hamiltonian terms: {len(hTerms)}; Time: {pairTime:.6f} s",
+                    file = sys.stderr,
+                    flush = True,
+                )
+
+    wickProductCache: dict[tuple, Expr] = {}
+
+    def evalSerial(item: R2WorkItem) -> tuple[int, Expr]:
+        key = productKey((
+            bra,
+            item.hGroup,
+            item.leftGroup,
+            item.rightGroup,
+        ))
+        value = wickProductCache.get(key)
+        if value is None:
+            with timed("R2.wick_eval"):
+                value = wick.eval(
+                    Product((
+                        bra,
+                        item.hGroup,
+                        item.leftGroup,
+                        item.rightGroup,
+                    )),
+                    connected = True,
+                )
+            wickProductCache[key] = value
+
+        if not value:
+            return item.index, ()
+
+        out = value
+        for coeff in (
+            item.rightCoeff,
+            item.leftCoeff,
+            item.hCoeff,
+        ):
+            out = mul(
+                coeff,
+                out,
+            )
+
+        return (
+            item.index,
+            scale(
+                out,
+                Fraction(1, 2) * item.pairFactor,
+            ),
+        )
+
+    if WICK_EXECUTOR == "process" and WICK_JOBS > 1:
+        indexBatches = batches(
+            tuple(range(len(workItems))),
+            WICK_R2_BATCH_SIZE,
+        )
+        with ProcessPoolExecutor(
+            max_workers = WICK_JOBS,
+            initializer = initR2Process,
+            initargs = (
+                bra,
+                tuple(workItems),
+            ),
+        ) as pool:
+            batchResults = tuple(pool.map(evalR2IndexBatch, indexBatches))
+        results = tuple(
+            result
+            for batch in batchResults
+            for result in batch
+        )
+    elif WICK_EXECUTOR == "thread" and WICK_JOBS > 1:
+        batchResults = mapWork(
+            evalR2WorkBatch,
+            tuple(
+                (
+                    bra,
+                    batch,
+                )
+                for batch in batches(
+                    tuple(workItems),
+                    WICK_R2_BATCH_SIZE,
+                )
+            ),
+            jobs = WICK_JOBS,
+            executor = WICK_EXECUTOR,
+        )
+        results = tuple(
+            result
+            for batch in batchResults
+            for result in batch
+        )
+    else:
+        results = mapWork(
+            evalSerial,
+            tuple(workItems),
+            jobs = 1,
+            executor = "serial",
+        )
+
+    exprs = [
+        expr
+        for _, expr in sorted(results, key = lambda item: item[0])
+        if expr
+    ]
+    zeroCount = len(workItems) - len(exprs)
+    beforeTerms = sum(len(expr) for expr in exprs)
+
+    with timed("R2.combine"):
+        combined = chunkedCombine(
+            exprs,
+            chunkSize = WICK_R2_CHUNK_SIZE,
+        )
+
+    combinedTerms = len(combined)
+    with timed("canonicaliseForOutput"):
+        out = canonicaliseForOutput(combined)
+
+    if WICK_PROFILE:
+        timings, counts = profileSnapshot()
+        print(
+            (
+                f"R2 profile for {name}: Total time: {perf_counter() - classStart:.6f} s; "
+                f"Pairs: {len(pairs)}; Candidate combinations: {candidateCount}; "
+                f"Skipped by balance: {skippedByBalance}; Wick evaluations: {len(workItems)}; "
+                f"Zero expressions: {zeroCount}; Terms before combine: {beforeTerms}; "
+                f"Terms after combine: {combinedTerms}; Terms after canonicalisation: {len(out)}; "
+                f"Minimum pair time: {min(pairTimes) if pairTimes else 0.0:.6f} s; "
+                f"Maximum pair time: {max(pairTimes) if pairTimes else 0.0:.6f} s; "
+                f"Total pair time: {sum(pairTimes):.6f} s; "
+                f"Jobs: {WICK_JOBS}; Executor: {WICK_EXECUTOR}"
+            ),
+            file = sys.stderr,
+            flush = True,
+        )
+        for key in sorted(timings):
+            print(
+                f"Kernel profile for {name}: Name: {key}; Calls: {counts.get(key, 0)}; Time: {timings[key]:.6f} s",
+                file = sys.stderr,
+                flush = True,
+            )
+
+    return out
+
+def freshIdx(idx: Idx, tag: str) -> Idx:
+    """ 
+    Return a renamed copy of one orbital index.
+
+    Notation:
+        
+
+    Examples:
+        freshIdx(Idx("u", Space.ACTIVE), "_l") returns active index u_l.
+        freshIdx(Idx("i", Space.CORE), "_r") returns core index i_r.
+    """
+    return Idx(f"{idx.name}{tag}", idx.space)
+
+def freshSpec(spec: ExcitationSpec, tag: str) -> ExcitationSpec:
+    """ 
+    Return an excitation specification with renamed dummy indices.
+
+    This is used for products containing more than one cluster insertion. The
+    two insertions must not reuse the same symbolic dummy labels before Wick
+    contraction.
+
+    Notation:
+        \tau_\nu(p, q, ...) -> \tau_\nu(p_t, q_t, ...)
+
+    Examples:
+        freshSpec(C -> A, "_l") gives a left T dummy excitation.
+        freshSpec(C -> A, "_r") gives a right T dummy excitation.
+    """
+    creators = tuple(freshIdx(idx, tag) for idx in spec.creators)
+    annihilators = tuple(freshIdx(idx, tag) for idx in spec.annihilators)
+
+    unpack = tuple(idx.name for idx in creators + annihilators)
+
+    return ExcitationSpec(
+        name = f"{spec.name}{tag}",
+        creators = creators,
+        annihilators = annihilators,
+        rustName = spec.rustName,
+        latexName = spec.latexName,
+        unpack = unpack,
+    )
+
+def residualExpr(name: str, order: int = 0) -> Expr:
+    """ Evaluate one residual contribution by cluster-amplitude order.
+
+    Notation:
+        R_mu = R_mu^(0) + R_mu^(1) + R_mu^(2)
 
     Examples:
         residualExpr("CToA", 0) evaluates the direct residual.
         residualExpr("CToA", 1) evaluates terms linear in T.
+        residualExpr("CToA", 2) evaluates terms quadratic in T.
     """
     if order == 0:
         return r0Expr(name)
-
     if order == 1:
         return r1Expr(name)
-
+    if order == 2:
+        return r2Expr(name)
     raise ValueError(f"unsupported residual order {order}")

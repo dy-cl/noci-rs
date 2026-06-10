@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 from fractions import Fraction
+import os
 from typing import Any
 import sys
 import signal
+from time import perf_counter
 
 from core import Idx, Space, Term
-from equations import outputExpr, residualExpr
+from equations import configureWick, outputExpr, residualExpr
 from specs import EXCITATIONS, ExcitationSpec, OverlapBlockSpec, availableBlocks, availableExcitations, overlapBlock
 
 SPACE_KIND = {
@@ -34,6 +36,8 @@ TENSOR_KIND = {
     "t1": 8,
     "t2": 9,
 }
+
+PROFILE = os.environ.get("WICK_PROFILE", "") not in ("", "0", "false", "False")
 
 def indexKey(idx: Idx) -> tuple[str, Space]:
     """
@@ -404,6 +408,7 @@ def residualClassTerms(name: str, order: int) -> dict[str, Any]:
     Examples:
         residualClassTerms("CToA", 1) emits the first-order CToA term table.
     """
+    start = perf_counter()
     spec = EXCITATIONS[name]
     expr = tuple(
         residualExpr(
@@ -427,7 +432,7 @@ def residualClassTerms(name: str, order: int) -> dict[str, Any]:
 
     freeIds = set(free)
 
-    return {
+    out = {
         "indices": [
             [
                 idx.name,
@@ -445,6 +450,15 @@ def residualClassTerms(name: str, order: int) -> dict[str, Any]:
             for term in expr
         ],
     }
+
+    if PROFILE:
+        print(
+            f"Class profile for {name}: Order: {order}; Total time: {perf_counter() - start:.6f} s; Terms: {len(expr)}",
+            file = sys.stderr,
+            flush = True,
+        )
+
+    return out
 
 def overlapBlockTerms(name: str) -> dict[str, Any]:
     """
@@ -499,8 +513,9 @@ def residualTermsData(name: str, order: int) -> dict[str, Any]:
 
     Examples:
         residualTermsData("all", 1) emits all first-order residual term data.
+        residualTermsData("all", 2) emits all second-order residual term data.
     """
-    if order not in (0, 1):
+    if order not in (0, 1, 2):
         raise ValueError(f"unsupported residual order {order}")
 
     if name == "all":
@@ -562,7 +577,9 @@ def residualTermsJson(
         residual expression -> compact class-local term IR
 
     Examples:
+        residualTermsJson("all", 0) emits r0terms.json.
         residualTermsJson("all", 1) emits r1terms.json.
+        residualTermsJson("all", 2) emits r2terms.json.
     """
     data = residualTermsData(
         name,
@@ -590,8 +607,9 @@ def overlapTermsJson(
     """
     Emit overlap term data as JSON.
 
-    Notation: overlap expression -> compact block-local term IR
-    Examples: overlapTermsJson("all") emits overlapterms.json.
+    Notation:
+
+    Examples:
     """
     data = overlapTermsData(name)
 
@@ -621,6 +639,13 @@ def writeResidualTermsJson(
     For --class all this streams one excitation class at a time so large first-
     and second-order residual files do not need to be materialised as one Python
     dictionary before output.
+
+    Notation:
+        R_mu^(t) ---> JSON term table
+
+    Examples:
+        writeResidualTermsJson("all", 1, sys.stdout) writes r1terms.json.
+        writeResidualTermsJson("all", 2, sys.stdout) writes r2terms.json.
     """
     if name != "all" or pretty:
         out.write(
@@ -751,12 +776,8 @@ def main() -> None:
     Run the term JSON emitter.
 
     Notation:
-        python tools/wick/terms.py --class all --order 1
-        python tools/wick/terms.py --kind overlap --block all
 
     Examples:
-        python tools/wick/terms.py --class CToA --order 1 --pretty
-        python tools/wick/terms.py --kind overlap --block C4 --pretty
     """
     parser = argparse.ArgumentParser()
 
@@ -776,7 +797,7 @@ def main() -> None:
     parser.add_argument(
         "--order",
         type = int,
-        choices = (0, 1),
+        choices = (0, 1, 2),
         default = 0,
     )
 
@@ -791,7 +812,32 @@ def main() -> None:
         default = "all",
     )
 
+    parser.add_argument(
+        "--profile",
+        action = "store_true",
+    )
+
+    parser.add_argument(
+        "--jobs",
+        type = int,
+        default = None,
+    )
+
+    parser.add_argument(
+        "--executor",
+        choices = ("serial", "thread", "process"),
+        default = None,
+    )
+
     args = parser.parse_args()
+
+    global PROFILE
+    PROFILE = PROFILE or args.profile
+    configureWick(
+        jobs = args.jobs,
+        executor = args.executor,
+        profile = PROFILE,
+    )
 
     if args.kind == "overlap":
         writeOverlapTermsJson(

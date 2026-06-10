@@ -10,13 +10,79 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from fractions import Fraction
 from functools import cache
 from itertools import combinations, permutations, product as cartesianProduct
+from time import perf_counter
 
 from spinsum import permutationSign, spinGram, solveConsistent
+
+PROFILE_ENABLED = False
+PROFILE_TIMES: dict[str, float] = {}
+PROFILE_COUNTS: dict[str, int] = {}
+
+def setProfiling(enabled: bool) -> None:
+    """
+    Enable or disable low-overhead Wick timing counters.
+
+    Notation:
+        
+
+    Examples:
+        terms.py calls this when WICK_PROFILE=1 or --profile is used.
+    """
+    global PROFILE_ENABLED
+    PROFILE_ENABLED = enabled
+
+def resetProfile() -> None:
+    """
+    Clear Wick timing counters.
+
+    Notation:
+        
+
+    Examples:
+        Called before each residual class so timings stay class-local.
+    """
+    PROFILE_TIMES.clear()
+    PROFILE_COUNTS.clear()
+
+def profileSnapshot() -> tuple[dict[str, float], dict[str, int]]:
+    """
+    Return a copy of Wick timing counters.
+
+    Notation:
+        
+
+    Examples:
+        The emitter prints this on stderr after one class.
+    """
+    return dict(PROFILE_TIMES), dict(PROFILE_COUNTS)
+
+@contextmanager
+def timed(name: str):
+    """
+    Time one Wick kernel if profiling is enabled.
+
+    Notation:
+        
+
+    Examples:
+        with timed("Wick.expand"): ...
+    """
+    if not PROFILE_ENABLED:
+        yield
+        return
+
+    start = perf_counter()
+    try:
+        yield
+    finally:
+        PROFILE_TIMES[name] = PROFILE_TIMES.get(name, 0.0) + perf_counter() - start
+        PROFILE_COUNTS[name] = PROFILE_COUNTS.get(name, 0) + 1
 
 class Space(Enum):
     """
@@ -299,20 +365,21 @@ def mul(left: Expr, right: Expr) -> Expr:
         mul(delta(i, j), tensor("Gamma1", (u,), (w,)))
         represents \delta^i_j \Gamma^u_w
     """
-    out = []
+    with timed("Expr.mul"):
+        out = []
 
-    for a in left:
-        for b in right:
-            out.append(
-                Term(
-                    coeff = a.coeff * b.coeff,
-                    deltas = tuple(sorted(a.deltas + b.deltas)),
-                    tensors = tuple(sorted(a.tensors + b.tensors)),
+        for a in left:
+            for b in right:
+                out.append(
+                    Term(
+                        coeff = a.coeff * b.coeff,
+                        deltas = tuple(sorted(a.deltas + b.deltas)),
+                        tensors = tuple(sorted(a.tensors + b.tensors)),
+                    )
                 )
-            )
-    
-    # Covert to tuple and simplify with merging of terms.
-    return combine(tuple(out))
+        
+        # Covert to tuple and simplify with merging of terms.
+        return combine(tuple(out))
 
 def mulRaw(left: Expr, right: Expr) -> Expr:
     """
@@ -354,14 +421,15 @@ def prod(exprs: tuple[Expr, ...]) -> Expr:
         ))
         represents \delta^i_j \Gamma^u_w \Theta^x_v
     """
-    # Begin with unity.
-    out = one()
-    
-    # For each expression multiply it by the accumulated product.
-    for expr in exprs:
-        out = mulRaw(out, expr)
+    with timed("Expr.prod"):
+        # Begin with unity.
+        out = one()
+        
+        # For each expression multiply it by the accumulated product.
+        for expr in exprs:
+            out = mulRaw(out, expr)
 
-    return combine(out)
+        return combine(out)
 
 
 def combine(expr: Expr) -> Expr:
@@ -375,10 +443,11 @@ def combine(expr: Expr) -> Expr:
         (1/2) \Gamma^u_v + (1/2) \Gamma^u_v
         becomes \Gamma^u_v
     """
-    acc = {}
-    accumulateTerms(acc, expr)
-    
-    return accumulatedExpr(acc)
+    with timed("Expr.combine"):
+        acc = {}
+        accumulateTerms(acc, expr)
+        
+        return accumulatedExpr(acc)
 
 def accumulateTerms(acc: dict[tuple, Fraction], expr: Expr) -> None:
     """
@@ -750,6 +819,27 @@ class Spin:
             if c != 0
         )
 
+def prewarmSpinCoeffs(maxRank: int = 4) -> None:
+    """
+    Precompute spin-projection coefficient tables used by active cumulants.
+
+    Notation:
+        \lambda^{p_1\sigma_1\cdots p_k\sigma_k}_{q_1\tau_1\cdots q_k\tau_k}
+        =
+        \sum_{\pi} c_{\pi} \Lambda^{p_1\cdots p_k}_{q_{\pi(1)}\cdots q_{\pi(k)}}.
+
+    Examples:
+        R2 generation calls this once per process before hard Wick kernels.
+    """
+    for rank in range(2, maxRank + 1):
+        for upperSpins in cartesianProduct(SPINS, repeat = rank):
+            for lowerSpins in cartesianProduct(SPINS, repeat = rank):
+                Spin.coeffs(
+                    rank,
+                    upperSpins,
+                    lowerSpins,
+                )
+
 class Ref:
     """
     Reference-state connected cumulant rules. 
@@ -818,6 +908,12 @@ class Ref:
                 )
 
             if len(creators) != len(annihilators):
+                return False
+
+            creatorSpins = [op.spin for op in creators]
+            annihilatorSpins = [op.spin for op in annihilators]
+
+            if creatorSpins.count(ALPHA) != annihilatorSpins.count(ALPHA):
                 return False
 
             rank = len(creators)
@@ -1182,7 +1278,10 @@ class Wick:
             tuple[tuple[str, Idx, str, int], ...],
             tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...],
         ] = {}
-        self.spinStringCache: dict[tuple[tuple[str, Idx, str, int], ...], Expr] = {}
+        self.spinStringCache: dict[
+            tuple[tuple[tuple[str, Idx, str, int], ...], bool],
+            Expr,
+        ] = {}
 
     def kappaKey(self, ops: tuple[Op, ...]) -> tuple[tuple[str, Idx, str], ...]:
         """
@@ -1240,7 +1339,8 @@ class Wick:
         key = self.kappaKey(ops)
 
         if key not in self.kappaCache:
-            self.kappaCache[key] = self.ref.kappa(ops)
+            with timed("Ref.kappa"):
+                self.kappaCache[key] = self.ref.kappa(ops)
 
         return self.kappaCache[key]
 
@@ -1260,7 +1360,7 @@ class Wick:
 
         return self.prodCache[factors]
 
-    def eval(self, product: Product) -> Expr:
+    def eval(self, product: Product, connected: bool = False,) -> Expr:
         """
         Evaluate a product of normal ordered groups.
 
@@ -1272,17 +1372,23 @@ class Wick:
             product = Product((tau2(i, u, v, a, 0), tau2(x, b, j, w, 1)))
             represents \langle \Phi | \{E^{iu}_{va}\}\{E^{xb}_{jw}\} | \Phi \rangle
 
-            The algorithm expands spin-free E operators into spin-orbital
-            strings, enumerates Wick partitions, rejects internal contractions,
-            applies Ref.kappa to each block, and sums the result.
+            Wick(ref).eval(Product((bra, h, tau)), connected = True)
+            evaluates only connected residual contractions.
+
+        The algorithm expands spin-free E operators into spin-orbital
+        strings, enumerates Wick partitions, rejects internal contractions,
+        applies Ref.kappa to each block, and sums the result.
         """
 
         # Accumulate spin-string terms and combine once.
         acc = {}
         
         # Expand spin-free groups into spin-orbital strings.
-        for ops in self.expand(product):
-            accumulateTerms(acc, self.evalSpinString(ops))
+        with timed("Wick.expand"):
+            spinStrings = self.expand(product)
+
+        for ops in spinStrings:
+            accumulateTerms(acc, self.evalSpinString(ops, connected = connected))
         
         # Simplify terms.
         return accumulatedExpr(acc)
@@ -1409,6 +1515,9 @@ class Wick:
             if leftOp.idx.space != rightOp.idx.space:
                 continue
 
+            if leftOp.group == rightOp.group:
+                continue
+
             if (
                 leftOp.idx.space == Space.CORE
                 and leftOp.kind == "create"
@@ -1475,6 +1584,26 @@ class Wick:
                 for annihilators in combinations(activeAnnihilators, rank):
                     block = tuple(sorted(creators + annihilators))
 
+                    blockGroups = {
+                        ops[position].group
+                        for position in block
+                    }
+                    if len(blockGroups) == 1:
+                        continue
+
+                    creatorAlpha = sum(
+                        1
+                        for position in creators
+                        if ops[position].spin == ALPHA
+                    )
+                    annihilatorAlpha = sum(
+                        1
+                        for position in annihilators
+                        if ops[position].spin == ALPHA
+                    )
+                    if creatorAlpha != annihilatorAlpha:
+                        continue
+
                     if not self.ref.mayHaveNonzeroKappa(
                         tuple(
                             ops[position]
@@ -1501,6 +1630,13 @@ class Wick:
             A ten-operator spin string no longer traverses all 115975
             set partitions before rejecting zero blocks.
         """
+        with timed("Wick.viablePartitions"):
+            return self._viablePartitions(ops)
+
+    def _viablePartitions(
+        self,
+        ops: tuple[Op, ...],
+    ) -> tuple[tuple[tuple[tuple[int, ...], Expr], ...], ...]:
         key = self.spinStringKey(ops)
 
         if key in self.partitionCache:
@@ -1553,12 +1689,13 @@ class Wick:
 
         return self.partitionCache[key]
 
-    def evalSpinString(self, ops: tuple[Op, ...]) -> Expr:
+    def evalSpinString(self, ops: tuple[Op, ...], connected: bool = False,) -> Expr:
         """
         Evaluate one spin-orbital string by generalised Wick's theorem.
 
         A partition is rejected if any block is internal to one normal-ordered
-        group due to normal ordering or if Ref.kappa(block) is zero.
+        group due to normal ordering or if Ref.kappa(block) is zero, or, when 
+        connected is requested, if the partition does not connect every GNO group.
 
         Notation:
             \sum_P \sign(P) \prod_{B \in P} \kappa(B)
@@ -1571,36 +1708,155 @@ class Wick:
             The block \kappa(a^\dagger_{i\alpha}, a_{u\alpha}) is
             rejected because it is internal to one group. The block
             \kappa(a_{u\alpha}, a^\dagger_{x\alpha}) is allowed if it
-            connects different groups.
-        """
-        key = self.spinStringKey(ops)
+            connects different groups. 
 
-        if key in self.spinStringCache:
+        In the second order residual, \{T^2\} = \{TT\}, both T's are given the 
+        same group id, thus we may have internal blocks to \{T^2\} which are
+        rejected by the same rule.
+        """
+        with timed("Wick.evalSpinString"):
+            key = (self.spinStringKey(ops), connected)
+            if key in self.spinStringCache:
+                return self.spinStringCache[key]
+
+            if not self.maybeSpinBalanced(ops):
+                self.spinStringCache[key] = ()
+                return ()
+
+            if connected and not self.maybeConnected(ops):
+                self.spinStringCache[key] = ()
+                return ()
+
+            acc = {}
+            for partition in self.viablePartitions(ops):
+                blocks = tuple(block for block, _ in partition)
+                if connected and not self.connected(ops, blocks):
+                    continue
+
+                factors = tuple(value for _, value in partition)
+                accumulateTerms(
+                    acc,
+                    scale(
+                        self.prodCached(factors),
+                        self.sign(blocks),
+                    ),
+                )
+
+            self.spinStringCache[key] = accumulatedExpr(acc)
             return self.spinStringCache[key]
 
-        acc = {}
+    def maybeSpinBalanced(
+        self,
+        ops: tuple[Op, ...],
+    ) -> bool:
+        """
+        Cheaply test whether a spin string can possibly fully contract.
 
-        for partition in self.viablePartitions(ops):
-            blocks = tuple(
-                block
-                for block, _ in partition
+        Notation:
+            n_c(X, \sigma) = n_a(X, \sigma),
+            where c is creation and a is annihilation.
+
+        Examples:
+            If active alpha creators outnumber active alpha annihilators, every
+            active cumulant partition is zero.
+        """
+        counts: dict[tuple[Space, str], int] = {}
+
+        for op in ops:
+            key = (
+                op.idx.space,
+                op.spin,
             )
-            factors = tuple(
-                value
-                for _, value in partition
+            delta = 1 if op.kind == "create" else -1
+            counts[key] = counts.get(key, 0) + delta
+
+        return all(value == 0 for value in counts.values())
+
+    def canContract(self, left: Op, right: Op) -> bool:
+        """
+        Cheaply test whether two spin operators could share a Wick block.
+
+        Notation:
+            possible two-operator or active cumulant connection
+
+        Examples:
+            Different spins and orbital spaces cannot form a frozen pair.
+        """
+        if left.group == right.group:
+            return False
+
+        if left.idx.space != right.idx.space:
+            return False
+
+        if left.idx.space == Space.ACTIVE:
+            return left.kind != right.kind
+
+        if left.spin != right.spin:
+            return False
+
+        if left.idx.space == Space.CORE:
+            return (
+                left.kind == "create"
+                and right.kind == "annihilate"
+            ) or (
+                left.kind == "annihilate"
+                and right.kind == "create"
             )
 
-            accumulateTerms(
-                acc,
-                scale(
-                    self.prodCached(factors),
-                    self.sign(blocks),
-                )
+        if left.idx.space == Space.VIRTUAL:
+            return (
+                left.kind == "annihilate"
+                and right.kind == "create"
+            ) or (
+                left.kind == "create"
+                and right.kind == "annihilate"
             )
 
-        self.spinStringCache[key] = accumulatedExpr(acc)
+        return False
 
-        return self.spinStringCache[key]
+    def maybeConnected(
+        self,
+        ops: tuple[Op, ...],
+    ) -> bool:
+        """
+        Cheaply test whether a spin string can possibly have a connected Wick
+        partition.
+
+        This is only a prefilter. A true result does not imply that a valid
+        connected partition exists.
+
+        Notation:
+            possible contraction graph over GNO groups must be connected.
+
+        Examples:
+            If no operator in group 0 can contract with any operator outside
+            group 0, a connected residual contribution is impossible.
+        """
+        groups = tuple(sorted({op.group for op in ops}))
+        if len(groups) <= 1:
+            return True
+
+        parent = {group: group for group in groups}
+
+        def find(group: int) -> int:
+            while parent[group] != group:
+                parent[group] = parent[parent[group]]
+                group = parent[group]
+            return group
+
+        def union(left: int, right: int) -> None:
+            leftRoot = find(left)
+            rightRoot = find(right)
+            if leftRoot != rightRoot:
+                parent[rightRoot] = leftRoot
+
+        for i, left in enumerate(ops):
+            for right in ops[i + 1:]:
+                if self.canContract(left, right):
+                    union(left.group, right.group)
+
+        root = find(groups[0])
+        return all(find(group) == root for group in groups)
 
     def internal(self, ops: tuple[Op, ...], block: tuple[int, ...]) -> bool:
         """
@@ -1641,6 +1897,45 @@ class Wick:
             self.signCache[partition] = partitionSign(partition)
 
         return self.signCache[partition]
+
+    def connected(self, ops: tuple[Op, ...], blocks: tuple[tuple[int, ...], ...]) -> bool:
+        """ 
+        Test whether a Wick partition connects all normal-ordered groups. A partition is 
+        connected when the graph whose vertices are GNO group ids and whose edges are Wick 
+        blocks has one connected component.
+
+        Notation:
+
+        Examples:
+        """
+        groups = tuple(sorted({op.group for op in ops}))
+        if len(groups) <= 1:
+            return True
+
+        parent = {group: group for group in groups}
+
+        def find(group: int) -> int:
+            while parent[group] != group:
+                parent[group] = parent[parent[group]]
+                group = parent[group]
+            return group
+
+        def union(left: int, right: int) -> None:
+            leftRoot = find(left)
+            rightRoot = find(right)
+            if leftRoot != rightRoot:
+                parent[rightRoot] = leftRoot
+
+        for block in blocks:
+            blockGroups = tuple(sorted({ops[i].group for i in block}))
+            if len(blockGroups) <= 1:
+                continue
+            first = blockGroups[0]
+            for group in blockGroups[1:]:
+                union(first, group)
+
+        root = find(groups[0])
+        return all(find(group) == root for group in groups)
 
 def groupE1(p: Idx, q: Idx, groupId: int) -> Group:
     """
