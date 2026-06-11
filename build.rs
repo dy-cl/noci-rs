@@ -50,9 +50,9 @@ fn convert_terms<T>(
 /// # Returns:
 /// - `()`: Writes generated bincode term tables under Cargo's output directory.
 fn main() {
-    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NOCCTERMS");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NOCC");
 
-    if std::env::var_os("CARGO_FEATURE_NOCCT").is_none() {
+    if std::env::var_os("CARGO_FEATURE_NOCC").is_none() {
         return;
     }
 
