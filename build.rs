@@ -54,5 +54,6 @@ fn main() {
 
     convert_terms::<ResidualTermSet>("src/nocc/terms/r0terms.json", "r0terms.bin");
     convert_terms::<ResidualTermSet>("src/nocc/terms/r1terms.json", "r1terms.bin");
+    convert_terms::<ResidualTermSet>("src/nocc/terms/r2terms.json", "r2terms.bin");
     convert_terms::<OverlapTermSet>("src/nocc/terms/overlapterms.json", "overlapterms.bin");
 }

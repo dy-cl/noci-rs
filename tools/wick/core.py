@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from fractions import Fraction
 from functools import cache
@@ -108,7 +108,7 @@ ALPHA = "alpha"
 BETA = "beta"
 SPINS = (ALPHA, BETA)
 
-@dataclass(frozen = True, order = True)
+@dataclass(frozen = True, order = True, slots = True)
 class Idx:
     """
     Spin-free orbital index.
@@ -124,6 +124,17 @@ class Idx:
     """
     name: str
     space: Space
+    _hash: int = field(init = False, repr = False, compare = False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_hash",
+            hash((self.name, self.space.value)),
+        )
+
+    def __hash__(self) -> int:
+        return self._hash
 
 @dataclass(frozen = True, order = True)
 class Op:
@@ -184,7 +195,7 @@ class Product:
     """
     groups: tuple[Group, ...]
 
-@dataclass(frozen = True, order = True)
+@dataclass(frozen = True, order = True, slots = True)
 class Delta:
     """
     Kronecker delta.
@@ -197,8 +208,19 @@ class Delta:
     """
     left: Idx
     right: Idx
+    _hash: int = field(init = False, repr = False, compare = False)
 
-@dataclass(frozen = True, order = True)
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_hash",
+            hash((self.left, self.right)),
+        )
+
+    def __hash__(self) -> int:
+        return self._hash
+
+@dataclass(frozen = True, order = True, slots = True)
 class Tensor:
     """
     Spin-free tensor factor.
@@ -220,6 +242,17 @@ class Tensor:
     name: str
     upper: tuple[Idx, ...]
     lower: tuple[Idx, ...]
+    _hash: int = field(init = False, repr = False, compare = False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_hash",
+            hash((self.name, self.upper, self.lower)),
+        )
+
+    def __hash__(self) -> int:
+        return self._hash
 
 @dataclass(frozen = True, order = True)
 class Term:
@@ -472,42 +505,78 @@ def combine(expr: Expr) -> Expr:
         
         return accumulatedExpr(acc)
 
+def accumulateCoeff(
+    acc: dict[tuple, Fraction],
+    key: tuple,
+    coeff: Fraction,
+) -> None:
+    if coeff == 0:
+        return
+
+    old = acc.get(key)
+
+    if old is None:
+        acc[key] = coeff
+        return
+
+    value = old + coeff
+
+    if value == 0:
+        del acc[key]
+    else:
+        acc[key] = value 
+
 def accumulateTerms(acc: dict[tuple, Fraction], expr: Expr) -> None:
     """
     Accumulate scalar expression coefficients by symbolic product.
 
     Notation:
         c A + d A -> acc[A] = c + d
-
-    Examples:
-        Two terms with the same deltas and tensors update one dictionary entry.
     """
     for term in expr:
-        key = (term.deltas, term.tensors)
-        acc[key] = acc.get(key, ZERO_FRACTION) + term.coeff
+        accumulateCoeff(
+            acc,
+            (term.deltas, term.tensors),
+            term.coeff,
+        )
 
 def accumulateScaledTerms(acc: dict[tuple, Fraction], expr: Expr, coeff: int | Fraction) -> None:
     """
     Accumulate scaled expression coefficients by symbolic product.
 
     Notation:
-        acc[A] \leftarrow acc[A] + c e_A
-
-    Examples:
-        Wick partition signs are folded into the accumulator without building
-        a temporary scaled expression.
+        acc[A] <- acc[A] + c e_A
     """
     if coeff == 1:
         accumulateTerms(acc, expr)
         return
 
-    c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
-    if c == 0:
+    if coeff == 0:
         return
 
+    c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
+
     for term in expr:
-        key = (term.deltas, term.tensors)
-        acc[key] = acc.get(key, ZERO_FRACTION) + c * term.coeff
+        termCoeff = term.coeff
+
+        if termCoeff == 1:
+            value = c
+        elif termCoeff == -1:
+            value = -c
+        else:
+            value = c * termCoeff
+
+        accumulateCoeff(
+            acc,
+            (term.deltas, term.tensors),
+            value,
+        )
+
+def sortedFactors(items) -> tuple:
+    if len(items) < 2:
+        return tuple(items)
+
+    return tuple(sorted(items))
 
 def accumulateProductTerms(
     acc: dict[tuple, Fraction],
@@ -526,6 +595,49 @@ def accumulateProductTerms(
         Wick partition.
     """
     c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
+
+    factors = tuple(
+        factor
+        for factor in factors
+        if not isOneExpr(factor)
+    )
+
+    if not factors:
+        acc[((), ())] = acc.get(((), ()), ZERO_FRACTION) + c
+        return
+
+    if all(len(expr) == 1 for expr in factors):
+        coeffOut = c
+        deltas = []
+        tensors = []
+
+        for expr in factors:
+            term = expr[0]
+            termCoeff = term.coeff
+
+            if termCoeff == 1:
+                pass
+            elif termCoeff == -1:
+                coeffOut = -coeffOut
+            else:
+                coeffOut *= termCoeff
+
+            if coeffOut == 0:
+                return
+
+            deltas.extend(term.deltas)
+            tensors.extend(term.tensors)
+        
+        key = (
+            sortedFactors(deltas),
+            sortedFactors(tensors),
+        )
+        accumulateCoeff(
+            acc,
+            key,
+            coeffOut,
+        )
+        return
 
     if c == 0:
         return
@@ -562,10 +674,22 @@ def accumulateProductTerms(
 
     for coeffOut, deltas, tensors in partial:
         key = (
-            tuple(sorted(deltas)),
-            tuple(sorted(tensors)),
+            sortedFactors(deltas),
+            sortedFactors(tensors),
         )
-        acc[key] = acc.get(key, ZERO_FRACTION) + coeffOut
+        accumulateCoeff(
+            acc,
+            key,
+            coeffOut,
+        )
+
+def isOneExpr(expr: Expr) -> bool:
+    return (
+        len(expr) == 1
+        and expr[0].coeff == 1
+        and not expr[0].deltas
+        and not expr[0].tensors
+    )
 
 def accumulatedExpr(acc: dict[tuple, Fraction], sort: bool = True) -> Expr:
     """
@@ -1917,23 +2041,42 @@ class Wick:
 
             acc = {}
 
-            for sign, blocks in self.viablePartitionPatterns(
+            patterns = self.viablePartitionPatterns(
                 ops,
                 connected = connected,
-            ):
-                factors = tuple(
-                    self.kappaCached(
-                        tuple(
-                            ops[i]
-                            for i in block
-                        )
+            )
+
+            blockValues = {}
+            for _, blocks in patterns:
+                for block in blocks:
+                    if block in blockValues:
+                        continue
+
+                    blockOps = tuple(
+                        ops[i]
+                        for i in block
                     )
-                    for block in blocks
-                )
+                    blockValues[block] = self.kappaCached(blockOps)
+
+            for sign, blocks in patterns:
+                factors = []
+                ok = True
+
+                for block in blocks:
+                    value = blockValues[block]
+
+                    if not value:
+                        ok = False
+                        break
+
+                    factors.append(value)
+
+                if not ok:
+                    continue
 
                 accumulateProductTerms(
                     acc,
-                    factors,
+                    tuple(factors),
                     sign,
                 )
 
@@ -1975,7 +2118,6 @@ class Wick:
         Cheaply test whether two spin operators could share a Wick block.
 
         Notation:
-            possible two-operator or active cumulant connection
 
         Examples:
             Different spins and orbital spaces cannot form a frozen pair.

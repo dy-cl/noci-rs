@@ -9,6 +9,7 @@ use super::terms::{OverlapTermSet, ResidualTermSet};
 static OVERLAP_TERMS: OnceLock<OverlapTermSet> = OnceLock::new();
 static R0_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
 static R1_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
+static R2_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
 
 /// Decode one embedded residual term table.
 /// # Arguments:
@@ -50,6 +51,15 @@ pub(crate) fn r0_terms() -> &'static ResidualTermSet {
 /// - `&'static ResidualTermSet`: Decoded first-order residual term table.
 pub(crate) fn r1_terms() -> &'static ResidualTermSet {
     R1_TERMS.get_or_init(|| decode_terms(include_bytes!(concat!(env!("OUT_DIR"), "/r1terms.bin"))))
+}
+
+/// Return the second-order residual term table.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `&'static ResidualTermSet`: Decoded first-order residual term table.
+pub(crate) fn r2_terms() -> &'static ResidualTermSet {
+    R2_TERMS.get_or_init(|| decode_terms(include_bytes!(concat!(env!("OUT_DIR"), "/r2terms.bin"))))
 }
 
 /// Return the overlap term table.
