@@ -52,7 +52,7 @@ fn convert_terms<T>(
 fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NOCCTERMS");
 
-    if std::env::var_os("CARGO_FEATURE_NOCCTERMS").is_none() {
+    if std::env::var_os("CARGO_FEATURE_NOCCT").is_none() {
         return;
     }
 

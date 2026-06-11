@@ -57,7 +57,7 @@ pub(crate) fn r1_terms() -> &'static ResidualTermSet {
 /// # Arguments:
 /// - None.
 /// # Returns:
-/// - `&'static ResidualTermSet`: Decoded first-order residual term table.
+/// - `&'static ResidualTermSet`: Decoded second-order residual term table.
 pub(crate) fn r2_terms() -> &'static ResidualTermSet {
     R2_TERMS.get_or_init(|| decode_terms(include_bytes!(concat!(env!("OUT_DIR"), "/r2terms.bin"))))
 }
@@ -69,9 +69,6 @@ pub(crate) fn r2_terms() -> &'static ResidualTermSet {
 /// - `&'static OverlapTermSet`: Decoded overlap term table.
 pub(crate) fn overlap_terms() -> &'static OverlapTermSet {
     OVERLAP_TERMS.get_or_init(|| {
-        decode_overlap(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/overlapterms.bin"
-        )))
+        decode_overlap(include_bytes!(concat!(env!("OUT_DIR"), "/overlapterms.bin")))
     })
 }

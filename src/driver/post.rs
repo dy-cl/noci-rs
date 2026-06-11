@@ -1,6 +1,7 @@
 // driver/post.rs
 
 use mpi::topology::Communicator;
+#[cfg(feature = "nocc")]
 use ndarray::Array1;
 use num_complex::Complex64;
 
@@ -9,10 +10,13 @@ use crate::driver::reference::ReferenceRun;
 use crate::driver::snoci::run_snoci;
 use crate::driver::stochastic::run_qmc_stochastic_noci;
 use crate::input::Input;
+#[cfg(feature = "nocc")]
 use crate::nocc::run_noccmc;
+#[cfg(feature = "nocc")]
 use crate::noci::NOCIData;
 use crate::noci::{build_mo_cache, build_wicks_shared};
 use crate::nonorthogonalwicks::WicksShared;
+#[cfg(feature = "nocc")]
 use crate::orbitals::noci_natural_orbitals;
 use crate::{AoData, HSCFState, PostSCFData, SCFState};
 
@@ -81,7 +85,8 @@ pub fn run_real_post_reference(
             wicks,
         ));
     }
-
+    
+    #[cfg(feature = "nocc")]
     if input.noccmc.is_some() {
         let no = {
             let wicks = reference.wicks.as_ref().map(|ws| ws.view());
@@ -93,7 +98,6 @@ pub fn run_real_post_reference(
         };
 
         reference.wicks = None;
-
         run_noccmc(&post, input, &reference.c0, &no, world);
     }
 

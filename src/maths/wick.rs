@@ -3,8 +3,11 @@
 // maths/wick.rs
 
 use crate::StateScalar;
+#[cfg(feature = "nocc")]
 use crate::noci::NOCIScalar;
-use ndarray::{Array2, ArrayView2};
+#[cfg(feature = "nocc")]
+use ndarray::Array2;
+use ndarray::ArrayView2;
 
 /// Calculate a determinant coefficient for an occupation bitstring.
 /// # Arguments:
@@ -13,6 +16,7 @@ use ndarray::{Array2, ArrayView2};
 /// - `nel`: Number of occupied orbitals.
 /// # Returns:
 /// - `T`: Determinant coefficient for the occupied rows and first `nel` columns.
+#[cfg(feature = "nocc")]
 pub(crate) fn det_occupied_minor<T: NOCIScalar>(
     c: &Array2<T>,
     mask: u128,

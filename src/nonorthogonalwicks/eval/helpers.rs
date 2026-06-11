@@ -1,9 +1,12 @@
 // nonorthogonalwicks/eval/helpers.rs
 
+#[cfg(feature = "nocc")]
 use ndarray::{Array2, ArrayView2, s};
 
 use crate::ExcitationSpin;
-use crate::maths::{adjoint, det};
+#[cfg(feature = "nocc")]
+use crate::maths::{adjoint};
+use crate::maths::det;
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -89,6 +92,7 @@ pub(super) fn det_or_zero<T: NOCIScalar>(
 /// - `Array2<T>`: Extended Wick contraction determinant whose original determinant-orbital block
 ///   is unchanged, and whose final rows and columns open RDM-basis operators.
 #[inline(always)]
+#[cfg(feature = "nocc")]
 pub(super) fn extend_rdm_d<T: NOCIScalar>(
     d: &ArrayView2<'_, T>,
     l_c: &Array2<T>,

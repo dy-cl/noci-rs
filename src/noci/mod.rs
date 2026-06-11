@@ -16,7 +16,9 @@ pub(crate) use m::calculate_m_pair;
 pub(crate) use matrix::build_noci_fock;
 pub use matrix::{build_noci_hs, build_noci_s, calculate_noci_energy};
 pub use naive::noci_density;
-pub(crate) use naive::{build_s_pair, occ_coeffs, pair_density};
+pub(crate) use naive::occ_coeffs;
+#[cfg(feature = "nocc")]
+pub(crate) use naive::{build_s_pair, pair_density};
 pub(crate) use overlap::calculate_s_pair;
 pub(crate) use types::{DetPair, FockData};
 pub use types::{FockMOCache, MOCache};

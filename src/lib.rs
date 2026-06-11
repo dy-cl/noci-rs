@@ -5,9 +5,11 @@ pub mod driver;
 pub mod input;
 pub mod maths;
 pub mod mpiutils;
+#[cfg(feature = "nocc")]
 pub mod nocc;
 pub mod noci;
 pub mod nonorthogonalwicks;
+#[cfg(feature = "nocc")]
 pub mod orbitals;
 pub mod read;
 pub mod scalar;
