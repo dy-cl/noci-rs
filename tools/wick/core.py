@@ -828,19 +828,37 @@ def accumulatedExpr(acc: dict[tuple, Fraction], sort: bool = True) -> Expr:
     Examples:
         Zero coefficients are discarded and remaining terms are sorted.
     """
-    items = sorted(acc.items()) if sort else acc.items()
+    if not acc:
+        return ()
 
-    return tuple(
-        Term(
+    if len(acc) == 1:
+        ((deltas, tensors), coeff), = acc.items()
+
+        if coeff == 0:
+            return ()
+
+        return (Term(
             coeff = coeff,
             deltas = deltas,
             tensors = tensors,
+        ),)
+
+    items = sorted(acc.items()) if sort else acc.items()
+    out = []
+
+    for (deltas, tensors), coeff in items:
+        if coeff == 0:
+            continue
+
+        out.append(
+            Term(
+                coeff = coeff,
+                deltas = deltas,
+                tensors = tensors,
+            )
         )
-        # Do it for each unique symbolic product and coefficient in dictionary.
-        for (deltas, tensors), coeff in items
-        # Provided that coefficient is not zero, otherwise ignore.
-        if coeff != 0
-    )
+
+    return tuple(out)
 
 def anticommutator(left: Op, right: Op) -> Expr:
     """
