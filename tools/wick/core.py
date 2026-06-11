@@ -13,10 +13,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from fractions import Fraction
 from functools import cache
 from itertools import combinations, permutations, product as cartesianProduct
 from time import perf_counter
+
+try:
+    from gmpy2 import mpq as Fraction
+except ImportError:
+    from fractions import Fraction
 
 from spinsum import permutationSign, spinGram, solveConsistent
 
@@ -25,6 +29,47 @@ ZERO_FRACTION = Fraction(0)
 PROFILE_ENABLED = False
 PROFILE_TIMES: dict[str, float] = {}
 PROFILE_COUNTS: dict[str, int] = {}
+
+@cache
+def addCoeffValues(left: Fraction, right: Fraction) -> Fraction:
+    return left + right
+
+@cache
+def mulCoeffValues(left: Fraction, right: Fraction) -> Fraction:
+    return left * right
+
+def addCoeffValuesFast(left: Fraction, right: Fraction) -> Fraction:
+    if left == 0:
+        return right
+
+    if right == 0:
+        return left
+
+    return addCoeffValues(
+        left,
+        right,
+    )
+
+def mulCoeffValuesFast(left: Fraction, right: Fraction) -> Fraction:
+    if left == 1:
+        return right
+
+    if right == 1:
+        return left
+
+    if left == -1:
+        return -right
+
+    if right == -1:
+        return -left
+
+    if left == 0 or right == 0:
+        return ZERO_FRACTION
+
+    return mulCoeffValues(
+        left,
+        right,
+    )
 
 def setProfiling(enabled: bool) -> None:
     """
@@ -519,7 +564,10 @@ def accumulateCoeff(
         acc[key] = coeff
         return
 
-    value = old + coeff
+    value = addCoeffValuesFast(
+        old,
+        coeff,
+    )
 
     if value == 0:
         del acc[key]
@@ -564,7 +612,10 @@ def accumulateScaledTerms(acc: dict[tuple, Fraction], expr: Expr, coeff: int | F
         elif termCoeff == -1:
             value = -c
         else:
-            value = c * termCoeff
+            value = mulCoeffValuesFast(
+                c,
+                termCoeff,
+            )
 
         accumulateCoeff(
             acc,
@@ -572,11 +623,15 @@ def accumulateScaledTerms(acc: dict[tuple, Fraction], expr: Expr, coeff: int | F
             value,
         )
 
+@cache
+def sortedTupleFactors(items: tuple) -> tuple:
+    return tuple(sorted(items))
+
 def sortedFactors(items) -> tuple:
     if len(items) < 2:
         return tuple(items)
 
-    return tuple(sorted(items))
+    return sortedTupleFactors(tuple(items))
 
 def accumulateProductTerms(
     acc: dict[tuple, Fraction],
@@ -594,19 +649,30 @@ def accumulateProductTerms(
         Used inside Wick partition evaluation to avoid building one Expr per
         Wick partition.
     """
+    if coeff == 0:
+        return
+
     c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
 
-    factors = tuple(
-        factor
-        for factor in factors
-        if not isOneExpr(factor)
-    )
+    nonOneFactors = []
+    allSingle = True
+
+    for factor in factors:
+        if isOneExpr(factor):
+            continue
+
+        if len(factor) != 1:
+            allSingle = False
+
+        nonOneFactors.append(factor)
+
+    factors = nonOneFactors
 
     if not factors:
         acc[((), ())] = acc.get(((), ()), ZERO_FRACTION) + c
         return
 
-    if all(len(expr) == 1 for expr in factors):
+    if allSingle:
         coeffOut = c
         deltas = []
         tensors = []
@@ -620,7 +686,10 @@ def accumulateProductTerms(
             elif termCoeff == -1:
                 coeffOut = -coeffOut
             else:
-                coeffOut *= termCoeff
+                coeffOut = mulCoeffValuesFast(
+                    coeffOut,
+                    termCoeff,
+                )
 
             if coeffOut == 0:
                 return
@@ -639,9 +708,6 @@ def accumulateProductTerms(
         )
         return
 
-    if c == 0:
-        return
-
     partial = [(
         c,
         (),
@@ -656,7 +722,17 @@ def accumulateProductTerms(
 
         for leftCoeff, leftDeltas, leftTensors in partial:
             for term in expr:
-                value = leftCoeff * term.coeff
+                termCoeff = term.coeff
+
+                if termCoeff == 1:
+                    value = leftCoeff
+                elif termCoeff == -1:
+                    value = -leftCoeff
+                else:
+                    value = mulCoeffValuesFast(
+                        leftCoeff,
+                        termCoeff,
+                    )
 
                 if value == 0:
                     continue
@@ -1924,18 +2000,44 @@ class Wick:
                 return self.partitionPatternCache[key]
 
             groups = tuple(sorted({op.group for op in ops}))
+            opGroups = tuple(op.group for op in ops)
+            positionBits = tuple(1 << position for position in range(len(ops)))
+            groupPairBits = {
+                (left, right): 1 << bit
+                for bit, (left, right) in enumerate(combinations(groups, 2))
+            }
+
+            def blockEdgeMask(block: tuple[int, ...]) -> int:
+                blockGroups = tuple(sorted({opGroups[i] for i in block}))
+
+                if len(blockGroups) <= 1:
+                    return 0
+
+                out = 0
+
+                for left, right in combinations(blockGroups, 2):
+                    out |= groupPairBits[(left, right)]
+
+                return out
+
+            def blockPositionMask(block: tuple[int, ...]) -> int:
+                out = 0
+
+                for position in block:
+                    out |= positionBits[position]
+
+                return out
+
+            if key[0] not in self.shapeBlockCache:
+                self.shapeBlockCache[key[0]] = self.candidateBlocks(ops)
 
             blocks = tuple(
                 (
                     block,
-                    sum(1 << position for position in block),
-                    self.blockEdgeMask(
-                        ops,
-                        block,
-                        groups,
-                    ),
+                    blockPositionMask(block),
+                    blockEdgeMask(block),
                 )
-                for block in self.candidateBlocksByShape(ops)
+                for block in self.shapeBlockCache[key[0]]
             )
 
             byPosition: dict[int, list[tuple[tuple[int, ...], int, int]]] = {}
@@ -1977,14 +2079,28 @@ class Wick:
 
                     restMask = remainingMask & ~blockMask
                     nextEdgeMask = edgeMask | blockEdgeMask
-
-                    for _, suffix in cover(
+                    suffixes = cover(
                         restMask,
                         nextEdgeMask,
-                    ):
+                    )
+
+                    if not suffixes:
+                        continue
+
+                    crossParity = 0
+
+                    for position in block:
+                        crossParity ^= (
+                            restMask
+                            & ((1 << position) - 1)
+                        ).bit_count() & 1
+
+                    prefixSign = -1 if crossParity else 1
+
+                    for suffixSign, suffix in suffixes:
                         partition = (block,) + suffix
                         local.append((
-                            partitionSign(partition),
+                            prefixSign * suffixSign,
                             partition,
                         ))
 

@@ -273,8 +273,8 @@ def encodeCoeff(coeff) -> list[int]:
     value = Fraction(coeff)
 
     return [
-        value.numerator,
-        value.denominator,
+        int(value.numerator),
+        int(value.denominator),
     ]
 
 def encodeLoops(
