@@ -30,6 +30,7 @@ serial_test = {version = "3"}
 [features]
 default = []
 timings = []
+noccterms = []
 
 [profile.release]
 opt-level = 3

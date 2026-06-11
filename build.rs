@@ -50,7 +50,11 @@ fn convert_terms<T>(
 /// # Returns:
 /// - `()`: Writes generated bincode term tables under Cargo's output directory.
 fn main() {
-    println!("cargo:rerun-if-changed=src/nocc/terms.rs");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NOCCTERMS");
+
+    if std::env::var_os("CARGO_FEATURE_NOCCTERMS").is_none() {
+        return;
+    }
 
     convert_terms::<ResidualTermSet>("src/nocc/terms/r0terms.json", "r0terms.bin");
     convert_terms::<ResidualTermSet>("src/nocc/terms/r1terms.json", "r1terms.bin");
