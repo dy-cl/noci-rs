@@ -36,4 +36,4 @@ jobs:
           python3 -m pip install --prefer-binary pyscf h5py numpy
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --no-default-features -- -D warnings

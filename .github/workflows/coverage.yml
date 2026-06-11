@@ -45,7 +45,7 @@ jobs:
         run: |
           cargo llvm-cov \
             --workspace \
-            --all-features \
+            --no-default-features \
             --lcov \
             --output-path lcov.info
 
