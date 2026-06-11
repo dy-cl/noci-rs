@@ -32,13 +32,38 @@ PROFILE_COUNTS: dict[str, int] = {}
 
 @cache
 def addCoeffValues(left: Fraction, right: Fraction) -> Fraction:
+    """
+    Add two exact scalar coefficients with a cache.
+
+    Notation:
+        c = a + b
+
+    Examples:
+    """
     return left + right
 
 @cache
 def mulCoeffValues(left: Fraction, right: Fraction) -> Fraction:
+    """
+    Multiply two exact scalar coefficients with a cache.
+
+    Notation:
+        c = a b
+
+    Examples:
+    """
     return left * right
 
 def addCoeffValuesFast(left: Fraction, right: Fraction) -> Fraction:
+    """
+    Add two exact scalar coefficients with zero fast paths.
+
+    Notation:
+        c = a + b
+
+    Examples:
+        addCoeffValuesFast(0, c) returns c without constructing a new rational.
+    """
     if left == 0:
         return right
 
@@ -51,6 +76,15 @@ def addCoeffValuesFast(left: Fraction, right: Fraction) -> Fraction:
     )
 
 def mulCoeffValuesFast(left: Fraction, right: Fraction) -> Fraction:
+    """
+    Multiply two exact scalar coefficients with zero and sign fast paths.
+
+    Notation:
+        c = a b
+
+    Examples:
+        mulCoeffValuesFast(-1, c) returns -c without rational multiplication.
+    """
     if left == 1:
         return right
 
@@ -625,9 +659,26 @@ def accumulateScaledTerms(acc: dict[tuple, Fraction], expr: Expr, coeff: int | F
 
 @cache
 def sortedTupleFactors(items: tuple) -> tuple:
+    """
+    Return a sorted factor tuple with a cache.
+
+    Notation:
+        (x_{\pi(1)}, \ldots, x_{\pi(n)}) with x_{\pi(1)} \le \cdots \le x_{\pi(n)}
+
+    Examples:
+    """
     return tuple(sorted(items))
 
 def sortedFactors(items) -> tuple:
+    """
+    Return factors in canonical sorted order.
+
+    Notation:
+        \prod_i f_i -> \prod_i f_{\pi(i)}
+
+    Examples:
+        Empty and one-factor products are returned without sorting.
+    """
     if len(items) < 2:
         return tuple(items)
 
@@ -1940,6 +1991,9 @@ class Wick:
                 self.ref.maxActiveCumulantRank,
             )
 
+        if maxRank == 0:
+            return ()
+
         out = []
 
         for rank in range(1, maxRank + 1):
@@ -2008,6 +2062,14 @@ class Wick:
             }
 
             def blockEdgeMask(block: tuple[int, ...]) -> int:
+                """
+                Return the group-connectivity edge mask for one candidate block.
+
+                Notation:
+                    e(B) = \{(g_i, g_j) : g_i, g_j \in B\}
+
+                Examples:
+                """
                 blockGroups = tuple(sorted({opGroups[i] for i in block}))
 
                 if len(blockGroups) <= 1:
@@ -2021,6 +2083,14 @@ class Wick:
                 return out
 
             def blockPositionMask(block: tuple[int, ...]) -> int:
+                """
+                Return the operator-position bit mask for one candidate block.
+
+                Notation:
+                    m(B) = \sum_{i \in B} 2^i
+
+                Examples:
+                """
                 out = 0
 
                 for position in block:

@@ -4,6 +4,269 @@ from fractions import Fraction
 from functools import cache
 from itertools import permutations
 
+try:
+    import numpy as np
+    from numba import njit
+except ImportError:
+    np = None
+    njit = None
+
+INT64_MIN = -(1 << 63)
+INT64_MAX = (1 << 63) - 1
+
+def int64RationalPart(value: Fraction) -> tuple[int, int]:
+    """
+    Return one rational value as signed 64-bit numerator and denominator.
+
+    Notation:
+        x = n / d
+
+    Examples:
+        Fraction(-1, 2) gives (-1, 2).
+    """
+    numerator = int(value.numerator)
+    denominator = int(value.denominator)
+
+    if (
+        numerator < INT64_MIN
+        or numerator > INT64_MAX
+        or denominator < INT64_MIN
+        or denominator > INT64_MAX
+    ):
+        raise OverflowError("rational coefficient does not fit int64")
+
+    return (
+        numerator,
+        denominator,
+    )
+
+if njit is not None:
+    @njit(cache = True)
+    def gcdInt64(left: int, right: int) -> int:
+        """
+        Return greatest common divisor for signed 64-bit integers.
+
+        Notation:
+            \gcd(a, b)
+
+        Examples:
+        """
+        if left < 0:
+            left = -left
+
+        if right < 0:
+            right = -right
+
+        while right:
+            left, right = right, left % right
+
+        return left
+
+    @njit(cache = True)
+    def normaliseRationalInt64(
+        numerator: int,
+        denominator: int,
+    ) -> tuple[int, int]:
+        """
+        Normalise one signed 64-bit rational pair.
+
+        Notation:
+            n / d -> n' / d', \gcd(n', d') = 1, d' > 0
+
+        Examples:
+        """
+        if numerator == 0:
+            return (
+                0,
+                1,
+            )
+
+        if denominator < 0:
+            numerator = -numerator
+            denominator = -denominator
+
+        divisor = gcdInt64(
+            numerator,
+            denominator,
+        )
+
+        return (
+            numerator // divisor,
+            denominator // divisor,
+        )
+
+    @njit(cache = True)
+    def solveConsistentInt64(
+        augNum: np.ndarray,
+        augDen: np.ndarray,
+    ) -> tuple[bool, np.ndarray, np.ndarray]:
+        """
+        Solve a rational linear system using signed 64-bit arithmetic.
+
+        Notation:
+            A x = b
+
+        Examples:
+        """
+        nRows = augNum.shape[0]
+        nCols = augNum.shape[1] - 1
+        pivotCols = np.empty(nCols, dtype = np.int64)
+        pivotCount = 0
+        row = 0
+
+        for col in range(nCols):
+            pivot = -1
+
+            for r in range(row, nRows):
+                if augNum[r, col] != 0:
+                    pivot = r
+                    break
+
+            if pivot == -1:
+                continue
+
+            if pivot != row:
+                for i in range(nCols + 1):
+                    tmpNum = augNum[row, i]
+                    tmpDen = augDen[row, i]
+                    augNum[row, i] = augNum[pivot, i]
+                    augDen[row, i] = augDen[pivot, i]
+                    augNum[pivot, i] = tmpNum
+                    augDen[pivot, i] = tmpDen
+
+            scaleNum = augNum[row, col]
+            scaleDen = augDen[row, col]
+
+            for i in range(nCols + 1):
+                numerator = augNum[row, i] * scaleDen
+                denominator = augDen[row, i] * scaleNum
+                numerator, denominator = normaliseRationalInt64(
+                    numerator,
+                    denominator,
+                )
+                augNum[row, i] = numerator
+                augDen[row, i] = denominator
+
+            for r in range(nRows):
+                if r == row:
+                    continue
+
+                factorNum = augNum[r, col]
+
+                if factorNum == 0:
+                    continue
+
+                factorDen = augDen[r, col]
+
+                for i in range(nCols + 1):
+                    leftNum = augNum[r, i]
+                    leftDen = augDen[r, i]
+                    rightNum = factorNum * augNum[row, i]
+                    rightDen = factorDen * augDen[row, i]
+                    numerator = leftNum * rightDen - rightNum * leftDen
+                    denominator = leftDen * rightDen
+                    numerator, denominator = normaliseRationalInt64(
+                        numerator,
+                        denominator,
+                    )
+                    augNum[r, i] = numerator
+                    augDen[r, i] = denominator
+
+            pivotCols[pivotCount] = col
+            pivotCount += 1
+            row += 1
+
+            if row == nRows:
+                break
+
+        for r in range(row, nRows):
+            allZero = True
+
+            for c in range(nCols):
+                if augNum[r, c] != 0:
+                    allZero = False
+                    break
+
+            if allZero and augNum[r, nCols] != 0:
+                return (
+                    False,
+                    np.zeros(nCols, dtype = np.int64),
+                    np.ones(nCols, dtype = np.int64),
+                )
+
+        solNum = np.zeros(nCols, dtype = np.int64)
+        solDen = np.ones(nCols, dtype = np.int64)
+
+        for r in range(pivotCount):
+            col = pivotCols[r]
+            solNum[col] = augNum[r, nCols]
+            solDen[col] = augDen[r, nCols]
+
+        return (
+            True,
+            solNum,
+            solDen,
+        )
+
+def solveConsistentNumba(
+    mat: list[list[Fraction]],
+    rhs: list[Fraction],
+) -> list[Fraction]:
+    """
+    Solve one rational linear system through the optional Numba backend.
+
+    Notation:
+        A x = b
+
+    Examples:
+        Falls back to solveConsistent if numba or int64 conversion is unavailable.
+    """
+    if np is None or njit is None:
+        raise RuntimeError("numba backend is unavailable")
+
+    nRows = len(mat)
+    nCols = len(mat[0])
+    augNum = np.zeros(
+        (
+            nRows,
+            nCols + 1,
+        ),
+        dtype = np.int64,
+    )
+    augDen = np.ones(
+        (
+            nRows,
+            nCols + 1,
+        ),
+        dtype = np.int64,
+    )
+
+    for r, row in enumerate(mat):
+        for c, value in enumerate(row):
+            numerator, denominator = int64RationalPart(value)
+            augNum[r, c] = numerator
+            augDen[r, c] = denominator
+
+        numerator, denominator = int64RationalPart(rhs[r])
+        augNum[r, nCols] = numerator
+        augDen[r, nCols] = denominator
+
+    ok, solNum, solDen = solveConsistentInt64(
+        augNum,
+        augDen,
+    )
+
+    if not ok:
+        raise ValueError("inconsistent spin-projection system")
+
+    return [
+        Fraction(
+            int(numerator),
+            int(denominator),
+        )
+        for numerator, denominator in zip(solNum, solDen)
+    ]
+
 def permutationSign(sequence: tuple[int, ...]) -> int:
     """
     Return fermionic parity of a permutation.
@@ -171,6 +434,15 @@ def solveConsistent(mat: list[list[Fraction]], rhs: list[Fraction]) -> list[Frac
     is linearly dependent for rank 3 or greater. This function chooses a deterministic solve 
     by setting all free variables to zero.
     """
+    if njit is not None:
+        try:
+            return solveConsistentNumba(
+                mat,
+                rhs,
+            )
+        except (OverflowError, RuntimeError):
+            pass
+
     # Number of equations.
     nRows = len(mat)
     # Number of unknowns (number of lower-permutations).
