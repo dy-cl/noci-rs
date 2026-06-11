@@ -7,7 +7,6 @@ on:
 
 jobs:
   clippy:
-    run: cargo clippy --all-targets --no-default-features -- -D warnings
     runs-on: ubuntu-latest
 
     steps:
