@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import cache
 from itertools import combinations, permutations, product as cartesianProduct
+import os
 from time import perf_counter
 
 try:
@@ -46,6 +48,8 @@ SPINSTRING_STREAM_SUFFIX_CACHE_OP_LIMIT = 12
 # accumulator. This bounds peak memory without making ordinary products slow.
 PRODUCT_PARTIAL_TERM_LIMIT = 10_000_000
 WICK_PROGRESS_PARTITION_INTERVAL = 50_000
+WICK_SPIN_POOL = None
+WICK_SPIN_POOL_JOBS = 0
 
 PROFILE_ENABLED = False
 PROFILE_TIMES: dict[str, float] = {}
@@ -204,6 +208,74 @@ def currentRssKiB() -> int:
     except OSError:
         pass
     return 0
+
+def wickEnvInt(name: str, default: int) -> int:
+    """
+    Read one integer Wick runtime environment option.
+
+    Notation:
+        x = \mathrm{env}(name)
+
+    Examples:
+        wickEnvInt("WICK_SPIN_JOBS", 1) returns the requested spin workers.
+    """
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+def wickEnvPositiveInt(name: str, default: int) -> int:
+    """
+    Read one positive integer Wick runtime environment option.
+
+    Notation:
+        x = \max(1, \mathrm{env}(name))
+
+    Examples:
+        WICK_SPIN_CHUNK_SIZE=1 schedules one spin string per worker task.
+    """
+    return max(
+        1,
+        wickEnvInt(
+            name,
+            default,
+        ),
+    )
+
+def wickEnvRange(
+    startName: str,
+    stopName: str,
+    total: int,
+) -> tuple[int, int, bool]:
+    """
+    Return a 1-based stop-exclusive environment slice as 0-based bounds.
+
+    Notation:
+        [s, t) \subseteq \{1,\ldots,N\}
+
+    Examples:
+        WICK_SPIN_START=70 and WICK_SPIN_STOP=90 selects spin strings
+        70 through 89.
+    """
+    startValue = os.environ.get(startName)
+    stopValue = os.environ.get(stopName)
+    partial = startValue not in (None, "") or stopValue not in (None, "")
+
+    start = wickEnvInt(startName, 1)
+    stop = wickEnvInt(stopName, total + 1)
+
+    start = max(1, start)
+    stop = min(total + 1, max(start, stop))
+
+    return (
+        start - 1,
+        stop - 1,
+        partial,
+    )
 
 class Space(Enum):
     """
@@ -394,6 +466,287 @@ class Term:
     tensors: tuple[Tensor, ...] = ()
 
 Expr = tuple[Term, ...]
+IntKey = tuple[tuple[int, ...], tuple[int, ...]]
+IntAcc = dict[IntKey, Fraction]
+
+class FactorInterner:
+    """
+    Map symbolic Delta/Tensor factors to compact integer ids.
+
+    Notation:
+        \iota: \mathcal{F} \to \mathbb{N}^{+}
+
+    Examples:
+        Parallel Wick workers return tensor ids instead of repeated Tensor
+        objects in every accumulator key.
+    """
+    def __init__(self) -> None:
+        self.deltaIds: dict[Delta, int] = {}
+        self.tensorIds: dict[Tensor, int] = {}
+        self.deltas: list[Delta] = []
+        self.tensors: list[Tensor] = []
+
+    def deltaId(self, deltaIn: Delta) -> int:
+        """
+        Return the id for one delta factor.
+
+        Notation:
+            \iota_{\Delta}(\delta^p_q) = n
+
+        Examples:
+            Equal Delta values get the same positive integer id.
+        """
+        value = self.deltaIds.get(deltaIn)
+        if value is not None:
+            return value
+
+        value = len(self.deltas) + 1
+        self.deltaIds[deltaIn] = value
+        self.deltas.append(deltaIn)
+        return value
+
+    def tensorId(self, tensorIn: Tensor) -> int:
+        """
+        Return the id for one tensor factor.
+
+        Notation:
+            \iota_T(T^{p}_{q}) = n
+
+        Examples:
+            Equal Tensor values get the same positive integer id.
+        """
+        value = self.tensorIds.get(tensorIn)
+        if value is not None:
+            return value
+
+        value = len(self.tensors) + 1
+        self.tensorIds[tensorIn] = value
+        self.tensors.append(tensorIn)
+        return value
+
+def encodeExprToIntAcc(interner: FactorInterner, expr: Expr) -> IntAcc:
+    """
+    Encode a symbolic expression into an integer-keyed accumulator.
+
+    Notation:
+        E = \sum_A c_A A \mapsto a_{\iota(A)} = c_A
+
+    Examples:
+        Spin workers use this before sending results back to the parent.
+    """
+    acc: IntAcc = {}
+
+    for term in expr:
+        key = (
+            tuple(interner.deltaId(deltaIn) for deltaIn in term.deltas),
+            tuple(interner.tensorId(tensorIn) for tensorIn in term.tensors),
+        )
+        old = acc.get(key)
+        acc[key] = term.coeff if old is None else addCoeffValuesFast(old, term.coeff)
+
+    return {
+        key: coeff
+        for key, coeff in acc.items()
+        if coeff != 0
+    }
+
+def decodeIntAcc(interner: FactorInterner, acc: IntAcc, sort: bool = False) -> Expr:
+    """
+    Decode an integer-keyed accumulator into symbolic terms.
+
+    Notation:
+        a_{\iota(A)} \mapsto \sum_A a_{\iota(A)} A
+
+    Examples:
+        Wick.eval decodes once after merging parallel spin shards.
+    """
+    items = sorted(acc.items()) if sort else acc.items()
+    out = []
+
+    for (deltaIds, tensorIds), coeff in items:
+        if coeff == 0:
+            continue
+
+        out.append(
+            Term(
+                coeff = coeff,
+                deltas = tuple(interner.deltas[i - 1] for i in deltaIds),
+                tensors = tuple(interner.tensors[i - 1] for i in tensorIds),
+            )
+        )
+
+    return tuple(out)
+
+def mergeIntShard(
+    targetInterner: FactorInterner,
+    targetAcc: IntAcc,
+    shardDeltas: tuple[Delta, ...],
+    shardTensors: tuple[Tensor, ...],
+    shardAcc: IntAcc,
+) -> None:
+    """
+    Merge one worker-local integer accumulator into a parent accumulator.
+
+    Notation:
+        a_{\iota(A)} \leftarrow a_{\iota(A)} + b_{\iota_w(A)}
+
+    Examples:
+        Parallel spin-string chunks are merged deterministically by spin index.
+    """
+    deltaMap = tuple(targetInterner.deltaId(deltaIn) for deltaIn in shardDeltas)
+    tensorMap = tuple(targetInterner.tensorId(tensorIn) for tensorIn in shardTensors)
+
+    for (deltaIds, tensorIds), coeff in shardAcc.items():
+        key = (
+            tuple(deltaMap[i - 1] for i in deltaIds),
+            tuple(tensorMap[i - 1] for i in tensorIds),
+        )
+        old = targetAcc.get(key)
+
+        if old is None:
+            targetAcc[key] = coeff
+            continue
+
+        value = addCoeffValuesFast(
+            old,
+            coeff,
+        )
+        if value == 0:
+            del targetAcc[key]
+        else:
+            targetAcc[key] = value
+
+def wickSpinPool(jobs: int):
+    """
+    Return the lazy process pool used for spin-string parallelism.
+
+    Notation:
+        \mathcal{P}_{n} = \mathrm{ProcessPool}(n)
+
+    Examples:
+        WICK_SPIN_JOBS=16 creates one persistent pool for Wick.eval calls.
+    """
+    global WICK_SPIN_POOL
+    global WICK_SPIN_POOL_JOBS
+
+    if WICK_SPIN_POOL is None or WICK_SPIN_POOL_JOBS != jobs:
+        if WICK_SPIN_POOL is not None:
+            WICK_SPIN_POOL.shutdown()
+
+        WICK_SPIN_POOL = ProcessPoolExecutor(max_workers = jobs)
+        WICK_SPIN_POOL_JOBS = jobs
+
+    return WICK_SPIN_POOL
+
+def _wickSpinChunkWorker(args):
+    """
+    Evaluate a chunk of spin strings in a worker process.
+
+    Notation:
+        S = \sum_{s \in C} W_s
+
+    Examples:
+        Wick.eval submits one or more spin strings and receives one compact
+        integer accumulator shard.
+    """
+    (
+        chunkStart,
+        spinChunk,
+        connected,
+        maxActiveCumulantRank,
+    ) = args
+    setProfiling(False)
+    os.environ["WICK_PARTITION_JOBS"] = "1"
+
+    wick = Wick(Ref(maxActiveCumulantRank = maxActiveCumulantRank))
+    symbolicAcc: dict[tuple, Fraction] = {}
+    maxTerms = 0
+    start = perf_counter()
+
+    for offset, ops in enumerate(spinChunk):
+        expr = wick.evalSpinString(
+            ops,
+            connected = connected,
+            spinStringIndex = chunkStart + offset,
+            spinStringTotal = None,
+        )
+        maxTerms = max(maxTerms, len(expr))
+        accumulateTerms(
+            symbolicAcc,
+            expr,
+        )
+
+    expr = accumulatedExpr(
+        symbolicAcc,
+        sort = False,
+    )
+    interner = FactorInterner()
+    shardAcc = encodeExprToIntAcc(
+        interner,
+        expr,
+    )
+
+    return {
+        "start": chunkStart,
+        "count": len(spinChunk),
+        "deltas": tuple(interner.deltas),
+        "tensors": tuple(interner.tensors),
+        "acc": shardAcc,
+        "terms": len(expr),
+        "max_terms": maxTerms,
+        "rss": currentRssKiB(),
+        "elapsed": perf_counter() - start,
+    }
+
+def _wickPartitionBranchWorker(args):
+    """
+    Evaluate one top-level Wick partition branch in a worker process.
+
+    Notation:
+        P = B_0 \cup P_{\mathrm{rest}}
+
+    Examples:
+        A pathological spin string can distribute first-block branches over
+        worker processes without enumerating and skipping earlier partitions.
+    """
+    (
+        ops,
+        connected,
+        maxActiveCumulantRank,
+        firstBlocks,
+    ) = args
+    setProfiling(False)
+    wick = Wick(Ref(maxActiveCumulantRank = maxActiveCumulantRank))
+    start = perf_counter()
+    symbolicAcc: dict[tuple, Fraction] = {}
+    for firstBlock in firstBlocks:
+        accumulateTerms(
+            symbolicAcc,
+            wick.evalSpinStringPartitionBranch(
+                ops,
+                connected,
+                firstBlock,
+            ),
+        )
+    expr = accumulatedExpr(
+        symbolicAcc,
+        sort = False,
+    )
+    interner = FactorInterner()
+    shardAcc = encodeExprToIntAcc(
+        interner,
+        expr,
+    )
+    return {
+        "branch": firstBlocks[0],
+        "count": len(firstBlocks),
+        "deltas": tuple(interner.deltas),
+        "tensors": tuple(interner.tensors),
+        "acc": shardAcc,
+        "terms": len(expr),
+        "rss": currentRssKiB(),
+        "elapsed": perf_counter() - start,
+    }
 
 def zero() -> Expr:
     """
@@ -1953,7 +2306,28 @@ class Wick:
 
     def eval(self, product: Product, connected: bool = False,) -> Expr:
         """
-        Evaluate a product of normal ordered groups.
+        Evaluate a product of normal ordered groups and return symbolic terms.
+
+        Notation:
+            W(P) = \sum_A c_A A
+
+        Examples:
+            Wick(ref).eval(product, connected=True) returns the public symbolic
+            expression used by non-hot callers.
+        """
+        interner, acc = self.evalInt(
+            product,
+            connected = connected,
+        )
+        return decodeIntAcc(
+            interner,
+            acc,
+            sort = False,
+        )
+
+    def evalInt(self, product: Product, connected: bool = False,) -> tuple[FactorInterner, IntAcc]:
+        """
+        Evaluate a product of normal ordered groups into an integer accumulator.
 
         Notation:
             \langle \Phi | \{A\}\{B\}\{C\} \cdots | \Phi \rangle.
@@ -1971,30 +2345,118 @@ class Wick:
         applies Ref.kappa to each block, and sums the result.
         """
 
-        # Accumulate spin-string terms and combine once.
-        acc = {}
-        
         # Expand spin-free groups into spin-orbital strings.
         with timed("Wick.expand"):
             spinStrings = self.expand(product)
 
         spinStringTotal = len(spinStrings)
-        for spinStringIndex, ops in enumerate(spinStrings, 1):
-            accumulateTerms(
-                acc,
-                self.evalSpinString(
-                    ops,
-                    connected = connected,
-                    spinStringIndex = spinStringIndex,
-                    spinStringTotal = spinStringTotal,
-                ),
-            )
-        
-        # Simplify terms. Final emission canonicalises separately.
-        return accumulatedExpr(
-            acc,
-            sort = False,
+        spinStart, spinStop, spinPartial = wickEnvRange(
+            "WICK_SPIN_START",
+            "WICK_SPIN_STOP",
+            spinStringTotal,
         )
+        selectedSpinStrings = tuple(enumerate(spinStrings[spinStart:spinStop], spinStart + 1))
+
+        jobs = wickEnvPositiveInt("WICK_SPIN_JOBS", 1)
+        minSpinStrings = wickEnvPositiveInt("WICK_SPIN_PARALLEL_MIN_SPINSTRINGS", 32)
+        minOps = wickEnvPositiveInt("WICK_SPIN_PARALLEL_MIN_OPS", 14)
+        chunkSize = wickEnvPositiveInt("WICK_SPIN_CHUNK_SIZE", 1)
+        useParallel = (
+            jobs > 1
+            and (spinPartial or len(selectedSpinStrings) >= minSpinStrings)
+            and bool(selectedSpinStrings)
+            and len(selectedSpinStrings[0][1]) >= minOps
+        )
+
+        if useParallel:
+            parentInterner = FactorInterner()
+            intAcc: IntAcc = {}
+            pool = wickSpinPool(jobs)
+            chunks = []
+
+            for first in range(0, len(selectedSpinStrings), chunkSize):
+                chunkItems = selectedSpinStrings[first:first + chunkSize]
+                chunks.append((
+                    chunkItems[0][0],
+                    tuple(ops for _index, ops in chunkItems),
+                ))
+
+            futures = [
+                pool.submit(
+                    _wickSpinChunkWorker,
+                    (
+                        chunkStart,
+                        spinChunk,
+                        connected,
+                        self.ref.maxActiveCumulantRank,
+                    ),
+                )
+                for chunkStart, spinChunk in chunks
+            ]
+            summaries = []
+            doneChunks = 0
+            doneSpinStrings = 0
+            progressClassName = self.progressClassName
+            progressWorkItem = self.progressWorkItem
+
+            for future in as_completed(futures):
+                summary = future.result()
+                summaries.append(summary)
+                doneChunks += 1
+                doneSpinStrings += summary["count"]
+
+                if progressClassName is not None and progressWorkItem is not None:
+                    print(
+                        (
+                            f"Wick parallel {progressClassName}: Work item: {progressWorkItem}; "
+                            f"Spin chunks done: {doneChunks}/{len(chunks)}; "
+                            f"Spin strings done: {doneSpinStrings}/{len(selectedSpinStrings)}; "
+                            f"RSS: {currentRssKiB()} KiB"
+                        ),
+                        flush = True,
+                    )
+
+            for summary in sorted(summaries, key = lambda item: item["start"]):
+                mergeIntShard(
+                    parentInterner,
+                    intAcc,
+                    summary["deltas"],
+                    summary["tensors"],
+                    summary["acc"],
+                )
+
+            if spinPartial:
+                raise RuntimeError(
+                    (
+                        "partial Wick spin-string generation requested: "
+                        f"WICK_SPIN_START={spinStart + 1}, WICK_SPIN_STOP={spinStop + 1}"
+                    )
+                )
+
+            return parentInterner, intAcc
+
+        # Accumulate spin-string terms and combine once.
+        parentInterner = FactorInterner()
+        intAcc: IntAcc = {}
+        for spinStringIndex, ops in selectedSpinStrings:
+            self.evalSpinString(
+                ops,
+                connected = connected,
+                spinStringIndex = spinStringIndex,
+                spinStringTotal = spinStringTotal,
+                targetInterner = parentInterner,
+                targetAcc = intAcc,
+            )
+
+        if spinPartial:
+            raise RuntimeError(
+                (
+                    "partial Wick spin-string generation requested: "
+                    f"WICK_SPIN_START={spinStart + 1}, WICK_SPIN_STOP={spinStop + 1}"
+                )
+            )
+
+        return parentInterner, intAcc
 
     def expand(self, product: Product) -> tuple[tuple[Op, ...], ...]:
         """
@@ -2659,12 +3121,206 @@ class Wick:
                 0,
             )
 
+    def nonzeroPartitionBranches(
+        self,
+        ops: tuple[Op, ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        """
+        Yield top-level nonzero Wick partition branches.
+
+        Notation:
+            P = B_0 \cup P_{\mathrm{rest}}
+
+        Examples:
+            A pathological spin string distributes first-block branches over
+            workers instead of making one worker enumerate all partitions.
+        """
+        if not ops:
+            return ()
+
+        out = []
+        for block in self.candidateBlocksByShape(ops):
+            if 0 not in block:
+                continue
+
+            blockOps = tuple(ops[i] for i in block)
+            if self.kappaCached(blockOps):
+                out.append(block)
+
+        return tuple(out)
+
+    def evalSpinStringPartitionBranch(
+        self,
+        ops: tuple[Op, ...],
+        connected: bool,
+        firstBlock: tuple[int, ...],
+    ) -> Expr:
+        """
+        Evaluate one top-level Wick partition branch.
+
+        Notation:
+            \sum_{P: B_0 \in P} \sign(P) \prod_{B \in P} \kappa(B)
+
+        Examples:
+            WICK_PARTITION_JOBS uses this for one branch of a large spin string.
+        """
+        groups = tuple(sorted({op.group for op in ops}))
+        opGroups = tuple(op.group for op in ops)
+        positionBits = tuple(1 << position for position in range(len(ops)))
+        groupPairBits = {
+            (left, right): 1 << bit
+            for bit, (left, right) in enumerate(combinations(groups, 2))
+        }
+
+        def blockEdgeMask(block: tuple[int, ...]) -> int:
+            blockGroups = tuple(sorted({opGroups[i] for i in block}))
+            if len(blockGroups) <= 1:
+                return 0
+
+            out = 0
+            for left, right in combinations(blockGroups, 2):
+                out |= groupPairBits[(left, right)]
+            return out
+
+        def blockPositionMask(block: tuple[int, ...]) -> int:
+            out = 0
+            for position in block:
+                out |= positionBits[position]
+            return out
+
+        blockValues: dict[tuple[int, ...], Expr] = {}
+        blocks = []
+
+        for block in self.candidateBlocksByShape(ops):
+            blockOps = tuple(ops[i] for i in block)
+            value = self.kappaCached(blockOps)
+            if not value:
+                continue
+
+            blockValues[block] = value
+            blocks.append((
+                block,
+                blockPositionMask(block),
+                blockEdgeMask(block),
+            ))
+
+        byPosition: dict[int, list[tuple[tuple[int, ...], int, int]]] = {}
+        blockMeta = {}
+
+        for block, blockMask, edgeMask in blocks:
+            blockMeta[block] = (
+                blockMask,
+                edgeMask,
+            )
+            for position in block:
+                byPosition.setdefault(position, []).append((
+                    block,
+                    blockMask,
+                    edgeMask,
+                ))
+
+        firstMeta = blockMeta.get(firstBlock)
+        firstValue = blockValues.get(firstBlock)
+        if firstMeta is None or not firstValue:
+            return ()
+
+        firstMask, firstEdgeMask = firstMeta
+        fullMask = (1 << len(ops)) - 1
+        restAfterFirst = fullMask & ~firstMask
+        crossParity = 0
+        for position in firstBlock:
+            crossParity ^= (
+                restAfterFirst
+                & ((1 << position) - 1)
+            ).bit_count() & 1
+        firstSign = -1 if crossParity else 1
+
+        def cover(
+            remainingMask: int,
+            edgeMask: int,
+        ):
+            if remainingMask == 0:
+                if connected and not self.edgeMaskConnected(
+                    groups,
+                    edgeMask,
+                ):
+                    return
+
+                yield (
+                    1,
+                    (),
+                )
+                return
+
+            first = (remainingMask & -remainingMask).bit_length() - 1
+
+            for block, blockMask, blockEdgeMask in byPosition.get(first, ()):
+                if blockMask & remainingMask != blockMask:
+                    continue
+
+                restMask = remainingMask & ~blockMask
+                suffixes = cover(
+                    restMask,
+                    edgeMask | blockEdgeMask,
+                )
+
+                crossParity = 0
+                for position in block:
+                    crossParity ^= (
+                        restMask
+                        & ((1 << position) - 1)
+                    ).bit_count() & 1
+
+                prefixSign = -1 if crossParity else 1
+
+                for suffixSign, suffix in suffixes:
+                    yield (
+                        prefixSign * suffixSign,
+                        (block,) + suffix,
+                    )
+
+        acc = {}
+        nextAccCompact = SPINSTRING_ACC_COMPACT_LIMIT
+        for suffixSign, suffix in cover(
+            restAfterFirst,
+            firstEdgeMask,
+        ):
+            factors = [firstValue]
+            ok = True
+
+            for block in suffix:
+                value = blockValues.get(block)
+                if not value:
+                    ok = False
+                    break
+                factors.append(value)
+
+            if not ok:
+                continue
+
+            accumulateProductTerms(
+                acc,
+                tuple(factors),
+                firstSign * suffixSign,
+            )
+
+            if nextAccCompact > 0 and len(acc) >= nextAccCompact:
+                compactAccumulator(acc)
+                nextAccCompact = len(acc) + SPINSTRING_ACC_COMPACT_LIMIT
+
+        return drainedAccumulatedExpr(
+            acc,
+            sort = False,
+        )
+
     def evalSpinString(
         self,
         ops: tuple[Op, ...],
         connected: bool = False,
         spinStringIndex: int | None = None,
         spinStringTotal: int | None = None,
+        targetInterner: FactorInterner | None = None,
+        targetAcc: IntAcc | None = None,
     ) -> Expr:
         """
         Evaluate one spin-orbital string by generalised Wick's theorem.
@@ -2765,6 +3421,94 @@ class Wick:
                 )
                 return ()
 
+            partitionJobs = wickEnvPositiveInt("WICK_PARTITION_JOBS", 1)
+            partitionMinPartitions = wickEnvPositiveInt(
+                "WICK_PARTITION_PARALLEL_MIN_PARTITIONS",
+                100_000,
+            )
+            if (
+                partitionJobs > 1
+            ):
+                branches = self.nonzeroPartitionBranches(ops)
+
+                if branches and len(branches) <= partitionMinPartitions:
+                    pool = wickSpinPool(partitionJobs)
+                    branchChunkSize = wickEnvPositiveInt(
+                        "WICK_PARTITION_BRANCH_CHUNK_SIZE",
+                        1,
+                    )
+                    branchChunks = tuple(
+                        branches[first:first + branchChunkSize]
+                        for first in range(0, len(branches), branchChunkSize)
+                    )
+                    futures = [
+                        pool.submit(
+                            _wickPartitionBranchWorker,
+                            (
+                                ops,
+                                connected,
+                                self.ref.maxActiveCumulantRank,
+                                branchChunk,
+                            ),
+                        )
+                        for branchChunk in branchChunks
+                    ]
+                    interner = FactorInterner()
+                    intAcc: IntAcc = {}
+                    doneBranches = 0
+
+                    for future in as_completed(futures):
+                        summary = future.result()
+                        mergeIntShard(
+                            interner,
+                            intAcc,
+                            summary["deltas"],
+                            summary["tensors"],
+                            summary["acc"],
+                        )
+                        doneBranches += 1
+
+                        printProgress(
+                            "partition_branches",
+                            partitionIndex = doneBranches,
+                            partitionTotal = len(branchChunks),
+                            terms = summary["terms"],
+                        )
+
+                    if targetInterner is not None and targetAcc is not None:
+                        mergeIntShard(
+                            targetInterner,
+                            targetAcc,
+                            tuple(interner.deltas),
+                            tuple(interner.tensors),
+                            intAcc,
+                        )
+                        printProgress(
+                            "spin_string_done",
+                            partitionIndex = len(branchChunks),
+                            partitionTotal = len(branchChunks),
+                            terms = len(intAcc),
+                        )
+                        return ()
+                    result = decodeIntAcc(
+                        interner,
+                        intAcc,
+                        sort = False,
+                    )
+                    maybeCacheSpinString(
+                        self.spinStringCache,
+                        key,
+                        result,
+                        SPINSTRING_CACHE_TERM_LIMIT,
+                    )
+                    printProgress(
+                        "spin_string_done",
+                        partitionIndex = len(branchChunks),
+                        partitionTotal = len(branchChunks),
+                        terms = len(result),
+                    )
+                    return result
+
             acc = {}
             blockValues = {}
             nextAccCompact = SPINSTRING_ACC_COMPACT_LIMIT
@@ -2827,6 +3571,32 @@ class Wick:
                 acc,
                 sort = False,
             )
+            if targetInterner is not None and targetAcc is not None:
+                shardInterner = FactorInterner()
+                shardAcc = encodeExprToIntAcc(
+                    shardInterner,
+                    result,
+                )
+                mergeIntShard(
+                    targetInterner,
+                    targetAcc,
+                    tuple(shardInterner.deltas),
+                    tuple(shardInterner.tensors),
+                    shardAcc,
+                )
+                maybeCacheSpinString(
+                    self.spinStringCache,
+                    key,
+                    result,
+                    SPINSTRING_CACHE_TERM_LIMIT,
+                )
+                printProgress(
+                    "spin_string_done",
+                    partitionIndex = partitionIndex if "partitionIndex" in locals() else 0,
+                    partitionTotal = partitionTotal,
+                    terms = len(result),
+                )
+                return ()
             maybeCacheSpinString(
                 self.spinStringCache,
                 key,

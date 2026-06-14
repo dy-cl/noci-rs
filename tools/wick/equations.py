@@ -8,13 +8,17 @@ from time import perf_counter
 from canonical import canonicaliseForOutput
 from core import (
     Expr,
+    FactorInterner,
     Group,
     Idx,
+    IntAcc,
     Product,
     Ref,
     Space,
     Wick,
     add,
+    accumulateCoeff,
+    accumulatedExpr,
     combine,
     daggerTau1,
     daggerTau2,
@@ -1306,6 +1310,46 @@ def _r2MaxWorkItems() -> int | None:
     out = int(value)
     return out if out > 0 else None
 
+def _envInt(name: str, default: int) -> int:
+    """
+    Read one integer environment option.
+
+    Notation:
+        x = \mathrm{env}(name)
+
+    Examples:
+        _envInt("WICK_R2_WORK_START", 1) reads the first selected work item.
+    """
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+    return int(value)
+
+def _r2WorkRange(total: int) -> tuple[int, int, bool]:
+    """
+    Return the selected R2 work-item range as 0-based bounds.
+
+    Notation:
+        [s, t) \subseteq \{1,\ldots,N\}
+
+    Examples:
+        WICK_R2_WORK_START=440 and WICK_R2_WORK_STOP=441 selects only
+        progress work item 440.
+    """
+    startValue = os.environ.get("WICK_R2_WORK_START")
+    stopValue = os.environ.get("WICK_R2_WORK_STOP")
+    partial = startValue not in (None, "") or stopValue not in (None, "")
+
+    start = max(1, _envInt("WICK_R2_WORK_START", 1))
+    stop = _envInt("WICK_R2_WORK_STOP", total + 1)
+    stop = min(total + 1, max(start, stop))
+
+    return (
+        start - 1,
+        stop - 1,
+        partial,
+    )
+
 def currentRssKiB() -> int:
     """
     Return the current resident set size in KiB.
@@ -1324,6 +1368,69 @@ def currentRssKiB() -> int:
     except OSError:
         pass
     return 0
+
+def accumulateScaledIntWickProduct(
+    acc: dict[tuple, Fraction],
+    coeffs: tuple[Expr, ...],
+    wickInterner: FactorInterner,
+    wickAcc: IntAcc,
+    scaleCoeff: Fraction,
+) -> int:
+    """
+    Accumulate coefficient tensors times an integer-coded Wick value.
+
+    Notation:
+        a_A \leftarrow a_A
+            + \sum_w s \left(\prod_i C_i\right) w_A
+
+        where \(w_A\) is stored in the Wick integer accumulator.
+
+    Examples:
+        r2Expr uses this to avoid decoding a huge Wick value into Term objects
+        before multiplying by h and T amplitudes.
+    """
+    partials = ((scaleCoeff, (), ()),)
+
+    for expr in coeffs:
+        nextPartials = []
+        for leftCoeff, leftDeltas, leftTensors in partials:
+            for term in expr:
+                coeff = leftCoeff * term.coeff
+                if coeff == 0:
+                    continue
+                nextPartials.append((
+                    coeff,
+                    tuple(sorted(leftDeltas + term.deltas)),
+                    tuple(sorted(leftTensors + term.tensors)),
+                ))
+        partials = tuple(nextPartials)
+        if not partials:
+            return 0
+
+    rawTerms = 0
+    for (deltaIds, tensorIds), wickCoeff in wickAcc.items():
+        if wickCoeff == 0:
+            continue
+
+        wickDeltas = tuple(wickInterner.deltas[i - 1] for i in deltaIds)
+        wickTensors = tuple(wickInterner.tensors[i - 1] for i in tensorIds)
+
+        for leftCoeff, leftDeltas, leftTensors in partials:
+            coeff = leftCoeff * wickCoeff
+            if coeff == 0:
+                continue
+
+            rawTerms += 1
+            accumulateCoeff(
+                acc,
+                (
+                    tuple(sorted(leftDeltas + wickDeltas)),
+                    tuple(sorted(leftTensors + wickTensors)),
+                ),
+                coeff,
+            )
+
+    return rawTerms
 
 def r2Expr(name: str) -> Expr:
     """
@@ -1348,7 +1455,7 @@ def r2Expr(name: str) -> Expr:
         daggered = True,
     )
     hCache: dict[tuple[tuple[Space, int], ...], tuple[tuple[Expr, Group], ...]] = {}
-    wickProductCache: dict[tuple, Expr] = {}
+    wickProductCache: dict[tuple, tuple[FactorInterner, IntAcc]] = {}
     leftTerms = tTermsWithBalance(
         2,
         tag = "_l",
@@ -1357,7 +1464,8 @@ def r2Expr(name: str) -> Expr:
         2,
         tag = "_r",
     )
-    terms = []
+    termsAcc: dict[tuple, Fraction] = {}
+    rawTermCount = 0
     workItemsProcessed = 0
     candidateCount = 0
     skippedByBalance = 0
@@ -1424,6 +1532,15 @@ def r2Expr(name: str) -> Expr:
                     )
 
     totalWorkItems = len(workItems)
+    rangeStart, rangeStop, rangePartial = _r2WorkRange(totalWorkItems)
+    if maxWorkItems is not None:
+        rangeStop = min(
+            rangeStop,
+            rangeStart + maxWorkItems,
+        )
+    activeWorkItems = workItems[rangeStart:rangeStop]
+    if rangePartial or maxWorkItems is not None:
+        stoppedEarly = True
 
     for itemIndex, (
         hCoeffExpr,
@@ -1433,11 +1550,7 @@ def r2Expr(name: str) -> Expr:
         rightCoeff,
         rightGroup,
         pairFactor,
-    ) in enumerate(workItems, 1):
-        if maxWorkItems is not None and workItemsProcessed >= maxWorkItems:
-            stoppedEarly = True
-            break
-
+    ) in enumerate(activeWorkItems, rangeStart + 1):
         percent = 100.0 * itemIndex / totalWorkItems if totalWorkItems else 100.0
         print(
             (
@@ -1462,7 +1575,7 @@ def r2Expr(name: str) -> Expr:
                 wick.progressClassName = name
                 wick.progressWorkItem = itemIndex
                 try:
-                    value = wick.eval(
+                    value = wick.evalInt(
                         Product((
                             bra,
                             hGroup,
@@ -1479,7 +1592,10 @@ def r2Expr(name: str) -> Expr:
         workItemsProcessed += 1
         elapsed = perf_counter() - workStart
 
-        if value:
+        wickInterner, wickAcc = value
+        termCount = len(wickAcc)
+
+        if wickAcc:
             nonzeroCount += 1
         else:
             zeroCount += 1
@@ -1488,28 +1604,28 @@ def r2Expr(name: str) -> Expr:
             (
                 f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
                 f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
-                f"Zero expressions: {zeroCount}; Terms: {len(value)}; "
+                f"Zero expressions: {zeroCount}; Terms: {termCount}; "
                 f"Phase: wick_eval_done; Elapsed: {elapsed:.3f}s; RSS: {currentRssKiB()} KiB"
             ),
             flush = True,
         )
 
-        if not value:
+        if not wickAcc:
             continue
 
-        terms.extend(
-            scale(
-                prod((
-                    rightCoeff,
-                    leftCoeff,
-                    hCoeffExpr,
-                    value,
-                )),
-                Fraction(1, 2) * pairFactor,
-            )
+        rawTermCount += accumulateScaledIntWickProduct(
+            termsAcc,
+            (
+                rightCoeff,
+                leftCoeff,
+                hCoeffExpr,
+            ),
+            wickInterner,
+            wickAcc,
+            Fraction(1, 2) * pairFactor,
         )
 
-    beforeTerms = len(terms)
+    beforeTerms = rawTermCount
 
     print(
         f"R2 progress {name}: Phase: combine_start; Expressions: {beforeTerms}; RSS: {currentRssKiB()} KiB",
@@ -1517,7 +1633,7 @@ def r2Expr(name: str) -> Expr:
     )
     combineStart = perf_counter()
     with timed("R2.combine"):
-        combined = combine(tuple(terms))
+        combined = accumulatedExpr(termsAcc)
     print(
         (
             f"R2 progress {name}: Phase: combine_done; Terms: {len(combined)}; "
@@ -1546,7 +1662,10 @@ def r2Expr(name: str) -> Expr:
         timings, counts = profileSnapshot()
         suffix = ""
         if stoppedEarly:
-            suffix = f"; Partial: True; Stop reason: WICK_R2_MAX_WORK_ITEMS={maxWorkItems}"
+            suffix = (
+                f"; Partial: True; Work start: {rangeStart + 1}; "
+                f"Work stop: {rangeStop + 1}; Max work items: {maxWorkItems}"
+            )
         print(
             (
                 f"R2 profile for {name}: Total time: {perf_counter() - classStart:.6f} s; "
@@ -1570,7 +1689,14 @@ def r2Expr(name: str) -> Expr:
             )
 
     if stoppedEarly:
-        raise RuntimeError(f"partial R2 generation requested: WICK_R2_MAX_WORK_ITEMS={maxWorkItems}")
+        raise RuntimeError(
+            (
+                "partial R2 generation requested: "
+                f"WICK_R2_WORK_START={rangeStart + 1}, "
+                f"WICK_R2_WORK_STOP={rangeStop + 1}, "
+                f"WICK_R2_MAX_WORK_ITEMS={maxWorkItems}"
+            )
+        )
 
     return out
 
