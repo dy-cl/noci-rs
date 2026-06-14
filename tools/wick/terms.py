@@ -6,7 +6,6 @@ from fractions import Fraction
 import os
 from typing import Any
 import sys
-import signal
 from time import perf_counter
 
 from core import Idx, Space, Term
@@ -648,13 +647,24 @@ def writeResidualTermsJson(
         writeResidualTermsJson("all", 2, sys.stdout) writes r2terms.json.
     """
     if name != "all" or pretty:
-        out.write(
-            residualTermsJson(
-                name,
-                order,
-                pretty = pretty,
-            )
+        data = residualTermsJson(
+            name,
+            order,
+            pretty = pretty,
         )
+        if order == 2:
+            print(
+                f"R2 progress {name}: Phase: json_write_start",
+                flush = True,
+            )
+        out.write(
+            data
+        )
+        if order == 2:
+            print(
+                f"R2 progress {name}: Phase: json_write_done",
+                flush = True,
+            )
         return
 
     out.write("{")
@@ -693,14 +703,25 @@ def writeResidualTermsJson(
         )
         out.write(":")
 
+        data = residualClassTerms(
+            className,
+            order,
+        )
+        if order == 2:
+            print(
+                f"R2 progress {className}: Phase: json_write_start",
+                flush = True,
+            )
         json.dump(
-            residualClassTerms(
-                className,
-                order,
-            ),
+            data,
             out,
             separators = (",", ":"),
         )
+        if order == 2:
+            print(
+                f"R2 progress {className}: Phase: json_write_done",
+                flush = True,
+            )
 
         out.flush()
 
@@ -818,40 +839,49 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--jobs",
-        type = int,
-        default = None,
-    )
-
-    parser.add_argument(
-        "--executor",
-        choices = ("serial", "thread", "process"),
+        "--output",
         default = None,
     )
 
     args = parser.parse_args()
 
+    if args.kind == "residual" and args.order == 2 and args.output is None:
+        raise SystemExit("R2 progress prints to stdout; use --output FILE for JSON output")
+
     global PROFILE
     PROFILE = PROFILE or args.profile
     configureWick(
-        jobs = args.jobs,
-        executor = args.executor,
         profile = PROFILE,
     )
 
-    if args.kind == "overlap":
-        writeOverlapTermsJson(
-            args.block,
-            sys.stdout,
-            pretty = args.pretty,
-        )
+    if args.output is None:
+        out = sys.stdout
+        closeOut = False
     else:
-        writeResidualTermsJson(
-            args.name,
-            args.order,
-            sys.stdout,
-            pretty = args.pretty,
+        out = open(
+            args.output,
+            "w",
+            encoding = "utf-8",
         )
+        closeOut = True
+
+    try:
+        if args.kind == "overlap":
+            writeOverlapTermsJson(
+                args.block,
+                out,
+                pretty = args.pretty,
+            )
+        else:
+            writeResidualTermsJson(
+                args.name,
+                args.order,
+                out,
+                pretty = args.pretty,
+            )
+    finally:
+        if closeOut:
+            out.close()
 
 if __name__ == "__main__":
     main()

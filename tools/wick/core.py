@@ -26,6 +26,27 @@ from spinsum import permutationSign, spinGram, solveConsistent
 
 ZERO_FRACTION = Fraction(0)
 
+# Large spin-string results caused OOM by staying in Wick.spinStringCache.
+# Keep caching useful small results, but never retain pathological expressions.
+SPINSTRING_CACHE_TERM_LIMIT = 100_000
+
+# Periodically rebuild huge coefficient tables to shed hash-table slack. The
+# value is high enough to avoid slowing ordinary classes, low enough to bound
+# pathological A/A residual work items.
+SPINSTRING_ACC_COMPACT_LIMIT = 200_000
+
+# Stream only expressions above current Wick products. Existing 16-operator R2
+# strings rely on cached partition suffixes for speed; streaming is reserved
+# for future larger strings.
+SPINSTRING_STREAM_OP_LIMIT = 18
+SPINSTRING_STREAM_SUFFIX_CACHE_OP_LIMIT = 12
+
+# Wick partition products are usually small. Use the old fast partial-product
+# list until it would become too large, then stream the rest into the
+# accumulator. This bounds peak memory without making ordinary products slow.
+PRODUCT_PARTIAL_TERM_LIMIT = 10_000_000
+WICK_PROGRESS_PARTITION_INTERVAL = 50_000
+
 PROFILE_ENABLED = False
 PROFILE_TIMES: dict[str, float] = {}
 PROFILE_COUNTS: dict[str, int] = {}
@@ -164,6 +185,25 @@ def timed(name: str):
     finally:
         PROFILE_TIMES[name] = PROFILE_TIMES.get(name, 0.0) + perf_counter() - start
         PROFILE_COUNTS[name] = PROFILE_COUNTS.get(name, 0) + 1
+
+def currentRssKiB() -> int:
+    """
+    Return the current resident set size in KiB.
+
+    Notation:
+        RSS is the resident memory currently held by the process.
+
+    Examples:
+        Wick progress prints currentRssKiB() during long spin-string partition loops.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
 
 class Space(Enum):
     """
@@ -759,16 +799,40 @@ def accumulateProductTerms(
         )
         return
 
-    partial = [(
-        c,
-        (),
-        (),
-    )]
+    def accumulatePartial(partial: list[tuple[Fraction, tuple[Delta, ...], tuple[Tensor, ...]]]) -> None:
+        """
+        Accumulate already-expanded product terms.
 
-    for expr in factors:
-        if not expr:
-            return
+        Notation:
+            acc += partial
 
+        Examples:
+            The bounded product expander emits one chunk of completed products.
+        """
+        for coeffOut, deltas, tensors in partial:
+            key = (
+                sortedFactors(deltas),
+                sortedFactors(tensors),
+            )
+            accumulateCoeff(
+                acc,
+                key,
+                coeffOut,
+            )
+
+    def expandOne(
+        partial: list[tuple[Fraction, tuple[Delta, ...], tuple[Tensor, ...]]],
+        expr: Expr,
+    ) -> list[tuple[Fraction, tuple[Delta, ...], tuple[Tensor, ...]]]:
+        """
+        Expand one factor over a bounded partial product list.
+
+        Notation:
+            P' = P * E
+
+        Examples:
+            Product chunks stay below PRODUCT_PARTIAL_TERM_LIMIT terms.
+        """
         nextPartial = []
 
         for leftCoeff, leftDeltas, leftTensors in partial:
@@ -794,21 +858,97 @@ def accumulateProductTerms(
                     leftTensors + term.tensors,
                 ))
 
-        partial = nextPartial
+        return nextPartial
 
+    def process(
+        index: int,
+        partial: list[tuple[Fraction, tuple[Delta, ...], tuple[Tensor, ...]]],
+    ) -> None:
+        """
+        Expand remaining factors in bounded chunks.
+
+        Notation:
+            acc += P * \prod_{k=index} E_k
+
+        Examples:
+            A huge active-cumulant product is split into product chunks rather
+            than one giant intermediate list or one term-at-a-time recursion.
+        """
         if not partial:
             return
 
-    for coeffOut, deltas, tensors in partial:
-        key = (
-            sortedFactors(deltas),
-            sortedFactors(tensors),
+        if index == len(factors):
+            accumulatePartial(partial)
+            return
+
+        expr = factors[index]
+        if not expr:
+            return
+
+        maxPartial = max(
+            1,
+            PRODUCT_PARTIAL_TERM_LIMIT // len(expr),
         )
-        accumulateCoeff(
-            acc,
-            key,
-            coeffOut,
-        )
+
+        for start in range(0, len(partial), maxPartial):
+            nextPartial = expandOne(
+                partial[start:start + maxPartial],
+                expr,
+            )
+            process(
+                index + 1,
+                nextPartial,
+            )
+
+    process(
+        0,
+        [(
+            c,
+            (),
+            (),
+        )],
+    )
+
+def compactAccumulator(acc: dict[tuple, Fraction]) -> None:
+    """
+    Rebuild an accumulator in place to release hash-table slack.
+
+    Notation:
+        acc[A] = c -> compact(acc)[A] = c
+
+    Examples:
+        evalSpinString calls this when SPINSTRING_ACC_COMPACT_LIMIT is reached.
+    """
+    if not acc:
+        return
+
+    compact = drainedAccumulatedExpr(
+        acc,
+        sort = False,
+    )
+    accumulateTerms(
+        acc,
+        compact,
+    )
+
+def maybeCacheSpinString(
+    cache: dict,
+    key,
+    result: Expr,
+    limit: int,
+) -> None:
+    """
+    Cache one spin-string expression only if it is small enough.
+
+    Notation:
+        |E| <= L -> cache[key] = E
+
+    Examples:
+        A small CToV spin string remains cached, but a huge AAToAA spin string
+        is returned without being retained by Wick.spinStringCache.
+    """
+    if limit <= 0 or len(result) <= limit:
+        cache[key] = result
 
 def isOneExpr(expr: Expr) -> bool:
     return (
@@ -847,6 +987,44 @@ def accumulatedExpr(acc: dict[tuple, Fraction], sort: bool = True) -> Expr:
     out = []
 
     for (deltas, tensors), coeff in items:
+        if coeff == 0:
+            continue
+
+        out.append(
+            Term(
+                coeff = coeff,
+                deltas = deltas,
+                tensors = tensors,
+            )
+        )
+
+    return tuple(out)
+
+def drainedAccumulatedExpr(acc: dict[tuple, Fraction], sort: bool = True) -> Expr:
+    """
+    Emit an expression while emptying the accumulator.
+
+    Notation:
+        acc[A] = c -> E = \sum_A c A and acc <- {}
+
+    Examples:
+        evalSpinString uses drainedAccumulatedExpr(acc, sort = False) so a
+        huge coefficient dictionary is not retained while building the final
+        spin-string expression.
+    """
+    if sort:
+        out = accumulatedExpr(
+            acc,
+            sort = True,
+        )
+        acc.clear()
+        return out
+
+    out = []
+
+    while acc:
+        (deltas, tensors), coeff = acc.popitem()
+
         if coeff == 0:
             continue
 
@@ -1666,6 +1844,8 @@ class Wick:
             tuple[tuple[tuple[str, Space, str, int], ...], bool],
             tuple[tuple[int, tuple[tuple[int, ...], ...]], ...],
         ] = {}
+        self.progressClassName: str | None = None
+        self.progressWorkItem: int | None = None
 
     def kappaKey(self, ops: tuple[Op, ...]) -> tuple[tuple[str, Idx, str], ...]:
         """
@@ -1798,8 +1978,17 @@ class Wick:
         with timed("Wick.expand"):
             spinStrings = self.expand(product)
 
-        for ops in spinStrings:
-            accumulateTerms(acc, self.evalSpinString(ops, connected = connected))
+        spinStringTotal = len(spinStrings)
+        for spinStringIndex, ops in enumerate(spinStrings, 1):
+            accumulateTerms(
+                acc,
+                self.evalSpinString(
+                    ops,
+                    connected = connected,
+                    spinStringIndex = spinStringIndex,
+                    spinStringTotal = spinStringTotal,
+                ),
+            )
         
         # Simplify terms. Final emission canonicalises separately.
         return accumulatedExpr(
@@ -2205,7 +2394,278 @@ class Wick:
 
             return self.partitionPatternCache[key]
 
-    def evalSpinString(self, ops: tuple[Op, ...], connected: bool = False,) -> Expr:
+    def iterViablePartitionPatterns(
+        self,
+        ops: tuple[Op, ...],
+        connected: bool = False,
+    ):
+        """
+        Stream viable Wick partition patterns and signs.
+
+        Notation:
+            yield (sign(P), P) without materialising all P.
+
+        Examples:
+            evalSpinString uses this for large R2 spin strings so one work item
+            does not allocate a giant partition tuple before accumulation.
+        """
+        with timed("Wick.iterViablePartitionPatterns"):
+            groups = tuple(sorted({op.group for op in ops}))
+            opGroups = tuple(op.group for op in ops)
+            positionBits = tuple(1 << position for position in range(len(ops)))
+            groupPairBits = {
+                (left, right): 1 << bit
+                for bit, (left, right) in enumerate(combinations(groups, 2))
+            }
+
+            def blockEdgeMask(block: tuple[int, ...]) -> int:
+                blockGroups = tuple(sorted({opGroups[i] for i in block}))
+
+                if len(blockGroups) <= 1:
+                    return 0
+
+                out = 0
+
+                for left, right in combinations(blockGroups, 2):
+                    out |= groupPairBits[(left, right)]
+
+                return out
+
+            def blockPositionMask(block: tuple[int, ...]) -> int:
+                out = 0
+
+                for position in block:
+                    out |= positionBits[position]
+
+                return out
+
+            shapeKey = self.spinStringShapeKey(ops)
+            if shapeKey not in self.shapeBlockCache:
+                self.shapeBlockCache[shapeKey] = self.candidateBlocks(ops)
+
+            blocks = tuple(
+                (
+                    block,
+                    blockPositionMask(block),
+                    blockEdgeMask(block),
+                )
+                for block in self.shapeBlockCache[shapeKey]
+            )
+
+            byPosition: dict[int, list[tuple[tuple[int, ...], int, int]]] = {}
+
+            for block, blockMask, edgeMask in blocks:
+                for position in block:
+                    byPosition.setdefault(position, []).append((
+                        block,
+                        blockMask,
+                        edgeMask,
+                    ))
+
+            fullMask = (1 << len(ops)) - 1
+
+            def iterCover(
+                remainingMask: int,
+                edgeMask: int,
+            ):
+                if remainingMask == 0:
+                    if connected and not self.edgeMaskConnected(
+                        groups,
+                        edgeMask,
+                    ):
+                        return
+
+                    yield (
+                        1,
+                        (),
+                    )
+                    return
+
+                first = (remainingMask & -remainingMask).bit_length() - 1
+
+                for block, blockMask, blockEdgeMask in byPosition.get(first, ()):
+                    if blockMask & remainingMask != blockMask:
+                        continue
+
+                    restMask = remainingMask & ~blockMask
+                    crossParity = 0
+
+                    for position in block:
+                        crossParity ^= (
+                            restMask
+                            & ((1 << position) - 1)
+                        ).bit_count() & 1
+
+                    prefixSign = -1 if crossParity else 1
+                    nextEdgeMask = edgeMask | blockEdgeMask
+
+                    if (
+                        SPINSTRING_STREAM_SUFFIX_CACHE_OP_LIMIT > 0
+                        and restMask.bit_count() <= SPINSTRING_STREAM_SUFFIX_CACHE_OP_LIMIT
+                    ):
+                        suffixes = coverCached(
+                            restMask,
+                            nextEdgeMask,
+                        )
+                    else:
+                        suffixes = iterCover(
+                            restMask,
+                            nextEdgeMask,
+                        )
+
+                    for suffixSign, suffix in suffixes:
+                        yield (
+                            prefixSign * suffixSign,
+                            (block,) + suffix,
+                        )
+
+            @cache
+            def coverCached(
+                remainingMask: int,
+                edgeMask: int,
+            ) -> tuple[tuple[int, tuple[tuple[int, ...], ...]], ...]:
+                return tuple(iterCover(remainingMask, edgeMask))
+
+            yield from iterCover(
+                fullMask,
+                0,
+            )
+
+    def iterNonzeroPartitionPatterns(
+        self,
+        ops: tuple[Op, ...],
+        blockValues: dict[tuple[int, ...], Expr],
+        connected: bool = False,
+    ):
+        """
+        Stream concrete nonzero Wick partition patterns and signs.
+
+        Notation:
+            yield (sign(P), P) with \kappa(B) != 0 for every B in P.
+
+        Examples:
+            Large active-space R2 spin strings use this to avoid materialising
+            partitions containing blocks that vanish for the concrete indices.
+        """
+        with timed("Wick.iterNonzeroPartitionPatterns"):
+            groups = tuple(sorted({op.group for op in ops}))
+            opGroups = tuple(op.group for op in ops)
+            positionBits = tuple(1 << position for position in range(len(ops)))
+            groupPairBits = {
+                (left, right): 1 << bit
+                for bit, (left, right) in enumerate(combinations(groups, 2))
+            }
+
+            def blockEdgeMask(block: tuple[int, ...]) -> int:
+                blockGroups = tuple(sorted({opGroups[i] for i in block}))
+
+                if len(blockGroups) <= 1:
+                    return 0
+
+                out = 0
+
+                for left, right in combinations(blockGroups, 2):
+                    out |= groupPairBits[(left, right)]
+
+                return out
+
+            def blockPositionMask(block: tuple[int, ...]) -> int:
+                out = 0
+
+                for position in block:
+                    out |= positionBits[position]
+
+                return out
+
+            rawBlocks = self.candidateBlocksByShape(ops)
+            blocks = []
+
+            for block in rawBlocks:
+                blockOps = tuple(
+                    ops[i]
+                    for i in block
+                )
+                value = self.kappaCached(blockOps)
+
+                if not value:
+                    continue
+
+                blockValues[block] = value
+                blocks.append((
+                    block,
+                    blockPositionMask(block),
+                    blockEdgeMask(block),
+                ))
+
+            byPosition: dict[int, list[tuple[tuple[int, ...], int, int]]] = {}
+
+            for block, blockMask, edgeMask in blocks:
+                for position in block:
+                    byPosition.setdefault(position, []).append((
+                        block,
+                        blockMask,
+                        edgeMask,
+                    ))
+
+            fullMask = (1 << len(ops)) - 1
+
+            def cover(
+                remainingMask: int,
+                edgeMask: int,
+            ):
+                if remainingMask == 0:
+                    if connected and not self.edgeMaskConnected(
+                        groups,
+                        edgeMask,
+                    ):
+                        return
+
+                    yield (
+                        1,
+                        (),
+                    )
+                    return
+
+                first = (remainingMask & -remainingMask).bit_length() - 1
+
+                for block, blockMask, blockEdgeMask in byPosition.get(first, ()):
+                    if blockMask & remainingMask != blockMask:
+                        continue
+
+                    restMask = remainingMask & ~blockMask
+                    suffixes = cover(
+                        restMask,
+                        edgeMask | blockEdgeMask,
+                    )
+
+                    crossParity = 0
+
+                    for position in block:
+                        crossParity ^= (
+                            restMask
+                            & ((1 << position) - 1)
+                        ).bit_count() & 1
+
+                    prefixSign = -1 if crossParity else 1
+
+                    for suffixSign, suffix in suffixes:
+                        yield (
+                            prefixSign * suffixSign,
+                            (block,) + suffix,
+                        )
+
+            yield from cover(
+                fullMask,
+                0,
+            )
+
+    def evalSpinString(
+        self,
+        ops: tuple[Op, ...],
+        connected: bool = False,
+        spinStringIndex: int | None = None,
+        spinStringTotal: int | None = None,
+    ) -> Expr:
         """
         Evaluate one spin-orbital string by generalised Wick's theorem.
 
@@ -2231,43 +2691,112 @@ class Wick:
         rejected by the same rule.
         """
         with timed("Wick.evalSpinString"):
+            progressClassName = self.progressClassName
+            progressWorkItem = self.progressWorkItem
+            showProgress = progressClassName is not None and progressWorkItem is not None
+
+            def printProgress(
+                phase: str,
+                partitionIndex: int | None = None,
+                partitionTotal: int | None = None,
+                accSize: int | None = None,
+                terms: int | None = None,
+            ) -> None:
+                """
+                Print one nested Wick progress line.
+
+                Notation:
+                    R2 work item -> spin string -> Wick partitions.
+
+                Examples:
+                    evalSpinString prints every WICK_PROGRESS_PARTITION_INTERVAL partitions.
+                """
+                if not showProgress:
+                    return
+
+                spin = "?"
+                if spinStringIndex is not None and spinStringTotal is not None:
+                    spin = f"{spinStringIndex}/{spinStringTotal}"
+
+                parts = [
+                    f"  Wick progress {progressClassName}:",
+                    f"Work item: {progressWorkItem};",
+                    f"Spin string index: {spin};",
+                    f"Phase: {phase};",
+                ]
+                if partitionIndex is not None:
+                    if partitionTotal is None:
+                        parts.append(f"Partition index: {partitionIndex};")
+                    else:
+                        parts.append(f"Partition index: {partitionIndex}/{partitionTotal};")
+                if accSize is not None:
+                    parts.append(f"Accumulator size: {accSize};")
+                if terms is not None:
+                    parts.append(f"Terms: {terms};")
+                parts.append(f"RSS: {currentRssKiB()} KiB")
+                print(
+                    " ".join(parts),
+                    flush = True,
+                )
+
+            printProgress("spin_string_start")
             key = (self.spinStringKey(ops), connected)
             if key in self.spinStringCache:
-                return self.spinStringCache[key]
+                result = self.spinStringCache[key]
+                printProgress(
+                    "spin_string_done",
+                    terms = len(result),
+                )
+                return result
 
             if not self.maybeSpinBalanced(ops):
                 self.spinStringCache[key] = ()
+                printProgress(
+                    "spin_string_done",
+                    terms = 0,
+                )
                 return ()
 
             if connected and not self.maybeConnected(ops):
                 self.spinStringCache[key] = ()
+                printProgress(
+                    "spin_string_done",
+                    terms = 0,
+                )
                 return ()
 
             acc = {}
-
-            patterns = self.viablePartitionPatterns(
-                ops,
-                connected = connected,
-            )
-
             blockValues = {}
-            for _, blocks in patterns:
-                for block in blocks:
-                    if block in blockValues:
-                        continue
+            nextAccCompact = SPINSTRING_ACC_COMPACT_LIMIT
+            if (
+                SPINSTRING_STREAM_OP_LIMIT > 0
+                and len(ops) < SPINSTRING_STREAM_OP_LIMIT
+            ):
+                patterns = self.viablePartitionPatterns(
+                    ops,
+                    connected = connected,
+                )
+            else:
+                patterns = self.iterNonzeroPartitionPatterns(
+                    ops,
+                    blockValues,
+                    connected = connected,
+                )
+            partitionTotal = len(patterns) if hasattr(patterns, "__len__") else None
 
-                    blockOps = tuple(
-                        ops[i]
-                        for i in block
-                    )
-                    blockValues[block] = self.kappaCached(blockOps)
-
-            for sign, blocks in patterns:
+            for partitionIndex, (sign, blocks) in enumerate(patterns, 1):
                 factors = []
                 ok = True
 
                 for block in blocks:
-                    value = blockValues[block]
+                    value = blockValues.get(block)
+                    if value is None:
+                        blockOps = tuple(
+                            ops[i]
+                            for i in block
+                        )
+                        value = self.kappaCached(blockOps)
+                        blockValues[block] = value
 
                     if not value:
                         ok = False
@@ -2283,12 +2812,34 @@ class Wick:
                     tuple(factors),
                     sign,
                 )
+                if nextAccCompact > 0 and len(acc) >= nextAccCompact:
+                    compactAccumulator(acc)
+                    nextAccCompact = len(acc) + SPINSTRING_ACC_COMPACT_LIMIT
+                if partitionIndex % WICK_PROGRESS_PARTITION_INTERVAL == 0:
+                    printProgress(
+                        "partitions",
+                        partitionIndex = partitionIndex,
+                        partitionTotal = partitionTotal,
+                        accSize = len(acc),
+                    )
 
-            self.spinStringCache[key] = accumulatedExpr(
+            result = drainedAccumulatedExpr(
                 acc,
                 sort = False,
             )
-            return self.spinStringCache[key]
+            maybeCacheSpinString(
+                self.spinStringCache,
+                key,
+                result,
+                SPINSTRING_CACHE_TERM_LIMIT,
+            )
+            printProgress(
+                "spin_string_done",
+                partitionIndex = partitionIndex if "partitionIndex" in locals() else 0,
+                partitionTotal = partitionTotal,
+                terms = len(result),
+            )
+            return result
 
     def maybeSpinBalanced(
         self,

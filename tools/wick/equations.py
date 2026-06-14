@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass
 from fractions import Fraction
 import os
 import sys
 from time import perf_counter
-import threading
 
 from canonical import canonicaliseForOutput
 from core import (
@@ -36,19 +33,13 @@ from core import (
 )
 from specs import A, C, EXCITATIONS, ExcitationSpec, V, availableExcitations
 
-WICK_JOBS = int(os.environ.get("WICK_JOBS", "1"))
-WICK_EXECUTOR = os.environ.get("WICK_EXECUTOR", "serial")
 WICK_PROFILE = os.environ.get("WICK_PROFILE", "") not in ("", "0", "false", "False")
 WICK_PROFILE_PAIRS = os.environ.get("WICK_PROFILE_PAIRS", "") not in ("", "0", "false", "False")
-WICK_R2_CHUNK_SIZE = int(os.environ.get("WICK_R2_CHUNK_SIZE", "256"))
-WICK_R2_BATCH_SIZE = int(os.environ.get("WICK_R2_BATCH_SIZE", "16"))
 WICK_R2_PAIR_SYMMETRY = os.environ.get("WICK_R2_PAIR_SYMMETRY", "") not in ("", "0", "false", "False")
 
 setProfiling(WICK_PROFILE)
 
 def configureWick(
-    jobs: int | None = None,
-    executor: str | None = None,
     profile: bool | None = None,
 ) -> None:
     """
@@ -60,12 +51,8 @@ def configureWick(
     Examples:
         
     """
-    global WICK_JOBS, WICK_EXECUTOR, WICK_PROFILE
+    global WICK_PROFILE
 
-    if jobs is not None:
-        WICK_JOBS = jobs
-    if executor is not None:
-        WICK_EXECUTOR = executor
     if profile is not None:
         WICK_PROFILE = profile
         setProfiling(profile)
@@ -1028,246 +1015,6 @@ def productKey(groups: tuple[Group, ...]) -> tuple:
     """
     return tuple(groupKey(group) for group in groups)
 
-@dataclass(frozen = True)
-class R2WorkItem:
-    """
-    Store one second-order residual Wick product to evaluate.
-
-    Notation:
-        h * t_l * t_r * <tau_mu^dagger H T_l T_r>_c
-
-    Examples:
-        One item may represent a CToA residual with one f Hamiltonian factor,
-        one T1 insertion, and one T2 insertion.
-    """
-    index: int
-    hCoeff: Expr
-    hGroup: Group
-    leftCoeff: Expr
-    leftGroup: Group
-    rightCoeff: Expr
-    rightGroup: Group
-    pairFactor: Fraction = Fraction(1)
-
-_workerLocal = threading.local()
-_processBra: Group | None = None
-_processItems: tuple[R2WorkItem, ...] = ()
-
-def workerWick() -> Wick:
-    """
-    Return a worker-local Wick evaluator.
-
-    Notation:
-        
-
-    Examples:
-        
-    """
-    wick = getattr(_workerLocal, "wick", None)
-    if wick is None:
-        prewarmSpinCoeffs(4)
-        wick = Wick(Ref(maxActiveCumulantRank = 4))
-        _workerLocal.wick = wick
-    return wick
-
-def evalR2WorkItem(
-    wick: Wick | None,
-    bra: Group,
-    item: R2WorkItem,
-) -> tuple[int, Expr]:
-    """
-    Evaluate one filtered second-order residual work item.
-
-    Notation:
-        1/2 h t_l t_r <tau_mu^dagger H T_l T_r>_c
-
-    Examples:
-        Returns `(item.index, expr)` so the caller can restore deterministic
-        ordering after threaded execution.
-    """
-    if wick is None:
-        wick = workerWick()
-
-    value = wick.eval(
-        Product((
-            bra,
-            item.hGroup,
-            item.leftGroup,
-            item.rightGroup,
-        )),
-        connected = True,
-    )
-
-    if not value:
-        return item.index, ()
-
-    out = prod((
-        item.rightCoeff,
-        item.leftCoeff,
-        item.hCoeff,
-        value,
-    ))
-
-    out = scale(
-        out,
-        Fraction(1, 2) * item.pairFactor,
-    )
-
-    return item.index, out
-
-def _evalR2WorkItemProcess(args) -> tuple[int, Expr]:
-    """
-    Process-pool wrapper for one R2 work item.
-
-    Notation:
-        
-
-    Examples:
-        
-    """
-    bra, item = args
-    return evalR2WorkItem(
-        None,
-        bra,
-        item,
-    )
-
-def evalR2WorkBatch(args) -> tuple[tuple[int, Expr], ...]:
-    """
-    Evaluate one batch of filtered second-order residual work items.
-
-    Notation:
-        R_\mu^{(2)} \leftarrow \{W_i\}_{i=1}^{N}
-
-    Examples:
-        Process-pool R2 generation uses this to amortize worker startup,
-        pickling, and local Wick cache setup.
-    """
-    bra, items = args
-    wick = workerWick()
-    return tuple(
-        evalR2WorkItem(
-            wick,
-            bra,
-            item,
-        )
-        for item in items
-    )
-
-def initR2Process(
-    bra: Group,
-    items: tuple[R2WorkItem, ...],
-) -> None:
-    """
-    Initialise process-local R2 work state.
-
-    Notation:
-        
-
-    Examples:
-        
-    """
-    global _processBra, _processItems
-    _processBra = bra
-    _processItems = items
-    prewarmSpinCoeffs(4)
-    _workerLocal.wick = Wick(Ref(maxActiveCumulantRank = 4))
-
-def evalR2IndexBatch(indices: tuple[int, ...]) -> tuple[tuple[int, Expr], ...]:
-    """
-    Evaluate one process-local batch of R2 work item indices.
-
-    Notation:
-        R_\mu^{(2)} \leftarrow \{i_k\}_{k=1}^{N}
-
-    Examples:
-        Process-pool R2 generation sends compact integer batches instead of
-        pickling symbolic work items repeatedly.
-    """
-    if _processBra is None:
-        raise RuntimeError("R2 process worker not initialised")
-
-    wick = workerWick()
-    return tuple(
-        evalR2WorkItem(
-            wick,
-            _processBra,
-            _processItems[index],
-        )
-        for index in indices
-    )
-
-def batches(items: tuple, batchSize: int) -> tuple[tuple, ...]:
-    """
-    Split work into deterministic batches.
-
-    Notation:
-        
-
-    Examples:
-        
-    """
-    return tuple(
-        items[start:start + batchSize]
-        for start in range(0, len(items), batchSize)
-    )
-
-def mapWork(
-    fn,
-    work: tuple,
-    jobs: int = 1,
-    executor: str = "serial",
-):
-    """
-    Evaluate independent symbolic work items.
-
-    Results are returned in input order so emitted JSON remains deterministic.
-
-    Notation:
-        
-
-    Examples:
-        mapWork(evalR2WorkItem, items, jobs = 8, executor = "thread")
-        evaluates R2 Wick products concurrently within one residual class.
-    """
-    if jobs <= 1 or executor == "serial" or not work:
-        return tuple(fn(item) for item in work)
-
-    if executor == "thread":
-        with ThreadPoolExecutor(max_workers = jobs) as pool:
-            return tuple(pool.map(fn, work))
-
-    if executor == "process":
-        with ProcessPoolExecutor(max_workers = jobs) as pool:
-            return tuple(pool.map(fn, work))
-
-    raise ValueError(f"unknown Wick executor {executor!r}")
-
-def chunkedCombine(
-    exprs: list[Expr],
-    chunkSize: int = 256,
-) -> Expr:
-    """
-    Combine many expressions without repeatedly canonicalising the whole class.
-
-    Notation:
-        combine(E_1, ..., E_n)
-
-    Examples:
-        Used by R2 generation to limit peak expression-list size.
-    """
-    if not exprs:
-        return ()
-
-    chunks = []
-    for start in range(0, len(exprs), chunkSize):
-        terms = []
-        for expr in exprs[start:start + chunkSize]:
-            terms.extend(expr)
-        chunks.extend(combine(tuple(terms)))
-
-    return combine(tuple(chunks))
-
 def tCoeff(spec: ExcitationSpec) -> Expr:
     """
     Build the cluster-amplitude coefficient for one excitation class.
@@ -1552,8 +1299,34 @@ def r1Expr(name: str) -> Expr:
         combine(tuple(terms))
     )
 
+def _r2MaxWorkItems() -> int | None:
+    value = os.environ.get("WICK_R2_MAX_WORK_ITEMS")
+    if value in (None, ""):
+        return None
+    out = int(value)
+    return out if out > 0 else None
+
+def currentRssKiB() -> int:
+    """
+    Return the current resident set size in KiB.
+
+    Notation:
+        RSS is the resident memory currently held by the process.
+
+    Examples:
+        R2 progress prints currentRssKiB() before and after a Wick work item.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
+
 def r2Expr(name: str) -> Expr:
-    """ 
+    """
     Evaluate one second-order residual contribution.
 
     Notation:
@@ -1568,13 +1341,14 @@ def r2Expr(name: str) -> Expr:
     prewarmSpinCoeffs(4)
     spec = EXCITATIONS[name]
     wick = Wick(Ref(maxActiveCumulantRank = 4))
-
+    maxWorkItems = _r2MaxWorkItems()
     bra = braGroup(spec, 0)
     braBalance = excitationBalance(
         spec,
         daggered = True,
     )
-
+    hCache: dict[tuple[tuple[Space, int], ...], tuple[tuple[Expr, Group], ...]] = {}
+    wickProductCache: dict[tuple, Expr] = {}
     leftTerms = tTermsWithBalance(
         2,
         tag = "_l",
@@ -1583,206 +1357,207 @@ def r2Expr(name: str) -> Expr:
         2,
         tag = "_r",
     )
+    terms = []
+    workItemsProcessed = 0
+    candidateCount = 0
+    skippedByBalance = 0
+    zeroCount = 0
+    nonzeroCount = 0
+    pairTimes: list[float] = []
+    stoppedEarly = False
+    workItems = []
 
-    pairs = []
     for leftIndex, (leftCoeff, leftGroup, leftBalance) in enumerate(leftTerms):
         start = leftIndex if WICK_R2_PAIR_SYMMETRY else 0
         for rightIndex, (rightCoeff, rightGroup, rightBalance) in enumerate(rightTerms[start:], start):
+            pairStart = perf_counter()
             pairFactor = Fraction(2) if WICK_R2_PAIR_SYMMETRY and rightIndex != leftIndex else Fraction(1)
             ttBalance = mergeBalances(
                 leftBalance,
                 rightBalance,
             )
-            pairs.append((
-                leftCoeff,
-                leftGroup,
-                rightCoeff,
-                rightGroup,
-                ttBalance,
-                pairFactor,
-            ))
-
-    hCache: dict[tuple[tuple[Space, int], ...], tuple[tuple[Expr, Group], ...]] = {}
-    workItems = []
-    skippedByBalance = 0
-    candidateCount = 0
-    workIndex = 0
-    pairTimes: list[float] = []
-
-    for leftCoeff, leftGroup, rightCoeff, rightGroup, ttBalance, pairFactor in pairs:
-        pairStart = perf_counter()
-        required = negateBalance(
-            mergeBalances(
-                braBalance,
-                ttBalance,
+            required = negateBalance(
+                mergeBalances(
+                    braBalance,
+                    ttBalance,
+                )
             )
-        )
-        hTerms = cachedHTermsByBalance(
-            hCache,
-            1,
-            required,
-        )
+            hTerms = cachedHTermsByBalance(
+                hCache,
+                1,
+                required,
+            )
 
-        if not hTerms:
-            skippedByBalance += 1
-            pairTime = perf_counter() - pairStart
-            pairTimes.append(pairTime)
-            if WICK_PROFILE:
-                if WICK_PROFILE_PAIRS:
+            if not hTerms:
+                skippedByBalance += 1
+                pairTime = perf_counter() - pairStart
+                pairTimes.append(pairTime)
+                if WICK_PROFILE and WICK_PROFILE_PAIRS:
                     print(
                         f"R2 pair profile for {name}: Hamiltonian terms: 0; Time: {pairTime:.6f} s",
                         file = sys.stderr,
                         flush = True,
                     )
-            continue
+                continue
 
-        candidateCount += len(hTerms)
+            candidateCount += len(hTerms)
 
-        for hCoeffExpr, hGroup in hTerms:
-            workItems.append(
-                R2WorkItem(
-                    index = workIndex,
-                    hCoeff = hCoeffExpr,
-                    hGroup = hGroup,
-                    leftCoeff = leftCoeff,
-                    leftGroup = leftGroup,
-                    rightCoeff = rightCoeff,
-                    rightGroup = rightGroup,
-                    pairFactor = pairFactor,
-                )
-            )
-            workIndex += 1
+            for hCoeffExpr, hGroup in hTerms:
+                workItems.append((
+                    hCoeffExpr,
+                    hGroup,
+                    leftCoeff,
+                    leftGroup,
+                    rightCoeff,
+                    rightGroup,
+                    pairFactor,
+                ))
 
-        if WICK_PROFILE:
-            pairTime = perf_counter() - pairStart
-            pairTimes.append(pairTime)
-            if WICK_PROFILE_PAIRS:
-                print(
-                    f"R2 pair profile for {name}: Hamiltonian terms: {len(hTerms)}; Time: {pairTime:.6f} s",
-                    file = sys.stderr,
-                    flush = True,
-                )
+            if WICK_PROFILE:
+                pairTime = perf_counter() - pairStart
+                pairTimes.append(pairTime)
+                if WICK_PROFILE_PAIRS:
+                    print(
+                        f"R2 pair profile for {name}: Hamiltonian terms: {len(hTerms)}; Time: {pairTime:.6f} s",
+                        file = sys.stderr,
+                        flush = True,
+                    )
 
-    wickProductCache: dict[tuple, Expr] = {}
+    totalWorkItems = len(workItems)
 
-    def evalSerial(item: R2WorkItem) -> tuple[int, Expr]:
+    for itemIndex, (
+        hCoeffExpr,
+        hGroup,
+        leftCoeff,
+        leftGroup,
+        rightCoeff,
+        rightGroup,
+        pairFactor,
+    ) in enumerate(workItems, 1):
+        if maxWorkItems is not None and workItemsProcessed >= maxWorkItems:
+            stoppedEarly = True
+            break
+
+        percent = 100.0 * itemIndex / totalWorkItems if totalWorkItems else 100.0
+        print(
+            (
+                f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
+                f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
+                f"Zero expressions: {zeroCount}; Phase: wick_eval_start; "
+                f"RSS: {currentRssKiB()} KiB"
+            ),
+            flush = True,
+        )
+
+        workStart = perf_counter()
         key = productKey((
             bra,
-            item.hGroup,
-            item.leftGroup,
-            item.rightGroup,
+            hGroup,
+            leftGroup,
+            rightGroup,
         ))
         value = wickProductCache.get(key)
         if value is None:
             with timed("R2.wick_eval"):
-                value = wick.eval(
-                    Product((
-                        bra,
-                        item.hGroup,
-                        item.leftGroup,
-                        item.rightGroup,
-                    )),
-                    connected = True,
-                )
+                wick.progressClassName = name
+                wick.progressWorkItem = itemIndex
+                try:
+                    value = wick.eval(
+                        Product((
+                            bra,
+                            hGroup,
+                            leftGroup,
+                            rightGroup,
+                        )),
+                        connected = True,
+                    )
+                finally:
+                    wick.progressClassName = None
+                    wick.progressWorkItem = None
             wickProductCache[key] = value
 
+        workItemsProcessed += 1
+        elapsed = perf_counter() - workStart
+
+        if value:
+            nonzeroCount += 1
+        else:
+            zeroCount += 1
+
+        print(
+            (
+                f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
+                f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
+                f"Zero expressions: {zeroCount}; Terms: {len(value)}; "
+                f"Phase: wick_eval_done; Elapsed: {elapsed:.3f}s; RSS: {currentRssKiB()} KiB"
+            ),
+            flush = True,
+        )
+
         if not value:
-            return item.index, ()
+            continue
 
-        out = prod((
-            item.rightCoeff,
-            item.leftCoeff,
-            item.hCoeff,
-            value,
-        ))
-
-        return (
-            item.index,
+        terms.extend(
             scale(
-                out,
-                Fraction(1, 2) * item.pairFactor,
-            ),
+                prod((
+                    rightCoeff,
+                    leftCoeff,
+                    hCoeffExpr,
+                    value,
+                )),
+                Fraction(1, 2) * pairFactor,
+            )
         )
 
-    if WICK_EXECUTOR == "process" and WICK_JOBS > 1:
-        indexBatches = batches(
-            tuple(range(len(workItems))),
-            WICK_R2_BATCH_SIZE,
-        )
-        with ProcessPoolExecutor(
-            max_workers = WICK_JOBS,
-            initializer = initR2Process,
-            initargs = (
-                bra,
-                tuple(workItems),
-            ),
-        ) as pool:
-            batchResults = tuple(pool.map(evalR2IndexBatch, indexBatches))
-        results = tuple(
-            result
-            for batch in batchResults
-            for result in batch
-        )
-    elif WICK_EXECUTOR == "thread" and WICK_JOBS > 1:
-        batchResults = mapWork(
-            evalR2WorkBatch,
-            tuple(
-                (
-                    bra,
-                    batch,
-                )
-                for batch in batches(
-                    tuple(workItems),
-                    WICK_R2_BATCH_SIZE,
-                )
-            ),
-            jobs = WICK_JOBS,
-            executor = WICK_EXECUTOR,
-        )
-        results = tuple(
-            result
-            for batch in batchResults
-            for result in batch
-        )
-    else:
-        results = mapWork(
-            evalSerial,
-            tuple(workItems),
-            jobs = 1,
-            executor = "serial",
-        )
+    beforeTerms = len(terms)
 
-    exprs = [
-        expr
-        for _, expr in sorted(results, key = lambda item: item[0])
-        if expr
-    ]
-    zeroCount = len(workItems) - len(exprs)
-    beforeTerms = sum(len(expr) for expr in exprs)
-
+    print(
+        f"R2 progress {name}: Phase: combine_start; Expressions: {beforeTerms}; RSS: {currentRssKiB()} KiB",
+        flush = True,
+    )
+    combineStart = perf_counter()
     with timed("R2.combine"):
-        combined = chunkedCombine(
-            exprs,
-            chunkSize = WICK_R2_CHUNK_SIZE,
-        )
+        combined = combine(tuple(terms))
+    print(
+        (
+            f"R2 progress {name}: Phase: combine_done; Terms: {len(combined)}; "
+            f"Elapsed: {perf_counter() - combineStart:.3f}s; RSS: {currentRssKiB()} KiB"
+        ),
+        flush = True,
+    )
 
     combinedTerms = len(combined)
+    print(
+        f"R2 progress {name}: Phase: canonicalise_start; Terms: {combinedTerms}; RSS: {currentRssKiB()} KiB",
+        flush = True,
+    )
+    canonicalStart = perf_counter()
     with timed("canonicaliseForOutput"):
         out = canonicaliseForOutput(combined)
+    print(
+        (
+            f"R2 progress {name}: Phase: canonicalise_done; Terms: {len(out)}; "
+            f"Elapsed: {perf_counter() - canonicalStart:.3f}s; RSS: {currentRssKiB()} KiB"
+        ),
+        flush = True,
+    )
 
     if WICK_PROFILE:
         timings, counts = profileSnapshot()
+        suffix = ""
+        if stoppedEarly:
+            suffix = f"; Partial: True; Stop reason: WICK_R2_MAX_WORK_ITEMS={maxWorkItems}"
         print(
             (
                 f"R2 profile for {name}: Total time: {perf_counter() - classStart:.6f} s; "
-                f"Pairs: {len(pairs)}; Candidate combinations: {candidateCount}; "
-                f"Skipped by balance: {skippedByBalance}; Wick evaluations: {len(workItems)}; "
+                f"Candidate combinations: {candidateCount}; "
+                f"Skipped by balance: {skippedByBalance}; Wick evaluations: {workItemsProcessed}; "
                 f"Zero expressions: {zeroCount}; Terms before combine: {beforeTerms}; "
                 f"Terms after combine: {combinedTerms}; Terms after canonicalisation: {len(out)}; "
                 f"Minimum pair time: {min(pairTimes) if pairTimes else 0.0:.6f} s; "
                 f"Maximum pair time: {max(pairTimes) if pairTimes else 0.0:.6f} s; "
                 f"Total pair time: {sum(pairTimes):.6f} s; "
-                f"Jobs: {WICK_JOBS}; Executor: {WICK_EXECUTOR}"
+                f"Jobs: 1; Executor: serial{suffix}"
             ),
             file = sys.stderr,
             flush = True,
@@ -1793,6 +1568,9 @@ def r2Expr(name: str) -> Expr:
                 file = sys.stderr,
                 flush = True,
             )
+
+    if stoppedEarly:
+        raise RuntimeError(f"partial R2 generation requested: WICK_R2_MAX_WORK_ITEMS={maxWorkItems}")
 
     return out
 
