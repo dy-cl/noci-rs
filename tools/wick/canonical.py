@@ -391,7 +391,7 @@ def sparsifyHighRankCumulantOrbits(expr: Expr) -> Expr:
 
     return combine(tuple(out))
 
-def canonicaliseForOutput(expr: Expr) -> Expr:
+def canonicaliseForOutput(expr: Expr, combined: bool = False) -> Expr:
     """Canonical form for LaTeX/Rust emission.
 
     Notation:
@@ -399,9 +399,13 @@ def canonicaliseForOutput(expr: Expr) -> Expr:
 
             Lambda2^{pq}_{rs} = Lambda2^{qp}_{sr}
             G c = G d for Lambda3/Lambda4 spin-free projection gauges
+
+    Examples:
+        r2Expr passes combined = True after termsAcc has already been reduced
+        to one coefficient per scalar product.
     """
     return sparsifyHighRankCumulantOrbits(
         canonicaliseTensorSymmetry(
-            combine(expr)
+            expr if combined else combine(expr)
         )
     )

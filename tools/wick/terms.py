@@ -38,6 +38,40 @@ TENSOR_KIND = {
 
 PROFILE = os.environ.get("WICK_PROFILE", "") not in ("", "0", "false", "False")
 
+def _envInt(name: str, default: int) -> int:
+    """
+    Read one integer Wick runtime option.
+
+    Notation:
+        x = \mathrm{env}(name)
+
+    Examples:
+        WICK_VERBOSE=2 enables nested Wick progress printing.
+    """
+    value = os.environ.get(name)
+    if value in (None, ""):
+        return default
+
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+def _verbose() -> int:
+    """
+    Return Wick progress verbosity.
+
+    Notation:
+        v \in \{0,1,2,\ldots\}
+
+    Examples:
+        WICK_VERBOSE=1 prints outer residual progress.
+    """
+    return _envInt(
+        "WICK_VERBOSE",
+        1,
+    )
+
 def indexKey(idx: Idx) -> tuple[str, Space]:
     """
     Return the local key for one symbolic orbital index.
@@ -652,7 +686,7 @@ def writeResidualTermsJson(
             order,
             pretty = pretty,
         )
-        if order == 2:
+        if order == 2 and _verbose() >= 1:
             print(
                 f"R2 progress {name}: Phase: json_write_start",
                 flush = True,
@@ -660,7 +694,7 @@ def writeResidualTermsJson(
         out.write(
             data
         )
-        if order == 2:
+        if order == 2 and _verbose() >= 1:
             print(
                 f"R2 progress {name}: Phase: json_write_done",
                 flush = True,
@@ -707,7 +741,7 @@ def writeResidualTermsJson(
             className,
             order,
         )
-        if order == 2:
+        if order == 2 and _verbose() >= 1:
             print(
                 f"R2 progress {className}: Phase: json_write_start",
                 flush = True,
@@ -717,7 +751,7 @@ def writeResidualTermsJson(
             out,
             separators = (",", ":"),
         )
-        if order == 2:
+        if order == 2 and _verbose() >= 1:
             print(
                 f"R2 progress {className}: Phase: json_write_done",
                 flush = True,

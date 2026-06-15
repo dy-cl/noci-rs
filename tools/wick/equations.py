@@ -43,6 +43,22 @@ WICK_R2_PAIR_SYMMETRY = os.environ.get("WICK_R2_PAIR_SYMMETRY", "") not in ("", 
 
 setProfiling(WICK_PROFILE)
 
+def _verbose() -> int:
+    """
+    Return Wick progress verbosity.
+
+    Notation:
+        v \in \{0,1,2,\ldots\}
+
+    Examples:
+        WICK_VERBOSE=1 prints outer R2 progress. WICK_VERBOSE=2 also prints
+        nested spin-string progress from core.py.
+    """
+    return _envInt(
+        "WICK_VERBOSE",
+        1,
+    )
+
 def configureWick(
     profile: bool | None = None,
 ) -> None:
@@ -1552,15 +1568,16 @@ def r2Expr(name: str) -> Expr:
         pairFactor,
     ) in enumerate(activeWorkItems, rangeStart + 1):
         percent = 100.0 * itemIndex / totalWorkItems if totalWorkItems else 100.0
-        print(
-            (
-                f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
-                f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
-                f"Zero expressions: {zeroCount}; Phase: wick_eval_start; "
-                f"RSS: {currentRssKiB()} KiB"
-            ),
-            flush = True,
-        )
+        if _verbose() >= 1:
+            print(
+                (
+                    f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
+                    f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
+                    f"Zero expressions: {zeroCount}; Phase: wick_eval_start; "
+                    f"RSS: {currentRssKiB()} KiB"
+                ),
+                flush = True,
+            )
 
         workStart = perf_counter()
         key = productKey((
@@ -1600,15 +1617,16 @@ def r2Expr(name: str) -> Expr:
         else:
             zeroCount += 1
 
-        print(
-            (
-                f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
-                f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
-                f"Zero expressions: {zeroCount}; Terms: {termCount}; "
-                f"Phase: wick_eval_done; Elapsed: {elapsed:.3f}s; RSS: {currentRssKiB()} KiB"
-            ),
-            flush = True,
-        )
+        if _verbose() >= 1:
+            print(
+                (
+                    f"R2 progress {name}: Work item: {itemIndex}/{totalWorkItems}; "
+                    f"Percent: {percent:.1f}%; Nonzero expressions: {nonzeroCount}; "
+                    f"Zero expressions: {zeroCount}; Terms: {termCount}; "
+                    f"Phase: wick_eval_done; Elapsed: {elapsed:.3f}s; RSS: {currentRssKiB()} KiB"
+                ),
+                flush = True,
+            )
 
         if not wickAcc:
             continue
@@ -1627,36 +1645,43 @@ def r2Expr(name: str) -> Expr:
 
     beforeTerms = rawTermCount
 
-    print(
-        f"R2 progress {name}: Phase: combine_start; Expressions: {beforeTerms}; RSS: {currentRssKiB()} KiB",
-        flush = True,
-    )
+    if _verbose() >= 1:
+        print(
+            f"R2 progress {name}: Phase: combine_start; Expressions: {beforeTerms}; RSS: {currentRssKiB()} KiB",
+            flush = True,
+        )
     combineStart = perf_counter()
     with timed("R2.combine"):
         combined = accumulatedExpr(termsAcc)
-    print(
-        (
-            f"R2 progress {name}: Phase: combine_done; Terms: {len(combined)}; "
-            f"Elapsed: {perf_counter() - combineStart:.3f}s; RSS: {currentRssKiB()} KiB"
-        ),
-        flush = True,
-    )
+    if _verbose() >= 1:
+        print(
+            (
+                f"R2 progress {name}: Phase: combine_done; Terms: {len(combined)}; "
+                f"Elapsed: {perf_counter() - combineStart:.3f}s; RSS: {currentRssKiB()} KiB"
+            ),
+            flush = True,
+        )
 
     combinedTerms = len(combined)
-    print(
-        f"R2 progress {name}: Phase: canonicalise_start; Terms: {combinedTerms}; RSS: {currentRssKiB()} KiB",
-        flush = True,
-    )
+    if _verbose() >= 1:
+        print(
+            f"R2 progress {name}: Phase: canonicalise_start; Terms: {combinedTerms}; RSS: {currentRssKiB()} KiB",
+            flush = True,
+        )
     canonicalStart = perf_counter()
     with timed("canonicaliseForOutput"):
-        out = canonicaliseForOutput(combined)
-    print(
-        (
-            f"R2 progress {name}: Phase: canonicalise_done; Terms: {len(out)}; "
-            f"Elapsed: {perf_counter() - canonicalStart:.3f}s; RSS: {currentRssKiB()} KiB"
-        ),
-        flush = True,
-    )
+        out = canonicaliseForOutput(
+            combined,
+            combined = True,
+        )
+    if _verbose() >= 1:
+        print(
+            (
+                f"R2 progress {name}: Phase: canonicalise_done; Terms: {len(out)}; "
+                f"Elapsed: {perf_counter() - canonicalStart:.3f}s; RSS: {currentRssKiB()} KiB"
+            ),
+            flush = True,
+        )
 
     if WICK_PROFILE:
         timings, counts = profileSnapshot()

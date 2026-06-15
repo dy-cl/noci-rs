@@ -21,6 +21,13 @@ import os
 from time import perf_counter
 
 try:
+    import numpy as np
+    from numba import njit
+except ImportError:
+    np = None
+    njit = None
+
+try:
     from gmpy2 import mpq as Fraction
 except ImportError:
     from fractions import Fraction
@@ -51,6 +58,7 @@ PRODUCT_PARTIAL_TERM_LIMIT = 10_000_000
 WICK_PROGRESS_PARTITION_INTERVAL = 50_000
 WICK_SPIN_POOL = None
 WICK_SPIN_POOL_JOBS = 0
+COMPILED_PARTITIONS_AVAILABLE = np is not None and njit is not None
 
 PROFILE_ENABLED = False
 PROFILE_TIMES: dict[str, float] = {}
@@ -247,6 +255,22 @@ def wickEnvPositiveInt(name: str, default: int) -> int:
         ),
     )
 
+def wickVerbose() -> int:
+    """
+    Return Wick progress verbosity.
+
+    Notation:
+        v \in \{0,1,2,\ldots\}
+
+    Examples:
+        WICK_VERBOSE=1 prints outer progress. WICK_VERBOSE=2 also prints
+        nested spin-string and partition progress.
+    """
+    return wickEnvInt(
+        "WICK_VERBOSE",
+        1,
+    )
+
 def wickEnvRange(
     startName: str,
     stopName: str,
@@ -277,6 +301,858 @@ def wickEnvRange(
         stop - 1,
         partial,
     )
+
+if COMPILED_PARTITIONS_AVAILABLE:
+    @njit(cache = True)
+    def compactFirstBitIndex(mask: int) -> int:
+        """
+        Return the lowest set bit position.
+
+        Notation:
+            i = \min \{j : m_j = 1\}
+
+        Examples:
+            compactFirstBitIndex(8) returns 3.
+        """
+        position = 0
+        while mask & 1 == 0:
+            mask >>= 1
+            position += 1
+
+        return position
+
+    @njit(cache = True)
+    def compactParity(mask: int) -> int:
+        """
+        Return the parity of a bit mask population count.
+
+        Notation:
+            p = |m| \bmod 2
+
+        Examples:
+        """
+        parity = 0
+        while mask:
+            parity ^= 1
+            mask &= mask - 1
+
+        return parity
+
+    @njit(cache = True)
+    def compactBlockCrossSign(blockMask: int, restMask: int) -> int:
+        """
+        Return the fermion sign contributed by one leading Wick block.
+
+        Notation:
+            (-1)^{\sum_{i \in B} |\{j \in R : j < i\}|}
+
+        Examples:
+            A block crossing one remaining operator gives -1.
+        """
+        parity = 0
+        local = blockMask
+
+        while local:
+            bit = local & -local
+            position = compactFirstBitIndex(bit)
+            parity ^= compactParity(
+                restMask & ((1 << position) - 1)
+            )
+            local ^= bit
+
+        if parity:
+            return -1
+
+        return 1
+
+    @njit(cache = True)
+    def compactEdgeMaskConnected(
+        groupCount: int,
+        edgeMask: int,
+        edgeLeft,
+        edgeRight,
+    ) -> bool:
+        """
+        Test whether an integer group-edge mask is connected.
+
+        Notation:
+            G(E) \mathrm{\ is\ connected}
+
+        Examples:
+            For three groups, edges 0-1 and 1-2 connect all groups.
+        """
+        if groupCount <= 1:
+            return True
+
+        parent = np.empty(
+            groupCount,
+            dtype = np.int64,
+        )
+
+        for group in range(groupCount):
+            parent[group] = group
+
+        for edgeIndex in range(len(edgeLeft)):
+            if edgeMask & (1 << edgeIndex) == 0:
+                continue
+
+            left = edgeLeft[edgeIndex]
+            while parent[left] != left:
+                parent[left] = parent[parent[left]]
+                left = parent[left]
+
+            right = edgeRight[edgeIndex]
+            while parent[right] != right:
+                parent[right] = parent[parent[right]]
+                right = parent[right]
+
+            if left != right:
+                parent[right] = left
+
+        root = 0
+        while parent[root] != root:
+            parent[root] = parent[parent[root]]
+            root = parent[root]
+
+        for group in range(1, groupCount):
+            current = group
+            while parent[current] != current:
+                parent[current] = parent[parent[current]]
+                current = parent[current]
+
+            if current != root:
+                return False
+
+        return True
+
+    @njit(cache = True)
+    def countCompactPartitionCovers(
+        remainingMask: int,
+        edgeMask: int,
+        blockMasks,
+        blockEdges,
+        byPositionBlocks,
+        byPositionCounts,
+        connected: bool,
+        groupCount: int,
+        edgeLeft,
+        edgeRight,
+    ) -> int:
+        """
+        Count viable Wick partition covers using compact integer masks.
+
+        Notation:
+            N(m, e) = \sum_B N(m \setminus B, e \cup e_B)
+
+        Examples:
+            compactPartitionPatterns uses this to allocate output arrays exactly.
+        """
+        if remainingMask == 0:
+            if connected and not compactEdgeMaskConnected(
+                groupCount,
+                edgeMask,
+                edgeLeft,
+                edgeRight,
+            ):
+                return 0
+
+            return 1
+
+        first = compactFirstBitIndex(remainingMask)
+        out = 0
+
+        for localIndex in range(byPositionCounts[first]):
+            blockIndex = byPositionBlocks[
+                first,
+                localIndex,
+            ]
+            blockMask = blockMasks[blockIndex]
+
+            if blockMask & remainingMask != blockMask:
+                continue
+
+            out += countCompactPartitionCovers(
+                remainingMask & ~blockMask,
+                edgeMask | blockEdges[blockIndex],
+                blockMasks,
+                blockEdges,
+                byPositionBlocks,
+                byPositionCounts,
+                connected,
+                groupCount,
+                edgeLeft,
+                edgeRight,
+            )
+
+        return out
+
+    @njit(cache = True)
+    def fillCompactPartitionCovers(
+        remainingMask: int,
+        edgeMask: int,
+        sign: int,
+        depth: int,
+        chosenBlocks,
+        blockMasks,
+        blockEdges,
+        byPositionBlocks,
+        byPositionCounts,
+        connected: bool,
+        groupCount: int,
+        edgeLeft,
+        edgeRight,
+        outSigns,
+        outLengths,
+        outBlocks,
+        outIndex: int,
+    ) -> int:
+        """
+        Fill compact Wick partition covers.
+
+        Notation:
+            O_k = (\sign(P_k), B_{k1}, \ldots, B_{kn})
+
+        Examples:
+            Each output row stores block ids rather than Python block tuples.
+        """
+        if remainingMask == 0:
+            if connected and not compactEdgeMaskConnected(
+                groupCount,
+                edgeMask,
+                edgeLeft,
+                edgeRight,
+            ):
+                return outIndex
+
+            outSigns[outIndex] = sign
+            outLengths[outIndex] = depth
+
+            for index in range(depth):
+                outBlocks[
+                    outIndex,
+                    index,
+                ] = chosenBlocks[index]
+
+            return outIndex + 1
+
+        first = compactFirstBitIndex(remainingMask)
+
+        for localIndex in range(byPositionCounts[first]):
+            blockIndex = byPositionBlocks[
+                first,
+                localIndex,
+            ]
+            blockMask = blockMasks[blockIndex]
+
+            if blockMask & remainingMask != blockMask:
+                continue
+
+            restMask = remainingMask & ~blockMask
+            chosenBlocks[depth] = blockIndex
+            outIndex = fillCompactPartitionCovers(
+                restMask,
+                edgeMask | blockEdges[blockIndex],
+                sign * compactBlockCrossSign(
+                    blockMask,
+                    restMask,
+                ),
+                depth + 1,
+                chosenBlocks,
+                blockMasks,
+                blockEdges,
+                byPositionBlocks,
+                byPositionCounts,
+                connected,
+                groupCount,
+                edgeLeft,
+                edgeRight,
+                outSigns,
+                outLengths,
+                outBlocks,
+                outIndex,
+            )
+
+        return outIndex
+
+    def compactPartitionPatterns(
+        opCount: int,
+        groupCount: int,
+        blockMasks: tuple[int, ...],
+        blockEdges: tuple[int, ...],
+        byPosition: tuple[tuple[int, ...], ...],
+        edgePairs: tuple[tuple[int, int], ...],
+        connected: bool,
+    ):
+        """
+        Enumerate viable Wick partition patterns as compact arrays.
+
+        Notation:
+            \{P\} \rightarrow (s_k, \ell_k, b_{k\ell})
+
+        Examples:
+            Wick.viablePartitionPatterns converts the compact rows back to the
+            existing symbolic partition API.
+        """
+        blockMaskArray = np.asarray(
+            blockMasks,
+            dtype = np.int64,
+        )
+        blockEdgeArray = np.asarray(
+            blockEdges,
+            dtype = np.int64,
+        )
+        maxBlocks = max(
+            (
+                len(blocks)
+                for blocks in byPosition
+            ),
+            default = 0,
+        )
+        byPositionBlocks = np.full(
+            (
+                opCount,
+                maxBlocks,
+            ),
+            -1,
+            dtype = np.int64,
+        )
+        byPositionCounts = np.zeros(
+            opCount,
+            dtype = np.int64,
+        )
+
+        for position, blocks in enumerate(byPosition):
+            byPositionCounts[position] = len(blocks)
+            for localIndex, blockIndex in enumerate(blocks):
+                byPositionBlocks[
+                    position,
+                    localIndex,
+                ] = blockIndex
+
+        edgeLeft = np.asarray(
+            tuple(left for left, _right in edgePairs),
+            dtype = np.int64,
+        )
+        edgeRight = np.asarray(
+            tuple(right for _left, right in edgePairs),
+            dtype = np.int64,
+        )
+        fullMask = (1 << opCount) - 1
+        count = countCompactPartitionCovers(
+            fullMask,
+            0,
+            blockMaskArray,
+            blockEdgeArray,
+            byPositionBlocks,
+            byPositionCounts,
+            connected,
+            groupCount,
+            edgeLeft,
+            edgeRight,
+        )
+        outSigns = np.empty(
+            count,
+            dtype = np.int64,
+        )
+        outLengths = np.empty(
+            count,
+            dtype = np.int64,
+        )
+        outBlocks = np.empty(
+            (
+                count,
+                opCount,
+            ),
+            dtype = np.int64,
+        )
+        chosenBlocks = np.empty(
+            opCount,
+            dtype = np.int64,
+        )
+        fillCompactPartitionCovers(
+            fullMask,
+            0,
+            1,
+            0,
+            chosenBlocks,
+            blockMaskArray,
+            blockEdgeArray,
+            byPositionBlocks,
+            byPositionCounts,
+            connected,
+            groupCount,
+            edgeLeft,
+            edgeRight,
+            outSigns,
+            outLengths,
+            outBlocks,
+            0,
+        )
+
+        return (
+            outSigns,
+            outLengths,
+            outBlocks,
+        )
+
+    @njit(cache = True)
+    def gcdInt64(left: int, right: int) -> int:
+        """
+        Return the greatest common divisor of two signed integers.
+
+        Notation:
+            \gcd(a, b)
+
+        Examples:
+        """
+        if left < 0:
+            left = -left
+
+        if right < 0:
+            right = -right
+
+        while right:
+            left, right = right, left % right
+
+        return left
+
+    @njit(cache = True)
+    def normaliseRationalPair(numerator: int, denominator: int) -> tuple[int, int]:
+        """
+        Normalise one integer rational pair.
+
+        Notation:
+            n / d \rightarrow n' / d'
+
+        Examples:
+        """
+        if numerator == 0:
+            return (
+                0,
+                1,
+            )
+
+        if denominator < 0:
+            numerator = -numerator
+            denominator = -denominator
+
+        divisor = gcdInt64(
+            numerator,
+            denominator,
+        )
+
+        return (
+            numerator // divisor,
+            denominator // divisor,
+        )
+
+    @njit(cache = True)
+    def countNumericSpinStringProducts(
+        remainingMask: int,
+        edgeMask: int,
+        blockMasks,
+        blockEdges,
+        blockTermStarts,
+        blockTermCounts,
+        byPositionBlocks,
+        byPositionCounts,
+        connected: bool,
+        groupCount: int,
+        edgeLeft,
+        edgeRight,
+    ) -> int:
+        """
+        Count numeric products emitted by one spin string.
+
+        Notation:
+            N(m, e) = \sum_{B,t \in \kappa(B)} N(m \setminus B, e \cup e_B)
+
+        Examples:
+            The numeric spin-string kernel allocates row buffers from this count.
+        """
+        if remainingMask == 0:
+            if connected and not compactEdgeMaskConnected(
+                groupCount,
+                edgeMask,
+                edgeLeft,
+                edgeRight,
+            ):
+                return 0
+
+            return 1
+
+        first = compactFirstBitIndex(remainingMask)
+        out = 0
+
+        for localIndex in range(byPositionCounts[first]):
+            blockIndex = byPositionBlocks[
+                first,
+                localIndex,
+            ]
+            blockMask = blockMasks[blockIndex]
+
+            if blockMask & remainingMask != blockMask:
+                continue
+
+            termCount = blockTermCounts[blockIndex]
+            if termCount == 0:
+                continue
+
+            suffixCount = countNumericSpinStringProducts(
+                remainingMask & ~blockMask,
+                edgeMask | blockEdges[blockIndex],
+                blockMasks,
+                blockEdges,
+                blockTermStarts,
+                blockTermCounts,
+                byPositionBlocks,
+                byPositionCounts,
+                connected,
+                groupCount,
+                edgeLeft,
+                edgeRight,
+            )
+            out += termCount * suffixCount
+
+        return out
+
+    @njit(cache = True)
+    def fillNumericSpinStringProducts(
+        remainingMask: int,
+        edgeMask: int,
+        sign: int,
+        coeffNum: int,
+        coeffDen: int,
+        deltaCount: int,
+        tensorCount: int,
+        currentDeltas,
+        currentTensors,
+        blockMasks,
+        blockEdges,
+        blockTermStarts,
+        blockTermCounts,
+        termNums,
+        termDens,
+        termDeltas,
+        termTensors,
+        byPositionBlocks,
+        byPositionCounts,
+        connected: bool,
+        groupCount: int,
+        edgeLeft,
+        edgeRight,
+        outNums,
+        outDens,
+        outDeltaCounts,
+        outTensorCounts,
+        outDeltas,
+        outTensors,
+        outIndex: int,
+    ) -> int:
+        """
+        Fill numeric products emitted by one spin string.
+
+        Notation:
+            row = (c, \delta_1,\ldots, T_1,\ldots)
+
+        Examples:
+            Python reduces these rows into the existing IntAcc structure.
+        """
+        if remainingMask == 0:
+            if connected and not compactEdgeMaskConnected(
+                groupCount,
+                edgeMask,
+                edgeLeft,
+                edgeRight,
+            ):
+                return outIndex
+
+            outNums[outIndex] = sign * coeffNum
+            outDens[outIndex] = coeffDen
+            outDeltaCounts[outIndex] = deltaCount
+            outTensorCounts[outIndex] = tensorCount
+
+            for index in range(deltaCount):
+                outDeltas[
+                    outIndex,
+                    index,
+                ] = currentDeltas[index]
+
+            for index in range(tensorCount):
+                outTensors[
+                    outIndex,
+                    index,
+                ] = currentTensors[index]
+
+            return outIndex + 1
+
+        first = compactFirstBitIndex(remainingMask)
+
+        for localIndex in range(byPositionCounts[first]):
+            blockIndex = byPositionBlocks[
+                first,
+                localIndex,
+            ]
+            blockMask = blockMasks[blockIndex]
+
+            if blockMask & remainingMask != blockMask:
+                continue
+
+            termCount = blockTermCounts[blockIndex]
+            if termCount == 0:
+                continue
+
+            restMask = remainingMask & ~blockMask
+            nextSign = sign * compactBlockCrossSign(
+                blockMask,
+                restMask,
+            )
+            termStart = blockTermStarts[blockIndex]
+
+            for termOffset in range(termCount):
+                termIndex = termStart + termOffset
+                nextNum = coeffNum * termNums[termIndex]
+                nextDen = coeffDen * termDens[termIndex]
+                nextNum, nextDen = normaliseRationalPair(
+                    nextNum,
+                    nextDen,
+                )
+                if nextNum == 0:
+                    continue
+
+                nextDeltaCount = deltaCount
+                deltaId = termDeltas[termIndex]
+                if deltaId != 0:
+                    currentDeltas[nextDeltaCount] = deltaId
+                    nextDeltaCount += 1
+
+                nextTensorCount = tensorCount
+                tensorId = termTensors[termIndex]
+                if tensorId != 0:
+                    currentTensors[nextTensorCount] = tensorId
+                    nextTensorCount += 1
+
+                outIndex = fillNumericSpinStringProducts(
+                    restMask,
+                    edgeMask | blockEdges[blockIndex],
+                    nextSign,
+                    nextNum,
+                    nextDen,
+                    nextDeltaCount,
+                    nextTensorCount,
+                    currentDeltas,
+                    currentTensors,
+                    blockMasks,
+                    blockEdges,
+                    blockTermStarts,
+                    blockTermCounts,
+                    termNums,
+                    termDens,
+                    termDeltas,
+                    termTensors,
+                    byPositionBlocks,
+                    byPositionCounts,
+                    connected,
+                    groupCount,
+                    edgeLeft,
+                    edgeRight,
+                    outNums,
+                    outDens,
+                    outDeltaCounts,
+                    outTensorCounts,
+                    outDeltas,
+                    outTensors,
+                    outIndex,
+                )
+
+        return outIndex
+
+    def numericSpinStringProducts(
+        opCount: int,
+        groupCount: int,
+        blockMasks: tuple[int, ...],
+        blockEdges: tuple[int, ...],
+        blockTermStarts: tuple[int, ...],
+        blockTermCounts: tuple[int, ...],
+        termNums: tuple[int, ...],
+        termDens: tuple[int, ...],
+        termDeltas: tuple[int, ...],
+        termTensors: tuple[int, ...],
+        byPosition: tuple[tuple[int, ...], ...],
+        edgePairs: tuple[tuple[int, int], ...],
+        connected: bool,
+    ):
+        """
+        Emit numeric product rows for one spin string.
+
+        Notation:
+            W_s \rightarrow \{(c, \delta_i, T_j)\}
+
+        Examples:
+            Wick.evalSpinStringInt reduces these rows into IntAcc.
+        """
+        blockMaskArray = np.asarray(
+            blockMasks,
+            dtype = np.int64,
+        )
+        blockEdgeArray = np.asarray(
+            blockEdges,
+            dtype = np.int64,
+        )
+        blockTermStartArray = np.asarray(
+            blockTermStarts,
+            dtype = np.int64,
+        )
+        blockTermCountArray = np.asarray(
+            blockTermCounts,
+            dtype = np.int64,
+        )
+        maxBlocks = max(
+            (
+                len(blocks)
+                for blocks in byPosition
+            ),
+            default = 0,
+        )
+        byPositionBlocks = np.full(
+            (
+                opCount,
+                maxBlocks,
+            ),
+            -1,
+            dtype = np.int64,
+        )
+        byPositionCounts = np.zeros(
+            opCount,
+            dtype = np.int64,
+        )
+
+        for position, blocks in enumerate(byPosition):
+            byPositionCounts[position] = len(blocks)
+            for localIndex, blockIndex in enumerate(blocks):
+                byPositionBlocks[
+                    position,
+                    localIndex,
+                ] = blockIndex
+
+        edgeLeft = np.asarray(
+            tuple(left for left, _right in edgePairs),
+            dtype = np.int64,
+        )
+        edgeRight = np.asarray(
+            tuple(right for _left, right in edgePairs),
+            dtype = np.int64,
+        )
+        termNumArray = np.asarray(
+            termNums,
+            dtype = np.int64,
+        )
+        termDenArray = np.asarray(
+            termDens,
+            dtype = np.int64,
+        )
+        termDeltaArray = np.asarray(
+            termDeltas,
+            dtype = np.int64,
+        )
+        termTensorArray = np.asarray(
+            termTensors,
+            dtype = np.int64,
+        )
+        fullMask = (1 << opCount) - 1
+        count = countNumericSpinStringProducts(
+            fullMask,
+            0,
+            blockMaskArray,
+            blockEdgeArray,
+            blockTermStartArray,
+            blockTermCountArray,
+            byPositionBlocks,
+            byPositionCounts,
+            connected,
+            groupCount,
+            edgeLeft,
+            edgeRight,
+        )
+        outNums = np.empty(
+            count,
+            dtype = np.int64,
+        )
+        outDens = np.empty(
+            count,
+            dtype = np.int64,
+        )
+        outDeltaCounts = np.empty(
+            count,
+            dtype = np.int64,
+        )
+        outTensorCounts = np.empty(
+            count,
+            dtype = np.int64,
+        )
+        outDeltas = np.zeros(
+            (
+                count,
+                opCount,
+            ),
+            dtype = np.int64,
+        )
+        outTensors = np.zeros(
+            (
+                count,
+                opCount,
+            ),
+            dtype = np.int64,
+        )
+        currentDeltas = np.empty(
+            opCount,
+            dtype = np.int64,
+        )
+        currentTensors = np.empty(
+            opCount,
+            dtype = np.int64,
+        )
+        fillNumericSpinStringProducts(
+            fullMask,
+            0,
+            1,
+            1,
+            1,
+            0,
+            0,
+            currentDeltas,
+            currentTensors,
+            blockMaskArray,
+            blockEdgeArray,
+            blockTermStartArray,
+            blockTermCountArray,
+            termNumArray,
+            termDenArray,
+            termDeltaArray,
+            termTensorArray,
+            byPositionBlocks,
+            byPositionCounts,
+            connected,
+            groupCount,
+            edgeLeft,
+            edgeRight,
+            outNums,
+            outDens,
+            outDeltaCounts,
+            outTensorCounts,
+            outDeltas,
+            outTensors,
+            0,
+        )
+
+        return (
+            outNums,
+            outDens,
+            outDeltaCounts,
+            outTensorCounts,
+            outDeltas,
+            outTensors,
+        )
 
 class Space(Enum):
     """
@@ -678,11 +1554,42 @@ def _wickSpinChunkWorker(args):
     os.environ["WICK_PARTITION_JOBS"] = "1"
 
     wick = Wick(Ref(maxActiveCumulantRank = maxActiveCumulantRank))
+    interner = FactorInterner()
+    intAcc: IntAcc = {}
     symbolicAcc: dict[tuple, Fraction] = {}
     maxTerms = 0
     start = perf_counter()
+    useNumeric = wickEnvInt("WICK_NUMERIC_SPINSTRING", 1) != 0
 
     for offset, ops in enumerate(spinChunk):
+        if useNumeric:
+            beforeTerms = len(intAcc)
+            expr = wick.evalSpinString(
+                ops,
+                connected = connected,
+                spinStringIndex = chunkStart + offset,
+                spinStringTotal = None,
+                targetInterner = interner,
+                targetAcc = intAcc,
+            )
+            maxTerms = max(
+                maxTerms,
+                abs(len(intAcc) - beforeTerms),
+            )
+            if expr:
+                shardAcc = encodeExprToIntAcc(
+                    interner,
+                    expr,
+                )
+                mergeIntShard(
+                    interner,
+                    intAcc,
+                    tuple(interner.deltas),
+                    tuple(interner.tensors),
+                    shardAcc,
+                )
+            continue
+
         expr = wick.evalSpinString(
             ops,
             connected = connected,
@@ -698,15 +1605,19 @@ def _wickSpinChunkWorker(args):
             expr,
         )
 
-    expr = accumulatedExpr(
-        symbolicAcc,
-        sort = False,
-    )
-    interner = FactorInterner()
-    shardAcc = encodeExprToIntAcc(
-        interner,
-        expr,
-    )
+    if useNumeric:
+        shardAcc = intAcc
+        terms = len(intAcc)
+    else:
+        expr = accumulatedExpr(
+            symbolicAcc,
+            sort = False,
+        )
+        shardAcc = encodeExprToIntAcc(
+            interner,
+            expr,
+        )
+        terms = len(expr)
 
     return {
         "start": chunkStart,
@@ -714,7 +1625,7 @@ def _wickSpinChunkWorker(args):
         "deltas": tuple(interner.deltas),
         "tensors": tuple(interner.tensors),
         "acc": shardAcc,
-        "terms": len(expr),
+        "terms": terms,
         "max_terms": maxTerms,
         "rss": currentRssKiB(),
         "elapsed": perf_counter() - start,
@@ -1162,7 +2073,7 @@ def accumulateProductTerms(
 
             deltas.extend(term.deltas)
             tensors.extend(term.tensors)
-        
+
         key = (
             sortedFactors(deltas),
             sortedFactors(tensors),
@@ -1248,6 +2159,228 @@ def accumulateProductTerms(
         Examples:
             A huge active-cumulant product is split into product chunks rather
             than one giant intermediate list or one term-at-a-time recursion.
+        """
+        if not partial:
+            return
+
+        if index == len(factors):
+            accumulatePartial(partial)
+            return
+
+        expr = factors[index]
+        if not expr:
+            return
+
+        maxPartial = max(
+            1,
+            PRODUCT_PARTIAL_TERM_LIMIT // len(expr),
+        )
+
+        for start in range(0, len(partial), maxPartial):
+            nextPartial = expandOne(
+                partial[start:start + maxPartial],
+                expr,
+            )
+            process(
+                index + 1,
+                nextPartial,
+            )
+
+    process(
+        0,
+        [(
+            c,
+            (),
+            (),
+        )],
+    )
+
+def accumulateProductTermsInt(
+    interner: FactorInterner,
+    acc: IntAcc,
+    factors: tuple[Expr, ...],
+    coeff: int | Fraction,
+) -> None:
+    """
+    Accumulate a product of expressions into an integer-keyed accumulator.
+
+    Notation:
+        a_{\iota(A)} \leftarrow a_{\iota(A)} + c \prod_k E_k
+
+    Examples:
+        Wick.evalInt uses this to avoid building then re-encoding one symbolic
+        spin-string expression.
+    """
+    if coeff == 0:
+        return
+
+    c = coeff if isinstance(coeff, Fraction) else Fraction(coeff)
+
+    nonOneFactors = []
+    allSingle = True
+
+    for factor in factors:
+        if isOneExpr(factor):
+            continue
+
+        if len(factor) != 1:
+            allSingle = False
+
+        nonOneFactors.append(factor)
+
+    factors = nonOneFactors
+
+    if not factors:
+        key = (
+            (),
+            (),
+        )
+        old = acc.get(key)
+        acc[key] = c if old is None else addCoeffValuesFast(old, c)
+        if acc[key] == 0:
+            del acc[key]
+        return
+
+    def accumulateIntCoeff(
+        deltaIds: tuple[int, ...],
+        tensorIds: tuple[int, ...],
+        coeffOut: Fraction,
+    ) -> None:
+        if coeffOut == 0:
+            return
+
+        key = (
+            tuple(sorted(deltaIds)),
+            tuple(sorted(tensorIds)),
+        )
+        old = acc.get(key)
+
+        if old is None:
+            acc[key] = coeffOut
+            return
+
+        value = addCoeffValuesFast(
+            old,
+            coeffOut,
+        )
+        if value == 0:
+            del acc[key]
+        else:
+            acc[key] = value
+
+    if allSingle:
+        coeffOut = c
+        deltaIds = []
+        tensorIds = []
+
+        for expr in factors:
+            term = expr[0]
+            termCoeff = term.coeff
+
+            if termCoeff == 1:
+                pass
+            elif termCoeff == -1:
+                coeffOut = -coeffOut
+            else:
+                coeffOut = mulCoeffValuesFast(
+                    coeffOut,
+                    termCoeff,
+                )
+
+            if coeffOut == 0:
+                return
+
+            deltaIds.extend(
+                interner.deltaId(deltaIn)
+                for deltaIn in term.deltas
+            )
+            tensorIds.extend(
+                interner.tensorId(tensorIn)
+                for tensorIn in term.tensors
+            )
+
+        accumulateIntCoeff(
+            tuple(deltaIds),
+            tuple(tensorIds),
+            coeffOut,
+        )
+        return
+
+    def accumulatePartial(
+        partial: list[tuple[Fraction, tuple[int, ...], tuple[int, ...]]],
+    ) -> None:
+        """
+        Accumulate already-expanded integer product terms.
+
+        Notation:
+            a += partial
+
+        Examples:
+            The bounded product expander emits one chunk of completed products.
+        """
+        for coeffOut, deltaIds, tensorIds in partial:
+            accumulateIntCoeff(
+                deltaIds,
+                tensorIds,
+                coeffOut,
+            )
+
+    def expandOne(
+        partial: list[tuple[Fraction, tuple[int, ...], tuple[int, ...]]],
+        expr: Expr,
+    ) -> list[tuple[Fraction, tuple[int, ...], tuple[int, ...]]]:
+        """
+        Expand one integer-encoded factor over a bounded partial product list.
+
+        Notation:
+            P' = P * E
+
+        Examples:
+        """
+        nextPartial = []
+
+        for leftCoeff, leftDeltas, leftTensors in partial:
+            for term in expr:
+                termCoeff = term.coeff
+
+                if termCoeff == 1:
+                    value = leftCoeff
+                elif termCoeff == -1:
+                    value = -leftCoeff
+                else:
+                    value = mulCoeffValuesFast(
+                        leftCoeff,
+                        termCoeff,
+                    )
+
+                if value == 0:
+                    continue
+
+                nextPartial.append((
+                    value,
+                    leftDeltas + tuple(
+                        interner.deltaId(deltaIn)
+                        for deltaIn in term.deltas
+                    ),
+                    leftTensors + tuple(
+                        interner.tensorId(tensorIn)
+                        for tensorIn in term.tensors
+                    ),
+                ))
+
+        return nextPartial
+
+    def process(
+        index: int,
+        partial: list[tuple[Fraction, tuple[int, ...], tuple[int, ...]]],
+    ) -> None:
+        """
+        Expand remaining integer-encoded factors in bounded chunks.
+
+        Notation:
+            a += P * \prod_{k=index} E_k
+
+        Examples:
         """
         if not partial:
             return
@@ -2465,7 +3598,11 @@ class Wick:
                     doneChunks += 1
                     doneSpinStrings += summary["count"]
 
-                    if progressClassName is not None and progressWorkItem is not None:
+                    if (
+                        wickVerbose() >= 1
+                        and progressClassName is not None
+                        and progressWorkItem is not None
+                    ):
                         print(
                             (
                                 f"Wick parallel {progressClassName}: Work item: {progressWorkItem}; "
@@ -2854,6 +3991,47 @@ class Wick:
                     ))
 
             fullMask = (1 << len(ops)) - 1
+            if (
+                COMPILED_PARTITIONS_AVAILABLE
+                and wickEnvInt("WICK_COMPILED_PARTITIONS", 0) != 0
+                and len(ops) < 63
+            ):
+                compactByPosition = tuple(
+                    tuple(
+                        blockIndex
+                        for blockIndex, (block, _blockMask, _edgeMask) in enumerate(blocks)
+                        if position in block
+                    )
+                    for position in range(len(ops))
+                )
+                edgePairs = tuple(
+                    (left, right)
+                    for left in range(len(groups))
+                    for right in range(left + 1, len(groups))
+                )
+                compactSigns, compactLengths, compactBlocks = compactPartitionPatterns(
+                    len(ops),
+                    len(groups),
+                    tuple(blockMask for _block, blockMask, _edgeMask in blocks),
+                    tuple(edgeMask for _block, _blockMask, edgeMask in blocks),
+                    compactByPosition,
+                    edgePairs,
+                    connected,
+                )
+                out = tuple(
+                    (
+                        int(compactSigns[row]),
+                        tuple(
+                            blocks[int(compactBlocks[row, col])][0]
+                            for col in range(int(compactLengths[row]))
+                        ),
+                    )
+                    for row in range(len(compactSigns))
+                )
+                self.partitionPatternCache[key] = out
+
+                return self.partitionPatternCache[key]
+
             out: list[tuple[int, tuple[tuple[int, ...], ...]]] = []
 
             @cache
@@ -3377,6 +4555,189 @@ class Wick:
             sort = False,
         )
 
+    def evalSpinStringInt(
+        self,
+        ops: tuple[Op, ...],
+        connected: bool,
+        interner: FactorInterner,
+        acc: IntAcc,
+    ) -> int | None:
+        """
+        Evaluate one spin-orbital string into an integer accumulator.
+
+        Notation:
+            W_s \rightarrow a_{\iota(A)}
+
+        Examples:
+            WICK_NUMERIC_SPINSTRING=1 uses this to keep the hot partition loop
+            in integer arrays instead of symbolic Term objects.
+        """
+        if not COMPILED_PARTITIONS_AVAILABLE:
+            return None
+
+        if len(ops) >= 63:
+            return None
+
+        groups = tuple(sorted({op.group for op in ops}))
+        groupIds = {
+            group: index
+            for index, group in enumerate(groups)
+        }
+        opGroups = tuple(
+            groupIds[op.group]
+            for op in ops
+        )
+        positionBits = tuple(1 << position for position in range(len(ops)))
+        groupPairBits = {
+            (left, right): 1 << bit
+            for bit, (left, right) in enumerate(combinations(range(len(groups)), 2))
+        }
+
+        def blockEdgeMask(block: tuple[int, ...]) -> int:
+            blockGroups = tuple(sorted({opGroups[i] for i in block}))
+
+            if len(blockGroups) <= 1:
+                return 0
+
+            out = 0
+
+            for left, right in combinations(blockGroups, 2):
+                out |= groupPairBits[(left, right)]
+
+            return out
+
+        def blockPositionMask(block: tuple[int, ...]) -> int:
+            out = 0
+
+            for position in block:
+                out |= positionBits[position]
+
+            return out
+
+        rawBlocks = self.candidateBlocksByShape(ops)
+        blocks = []
+        blockTermStarts = []
+        blockTermCounts = []
+        termNums = []
+        termDens = []
+        termDeltas = []
+        termTensors = []
+
+        for block in rawBlocks:
+            blockOps = tuple(
+                ops[i]
+                for i in block
+            )
+            expr = self.kappaCached(blockOps)
+            start = len(termNums)
+
+            for term in expr:
+                if len(term.deltas) > 1 or len(term.tensors) > 1:
+                    return None
+
+                coeff = term.coeff
+                numerator = int(coeff.numerator)
+                denominator = int(coeff.denominator)
+                if (
+                    numerator < -(1 << 63)
+                    or numerator >= (1 << 63)
+                    or denominator < 1
+                    or denominator >= (1 << 63)
+                ):
+                    return None
+
+                termNums.append(numerator)
+                termDens.append(denominator)
+                termDeltas.append(
+                    interner.deltaId(term.deltas[0])
+                    if term.deltas
+                    else 0
+                )
+                termTensors.append(
+                    interner.tensorId(term.tensors[0])
+                    if term.tensors
+                    else 0
+                )
+
+            blocks.append((
+                block,
+                blockPositionMask(block),
+                blockEdgeMask(block),
+            ))
+            blockTermStarts.append(start)
+            blockTermCounts.append(len(termNums) - start)
+
+        byPosition = tuple(
+            tuple(
+                blockIndex
+                for blockIndex, (block, _blockMask, _edgeMask) in enumerate(blocks)
+                if position in block
+            )
+            for position in range(len(ops))
+        )
+        edgePairs = tuple(
+            (left, right)
+            for left in range(len(groups))
+            for right in range(left + 1, len(groups))
+        )
+        (
+            outNums,
+            outDens,
+            outDeltaCounts,
+            outTensorCounts,
+            outDeltas,
+            outTensors,
+        ) = numericSpinStringProducts(
+            len(ops),
+            len(groups),
+            tuple(blockMask for _block, blockMask, _edgeMask in blocks),
+            tuple(edgeMask for _block, _blockMask, edgeMask in blocks),
+            tuple(blockTermStarts),
+            tuple(blockTermCounts),
+            tuple(termNums),
+            tuple(termDens),
+            tuple(termDeltas),
+            tuple(termTensors),
+            byPosition,
+            edgePairs,
+            connected,
+        )
+
+        for row in range(len(outNums)):
+            coeff = Fraction(
+                int(outNums[row]),
+                int(outDens[row]),
+            )
+            if coeff == 0:
+                continue
+
+            key = (
+                tuple(sorted(
+                    int(outDeltas[row, col])
+                    for col in range(int(outDeltaCounts[row]))
+                )),
+                tuple(sorted(
+                    int(outTensors[row, col])
+                    for col in range(int(outTensorCounts[row]))
+                )),
+            )
+            old = acc.get(key)
+
+            if old is None:
+                acc[key] = coeff
+                continue
+
+            value = addCoeffValuesFast(
+                old,
+                coeff,
+            )
+            if value == 0:
+                del acc[key]
+            else:
+                acc[key] = value
+
+        return len(outNums)
+
     def evalSpinString(
         self,
         ops: tuple[Op, ...],
@@ -3413,7 +4774,11 @@ class Wick:
         with timed("Wick.evalSpinString"):
             progressClassName = self.progressClassName
             progressWorkItem = self.progressWorkItem
-            showProgress = progressClassName is not None and progressWorkItem is not None
+            showProgress = (
+                wickVerbose() >= 2
+                and progressClassName is not None
+                and progressWorkItem is not None
+            )
 
             def printProgress(
                 phase: str,
@@ -3497,6 +4862,24 @@ class Wick:
                     terms = 0,
                 )
                 return ()
+
+            if (
+                targetInterner is not None
+                and targetAcc is not None
+                and wickEnvInt("WICK_NUMERIC_SPINSTRING", 1) != 0
+            ):
+                numericTerms = self.evalSpinStringInt(
+                    ops,
+                    connected,
+                    targetInterner,
+                    targetAcc,
+                )
+                if numericTerms is not None:
+                    printProgress(
+                        "spin_string_done",
+                        terms = numericTerms,
+                    )
+                    return ()
 
             partitionJobs = wickEnvPositiveInt("WICK_PARTITION_JOBS", 1)
             partitionMinPartitions = wickEnvPositiveInt(
@@ -3589,7 +4972,14 @@ class Wick:
             acc = {}
             blockValues = {}
             nextAccCompact = SPINSTRING_ACC_COMPACT_LIMIT
+            directIntAcc = (
+                targetInterner is not None
+                and targetAcc is not None
+                and wickEnvInt("WICK_DIRECT_INT_ACC", 0) != 0
+            )
             if (
+                wickEnvInt("WICK_NONZERO_PARTITIONS", 0) == 0
+                and
                 SPINSTRING_STREAM_OP_LIMIT > 0
                 and len(ops) < SPINSTRING_STREAM_OP_LIMIT
             ):
@@ -3628,12 +5018,25 @@ class Wick:
                 if not ok:
                     continue
 
-                accumulateProductTerms(
-                    acc,
-                    tuple(factors),
-                    sign,
-                )
-                if nextAccCompact > 0 and len(acc) >= nextAccCompact:
+                if directIntAcc:
+                    accumulateProductTermsInt(
+                        targetInterner,
+                        targetAcc,
+                        tuple(factors),
+                        sign,
+                    )
+                else:
+                    accumulateProductTerms(
+                        acc,
+                        tuple(factors),
+                        sign,
+                    )
+
+                if (
+                    not directIntAcc
+                    and nextAccCompact > 0
+                    and len(acc) >= nextAccCompact
+                ):
                     compactAccumulator(acc)
                     nextAccCompact = len(acc) + SPINSTRING_ACC_COMPACT_LIMIT
                 if partitionIndex % WICK_PROGRESS_PARTITION_INTERVAL == 0:
@@ -3641,8 +5044,17 @@ class Wick:
                         "partitions",
                         partitionIndex = partitionIndex,
                         partitionTotal = partitionTotal,
-                        accSize = len(acc),
+                        accSize = len(targetAcc) if directIntAcc else len(acc),
                     )
+
+            if directIntAcc:
+                printProgress(
+                    "spin_string_done",
+                    partitionIndex = partitionIndex if "partitionIndex" in locals() else 0,
+                    partitionTotal = partitionTotal,
+                    terms = len(targetAcc),
+                )
+                return ()
 
             result = drainedAccumulatedExpr(
                 acc,
