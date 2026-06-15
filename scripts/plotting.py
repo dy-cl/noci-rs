@@ -7,6 +7,7 @@ import re
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.lines import Line2D
 from matplotlib.patches import ConnectionPatch, Rectangle
 import numpy as np
 import pandas as pd
@@ -301,11 +302,11 @@ def plotDeterministicCoefficients(args):
     plt.subplots_adjust(left = 0.15)
     finish(args)
 
-def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25]):
+def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25], side = "right"):
     """
     Add an inset showing a zoomed region of the main energy plot.
 
-    `loc` is [left, bottom, width, height] in axes-fraction coordinates.
+    `loc` is [left, bottom, width, height] in parent-axes fraction coordinates.
     """
     inset = ax.inset_axes(loc)
 
@@ -338,55 +339,47 @@ def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25]):
         linewidth = 2,
         linestyle = "--",
         alpha = 0.5,
-        zorder = -100,
+        zorder = 50,
     )
     ax.add_patch(rect)
 
-    # Available connector choices:
-    #
-    # Top-right zoom -> bottom-left inset
-    # Bottom-right zoom -> bottom-right inset
-    connectors = [
-        ((xmax, ymax), (0.0, 0.0)),
-        ((xmax, ymin), (1.0, 0.0)),
-    ]
+    if side == "right":
+        connectors = [
+            ((xmax, ymax), (0.0, 1.0)),
+            ((xmax, ymin), (0.0, 0.0)),
+        ]
+    elif side == "left":
+        connectors = [
+            ((xmin, ymax), (1.0, 1.0)),
+            ((xmin, ymin), (1.0, 0.0)),
+        ]
+    elif side == "above":
+        connectors = [
+            ((xmin, ymax), (0.0, 0.0)),
+            ((xmax, ymax), (1.0, 0.0)),
+        ]
+    else:
+        connectors = [
+            ((xmin, ymin), (0.0, 1.0)),
+            ((xmax, ymin), (1.0, 1.0)),
+        ]
 
-    # Top-right zoom -> top-left inset
-    # Bottom-right zoom -> bottom-left inset
-    # connectors = [
-    #     ((xmax, ymax), (0.0, 1.0)),
-    #     ((xmax, ymin), (0.0, 0.0)),
-    # ]
-
-    # Top-left zoom -> bottom-left inset
-    # Top-right zoom -> bottom-right inset
-    # connectors = [
-    #     ((xmin, ymax), (0.0, 0.0)),
-    #     ((xmax, ymax), (1.0, 0.0)),
-    # ]
-
-    # Bottom-left zoom -> top-left inset
-    # Bottom-right zoom -> top-right inset
-    # connectors = [
-    #     ((xmin, ymin), (0.0, 1.0)),
-    #     ((xmax, ymin), (1.0, 1.0)),
-    # ]
-    
-    for xy_data, xy_inset in connectors:
+    for xyMain, xyInset in connectors:
         con = ConnectionPatch(
-            xyA = xy_data,
+            xyA = xyMain,
             coordsA = ax.transData,
-            xyB = xy_inset,
+            xyB = xyInset,
             coordsB = inset.transAxes,
             color = "0.35",
             linewidth = 2,
             linestyle = "--",
             alpha = 0.5,
-            zorder = -99,
+            zorder = 60,
+            clip_on = False,
         )
         ax.add_artist(con)
 
-    return inset
+    return inset 
 
 def plotEnergy(args):
     """
@@ -450,7 +443,7 @@ def plotEnergy(args):
             sm = plt.cm.ScalarMappable(norm = norm, cmap = cmap)
             sm.set_array([])
             
-            cax = ax.inset_axes([0.05, 0.90, 0.28, 0.035])
+            cax = ax.inset_axes([0.08, 0.90, 0.28, 0.035])
             cbar = fig.colorbar(sm, cax = cax, orientation = "horizontal")
             cbar.set_label(r"$\epsilon / E_h$", fontsize = 20)
             cbar.ax.tick_params(labelsize = 16)
@@ -513,7 +506,10 @@ def plotEnergy(args):
             zorder = 1,
             color = 'tab:orange'
         )
-   
+
+    formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
+    ax.grid(True)
+
     if args.inset is not None:
         xmin, xmax, ymin, ymax = args.inset
         left, bottom = args.inset_location
@@ -524,8 +520,9 @@ def plotEnergy(args):
             xlim = (xmin, xmax),
             ylim = (ymin, ymax),
             loc = [left, bottom, width, height],
+            side = args.inset_side
         )
-    
+
     formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
     plt.grid(True)
     finish(args)
@@ -671,6 +668,12 @@ def buildParser():
         metavar = ("XMIN", "XMAX", "YMIN", "YMAX"),
         default = None,
         help = "Add an inset with zoom limits XMIN XMAX YMIN YMAX.",
+    )
+    p.add_argument(
+        "--inset-side",
+        choices = ["right", "left", "above", "below"],
+        default = "right",
+        help = "Side of the zoom region where the inset is placed.",
     )
     p.add_argument(
         "--inset-location",
