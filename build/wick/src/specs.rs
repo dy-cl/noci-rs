@@ -99,18 +99,6 @@ pub fn exc(name: &str) -> Exc {
     Exc { class: x.left, f: x.lf }
 }
 
-/// Return all excitation classes with a given rank.
-/// # Arguments:
-/// - `rank`: Excitation rank.
-/// # Returns:
-/// - `Vec<ExcSpec>`: Matching classes.
-pub fn classes(rank: usize) -> Vec<ExcSpec> {
-    EXCS.iter()
-        .copied()
-        .filter(|x| x.f.len() == 2 * rank)
-        .collect()
-}
-
 /// Build the daggered residual projector.
 /// # Arguments:
 /// - `x`: Excitation projector.
@@ -281,32 +269,49 @@ pub fn hname(space: Space, slot: usize) -> &'static str {
     }
 }
 
-/// Construct a cluster-amplitude dummy-index name.
+// Construct a cluster dummy-index name.
 /// # Arguments:
 /// - `space`: Orbital space.
-/// - `slot`: Dummy slot.
+/// - `slot`: Dummy-index slot.
+/// - `tag`: Cluster tag, one of `'t'`, `'l'`, or `'r'`.
 /// # Returns:
 /// - `&'static str`: Cluster dummy-index name.
-pub fn tname(space: Space, slot: usize) -> &'static str {
+pub fn tname(space: Space, slot: usize, tag: char) -> &'static str {
     const TC: [&str; 4] = ["tc0", "tc1", "tc2", "tc3"];
     const TA: [&str; 4] = ["ta0", "ta1", "ta2", "ta3"];
     const TV: [&str; 4] = ["tv0", "tv1", "tv2", "tv3"];
 
-    match space {
-        Space::Core => TC[slot],
-        Space::Active => TA[slot],
-        Space::Virtual => TV[slot],
+    const LC: [&str; 4] = ["lc0", "lc1", "lc2", "lc3"];
+    const LA: [&str; 4] = ["la0", "la1", "la2", "la3"];
+    const LV: [&str; 4] = ["lv0", "lv1", "lv2", "lv3"];
+
+    const RC: [&str; 4] = ["rc0", "rc1", "rc2", "rc3"];
+    const RA: [&str; 4] = ["ra0", "ra1", "ra2", "ra3"];
+    const RV: [&str; 4] = ["rv0", "rv1", "rv2", "rv3"];
+
+    match (tag, space) {
+        ('t', Space::Core) => TC[slot],
+        ('t', Space::Active) => TA[slot],
+        ('t', Space::Virtual) => TV[slot],
+        ('l', Space::Core) => LC[slot],
+        ('l', Space::Active) => LA[slot],
+        ('l', Space::Virtual) => LV[slot],
+        ('r', Space::Core) => RC[slot],
+        ('r', Space::Active) => RA[slot],
+        ('r', Space::Virtual) => RV[slot],
+        _ => panic!("unsupported cluster tag {tag}"),
     }
 }
 
-/// Convert excitation-class labels into cluster dummy labels.
+/// Convert excitation labels into cluster dummy labels.
 /// # Arguments:
 /// - `xs`: Excitation-class free-index names.
+/// - `tag`: Cluster tag, one of `'t'`, `'l'`, or `'r'`.
 /// # Returns:
-/// - `Vec<&'static str>`: Cluster dummy-index labels with matching spaces.
-pub fn tlabels(xs: &[&'static str]) -> Vec<&'static str> {
+/// - `Vec<&'static str>`: Cluster dummy labels with matching spaces.
+pub fn tlabels(xs: &[&'static str], tag: char) -> Vec<&'static str> {
     xs.iter()
         .enumerate()
-        .map(|(i, &x)| tname(space(x), i))
+        .map(|(i, &x)| tname(space(x), i, tag))
         .collect()
 }

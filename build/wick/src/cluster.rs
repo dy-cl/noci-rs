@@ -113,12 +113,13 @@ pub fn term(xs: &[&'static str], g: usize) -> TTerm {
 /// Build all singles and doubles cluster terms.
 /// # Arguments:
 /// - `g`: Group id.
+/// - `tag`: Cluster tag, one of `'t'`, `'l'`, or `'r'`.
 /// # Returns:
 /// - `Vec<TTerm>`: Cluster terms.
-pub fn terms(g: usize) -> Vec<TTerm> {
+pub fn terms(g: usize, tag: char) -> Vec<TTerm> {
     specs::EXCS.iter()
         .map(|x| {
-            let xs = specs::tlabels(x.f);
+            let xs = specs::tlabels(x.f, tag);
             term(&xs, g)
         })
         .collect()

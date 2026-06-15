@@ -183,37 +183,3 @@ pub fn terms_with_balance(g: usize, required: specs::Balance) -> Vec<HTerm> {
     out
 }
 
-/// Build restricted one-body Hamiltonian terms.
-/// # Arguments:
-/// - `g`: Group id.
-/// # Returns:
-/// - `Vec<HTerm>`: One-body Hamiltonian terms.
-pub fn h1terms(g: usize) -> Vec<HTerm> {
-    specs::classes(1)
-        .into_iter()
-        .map(|x| term(x.f, g))
-        .collect()
-}
-
-/// Build restricted two-body Hamiltonian terms.
-/// # Arguments:
-/// - `g`: Group id.
-/// # Returns:
-/// - `Vec<HTerm>`: Two-body Hamiltonian terms.
-pub fn h2terms(g: usize) -> Vec<HTerm> {
-    specs::classes(2)
-        .into_iter()
-        .map(|x| term(x.f, g))
-        .collect()
-}
-
-/// Build all restricted Hamiltonian terms.
-/// # Arguments:
-/// - `g`: Group id.
-/// # Returns:
-/// - `Vec<HTerm>`: One- and two-body Hamiltonian terms.
-pub fn terms(g: usize) -> Vec<HTerm> {
-    let mut out = h1terms(g);
-    out.extend(h2terms(g));
-    out
-}

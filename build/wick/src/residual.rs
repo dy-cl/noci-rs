@@ -11,6 +11,16 @@ use crate::wick;
 
 type Rat = Ratio<i64>;
 
+/// Build a rational coefficient.
+/// # Arguments:
+/// - `n`: Numerator.
+/// - `d`: Denominator.
+/// # Returns:
+/// - `Rational`: Rational coefficient.
+fn q(n: i64, d: i64) -> Rational {
+    Rational { num: n, den: d }
+}
+
 /// Generate the zeroth-order residual for one excitation class.
 /// # Arguments:
 /// - `name`: Excitation class name.
@@ -46,7 +56,7 @@ pub fn r1(name: &str) -> Expr {
     let bra_balance = specs::bal(spec.f, true);
     let mut out = Vec::new();
 
-    for t in cluster::terms(2) {
+    for t in cluster::terms(2, 't') {
         let required = specs::neg(specs::add(bra_balance, t.balance));
 
         for h in hamiltonian::terms_with_balance(1, required) {
@@ -56,6 +66,41 @@ pub fn r1(name: &str) -> Expr {
             for x in e {
                 let x = mulh(x, h.coeff, h.fac.clone());
                 out.push(mulh(x, t.coeff, t.fac.clone()));
+            }
+        }
+    }
+
+    canonical::canon(out)
+}
+
+/// Generate the second-order residual for one excitation class.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `Expr`: Canonical second-order residual.
+pub fn r2(name: &str) -> Expr {
+    let spec = specs::exc(name);
+    let bra = specs::bra(&spec, 0);
+    let brab = specs::bal(spec.f, true);
+    let leftt = cluster::terms(2, 'l');
+    let rightt = cluster::terms(3, 'l');
+    let mut out = Vec::new();
+
+    for l in &leftt {
+        for r in &rightt {
+            let ttb = specs::add(l.balance, r.balance);
+            let required = specs::neg(specs::add(brab, ttb));
+
+            for h in hamiltonian::terms_with_balance(1, required) {
+                let p = join(&join(&join(&bra, &h.op), &l.op), &r.op);
+                let e = wick::evalc(&p);
+
+                for x in e {
+                    let x = mulh(x, h.coeff, h.fac.clone());
+                    let x = mulh(x, l.coeff, l.fac.clone());
+                    let c = mulr(q(1, 2), r.coeff);
+                    out.push(mulh(x, c, r.fac.clone()));
+                }
             }
         }
     }
@@ -90,4 +135,18 @@ fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
     x.coeff = Rational { num: *q.numer(), den: *q.denom() };
     x.tensors.push(fac);
     x
+}
+
+/// Multiply two rational coefficients.
+/// # Arguments:
+/// - `a`: First coefficient.
+/// - `b`: Second coefficient.
+/// # Returns:
+/// - `Rational`: Product coefficient.
+fn mulr(a: Rational, b: Rational) -> Rational {
+    let x = Rat::new(a.num, a.den);
+    let y = Rat::new(b.num, b.den);
+    let q = x * y;
+
+    Rational { num: *q.numer(), den: *q.denom() }
 }

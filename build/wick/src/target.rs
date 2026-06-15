@@ -1,6 +1,8 @@
 // target.rs
 
-use crate::ir::{a, c, v, Delta, Expr, Rational, Tensor, TensorKind, Term};
+use crate::ir::{a, c, v, Delta, Expr, Product, Rational, Space, Tensor, TensorKind, Term};
+
+const SPACES: [Space; 3] = [Space::Core, Space::Active, Space::Virtual];
 
 /// Build an integer rational coefficient.
 /// # Arguments:
@@ -389,14 +391,14 @@ fn c16() -> Expr {
     ]
 }
 
-/// Multiply a target term by a Hamiltonian coefficient.
+/// Multiply a term by a scalar tensor coefficient.
 /// # Arguments:
-/// - `x`: Metric target term.
-/// - `c`: Hamiltonian scalar prefactor.
-/// - `fac`: Hamiltonian coefficient tensor.
+/// - `x`: Input term.
+/// - `c`: Scalar prefactor.
+/// - `fac`: Coefficient tensor.
 /// # Returns:
-/// - `Term`: Residual target term.
-fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
+/// - `Term`: Updated term.
+fn mulf(mut x: Term, c: Rational, fac: Tensor) -> Term {
     let a = num_rational::Ratio::new(x.coeff.num, x.coeff.den);
     let b = num_rational::Ratio::new(c.num, c.den);
     let q = a * b;
@@ -406,28 +408,31 @@ fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
     x
 }
 
-/// Build one zeroth-order residual target from metric targets.
+/// Multiply two rational coefficients.
 /// # Arguments:
-/// - `name`: Excitation class name.
+/// - `a`: First coefficient.
+/// - `b`: Second coefficient.
 /// # Returns:
-/// - `Expr`: Zeroth-order residual target.
-pub fn r0(name: &str) -> Expr {
-    let x = crate::specs::exc(name);
-    let mut out = Vec::new();
+/// - `Rational`: Product coefficient.
+fn mulr(a: Rational, b: Rational) -> Rational {
+    let x = num_rational::Ratio::new(a.num, a.den);
+    let y = num_rational::Ratio::new(b.num, b.den);
+    let q = x * y;
 
-    for b in crate::specs::BLOCKS.iter().filter(|b| b.left == x.class) {
-        let Some(expr) = tblock(b.name) else {
-            continue;
-        };
+    Rational { num: *q.numer(), den: *q.denom() }
+}
 
-        let (c, fac) = crate::hamiltonian::fac(b.rf);
+/// Concatenate two spin-free products.
+/// # Arguments:
+/// - `x`: Left product.
+/// - `y`: Right product.
+/// # Returns:
+/// - `Product`: Concatenated product.
+fn join(x: &Product, y: &Product) -> Product {
+    let mut groups = x.groups.clone();
+    groups.extend(y.groups.clone());
 
-        for t in expr {
-            out.push(mulh(t, c, fac.clone()));
-        }
-    }
-
-    crate::canonical::canon(out)
+    Product { groups }
 }
 
 /// Return the Appendix C target expression if available.
@@ -465,4 +470,129 @@ fn tblock(name: &str) -> Option<Expr> {
 pub fn block(name: &str) -> Expr {
     tblock(name).unwrap_or_else(|| panic!("no Appendix C target for {name}"))
 }
+
+/// Build Hamiltonian dummy labels from orbital spaces.
+/// # Arguments:
+/// - `xs`: Orbital spaces.
+/// # Returns:
+/// - `Vec<&'static str>`: Hamiltonian dummy labels.
+fn hlabels(xs: &[Space]) -> Vec<&'static str> {
+    xs.iter()
+        .enumerate()
+        .map(|(i, &x)| crate::specs::hname(x, i))
+        .collect()
+}
+
+/// Build all general one- and two-body Hamiltonian target terms.
+/// # Arguments:
+/// - `g`: Group id.
+/// # Returns:
+/// - `Vec<crate::hamiltonian::HTerm>`: General Hamiltonian terms.
+fn hterms(g: usize) -> Vec<crate::hamiltonian::HTerm> {
+    let mut out = Vec::new();
+
+    for &p in &SPACES {
+        for &q_ in &SPACES {
+            let xs = hlabels(&[p, q_]);
+            out.push(crate::hamiltonian::term(&xs, g));
+        }
+    }
+
+    for &p in &SPACES {
+        for &q_ in &SPACES {
+            for &r_ in &SPACES {
+                for &s in &SPACES {
+                    let xs = hlabels(&[p, q_, r_, s]);
+                    out.push(crate::hamiltonian::term(&xs, g));
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Build one zeroth-order residual target from metric targets.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `Expr`: Zeroth-order residual target.
+pub fn r0(name: &str) -> Expr {
+    let x = crate::specs::exc(name);
+    let mut out = Vec::new();
+
+    for b in crate::specs::BLOCKS.iter().filter(|b| b.left == x.class) {
+        let Some(expr) = tblock(b.name) else {
+            continue;
+        };
+
+        let (c, fac) = crate::hamiltonian::fac(b.rf);
+
+        for t in expr {
+            out.push(mulf(t, c, fac.clone()));
+        }
+    }
+
+    crate::canonical::canon(out)
+}
+
+/// Build one first-order residual target by unfiltered Hamiltonian enumeration.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `Expr`: First-order residual target.
+pub fn r1(name: &str) -> Expr {
+    let spec = crate::specs::exc(name);
+    let bra = crate::specs::bra(&spec, 0);
+    let hs = hterms(1);
+    let ts = crate::cluster::terms(2, 't');
+    let mut out = Vec::new();
+
+    for t in &ts {
+        for h in &hs {
+            let p = join(&join(&bra, &h.op), &t.op);
+            let e = crate::wick::evalc(&p);
+
+            for x in e {
+                let x = mulf(x, h.coeff, h.fac.clone());
+                out.push(mulf(x, t.coeff, t.fac.clone()));
+            }
+        }
+    }
+
+    crate::canonical::canon(out)
+}
+
+/// Build one second-order residual target by unfiltered Hamiltonian enumeration.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `Expr`: Second-order residual target.
+pub fn r2(name: &str) -> Expr {
+    let spec = crate::specs::exc(name);
+    let bra = crate::specs::bra(&spec, 0);
+    let hs = hterms(1);
+    let ls = crate::cluster::terms(2, 'l');
+    let rs = crate::cluster::terms(3, 'r');
+    let mut out = Vec::new();
+
+    for l in &ls {
+        for r_ in &rs {
+            for h in &hs {
+                let p = join(&join(&join(&bra, &h.op), &l.op), &r_.op);
+                let e = crate::wick::evalc(&p);
+
+                for x in e {
+                    let x = mulf(x, h.coeff, h.fac.clone());
+                    let x = mulf(x, l.coeff, l.fac.clone());
+                    let c = mulr(q(1, 2), r_.coeff);
+                    out.push(mulf(x, c, r_.fac.clone()));
+                }
+            }
+        }
+    }
+
+    crate::canonical::canon(out)
+}
+
 
