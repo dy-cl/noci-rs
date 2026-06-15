@@ -10,12 +10,13 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import cache
 from itertools import combinations, permutations, product as cartesianProduct
+import gc
 import os
 from time import perf_counter
 
@@ -638,6 +639,24 @@ def wickSpinPool(jobs: int):
 
     return WICK_SPIN_POOL
 
+def spinMaxInFlight(jobs: int) -> int:
+    """
+    Return the maximum number of submitted spin tasks.
+
+    Notation:
+        N_{\mathrm{flight}} \geq N_{\mathrm{jobs}}
+
+    Examples:
+        With WICK_SPIN_JOBS=16, the default keeps about 32 spin chunks queued.
+    """
+    return max(
+        jobs,
+        wickEnvPositiveInt(
+            "WICK_SPIN_MAX_IN_FLIGHT",
+            2 * jobs,
+        ),
+    )
+
 def _wickSpinChunkWorker(args):
     """
     Evaluate a chunk of spin strings in a worker process.
@@ -670,7 +689,10 @@ def _wickSpinChunkWorker(args):
             spinStringIndex = chunkStart + offset,
             spinStringTotal = None,
         )
-        maxTerms = max(maxTerms, len(expr))
+        maxTerms = max(
+            maxTerms,
+            len(expr),
+        )
         accumulateTerms(
             symbolicAcc,
             expr,
@@ -2381,49 +2403,91 @@ class Wick:
                     tuple(ops for _index, ops in chunkItems),
                 ))
 
-            futures = [
-                pool.submit(
-                    _wickSpinChunkWorker,
-                    (
-                        chunkStart,
-                        spinChunk,
-                        connected,
-                        self.ref.maxActiveCumulantRank,
-                    ),
-                )
-                for chunkStart, spinChunk in chunks
-            ]
-            summaries = []
+            chunkIter = iter(chunks)
+            active = set()
+            maxInFlight = spinMaxInFlight(jobs)
+            submittedChunks = 0
             doneChunks = 0
             doneSpinStrings = 0
+            gcRssThreshold = wickEnvInt("WICK_SPIN_GC_RSS_KIB", 0)
             progressClassName = self.progressClassName
             progressWorkItem = self.progressWorkItem
 
-            for future in as_completed(futures):
-                summary = future.result()
-                summaries.append(summary)
-                doneChunks += 1
-                doneSpinStrings += summary["count"]
+            def submitNext() -> bool:
+                """
+                Submit one spin chunk if any remain.
 
-                if progressClassName is not None and progressWorkItem is not None:
-                    print(
+                Notation:
+                    Q \leftarrow Q \cup \{C_k\}
+
+                Examples:
+                    Keeps at most WICK_SPIN_MAX_IN_FLIGHT futures alive.
+                """
+                nonlocal submittedChunks
+
+                try:
+                    chunkStart, spinChunk = next(chunkIter)
+                except StopIteration:
+                    return False
+
+                active.add(
+                    pool.submit(
+                        _wickSpinChunkWorker,
                         (
-                            f"Wick parallel {progressClassName}: Work item: {progressWorkItem}; "
-                            f"Spin chunks done: {doneChunks}/{len(chunks)}; "
-                            f"Spin strings done: {doneSpinStrings}/{len(selectedSpinStrings)}; "
-                            f"RSS: {currentRssKiB()} KiB"
+                            chunkStart,
+                            spinChunk,
+                            connected,
+                            self.ref.maxActiveCumulantRank,
                         ),
-                        flush = True,
                     )
-
-            for summary in sorted(summaries, key = lambda item: item["start"]):
-                mergeIntShard(
-                    parentInterner,
-                    intAcc,
-                    summary["deltas"],
-                    summary["tensors"],
-                    summary["acc"],
                 )
+                submittedChunks += 1
+                return True
+
+            for _ in range(min(maxInFlight, len(chunks))):
+                submitNext()
+
+            while active:
+                done, active = wait(
+                    active,
+                    return_when = FIRST_COMPLETED,
+                )
+
+                for future in done:
+                    summary = future.result()
+                    mergeIntShard(
+                        parentInterner,
+                        intAcc,
+                        summary["deltas"],
+                        summary["tensors"],
+                        summary["acc"],
+                    )
+                    doneChunks += 1
+                    doneSpinStrings += summary["count"]
+
+                    if progressClassName is not None and progressWorkItem is not None:
+                        print(
+                            (
+                                f"Wick parallel {progressClassName}: Work item: {progressWorkItem}; "
+                                f"Spin chunks done: {doneChunks}/{len(chunks)}; "
+                                f"Spin strings done: {doneSpinStrings}/{len(selectedSpinStrings)}; "
+                                f"Submitted: {submittedChunks}/{len(chunks)}; "
+                                f"Active: {len(active)}; Acc terms: {len(intAcc)}; "
+                                f"RSS: {currentRssKiB()} KiB"
+                            ),
+                            flush = True,
+                        )
+
+                    del summary
+                    del future
+                    submitNext()
+
+                if (
+                    gcRssThreshold > 0
+                    and doneChunks % 16 == 0
+                    and currentRssKiB() >= gcRssThreshold
+                ):
+                    gc.collect()
 
             if spinPartial:
                 raise RuntimeError(
@@ -3399,6 +3463,19 @@ class Wick:
             key = (self.spinStringKey(ops), connected)
             if key in self.spinStringCache:
                 result = self.spinStringCache[key]
+                if targetInterner is not None and targetAcc is not None:
+                    shardInterner = FactorInterner()
+                    shardAcc = encodeExprToIntAcc(
+                        shardInterner,
+                        result,
+                    )
+                    mergeIntShard(
+                        targetInterner,
+                        targetAcc,
+                        tuple(shardInterner.deltas),
+                        tuple(shardInterner.tensors),
+                        shardAcc,
+                    )
                 printProgress(
                     "spin_string_done",
                     terms = len(result),
