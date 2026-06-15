@@ -1,6 +1,7 @@
 // lib.rs 
 
 mod canonical;
+mod cluster;
 mod encode;
 mod gno;
 mod hamiltonian;

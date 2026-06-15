@@ -74,6 +74,7 @@ pub struct Delta {
     pub right: Idx,
 }
 
+/// Symbolic tensor kind.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub enum TensorKind {
     /// One-particle RDM.
@@ -90,6 +91,10 @@ pub enum TensorKind {
     Fock,
     /// Two-body Hamiltonian coefficient.
     ERI,
+    /// One-body cluster amplitude.
+    T1,
+    /// Two-body cluster amplitude.
+    T2,
 }
 
 /// Tensor factor.

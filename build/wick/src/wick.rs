@@ -23,6 +23,8 @@ struct Row {
     d: SmallVec<[Id; 4]>,
     /// Tensor factor ids.
     t: SmallVec<[Id; 4]>,
+    /// Wick-block GNO-group masks.
+    e: SmallVec<[u64; 4]>,
 }
 
 /// One possible Wick block in an operator string.
@@ -30,6 +32,8 @@ struct Row {
 struct Block {
     /// Operator-position bit mask covered by this block.
     m: u64,
+    /// GNO-group bit mask touched by this block.
+    g: u64,
     /// Numeric values of this block.
     v: Vec<Row>,
 }
@@ -84,32 +88,6 @@ impl Store {
 /// Final numeric accumulator.
 type Acc = BTreeMap<(Vec<Id>, Vec<Id>), Rat>;
 
-/// Evaluate a metric Wick product.
-/// # Arguments:
-/// - `p`: Product of spin-free GNO groups.
-/// # Returns:
-/// - `Expr`: Spin-free symbolic expression.
-pub fn eval(p: &Product) -> Expr {
-    let mut s = Store::default();
-    let mut acc = Acc::new();
-
-    for ops in spin(p) {
-        let bs = blocks(&ops, &mut s);
-        let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
-
-        for (i, b) in bs.iter().enumerate() {
-            for pos in bits(b.m) {
-                by_pos[pos].push(i);
-            }
-        }
-
-        let full = (1u64 << ops.len()) - 1;
-        walk(full, &bs, &by_pos, Row { c: Rat::one(), d: SmallVec::new(), t: SmallVec::new() }, &mut acc);
-    }
-    
-    canon(out(&s, acc))
-}
-
 /// Expand spin-free GNO groups into spin-orbital strings.
 /// # Arguments:
 /// - `p`: Product of spin-free GNO groups.
@@ -149,7 +127,7 @@ fn blocks(ops: &[Op], s: &mut Store) -> Vec<Block> {
         let v = val(&xs, s);
 
         if !v.is_empty() {
-            out.push(Block { m: mask(&b), v });
+            out.push(Block { m: mask(&b), g: gmask(&b, ops), v });
         }
     }
 
@@ -333,11 +311,16 @@ fn proj(r: usize, us: &[Spin], ls: &[Spin]) -> Vec<(Vec<usize>, Rat)> {
 /// - `by_pos`: Block ids containing each position.
 /// - `cur`: Current numeric product row.
 /// - `acc`: Final accumulator.
+/// - `connected`: Whether to discard disconnected contractions.
+/// - `want`: Required GNO-group mask.
 /// # Returns:
 /// - `()`: Mutates `acc`.
-fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], cur: Row, acc: &mut Acc) {
+fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], cur: Row, acc: &mut Acc, connected: bool, want: u64) {
     if left == 0 {
-        add(acc, cur);
+        if !connected || conn(want, &cur.e) {
+            add(acc, cur);
+        }
+
         return;
     }
 
@@ -364,7 +347,11 @@ fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], cur: Row, acc: &mut Acc)
             next.d.extend_from_slice(&v.d);
             next.t.extend_from_slice(&v.t);
 
-            walk(rest, bs, by_pos, next, acc);
+            if connected {
+                next.e.push(b.g);
+            }
+
+            walk(rest, bs, by_pos, next, acc, connected, want);
         }
     }
 }
@@ -422,7 +409,7 @@ fn out(s: &Store, acc: Acc) -> Expr {
 /// # Returns:
 /// - `Row`: Numeric row.
 fn row(c: Rat, d: &[Id], t: &[Id]) -> Row {
-    Row { c, d: d.iter().copied().collect(), t: t.iter().copied().collect() }
+    Row { c, d: d.iter().copied().collect(), t: t.iter().copied().collect(), e: SmallVec::new() }
 }
 
 /// Return bit positions in a mask.
@@ -449,6 +436,46 @@ fn bits(mut m: u64) -> Vec<usize> {
 /// - `u64`: Bit mask.
 fn mask(xs: &[usize]) -> u64 {
     xs.iter().fold(0, |m, &i| m | (1u64 << i))
+}
+
+/// Build the GNO-group mask touched by a Wick block.
+/// # Arguments:
+/// - `xs`: Operator positions in the block.
+/// - `ops`: Spin-orbital operator string.
+/// # Returns:
+/// - `u64`: Bit mask of GNO group ids.
+fn gmask(xs: &[usize], ops: &[Op]) -> u64 {
+    xs.iter().fold(0, |m, &i| m | (1u64 << ops[i].group))
+}
+
+/// Check whether a set of Wick-block group masks forms a connected graph.
+/// # Arguments:
+/// - `want`: Required group mask.
+/// - `edges`: Wick-block group masks.
+/// # Returns:
+/// - `bool`: Whether all required groups are connected.
+fn conn(want: u64, edges: &[u64]) -> bool {
+    if want.count_ones() <= 1 {
+        return true;
+    }
+
+    let mut seen = 1u64;
+
+    loop {
+        let old = seen;
+
+        for &e in edges {
+            if e & seen != 0 {
+                seen |= e;
+            }
+        }
+
+        if seen == old {
+            break;
+        }
+    }
+
+    seen == want
 }
 
 /// Return the Wick sign from moving a block before the remaining operators.
@@ -494,5 +521,60 @@ fn norm(ops: &[Op]) -> Option<(i64, Vec<Op>, Vec<Op>)> {
     }
 
     Some((if inv % 2 == 0 { 1 } else { -1 }, cs, as_))
+}
+
+/// Evaluate a spin-free product with all Wick contractions retained.
+/// # Arguments:
+/// - `p`: Spin-free product.
+/// # Returns:
+/// - `Expr`: Canonical contracted expression.
+pub fn eval(p: &Product) -> Expr {
+    eval0(p, false)
+}
+
+/// Evaluate a spin-free product keeping only connected contractions.
+/// # Arguments:
+/// - `p`: Spin-free product.
+/// # Returns:
+/// - `Expr`: Canonical connected contracted expression.
+pub fn evalc(p: &Product) -> Expr {
+    eval0(p, true)
+}
+
+/// Evaluate a spin-free product.
+/// # Arguments:
+/// - `p`: Spin-free product.
+/// - `connected`: Whether to discard disconnected contractions.
+/// # Returns:
+/// - `Expr`: Canonical contracted expression.
+fn eval0(p: &Product, connected: bool) -> Expr {
+    let mut s = Store::default();
+    let mut acc = Acc::new();
+    let want = (1u64 << p.groups.len()) - 1;
+
+    for ops in spin(p) {
+        let bs = blocks(&ops, &mut s);
+        let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
+
+        for (i, b) in bs.iter().enumerate() {
+            for pos in bits(b.m) {
+                by_pos[pos].push(i);
+            }
+        }
+
+        let full = (1u64 << ops.len()) - 1;
+
+        walk(
+            full,
+            &bs,
+            &by_pos,
+            Row { c: Rat::one(), d: SmallVec::new(), t: SmallVec::new(), e: SmallVec::new() },
+            &mut acc,
+            connected,
+            want,
+        );
+    }
+
+    canon(out(&s, acc))
 }
 

@@ -5,6 +5,7 @@ use num_rational::Ratio;
 use crate::canonical;
 use crate::hamiltonian;
 use crate::specs;
+use crate::cluster;
 use crate::ir::{Expr, Product, Rational, Tensor, Term};
 use crate::wick;
 
@@ -27,7 +28,35 @@ pub fn r0(name: &str) -> Expr {
         let e = wick::eval(&p);
 
         for x in e {
-            out.push(mul_h(x, h.coeff, h.fac.clone()));
+            out.push(mulh(x, h.coeff, h.fac.clone()));
+        }
+    }
+
+    canonical::canon(out)
+}
+
+/// Generate the first-order residual for one excitation class.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `Expr`: Canonical first-order residual.
+pub fn r1(name: &str) -> Expr {
+    let spec = specs::exc(name);
+    let bra = specs::bra(&spec, 0);
+    let bra_balance = specs::bal(spec.f, true);
+    let mut out = Vec::new();
+
+    for t in cluster::terms(2) {
+        let required = specs::neg(specs::add(bra_balance, t.balance));
+
+        for h in hamiltonian::terms_with_balance(1, required) {
+            let p = join(&join(&bra, &h.op), &t.op);
+            let e = wick::evalc(&p);
+
+            for x in e {
+                let x = mulh(x, h.coeff, h.fac.clone());
+                out.push(mulh(x, t.coeff, t.fac.clone()));
+            }
         }
     }
 
@@ -53,7 +82,7 @@ fn join(a: &Product, b: &Product) -> Product {
 /// - `fac`: Hamiltonian coefficient tensor.
 /// # Returns:
 /// - `Term`: Residual term.
-fn mul_h(mut x: Term, c: Rational, fac: Tensor) -> Term {
+fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
     let a = Rat::new(x.coeff.num, x.coeff.den);
     let b = Rat::new(c.num, c.den);
     let q = a * b;

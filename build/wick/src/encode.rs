@@ -32,6 +32,8 @@ fn tk(x: TensorKind) -> u8 {
         TensorKind::Lambda4 => 5,
         TensorKind::Fock => 6,
         TensorKind::ERI => 7,
+        TensorKind::T1 => 8,
+        TensorKind::T2 => 9,
     }
 }
 

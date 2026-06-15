@@ -1,7 +1,7 @@
 // hamiltonian.rs
 
 use crate::gno::{e1, e2};
-use crate::ir::{Product, Rational, Tensor, TensorKind};
+use crate::ir::{Product, Rational, Tensor, TensorKind, Space};
 use crate::specs;
 
 /// One Hamiltonian operator term.
@@ -14,6 +14,12 @@ pub struct HTerm {
     /// Spin-free operator product.
     pub op: Product,
 }
+
+const SPACES: [crate::ir::Space; 3] = [
+    crate::ir::Space::Core,
+    crate::ir::Space::Active,
+    crate::ir::Space::Virtual,
+];
 
 /// Build an integer rational.
 /// # Arguments:
@@ -92,7 +98,7 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
 /// - `xs`: Free-index names.
 /// - `g`: Group id.
 /// # Returns:
-/// - `Product`: Spin-free operator product.
+/// - `Product`: Spin-free Hamiltonian operator product.
 pub fn op(xs: &[&'static str], g: usize) -> Product {
     match xs.len() {
         2 => {
@@ -127,6 +133,54 @@ pub fn term(xs: &[&'static str], g: usize) -> HTerm {
         fac,
         op: op(xs, g),
     }
+}
+
+/// Build Hamiltonian dummy labels from orbital spaces.
+/// # Arguments:
+/// - `xs`: Orbital spaces.
+/// # Returns:
+/// - `Vec<&'static str>`: Hamiltonian dummy labels.
+fn hlabels(xs: &[Space]) -> Vec<&'static str> {
+    xs.iter()
+        .enumerate()
+        .map(|(i, &x)| specs::hname(x, i))
+        .collect()
+}
+
+/// Build general Hamiltonian terms with a specified orbital-space balance.
+/// # Arguments:
+/// - `g`: Group id.
+/// - `required`: Required orbital-space balance.
+/// # Returns:
+/// - `Vec<HTerm>`: Matching one- and two-body Hamiltonian terms.
+pub fn terms_with_balance(g: usize, required: specs::Balance) -> Vec<HTerm> {
+    let mut out = Vec::new();
+
+    for p in SPACES {
+        for q_ in SPACES {
+            let xs = hlabels(&[p, q_]);
+
+            if specs::bal(&xs, false) == required {
+                out.push(term(&xs, g));
+            }
+        }
+    }
+
+    for p in SPACES {
+        for q_ in SPACES {
+            for r_ in SPACES {
+                for s in SPACES {
+                    let xs = hlabels(&[p, q_, r_, s]);
+
+                    if specs::bal(&xs, false) == required {
+                        out.push(term(&xs, g));
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Build restricted one-body Hamiltonian terms.

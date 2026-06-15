@@ -173,6 +173,18 @@ pub fn product(name: &str) -> Product {
 /// # Returns:
 /// - `Space`: Orbital space.
 pub fn space(name: &str) -> Space {
+    if name.starts_with("hc") || name.starts_with("tc") {
+        return Space::Core;
+    }
+
+    if name.starts_with("ha") || name.starts_with("ta") {
+        return Space::Active;
+    }
+
+    if name.starts_with("hv") || name.starts_with("tv") {
+        return Space::Virtual;
+    }
+
     match name {
         "i" | "j" | "k" | "l" => Space::Core,
         "a" | "b" | "c" | "d" => Space::Virtual,
@@ -187,4 +199,114 @@ pub fn space(name: &str) -> Space {
 /// - `Idx`: Index with inferred space.
 pub fn idx(name: &'static str) -> Idx {
     Idx { name, space: space(name) }
+}
+
+/// Orbital-space balance vector in `(core, active, virtual)` order.
+pub type Balance = [i8; 3];
+
+/// Return the slot of an orbital space in a balance vector.
+/// # Arguments:
+/// - `x`: Orbital space.
+/// # Returns:
+/// - `usize`: Balance-vector slot.
+fn sid(x: Space) -> usize {
+    match x {
+        Space::Core => 0,
+        Space::Active => 1,
+        Space::Virtual => 2,
+    }
+}
+
+/// Add two orbital-space balances.
+/// # Arguments:
+/// - `a`: First balance.
+/// - `b`: Second balance.
+/// # Returns:
+/// - `Balance`: Elementwise sum.
+pub fn add(mut a: Balance, b: Balance) -> Balance {
+    for i in 0..3 {
+        a[i] += b[i];
+    }
+
+    a
+}
+
+/// Negate an orbital-space balance.
+/// # Arguments:
+/// - `a`: Input balance.
+/// # Returns:
+/// - `Balance`: Elementwise negation.
+pub fn neg(a: Balance) -> Balance {
+    [-a[0], -a[1], -a[2]]
+}
+
+/// Compute the orbital-space balance of an excitation pattern.
+/// # Arguments:
+/// - `xs`: Free-index names, with creation labels first and annihilation labels second.
+/// - `daggered`: Whether to compute the balance of the daggered operator.
+/// # Returns:
+/// - `Balance`: Net `(core, active, virtual)` balance.
+pub fn bal(xs: &[&'static str], daggered: bool) -> Balance {
+    let mut out = [0, 0, 0];
+    let r = xs.len() / 2;
+
+    for &x in &xs[..r] {
+        let s = sid(space(x));
+        out[s] += if daggered { -1 } else { 1 };
+    }
+
+    for &x in &xs[r..] {
+        let s = sid(space(x));
+        out[s] += if daggered { 1 } else { -1 };
+    }
+
+    out
+}
+
+/// Construct a Hamiltonian dummy-index name.
+/// # Arguments:
+/// - `space`: Orbital space.
+/// - `slot`: Dummy slot.
+/// # Returns:
+/// - `&'static str`: Hamiltonian dummy-index name.
+pub fn hname(space: Space, slot: usize) -> &'static str {
+    const HC: [&str; 4] = ["hc0", "hc1", "hc2", "hc3"];
+    const HA: [&str; 4] = ["ha0", "ha1", "ha2", "ha3"];
+    const HV: [&str; 4] = ["hv0", "hv1", "hv2", "hv3"];
+
+    match space {
+        Space::Core => HC[slot],
+        Space::Active => HA[slot],
+        Space::Virtual => HV[slot],
+    }
+}
+
+/// Construct a cluster-amplitude dummy-index name.
+/// # Arguments:
+/// - `space`: Orbital space.
+/// - `slot`: Dummy slot.
+/// # Returns:
+/// - `&'static str`: Cluster dummy-index name.
+pub fn tname(space: Space, slot: usize) -> &'static str {
+    const TC: [&str; 4] = ["tc0", "tc1", "tc2", "tc3"];
+    const TA: [&str; 4] = ["ta0", "ta1", "ta2", "ta3"];
+    const TV: [&str; 4] = ["tv0", "tv1", "tv2", "tv3"];
+
+    match space {
+        Space::Core => TC[slot],
+        Space::Active => TA[slot],
+        Space::Virtual => TV[slot],
+    }
+}
+
+/// Convert excitation-class labels into cluster dummy labels.
+/// # Arguments:
+/// - `xs`: Excitation-class free-index names.
+/// # Returns:
+/// - `Vec<&'static str>`: Cluster dummy-index labels with matching spaces.
+pub fn tlabels(xs: &[&'static str]) -> Vec<&'static str> {
+    xs.iter()
+        .enumerate()
+        .map(|(i, &x)| tname(space(x), i))
+        .collect()
 }
