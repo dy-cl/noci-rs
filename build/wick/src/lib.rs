@@ -2,11 +2,14 @@
 
 mod canonical;
 mod encode;
+mod gno;
+mod hamiltonian;
 mod ir;
-pub mod overlap;
 mod schema;
 mod specs;
 mod spinsum;
+pub mod overlap;
+pub mod residual;
 pub mod target;
 pub mod wick;
 

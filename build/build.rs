@@ -15,7 +15,7 @@ fn main() {
 
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
 
-    let terms = noci_wick_build::overlap_terms();
+    let terms = wick_build::overlap_terms();
     let bytes = bincode::DefaultOptions::new()
         .with_varint_encoding()
         .serialize(&terms)

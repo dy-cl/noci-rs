@@ -25,11 +25,13 @@ fn sp(x: Space) -> u8 {
 /// - `u8`: Runtime tensor id.
 fn tk(x: TensorKind) -> u8 {
     match x {
-        TensorKind::Gamma1 => 0,
-        TensorKind::Theta => 1,
-        TensorKind::Lambda2 => 4,
-        TensorKind::Lambda3 => 5,
-        TensorKind::Lambda4 => 6,
+        TensorKind::Gamma1 => 1,
+        TensorKind::Theta => 2,
+        TensorKind::Lambda2 => 3,
+        TensorKind::Lambda3 => 4,
+        TensorKind::Lambda4 => 5,
+        TensorKind::Fock => 6,
+        TensorKind::ERI => 7,
     }
 }
 

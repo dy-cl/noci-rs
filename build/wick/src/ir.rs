@@ -74,19 +74,22 @@ pub struct Delta {
     pub right: Idx,
 }
 
-/// Tensor kind.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub enum TensorKind {
-    /// One-particle active RDM.
+    /// One-particle RDM.
     Gamma1,
-    /// Active hole density.
+    /// One-hole RDM.
     Theta,
-    /// Two-particle cumulant.
+    /// Two-body cumulant.
     Lambda2,
-    /// Three-particle cumulant.
+    /// Three-body cumulant.
     Lambda3,
-    /// Four-particle cumulant.
+    /// Four-body cumulant.
     Lambda4,
+    /// One-body Hamiltonian coefficient.
+    Fock,
+    /// Two-body Hamiltonian coefficient.
+    ERI,
 }
 
 /// Tensor factor.

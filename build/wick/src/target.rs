@@ -389,29 +389,80 @@ fn c16() -> Expr {
     ]
 }
 
+/// Multiply a target term by a Hamiltonian coefficient.
+/// # Arguments:
+/// - `x`: Metric target term.
+/// - `c`: Hamiltonian scalar prefactor.
+/// - `fac`: Hamiltonian coefficient tensor.
+/// # Returns:
+/// - `Term`: Residual target term.
+fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
+    let a = num_rational::Ratio::new(x.coeff.num, x.coeff.den);
+    let b = num_rational::Ratio::new(c.num, c.den);
+    let q = a * b;
+
+    x.coeff = Rational { num: *q.numer(), den: *q.denom() };
+    x.tensors.push(fac);
+    x
+}
+
+/// Build one zeroth-order residual target from metric targets.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `Expr`: Zeroth-order residual target.
+pub fn r0(name: &str) -> Expr {
+    let x = crate::specs::exc(name);
+    let mut out = Vec::new();
+
+    for b in crate::specs::BLOCKS.iter().filter(|b| b.left == x.class) {
+        let Some(expr) = tblock(b.name) else {
+            continue;
+        };
+
+        let (c, fac) = crate::hamiltonian::fac(b.rf);
+
+        for t in expr {
+            out.push(mulh(t, c, fac.clone()));
+        }
+    }
+
+    crate::canonical::canon(out)
+}
+
+/// Return the Appendix C target expression if available.
+/// # Arguments:
+/// - `name`: Metric block name.
+/// # Returns:
+/// - `Option<Expr>`: Target expression if implemented.
+fn tblock(name: &str) -> Option<Expr> {
+    match name {
+        "C1" => Some(c1()),
+        "C2" => Some(c2()),
+        "C3" => Some(c3()),
+        "C4" => Some(c4()),
+        "C5" => Some(c5()),
+        "C6" => Some(c6()),
+        "C7" => Some(c7()),
+        "C8" => Some(c8()),
+        "C9" => Some(c9()),
+        "C10" => Some(c10()),
+        "C11" => Some(c11()),
+        "C12" => Some(c12()),
+        "C13" => Some(c13()),
+        "C14" => Some(c14()),
+        "C15" => Some(c15()),
+        "C16" => Some(c16()),
+        _ => None,
+    }
+}
+
 /// Return the Appendix C target expression for one metric block.
 /// # Arguments:
 /// - `name`: Metric block name.
 /// # Returns:
 /// - `Expr`: Target expression.
 pub fn block(name: &str) -> Expr {
-    match name {
-        "C1" => c1(),
-        "C2" => c2(),
-        "C3" => c3(),
-        "C4" => c4(),
-        "C5" => c5(),
-        "C6" => c6(),
-        "C7" => c7(),
-        "C8" => c8(),
-        "C9" => c9(),
-        "C10" => c10(),
-        "C11" => c11(),
-        "C12" => c12(),
-        "C13" => c13(),
-        "C14" => c14(),
-        "C15" => c15(),
-        "C16" => c16(),
-        _ => panic!("no Appendix C target for {name}"),
-    }
+    tblock(name).unwrap_or_else(|| panic!("no Appendix C target for {name}"))
 }
+
