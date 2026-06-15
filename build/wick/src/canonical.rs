@@ -43,9 +43,9 @@ fn sum(e: Expr) -> Expr {
     let mut acc = BTreeMap::<(Vec<Delta>, Vec<Tensor>), Rat>::new();
 
     for mut x in e {
-        x.deltas.sort();
+        x.deltas.sort_unstable();
         x.tensors = x.tensors.into_iter().map(ten).collect();
-        x.tensors.sort();
+        x.tensors.sort_unstable();
 
         let key = (x.deltas, x.tensors);
         let c = Rat::new(x.coeff.num, x.coeff.den);
@@ -132,7 +132,7 @@ fn spar(e: Expr) -> Expr {
         }
 
         let mut lo = lam.lower.clone();
-        lo.sort();
+        lo.sort_unstable();
 
         let Some(p) = perm(&lo, &lam.lower) else {
             out.push(term);
@@ -211,9 +211,8 @@ fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
         return cs;
     }
 
-    let ps = spinsum::perms(n);
-    let g = spinsum::gram(n);
-    let y = img(&ps, &g, &cs);
+    let (ps, g) = spinsum::data(n).expect("Cached spin sparsifier rank missing.");
+    let y = img(ps, g, &cs);
     let m = cs.len();
 
     for size in 1..=m {

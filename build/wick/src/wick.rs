@@ -1,10 +1,12 @@
 // wick.rs
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use itertools::Itertools;
 use num_rational::Ratio;
 use num_traits::{One, Zero};
+use rayon::prelude::*;
 use smallvec::SmallVec;
 
 pub use crate::canonical::canon;
@@ -13,6 +15,9 @@ use crate::ir::{Delta, Expr, Op, OpKind, Product, Rational, Space, Spin, Tensor,
 
 type Rat = Ratio<i64>;
 type Id = u32;
+type ProjKey = (usize, u8, u8);
+
+static PROJ: OnceLock<BTreeMap<ProjKey, Vec<(Vec<usize>, Rat)>>> = OnceLock::new();
 
 /// One numeric Wick product row.
 #[derive(Clone, Debug)]
@@ -286,12 +291,42 @@ fn val(ops: &[Op], s: &mut Store) -> Vec<Row> {
 /// # Returns:
 /// - `Vec<(Vec<usize>, Rat)>`: Lower-index permutations and coefficients.
 fn proj(r: usize, us: &[Spin], ls: &[Spin]) -> Vec<(Vec<usize>, Rat)> {
-    let ps = spinsum::perms(r);
-    let g = spinsum::gram(r);
+    let key = (r, sbits(us), sbits(ls));
+    PROJ.get_or_init(ptab)[&key].clone()
+}
+
+/// Build all small-rank spin projections.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `BTreeMap<ProjKey, Vec<(Vec<usize>, Rat)>>`: Projection table.
+fn ptab() -> BTreeMap<ProjKey, Vec<(Vec<usize>, Rat)>> {
+    let mut out = BTreeMap::new();
+
+    for r in 1..=4 {
+        for us in 0..(1u8 << r) {
+            for ls in 0..(1u8 << r) {
+                out.insert((r, us, ls), pval(r, us, ls));
+            }
+        }
+    }
+
+    out
+}
+
+/// Build one small-rank spin projection.
+/// # Arguments:
+/// - `r`: Cumulant rank.
+/// - `us`: Upper spin bits.
+/// - `ls`: Lower spin bits.
+/// # Returns:
+/// - `Vec<(Vec<usize>, Rat)>`: Lower-index permutations and coefficients.
+fn pval(r: usize, us: u8, ls: u8) -> Vec<(Vec<usize>, Rat)> {
+    let (ps, g) = spinsum::data(r).expect("Cached spin projection rank missing.");
 
     let b = ps.iter()
         .map(|p| {
-            if (0..r).all(|i| us[i] == ls[p[i]]) {
+            if (0..r).all(|i| bit(us, i) == bit(ls, p[i])) {
                 Rat::from_integer(spinsum::sgn(p))
             } else {
                 Rat::zero()
@@ -299,32 +334,59 @@ fn proj(r: usize, us: &[Spin], ls: &[Spin]) -> Vec<(Vec<usize>, Rat)> {
         })
         .collect::<Vec<_>>();
 
-    let x = spinsum::solve(g, b).expect("Inconsistent spin projection.");
+    let x = spinsum::solve(g.to_vec(), b).expect("Inconsistent spin projection.");
 
-    ps.into_iter().zip(x).filter(|(_, c)| !c.is_zero()).collect()
+    ps.iter().cloned().zip(x).filter(|(_, c)| !c.is_zero()).collect()
 }
 
-/// Recursively enumerate exact covers of one spin string.
+/// Return one spin bit.
+/// # Arguments:
+/// - `x`: Spin bit field.
+/// - `i`: Bit index.
+/// # Returns:
+/// - `u8`: Spin bit.
+fn bit(x: u8, i: usize) -> u8 {
+    (x >> i) & 1
+}
+
+/// Encode spin labels into a compact cache key.
+/// # Arguments:
+/// - `xs`: Spin labels.
+/// # Returns:
+/// - `u8`: One bit per spin label.
+fn sbits(xs: &[Spin]) -> u8 {
+    xs.iter().enumerate().fold(0, |bits, (i, s)| {
+        let bit = match s {
+            Spin::Alpha => 0,
+            Spin::Beta => 1,
+        };
+
+        bits | (bit << i)
+    })
+}
+
+/// Recursively enumerate exact-cover suffixes of one spin string.
 /// # Arguments:
 /// - `left`: Remaining operator-position mask.
 /// - `bs`: Wick blocks.
 /// - `by_pos`: Block ids containing each position.
-/// - `cur`: Current numeric product row.
-/// - `acc`: Final accumulator.
 /// - `connected`: Whether to discard disconnected contractions.
-/// - `want`: Required GNO-group mask.
+/// - `memo`: Exact-cover suffix cache.
 /// # Returns:
-/// - `()`: Mutates `acc`.
-fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], cur: Row, acc: &mut Acc, connected: bool, want: u64) {
+/// - `Vec<Row>`: Numeric suffix rows.
+fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], connected: bool, memo: &mut BTreeMap<u64, Vec<Row>>) -> Vec<Row> {
     if left == 0 {
-        if !connected || conn(want, &cur.e) {
-            add(acc, cur);
-        }
-
-        return;
+        return vec![Row { c: Rat::one(), d: SmallVec::new(), t: SmallVec::new(), e: SmallVec::new() }];
     }
 
-    let i = left.trailing_zeros() as usize;
+    if let Some(x) = memo.get(&left) {
+        return x.clone();
+    }
+
+    let Some(i) = pick(left, bs, by_pos) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
 
     for &bi in &by_pos[i] {
         let b = &bs[bi];
@@ -335,25 +397,72 @@ fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], cur: Row, acc: &mut Acc,
 
         let rest = left & !b.m;
         let sgn = cross(b.m, rest);
+        let tail = walk(rest, bs, by_pos, connected, memo);
 
         for v in &b.v {
-            let mut next = cur.clone();
-            next.c *= &v.c;
+            for w in &tail {
+                let mut row = Row {
+                    c: v.c.clone() * w.c.clone(),
+                    d: v.d.clone(),
+                    t: v.t.clone(),
+                    e: SmallVec::new(),
+                };
 
-            if sgn < 0 {
-                next.c = -next.c;
+                if sgn < 0 {
+                    row.c = -row.c;
+                }
+
+                row.d.extend_from_slice(&w.d);
+                row.t.extend_from_slice(&w.t);
+
+                if connected {
+                    row.e.push(b.g);
+                    row.e.extend_from_slice(&w.e);
+                }
+
+                out.push(row);
             }
-
-            next.d.extend_from_slice(&v.d);
-            next.t.extend_from_slice(&v.t);
-
-            if connected {
-                next.e.push(b.g);
-            }
-
-            walk(rest, bs, by_pos, next, acc, connected, want);
         }
     }
+
+    memo.insert(left, out.clone());
+    out
+}
+
+/// Pick remaining position with fewest viable Wick blocks.
+/// # Arguments:
+/// - `left`: Remaining operator-position mask.
+/// - `bs`: Wick blocks.
+/// - `by_pos`: Block ids containing each position.
+/// # Returns:
+/// - `Option<usize>`: Best operator-position index.
+fn pick(mut left: u64, bs: &[Block], by_pos: &[Vec<usize>]) -> Option<usize> {
+    let rem = left;
+    let mut best = None;
+    let mut min = usize::MAX;
+
+    while left != 0 {
+        let b = left & left.wrapping_neg();
+        let i = b.trailing_zeros() as usize;
+        let n = by_pos[i].iter().filter(|&&bi| bs[bi].m & rem == bs[bi].m).count();
+
+        if n == 0 {
+            return None;
+        }
+
+        if n < min {
+            best = Some(i);
+            min = n;
+
+            if n == 1 {
+                break;
+            }
+        }
+
+        left ^= b;
+    }
+
+    best
 }
 
 /// Accumulate one numeric row.
@@ -548,33 +657,43 @@ pub fn evalc(p: &Product) -> Expr {
 /// # Returns:
 /// - `Expr`: Canonical contracted expression.
 fn eval0(p: &Product, connected: bool) -> Expr {
-    let mut s = Store::default();
-    let mut acc = Acc::new();
     let want = (1u64 << p.groups.len()) - 1;
 
-    for ops in spin(p) {
-        let bs = blocks(&ops, &mut s);
-        let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
+    let e = spin(p)
+        .into_par_iter()
+        .flat_map(|ops| eval1(&ops, connected, want))
+        .collect();
 
-        for (i, b) in bs.iter().enumerate() {
-            for pos in bits(b.m) {
-                by_pos[pos].push(i);
-            }
-        }
-
-        let full = (1u64 << ops.len()) - 1;
-
-        walk(
-            full,
-            &bs,
-            &by_pos,
-            Row { c: Rat::one(), d: SmallVec::new(), t: SmallVec::new(), e: SmallVec::new() },
-            &mut acc,
-            connected,
-            want,
-        );
-    }
-
-    canon(out(&s, acc))
+    canon(e)
 }
 
+/// Evaluate one spin-orbital string.
+/// # Arguments:
+/// - `ops`: Spin-orbital operator string.
+/// - `connected`: Whether to discard disconnected contractions.
+/// - `want`: Required GNO-group mask.
+/// # Returns:
+/// - `Expr`: Contracted expression.
+fn eval1(ops: &[Op], connected: bool, want: u64) -> Expr {
+    let mut s = Store::default();
+    let mut acc = Acc::new();
+    let bs = blocks(ops, &mut s);
+    let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
+
+    for (i, b) in bs.iter().enumerate() {
+        for pos in bits(b.m) {
+            by_pos[pos].push(i);
+        }
+    }
+
+    let full = (1u64 << ops.len()) - 1;
+    let mut memo = BTreeMap::new();
+
+    for row in walk(full, &bs, &by_pos, connected, &mut memo) {
+        if !connected || conn(want, &row.e) {
+            add(&mut acc, row);
+        }
+    }
+
+    out(&s, acc)
+}

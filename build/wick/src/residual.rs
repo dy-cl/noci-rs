@@ -1,6 +1,7 @@
 // residual.rs
 
 use num_rational::Ratio;
+use rayon::prelude::*;
 
 use crate::canonical;
 use crate::hamiltonian;
@@ -83,11 +84,16 @@ pub fn r2(name: &str) -> Expr {
     let bra = specs::bra(&spec, 0);
     let brab = specs::bal(spec.f, true);
     let leftt = cluster::terms(2, 'l');
-    let rightt = cluster::terms(3, 'l');
-    let mut out = Vec::new();
+    let rightt = cluster::terms(3, 'r');
+    let pairs = leftt
+        .iter()
+        .flat_map(|l| rightt.iter().map(move |r| (l, r)))
+        .collect::<Vec<_>>();
 
-    for l in &leftt {
-        for r in &rightt {
+    let out = pairs
+        .par_iter()
+        .flat_map(|&(l, r)| {
+            let mut out = Vec::new();
             let ttb = specs::add(l.balance, r.balance);
             let required = specs::neg(specs::add(brab, ttb));
 
@@ -102,8 +108,10 @@ pub fn r2(name: &str) -> Expr {
                     out.push(mulh(x, c, r.fac.clone()));
                 }
             }
-        }
-    }
+
+            canonical::canon(out)
+        })
+        .collect::<Vec<_>>();
 
     canonical::canon(out)
 }

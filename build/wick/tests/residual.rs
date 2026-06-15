@@ -62,16 +62,6 @@ macro_rules! residual_test {
     };
 }
 
-macro_rules! residual_ignored_test {
-    ($test:ident, $order:ident, $class:literal) => {
-        #[test]
-        #[ignore]
-        fn $test() {
-            check(Order::$order, $class);
-        }
-    };
-}
-
 residual_test!(r0_ctoa, R0, "CToA");
 residual_test!(r0_atoa, R0, "AToA");
 residual_test!(r0_atov, R0, "AToV");
@@ -99,14 +89,14 @@ residual_test!(r1_aatovv, R1, "AAToVV");
 residual_test!(r1_aatoaa, R1, "AAToAA");
 
 residual_test!(r2_ctoa, R2, "CToA");
-residual_ignored_test!(r2_atoa, R2, "AToA");
-residual_ignored_test!(r2_atov, R2, "AToV");
-residual_ignored_test!(r2_catoav, R2, "CAToAV");
-residual_ignored_test!(r2_catova, R2, "CAToVA");
-residual_ignored_test!(r2_catovv, R2, "CAToVV");
-residual_ignored_test!(r2_cctoav, R2, "CCToAV");
-residual_ignored_test!(r2_cctoaa, R2, "CCToAA");
-residual_ignored_test!(r2_catoaa, R2, "CAToAA");
-residual_ignored_test!(r2_aatoav, R2, "AAToAV");
-residual_ignored_test!(r2_aatovv, R2, "AAToVV");
-residual_ignored_test!(r2_aatoaa, R2, "AAToAA");
+residual_test!(r2_atoa, R2, "AToA");
+residual_test!(r2_atov, R2, "AToV");
+residual_test!(r2_catoav, R2, "CAToAV");
+residual_test!(r2_catova, R2, "CAToVA");
+residual_test!(r2_catovv, R2, "CAToVV");
+residual_test!(r2_cctoav, R2, "CCToAV");
+residual_test!(r2_cctoaa, R2, "CCToAA");
+residual_test!(r2_catoaa, R2, "CAToAA");
+residual_test!(r2_aatoav, R2, "AAToAV");
+residual_test!(r2_aatovv, R2, "AAToVV");
+residual_test!(r2_aatoaa, R2, "AAToAA");

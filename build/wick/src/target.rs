@@ -1,6 +1,7 @@
 // target.rs
 
 use crate::ir::{a, c, v, Delta, Expr, Product, Rational, Space, Tensor, TensorKind, Term};
+use rayon::prelude::*;
 
 const SPACES: [Space; 3] = [Space::Core, Space::Active, Space::Virtual];
 
@@ -563,7 +564,7 @@ pub fn r1(name: &str) -> Expr {
     crate::canonical::canon(out)
 }
 
-/// Build one second-order residual target by unfiltered Hamiltonian enumeration.
+/// Build one second-order residual target by balance-filtered Hamiltonian enumeration.
 /// # Arguments:
 /// - `name`: Excitation class name.
 /// # Returns:
@@ -571,14 +572,21 @@ pub fn r1(name: &str) -> Expr {
 pub fn r2(name: &str) -> Expr {
     let spec = crate::specs::exc(name);
     let bra = crate::specs::bra(&spec, 0);
-    let hs = hterms(1);
+    let brab = crate::specs::bal(spec.f, true);
     let ls = crate::cluster::terms(2, 'l');
     let rs = crate::cluster::terms(3, 'r');
-    let mut out = Vec::new();
+    let pairs = ls
+        .iter()
+        .flat_map(|l| rs.iter().map(move |r_| (l, r_)))
+        .collect::<Vec<_>>();
+    let out = pairs
+        .par_iter()
+        .flat_map(|&(l, r_)| {
+            let mut out = Vec::new();
+            let ttb = crate::specs::add(l.balance, r_.balance);
+            let req = crate::specs::neg(crate::specs::add(brab, ttb));
 
-    for l in &ls {
-        for r_ in &rs {
-            for h in &hs {
+            for h in crate::hamiltonian::terms_with_balance(1, req) {
                 let p = join(&join(&join(&bra, &h.op), &l.op), &r_.op);
                 let e = crate::wick::evalc(&p);
 
@@ -589,10 +597,10 @@ pub fn r2(name: &str) -> Expr {
                     out.push(mulf(x, c, r_.fac.clone()));
                 }
             }
-        }
-    }
+
+            crate::canonical::canon(out)
+        })
+        .collect::<Vec<_>>();
 
     crate::canonical::canon(out)
 }
-
-

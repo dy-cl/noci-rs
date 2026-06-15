@@ -3,26 +3,65 @@
 use itertools::Itertools;
 use num_rational::Ratio;
 use num_traits::Zero;
+use std::sync::OnceLock;
 
 pub type Rat = Ratio<i64>;
 
-/// Return all permutations of `0..n`.
+/// Cached spin algebra data.
+#[derive(Clone, Debug)]
+struct Basis {
+    /// Permutations.
+    ps: Vec<Vec<usize>>,
+    /// Spin Gram matrix.
+    g: Vec<Vec<Rat>>,
+}
+
+static BASES: OnceLock<[Basis; 5]> = OnceLock::new();
+
+/// Return cached spin algebra basis.
+/// # Arguments:
+/// - `n`: Number of elements.
+/// # Returns:
+/// - `Option<&'static Basis>`: Cached basis.
+fn basis(n: usize) -> Option<&'static Basis> {
+    BASES.get_or_init(|| std::array::from_fn(make)).get(n)
+}
+
+/// Return cached spin algebra data.
+/// # Arguments:
+/// - `n`: Number of elements.
+/// # Returns:
+/// - `Option<(&'static [Vec<usize>], &'static [Vec<Rat>])>`: Permutations and Gram matrix.
+pub fn data(n: usize) -> Option<(&'static [Vec<usize>], &'static [Vec<Rat>])> {
+    basis(n).map(|b| (b.ps.as_slice(), b.g.as_slice()))
+}
+
+/// Build one cached basis.
+/// # Arguments:
+/// - `n`: Number of elements.
+/// # Returns:
+/// - `Basis`: Permutations and Gram matrix.
+fn make(n: usize) -> Basis {
+    let ps = perms0(n);
+    let g = gram0(&ps);
+    Basis { ps, g }
+}
+
+/// Return all permutations without cache lookup.
 /// # Arguments:
 /// - `n`: Number of elements.
 /// # Returns:
 /// - `Vec<Vec<usize>>`: Permutations.
-pub fn perms(n: usize) -> Vec<Vec<usize>> {
+fn perms0(n: usize) -> Vec<Vec<usize>> {
     (0..n).permutations(n).collect()
 }
 
-/// Build the spin Gram matrix.
+/// Build the spin Gram matrix from permutations.
 /// # Arguments:
-/// - `n`: Cumulant rank.
+/// - `ps`: Permutations.
 /// # Returns:
 /// - `Vec<Vec<Rat>>`: Gram matrix.
-pub fn gram(n: usize) -> Vec<Vec<Rat>> {
-    let ps = perms(n);
-
+fn gram0(ps: &[Vec<usize>]) -> Vec<Vec<Rat>> {
     ps.iter()
         .map(|p| {
             ps.iter()
