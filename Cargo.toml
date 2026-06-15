@@ -2,8 +2,10 @@
 name = "noci-rs"
 version = "0.1.1"
 edition = "2024"
+build = "build/build.rs"
 
 [build-dependencies]
+wick-build = {path = "build/wick"}
 bincode = {version = "1"}
 serde = {version = "1", features = ["derive", "rc"]}
 serde_json = {version = "1", features = ["std"], default-features = false}
@@ -26,6 +28,12 @@ itertools = {version = "0.13"}
 
 [dev-dependencies]
 serial_test = {version = "3"}
+
+[workspace]
+members = [
+    ".",
+    "build/wick",
+]
 
 [features]
 default = []

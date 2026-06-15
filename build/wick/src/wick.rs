@@ -1,0 +1,498 @@
+// wick.rs
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use itertools::Itertools;
+use num_rational::Ratio;
+use num_traits::{One, Zero};
+use smallvec::SmallVec;
+
+pub use crate::canonical::canon;
+use crate::spinsum;
+use crate::ir::{Delta, Expr, Op, OpKind, Product, Rational, Space, Spin, Tensor, TensorKind, Term};
+
+type Rat = Ratio<i64>;
+type Id = u32;
+
+/// One numeric Wick product row.
+#[derive(Clone, Debug)]
+struct Row {
+    /// Exact rational coefficient.
+    c: Rat,
+    /// Delta factor ids.
+    d: SmallVec<[Id; 4]>,
+    /// Tensor factor ids.
+    t: SmallVec<[Id; 4]>,
+}
+
+/// One possible Wick block in an operator string.
+#[derive(Clone, Debug)]
+struct Block {
+    /// Operator-position bit mask covered by this block.
+    m: u64,
+    /// Numeric values of this block.
+    v: Vec<Row>,
+}
+
+/// Interned scalar factors.
+#[derive(Clone, Debug, Default)]
+struct Store {
+    /// Delta ids.
+    ds: BTreeMap<Delta, Id>,
+    /// Tensor ids.
+    ts: BTreeMap<Tensor, Id>,
+    /// Delta factors by id.
+    d: Vec<Delta>,
+    /// Tensor factors by id.
+    t: Vec<Tensor>,
+}
+
+impl Store {
+    /// Intern one delta factor.
+    /// # Arguments:
+    /// - `x`: Delta factor.
+    /// # Returns:
+    /// - `Id`: One-based factor id.
+    fn delta(&mut self, x: Delta) -> Id {
+        if let Some(&id) = self.ds.get(&x) {
+            return id;
+        }
+
+        let id = self.d.len() as Id + 1;
+        self.ds.insert(x, id);
+        self.d.push(x);
+        id
+    }
+
+    /// Intern one tensor factor.
+    /// # Arguments:
+    /// - `x`: Tensor factor.
+    /// # Returns:
+    /// - `Id`: One-based factor id.
+    fn tensor(&mut self, x: Tensor) -> Id {
+        if let Some(&id) = self.ts.get(&x) {
+            return id;
+        }
+
+        let id = self.t.len() as Id + 1;
+        self.ts.insert(x.clone(), id);
+        self.t.push(x);
+        id
+    }
+}
+
+/// Final numeric accumulator.
+type Acc = BTreeMap<(Vec<Id>, Vec<Id>), Rat>;
+
+/// Evaluate a metric Wick product.
+/// # Arguments:
+/// - `p`: Product of spin-free GNO groups.
+/// # Returns:
+/// - `Expr`: Spin-free symbolic expression.
+pub fn eval(p: &Product) -> Expr {
+    let mut s = Store::default();
+    let mut acc = Acc::new();
+
+    for ops in spin(p) {
+        let bs = blocks(&ops, &mut s);
+        let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
+
+        for (i, b) in bs.iter().enumerate() {
+            for pos in bits(b.m) {
+                by_pos[pos].push(i);
+            }
+        }
+
+        let full = (1u64 << ops.len()) - 1;
+        walk(full, &bs, &by_pos, Row { c: Rat::one(), d: SmallVec::new(), t: SmallVec::new() }, &mut acc);
+    }
+    
+    canon(out(&s, acc))
+}
+
+/// Expand spin-free GNO groups into spin-orbital strings.
+/// # Arguments:
+/// - `p`: Product of spin-free GNO groups.
+/// # Returns:
+/// - `Vec<Vec<Op>>`: Spin-orbital operator strings.
+fn spin(p: &Product) -> Vec<Vec<Op>> {
+    let mut out = vec![Vec::new()];
+
+    for g in &p.groups {
+        let mut next = Vec::new();
+
+        for a in &out {
+            for b in &g.strings {
+                let mut x = a.clone();
+                x.extend_from_slice(b);
+                next.push(x);
+            }
+        }
+
+        out = next;
+    }
+
+    out
+}
+
+/// Build all nonzero non-internal Wick blocks for one spin string.
+/// # Arguments:
+/// - `ops`: Spin-orbital operator string.
+/// - `s`: Factor store.
+/// # Returns:
+/// - `Vec<Block>`: Allowed Wick blocks.
+fn blocks(ops: &[Op], s: &mut Store) -> Vec<Block> {
+    let mut out = Vec::new();
+
+    for b in frozen(ops).into_iter().chain(active(ops)) {
+        let xs = b.iter().map(|&i| ops[i]).collect::<Vec<_>>();
+        let v = val(&xs, s);
+
+        if !v.is_empty() {
+            out.push(Block { m: mask(&b), v });
+        }
+    }
+
+    out
+}
+
+/// Enumerate core and virtual pair contractions.
+/// # Arguments:
+/// - `ops`: Spin-orbital operator string.
+/// # Returns:
+/// - `Vec<Vec<usize>>`: Operator-position blocks.
+fn frozen(ops: &[Op]) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+
+    for (i, j) in (0..ops.len()).tuple_combinations() {
+        let a = ops[i];
+        let b = ops[j];
+
+        if a.group == b.group || a.spin != b.spin || a.idx.space != b.idx.space {
+            continue;
+        }
+
+        let core = a.idx.space == Space::Core && a.kind == OpKind::Create && b.kind == OpKind::Annihilate;
+        let virt = a.idx.space == Space::Virtual && a.kind == OpKind::Annihilate && b.kind == OpKind::Create;
+
+        if core || virt {
+            out.push(vec![i, j]);
+        }
+    }
+
+    out
+}
+
+/// Enumerate active cumulant blocks up to rank four.
+/// # Arguments:
+/// - `ops`: Spin-orbital operator string.
+/// # Returns:
+/// - `Vec<Vec<usize>>`: Operator-position blocks.
+fn active(ops: &[Op]) -> Vec<Vec<usize>> {
+    let cs = ops.iter().enumerate()
+        .filter(|(_, o)| o.idx.space == Space::Active && o.kind == OpKind::Create)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+
+    let as_ = ops.iter().enumerate()
+        .filter(|(_, o)| o.idx.space == Space::Active && o.kind == OpKind::Annihilate)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::new();
+
+    for r in 1..=cs.len().min(as_.len()).min(4) {
+        for c in cs.iter().copied().combinations(r) {
+            for a in as_.iter().copied().combinations(r) {
+                let mut b = c.clone();
+                b.extend(a.iter().copied());
+                b.sort_unstable();
+
+                let groups = b.iter().map(|&i| ops[i].group).collect::<BTreeSet<_>>();
+                if groups.len() == 1 {
+                    continue;
+                }
+
+                let ca = c.iter().filter(|&&i| ops[i].spin == Spin::Alpha).count();
+                let aa = a.iter().filter(|&&i| ops[i].spin == Spin::Alpha).count();
+
+                if ca == aa {
+                    out.push(b);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Evaluate one Wick block.
+/// # Arguments:
+/// - `ops`: Operators in the block.
+/// - `s`: Factor store.
+/// # Returns:
+/// - `Vec<Row>`: Numeric value of the block.
+fn val(ops: &[Op], s: &mut Store) -> Vec<Row> {
+    if ops.len() == 2 {
+        let a = ops[0];
+        let b = ops[1];
+
+        if a.spin != b.spin || a.idx.space != b.idx.space {
+            return Vec::new();
+        }
+
+        if a.idx.space == Space::Core && a.kind == OpKind::Create && b.kind == OpKind::Annihilate {
+            return vec![row(Rat::one(), &[s.delta(Delta { left: a.idx, right: b.idx })], &[])];
+        }
+        
+        if a.idx.space == Space::Virtual && a.kind == OpKind::Annihilate && b.kind == OpKind::Create {
+            return vec![row(Rat::one(), &[s.delta(Delta { left: b.idx, right: a.idx })], &[])];
+        }
+
+        if a.idx.space == Space::Active && a.kind == OpKind::Create && b.kind == OpKind::Annihilate {
+            return vec![row(Rat::new(1, 2), &[], &[s.tensor(Tensor { kind: TensorKind::Gamma1, upper: vec![a.idx], lower: vec![b.idx] })])];
+        }
+
+        if a.idx.space == Space::Active && a.kind == OpKind::Annihilate && b.kind == OpKind::Create {
+            return vec![row(Rat::new(1, 2), &[], &[s.tensor(Tensor { kind: TensorKind::Theta, upper: vec![b.idx], lower: vec![a.idx] })])];
+        }
+
+        return Vec::new();
+    }
+
+    if !ops.iter().all(|o| o.idx.space == Space::Active) {
+        return Vec::new();
+    }
+
+    let Some((sign, cs, as_)) = norm(ops) else {
+        return Vec::new();
+    };
+
+    let r = cs.len();
+
+    if r == 0 || r != as_.len() || r > 4 {
+        return Vec::new();
+    }
+
+    let upper = cs.iter().map(|o| o.idx).collect::<Vec<_>>();
+    let lower = as_.iter().rev().map(|o| o.idx).collect::<Vec<_>>();
+    let us = cs.iter().map(|o| o.spin).collect::<Vec<_>>();
+    let ls = as_.iter().rev().map(|o| o.spin).collect::<Vec<_>>();
+    let kind = match r {
+        2 => TensorKind::Lambda2,
+        3 => TensorKind::Lambda3,
+        4 => TensorKind::Lambda4,
+        _ => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+
+    for (p, mut c) in proj(r, &us, &ls) {
+        if sign < 0 {
+            c = -c;
+        }
+
+        let lower_p = p.iter().map(|&i| lower[i]).collect::<Vec<_>>();
+        let id = s.tensor(Tensor { kind, upper: upper.clone(), lower: lower_p });
+        out.push(row(c, &[], &[id]));
+    }
+
+    out
+}
+
+/// Project one spin-orbital active cumulant into spin-free cumulants.
+/// # Arguments:
+/// - `r`: Cumulant rank.
+/// - `us`: Upper spin labels.
+/// - `ls`: Lower spin labels.
+/// # Returns:
+/// - `Vec<(Vec<usize>, Rat)>`: Lower-index permutations and coefficients.
+fn proj(r: usize, us: &[Spin], ls: &[Spin]) -> Vec<(Vec<usize>, Rat)> {
+    let ps = spinsum::perms(r);
+    let g = spinsum::gram(r);
+
+    let b = ps.iter()
+        .map(|p| {
+            if (0..r).all(|i| us[i] == ls[p[i]]) {
+                Rat::from_integer(spinsum::sgn(p))
+            } else {
+                Rat::zero()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let x = spinsum::solve(g, b).expect("Inconsistent spin projection.");
+
+    ps.into_iter().zip(x).filter(|(_, c)| !c.is_zero()).collect()
+}
+
+/// Recursively enumerate exact covers of one spin string.
+/// # Arguments:
+/// - `left`: Remaining operator-position mask.
+/// - `bs`: Wick blocks.
+/// - `by_pos`: Block ids containing each position.
+/// - `cur`: Current numeric product row.
+/// - `acc`: Final accumulator.
+/// # Returns:
+/// - `()`: Mutates `acc`.
+fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], cur: Row, acc: &mut Acc) {
+    if left == 0 {
+        add(acc, cur);
+        return;
+    }
+
+    let i = left.trailing_zeros() as usize;
+
+    for &bi in &by_pos[i] {
+        let b = &bs[bi];
+
+        if b.m & left != b.m {
+            continue;
+        }
+
+        let rest = left & !b.m;
+        let sgn = cross(b.m, rest);
+
+        for v in &b.v {
+            let mut next = cur.clone();
+            next.c *= &v.c;
+
+            if sgn < 0 {
+                next.c = -next.c;
+            }
+
+            next.d.extend_from_slice(&v.d);
+            next.t.extend_from_slice(&v.t);
+
+            walk(rest, bs, by_pos, next, acc);
+        }
+    }
+}
+
+/// Accumulate one numeric row.
+/// # Arguments:
+/// - `acc`: Final accumulator.
+/// - `r`: Numeric row.
+/// # Returns:
+/// - `()`: Mutates `acc`.
+fn add(acc: &mut Acc, mut r: Row) {
+    if r.c.is_zero() {
+        return;
+    }
+
+    r.d.sort_unstable();
+    r.t.sort_unstable();
+
+    let key = (r.d.to_vec(), r.t.to_vec());
+    let x = acc.entry(key.clone()).or_insert_with(Rat::zero);
+    *x += r.c;
+
+    if x.is_zero() {
+        acc.remove(&key);
+    }
+}
+
+/// Decode numeric rows to symbolic terms.
+/// # Arguments:
+/// - `s`: Factor store.
+/// - `acc`: Final numeric accumulator.
+/// # Returns:
+/// - `Expr`: Symbolic expression.
+fn out(s: &Store, acc: Acc) -> Expr {
+    acc.into_iter()
+        .filter(|(_, c)| !c.is_zero())
+        .map(|((ds, ts), c)| {
+            let deltas = ds.iter().map(|&i| s.d[(i - 1) as usize]).collect();
+            let tensors = ts.iter().map(|&i| s.t[(i - 1) as usize].clone()).collect();
+
+            Term {
+                coeff: Rational { num: *c.numer(), den: *c.denom() },
+                deltas,
+                tensors,
+            }
+        })
+        .collect()
+}
+
+/// Build one numeric row.
+/// # Arguments:
+/// - `c`: Coefficient.
+/// - `d`: Delta ids.
+/// - `t`: Tensor ids.
+/// # Returns:
+/// - `Row`: Numeric row.
+fn row(c: Rat, d: &[Id], t: &[Id]) -> Row {
+    Row { c, d: d.iter().copied().collect(), t: t.iter().copied().collect() }
+}
+
+/// Return bit positions in a mask.
+/// # Arguments:
+/// - `m`: Bit mask.
+/// # Returns:
+/// - `Vec<usize>`: Set-bit positions.
+fn bits(mut m: u64) -> Vec<usize> {
+    let mut out = Vec::new();
+
+    while m != 0 {
+        let b = m & m.wrapping_neg();
+        out.push(b.trailing_zeros() as usize);
+        m ^= b;
+    }
+
+    out
+}
+
+/// Return the mask for selected positions.
+/// # Arguments:
+/// - `xs`: Positions.
+/// # Returns:
+/// - `u64`: Bit mask.
+fn mask(xs: &[usize]) -> u64 {
+    xs.iter().fold(0, |m, &i| m | (1u64 << i))
+}
+
+/// Return the Wick sign from moving a block before the remaining operators.
+/// # Arguments:
+/// - `m`: Selected block mask.
+/// - `rest`: Remaining operator mask.
+/// # Returns:
+/// - `i64`: Fermionic sign.
+fn cross(mut m: u64, rest: u64) -> i64 {
+    let mut p = 0;
+
+    while m != 0 {
+        let b = m & m.wrapping_neg();
+        let i = b.trailing_zeros();
+        p ^= (rest & ((1u64 << i) - 1)).count_ones() & 1;
+        m ^= b;
+    }
+
+    if p == 0 { 1 } else { -1 }
+}
+
+/// Normal-order active operators.
+/// # Arguments:
+/// - `ops`: Active operators.
+/// # Returns:
+/// - `Option<(i64, Vec<Op>, Vec<Op>)>`: Sign, creators, annihilators.
+fn norm(ops: &[Op]) -> Option<(i64, Vec<Op>, Vec<Op>)> {
+    let cs = ops.iter().copied().filter(|o| o.kind == OpKind::Create).collect::<Vec<_>>();
+    let as_ = ops.iter().copied().filter(|o| o.kind == OpKind::Annihilate).collect::<Vec<_>>();
+
+    if cs.len() + as_.len() != ops.len() {
+        return None;
+    }
+
+    let mut inv = 0;
+
+    for i in 0..ops.len() {
+        if ops[i].kind != OpKind::Annihilate {
+            continue;
+        }
+
+        inv += ops[i + 1..].iter().filter(|o| o.kind == OpKind::Create).count();
+    }
+
+    Some((if inv % 2 == 0 { 1 } else { -1 }, cs, as_))
+}
+
