@@ -520,21 +520,30 @@ fn hterms(g: usize) -> Vec<crate::hamiltonian::HTerm> {
 /// - `Expr`: Zeroth-order residual target.
 pub fn r0(name: &str) -> Expr {
     let x = crate::specs::exc(name);
-    let mut out = Vec::new();
+    let prog = crate::progress::Prog::new(format!("target::r0({name}) blocks"), crate::specs::BLOCKS.len());
 
-    for b in crate::specs::BLOCKS.iter().filter(|b| b.left == x.class) {
-        let Some(expr) = tblock(b.name) else {
-            continue;
-        };
+    crate::specs::BLOCKS.par_iter()
+        .filter(|b| b.left == x.class)
+        .fold(crate::canonical::Acc::new, |mut acc, b| {
+            let Some(expr) = tblock(b.name) else {
+                prog.tick();
+                return acc;
+            };
 
-        let (c, fac) = crate::hamiltonian::fac(b.rf);
+            let (c, fac) = crate::hamiltonian::fac(b.rf);
 
-        for t in expr {
-            out.push(mulf(t, c, fac.clone()));
-        }
-    }
+            for t in expr {
+                acc.addterm(mulf(t, c, fac.clone()));
+            }
 
-    crate::canonical::canon(out)
+            prog.tick();
+            acc
+        })
+        .reduce(crate::canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }
 
 /// Build one first-order residual target by unfiltered Hamiltonian enumeration.
@@ -547,24 +556,30 @@ pub fn r1(name: &str) -> Expr {
     let bra = crate::specs::bra(&spec, 0);
     let hs = hterms(1);
     let ts = crate::cluster::terms(2, 't');
-    let mut out = Vec::new();
+    let prog = crate::progress::Prog::new(format!("target::r1({name}) T terms"), ts.len());
 
-    for t in &ts {
-        for h in &hs {
-            let p = join(&join(&bra, &h.op), &t.op);
-            let e = crate::wick::evalc(&p);
+    ts.par_iter()
+        .fold(crate::canonical::Acc::new, |mut acc, t| {
+            for h in &hs {
+                let p = join(&join(&bra, &h.op), &t.op);
 
-            for x in e {
-                let x = mulf(x, h.coeff, h.fac.clone());
-                out.push(mulf(x, t.coeff, t.fac.clone()));
+                for x in crate::wick::evalc(&p) {
+                    let x = mulf(x, h.coeff, h.fac.clone());
+                    acc.addterm(mulf(x, t.coeff, t.fac.clone()));
+                }
             }
-        }
-    }
 
-    crate::canonical::canon(out)
+            prog.tick();
+            acc
+        })
+        .reduce(crate::canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }
 
-/// Build one second-order residual target by balance-filtered Hamiltonian enumeration.
+/// Build one second-order residual target by unfiltered Hamiltonian enumeration.
 /// # Arguments:
 /// - `name`: Excitation class name.
 /// # Returns:
@@ -572,35 +587,36 @@ pub fn r1(name: &str) -> Expr {
 pub fn r2(name: &str) -> Expr {
     let spec = crate::specs::exc(name);
     let bra = crate::specs::bra(&spec, 0);
-    let brab = crate::specs::bal(spec.f, true);
+    let hs = hterms(1);
     let ls = crate::cluster::terms(2, 'l');
     let rs = crate::cluster::terms(3, 'r');
-    let pairs = ls
-        .iter()
-        .flat_map(|l| rs.iter().map(move |r_| (l, r_)))
-        .collect::<Vec<_>>();
-    let out = pairs
-        .par_iter()
-        .flat_map(|&(l, r_)| {
-            let mut out = Vec::new();
-            let ttb = crate::specs::add(l.balance, r_.balance);
-            let req = crate::specs::neg(crate::specs::add(brab, ttb));
 
-            for h in crate::hamiltonian::terms_with_balance(1, req) {
-                let p = join(&join(&join(&bra, &h.op), &l.op), &r_.op);
-                let e = crate::wick::evalc(&p);
+    let pairs: Vec<_> = ls.iter()
+        .flat_map(|l| rs.iter().map(move |r| (l, r)))
+        .collect();
 
-                for x in e {
+    let prog = crate::progress::Prog::new(format!("target::r2({name}) T-pairs"), pairs.len());
+
+    pairs.par_iter()
+        .fold(crate::canonical::Acc::new, |mut acc, &(l, r)| {
+            for h in &hs {
+                let p = join(&join(&join(&bra, &h.op), &l.op), &r.op);
+
+                for x in crate::wick::evalc(&p) {
                     let x = mulf(x, h.coeff, h.fac.clone());
                     let x = mulf(x, l.coeff, l.fac.clone());
-                    let c = mulr(q(1, 2), r_.coeff);
-                    out.push(mulf(x, c, r_.fac.clone()));
+                    let c = mulr(q(1, 2), r.coeff);
+
+                    acc.addterm(mulf(x, c, r.fac.clone()));
                 }
             }
 
-            crate::canonical::canon(out)
+            prog.tick();
+            acc
         })
-        .collect::<Vec<_>>();
-
-    crate::canonical::canon(out)
+        .reduce(crate::canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }

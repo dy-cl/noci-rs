@@ -161,15 +161,15 @@ pub fn product(name: &str) -> Product {
 /// # Returns:
 /// - `Space`: Orbital space.
 pub fn space(name: &str) -> Space {
-    if name.starts_with("hc") || name.starts_with("tc") {
+    if name.starts_with("hc") || name.starts_with("tc") || name.starts_with("lc") || name.starts_with("rc") {
         return Space::Core;
     }
 
-    if name.starts_with("ha") || name.starts_with("ta") {
+    if name.starts_with("ha") || name.starts_with("ta") || name.starts_with("la") || name.starts_with("ra") {
         return Space::Active;
     }
 
-    if name.starts_with("hv") || name.starts_with("tv") {
+    if name.starts_with("hv") || name.starts_with("tv") || name.starts_with("lv") || name.starts_with("rv") {
         return Space::Virtual;
     }
 

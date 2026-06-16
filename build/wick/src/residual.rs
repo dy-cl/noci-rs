@@ -29,21 +29,30 @@ fn q(n: i64, d: i64) -> Rational {
 /// - `Expr`: Canonical zeroth-order residual.
 pub fn r0(name: &str) -> Expr {
     let spec = specs::exc(name);
-    let mut out = Vec::new();
+    let blocks: Vec<_> = specs::BLOCKS.iter()
+        .filter(|b| b.left == spec.class)
+        .collect();
+    let prog = crate::progress::Prog::new(format!("residual::r0({name}) blocks"), blocks.len());
 
-    for b in specs::BLOCKS.iter().filter(|b| b.left == spec.class) {
-        let lspec = specs::Exc { class: b.left, f: b.lf };
-        let bra = specs::bra(&lspec, 0);
-        let h = hamiltonian::term(b.rf, 1);
-        let p = join(&bra, &h.op);
-        let e = wick::eval(&p);
+    blocks.par_iter()
+        .fold(canonical::Acc::new, |mut acc, b| {
+            let lspec = specs::Exc { class: b.left, f: b.lf };
+            let bra = specs::bra(&lspec, 0);
+            let h = hamiltonian::term(b.rf, 1);
+            let p = join(&bra, &h.op);
 
-        for x in e {
-            out.push(mulh(x, h.coeff, h.fac.clone()));
-        }
-    }
+            for x in wick::eval(&p) {
+                acc.addterm(mulh(x, h.coeff, h.fac.clone()));
+            }
 
-    canonical::canon(out)
+            prog.tick();
+            acc
+        })
+        .reduce(canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }
 
 /// Generate the first-order residual for one excitation class.
@@ -54,24 +63,31 @@ pub fn r0(name: &str) -> Expr {
 pub fn r1(name: &str) -> Expr {
     let spec = specs::exc(name);
     let bra = specs::bra(&spec, 0);
-    let bra_balance = specs::bal(spec.f, true);
-    let mut out = Vec::new();
+    let brab = specs::bal(spec.f, true);
+    let terms = cluster::terms(2, 't');
+    let prog = crate::progress::Prog::new(format!("residual::r1({name}) T terms"), terms.len());
 
-    for t in cluster::terms(2, 't') {
-        let required = specs::neg(specs::add(bra_balance, t.balance));
+    terms.par_iter()
+        .fold(canonical::Acc::new, |mut acc, t| {
+            let req = specs::neg(specs::add(brab, t.balance));
 
-        for h in hamiltonian::terms_with_balance(1, required) {
-            let p = join(&join(&bra, &h.op), &t.op);
-            let e = wick::evalc(&p);
+            for h in hamiltonian::terms_with_balance(1, req) {
+                let p = join(&join(&bra, &h.op), &t.op);
 
-            for x in e {
-                let x = mulh(x, h.coeff, h.fac.clone());
-                out.push(mulh(x, t.coeff, t.fac.clone()));
+                for x in wick::evalc(&p) {
+                    let x = mulh(x, h.coeff, h.fac.clone());
+                    acc.addterm(mulh(x, t.coeff, t.fac.clone()));
+                }
             }
-        }
-    }
 
-    canonical::canon(out)
+            prog.tick();
+            acc
+        })
+        .reduce(canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }
 
 /// Generate the second-order residual for one excitation class.
@@ -83,37 +99,40 @@ pub fn r2(name: &str) -> Expr {
     let spec = specs::exc(name);
     let bra = specs::bra(&spec, 0);
     let brab = specs::bal(spec.f, true);
-    let leftt = cluster::terms(2, 'l');
-    let rightt = cluster::terms(3, 'r');
-    let pairs = leftt
-        .iter()
-        .flat_map(|l| rightt.iter().map(move |r| (l, r)))
-        .collect::<Vec<_>>();
+    let left = cluster::terms(2, 'l');
+    let right = cluster::terms(3, 'r');
 
-    let out = pairs
-        .par_iter()
-        .flat_map(|&(l, r)| {
-            let mut out = Vec::new();
-            let ttb = specs::add(l.balance, r.balance);
-            let required = specs::neg(specs::add(brab, ttb));
+    let pairs: Vec<_> = left.iter()
+        .flat_map(|l| right.iter().map(move |r| (l, r)))
+        .collect();
 
-            for h in hamiltonian::terms_with_balance(1, required) {
+    let prog = crate::progress::Prog::new(format!("residual::r2({name}) T-pairs"), pairs.len());
+
+    pairs.par_iter()
+        .fold(canonical::Acc::new, |mut acc, (l, r)| {
+            let tb = specs::add(l.balance, r.balance);
+            let req = specs::neg(specs::add(brab, tb));
+
+            for h in hamiltonian::terms_with_balance(1, req) {
                 let p = join(&join(&join(&bra, &h.op), &l.op), &r.op);
-                let e = wick::evalc(&p);
 
-                for x in e {
+                for x in wick::evalc(&p) {
                     let x = mulh(x, h.coeff, h.fac.clone());
                     let x = mulh(x, l.coeff, l.fac.clone());
                     let c = mulr(q(1, 2), r.coeff);
-                    out.push(mulh(x, c, r.fac.clone()));
+
+                    acc.addterm(mulh(x, c, r.fac.clone()));
                 }
             }
 
-            canonical::canon(out)
+            prog.tick();
+            acc
         })
-        .collect::<Vec<_>>();
-
-    canonical::canon(out)
+        .reduce(canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }
 
 /// Join two products.

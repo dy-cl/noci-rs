@@ -25,13 +25,112 @@ struct Key {
     lo: Vec<Idx>,
 }
 
+/// Canonical expression accumulator.
+pub struct Acc {
+    /// Combined coefficients keyed by canonical deltas and tensors.
+    acc: BTreeMap<(Vec<Delta>, Vec<Tensor>), Rat>,
+}
+
+impl Acc {
+    /// Create an empty canonical accumulator.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `Acc`: Empty accumulator.
+    pub fn new() -> Self {
+        Self { acc: BTreeMap::new() }
+    }
+    
+    /// Add one term to the accumulator.
+    /// # Arguments:
+    /// - `x`: Term to add.
+    /// # Returns:
+    /// - `()`: Mutates the accumulator.
+    pub fn addterm(&mut self, mut x: Term) {
+        x.deltas.sort();
+        x.tensors = x.tensors.into_iter().map(ten).collect();
+        x.tensors.sort();
+
+        let key = (x.deltas, x.tensors);
+        let c = Rat::new(x.coeff.num, x.coeff.den);
+
+        let remove = {
+            let v = self.acc.entry(key.clone()).or_insert_with(Rat::zero);
+            *v += c;
+            v.is_zero()
+        };
+
+        if remove {
+            self.acc.remove(&key);
+        }
+    }
+
+    /// Merge another accumulator into this accumulator.
+    /// # Arguments:
+    /// - `other`: Accumulator to merge.
+    /// # Returns:
+    /// - `()`: Mutates the accumulator.
+    pub fn merge(&mut self, other: Acc) {
+        for (key, c) in other.acc {
+            let remove = {
+                let v = self.acc.entry(key.clone()).or_insert_with(Rat::zero);
+                *v += c;
+                v.is_zero()
+            };
+
+            if remove {
+                self.acc.remove(&key);
+            }
+        }
+    }
+
+    /// Add one expression to the accumulator.
+    /// # Arguments:
+    /// - `e`: Expression to add.
+    /// # Returns:
+    /// - `()`: Mutates the accumulator.
+    pub fn addexpr(&mut self, e: Expr) {
+        for x in e {
+            self.addterm(x);
+        }
+    }
+
+    /// Convert the accumulator into an expression without sparsification.
+    /// # Arguments:
+    /// - `self`: Accumulator.
+    /// # Returns:
+    /// - `Expr`: Combined expression.
+    fn intoexpr(self) -> Expr {
+        self.acc.into_iter()
+            .filter(|(_, c)| !c.is_zero())
+            .map(|((deltas, tensors), c)| Term {
+                coeff: Rational { num: *c.numer(), den: *c.denom() },
+                deltas,
+                tensors,
+            })
+            .collect()
+    }
+
+    /// Finish canonicalisation.
+    /// # Arguments:
+    /// - `self`: Accumulator.
+    /// # Returns:
+    /// - `Expr`: Canonical expression.
+    pub fn finish(self) -> Expr {
+        sum(spar(self.intoexpr()))
+    }
+}
+
 /// Canonicalise a symbolic expression.
 /// # Arguments:
 /// - `e`: Symbolic expression.
 /// # Returns:
 /// - `Expr`: Canonical symbolic expression.
 pub fn canon(e: Expr) -> Expr {
-    sum(spar(sum(e)))
+    let mut acc = Acc::new();
+
+    acc.addexpr(e);
+    acc.finish()
 }
 
 /// Combine equal terms and apply simple tensor symmetries.
@@ -40,31 +139,10 @@ pub fn canon(e: Expr) -> Expr {
 /// # Returns:
 /// - `Expr`: Combined expression.
 fn sum(e: Expr) -> Expr {
-    let mut acc = BTreeMap::<(Vec<Delta>, Vec<Tensor>), Rat>::new();
+    let mut acc = Acc::new();
 
-    for mut x in e {
-        x.deltas.sort_unstable();
-        x.tensors = x.tensors.into_iter().map(ten).collect();
-        x.tensors.sort_unstable();
-
-        let key = (x.deltas, x.tensors);
-        let c = Rat::new(x.coeff.num, x.coeff.den);
-        let v = acc.entry(key.clone()).or_insert_with(Rat::zero);
-        *v += c;
-
-        if v.is_zero() {
-            acc.remove(&key);
-        }
-    }
-
-    acc.into_iter()
-        .filter(|(_, c)| !c.is_zero())
-        .map(|((deltas, tensors), c)| Term {
-            coeff: Rational { num: *c.numer(), den: *c.denom() },
-            deltas,
-            tensors,
-        })
-        .collect()
+    acc.addexpr(e);
+    acc.intoexpr()
 }
 
 /// Canonicalise one tensor.

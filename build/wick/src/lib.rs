@@ -6,6 +6,7 @@ mod encode;
 mod gno;
 mod hamiltonian;
 mod ir;
+mod progress;
 mod schema;
 mod specs;
 mod spinsum;
