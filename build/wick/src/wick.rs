@@ -647,7 +647,7 @@ pub fn eval(p: &Product) -> Expr {
 /// # Returns:
 /// - `Expr`: Canonical connected contracted expression.
 pub fn evalc(p: &Product) -> Expr {
-    eval0(p, true)
+    evalc0(p)
 }
 
 /// Evaluate a spin-free product.
@@ -696,4 +696,265 @@ fn eval1(ops: &[Op], connected: bool, want: u64) -> Expr {
     }
 
     out(&s, acc)
+}
+
+/// Evaluate a connected spin-free product.
+/// # Arguments:
+/// - `p`: Spin-free product.
+/// # Returns:
+/// - `Expr`: Canonical connected contracted expression.
+fn evalc0(p: &Product) -> Expr {
+    let want = (1u64 << p.groups.len()) - 1;
+    let e = spin(p)
+        .into_par_iter()
+        .flat_map(|ops| eval1c(&ops, want))
+        .collect();
+
+    canon(e)
+}
+
+/// Evaluate one spin-orbital string using hybrid connected enumeration.
+/// # Arguments:
+/// - `ops`: Spin-orbital operator string.
+/// - `want`: Required GNO-group mask.
+/// # Returns:
+/// - `Expr`: Connected contracted expression.
+fn eval1c(ops: &[Op], want: u64) -> Expr {
+    let mut s = Store::default();
+    let mut acc = Acc::new();
+    let bs = blocks(ops, &mut s);
+    let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
+
+    for (i, b) in bs.iter().enumerate() {
+        for pos in bits(b.m) {
+            by_pos[pos].push(i);
+        }
+    }
+
+    let full = (1u64 << ops.len()) - 1;
+    let mut cur = Row {
+        c: Rat::one(),
+        d: SmallVec::new(),
+        t: SmallVec::new(),
+        e: SmallVec::new(),
+    };
+
+    let mut tail_memo = BTreeMap::new();
+
+    walkc(full, &bs, &by_pos, want, &mut cur, &mut tail_memo, &mut acc);
+
+    out(&s, acc)
+}
+
+/// Recursively enumerate until the selected contractions are connected, then memoise the suffix.
+/// # Arguments:
+/// - `left`: Remaining operator-position mask.
+/// - `bs`: Wick blocks.
+/// - `by_pos`: Block ids containing each position.
+/// - `want`: Required GNO-group mask.
+/// - `cur`: Current partial row.
+/// - `tail_memo`: Memo table for already-connected suffix enumeration.
+/// - `acc`: Final numeric accumulator.
+/// # Returns:
+/// - `()`: Mutates `acc`.
+fn walkc(
+    left: u64,
+    bs: &[Block],
+    by_pos: &[Vec<usize>],
+    want: u64,
+    cur: &mut Row,
+    tail_memo: &mut BTreeMap<u64, Vec<Row>>,
+    acc: &mut Acc,
+) {
+    if rootseen(want, &cur.e) == want {
+        for tail in walk(left, bs, by_pos, false, tail_memo) {
+            add(acc, joinrow(cur, &tail));
+        }
+
+        return;
+    }
+
+    if left == 0 {
+        return;
+    }
+
+    if !canconnect(left, bs, want, &cur.e) {
+        return;
+    }
+
+    let Some(i) = pick(left, bs, by_pos) else {
+        return;
+    };
+
+    for &bi in &by_pos[i] {
+        let b = &bs[bi];
+
+        if b.m & left != b.m {
+            continue;
+        }
+
+        let rest = left & !b.m;
+
+        if !canconnect1(rest, bs, want, &cur.e, b.g) {
+            continue;
+        }
+
+        let sgn = cross(b.m, rest);
+        let c0 = cur.c.clone();
+        let nd = cur.d.len();
+        let nt = cur.t.len();
+        let ne = cur.e.len();
+
+        for v in &b.v {
+            let mut c = c0.clone() * v.c.clone();
+
+            if sgn < 0 {
+                c = -c;
+            }
+
+            cur.c = c;
+            cur.d.extend_from_slice(&v.d);
+            cur.t.extend_from_slice(&v.t);
+            cur.e.push(b.g);
+
+            walkc(rest, bs, by_pos, want, cur, tail_memo, acc);
+
+            cur.d.truncate(nd);
+            cur.t.truncate(nt);
+            cur.e.truncate(ne);
+        }
+
+        cur.c = c0;
+    }
+}
+
+/// Join a connected prefix row with a memoised suffix row.
+/// # Arguments:
+/// - `a`: Prefix row.
+/// - `b`: Suffix row.
+/// # Returns:
+/// - `Row`: Combined row.
+fn joinrow(a: &Row, b: &Row) -> Row {
+    let mut out = Row {
+        c: a.c * b.c,
+        d: a.d.clone(),
+        t: a.t.clone(),
+        e: SmallVec::new(),
+    };
+
+    out.d.extend_from_slice(&b.d);
+    out.t.extend_from_slice(&b.t);
+
+    out
+}
+
+/// Return the root-connected GNO-group component implied by selected Wick blocks.
+/// # Arguments:
+/// - `want`: Required group mask.
+/// - `edges`: Selected Wick-block group masks.
+/// # Returns:
+/// - `u64`: Root-connected group mask.
+fn rootseen(want: u64, edges: &[u64]) -> u64 {
+    if want.count_ones() <= 1 {
+        return want;
+    }
+
+    let mut seen = 1u64;
+
+    loop {
+        let old = seen;
+
+        for &e in edges {
+            if e & seen != 0 {
+                seen |= e;
+            }
+        }
+
+        if seen == old {
+            break;
+        }
+    }
+
+    seen & want
+}
+
+/// Check whether the partial contraction can still become connected.
+/// # Arguments:
+/// - `left`: Remaining operator-position mask.
+/// - `bs`: Wick blocks.
+/// - `want`: Required GNO-group mask.
+/// - `edges`: Already selected Wick-block group masks.
+/// # Returns:
+/// - `bool`: Whether connected completion remains possible.
+fn canconnect(left: u64, bs: &[Block], want: u64, edges: &[u64]) -> bool {
+    if want.count_ones() <= 1 {
+        return true;
+    }
+
+    let mut seen = 1u64;
+
+    loop {
+        let old = seen;
+
+        for &e in edges {
+            if e & seen != 0 {
+                seen |= e;
+            }
+        }
+
+        for b in bs {
+            if b.m & left == b.m && b.g & seen != 0 {
+                seen |= b.g;
+            }
+        }
+
+        if seen == old {
+            break;
+        }
+    }
+
+    seen & want == want
+}
+
+/// Check whether adding one candidate block can still lead to connected completion.
+/// # Arguments:
+/// - `left`: Remaining operator-position mask after the candidate block.
+/// - `bs`: Wick blocks.
+/// - `want`: Required GNO-group mask.
+/// - `edges`: Already selected Wick-block group masks.
+/// - `extra`: Candidate Wick-block group mask.
+/// # Returns:
+/// - `bool`: Whether connected completion remains possible.
+fn canconnect1(left: u64, bs: &[Block], want: u64, edges: &[u64], extra: u64) -> bool {
+    if want.count_ones() <= 1 {
+        return true;
+    }
+
+    let mut seen = 1u64;
+
+    loop {
+        let old = seen;
+
+        for &e in edges {
+            if e & seen != 0 {
+                seen |= e;
+            }
+        }
+
+        if extra & seen != 0 {
+            seen |= extra;
+        }
+
+        for b in bs {
+            if b.m & left == b.m && b.g & seen != 0 {
+                seen |= b.g;
+            }
+        }
+
+        if seen == old {
+            break;
+        }
+    }
+
+    seen & want == want
 }

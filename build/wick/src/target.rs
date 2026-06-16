@@ -513,30 +513,19 @@ fn hterms(g: usize) -> Vec<crate::hamiltonian::HTerm> {
     out
 }
 
-/// Build one zeroth-order residual target from metric targets.
+/// Canonicalise one target chunk from parallel Hamiltonian-term contributions.
 /// # Arguments:
-/// - `name`: Excitation class name.
+/// - `items`: Hamiltonian terms.
+/// - `make`: Function generating terms for one Hamiltonian term.
 /// # Returns:
-/// - `Expr`: Zeroth-order residual target.
-pub fn r0(name: &str) -> Expr {
-    let x = crate::specs::exc(name);
-    let prog = crate::progress::Prog::new(format!("target::r0({name}) blocks"), crate::specs::BLOCKS.len());
-
-    crate::specs::BLOCKS.par_iter()
-        .filter(|b| b.left == x.class)
-        .fold(crate::canonical::Acc::new, |mut acc, b| {
-            let Some(expr) = tblock(b.name) else {
-                prog.tick();
-                return acc;
-            };
-
-            let (c, fac) = crate::hamiltonian::fac(b.rf);
-
-            for t in expr {
-                acc.addterm(mulf(t, c, fac.clone()));
+/// - `Expr`: Canonical chunk expression.
+fn hchunk<T: Sync>(items: &[T], make: impl Fn(&T) -> Expr + Sync) -> Expr {
+    items.par_iter()
+        .fold(crate::canonical::Acc::new, |mut acc, h| {
+            for x in make(h) {
+                acc.addterm(x);
             }
 
-            prog.tick();
             acc
         })
         .reduce(crate::canonical::Acc::new, |mut a, b| {
@@ -546,77 +535,119 @@ pub fn r0(name: &str) -> Expr {
         .finish()
 }
 
-/// Build one first-order residual target by unfiltered Hamiltonian enumeration.
+/// Build zeroth-order residual target chunks from metric targets.
 /// # Arguments:
 /// - `name`: Excitation class name.
+/// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
-/// - `Expr`: First-order residual target.
-pub fn r1(name: &str) -> Expr {
+/// - `()`: Calls `emit` once per non-empty chunk.
+pub fn r0(name: &str, mut emit: impl FnMut(String, Expr)) {
+    let x = crate::specs::exc(name);
+    let blocks: Vec<_> = crate::specs::BLOCKS.iter()
+        .filter(|b| b.left == x.class)
+        .collect();
+    let prog = crate::progress::Prog::new(format!("target::r0({name}) blocks"), blocks.len());
+
+    let chunks: Vec<_> = blocks.par_iter()
+        .filter_map(|b| {
+            let Some(expr) = tblock(b.name) else {
+                prog.tick();
+                return None;
+            };
+
+            let (c, fac) = crate::hamiltonian::fac(b.rf);
+            let mut out = Vec::new();
+
+            for t in expr {
+                out.push(mulf(t, c, fac.clone()));
+            }
+
+            let e = crate::canonical::canon(out);
+            prog.tick();
+
+            if e.is_empty() {
+                None
+            } else {
+                Some((b.name.to_string(), e))
+            }
+        })
+        .collect();
+
+    for (k, e) in chunks {
+        emit(k, e);
+    }
+}
+
+/// Build first-order residual target chunks by unfiltered Hamiltonian enumeration.
+/// # Arguments:
+/// - `name`: Excitation class name.
+/// - `emit`: Callback receiving `(chunk_key, expression)`.
+/// # Returns:
+/// - `()`: Calls `emit` once per non-empty chunk.
+pub fn r1(name: &str, mut emit: impl FnMut(String, Expr)) {
     let spec = crate::specs::exc(name);
     let bra = crate::specs::bra(&spec, 0);
     let hs = hterms(1);
     let ts = crate::cluster::terms(2, 't');
     let prog = crate::progress::Prog::new(format!("target::r1({name}) T terms"), ts.len());
 
-    ts.par_iter()
-        .fold(crate::canonical::Acc::new, |mut acc, t| {
-            for h in &hs {
-                let p = join(&join(&bra, &h.op), &t.op);
+    for (ti, t) in ts.iter().enumerate() {
+        let e = hchunk(&hs, |h| {
+            let p = join(&join(&bra, &h.op), &t.op);
+            let mut out = Vec::new();
 
-                for x in crate::wick::evalc(&p) {
-                    let x = mulf(x, h.coeff, h.fac.clone());
-                    acc.addterm(mulf(x, t.coeff, t.fac.clone()));
-                }
+            for x in crate::wick::evalc(&p) {
+                let x = mulf(x, h.coeff, h.fac.clone());
+                out.push(mulf(x, t.coeff, t.fac.clone()));
             }
 
-            prog.tick();
-            acc
-        })
-        .reduce(crate::canonical::Acc::new, |mut a, b| {
-            a.merge(b);
-            a
-        })
-        .finish()
+            out
+        });
+
+        if !e.is_empty() {
+            emit(format!("t{ti}"), e);
+        }
+
+        prog.tick();
+    }
 }
 
-/// Build one second-order residual target by unfiltered Hamiltonian enumeration.
+/// Build second-order residual target chunks by unfiltered Hamiltonian enumeration.
 /// # Arguments:
 /// - `name`: Excitation class name.
+/// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
-/// - `Expr`: Second-order residual target.
-pub fn r2(name: &str) -> Expr {
+/// - `()`: Calls `emit` once per non-empty chunk.
+pub fn r2(name: &str, mut emit: impl FnMut(String, Expr)) {
     let spec = crate::specs::exc(name);
     let bra = crate::specs::bra(&spec, 0);
     let hs = hterms(1);
     let ls = crate::cluster::terms(2, 'l');
     let rs = crate::cluster::terms(3, 'r');
+    let total = ls.len() * rs.len();
+    let prog = crate::progress::Prog::new(format!("target::r2({name}) T-pairs"), total);
 
-    let pairs: Vec<_> = ls.iter()
-        .flat_map(|l| rs.iter().map(move |r| (l, r)))
-        .collect();
-
-    let prog = crate::progress::Prog::new(format!("target::r2({name}) T-pairs"), pairs.len());
-
-    pairs.par_iter()
-        .fold(crate::canonical::Acc::new, |mut acc, &(l, r)| {
-            for h in &hs {
+    for (li, l) in ls.iter().enumerate() {
+        for (ri, r) in rs.iter().enumerate() {
+            let e = hchunk(&hs, |h| {
                 let p = join(&join(&join(&bra, &h.op), &l.op), &r.op);
+                let mut out = Vec::new();
 
                 for x in crate::wick::evalc(&p) {
                     let x = mulf(x, h.coeff, h.fac.clone());
                     let x = mulf(x, l.coeff, l.fac.clone());
                     let c = mulr(q(1, 2), r.coeff);
-
-                    acc.addterm(mulf(x, c, r.fac.clone()));
+                    out.push(mulf(x, c, r.fac.clone()));
                 }
+
+                out
+            });
+
+            if !e.is_empty() {
+                emit(format!("l{li}_r{ri}"), e);
             }
 
             prog.tick();
-            acc
-        })
-        .reduce(crate::canonical::Acc::new, |mut a, b| {
-            a.merge(b);
-            a
-        })
-        .finish()
+        }
+    }
 }

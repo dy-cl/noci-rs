@@ -1,5 +1,7 @@
 // tests/residual.rs
 
+use std::collections::BTreeMap;
+
 use wick_build::{residual, target, wick};
 
 /// Residual order.
@@ -28,29 +30,81 @@ impl Order {
     }
 }
 
+/// Generate residual chunks.
+/// # Arguments:
+/// - `order`: Residual order.
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `BTreeMap<String, _>`: Canonical generated chunks keyed by chunk label.
+fn generated(order: Order, name: &str) -> BTreeMap<String, Vec<wick_build::ir::Term>> {
+    let mut out = BTreeMap::new();
+
+    match order {
+        Order::R0 => residual::r0(name, |k, e| {
+            out.insert(k, wick::canon(e));
+        }),
+        Order::R1 => residual::r1(name, |k, e| {
+            out.insert(k, wick::canon(e));
+        }),
+        Order::R2 => residual::r2(name, |k, e| {
+            out.insert(k, wick::canon(e));
+        }),
+    }
+
+    out
+}
+
+/// Generate target residual chunks.
+/// # Arguments:
+/// - `order`: Residual order.
+/// - `name`: Excitation class name.
+/// # Returns:
+/// - `BTreeMap<String, _>`: Canonical target chunks keyed by chunk label.
+fn expected(order: Order, name: &str) -> BTreeMap<String, Vec<wick_build::ir::Term>> {
+    let mut out = BTreeMap::new();
+
+    match order {
+        Order::R0 => target::r0(name, |k, e| {
+            out.insert(k, wick::canon(e));
+        }),
+        Order::R1 => target::r1(name, |k, e| {
+            out.insert(k, wick::canon(e));
+        }),
+        Order::R2 => target::r2(name, |k, e| {
+            out.insert(k, wick::canon(e));
+        }),
+    }
+
+    out
+}
+
 /// Check one residual class.
 /// # Arguments:
 /// - `order`: Residual order.
 /// - `name`: Excitation class name.
 /// # Returns:
-/// - `()`: Panics if generated and target expressions differ.
+/// - `()`: Panics if generated and target chunks differ.
 fn check(order: Order, name: &str) {
-    let (got, want) = match order {
-        Order::R0 => (
-            wick::canon(residual::r0(name)),
-            wick::canon(target::r0(name)),
-        ),
-        Order::R1 => (
-            wick::canon(residual::r1(name)),
-            wick::canon(target::r1(name)),
-        ),
-        Order::R2 => (
-            wick::canon(residual::r2(name)),
-            wick::canon(target::r2(name)),
-        ),
-    };
+    let got = generated(order, name);
+    let want = expected(order, name);
 
-    assert_eq!(got, want, "{} target mismatch for {name}", order.label());
+    assert_eq!(
+        got.keys().collect::<Vec<_>>(),
+        want.keys().collect::<Vec<_>>(),
+        "{} chunk-key mismatch for {name}",
+        order.label(),
+    );
+
+    for (key, got_expr) in got {
+        let want_expr = want.get(&key).unwrap();
+
+        assert_eq!(
+            &got_expr,
+            want_expr,
+            "{} target mismatch for {name}, chunk {key}",
+            order.label(),
+        );
+    }
 }
 
 macro_rules! residual_test {
