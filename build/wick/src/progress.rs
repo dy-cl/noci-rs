@@ -56,7 +56,41 @@ impl Prog {
 
         if n == self.total || n % self.step == 0 {
             let pct = if self.total == 0 { 100.0 } else { 100.0 * n as f64 / self.total as f64 };
-            eprintln!("[wick] {}: {}/{} ({pct:.1}%) elapsed {:?}", self.label, n, self.total, self.start.elapsed());
+            eprintln!("[wick-time] {}: {}/{} ({pct:.1}%), elapsed {:?}.", self.label, n, self.total, self.start.elapsed());
         }
+    }
+}
+
+/// Read resident memory from `/proc/self/status`.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: Resident memory in MiB, or zero if unavailable.
+pub fn rssmb() -> usize {
+    let Ok(s) = std::fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb = rest.split_whitespace()
+                .next()
+                .and_then(|x| x.parse::<usize>().ok())
+                .unwrap_or(0);
+            return kb / 1024;
+        }
+    }
+
+    0
+}
+
+/// Print a memory trace note when enabled.
+/// # Arguments:
+/// - `msg`: Message to print.
+/// # Returns:
+/// - `()`: Prints to stderr when `WICK_MEM` is set.
+pub fn mem(msg: impl std::fmt::Display) {
+    if std::env::var_os("WICK_MEM").is_some() {
+        eprintln!("[wick-mem] {msg}, rss: {} MiB", rssmb());
     }
 }

@@ -650,6 +650,212 @@ pub fn evalc(p: &Product) -> Expr {
     evalc0(p)
 }
 
+/// Number of spin strings to evaluate in one connected Wick batch.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: Spin-string batch size.
+fn spinbatch() -> usize {
+    std::env::var("WICK_SPIN_BATCH")
+        .ok()
+        .and_then(|x| x.parse::<usize>().ok())
+        .filter(|&x| x > 0)
+        .unwrap_or(64)
+}
+
+/// Number of spin strings to stream concurrently in split mode.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: Number of active spin-string workers.
+fn spinpar() -> usize {
+    std::env::var("WICK_SPIN_PAR")
+        .ok()
+        .and_then(|x| x.parse::<usize>().ok())
+        .filter(|&x| x > 0)
+        .unwrap_or(2)
+}
+
+/// Number of streamed chunks allowed to queue before workers block.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: Bounded output queue length.
+fn streamqueue() -> usize {
+    std::env::var("WICK_STREAM_QUEUE")
+        .ok()
+        .and_then(|x| x.parse::<usize>().ok())
+        .filter(|&x| x > 0)
+        .unwrap_or(2)
+}
+
+/// Connected accumulator flush threshold for streaming split mode.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: Approximate numeric terms per streamed subchunk.
+fn accflush() -> usize {
+    std::env::var("WICK_ACC_FLUSH")
+        .ok()
+        .and_then(|x| x.parse::<usize>().ok())
+        .filter(|&x| x > 0)
+        .unwrap_or(100_000)
+}
+
+/// Evaluate one connected spin-orbital string and stream accumulator chunks.
+/// # Arguments:
+/// - `ops`: Spin-orbital operator string.
+/// - `want`: Required GNO-group mask.
+/// - `id`: Spin-string id for tracing.
+/// - `emit`: Callback receiving one expression subchunk.
+/// # Returns:
+/// - `()`: Calls `emit` for each non-empty subchunk.
+fn eval1cstream(ops: &[Op], want: u64, id: usize, mut emit: impl FnMut(Expr)) {
+    let mut s = Store::default();
+    let mut acc = Acc::new();
+    let bs = blocks(ops, &mut s);
+    let mut by_pos = vec![Vec::<usize>::new(); ops.len()];
+
+    for (i, b) in bs.iter().enumerate() {
+        for pos in bits(b.m) {
+            by_pos[pos].push(i);
+        }
+    }
+
+    let full = (1u64 << ops.len()) - 1;
+    let mut cur = Row {
+        c: Rat::one(),
+        d: SmallVec::new(),
+        t: SmallVec::new(),
+        e: SmallVec::new(),
+    };
+
+    let mut tail_memo = BTreeMap::new();
+    let lim = accflush();
+    let mut n = 0usize;
+
+    {
+        let mut flush = |acc: &mut Acc| {
+            if acc.len() < lim {
+                return;
+            }
+
+            let e = out(&s, std::mem::take(acc));
+
+            if !e.is_empty() {
+                crate::progress::mem(format!("wick::eval1cstream emit spin {id} chunk {n} terms: {}", e.len()));
+                n += 1;
+                emit(e);
+            }
+        };
+
+        walkc(full, &bs, &by_pos, want, &mut cur, &mut tail_memo, &mut acc, &mut flush);
+    }
+
+    let e = out(&s, acc);
+
+    if !e.is_empty() {
+        crate::progress::mem(format!("wick::eval1cstream emit spin {id} chunk {n} terms: {}", e.len()));
+        emit(e);
+    }
+}
+
+/// Evaluate a connected spin-free product either as one fast chunk or in spin batches.
+/// # Arguments:
+/// - `p`: Spin-free product.
+/// - `split`: Whether to split this product by spin-string batches.
+/// - `emit`: Callback receiving `(spin_chunk_index, was_split, expression)`.
+/// # Returns:
+/// - `()`: Calls `emit` for each non-empty expression.
+pub fn evalcstream(p: &Product, split: bool, mut emit: impl FnMut(usize, bool, Expr) + Send) {
+    let want = (1u64 << p.groups.len()) - 1;
+    let ss = spin(p);
+    let nspin = ss.len();
+    let nops = ss.iter().map(|x| x.len()).max().unwrap_or(0);
+    let batch = spinbatch();
+
+    crate::progress::mem(format!("wick::evalcstream spin strings: {nspin}, ops: {nops}, split: {split}, batch: {batch}"));
+
+    if !split {
+        let e = ss.into_par_iter()
+            .fold(crate::canonical::Acc::new, |mut acc, ops| {
+                for x in eval1c(&ops, want) {
+                    acc.addterm(x);
+                }
+
+                acc
+            })
+            .reduce(crate::canonical::Acc::new, |mut a, b| {
+                a.merge(b);
+                a
+            })
+            .finish();
+
+        if !e.is_empty() {
+            emit(0, false, e);
+        }
+
+        return;
+    }
+
+    if batch == 1 {
+        let par = spinpar();
+        let queue = streamqueue();
+        let mut ci = 0usize;
+
+        for (base, group) in ss.chunks(par).enumerate() {
+            let first = base * par;
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, usize, Expr)>(queue);
+
+            rayon::scope(|scope| {
+                for (j, ops) in group.iter().enumerate() {
+                    let id = first + j;
+                    let tx = tx.clone();
+
+                    scope.spawn(move |_| {
+                        crate::progress::mem(format!("wick::evalcstream start spin {id}"));
+                        
+                        eval1cstream(ops, want, id, |e| {
+                            let _ = tx.send((id, 0usize, e));
+                        });
+
+                        crate::progress::mem(format!("wick::evalcstream end spin {id}"));
+                    });
+                }
+
+                drop(tx);
+
+                for (_id, _local, e) in rx {
+                    emit(ci, true, e);
+                    ci += 1;
+                }
+            });
+        }
+
+        return;
+    }
+
+    for (si, xs) in ss.chunks(batch).enumerate() {
+        let e = xs.par_iter()
+            .fold(crate::canonical::Acc::new, |mut acc, ops| {
+                for x in eval1c(ops, want) {
+                    acc.addterm(x);
+                }
+
+                acc
+            })
+            .reduce(crate::canonical::Acc::new, |mut a, b| {
+                a.merge(b);
+                a
+            })
+            .finish();
+
+        if !e.is_empty() {
+            emit(si, true, e);
+        }
+    }
+}
+
 /// Evaluate a spin-free product.
 /// # Arguments:
 /// - `p`: Spin-free product.
@@ -705,12 +911,21 @@ fn eval1(ops: &[Op], connected: bool, want: u64) -> Expr {
 /// - `Expr`: Canonical connected contracted expression.
 fn evalc0(p: &Product) -> Expr {
     let want = (1u64 << p.groups.len()) - 1;
-    let e = spin(p)
-        .into_par_iter()
-        .flat_map(|ops| eval1c(&ops, want))
-        .collect();
 
-    canon(e)
+    spin(p)
+        .into_par_iter()
+        .fold(crate::canonical::Acc::new, |mut acc, ops| {
+            for x in eval1c(&ops, want) {
+                acc.addterm(x);
+            }
+
+            acc
+        })
+        .reduce(crate::canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
 }
 
 /// Evaluate one spin-orbital string using hybrid connected enumeration.
@@ -740,8 +955,8 @@ fn eval1c(ops: &[Op], want: u64) -> Expr {
     };
 
     let mut tail_memo = BTreeMap::new();
-
-    walkc(full, &bs, &by_pos, want, &mut cur, &mut tail_memo, &mut acc);
+    let mut flush = |_: &mut Acc| {};
+    walkc(full, &bs, &by_pos, want, &mut cur, &mut tail_memo, &mut acc, &mut flush);
 
     out(&s, acc)
 }
@@ -765,10 +980,12 @@ fn walkc(
     cur: &mut Row,
     tail_memo: &mut BTreeMap<u64, Vec<Row>>,
     acc: &mut Acc,
+    flush: &mut impl FnMut(&mut Acc),
 ) {
     if rootseen(want, &cur.e) == want {
         for tail in walk(left, bs, by_pos, false, tail_memo) {
             add(acc, joinrow(cur, &tail));
+            flush(acc);
         }
 
         return;
@@ -800,13 +1017,13 @@ fn walkc(
         }
 
         let sgn = cross(b.m, rest);
-        let c0 = cur.c.clone();
+        let c0 = cur.c;
         let nd = cur.d.len();
         let nt = cur.t.len();
         let ne = cur.e.len();
 
         for v in &b.v {
-            let mut c = c0.clone() * v.c.clone();
+            let mut c = c0 * v.c;
 
             if sgn < 0 {
                 c = -c;
@@ -816,8 +1033,8 @@ fn walkc(
             cur.d.extend_from_slice(&v.d);
             cur.t.extend_from_slice(&v.t);
             cur.e.push(b.g);
-
-            walkc(rest, bs, by_pos, want, cur, tail_memo, acc);
+            
+            walkc(rest, bs, by_pos, want, cur, tail_memo, acc, flush);
 
             cur.d.truncate(nd);
             cur.t.truncate(nt);

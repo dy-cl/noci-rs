@@ -535,6 +535,36 @@ fn hchunk<T: Sync>(items: &[T], make: impl Fn(&T) -> Expr + Sync) -> Expr {
         .finish()
 }
 
+/// Number of Hamiltonian terms to evaluate in parallel per batch.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: H-term batch size.
+fn hbatch() -> usize {
+    std::env::var("WICK_H_BATCH")
+        .ok()
+        .and_then(|x| x.parse::<usize>().ok())
+        .filter(|&x| x > 0)
+        .unwrap_or(4)
+}
+
+/// Build a stable Hamiltonian-term chunk key.
+/// # Arguments:
+/// - `h`: Hamiltonian term.
+/// # Returns:
+/// - `String`: Hamiltonian chunk key.
+fn hkey(h: &crate::hamiltonian::HTerm) -> String {
+    let kind = match h.fac.kind {
+        crate::ir::TensorKind::Fock => "f",
+        crate::ir::TensorKind::ERI => "g",
+        _ => "x",
+    };
+    let up = h.fac.upper.iter().map(|x| x.name).collect::<Vec<_>>().join("_");
+    let lo = h.fac.lower.iter().map(|x| x.name).collect::<Vec<_>>().join("_");
+
+    format!("{kind}_{up}_{lo}")
+}
+
 /// Build zeroth-order residual target chunks from metric targets.
 /// # Arguments:
 /// - `name`: Excitation class name.
@@ -612,6 +642,34 @@ pub fn r1(name: &str, mut emit: impl FnMut(String, Expr)) {
     }
 }
 
+/// Build one second-order residual target Hamiltonian subchunk.
+/// # Arguments:
+/// - `bra`: Residual bra product.
+/// - `l`: Left cluster term.
+/// - `r`: Right cluster term.
+/// - `h`: Hamiltonian term.
+/// # Returns:
+/// - `Expr`: Canonical target subchunk expression.
+fn r2hterm(bra: &Product, l: &crate::cluster::TTerm, r: &crate::cluster::TTerm, h: &crate::hamiltonian::HTerm) -> Expr {
+    let p = join(&join(&join(bra, &h.op), &l.op), &r.op);
+
+    crate::wick::evalc(&p)
+        .into_par_iter()
+        .fold(crate::canonical::Acc::new, |mut acc, x| {
+            let x = mulf(x, h.coeff, h.fac.clone());
+            let x = mulf(x, l.coeff, l.fac.clone());
+            let c = mulr(q(1, 2), r.coeff);
+
+            acc.addterm(mulf(x, c, r.fac.clone()));
+            acc
+        })
+        .reduce(crate::canonical::Acc::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
+        .finish()
+}
+
 /// Build second-order residual target chunks by unfiltered Hamiltonian enumeration.
 /// # Arguments:
 /// - `name`: Excitation class name.
@@ -626,25 +684,31 @@ pub fn r2(name: &str, mut emit: impl FnMut(String, Expr)) {
     let rs = crate::cluster::terms(3, 'r');
     let total = ls.len() * rs.len();
     let prog = crate::progress::Prog::new(format!("target::r2({name}) T-pairs"), total);
+    let batch = hbatch();
 
     for (li, l) in ls.iter().enumerate() {
         for (ri, r) in rs.iter().enumerate() {
-            let e = hchunk(&hs, |h| {
-                let p = join(&join(&join(&bra, &h.op), &l.op), &r.op);
-                let mut out = Vec::new();
+            for hs in hs.chunks(batch) {
+                let chunks: Vec<_> = hs.par_iter()
+                    .filter_map(|h| {
+                        let key = format!("l{li}_r{ri}_h{}", hkey(h));
+                        crate::progress::mem(format!("target::r2({name}) start {key}"));
 
-                for x in crate::wick::evalc(&p) {
-                    let x = mulf(x, h.coeff, h.fac.clone());
-                    let x = mulf(x, l.coeff, l.fac.clone());
-                    let c = mulr(q(1, 2), r.coeff);
-                    out.push(mulf(x, c, r.fac.clone()));
+                        let e = r2hterm(&bra, l, r, h);
+
+                        crate::progress::mem(format!("target::r2({name}) end {key} terms={}", e.len()));
+
+                        if e.is_empty() {
+                            None
+                        } else {
+                            Some((key, e))
+                        }
+                    })
+                    .collect();
+
+                for (k, e) in chunks {
+                    emit(k, e);
                 }
-
-                out
-            });
-
-            if !e.is_empty() {
-                emit(format!("l{li}_r{ri}"), e);
             }
 
             prog.tick();
