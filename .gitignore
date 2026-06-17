@@ -10,6 +10,7 @@ scaling*
 data.h5
 tools/wick/__pycache__/
 src/nocc/terms/*
+build/generated/*
 Cargo.lock
 .codex
 
