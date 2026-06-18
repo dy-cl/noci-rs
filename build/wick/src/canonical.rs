@@ -1,16 +1,18 @@
 // canonical.rs
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::btree_map::Entry;
 
 use itertools::Itertools;
 use num_traits::Zero;
+use smallvec::SmallVec;
 
 use crate::ir::{Delta, Expr, Idx, Rational, Tensor, TensorKind, Term};
 use crate::spinsum::{self, Rat};
 
 /// High-rank cumulant orbit key.
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-struct Key {
+struct OrbitKey {
     /// Cumulant rank.
     n: usize,
     /// Delta factors.
@@ -25,10 +27,88 @@ struct Key {
     lo: Vec<Idx>,
 }
 
+/// Interned factor id.
+type Id = u32;
+
+/// Canonical term key.
+type TermKey = (SmallVec<[Id; 4]>, SmallVec<[Id; 8]>);
+
+/// Interned canonical factors.
+#[derive(Clone, Debug, Default)]
+struct Store {
+    /// Delta-to-id lookup.
+    ds: BTreeMap<Delta, Id>,
+    /// Tensor-to-id lookup.
+    ts: BTreeMap<Tensor, Id>,
+    /// Delta table.
+    d: Vec<Delta>,
+    /// Tensor table.
+    t: Vec<Tensor>,
+}
+
+impl Store {
+    /// Intern one delta.
+    /// # Arguments:
+    /// - `x`: Delta factor.
+    /// # Returns:
+    /// - `Id`: One-based delta id.
+    fn delta(&mut self, x: Delta) -> Id {
+        if let Some(&id) = self.ds.get(&x) {
+            return id;
+        }
+
+        let id = self.d.len() as Id + 1;
+
+        self.ds.insert(x, id);
+        self.d.push(x);
+
+        id
+    }
+
+    /// Intern one tensor.
+    /// # Arguments:
+    /// - `x`: Tensor factor.
+    /// # Returns:
+    /// - `Id`: One-based tensor id.
+    fn tensor(&mut self, x: Tensor) -> Id {
+        if let Some(&id) = self.ts.get(&x) {
+            return id;
+        }
+
+        let id = self.t.len() as Id + 1;
+
+        self.ts.insert(x.clone(), id);
+        self.t.push(x);
+
+        id
+    }
+}
+
+/// Sort a tiny factor-id list.
+/// # Arguments:
+/// - `xs`: Factor ids.
+/// # Returns:
+/// - `()`: Sorts `xs` in place.
+fn sortids(xs: &mut [Id]) {
+    for i in 1..xs.len() {
+        let x = xs[i];
+        let mut j = i;
+
+        while j > 0 && xs[j - 1] > x {
+            xs[j] = xs[j - 1];
+            j -= 1;
+        }
+
+        xs[j] = x;
+    }
+}
+
 /// Canonical expression accumulator.
 pub struct Acc {
-    /// Combined coefficients keyed by canonical deltas and tensors.
-    acc: BTreeMap<(Vec<Delta>, Vec<Tensor>), Rat>,
+    /// Interned canonical factor store.
+    store: Store,
+    /// Combined coefficients keyed by interned canonical factors.
+    acc: BTreeMap<TermKey, Rat>,
 }
 
 impl Acc {
@@ -38,31 +118,56 @@ impl Acc {
     /// # Returns:
     /// - `Acc`: Empty accumulator.
     pub fn new() -> Self {
-        Self { acc: BTreeMap::new() }
+        Self {
+            store: Store::default(),
+            acc: BTreeMap::default(),
+        }
     }
     
+    /// Add one coefficient by canonical integer key.
+    /// # Arguments:
+    /// - `key`: Canonical integer factor key.
+    /// - `c`: Coefficient.
+    /// # Returns:
+    /// - `()`: Mutates the accumulator.
+    fn addkey(&mut self, key: TermKey, c: Rat) {
+        if c.is_zero() {
+            return;
+        }
+
+        match self.acc.entry(key) {
+            Entry::Vacant(e) => {
+                e.insert(c);
+            }
+            Entry::Occupied(mut e) => {
+                *e.get_mut() += c;
+
+                if e.get().is_zero() {
+                    e.remove();
+                }
+            }
+        }
+    }
+
     /// Add one term to the accumulator.
     /// # Arguments:
     /// - `x`: Term to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addterm(&mut self, mut x: Term) {
-        x.deltas.sort();
-        x.tensors = x.tensors.into_iter().map(ten).collect();
-        x.tensors.sort();
+    pub fn addterm(&mut self, x: Term) {
+        let mut ds = x.deltas.into_iter()
+            .map(|d| self.store.delta(d))
+            .collect::<SmallVec<[Id; 4]>>();
 
-        let key = (x.deltas, x.tensors);
-        let c = Rat::new(x.coeff.num, x.coeff.den);
+        let mut ts = x.tensors.into_iter()
+            .map(ten)
+            .map(|t| self.store.tensor(t))
+            .collect::<SmallVec<[Id; 8]>>();
 
-        let remove = {
-            let v = self.acc.entry(key.clone()).or_insert_with(Rat::zero);
-            *v += c;
-            v.is_zero()
-        };
+        sortids(ds.as_mut_slice());
+        sortids(ts.as_mut_slice());
 
-        if remove {
-            self.acc.remove(&key);
-        }
+        self.addkey((ds, ts), Rat::new(x.coeff.num, x.coeff.den));
     }
 
     /// Merge another accumulator into this accumulator.
@@ -71,16 +176,35 @@ impl Acc {
     /// # Returns:
     /// - `()`: Mutates the accumulator.
     pub fn merge(&mut self, other: Acc) {
-        for (key, c) in other.acc {
-            let remove = {
-                let v = self.acc.entry(key.clone()).or_insert_with(Rat::zero);
-                *v += c;
-                v.is_zero()
-            };
+        let Acc { store, acc } = other;
 
-            if remove {
-                self.acc.remove(&key);
-            }
+        let mut dmap = Vec::with_capacity(store.d.len() + 1);
+        dmap.push(0);
+
+        for d in store.d {
+            dmap.push(self.store.delta(d));
+        }
+
+        let mut tmap = Vec::with_capacity(store.t.len() + 1);
+        tmap.push(0);
+
+        for t in store.t {
+            tmap.push(self.store.tensor(t));
+        }
+
+        for ((ds, ts), c) in acc {
+            let mut ds = ds.into_iter()
+                .map(|i| dmap[i as usize])
+                .collect::<SmallVec<[Id; 4]>>();
+
+            let mut ts = ts.into_iter()
+                .map(|i| tmap[i as usize])
+                .collect::<SmallVec<[Id; 8]>>();
+
+            sortids(ds.as_mut_slice());
+            sortids(ts.as_mut_slice());
+
+            self.addkey((ds, ts), c);
         }
     }
 
@@ -94,19 +218,22 @@ impl Acc {
             self.addterm(x);
         }
     }
-
+    
     /// Convert the accumulator into an expression without sparsification.
     /// # Arguments:
     /// - `self`: Accumulator.
     /// # Returns:
     /// - `Expr`: Combined expression.
     fn intoexpr(self) -> Expr {
-        self.acc.into_iter()
+        let Acc { store, acc } = self;
+        let Store { d, t, .. } = store;
+
+        acc.into_iter()
             .filter(|(_, c)| !c.is_zero())
-            .map(|((deltas, tensors), c)| Term {
+            .map(|((ds, ts), c)| Term {
                 coeff: Rational { num: *c.numer(), den: *c.denom() },
-                deltas,
-                tensors,
+                deltas: ds.into_iter().map(|i| d[(i - 1) as usize]).collect(),
+                tensors: ts.into_iter().map(|i| t[(i - 1) as usize].clone()).collect(),
             })
             .collect()
     }
@@ -184,7 +311,7 @@ fn rank(k: TensorKind) -> Option<usize> {
 /// - `Expr`: Sparsified expression.
 fn spar(e: Expr) -> Expr {
     let mut out = Vec::new();
-    let mut gs = BTreeMap::<Key, BTreeMap<Vec<usize>, Rat>>::new();
+    let mut gs = BTreeMap::<OrbitKey, BTreeMap<Vec<usize>, Rat>>::new();
 
     for term in e {
         let hs = term.tensors.iter()
@@ -219,8 +346,8 @@ fn spar(e: Expr) -> Expr {
 
         let mut ts = term.tensors.clone();
         ts.remove(i);
-
-        let key = Key {
+        
+        let key = OrbitKey {
             n,
             d: term.deltas.clone(),
             t: ts,

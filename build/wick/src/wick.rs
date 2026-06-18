@@ -1,6 +1,7 @@
 // wick.rs
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::collections::btree_map::Entry;
 use std::sync::OnceLock;
 
 use itertools::Itertools;
@@ -476,15 +477,41 @@ fn add(acc: &mut Acc, mut r: Row) {
         return;
     }
 
-    r.d.sort_unstable();
-    r.t.sort_unstable();
+    sortids(&mut r.d);
+    sortids(&mut r.t);
 
     let key = (r.d.to_vec(), r.t.to_vec());
-    let x = acc.entry(key.clone()).or_insert_with(Rat::zero);
-    *x += r.c;
 
-    if x.is_zero() {
-        acc.remove(&key);
+    match acc.entry(key) {
+        Entry::Vacant(e) => {
+            e.insert(r.c);
+        }
+        Entry::Occupied(mut e) => {
+            *e.get_mut() += r.c;
+
+            if e.get().is_zero() {
+                e.remove();
+            }
+        }
+    }
+}
+
+/// Sort a tiny factor-id list.
+/// # Arguments:
+/// - `xs`: Factor ids.
+/// # Returns:
+/// - `()`: Sorts `xs` in place.
+fn sortids(xs: &mut SmallVec<[Id; 4]>) {
+    for i in 1..xs.len() {
+        let x = xs[i];
+        let mut j = i;
+
+        while j > 0 && xs[j - 1] > x {
+            xs[j] = xs[j - 1];
+            j -= 1;
+        }
+
+        xs[j] = x;
     }
 }
 
