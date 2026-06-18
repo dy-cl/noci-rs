@@ -1,9 +1,11 @@
 // encode.rs
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::hash_map::Entry;
 
 use num_rational::Ratio;
 use num_traits::Zero;
+use rayon::prelude::*;
 
 use crate::ir::{Expr, Idx, Space, Tensor, TensorKind, Term};
 use crate::schema::{GeneratedTerm, OverlapBlockTerms, OverlapTermSet, ResidualClassTerms, ResidualTermSet, TensorFactor};
@@ -40,7 +42,6 @@ struct TKey {
     tensors: Vec<FKey>,
 }
 
-/// Global canonical accumulator for one generated class or block.
 #[derive(Clone, Debug)]
 struct Acc {
     /// Fixed free indices.
@@ -48,7 +49,9 @@ struct Acc {
     /// Free-index map.
     free_ids: BTreeMap<Idx, u16>,
     /// Globally combined terms.
-    terms: BTreeMap<TKey, Rat>,
+    terms: HashMap<TKey, Rat>,
+    /// Number of raw terms seen.
+    seen: usize,
 }
 
 /// Encode orbital space.
@@ -396,6 +399,66 @@ fn dummy_name(space: u8, n: u16) -> String {
     }
 }
 
+/// Add one coefficient to a canonical term map.
+/// # Arguments:
+/// - `map`: Canonical term map.
+/// - `k`: Canonical term key.
+/// - `c`: Coefficient to add.
+/// # Returns:
+/// - `()`: Mutates `map`.
+fn addkey(map: &mut HashMap<TKey, Rat>, k: TKey, c: Rat) {
+    if c.is_zero() {
+        return;
+    }
+
+    match map.entry(k) {
+        Entry::Vacant(e) => {
+            e.insert(c);
+        }
+        Entry::Occupied(mut e) => {
+            *e.get_mut() += c;
+
+            if e.get().is_zero() {
+                e.remove();
+            }
+        }
+    }
+}
+
+/// Merge one canonical term map into another.
+/// # Arguments:
+/// - `dst`: Destination term map.
+/// - `src`: Source term map.
+/// # Returns:
+/// - `()`: Mutates `dst`.
+fn mergemap(dst: &mut HashMap<TKey, Rat>, src: HashMap<TKey, Rat>) {
+    for (k, c) in src {
+        addkey(dst, k, c);
+    }
+}
+
+/// Return sorted canonical term entries.
+/// # Arguments:
+/// - `terms`: Canonical term map.
+/// # Returns:
+/// - `Vec<(&TKey, &Rat)>`: Deterministically sorted term entries.
+fn sorted(terms: &HashMap<TKey, Rat>) -> Vec<(&TKey, &Rat)> {
+    let mut out = terms.iter().collect::<Vec<_>>();
+
+    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    out
+}
+
+/// Return whether encoder progress should be printed.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `bool`: True if `WICK_ENCODE_PROGRESS` is set.
+fn encprog() -> bool {
+    std::env::var_os("WICK_ENCODE_PROGRESS").is_some()
+}
+
 impl Acc {
     /// Construct an empty global accumulator.
     /// # Arguments:
@@ -408,7 +471,7 @@ impl Acc {
             .map(|(i, &x)| (x, i as u16))
             .collect();
 
-        Self { free, free_ids, terms: BTreeMap::new() }
+        Self { free, free_ids, terms: HashMap::new(), seen: 0 }
     }
 
     /// Add one symbolic expression to the global canonical accumulator.
@@ -417,25 +480,28 @@ impl Acc {
     /// # Returns:
     /// - `()`: Mutates `self`.
     fn addexpr(&mut self, e: Expr) {
-        for t in e {
-            self.addterm(t);
-        }
-    }
+        let n = e.len();
+        let free = &self.free_ids;
 
-    /// Add one symbolic term to the global canonical accumulator.
-    /// # Arguments:
-    /// - `t`: Symbolic term.
-    /// # Returns:
-    /// - `()`: Mutates `self`.
-    fn addterm(&mut self, t: Term) {
-        let k = key(&t, &self.free_ids);
-        let c = coeff(&t);
-        let entry = self.terms.entry(k.clone()).or_insert_with(Rat::zero);
+        let local = e.into_par_iter()
+            .fold(HashMap::new, |mut acc, t| {
+                let k = key(&t, free);
+                let c = coeff(&t);
 
-        *entry += c;
+                addkey(&mut acc, k, c);
 
-        if entry.is_zero() {
-            self.terms.remove(&k);
+                acc
+            })
+            .reduce(HashMap::new, |mut a, b| {
+                mergemap(&mut a, b);
+                a
+            });
+
+        self.seen += n;
+        mergemap(&mut self.terms, local);
+
+        if encprog() {
+            crate::progress::mem(format!("encode chunk terms: {n}, raw terms: {}, unique terms: {}", self.seen, self.terms.len()));
         }
     }
 
@@ -451,7 +517,7 @@ impl Acc {
 
         let mut seen = BTreeSet::new();
 
-        for k in self.terms.keys() {
+        for (k, _) in sorted(&self.terms) {
             seen.extend(dummies(k));
         }
 
@@ -475,7 +541,7 @@ impl Acc {
     fn terms(&self, ids: &BTreeMap<(u8, u16), u16>) -> Vec<GeneratedTerm> {
         let mut out = Vec::new();
 
-        for (k, c) in &self.terms {
+        for (k, c) in sorted(&self.terms) {
             if c.is_zero() {
                 continue;
             }
@@ -578,10 +644,15 @@ fn block_terms(b: BlockSpec) -> OverlapBlockTerms {
 /// Generate one compact residual class.
 /// # Arguments:
 /// - `order`: Residual order.
-/// - `x`: Excitation-class specification.
+/// - `name`: Excitation-class name.
 /// # Returns:
 /// - `ResidualClassTerms`: Runtime residual class terms.
-fn residual_class(order: u8, x: ExcSpec) -> ResidualClassTerms {
+pub fn residual_class(order: u8, name: &str) -> ResidualClassTerms {
+    let x = EXCS.iter()
+        .copied()
+        .find(|x| x.name == name)
+        .unwrap_or_else(|| panic!("unknown excitation class {name}"));
+
     let mut acc = Acc::new(rfree(x));
 
     match order {
@@ -619,6 +690,6 @@ pub fn residual_terms(order: u8) -> ResidualTermSet {
         order,
         space_kinds: space_kinds(),
         tensor_kinds: tensor_kinds(),
-        classes: EXCS.iter().map(|&x| (x.name.to_string(), residual_class(order, x))).collect(),
+        classes: EXCS.iter().map(|&x| (x.name.to_string(), residual_class(order, x.name))).collect(),
     }
 }
