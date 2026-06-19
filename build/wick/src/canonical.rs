@@ -1,7 +1,7 @@
 // canonical.rs
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::collections::btree_map::Entry;
 
 use itertools::Itertools;
 use num_traits::Zero;
@@ -33,6 +33,12 @@ type Id = u32;
 /// Canonical term key.
 type TermKey = (SmallVec<[Id; 4]>, SmallVec<[Id; 8]>);
 
+/// Maximum number of uncombined canonical terms.
+const PENDING_LIMIT: usize = 262_144;
+
+/// Canonical term key and coefficient.
+type RunTerm = (TermKey, Rat);
+
 /// Interned canonical factors.
 #[derive(Clone, Debug, Default)]
 struct Store {
@@ -52,7 +58,10 @@ impl Store {
     /// - `x`: Delta factor.
     /// # Returns:
     /// - `Id`: One-based delta id.
-    fn delta(&mut self, x: Delta) -> Id {
+    fn delta(
+        &mut self,
+        x: Delta,
+    ) -> Id {
         if let Some(&id) = self.ds.get(&x) {
             return id;
         }
@@ -70,7 +79,10 @@ impl Store {
     /// - `x`: Tensor factor.
     /// # Returns:
     /// - `Id`: One-based tensor id.
-    fn tensor(&mut self, x: Tensor) -> Id {
+    fn tensor(
+        &mut self,
+        x: Tensor,
+    ) -> Id {
         if let Some(&id) = self.ts.get(&x) {
             return id;
         }
@@ -84,31 +96,81 @@ impl Store {
     }
 }
 
-/// Sort a tiny factor-id list.
+/// Sort one canonical run and combine equal adjacent keys.
+///
 /// # Arguments:
-/// - `xs`: Factor ids.
+/// - `run`: Canonical terms to reduce.
+///
 /// # Returns:
-/// - `()`: Sorts `xs` in place.
-fn sortids(xs: &mut [Id]) {
-    for i in 1..xs.len() {
-        let x = xs[i];
-        let mut j = i;
+/// - `()`: Sorts and reduces `run` in place.
+fn reducerun(run: &mut Vec<RunTerm>) {
+    run.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-        while j > 0 && xs[j - 1] > x {
-            xs[j] = xs[j - 1];
-            j -= 1;
+    let mut write = 0usize;
+    for read in 0..run.len() {
+        if write > 0 && run[write - 1].0 == run[read].0 {
+            let c = run[read].1.clone();
+            run[write - 1].1 += c;
+        } else {
+            if write != read {
+                run.swap(write, read);
+            }
+            write += 1;
         }
-
-        xs[j] = x;
     }
+
+    run.truncate(write);
+    run.retain(|(_, c)| !c.is_zero());
+}
+
+/// Merge two sorted unique canonical runs.
+///
+/// # Arguments:
+/// - `left`: First sorted run.
+/// - `right`: Second sorted run.
+/// - `out`: Reusable output run.
+///
+/// # Returns:
+/// - `()`: Drains both inputs into `out`.
+fn mergeruns(
+    left: &mut Vec<RunTerm>,
+    right: &mut Vec<RunTerm>,
+    out: &mut Vec<RunTerm>,
+) {
+    out.clear();
+    out.reserve(left.len() + right.len());
+
+    let mut a = left.drain(..).peekable();
+    let mut b = right.drain(..).peekable();
+
+    while let (Some(x), Some(y)) = (a.peek(), b.peek()) {
+        match x.0.cmp(&y.0) {
+            Ordering::Less => out.push(a.next().unwrap()),
+            Ordering::Greater => out.push(b.next().unwrap()),
+            Ordering::Equal => {
+                let (key, mut c) = a.next().unwrap();
+                c += b.next().unwrap().1;
+                if !c.is_zero() {
+                    out.push((key, c));
+                }
+            }
+        }
+    }
+
+    out.extend(a);
+    out.extend(b);
 }
 
 /// Canonical expression accumulator.
 pub struct Acc {
     /// Interned canonical factor store.
     store: Store,
-    /// Combined coefficients keyed by interned canonical factors.
-    acc: BTreeMap<TermKey, Rat>,
+    /// Sorted unique canonical terms.
+    terms: Vec<RunTerm>,
+    /// Unsorted canonical terms awaiting reduction.
+    pending: Vec<RunTerm>,
+    /// Reusable output buffer for run merging.
+    scratch: Vec<RunTerm>,
 }
 
 impl Acc {
@@ -120,32 +182,60 @@ impl Acc {
     pub fn new() -> Self {
         Self {
             store: Store::default(),
-            acc: BTreeMap::default(),
+            terms: Vec::new(),
+            pending: Vec::new(),
+            scratch: Vec::new(),
         }
     }
-    
+
+    /// Merge the pending terms into the sorted main run.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Leaves `terms` sorted and unique.
+    fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+
+        reducerun(&mut self.pending);
+        if self.pending.is_empty() {
+            return;
+        }
+
+        if self.terms.is_empty() {
+            std::mem::swap(&mut self.terms, &mut self.pending);
+            return;
+        }
+
+        let Acc {
+            terms,
+            pending,
+            scratch,
+            ..
+        } = self;
+        mergeruns(terms, pending, scratch);
+        std::mem::swap(terms, scratch);
+    }
+
     /// Add one coefficient by canonical integer key.
     /// # Arguments:
     /// - `key`: Canonical integer factor key.
     /// - `c`: Coefficient.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    fn addkey(&mut self, key: TermKey, c: Rat) {
+    fn addkey(
+        &mut self,
+        key: TermKey,
+        c: Rat,
+    ) {
         if c.is_zero() {
             return;
         }
 
-        match self.acc.entry(key) {
-            Entry::Vacant(e) => {
-                e.insert(c);
-            }
-            Entry::Occupied(mut e) => {
-                *e.get_mut() += c;
-
-                if e.get().is_zero() {
-                    e.remove();
-                }
-            }
+        self.pending.push((key, c));
+        if self.pending.len() >= PENDING_LIMIT {
+            self.flush();
         }
     }
 
@@ -154,18 +244,26 @@ impl Acc {
     /// - `x`: Term to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addterm(&mut self, x: Term) {
-        let mut ds = x.deltas.into_iter()
+    pub fn addterm(
+        &mut self,
+        mut x: Term,
+    ) {
+        x.deltas.sort_unstable();
+
+        x.tensors = x.tensors.into_iter().map(ten).collect();
+        x.tensors.sort_unstable();
+
+        let ds = x
+            .deltas
+            .into_iter()
             .map(|d| self.store.delta(d))
             .collect::<SmallVec<[Id; 4]>>();
 
-        let mut ts = x.tensors.into_iter()
-            .map(ten)
+        let ts = x
+            .tensors
+            .into_iter()
             .map(|t| self.store.tensor(t))
             .collect::<SmallVec<[Id; 8]>>();
-
-        sortids(ds.as_mut_slice());
-        sortids(ts.as_mut_slice());
 
         self.addkey((ds, ts), Rat::new(x.coeff.num, x.coeff.den));
     }
@@ -175,37 +273,62 @@ impl Acc {
     /// - `other`: Accumulator to merge.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn merge(&mut self, other: Acc) {
-        let Acc { store, acc } = other;
+    pub fn merge(
+        &mut self,
+        mut other: Acc,
+    ) {
+        self.flush();
+        other.flush();
+
+        if other.terms.is_empty() {
+            return;
+        }
+
+        if self.terms.is_empty() {
+            *self = other;
+            return;
+        }
+
+        let Acc {
+            store, mut terms, ..
+        } = other;
 
         let mut dmap = Vec::with_capacity(store.d.len() + 1);
         dmap.push(0);
-
         for d in store.d {
             dmap.push(self.store.delta(d));
         }
 
         let mut tmap = Vec::with_capacity(store.t.len() + 1);
         tmap.push(0);
-
         for t in store.t {
             tmap.push(self.store.tensor(t));
         }
 
-        for ((ds, ts), c) in acc {
-            let mut ds = ds.into_iter()
-                .map(|i| dmap[i as usize])
-                .collect::<SmallVec<[Id; 4]>>();
+        for ((ds, ts), _) in &mut terms {
+            for i in ds.iter_mut() {
+                *i = dmap[*i as usize];
+            }
 
-            let mut ts = ts.into_iter()
-                .map(|i| tmap[i as usize])
-                .collect::<SmallVec<[Id; 8]>>();
-
-            sortids(ds.as_mut_slice());
-            sortids(ts.as_mut_slice());
-
-            self.addkey((ds, ts), c);
+            for i in ts.iter_mut() {
+                *i = tmap[*i as usize];
+            }
         }
+
+        reducerun(&mut terms);
+
+        if terms.is_empty() {
+            return;
+        }
+
+        let Acc {
+            terms: left,
+            scratch,
+            ..
+        } = self;
+
+        mergeruns(left, &mut terms, scratch);
+        std::mem::swap(left, scratch);
     }
 
     /// Add one expression to the accumulator.
@@ -213,29 +336,61 @@ impl Acc {
     /// - `e`: Expression to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addexpr(&mut self, e: Expr) {
+    pub fn addexpr(
+        &mut self,
+        e: Expr,
+    ) {
         for x in e {
             self.addterm(x);
         }
     }
-    
+
     /// Convert the accumulator into an expression without sparsification.
     /// # Arguments:
     /// - `self`: Accumulator.
     /// # Returns:
     /// - `Expr`: Combined expression.
-    fn intoexpr(self) -> Expr {
-        let Acc { store, acc } = self;
+    fn intoexpr(mut self) -> Expr {
+        self.flush();
+
+        let Acc { store, terms, .. } = self;
         let Store { d, t, .. } = store;
 
-        acc.into_iter()
+        let mut out = terms
+            .into_iter()
             .filter(|(_, c)| !c.is_zero())
-            .map(|((ds, ts), c)| Term {
-                coeff: Rational { num: *c.numer(), den: *c.denom() },
-                deltas: ds.into_iter().map(|i| d[(i - 1) as usize]).collect(),
-                tensors: ts.into_iter().map(|i| t[(i - 1) as usize].clone()).collect(),
+            .map(|((ds, ts), c)| {
+                let mut deltas = ds
+                    .into_iter()
+                    .map(|i| d[(i - 1) as usize])
+                    .collect::<Vec<_>>();
+
+                let mut tensors = ts
+                    .into_iter()
+                    .map(|i| t[(i - 1) as usize].clone())
+                    .collect::<Vec<_>>();
+
+                deltas.sort_unstable();
+                tensors.sort_unstable();
+
+                Term {
+                    coeff: Rational {
+                        num: *c.numer(),
+                        den: *c.denom(),
+                    },
+                    deltas,
+                    tensors,
+                }
             })
-            .collect()
+            .collect::<Expr>();
+
+        out.sort_unstable_by(|a, b| {
+            a.deltas
+                .cmp(&b.deltas)
+                .then_with(|| a.tensors.cmp(&b.tensors))
+        });
+
+        out
     }
 
     /// Finish canonicalisation.
@@ -314,7 +469,9 @@ fn spar(e: Expr) -> Expr {
     let mut gs = BTreeMap::<OrbitKey, BTreeMap<Vec<usize>, Rat>>::new();
 
     for term in e {
-        let hs = term.tensors.iter()
+        let hs = term
+            .tensors
+            .iter()
             .enumerate()
             .filter_map(|(i, t)| rank(t.kind).map(|n| (i, n, t)))
             .collect::<Vec<_>>();
@@ -346,7 +503,7 @@ fn spar(e: Expr) -> Expr {
 
         let mut ts = term.tensors.clone();
         ts.remove(i);
-        
+
         let key = OrbitKey {
             n,
             d: term.deltas.clone(),
@@ -357,7 +514,11 @@ fn spar(e: Expr) -> Expr {
         };
 
         let c = Rat::new(term.coeff.num, term.coeff.den);
-        let v = gs.entry(key).or_default().entry(p).or_insert_with(Rat::zero);
+        let v = gs
+            .entry(key)
+            .or_default()
+            .entry(p)
+            .or_insert_with(Rat::zero);
         *v += c;
     }
 
@@ -375,7 +536,10 @@ fn spar(e: Expr) -> Expr {
             });
 
             out.push(Term {
-                coeff: Rational { num: *c.numer(), den: *c.denom() },
+                coeff: Rational {
+                    num: *c.numer(),
+                    den: *c.denom(),
+                },
                 deltas: key.d.clone(),
                 tensors: ts,
             });
@@ -391,7 +555,10 @@ fn spar(e: Expr) -> Expr {
 /// - `x`: Actual ordering.
 /// # Returns:
 /// - `Option<Vec<usize>>`: Permutation.
-fn perm(base: &[Idx], x: &[Idx]) -> Option<Vec<usize>> {
+fn perm(
+    base: &[Idx],
+    x: &[Idx],
+) -> Option<Vec<usize>> {
     let mut out = Vec::with_capacity(x.len());
 
     for y in x {
@@ -407,8 +574,12 @@ fn perm(base: &[Idx], x: &[Idx]) -> Option<Vec<usize>> {
 /// - `cs`: Coefficients by lower permutation.
 /// # Returns:
 /// - `BTreeMap<Vec<usize>, Rat>`: Sparse coefficients.
-fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
-    let cs = cs.into_iter()
+fn best(
+    n: usize,
+    cs: BTreeMap<Vec<usize>, Rat>,
+) -> BTreeMap<Vec<usize>, Rat> {
+    let cs = cs
+        .into_iter()
         .filter(|(_, c)| !c.is_zero())
         .collect::<BTreeMap<_, _>>();
 
@@ -430,7 +601,8 @@ fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
                 continue;
             };
 
-            let out = sup.iter()
+            let out = sup
+                .iter()
                 .copied()
                 .zip(x)
                 .filter(|(_, c)| !c.is_zero())
@@ -453,7 +625,11 @@ fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
 /// - `cs`: Coefficients.
 /// # Returns:
 /// - `Vec<Rat>`: Projected vector.
-fn img(ps: &[Vec<usize>], g: &[Vec<Rat>], cs: &BTreeMap<Vec<usize>, Rat>) -> Vec<Rat> {
+fn img(
+    ps: &[Vec<usize>],
+    g: &[Vec<Rat>],
+    cs: &BTreeMap<Vec<usize>, Rat>,
+) -> Vec<Rat> {
     (0..ps.len())
         .map(|i| {
             let mut x = Rat::zero();
