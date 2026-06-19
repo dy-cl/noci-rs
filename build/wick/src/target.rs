@@ -1,6 +1,6 @@
 // target.rs
 
-use crate::ir::{a, c, v, Delta, Expr, Product, Rational, Space, Tensor, TensorKind, Term};
+use crate::ir::{Delta, Expr, Product, Rational, Space, Tensor, TensorKind, Term, a, c, v};
 use rayon::prelude::*;
 
 const SPACES: [Space; 3] = [Space::Core, Space::Active, Space::Virtual];
@@ -20,7 +20,10 @@ fn r(n: i64) -> Rational {
 /// - `d`: Denominator.
 /// # Returns:
 /// - `Rational`: Rational coefficient.
-fn q(n: i64, d: i64) -> Rational {
+fn q(
+    n: i64,
+    d: i64,
+) -> Rational {
     Rational { num: n, den: d }
 }
 
@@ -31,8 +34,16 @@ fn q(n: i64, d: i64) -> Rational {
 /// - `tensors`: Tensor factors.
 /// # Returns:
 /// - `Term`: Symbolic term.
-fn term(coeff: Rational, deltas: Vec<Delta>, tensors: Vec<Tensor>) -> Term {
-    Term { coeff, deltas, tensors }
+fn term(
+    coeff: Rational,
+    deltas: Vec<Delta>,
+    tensors: Vec<Tensor>,
+) -> Term {
+    Term {
+        coeff,
+        deltas,
+        tensors,
+    }
 }
 
 /// Build a delta.
@@ -41,7 +52,10 @@ fn term(coeff: Rational, deltas: Vec<Delta>, tensors: Vec<Tensor>) -> Term {
 /// - `right`: Right index.
 /// # Returns:
 /// - `Delta`: Kronecker delta.
-fn d(left: crate::ir::Idx, right: crate::ir::Idx) -> Delta {
+fn d(
+    left: crate::ir::Idx,
+    right: crate::ir::Idx,
+) -> Delta {
     Delta { left, right }
 }
 
@@ -51,8 +65,15 @@ fn d(left: crate::ir::Idx, right: crate::ir::Idx) -> Delta {
 /// - `lower`: Lower active index.
 /// # Returns:
 /// - `Tensor`: Gamma1 tensor.
-fn g(upper: crate::ir::Idx, lower: crate::ir::Idx) -> Tensor {
-    Tensor { kind: TensorKind::Gamma1, upper: vec![upper], lower: vec![lower] }
+fn g(
+    upper: crate::ir::Idx,
+    lower: crate::ir::Idx,
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::Gamma1,
+        upper: vec![upper],
+        lower: vec![lower],
+    }
 }
 
 /// Build a Theta tensor.
@@ -61,8 +82,15 @@ fn g(upper: crate::ir::Idx, lower: crate::ir::Idx) -> Tensor {
 /// - `lower`: Lower active index.
 /// # Returns:
 /// - `Tensor`: Theta tensor.
-fn th(upper: crate::ir::Idx, lower: crate::ir::Idx) -> Tensor {
-    Tensor { kind: TensorKind::Theta, upper: vec![upper], lower: vec![lower] }
+fn th(
+    upper: crate::ir::Idx,
+    lower: crate::ir::Idx,
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::Theta,
+        upper: vec![upper],
+        lower: vec![lower],
+    }
 }
 
 /// Build a Lambda2 tensor.
@@ -73,8 +101,17 @@ fn th(upper: crate::ir::Idx, lower: crate::ir::Idx) -> Tensor {
 /// - `l2`: Second lower active index.
 /// # Returns:
 /// - `Tensor`: Lambda2 tensor.
-fn l2(u1: crate::ir::Idx, u2: crate::ir::Idx, l1: crate::ir::Idx, l2_: crate::ir::Idx) -> Tensor {
-    Tensor { kind: TensorKind::Lambda2, upper: vec![u1, u2], lower: vec![l1, l2_] }
+fn l2(
+    u1: crate::ir::Idx,
+    u2: crate::ir::Idx,
+    l1: crate::ir::Idx,
+    l2_: crate::ir::Idx,
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::Lambda2,
+        upper: vec![u1, u2],
+        lower: vec![l1, l2_],
+    }
 }
 
 /// Build a Lambda3 tensor.
@@ -83,8 +120,15 @@ fn l2(u1: crate::ir::Idx, u2: crate::ir::Idx, l1: crate::ir::Idx, l2_: crate::ir
 /// - `l`: Lower active indices.
 /// # Returns:
 /// - `Tensor`: Lambda3 tensor.
-fn l3(u: [crate::ir::Idx; 3], l: [crate::ir::Idx; 3]) -> Tensor {
-    Tensor { kind: TensorKind::Lambda3, upper: u.to_vec(), lower: l.to_vec() }
+fn l3(
+    u: [crate::ir::Idx; 3],
+    l: [crate::ir::Idx; 3],
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::Lambda3,
+        upper: u.to_vec(),
+        lower: l.to_vec(),
+    }
 }
 
 /// Build a Lambda4 tensor.
@@ -93,8 +137,15 @@ fn l3(u: [crate::ir::Idx; 3], l: [crate::ir::Idx; 3]) -> Tensor {
 /// - `l`: Lower active indices.
 /// # Returns:
 /// - `Tensor`: Lambda4 tensor.
-fn l4(u: [crate::ir::Idx; 4], l: [crate::ir::Idx; 4]) -> Tensor {
-    Tensor { kind: TensorKind::Lambda4, upper: u.to_vec(), lower: l.to_vec() }
+fn l4(
+    u: [crate::ir::Idx; 4],
+    l: [crate::ir::Idx; 4],
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::Lambda4,
+        upper: u.to_vec(),
+        lower: l.to_vec(),
+    }
 }
 
 /// Return the Appendix C1 target expression.
@@ -103,9 +154,11 @@ fn l4(u: [crate::ir::Idx; 4], l: [crate::ir::Idx; 4]) -> Tensor {
 /// # Returns:
 /// - `Expr`: Target expression for C -> A.
 fn c1() -> Expr {
-    vec![
-        term(r(1), vec![d(c("i"), c("j"))], vec![th(a("v"), a("u"))]),
-    ]
+    vec![term(
+        r(1),
+        vec![d(c("i"), c("j"))],
+        vec![th(a("v"), a("u"))],
+    )]
 }
 
 /// Return the Appendix C2 target expression.
@@ -114,9 +167,7 @@ fn c1() -> Expr {
 /// # Returns:
 /// - `Expr`: Target expression for A -> V.
 fn c2() -> Expr {
-    vec![
-        term(r(1), vec![d(v("b"), v("a"))], vec![g(a("t"), a("u"))]),
-    ]
+    vec![term(r(1), vec![d(v("b"), v("a"))], vec![g(a("t"), a("u"))])]
 }
 
 /// Return the Appendix C3 target expression.
@@ -138,8 +189,16 @@ fn c3() -> Expr {
 /// - `Expr`: Target expression for CA -> AV.
 fn c4() -> Expr {
     vec![
-        term(r(1), vec![d(c("i"), c("j")), d(v("b"), v("a"))], vec![g(a("u"), a("w")), th(a("x"), a("v"))]),
-        term(r(-1), vec![d(c("i"), c("j")), d(v("b"), v("a"))], vec![l2(a("u"), a("x"), a("w"), a("v"))]),
+        term(
+            r(1),
+            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
+            vec![g(a("u"), a("w")), th(a("x"), a("v"))],
+        ),
+        term(
+            r(-1),
+            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
+            vec![l2(a("u"), a("x"), a("w"), a("v"))],
+        ),
     ]
 }
 
@@ -150,8 +209,16 @@ fn c4() -> Expr {
 /// - `Expr`: Target expression for CA -> VA.
 fn c5() -> Expr {
     vec![
-        term(r(1), vec![d(c("i"), c("j")), d(v("b"), v("a"))], vec![g(a("u"), a("w")), th(a("x"), a("v"))]),
-        term(r(2), vec![d(c("i"), c("j")), d(v("b"), v("a"))], vec![l2(a("u"), a("x"), a("v"), a("w"))]),
+        term(
+            r(1),
+            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
+            vec![g(a("u"), a("w")), th(a("x"), a("v"))],
+        ),
+        term(
+            r(2),
+            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
+            vec![l2(a("u"), a("x"), a("v"), a("w"))],
+        ),
     ]
 }
 
@@ -162,8 +229,16 @@ fn c5() -> Expr {
 /// - `Expr`: Target expression for CA -> VV.
 fn c6() -> Expr {
     vec![
-        term(r(2), vec![d(c("i"), c("j")), d(v("d"), v("b")), d(v("c"), v("a"))], vec![g(a("u"), a("v"))]),
-        term(r(-1), vec![d(c("i"), c("j")), d(v("d"), v("a")), d(v("c"), v("b"))], vec![g(a("u"), a("v"))]),
+        term(
+            r(2),
+            vec![d(c("i"), c("j")), d(v("d"), v("b")), d(v("c"), v("a"))],
+            vec![g(a("u"), a("v"))],
+        ),
+        term(
+            r(-1),
+            vec![d(c("i"), c("j")), d(v("d"), v("a")), d(v("c"), v("b"))],
+            vec![g(a("u"), a("v"))],
+        ),
     ]
 }
 
@@ -174,8 +249,16 @@ fn c6() -> Expr {
 /// - `Expr`: Target expression for CC -> AV.
 fn c7() -> Expr {
     vec![
-        term(r(2), vec![d(v("b"), v("a")), d(c("i"), c("k")), d(c("j"), c("l"))], vec![th(a("v"), a("u"))]),
-        term(r(-1), vec![d(v("b"), v("a")), d(c("i"), c("l")), d(c("j"), c("k"))], vec![th(a("v"), a("u"))]),
+        term(
+            r(2),
+            vec![d(v("b"), v("a")), d(c("i"), c("k")), d(c("j"), c("l"))],
+            vec![th(a("v"), a("u"))],
+        ),
+        term(
+            r(-1),
+            vec![d(v("b"), v("a")), d(c("i"), c("l")), d(c("j"), c("k"))],
+            vec![th(a("v"), a("u"))],
+        ),
     ]
 }
 
@@ -186,13 +269,36 @@ fn c7() -> Expr {
 /// - `Expr`: Target expression for CC -> AA.
 fn c8() -> Expr {
     vec![
-        term(r(1), vec![d(c("i"), c("k")), d(c("j"), c("l"))], vec![th(a("w"), a("u")), th(a("x"), a("v"))]),
-        term(q(-1, 2), vec![d(c("i"), c("k")), d(c("j"), c("l"))], vec![th(a("w"), a("v")), th(a("x"), a("u"))]),
-        term(r(1), vec![d(c("i"), c("k")), d(c("j"), c("l"))], vec![l2(a("w"), a("x"), a("u"), a("v"))]),
-
-        term(r(1), vec![d(c("i"), c("l")), d(c("j"), c("k"))], vec![th(a("w"), a("v")), th(a("x"), a("u"))]),
-        term(q(-1, 2), vec![d(c("i"), c("l")), d(c("j"), c("k"))], vec![th(a("w"), a("u")), th(a("x"), a("v"))]),
-        term(r(1), vec![d(c("i"), c("l")), d(c("j"), c("k"))], vec![l2(a("w"), a("x"), a("v"), a("u"))]),
+        term(
+            r(1),
+            vec![d(c("i"), c("k")), d(c("j"), c("l"))],
+            vec![th(a("w"), a("u")), th(a("x"), a("v"))],
+        ),
+        term(
+            q(-1, 2),
+            vec![d(c("i"), c("k")), d(c("j"), c("l"))],
+            vec![th(a("w"), a("v")), th(a("x"), a("u"))],
+        ),
+        term(
+            r(1),
+            vec![d(c("i"), c("k")), d(c("j"), c("l"))],
+            vec![l2(a("w"), a("x"), a("u"), a("v"))],
+        ),
+        term(
+            r(1),
+            vec![d(c("i"), c("l")), d(c("j"), c("k"))],
+            vec![th(a("w"), a("v")), th(a("x"), a("u"))],
+        ),
+        term(
+            q(-1, 2),
+            vec![d(c("i"), c("l")), d(c("j"), c("k"))],
+            vec![th(a("w"), a("u")), th(a("x"), a("v"))],
+        ),
+        term(
+            r(1),
+            vec![d(c("i"), c("l")), d(c("j"), c("k"))],
+            vec![l2(a("w"), a("x"), a("v"), a("u"))],
+        ),
     ]
 }
 
@@ -207,14 +313,46 @@ fn c9() -> Expr {
     let delta = vec![d(c("i"), c("j"))];
 
     vec![
-        term(q(1, 2), delta.clone(), vec![g(a("u"), a("x")), th(a("y"), a("v")), th(a("z"), a("w"))]),
-        term(q(-1, 4), delta.clone(), vec![g(a("u"), a("x")), th(a("y"), a("w")), th(a("z"), a("v"))]),
-        term(q(1, 2), delta.clone(), vec![g(a("u"), a("x")), l2(a("y"), a("z"), a("v"), a("w"))]),
-        term(r(1), delta.clone(), vec![th(a("y"), a("v")), l2(a("u"), a("z"), a("w"), a("x"))]),
-        term(q(-1, 2), delta.clone(), vec![th(a("y"), a("w")), l2(a("u"), a("z"), a("v"), a("x"))]),
-        term(q(-1, 2), delta.clone(), vec![th(a("z"), a("v")), l2(a("u"), a("y"), a("w"), a("x"))]),
-        term(q(-1, 2), delta.clone(), vec![th(a("z"), a("w")), l2(a("u"), a("y"), a("x"), a("v"))]),
-        term(r(-1), delta, vec![l3([a("u"), a("y"), a("z")], [a("w"), a("v"), a("x")])]),
+        term(
+            q(1, 2),
+            delta.clone(),
+            vec![g(a("u"), a("x")), th(a("y"), a("v")), th(a("z"), a("w"))],
+        ),
+        term(
+            q(-1, 4),
+            delta.clone(),
+            vec![g(a("u"), a("x")), th(a("y"), a("w")), th(a("z"), a("v"))],
+        ),
+        term(
+            q(1, 2),
+            delta.clone(),
+            vec![g(a("u"), a("x")), l2(a("y"), a("z"), a("v"), a("w"))],
+        ),
+        term(
+            r(1),
+            delta.clone(),
+            vec![th(a("y"), a("v")), l2(a("u"), a("z"), a("w"), a("x"))],
+        ),
+        term(
+            q(-1, 2),
+            delta.clone(),
+            vec![th(a("y"), a("w")), l2(a("u"), a("z"), a("v"), a("x"))],
+        ),
+        term(
+            q(-1, 2),
+            delta.clone(),
+            vec![th(a("z"), a("v")), l2(a("u"), a("y"), a("w"), a("x"))],
+        ),
+        term(
+            q(-1, 2),
+            delta.clone(),
+            vec![th(a("z"), a("w")), l2(a("u"), a("y"), a("x"), a("v"))],
+        ),
+        term(
+            r(-1),
+            delta,
+            vec![l3([a("u"), a("y"), a("z")], [a("w"), a("v"), a("x")])],
+        ),
     ]
 }
 
@@ -227,14 +365,46 @@ fn c10() -> Expr {
     let delta = vec![d(v("b"), v("a"))];
 
     vec![
-        term(q(1, 2), delta.clone(), vec![th(a("z"), a("v")), g(a("t"), a("x")), g(a("u"), a("y"))]),
-        term(q(-1, 4), delta.clone(), vec![th(a("z"), a("v")), g(a("t"), a("y")), g(a("u"), a("x"))]),
-        term(q(1, 2), delta.clone(), vec![th(a("z"), a("v")), l2(a("t"), a("u"), a("x"), a("y"))]),
-        term(q(-1, 2), delta.clone(), vec![g(a("t"), a("x")), l2(a("u"), a("z"), a("y"), a("v"))]),
-        term(q(-1, 2), delta.clone(), vec![g(a("t"), a("y")), l2(a("u"), a("z"), a("v"), a("x"))]),
-        term(r(1), delta.clone(), vec![g(a("u"), a("y")), l2(a("t"), a("z"), a("v"), a("x"))]),
-        term(q(-1, 2), delta.clone(), vec![g(a("u"), a("x")), l2(a("t"), a("z"), a("v"), a("y"))]),
-        term(r(1), delta, vec![l3([a("t"), a("u"), a("z")], [a("v"), a("y"), a("x")])]),
+        term(
+            q(1, 2),
+            delta.clone(),
+            vec![th(a("z"), a("v")), g(a("t"), a("x")), g(a("u"), a("y"))],
+        ),
+        term(
+            q(-1, 4),
+            delta.clone(),
+            vec![th(a("z"), a("v")), g(a("t"), a("y")), g(a("u"), a("x"))],
+        ),
+        term(
+            q(1, 2),
+            delta.clone(),
+            vec![th(a("z"), a("v")), l2(a("t"), a("u"), a("x"), a("y"))],
+        ),
+        term(
+            q(-1, 2),
+            delta.clone(),
+            vec![g(a("t"), a("x")), l2(a("u"), a("z"), a("y"), a("v"))],
+        ),
+        term(
+            q(-1, 2),
+            delta.clone(),
+            vec![g(a("t"), a("y")), l2(a("u"), a("z"), a("v"), a("x"))],
+        ),
+        term(
+            r(1),
+            delta.clone(),
+            vec![g(a("u"), a("y")), l2(a("t"), a("z"), a("v"), a("x"))],
+        ),
+        term(
+            q(-1, 2),
+            delta.clone(),
+            vec![g(a("u"), a("x")), l2(a("t"), a("z"), a("v"), a("y"))],
+        ),
+        term(
+            r(1),
+            delta,
+            vec![l3([a("t"), a("u"), a("z")], [a("v"), a("y"), a("x")])],
+        ),
     ]
 }
 
@@ -249,11 +419,18 @@ fn c11() -> Expr {
 
     vec![
         term(r(1), d1.clone(), vec![g(a("t"), a("v")), g(a("u"), a("w"))]),
-        term(q(-1, 2), d1.clone(), vec![g(a("t"), a("w")), g(a("u"), a("v"))]),
+        term(
+            q(-1, 2),
+            d1.clone(),
+            vec![g(a("t"), a("w")), g(a("u"), a("v"))],
+        ),
         term(r(1), d1, vec![l2(a("t"), a("u"), a("v"), a("w"))]),
-
         term(r(1), d2.clone(), vec![g(a("u"), a("v")), g(a("t"), a("w"))]),
-        term(q(-1, 2), d2.clone(), vec![g(a("u"), a("w")), g(a("t"), a("v"))]),
+        term(
+            q(-1, 2),
+            d2.clone(),
+            vec![g(a("u"), a("w")), g(a("t"), a("v"))],
+        ),
         term(r(1), d2, vec![l2(a("u"), a("t"), a("v"), a("w"))]),
     ]
 }
@@ -265,81 +442,506 @@ fn c11() -> Expr {
 /// - `Expr`: Target expression for AA -> AA.
 fn c12() -> Expr {
     vec![
-        term(r(1), vec![], vec![l4([a("p"), a("r"), a("t"), a("v")], [a("q"), a("s"), a("u"), a("w")])]),
-
-        term(q(1, 2), vec![], vec![th(a("v"), a("s")), l3([a("p"), a("r"), a("t")], [a("q"), a("w"), a("u")])]),
-        term(q(1, 2), vec![], vec![th(a("v"), a("q")), l3([a("p"), a("r"), a("t")], [a("w"), a("s"), a("u")])]),
-        term(q(1, 2), vec![], vec![th(a("t"), a("s")), l3([a("p"), a("r"), a("v")], [a("q"), a("u"), a("w")])]),
-        term(q(1, 2), vec![], vec![th(a("t"), a("q")), l3([a("p"), a("r"), a("v")], [a("u"), a("s"), a("w")])]),
-
-        term(q(-1, 2), vec![], vec![g(a("r"), a("u")), l3([a("p"), a("t"), a("v")], [a("q"), a("s"), a("w")])]),
-        term(q(-1, 2), vec![], vec![g(a("r"), a("w")), l3([a("p"), a("t"), a("v")], [a("q"), a("u"), a("s")])]),
-        term(q(-1, 2), vec![], vec![g(a("p"), a("u")), l3([a("r"), a("t"), a("v")], [a("s"), a("q"), a("w")])]),
-        term(q(-1, 2), vec![], vec![g(a("p"), a("w")), l3([a("r"), a("t"), a("v")], [a("s"), a("u"), a("q")])]),
-
-        term(q(1, 4), vec![], vec![th(a("t"), a("q")), th(a("v"), a("s")), g(a("p"), a("u")), g(a("r"), a("w"))]),
-        term(q(-1, 8), vec![], vec![th(a("t"), a("q")), th(a("v"), a("s")), g(a("p"), a("w")), g(a("r"), a("u"))]),
-        term(q(1, 4), vec![], vec![th(a("t"), a("q")), th(a("v"), a("s")), l2(a("p"), a("r"), a("u"), a("w"))]),
-
-        term(q(1, 4), vec![], vec![th(a("t"), a("s")), th(a("v"), a("q")), g(a("p"), a("w")), g(a("r"), a("u"))]),
-        term(q(-1, 8), vec![], vec![th(a("t"), a("s")), th(a("v"), a("q")), g(a("p"), a("u")), g(a("r"), a("w"))]),
-        term(q(1, 4), vec![], vec![th(a("t"), a("s")), th(a("v"), a("q")), l2(a("p"), a("r"), a("w"), a("u"))]),
-
-        term(q(1, 4), vec![], vec![g(a("p"), a("u")), g(a("r"), a("w")), l2(a("t"), a("v"), a("q"), a("s"))]),
-        term(q(1, 4), vec![], vec![g(a("p"), a("w")), g(a("r"), a("u")), l2(a("t"), a("v"), a("s"), a("q"))]),
-
-        term(q(1, 3), vec![], vec![l2(a("t"), a("v"), a("q"), a("s")), l2(a("p"), a("r"), a("u"), a("w"))]),
-        term(q(1, 3), vec![], vec![l2(a("t"), a("v"), a("s"), a("q")), l2(a("p"), a("r"), a("w"), a("u"))]),
-        term(q(1, 6), vec![], vec![l2(a("t"), a("v"), a("q"), a("s")), l2(a("p"), a("r"), a("w"), a("u"))]),
-        term(q(1, 6), vec![], vec![l2(a("t"), a("v"), a("s"), a("q")), l2(a("p"), a("r"), a("u"), a("w"))]),
-
-        term(q(1, 2), vec![], vec![th(a("v"), a("s")), g(a("r"), a("w")), l2(a("p"), a("t"), a("q"), a("u"))]),
-        term(q(-1, 4), vec![], vec![th(a("v"), a("s")), g(a("r"), a("u")), l2(a("p"), a("t"), a("q"), a("w"))]),
-        term(q(-1, 4), vec![], vec![th(a("v"), a("q")), g(a("r"), a("w")), l2(a("p"), a("t"), a("s"), a("u"))]),
-        term(q(-1, 4), vec![], vec![th(a("v"), a("q")), g(a("r"), a("u")), l2(a("p"), a("t"), a("w"), a("s"))]),
-
-        term(q(-1, 4), vec![], vec![th(a("t"), a("s")), g(a("r"), a("w")), l2(a("p"), a("v"), a("q"), a("u"))]),
-        term(q(1, 2), vec![], vec![th(a("t"), a("s")), g(a("r"), a("u")), l2(a("p"), a("v"), a("q"), a("w"))]),
-        term(q(-1, 4), vec![], vec![th(a("t"), a("q")), g(a("r"), a("w")), l2(a("p"), a("v"), a("u"), a("s"))]),
-        term(q(-1, 4), vec![], vec![th(a("t"), a("q")), g(a("r"), a("u")), l2(a("p"), a("v"), a("s"), a("w"))]),
-
-        term(q(-1, 4), vec![], vec![th(a("v"), a("s")), g(a("p"), a("w")), l2(a("r"), a("t"), a("q"), a("u"))]),
-        term(q(-1, 4), vec![], vec![th(a("v"), a("s")), g(a("p"), a("u")), l2(a("r"), a("t"), a("w"), a("q"))]),
-        term(q(1, 2), vec![], vec![th(a("v"), a("q")), g(a("p"), a("w")), l2(a("r"), a("t"), a("s"), a("u"))]),
-        term(q(-1, 4), vec![], vec![th(a("v"), a("q")), g(a("p"), a("u")), l2(a("r"), a("t"), a("s"), a("w"))]),
-
-        term(q(-1, 4), vec![], vec![th(a("t"), a("s")), g(a("p"), a("w")), l2(a("r"), a("v"), a("u"), a("q"))]),
-        term(q(-1, 4), vec![], vec![th(a("t"), a("s")), g(a("p"), a("u")), l2(a("r"), a("v"), a("q"), a("w"))]),
-        term(q(-1, 4), vec![], vec![th(a("t"), a("q")), g(a("p"), a("w")), l2(a("r"), a("v"), a("s"), a("u"))]),
-        term(q(1, 2), vec![], vec![th(a("t"), a("q")), g(a("p"), a("u")), l2(a("r"), a("v"), a("s"), a("w"))]),
-
-        term(q(-1, 2), vec![], vec![l2(a("p"), a("r"), a("w"), a("s")), l2(a("t"), a("v"), a("u"), a("q"))]),
-        term(q(-1, 2), vec![], vec![l2(a("p"), a("r"), a("u"), a("s")), l2(a("t"), a("v"), a("q"), a("w"))]),
-        term(q(-1, 2), vec![], vec![l2(a("p"), a("r"), a("q"), a("w")), l2(a("t"), a("v"), a("u"), a("s"))]),
-        term(q(-1, 2), vec![], vec![l2(a("p"), a("r"), a("q"), a("u")), l2(a("t"), a("v"), a("s"), a("w"))]),
-
-        term(q(-1, 2), vec![], vec![l2(a("t"), a("r"), a("q"), a("s")), l2(a("p"), a("v"), a("u"), a("w"))]),
-        term(q(-1, 2), vec![], vec![l2(a("t"), a("r"), a("u"), a("w")), l2(a("p"), a("v"), a("q"), a("s"))]),
-        term(q(-1, 2), vec![], vec![l2(a("v"), a("r"), a("q"), a("s")), l2(a("t"), a("p"), a("u"), a("w"))]),
-        term(q(-1, 2), vec![], vec![l2(a("p"), a("t"), a("q"), a("s")), l2(a("r"), a("v"), a("u"), a("w"))]),
-
-        term(r(1), vec![], vec![l2(a("r"), a("v"), a("s"), a("w")), l2(a("p"), a("t"), a("q"), a("u"))]),
-        term(r(1), vec![], vec![l2(a("r"), a("t"), a("s"), a("u")), l2(a("p"), a("v"), a("q"), a("w"))]),
-
-        term(q(-1, 2), vec![], vec![l2(a("r"), a("v"), a("s"), a("u")), l2(a("p"), a("t"), a("q"), a("w"))]),
-        term(q(-1, 2), vec![], vec![l2(a("r"), a("v"), a("q"), a("w")), l2(a("p"), a("t"), a("s"), a("u"))]),
-        term(q(-1, 2), vec![], vec![l2(a("p"), a("v"), a("q"), a("u")), l2(a("r"), a("t"), a("s"), a("w"))]),
-        term(q(-1, 2), vec![], vec![l2(a("r"), a("t"), a("q"), a("u")), l2(a("p"), a("v"), a("s"), a("w"))]),
-
-        term(q(1, 3), vec![], vec![l2(a("r"), a("v"), a("q"), a("u")), l2(a("p"), a("t"), a("s"), a("w"))]),
-        term(q(1, 3), vec![], vec![l2(a("r"), a("v"), a("u"), a("q")), l2(a("p"), a("t"), a("w"), a("s"))]),
-        term(q(1, 6), vec![], vec![l2(a("r"), a("v"), a("u"), a("q")), l2(a("p"), a("t"), a("s"), a("w"))]),
-        term(q(1, 6), vec![], vec![l2(a("r"), a("v"), a("q"), a("u")), l2(a("p"), a("t"), a("w"), a("s"))]),
-
-        term(q(1, 3), vec![], vec![l2(a("r"), a("t"), a("q"), a("w")), l2(a("p"), a("v"), a("s"), a("u"))]),
-        term(q(1, 3), vec![], vec![l2(a("r"), a("t"), a("w"), a("q")), l2(a("p"), a("v"), a("u"), a("s"))]),
-        term(q(1, 6), vec![], vec![l2(a("r"), a("t"), a("w"), a("q")), l2(a("p"), a("v"), a("s"), a("u"))]),
-        term(q(1, 6), vec![], vec![l2(a("r"), a("t"), a("q"), a("w")), l2(a("p"), a("v"), a("u"), a("s"))]),
+        term(
+            r(1),
+            vec![],
+            vec![l4(
+                [a("p"), a("r"), a("t"), a("v")],
+                [a("q"), a("s"), a("u"), a("w")],
+            )],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("v"), a("s")),
+                l3([a("p"), a("r"), a("t")], [a("q"), a("w"), a("u")]),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("v"), a("q")),
+                l3([a("p"), a("r"), a("t")], [a("w"), a("s"), a("u")]),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                l3([a("p"), a("r"), a("v")], [a("q"), a("u"), a("w")]),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                l3([a("p"), a("r"), a("v")], [a("u"), a("s"), a("w")]),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                g(a("r"), a("u")),
+                l3([a("p"), a("t"), a("v")], [a("q"), a("s"), a("w")]),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                g(a("r"), a("w")),
+                l3([a("p"), a("t"), a("v")], [a("q"), a("u"), a("s")]),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                g(a("p"), a("u")),
+                l3([a("r"), a("t"), a("v")], [a("s"), a("q"), a("w")]),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                g(a("p"), a("w")),
+                l3([a("r"), a("t"), a("v")], [a("s"), a("u"), a("q")]),
+            ],
+        ),
+        term(
+            q(1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                th(a("v"), a("s")),
+                g(a("p"), a("u")),
+                g(a("r"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 8),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                th(a("v"), a("s")),
+                g(a("p"), a("w")),
+                g(a("r"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                th(a("v"), a("s")),
+                l2(a("p"), a("r"), a("u"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                th(a("v"), a("q")),
+                g(a("p"), a("w")),
+                g(a("r"), a("u")),
+            ],
+        ),
+        term(
+            q(-1, 8),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                th(a("v"), a("q")),
+                g(a("p"), a("u")),
+                g(a("r"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                th(a("v"), a("q")),
+                l2(a("p"), a("r"), a("w"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 4),
+            vec![],
+            vec![
+                g(a("p"), a("u")),
+                g(a("r"), a("w")),
+                l2(a("t"), a("v"), a("q"), a("s")),
+            ],
+        ),
+        term(
+            q(1, 4),
+            vec![],
+            vec![
+                g(a("p"), a("w")),
+                g(a("r"), a("u")),
+                l2(a("t"), a("v"), a("s"), a("q")),
+            ],
+        ),
+        term(
+            q(1, 3),
+            vec![],
+            vec![
+                l2(a("t"), a("v"), a("q"), a("s")),
+                l2(a("p"), a("r"), a("u"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 3),
+            vec![],
+            vec![
+                l2(a("t"), a("v"), a("s"), a("q")),
+                l2(a("p"), a("r"), a("w"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 6),
+            vec![],
+            vec![
+                l2(a("t"), a("v"), a("q"), a("s")),
+                l2(a("p"), a("r"), a("w"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 6),
+            vec![],
+            vec![
+                l2(a("t"), a("v"), a("s"), a("q")),
+                l2(a("p"), a("r"), a("u"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("v"), a("s")),
+                g(a("r"), a("w")),
+                l2(a("p"), a("t"), a("q"), a("u")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("v"), a("s")),
+                g(a("r"), a("u")),
+                l2(a("p"), a("t"), a("q"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("v"), a("q")),
+                g(a("r"), a("w")),
+                l2(a("p"), a("t"), a("s"), a("u")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("v"), a("q")),
+                g(a("r"), a("u")),
+                l2(a("p"), a("t"), a("w"), a("s")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                g(a("r"), a("w")),
+                l2(a("p"), a("v"), a("q"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                g(a("r"), a("u")),
+                l2(a("p"), a("v"), a("q"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                g(a("r"), a("w")),
+                l2(a("p"), a("v"), a("u"), a("s")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                g(a("r"), a("u")),
+                l2(a("p"), a("v"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("v"), a("s")),
+                g(a("p"), a("w")),
+                l2(a("r"), a("t"), a("q"), a("u")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("v"), a("s")),
+                g(a("p"), a("u")),
+                l2(a("r"), a("t"), a("w"), a("q")),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("v"), a("q")),
+                g(a("p"), a("w")),
+                l2(a("r"), a("t"), a("s"), a("u")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("v"), a("q")),
+                g(a("p"), a("u")),
+                l2(a("r"), a("t"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                g(a("p"), a("w")),
+                l2(a("r"), a("v"), a("u"), a("q")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("s")),
+                g(a("p"), a("u")),
+                l2(a("r"), a("v"), a("q"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 4),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                g(a("p"), a("w")),
+                l2(a("r"), a("v"), a("s"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![
+                th(a("t"), a("q")),
+                g(a("p"), a("u")),
+                l2(a("r"), a("v"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("p"), a("r"), a("w"), a("s")),
+                l2(a("t"), a("v"), a("u"), a("q")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("p"), a("r"), a("u"), a("s")),
+                l2(a("t"), a("v"), a("q"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("p"), a("r"), a("q"), a("w")),
+                l2(a("t"), a("v"), a("u"), a("s")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("p"), a("r"), a("q"), a("u")),
+                l2(a("t"), a("v"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("t"), a("r"), a("q"), a("s")),
+                l2(a("p"), a("v"), a("u"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("t"), a("r"), a("u"), a("w")),
+                l2(a("p"), a("v"), a("q"), a("s")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("v"), a("r"), a("q"), a("s")),
+                l2(a("t"), a("p"), a("u"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("p"), a("t"), a("q"), a("s")),
+                l2(a("r"), a("v"), a("u"), a("w")),
+            ],
+        ),
+        term(
+            r(1),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("s"), a("w")),
+                l2(a("p"), a("t"), a("q"), a("u")),
+            ],
+        ),
+        term(
+            r(1),
+            vec![],
+            vec![
+                l2(a("r"), a("t"), a("s"), a("u")),
+                l2(a("p"), a("v"), a("q"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("s"), a("u")),
+                l2(a("p"), a("t"), a("q"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("q"), a("w")),
+                l2(a("p"), a("t"), a("s"), a("u")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("p"), a("v"), a("q"), a("u")),
+                l2(a("r"), a("t"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![
+                l2(a("r"), a("t"), a("q"), a("u")),
+                l2(a("p"), a("v"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 3),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("q"), a("u")),
+                l2(a("p"), a("t"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 3),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("u"), a("q")),
+                l2(a("p"), a("t"), a("w"), a("s")),
+            ],
+        ),
+        term(
+            q(1, 6),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("u"), a("q")),
+                l2(a("p"), a("t"), a("s"), a("w")),
+            ],
+        ),
+        term(
+            q(1, 6),
+            vec![],
+            vec![
+                l2(a("r"), a("v"), a("q"), a("u")),
+                l2(a("p"), a("t"), a("w"), a("s")),
+            ],
+        ),
+        term(
+            q(1, 3),
+            vec![],
+            vec![
+                l2(a("r"), a("t"), a("q"), a("w")),
+                l2(a("p"), a("v"), a("s"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 3),
+            vec![],
+            vec![
+                l2(a("r"), a("t"), a("w"), a("q")),
+                l2(a("p"), a("v"), a("u"), a("s")),
+            ],
+        ),
+        term(
+            q(1, 6),
+            vec![],
+            vec![
+                l2(a("r"), a("t"), a("w"), a("q")),
+                l2(a("p"), a("v"), a("s"), a("u")),
+            ],
+        ),
+        term(
+            q(1, 6),
+            vec![],
+            vec![
+                l2(a("r"), a("t"), a("q"), a("w")),
+                l2(a("p"), a("v"), a("u"), a("s")),
+            ],
+        ),
     ]
 }
 
@@ -349,9 +951,11 @@ fn c12() -> Expr {
 /// # Returns:
 /// - `Expr`: Target expression for A -> V / AA -> AV.
 fn c13() -> Expr {
-    vec![
-        term(r(1), vec![d(v("b"), v("a"))], vec![l2(a("u"), a("x"), a("w"), a("v"))]),
-    ]
+    vec![term(
+        r(1),
+        vec![d(v("b"), v("a"))],
+        vec![l2(a("u"), a("x"), a("w"), a("v"))],
+    )]
 }
 
 /// Return the Appendix C14 target expression.
@@ -360,9 +964,11 @@ fn c13() -> Expr {
 /// # Returns:
 /// - `Expr`: Target expression for C -> A / CA -> AA.
 fn c14() -> Expr {
-    vec![
-        term(r(-1), vec![d(c("i"), c("j"))], vec![l2(a("w"), a("x"), a("u"), a("v"))]),
-    ]
+    vec![term(
+        r(-1),
+        vec![d(c("i"), c("j"))],
+        vec![l2(a("w"), a("x"), a("u"), a("v"))],
+    )]
 }
 
 /// Return the Appendix C15 target expression.
@@ -372,11 +978,31 @@ fn c14() -> Expr {
 /// - `Expr`: Target expression for A -> A / AA -> AA.
 fn c15() -> Expr {
     vec![
-        term(r(1), vec![], vec![l3([a("t"), a("y"), a("z")], [a("u"), a("w"), a("x")])]),
-        term(q(-1, 2), vec![], vec![g(a("t"), a("w")), l2(a("y"), a("z"), a("u"), a("x"))]),
-        term(q(-1, 2), vec![], vec![g(a("t"), a("x")), l2(a("y"), a("z"), a("w"), a("u"))]),
-        term(q(1, 2), vec![], vec![th(a("y"), a("u")), l2(a("t"), a("z"), a("w"), a("x"))]),
-        term(q(1, 2), vec![], vec![th(a("z"), a("u")), l2(a("t"), a("y"), a("x"), a("w"))]),
+        term(
+            r(1),
+            vec![],
+            vec![l3([a("t"), a("y"), a("z")], [a("u"), a("w"), a("x")])],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![g(a("t"), a("w")), l2(a("y"), a("z"), a("u"), a("x"))],
+        ),
+        term(
+            q(-1, 2),
+            vec![],
+            vec![g(a("t"), a("x")), l2(a("y"), a("z"), a("w"), a("u"))],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![th(a("y"), a("u")), l2(a("t"), a("z"), a("w"), a("x"))],
+        ),
+        term(
+            q(1, 2),
+            vec![],
+            vec![th(a("z"), a("u")), l2(a("t"), a("y"), a("x"), a("w"))],
+        ),
     ]
 }
 
@@ -387,8 +1013,16 @@ fn c15() -> Expr {
 /// - `Expr`: Target expression for CA -> AV / CA -> VA.
 fn c16() -> Expr {
     vec![
-        term(q(-1, 2), vec![d(c("i"), c("j")), d(v("b"), v("a"))], vec![g(a("u"), a("x")), th(a("y"), a("w"))]),
-        term(r(-1), vec![d(c("i"), c("j")), d(v("b"), v("a"))], vec![l2(a("u"), a("y"), a("w"), a("x"))]),
+        term(
+            q(-1, 2),
+            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
+            vec![g(a("u"), a("x")), th(a("y"), a("w"))],
+        ),
+        term(
+            r(-1),
+            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
+            vec![l2(a("u"), a("y"), a("w"), a("x"))],
+        ),
     ]
 }
 
@@ -399,12 +1033,19 @@ fn c16() -> Expr {
 /// - `fac`: Coefficient tensor.
 /// # Returns:
 /// - `Term`: Updated term.
-fn mulf(mut x: Term, c: Rational, fac: Tensor) -> Term {
+fn mulf(
+    mut x: Term,
+    c: Rational,
+    fac: Tensor,
+) -> Term {
     let a = num_rational::Ratio::new(x.coeff.num, x.coeff.den);
     let b = num_rational::Ratio::new(c.num, c.den);
     let q = a * b;
 
-    x.coeff = Rational { num: *q.numer(), den: *q.denom() };
+    x.coeff = Rational {
+        num: *q.numer(),
+        den: *q.denom(),
+    };
     x.tensors.push(fac);
     x
 }
@@ -415,12 +1056,18 @@ fn mulf(mut x: Term, c: Rational, fac: Tensor) -> Term {
 /// - `b`: Second coefficient.
 /// # Returns:
 /// - `Rational`: Product coefficient.
-fn mulr(a: Rational, b: Rational) -> Rational {
+fn mulr(
+    a: Rational,
+    b: Rational,
+) -> Rational {
     let x = num_rational::Ratio::new(a.num, a.den);
     let y = num_rational::Ratio::new(b.num, b.den);
     let q = x * y;
 
-    Rational { num: *q.numer(), den: *q.denom() }
+    Rational {
+        num: *q.numer(),
+        den: *q.denom(),
+    }
 }
 
 /// Concatenate two spin-free products.
@@ -429,7 +1076,10 @@ fn mulr(a: Rational, b: Rational) -> Rational {
 /// - `y`: Right product.
 /// # Returns:
 /// - `Product`: Concatenated product.
-fn join(x: &Product, y: &Product) -> Product {
+fn join(
+    x: &Product,
+    y: &Product,
+) -> Product {
     let mut groups = x.groups.clone();
     groups.extend(y.groups.clone());
 
@@ -519,8 +1169,12 @@ fn hterms(g: usize) -> Vec<crate::hamiltonian::HTerm> {
 /// - `make`: Function generating terms for one Hamiltonian term.
 /// # Returns:
 /// - `Expr`: Canonical chunk expression.
-fn hchunk<T: Sync>(items: &[T], make: impl Fn(&T) -> Expr + Sync) -> Expr {
-    items.par_iter()
+fn hchunk<T: Sync>(
+    items: &[T],
+    make: impl Fn(&T) -> Expr + Sync,
+) -> Expr {
+    items
+        .par_iter()
         .fold(crate::canonical::Acc::new, |mut acc, h| {
             for x in make(h) {
                 acc.addterm(x);
@@ -559,8 +1213,20 @@ fn hkey(h: &crate::hamiltonian::HTerm) -> String {
         crate::ir::TensorKind::ERI => "g",
         _ => "x",
     };
-    let up = h.fac.upper.iter().map(|x| x.name).collect::<Vec<_>>().join("_");
-    let lo = h.fac.lower.iter().map(|x| x.name).collect::<Vec<_>>().join("_");
+    let up = h
+        .fac
+        .upper
+        .iter()
+        .map(|x| x.name)
+        .collect::<Vec<_>>()
+        .join("_");
+    let lo = h
+        .fac
+        .lower
+        .iter()
+        .map(|x| x.name)
+        .collect::<Vec<_>>()
+        .join("_");
 
     format!("{kind}_{up}_{lo}")
 }
@@ -571,14 +1237,19 @@ fn hkey(h: &crate::hamiltonian::HTerm) -> String {
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r0(name: &str, mut emit: impl FnMut(String, Expr)) {
+pub fn r0(
+    name: &str,
+    mut emit: impl FnMut(String, Expr),
+) {
     let x = crate::specs::exc(name);
-    let blocks: Vec<_> = crate::specs::BLOCKS.iter()
+    let blocks: Vec<_> = crate::specs::BLOCKS
+        .iter()
         .filter(|b| b.left == x.class)
         .collect();
     let prog = crate::progress::Prog::new(format!("target::r0({name}) blocks"), blocks.len());
 
-    let chunks: Vec<_> = blocks.par_iter()
+    let chunks: Vec<_> = blocks
+        .par_iter()
         .filter_map(|b| {
             let Some(expr) = tblock(b.name) else {
                 prog.tick();
@@ -614,7 +1285,10 @@ pub fn r0(name: &str, mut emit: impl FnMut(String, Expr)) {
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r1(name: &str, mut emit: impl FnMut(String, Expr)) {
+pub fn r1(
+    name: &str,
+    mut emit: impl FnMut(String, Expr),
+) {
     let spec = crate::specs::exc(name);
     let bra = crate::specs::bra(&spec, 0);
     let hs = hterms(1);
@@ -650,7 +1324,12 @@ pub fn r1(name: &str, mut emit: impl FnMut(String, Expr)) {
 /// - `h`: Hamiltonian term.
 /// # Returns:
 /// - `Expr`: Canonical target subchunk expression.
-fn r2hterm(bra: &Product, l: &crate::cluster::TTerm, r: &crate::cluster::TTerm, h: &crate::hamiltonian::HTerm) -> Expr {
+fn r2hterm(
+    bra: &Product,
+    l: &crate::cluster::TTerm,
+    r: &crate::cluster::TTerm,
+    h: &crate::hamiltonian::HTerm,
+) -> Expr {
     let p = join(&join(&join(bra, &h.op), &l.op), &r.op);
 
     crate::wick::evalc(&p)
@@ -676,7 +1355,10 @@ fn r2hterm(bra: &Product, l: &crate::cluster::TTerm, r: &crate::cluster::TTerm, 
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r2(name: &str, mut emit: impl FnMut(String, Expr)) {
+pub fn r2(
+    name: &str,
+    mut emit: impl FnMut(String, Expr),
+) {
     let spec = crate::specs::exc(name);
     let bra = crate::specs::bra(&spec, 0);
     let hs = hterms(1);
@@ -689,20 +1371,20 @@ pub fn r2(name: &str, mut emit: impl FnMut(String, Expr)) {
     for (li, l) in ls.iter().enumerate() {
         for (ri, r) in rs.iter().enumerate() {
             for hs in hs.chunks(batch) {
-                let chunks: Vec<_> = hs.par_iter()
+                let chunks: Vec<_> = hs
+                    .par_iter()
                     .filter_map(|h| {
                         let key = format!("l{li}_r{ri}_h{}", hkey(h));
                         crate::progress::mem(format!("target::r2({name}) start {key}"));
 
                         let e = r2hterm(&bra, l, r, h);
 
-                        crate::progress::mem(format!("target::r2({name}) end {key} terms={}", e.len()));
+                        crate::progress::mem(format!(
+                            "target::r2({name}) end {key} terms={}",
+                            e.len()
+                        ));
 
-                        if e.is_empty() {
-                            None
-                        } else {
-                            Some((key, e))
-                        }
+                        if e.is_empty() { None } else { Some((key, e)) }
                     })
                     .collect();
 

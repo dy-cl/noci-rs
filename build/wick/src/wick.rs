@@ -1,7 +1,7 @@
 // wick.rs
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use itertools::Itertools;
@@ -11,8 +11,10 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 
 pub use crate::canonical::canon;
+use crate::ir::{
+    Delta, Expr, Op, OpKind, Product, Rational, Space, Spin, Tensor, TensorKind, Term,
+};
 use crate::spinsum;
-use crate::ir::{Delta, Expr, Op, OpKind, Product, Rational, Space, Spin, Tensor, TensorKind, Term};
 
 type Rat = Ratio<i64>;
 type Id = u32;
@@ -63,7 +65,10 @@ impl Store {
     /// - `x`: Delta factor.
     /// # Returns:
     /// - `Id`: One-based factor id.
-    fn delta(&mut self, x: Delta) -> Id {
+    fn delta(
+        &mut self,
+        x: Delta,
+    ) -> Id {
         if let Some(&id) = self.ds.get(&x) {
             return id;
         }
@@ -79,7 +84,10 @@ impl Store {
     /// - `x`: Tensor factor.
     /// # Returns:
     /// - `Id`: One-based factor id.
-    fn tensor(&mut self, x: Tensor) -> Id {
+    fn tensor(
+        &mut self,
+        x: Tensor,
+    ) -> Id {
         if let Some(&id) = self.ts.get(&x) {
             return id;
         }
@@ -125,7 +133,10 @@ fn spin(p: &Product) -> Vec<Vec<Op>> {
 /// - `s`: Factor store.
 /// # Returns:
 /// - `Vec<Block>`: Allowed Wick blocks.
-fn blocks(ops: &[Op], s: &mut Store) -> Vec<Block> {
+fn blocks(
+    ops: &[Op],
+    s: &mut Store,
+) -> Vec<Block> {
     let mut out = Vec::new();
 
     for b in frozen(ops).into_iter().chain(active(ops)) {
@@ -133,7 +144,11 @@ fn blocks(ops: &[Op], s: &mut Store) -> Vec<Block> {
         let v = val(&xs, s);
 
         if !v.is_empty() {
-            out.push(Block { m: mask(&b), g: gmask(&b, ops), v });
+            out.push(Block {
+                m: mask(&b),
+                g: gmask(&b, ops),
+                v,
+            });
         }
     }
 
@@ -156,8 +171,11 @@ fn frozen(ops: &[Op]) -> Vec<Vec<usize>> {
             continue;
         }
 
-        let core = a.idx.space == Space::Core && a.kind == OpKind::Create && b.kind == OpKind::Annihilate;
-        let virt = a.idx.space == Space::Virtual && a.kind == OpKind::Annihilate && b.kind == OpKind::Create;
+        let core =
+            a.idx.space == Space::Core && a.kind == OpKind::Create && b.kind == OpKind::Annihilate;
+        let virt = a.idx.space == Space::Virtual
+            && a.kind == OpKind::Annihilate
+            && b.kind == OpKind::Create;
 
         if core || virt {
             out.push(vec![i, j]);
@@ -173,12 +191,16 @@ fn frozen(ops: &[Op]) -> Vec<Vec<usize>> {
 /// # Returns:
 /// - `Vec<Vec<usize>>`: Operator-position blocks.
 fn active(ops: &[Op]) -> Vec<Vec<usize>> {
-    let cs = ops.iter().enumerate()
+    let cs = ops
+        .iter()
+        .enumerate()
         .filter(|(_, o)| o.idx.space == Space::Active && o.kind == OpKind::Create)
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
 
-    let as_ = ops.iter().enumerate()
+    let as_ = ops
+        .iter()
+        .enumerate()
         .filter(|(_, o)| o.idx.space == Space::Active && o.kind == OpKind::Annihilate)
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
@@ -216,7 +238,10 @@ fn active(ops: &[Op]) -> Vec<Vec<usize>> {
 /// - `s`: Factor store.
 /// # Returns:
 /// - `Vec<Row>`: Numeric value of the block.
-fn val(ops: &[Op], s: &mut Store) -> Vec<Row> {
+fn val(
+    ops: &[Op],
+    s: &mut Store,
+) -> Vec<Row> {
     if ops.len() == 2 {
         let a = ops[0];
         let b = ops[1];
@@ -226,19 +251,52 @@ fn val(ops: &[Op], s: &mut Store) -> Vec<Row> {
         }
 
         if a.idx.space == Space::Core && a.kind == OpKind::Create && b.kind == OpKind::Annihilate {
-            return vec![row(Rat::one(), &[s.delta(Delta { left: a.idx, right: b.idx })], &[])];
-        }
-        
-        if a.idx.space == Space::Virtual && a.kind == OpKind::Annihilate && b.kind == OpKind::Create {
-            return vec![row(Rat::one(), &[s.delta(Delta { left: b.idx, right: a.idx })], &[])];
+            return vec![row(
+                Rat::one(),
+                &[s.delta(Delta {
+                    left: a.idx,
+                    right: b.idx,
+                })],
+                &[],
+            )];
         }
 
-        if a.idx.space == Space::Active && a.kind == OpKind::Create && b.kind == OpKind::Annihilate {
-            return vec![row(Rat::new(1, 2), &[], &[s.tensor(Tensor { kind: TensorKind::Gamma1, upper: vec![a.idx], lower: vec![b.idx] })])];
+        if a.idx.space == Space::Virtual && a.kind == OpKind::Annihilate && b.kind == OpKind::Create
+        {
+            return vec![row(
+                Rat::one(),
+                &[s.delta(Delta {
+                    left: b.idx,
+                    right: a.idx,
+                })],
+                &[],
+            )];
         }
 
-        if a.idx.space == Space::Active && a.kind == OpKind::Annihilate && b.kind == OpKind::Create {
-            return vec![row(Rat::new(1, 2), &[], &[s.tensor(Tensor { kind: TensorKind::Theta, upper: vec![b.idx], lower: vec![a.idx] })])];
+        if a.idx.space == Space::Active && a.kind == OpKind::Create && b.kind == OpKind::Annihilate
+        {
+            return vec![row(
+                Rat::new(1, 2),
+                &[],
+                &[s.tensor(Tensor {
+                    kind: TensorKind::Gamma1,
+                    upper: vec![a.idx],
+                    lower: vec![b.idx],
+                })],
+            )];
+        }
+
+        if a.idx.space == Space::Active && a.kind == OpKind::Annihilate && b.kind == OpKind::Create
+        {
+            return vec![row(
+                Rat::new(1, 2),
+                &[],
+                &[s.tensor(Tensor {
+                    kind: TensorKind::Theta,
+                    upper: vec![b.idx],
+                    lower: vec![a.idx],
+                })],
+            )];
         }
 
         return Vec::new();
@@ -277,7 +335,11 @@ fn val(ops: &[Op], s: &mut Store) -> Vec<Row> {
         }
 
         let lower_p = p.iter().map(|&i| lower[i]).collect::<Vec<_>>();
-        let id = s.tensor(Tensor { kind, upper: upper.clone(), lower: lower_p });
+        let id = s.tensor(Tensor {
+            kind,
+            upper: upper.clone(),
+            lower: lower_p,
+        });
         out.push(row(c, &[], &[id]));
     }
 
@@ -291,7 +353,11 @@ fn val(ops: &[Op], s: &mut Store) -> Vec<Row> {
 /// - `ls`: Lower spin labels.
 /// # Returns:
 /// - `Vec<(Vec<usize>, Rat)>`: Lower-index permutations and coefficients.
-fn proj(r: usize, us: &[Spin], ls: &[Spin]) -> Vec<(Vec<usize>, Rat)> {
+fn proj(
+    r: usize,
+    us: &[Spin],
+    ls: &[Spin],
+) -> Vec<(Vec<usize>, Rat)> {
     let key = (r, sbits(us), sbits(ls));
     PROJ.get_or_init(ptab)[&key].clone()
 }
@@ -322,10 +388,15 @@ fn ptab() -> BTreeMap<ProjKey, Vec<(Vec<usize>, Rat)>> {
 /// - `ls`: Lower spin bits.
 /// # Returns:
 /// - `Vec<(Vec<usize>, Rat)>`: Lower-index permutations and coefficients.
-fn pval(r: usize, us: u8, ls: u8) -> Vec<(Vec<usize>, Rat)> {
+fn pval(
+    r: usize,
+    us: u8,
+    ls: u8,
+) -> Vec<(Vec<usize>, Rat)> {
     let (ps, g) = spinsum::data(r).expect("Cached spin projection rank missing.");
 
-    let b = ps.iter()
+    let b = ps
+        .iter()
         .map(|p| {
             if (0..r).all(|i| bit(us, i) == bit(ls, p[i])) {
                 Rat::from_integer(spinsum::sgn(p))
@@ -337,7 +408,11 @@ fn pval(r: usize, us: u8, ls: u8) -> Vec<(Vec<usize>, Rat)> {
 
     let x = spinsum::solve(g.to_vec(), b).expect("Inconsistent spin projection.");
 
-    ps.iter().cloned().zip(x).filter(|(_, c)| !c.is_zero()).collect()
+    ps.iter()
+        .cloned()
+        .zip(x)
+        .filter(|(_, c)| !c.is_zero())
+        .collect()
 }
 
 /// Return one spin bit.
@@ -346,7 +421,10 @@ fn pval(r: usize, us: u8, ls: u8) -> Vec<(Vec<usize>, Rat)> {
 /// - `i`: Bit index.
 /// # Returns:
 /// - `u8`: Spin bit.
-fn bit(x: u8, i: usize) -> u8 {
+fn bit(
+    x: u8,
+    i: usize,
+) -> u8 {
     (x >> i) & 1
 }
 
@@ -375,9 +453,20 @@ fn sbits(xs: &[Spin]) -> u8 {
 /// - `memo`: Exact-cover suffix cache.
 /// # Returns:
 /// - `Vec<Row>`: Numeric suffix rows.
-fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], connected: bool, memo: &mut BTreeMap<u64, Vec<Row>>) -> Vec<Row> {
+fn walk(
+    left: u64,
+    bs: &[Block],
+    by_pos: &[Vec<usize>],
+    connected: bool,
+    memo: &mut BTreeMap<u64, Vec<Row>>,
+) -> Vec<Row> {
     if left == 0 {
-        return vec![Row { c: Rat::one(), d: SmallVec::new(), t: SmallVec::new(), e: SmallVec::new() }];
+        return vec![Row {
+            c: Rat::one(),
+            d: SmallVec::new(),
+            t: SmallVec::new(),
+            e: SmallVec::new(),
+        }];
     }
 
     if let Some(x) = memo.get(&left) {
@@ -437,7 +526,11 @@ fn walk(left: u64, bs: &[Block], by_pos: &[Vec<usize>], connected: bool, memo: &
 /// - `by_pos`: Block ids containing each position.
 /// # Returns:
 /// - `Option<usize>`: Best operator-position index.
-fn pick(mut left: u64, bs: &[Block], by_pos: &[Vec<usize>]) -> Option<usize> {
+fn pick(
+    mut left: u64,
+    bs: &[Block],
+    by_pos: &[Vec<usize>],
+) -> Option<usize> {
     let rem = left;
     let mut best = None;
     let mut min = usize::MAX;
@@ -445,7 +538,10 @@ fn pick(mut left: u64, bs: &[Block], by_pos: &[Vec<usize>]) -> Option<usize> {
     while left != 0 {
         let b = left & left.wrapping_neg();
         let i = b.trailing_zeros() as usize;
-        let n = by_pos[i].iter().filter(|&&bi| bs[bi].m & rem == bs[bi].m).count();
+        let n = by_pos[i]
+            .iter()
+            .filter(|&&bi| bs[bi].m & rem == bs[bi].m)
+            .count();
 
         if n == 0 {
             return None;
@@ -472,7 +568,10 @@ fn pick(mut left: u64, bs: &[Block], by_pos: &[Vec<usize>]) -> Option<usize> {
 /// - `r`: Numeric row.
 /// # Returns:
 /// - `()`: Mutates `acc`.
-fn add(acc: &mut Acc, mut r: Row) {
+fn add(
+    acc: &mut Acc,
+    mut r: Row,
+) {
     if r.c.is_zero() {
         return;
     }
@@ -521,7 +620,10 @@ fn sortids(xs: &mut SmallVec<[Id; 4]>) {
 /// - `acc`: Final numeric accumulator.
 /// # Returns:
 /// - `Expr`: Symbolic expression.
-fn out(s: &Store, acc: Acc) -> Expr {
+fn out(
+    s: &Store,
+    acc: Acc,
+) -> Expr {
     acc.into_iter()
         .filter(|(_, c)| !c.is_zero())
         .map(|((ds, ts), c)| {
@@ -529,7 +631,10 @@ fn out(s: &Store, acc: Acc) -> Expr {
             let tensors = ts.iter().map(|&i| s.t[(i - 1) as usize].clone()).collect();
 
             Term {
-                coeff: Rational { num: *c.numer(), den: *c.denom() },
+                coeff: Rational {
+                    num: *c.numer(),
+                    den: *c.denom(),
+                },
                 deltas,
                 tensors,
             }
@@ -544,8 +649,17 @@ fn out(s: &Store, acc: Acc) -> Expr {
 /// - `t`: Tensor ids.
 /// # Returns:
 /// - `Row`: Numeric row.
-fn row(c: Rat, d: &[Id], t: &[Id]) -> Row {
-    Row { c, d: d.iter().copied().collect(), t: t.iter().copied().collect(), e: SmallVec::new() }
+fn row(
+    c: Rat,
+    d: &[Id],
+    t: &[Id],
+) -> Row {
+    Row {
+        c,
+        d: d.iter().copied().collect(),
+        t: t.iter().copied().collect(),
+        e: SmallVec::new(),
+    }
 }
 
 /// Return bit positions in a mask.
@@ -580,7 +694,10 @@ fn mask(xs: &[usize]) -> u64 {
 /// - `ops`: Spin-orbital operator string.
 /// # Returns:
 /// - `u64`: Bit mask of GNO group ids.
-fn gmask(xs: &[usize], ops: &[Op]) -> u64 {
+fn gmask(
+    xs: &[usize],
+    ops: &[Op],
+) -> u64 {
     xs.iter().fold(0, |m, &i| m | (1u64 << ops[i].group))
 }
 
@@ -590,7 +707,10 @@ fn gmask(xs: &[usize], ops: &[Op]) -> u64 {
 /// - `edges`: Wick-block group masks.
 /// # Returns:
 /// - `bool`: Whether all required groups are connected.
-fn conn(want: u64, edges: &[u64]) -> bool {
+fn conn(
+    want: u64,
+    edges: &[u64],
+) -> bool {
     if want.count_ones() <= 1 {
         return true;
     }
@@ -620,7 +740,10 @@ fn conn(want: u64, edges: &[u64]) -> bool {
 /// - `rest`: Remaining operator mask.
 /// # Returns:
 /// - `i64`: Fermionic sign.
-fn cross(mut m: u64, rest: u64) -> i64 {
+fn cross(
+    mut m: u64,
+    rest: u64,
+) -> i64 {
     let mut p = 0;
 
     while m != 0 {
@@ -639,8 +762,16 @@ fn cross(mut m: u64, rest: u64) -> i64 {
 /// # Returns:
 /// - `Option<(i64, Vec<Op>, Vec<Op>)>`: Sign, creators, annihilators.
 fn norm(ops: &[Op]) -> Option<(i64, Vec<Op>, Vec<Op>)> {
-    let cs = ops.iter().copied().filter(|o| o.kind == OpKind::Create).collect::<Vec<_>>();
-    let as_ = ops.iter().copied().filter(|o| o.kind == OpKind::Annihilate).collect::<Vec<_>>();
+    let cs = ops
+        .iter()
+        .copied()
+        .filter(|o| o.kind == OpKind::Create)
+        .collect::<Vec<_>>();
+    let as_ = ops
+        .iter()
+        .copied()
+        .filter(|o| o.kind == OpKind::Annihilate)
+        .collect::<Vec<_>>();
 
     if cs.len() + as_.len() != ops.len() {
         return None;
@@ -653,7 +784,10 @@ fn norm(ops: &[Op]) -> Option<(i64, Vec<Op>, Vec<Op>)> {
             continue;
         }
 
-        inv += ops[i + 1..].iter().filter(|o| o.kind == OpKind::Create).count();
+        inv += ops[i + 1..]
+            .iter()
+            .filter(|o| o.kind == OpKind::Create)
+            .count();
     }
 
     Some((if inv % 2 == 0 { 1 } else { -1 }, cs, as_))
@@ -737,7 +871,12 @@ fn accflush() -> usize {
 /// - `emit`: Callback receiving one expression subchunk.
 /// # Returns:
 /// - `()`: Calls `emit` for each non-empty subchunk.
-fn eval1cstream(ops: &[Op], want: u64, id: usize, mut emit: impl FnMut(Expr)) {
+fn eval1cstream(
+    ops: &[Op],
+    want: u64,
+    id: usize,
+    mut emit: impl FnMut(Expr),
+) {
     let mut s = Store::default();
     let mut acc = Acc::new();
     let bs = blocks(ops, &mut s);
@@ -770,19 +909,34 @@ fn eval1cstream(ops: &[Op], want: u64, id: usize, mut emit: impl FnMut(Expr)) {
             let e = out(&s, std::mem::take(acc));
 
             if !e.is_empty() {
-                crate::progress::mem(format!("wick::eval1cstream emit spin {id} chunk {n} terms: {}", e.len()));
+                crate::progress::mem(format!(
+                    "wick::eval1cstream emit spin {id} chunk {n} terms: {}",
+                    e.len()
+                ));
                 n += 1;
                 emit(e);
             }
         };
 
-        walkc(full, &bs, &by_pos, want, &mut cur, &mut tail_memo, &mut acc, &mut flush);
+        walkc(
+            full,
+            &bs,
+            &by_pos,
+            want,
+            &mut cur,
+            &mut tail_memo,
+            &mut acc,
+            &mut flush,
+        );
     }
 
     let e = out(&s, acc);
 
     if !e.is_empty() {
-        crate::progress::mem(format!("wick::eval1cstream emit spin {id} chunk {n} terms: {}", e.len()));
+        crate::progress::mem(format!(
+            "wick::eval1cstream emit spin {id} chunk {n} terms: {}",
+            e.len()
+        ));
         emit(e);
     }
 }
@@ -794,17 +948,24 @@ fn eval1cstream(ops: &[Op], want: u64, id: usize, mut emit: impl FnMut(Expr)) {
 /// - `emit`: Callback receiving `(spin_chunk_index, was_split, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` for each non-empty expression.
-pub fn evalcstream(p: &Product, split: bool, mut emit: impl FnMut(usize, bool, Expr) + Send) {
+pub fn evalcstream(
+    p: &Product,
+    split: bool,
+    mut emit: impl FnMut(usize, bool, Expr) + Send,
+) {
     let want = (1u64 << p.groups.len()) - 1;
     let ss = spin(p);
     let nspin = ss.len();
     let nops = ss.iter().map(|x| x.len()).max().unwrap_or(0);
     let batch = spinbatch();
 
-    crate::progress::mem(format!("wick::evalcstream spin strings: {nspin}, ops: {nops}, split: {split}, batch: {batch}"));
+    crate::progress::mem(format!(
+        "wick::evalcstream spin strings: {nspin}, ops: {nops}, split: {split}, batch: {batch}"
+    ));
 
     if !split {
-        let e = ss.into_par_iter()
+        let e = ss
+            .into_par_iter()
             .fold(crate::canonical::Acc::new, |mut acc, ops| {
                 for x in eval1c(&ops, want) {
                     acc.addterm(x);
@@ -841,7 +1002,7 @@ pub fn evalcstream(p: &Product, split: bool, mut emit: impl FnMut(usize, bool, E
 
                     scope.spawn(move |_| {
                         crate::progress::mem(format!("wick::evalcstream start spin {id}"));
-                        
+
                         eval1cstream(ops, want, id, |e| {
                             let _ = tx.send((id, 0usize, e));
                         });
@@ -863,7 +1024,8 @@ pub fn evalcstream(p: &Product, split: bool, mut emit: impl FnMut(usize, bool, E
     }
 
     for (si, xs) in ss.chunks(batch).enumerate() {
-        let e = xs.par_iter()
+        let e = xs
+            .par_iter()
             .fold(crate::canonical::Acc::new, |mut acc, ops| {
                 for x in eval1c(ops, want) {
                     acc.addterm(x);
@@ -889,7 +1051,10 @@ pub fn evalcstream(p: &Product, split: bool, mut emit: impl FnMut(usize, bool, E
 /// - `connected`: Whether to discard disconnected contractions.
 /// # Returns:
 /// - `Expr`: Canonical contracted expression.
-fn eval0(p: &Product, connected: bool) -> Expr {
+fn eval0(
+    p: &Product,
+    connected: bool,
+) -> Expr {
     let want = (1u64 << p.groups.len()) - 1;
 
     let e = spin(p)
@@ -907,7 +1072,11 @@ fn eval0(p: &Product, connected: bool) -> Expr {
 /// - `want`: Required GNO-group mask.
 /// # Returns:
 /// - `Expr`: Contracted expression.
-fn eval1(ops: &[Op], connected: bool, want: u64) -> Expr {
+fn eval1(
+    ops: &[Op],
+    connected: bool,
+    want: u64,
+) -> Expr {
     let mut s = Store::default();
     let mut acc = Acc::new();
     let bs = blocks(ops, &mut s);
@@ -961,7 +1130,10 @@ fn evalc0(p: &Product) -> Expr {
 /// - `want`: Required GNO-group mask.
 /// # Returns:
 /// - `Expr`: Connected contracted expression.
-fn eval1c(ops: &[Op], want: u64) -> Expr {
+fn eval1c(
+    ops: &[Op],
+    want: u64,
+) -> Expr {
     let mut s = Store::default();
     let mut acc = Acc::new();
     let bs = blocks(ops, &mut s);
@@ -983,7 +1155,16 @@ fn eval1c(ops: &[Op], want: u64) -> Expr {
 
     let mut tail_memo = BTreeMap::new();
     let mut flush = |_: &mut Acc| {};
-    walkc(full, &bs, &by_pos, want, &mut cur, &mut tail_memo, &mut acc, &mut flush);
+    walkc(
+        full,
+        &bs,
+        &by_pos,
+        want,
+        &mut cur,
+        &mut tail_memo,
+        &mut acc,
+        &mut flush,
+    );
 
     out(&s, acc)
 }
@@ -1060,7 +1241,7 @@ fn walkc(
             cur.d.extend_from_slice(&v.d);
             cur.t.extend_from_slice(&v.t);
             cur.e.push(b.g);
-            
+
             walkc(rest, bs, by_pos, want, cur, tail_memo, acc, flush);
 
             cur.d.truncate(nd);
@@ -1078,7 +1259,10 @@ fn walkc(
 /// - `b`: Suffix row.
 /// # Returns:
 /// - `Row`: Combined row.
-fn joinrow(a: &Row, b: &Row) -> Row {
+fn joinrow(
+    a: &Row,
+    b: &Row,
+) -> Row {
     let mut out = Row {
         c: a.c * b.c,
         d: a.d.clone(),
@@ -1098,7 +1282,10 @@ fn joinrow(a: &Row, b: &Row) -> Row {
 /// - `edges`: Selected Wick-block group masks.
 /// # Returns:
 /// - `u64`: Root-connected group mask.
-fn rootseen(want: u64, edges: &[u64]) -> u64 {
+fn rootseen(
+    want: u64,
+    edges: &[u64],
+) -> u64 {
     if want.count_ones() <= 1 {
         return want;
     }
@@ -1130,7 +1317,12 @@ fn rootseen(want: u64, edges: &[u64]) -> u64 {
 /// - `edges`: Already selected Wick-block group masks.
 /// # Returns:
 /// - `bool`: Whether connected completion remains possible.
-fn canconnect(left: u64, bs: &[Block], want: u64, edges: &[u64]) -> bool {
+fn canconnect(
+    left: u64,
+    bs: &[Block],
+    want: u64,
+    edges: &[u64],
+) -> bool {
     if want.count_ones() <= 1 {
         return true;
     }
@@ -1169,7 +1361,13 @@ fn canconnect(left: u64, bs: &[Block], want: u64, edges: &[u64]) -> bool {
 /// - `extra`: Candidate Wick-block group mask.
 /// # Returns:
 /// - `bool`: Whether connected completion remains possible.
-fn canconnect1(left: u64, bs: &[Block], want: u64, edges: &[u64], extra: u64) -> bool {
+fn canconnect1(
+    left: u64,
+    bs: &[Block],
+    want: u64,
+    edges: &[u64],
+    extra: u64,
+) -> bool {
     if want.count_ones() <= 1 {
         return true;
     }

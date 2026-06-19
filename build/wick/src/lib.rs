@@ -16,5 +16,7 @@ pub mod residual;
 pub mod target;
 pub mod wick;
 
-pub use schema::{GeneratedTerm, OverlapBlockTerms, OverlapTermSet, ResidualClassTerms, ResidualTermSet, TensorFactor};
-
+pub use schema::{
+    GeneratedTerm, OverlapBlockTerms, OverlapTermSet, ResidualClassTerms, ResidualTermSet,
+    TensorFactor,
+};

@@ -1,7 +1,7 @@
 // hamiltonian.rs
 
 use crate::gno::{e1, e2};
-use crate::ir::{Product, Rational, Tensor, TensorKind, Space};
+use crate::ir::{Product, Rational, Space, Tensor, TensorKind};
 use crate::specs;
 
 /// One Hamiltonian operator term.
@@ -36,7 +36,10 @@ fn r(n: i64) -> Rational {
 /// - `d`: Denominator.
 /// # Returns:
 /// - `Rational`: Rational coefficient.
-fn q(n: i64, d: i64) -> Rational {
+fn q(
+    n: i64,
+    d: i64,
+) -> Rational {
     Rational { num: n, den: d }
 }
 
@@ -46,8 +49,15 @@ fn q(n: i64, d: i64) -> Rational {
 /// - `lower`: Lower index.
 /// # Returns:
 /// - `Tensor`: Fock tensor.
-fn f(upper: crate::ir::Idx, lower: crate::ir::Idx) -> Tensor {
-    Tensor { kind: TensorKind::Fock, upper: vec![upper], lower: vec![lower] }
+fn f(
+    upper: crate::ir::Idx,
+    lower: crate::ir::Idx,
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::Fock,
+        upper: vec![upper],
+        lower: vec![lower],
+    }
 }
 
 /// Build an ERI tensor factor.
@@ -58,8 +68,17 @@ fn f(upper: crate::ir::Idx, lower: crate::ir::Idx) -> Tensor {
 /// - `l1`: Second lower index.
 /// # Returns:
 /// - `Tensor`: ERI tensor.
-fn eri(u0: crate::ir::Idx, u1: crate::ir::Idx, l0: crate::ir::Idx, l1: crate::ir::Idx) -> Tensor {
-    Tensor { kind: TensorKind::ERI, upper: vec![u0, u1], lower: vec![l0, l1] }
+fn eri(
+    u0: crate::ir::Idx,
+    u1: crate::ir::Idx,
+    l0: crate::ir::Idx,
+    l1: crate::ir::Idx,
+) -> Tensor {
+    Tensor {
+        kind: TensorKind::ERI,
+        upper: vec![u0, u1],
+        lower: vec![l0, l1],
+    }
 }
 
 /// Build the Hamiltonian coefficient for one excitation pattern.
@@ -73,10 +92,7 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
             let p = specs::idx(xs[0]);
             let q_ = specs::idx(xs[1]);
 
-            (
-                r(1),
-                f(q_, p),
-            )
+            (r(1), f(q_, p))
         }
         4 => {
             let p = specs::idx(xs[0]);
@@ -84,10 +100,7 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
             let r_ = specs::idx(xs[2]);
             let s = specs::idx(xs[3]);
 
-            (
-                q(1, 2),
-                eri(r_, s, p, q_),
-            )
+            (q(1, 2), eri(r_, s, p, q_))
         }
         _ => panic!("unsupported Hamiltonian rank"),
     }
@@ -99,13 +112,18 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
 /// - `g`: Group id.
 /// # Returns:
 /// - `Product`: Spin-free Hamiltonian operator product.
-pub fn op(xs: &[&'static str], g: usize) -> Product {
+pub fn op(
+    xs: &[&'static str],
+    g: usize,
+) -> Product {
     match xs.len() {
         2 => {
             let p = specs::idx(xs[0]);
             let q_ = specs::idx(xs[1]);
 
-            Product { groups: vec![e1(p, q_, g)] }
+            Product {
+                groups: vec![e1(p, q_, g)],
+            }
         }
         4 => {
             let p = specs::idx(xs[0]);
@@ -113,7 +131,9 @@ pub fn op(xs: &[&'static str], g: usize) -> Product {
             let r_ = specs::idx(xs[2]);
             let s = specs::idx(xs[3]);
 
-            Product { groups: vec![e2(p, q_, r_, s, g)] }
+            Product {
+                groups: vec![e2(p, q_, r_, s, g)],
+            }
         }
         _ => panic!("unsupported Hamiltonian rank"),
     }
@@ -125,7 +145,10 @@ pub fn op(xs: &[&'static str], g: usize) -> Product {
 /// - `g`: Group id.
 /// # Returns:
 /// - `HTerm`: Hamiltonian term.
-pub fn term(xs: &[&'static str], g: usize) -> HTerm {
+pub fn term(
+    xs: &[&'static str],
+    g: usize,
+) -> HTerm {
     let (coeff, fac) = fac(xs);
 
     HTerm {
@@ -153,7 +176,10 @@ fn hlabels(xs: &[Space]) -> Vec<&'static str> {
 /// - `required`: Required orbital-space balance.
 /// # Returns:
 /// - `Vec<HTerm>`: Matching one- and two-body Hamiltonian terms.
-pub fn terms_with_balance(g: usize, required: specs::Balance) -> Vec<HTerm> {
+pub fn terms_with_balance(
+    g: usize,
+    required: specs::Balance,
+) -> Vec<HTerm> {
     let mut out = Vec::new();
 
     for p in SPACES {
@@ -182,4 +208,3 @@ pub fn terms_with_balance(g: usize, required: specs::Balance) -> Vec<HTerm> {
 
     out
 }
-

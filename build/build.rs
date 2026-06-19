@@ -9,18 +9,8 @@ use bincode::Options;
 use serde::Serialize;
 
 const CLASSES: &[&str] = &[
-    "CToA",
-    "AToA",
-    "AToV",
-    "CAToAV",
-    "CAToVA",
-    "CAToVV",
-    "CCToAV",
-    "CCToAA",
-    "CAToAA",
-    "AAToAV",
-    "AAToVV",
-    "AAToAA",
+    "CToA", "AToA", "AToV", "CAToAV", "CAToVA", "CAToVV", "CCToAV", "CCToAA", "CAToAA", "AAToAV",
+    "AAToVV", "AAToAA",
 ];
 
 /// Return whether cached generated terms should be forcibly regenerated.
@@ -29,7 +19,9 @@ const CLASSES: &[&str] = &[
 /// # Returns:
 /// - `bool`: True when `WICK_FORCE_REGENERATE=1`.
 fn force() -> bool {
-    env::var("WICK_FORCE_REGENERATE").map(|x| x == "1").unwrap_or(false)
+    env::var("WICK_FORCE_REGENERATE")
+        .map(|x| x == "1")
+        .unwrap_or(false)
 }
 
 /// Print a visible Cargo build-script status line.
@@ -59,8 +51,12 @@ fn bytes<T: Serialize>(x: &T) -> Vec<u8> {
 /// - `dst`: Output path.
 /// # Returns:
 /// - `()`: Copies the file.
-fn copy(src: &Path, dst: &Path) {
-    fs::copy(src, dst).unwrap_or_else(|e| panic!("failed to copy {} to {}: {e}", src.display(), dst.display()));
+fn copy(
+    src: &Path,
+    dst: &Path,
+) {
+    fs::copy(src, dst)
+        .unwrap_or_else(|e| panic!("failed to copy {} to {}: {e}", src.display(), dst.display()));
 }
 
 /// Ensure one cached generated term table exists and is copied to `OUT_DIR`.
@@ -71,7 +67,12 @@ fn copy(src: &Path, dst: &Path) {
 /// - `make`: Generator callback.
 /// # Returns:
 /// - `()`: Writes or copies generated terms.
-fn ensure<T: Serialize>(name: &str, cache: &Path, out: &Path, make: impl FnOnce() -> T) {
+fn ensure<T: Serialize>(
+    name: &str,
+    cache: &Path,
+    out: &Path,
+    make: impl FnOnce() -> T,
+) {
     if cache.exists() && !force() {
         status(format!("using cached generated terms: {name}"));
         copy(cache, out);
@@ -79,7 +80,9 @@ fn ensure<T: Serialize>(name: &str, cache: &Path, out: &Path, make: impl FnOnce(
     }
 
     if cache.exists() {
-        status(format!("regenerating terms because WICK_FORCE_REGENERATE=1: {name}"));
+        status(format!(
+            "regenerating terms because WICK_FORCE_REGENERATE=1: {name}"
+        ));
     } else {
         status(format!("generated terms missing, generating now: {name}"));
     }
@@ -93,7 +96,10 @@ fn ensure<T: Serialize>(name: &str, cache: &Path, out: &Path, make: impl FnOnce(
     fs::write(cache, &data).unwrap_or_else(|e| panic!("failed to write {}: {e}", cache.display()));
     fs::write(out, data).unwrap_or_else(|e| panic!("failed to write {}: {e}", out.display()));
 
-    status(format!("ready generated terms: {name}, bytes: {}", fs::metadata(cache).map(|x| x.len()).unwrap_or(0)));
+    status(format!(
+        "ready generated terms: {name}, bytes: {}",
+        fs::metadata(cache).map(|x| x.len()).unwrap_or(0)
+    ));
 }
 
 /// Ensure one cached residual class exists and is copied to `OUT_DIR`.
@@ -104,17 +110,29 @@ fn ensure<T: Serialize>(name: &str, cache: &Path, out: &Path, make: impl FnOnce(
 /// - `out`: Output root.
 /// # Returns:
 /// - `()`: Writes or copies one class table.
-fn ensure_class(order: u8, class: &str, cache: &Path, out: &Path) {
+fn ensure_class(
+    order: u8,
+    class: &str,
+    cache: &Path,
+    out: &Path,
+) {
     let dir = format!("r{order}");
     let cache_dir = cache.join(&dir);
     let out_dir = out.join(&dir);
     let cache_file = cache_dir.join(format!("{class}.bin"));
     let out_file = out_dir.join(format!("{class}.bin"));
 
-    fs::create_dir_all(&cache_dir).unwrap_or_else(|e| panic!("failed to create {}: {e}", cache_dir.display()));
-    fs::create_dir_all(&out_dir).unwrap_or_else(|e| panic!("failed to create {}: {e}", out_dir.display()));
+    fs::create_dir_all(&cache_dir)
+        .unwrap_or_else(|e| panic!("failed to create {}: {e}", cache_dir.display()));
+    fs::create_dir_all(&out_dir)
+        .unwrap_or_else(|e| panic!("failed to create {}: {e}", out_dir.display()));
 
-    ensure(&format!("R{order}({class})"), &cache_file, &out_file, || wick_build::encode::residual_class(order, class));
+    ensure(
+        &format!("R{order}({class})"),
+        &cache_file,
+        &out_file,
+        || wick_build::encode::residual_class(order, class),
+    );
 }
 
 /// Append one residual loader function to generated source.
@@ -125,12 +143,26 @@ fn ensure_class(order: u8, class: &str, cache: &Path, out: &Path) {
 /// - `order`: Residual order.
 /// # Returns:
 /// - `()`: Appends Rust source.
-fn write_residual_loader(src: &mut String, fn_name: &str, static_name: &str, order: u8) {
-    let _ = writeln!(src, "pub(crate) fn {fn_name}() -> &'static ResidualTermSet {{");
-    let _ = writeln!(src, "    {static_name}.get_or_init(|| residual_terms({order}, &[");
+fn write_residual_loader(
+    src: &mut String,
+    fn_name: &str,
+    static_name: &str,
+    order: u8,
+) {
+    let _ = writeln!(
+        src,
+        "pub(crate) fn {fn_name}() -> &'static ResidualTermSet {{"
+    );
+    let _ = writeln!(
+        src,
+        "    {static_name}.get_or_init(|| residual_terms({order}, &["
+    );
 
     for class in CLASSES {
-        let _ = writeln!(src, "        (\"{class}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/r{order}/{class}.bin\")) as &[u8]),");
+        let _ = writeln!(
+            src,
+            "        (\"{class}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/r{order}/{class}.bin\")) as &[u8]),"
+        );
     }
 
     let _ = writeln!(src, "    ]))");
@@ -177,13 +209,20 @@ fn main() {
     println!("cargo:rerun-if-env-changed=WICK_ACC_FLUSH");
     println!("cargo:rerun-if-env-changed=WICK_SPIN_SPLIT_CHUNKS");
 
-    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
+    let manifest =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
     let cache = manifest.join("build/generated");
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is not set"));
 
-    fs::create_dir_all(&cache).unwrap_or_else(|e| panic!("failed to create {}: {e}", cache.display()));
+    fs::create_dir_all(&cache)
+        .unwrap_or_else(|e| panic!("failed to create {}: {e}", cache.display()));
 
-    ensure("overlap", &cache.join("overlapterms.bin"), &out.join("overlapterms.bin"), wick_build::encode::overlap_terms);
+    ensure(
+        "overlap",
+        &cache.join("overlapterms.bin"),
+        &out.join("overlapterms.bin"),
+        wick_build::encode::overlap_terms,
+    );
 
     for order in 0..=2 {
         for class in CLASSES {
@@ -191,5 +230,6 @@ fn main() {
         }
     }
 
-    fs::write(out.join("nocc_terms.rs"), generated_loader()).unwrap_or_else(|e| panic!("failed to write generated NOCC loader source: {e}"));
+    fs::write(out.join("nocc_terms.rs"), generated_loader())
+        .unwrap_or_else(|e| panic!("failed to write generated NOCC loader source: {e}"));
 }

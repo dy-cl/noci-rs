@@ -36,7 +36,10 @@ impl Order {
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `BTreeMap<String, _>`: Canonical generated chunks keyed by chunk label.
-fn generated(order: Order, name: &str) -> BTreeMap<String, Vec<wick_build::ir::Term>> {
+fn generated(
+    order: Order,
+    name: &str,
+) -> BTreeMap<String, Vec<wick_build::ir::Term>> {
     let mut out = BTreeMap::new();
 
     match order {
@@ -60,7 +63,10 @@ fn generated(order: Order, name: &str) -> BTreeMap<String, Vec<wick_build::ir::T
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `BTreeMap<String, _>`: Canonical target chunks keyed by chunk label.
-fn expected(order: Order, name: &str) -> BTreeMap<String, Vec<wick_build::ir::Term>> {
+fn expected(
+    order: Order,
+    name: &str,
+) -> BTreeMap<String, Vec<wick_build::ir::Term>> {
     let mut out = BTreeMap::new();
 
     match order {
@@ -84,7 +90,10 @@ fn expected(order: Order, name: &str) -> BTreeMap<String, Vec<wick_build::ir::Te
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `()`: Panics if generated and target chunks differ.
-fn check(order: Order, name: &str) {
+fn check(
+    order: Order,
+    name: &str,
+) {
     let got = generated(order, name);
     let want = expected(order, name);
 
@@ -113,7 +122,10 @@ fn check(order: Order, name: &str) {
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `()`: Panics only if generation itself fails.
-fn sink(order: Order, name: &str) {
+fn sink(
+    order: Order,
+    name: &str,
+) {
     let mut chunks = 0usize;
     let mut terms = 0usize;
 

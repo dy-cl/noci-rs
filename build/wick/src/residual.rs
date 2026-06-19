@@ -4,10 +4,10 @@ use num_rational::Ratio;
 use rayon::prelude::*;
 
 use crate::canonical;
-use crate::hamiltonian;
-use crate::specs;
 use crate::cluster;
-use crate::ir::{Expr, Product, Rational, Tensor, Term, TensorKind};
+use crate::hamiltonian;
+use crate::ir::{Expr, Product, Rational, Tensor, TensorKind, Term};
+use crate::specs;
 use crate::wick;
 
 type Rat = Ratio<i64>;
@@ -18,7 +18,10 @@ type Rat = Ratio<i64>;
 /// - `d`: Denominator.
 /// # Returns:
 /// - `Rational`: Rational coefficient.
-fn q(n: i64, d: i64) -> Rational {
+fn q(
+    n: i64,
+    d: i64,
+) -> Rational {
     Rational { num: n, den: d }
 }
 
@@ -28,7 +31,10 @@ fn q(n: i64, d: i64) -> Rational {
 /// - `b`: Right product.
 /// # Returns:
 /// - `Product`: Concatenated product.
-fn join(a: &Product, b: &Product) -> Product {
+fn join(
+    a: &Product,
+    b: &Product,
+) -> Product {
     let mut groups = a.groups.clone();
     groups.extend(b.groups.clone());
     Product { groups }
@@ -41,12 +47,19 @@ fn join(a: &Product, b: &Product) -> Product {
 /// - `fac`: Hamiltonian coefficient tensor.
 /// # Returns:
 /// - `Term`: Residual term.
-fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
+fn mulh(
+    mut x: Term,
+    c: Rational,
+    fac: Tensor,
+) -> Term {
     let a = Rat::new(x.coeff.num, x.coeff.den);
     let b = Rat::new(c.num, c.den);
     let q = a * b;
 
-    x.coeff = Rational { num: *q.numer(), den: *q.denom() };
+    x.coeff = Rational {
+        num: *q.numer(),
+        den: *q.denom(),
+    };
     x.tensors.push(fac);
     x
 }
@@ -57,12 +70,18 @@ fn mulh(mut x: Term, c: Rational, fac: Tensor) -> Term {
 /// - `b`: Second coefficient.
 /// # Returns:
 /// - `Rational`: Product coefficient.
-fn mulr(a: Rational, b: Rational) -> Rational {
+fn mulr(
+    a: Rational,
+    b: Rational,
+) -> Rational {
     let x = Rat::new(a.num, a.den);
     let y = Rat::new(b.num, b.den);
     let q = x * y;
 
-    Rational { num: *q.numer(), den: *q.denom() }
+    Rational {
+        num: *q.numer(),
+        den: *q.denom(),
+    }
 }
 
 /// Canonicalise one chunk from parallel Hamiltonian-term contributions.
@@ -71,8 +90,12 @@ fn mulr(a: Rational, b: Rational) -> Rational {
 /// - `make`: Function generating terms for one Hamiltonian term.
 /// # Returns:
 /// - `Expr`: Canonical chunk expression.
-fn hchunk<T: Sync>(items: &[T], make: impl Fn(&T) -> Expr + Sync) -> Expr {
-    items.par_iter()
+fn hchunk<T: Sync>(
+    items: &[T],
+    make: impl Fn(&T) -> Expr + Sync,
+) -> Expr {
+    items
+        .par_iter()
         .fold(canonical::Acc::new, |mut acc, h| {
             for x in make(h) {
                 acc.addterm(x);
@@ -111,8 +134,20 @@ fn hkey(h: &hamiltonian::HTerm) -> String {
         TensorKind::ERI => "g",
         _ => "x",
     };
-    let up = h.fac.upper.iter().map(|x| x.name).collect::<Vec<_>>().join("_");
-    let lo = h.fac.lower.iter().map(|x| x.name).collect::<Vec<_>>().join("_");
+    let up = h
+        .fac
+        .upper
+        .iter()
+        .map(|x| x.name)
+        .collect::<Vec<_>>()
+        .join("_");
+    let lo = h
+        .fac
+        .lower
+        .iter()
+        .map(|x| x.name)
+        .collect::<Vec<_>>()
+        .join("_");
 
     format!("{kind}_{up}_{lo}")
 }
@@ -123,16 +158,24 @@ fn hkey(h: &hamiltonian::HTerm) -> String {
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r0(name: &str, mut emit: impl FnMut(String, Expr)) {
+pub fn r0(
+    name: &str,
+    mut emit: impl FnMut(String, Expr),
+) {
     let spec = specs::exc(name);
-    let blocks: Vec<_> = specs::BLOCKS.iter()
+    let blocks: Vec<_> = specs::BLOCKS
+        .iter()
         .filter(|b| b.left == spec.class)
         .collect();
     let prog = crate::progress::Prog::new(format!("residual::r0({name}) blocks"), blocks.len());
 
-    let chunks: Vec<_> = blocks.par_iter()
+    let chunks: Vec<_> = blocks
+        .par_iter()
         .filter_map(|b| {
-            let lspec = specs::Exc { class: b.left, f: b.lf };
+            let lspec = specs::Exc {
+                class: b.left,
+                f: b.lf,
+            };
             let bra = specs::bra(&lspec, 0);
             let h = hamiltonian::term(b.rf, 1);
             let p = join(&bra, &h.op);
@@ -164,7 +207,10 @@ pub fn r0(name: &str, mut emit: impl FnMut(String, Expr)) {
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r1(name: &str, mut emit: impl FnMut(String, Expr)) {
+pub fn r1(
+    name: &str,
+    mut emit: impl FnMut(String, Expr),
+) {
     let spec = specs::exc(name);
     let bra = specs::bra(&spec, 0);
     let brab = specs::bal(spec.f, true);
@@ -201,7 +247,10 @@ pub fn r1(name: &str, mut emit: impl FnMut(String, Expr)) {
 /// - `x`: Value field.
 /// # Returns:
 /// - `bool`: True if the pattern matches.
-fn splitfield(pat: &str, x: &str) -> bool {
+fn splitfield(
+    pat: &str,
+    x: &str,
+) -> bool {
     pat == "*" || pat == x
 }
 
@@ -214,7 +263,13 @@ fn splitfield(pat: &str, x: &str) -> bool {
 /// - `h`: Hamiltonian key.
 /// # Returns:
 /// - `bool`: True if the pattern matches.
-fn splitpat(pat: &str, name: &str, li: usize, ri: usize, h: &str) -> bool {
+fn splitpat(
+    pat: &str,
+    name: &str,
+    li: usize,
+    ri: usize,
+    h: &str,
+) -> bool {
     let pat = pat.trim();
 
     if pat.is_empty() {
@@ -244,7 +299,12 @@ fn splitpat(pat: &str, name: &str, li: usize, ri: usize, h: &str) -> bool {
 /// - `h`: Hamiltonian key.
 /// # Returns:
 /// - `bool`: True if this chunk should be spin-batched.
-fn splitr2hterm(name: &str, li: usize, ri: usize, h: &str) -> bool {
+fn splitr2hterm(
+    name: &str,
+    li: usize,
+    ri: usize,
+    h: &str,
+) -> bool {
     if std::env::var_os("WICK_SPLIT_ALL_SPINS").is_some() {
         return true;
     }
@@ -270,7 +330,15 @@ fn splitr2hterm(name: &str, li: usize, ri: usize, h: &str) -> bool {
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty generated subchunk.
-fn r2hterm(base: String, split: bool, bra: &Product, l: &cluster::TTerm, r: &cluster::TTerm, h: &hamiltonian::HTerm, mut emit: impl FnMut(String, Expr) + Send) {
+fn r2hterm(
+    base: String,
+    split: bool,
+    bra: &Product,
+    l: &cluster::TTerm,
+    r: &cluster::TTerm,
+    h: &hamiltonian::HTerm,
+    mut emit: impl FnMut(String, Expr) + Send,
+) {
     let p = join(&join(&join(bra, &h.op), &l.op), &r.op);
 
     wick::evalcstream(&p, split, |si, split, e| {
@@ -324,7 +392,10 @@ fn r2hterm(base: String, split: bool, bra: &Product, l: &cluster::TTerm, r: &clu
 /// - `emit`: Callback receiving `(chunk_key, expression)`.
 /// # Returns:
 /// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r2(name: &str, mut emit: impl FnMut(String, Expr) + Send) {
+pub fn r2(
+    name: &str,
+    mut emit: impl FnMut(String, Expr) + Send,
+) {
     let spec = specs::exc(name);
     let bra = specs::bra(&spec, 0);
     let brab = specs::bal(spec.f, true);
@@ -354,7 +425,8 @@ pub fn r2(name: &str, mut emit: impl FnMut(String, Expr) + Send) {
             }
 
             for hs in normal.chunks(batch) {
-                let chunks: Vec<_> = hs.par_iter()
+                let chunks: Vec<_> = hs
+                    .par_iter()
                     .flat_map(|(hk, h)| {
                         let base = format!("l{li}_r{ri}_h{hk}");
                         let mut out = Vec::new();
@@ -362,11 +434,17 @@ pub fn r2(name: &str, mut emit: impl FnMut(String, Expr) + Send) {
                         crate::progress::mem(format!("residual::r2({name}) start {base}"));
 
                         r2hterm(base.clone(), false, &bra, l, r, h, |k, e| {
-                            crate::progress::mem(format!("residual::r2({name}) emit {k} terms: {}", e.len()));
+                            crate::progress::mem(format!(
+                                "residual::r2({name}) emit {k} terms: {}",
+                                e.len()
+                            ));
                             out.push((k, e));
                         });
 
-                        crate::progress::mem(format!("residual::r2({name}) end {base} subchunks: {}", out.len()));
+                        crate::progress::mem(format!(
+                            "residual::r2({name}) end {base} subchunks: {}",
+                            out.len()
+                        ));
 
                         out
                     })
@@ -385,11 +463,16 @@ pub fn r2(name: &str, mut emit: impl FnMut(String, Expr) + Send) {
 
                 r2hterm(base.clone(), true, &bra, l, r, h, |k, e| {
                     subchunks += 1;
-                    crate::progress::mem(format!("residual::r2({name}) emit {k} terms: {}", e.len()));
+                    crate::progress::mem(format!(
+                        "residual::r2({name}) emit {k} terms: {}",
+                        e.len()
+                    ));
                     emit(k, e);
                 });
 
-                crate::progress::mem(format!("residual::r2({name}) end {base} subchunks: {subchunks}"));
+                crate::progress::mem(format!(
+                    "residual::r2({name}) end {base} subchunks: {subchunks}"
+                ));
             }
 
             prog.tick();

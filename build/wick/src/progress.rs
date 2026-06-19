@@ -26,7 +26,10 @@ impl Prog {
     /// - `total`: Total number of work items.
     /// # Returns:
     /// - `Prog`: Progress printer.
-    pub fn new(label: impl Into<String>, total: usize) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        total: usize,
+    ) -> Self {
         let enabled = std::env::var_os("WICK_PROGRESS").is_some();
         let label = label.into();
         let step = std::env::var("WICK_PROGRESS_STEP")
@@ -39,7 +42,14 @@ impl Prog {
             eprintln!("[wick] {label}: start 0/{total}");
         }
 
-        Self { enabled, label, total, step, done: AtomicUsize::new(0), start: Instant::now() }
+        Self {
+            enabled,
+            label,
+            total,
+            step,
+            done: AtomicUsize::new(0),
+            start: Instant::now(),
+        }
     }
 
     /// Mark one work item as complete.
@@ -55,8 +65,18 @@ impl Prog {
         let n = self.done.fetch_add(1, Ordering::Relaxed) + 1;
 
         if n == self.total || n % self.step == 0 {
-            let pct = if self.total == 0 { 100.0 } else { 100.0 * n as f64 / self.total as f64 };
-            eprintln!("[wick-time] {}: {}/{} ({pct:.1}%), elapsed {:?}.", self.label, n, self.total, self.start.elapsed());
+            let pct = if self.total == 0 {
+                100.0
+            } else {
+                100.0 * n as f64 / self.total as f64
+            };
+            eprintln!(
+                "[wick-time] {}: {}/{} ({pct:.1}%), elapsed {:?}.",
+                self.label,
+                n,
+                self.total,
+                self.start.elapsed()
+            );
         }
     }
 }
@@ -73,7 +93,8 @@ pub fn rssmb() -> usize {
 
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb = rest.split_whitespace()
+            let kb = rest
+                .split_whitespace()
                 .next()
                 .and_then(|x| x.parse::<usize>().ok())
                 .unwrap_or(0);

@@ -32,7 +32,10 @@ fn r(n: i64) -> Rational {
 /// - `d`: Denominator.
 /// # Returns:
 /// - `Rational`: Rational coefficient.
-fn q(n: i64, d: i64) -> Rational {
+fn q(
+    n: i64,
+    d: i64,
+) -> Rational {
     Rational { num: n, den: d }
 }
 
@@ -49,7 +52,11 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
 
             (
                 r(1),
-                Tensor { kind: TensorKind::T1, upper: vec![q_], lower: vec![p] },
+                Tensor {
+                    kind: TensorKind::T1,
+                    upper: vec![q_],
+                    lower: vec![p],
+                },
             )
         }
         4 => {
@@ -60,7 +67,11 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
 
             (
                 q(1, 2),
-                Tensor { kind: TensorKind::T2, upper: vec![r_, s], lower: vec![p, q_] },
+                Tensor {
+                    kind: TensorKind::T2,
+                    upper: vec![r_, s],
+                    lower: vec![p, q_],
+                },
             )
         }
         _ => panic!("unsupported cluster rank"),
@@ -73,13 +84,18 @@ pub fn fac(xs: &[&'static str]) -> (Rational, Tensor) {
 /// - `g`: Group id.
 /// # Returns:
 /// - `Product`: Spin-free cluster operator product.
-pub fn op(xs: &[&'static str], g: usize) -> Product {
+pub fn op(
+    xs: &[&'static str],
+    g: usize,
+) -> Product {
     match xs.len() {
         2 => {
             let p = specs::idx(xs[0]);
             let q_ = specs::idx(xs[1]);
 
-            Product { groups: vec![e1(p, q_, g)] }
+            Product {
+                groups: vec![e1(p, q_, g)],
+            }
         }
         4 => {
             let p = specs::idx(xs[0]);
@@ -87,7 +103,9 @@ pub fn op(xs: &[&'static str], g: usize) -> Product {
             let r_ = specs::idx(xs[2]);
             let s = specs::idx(xs[3]);
 
-            Product { groups: vec![e2(p, q_, r_, s, g)] }
+            Product {
+                groups: vec![e2(p, q_, r_, s, g)],
+            }
         }
         _ => panic!("unsupported cluster rank"),
     }
@@ -99,7 +117,10 @@ pub fn op(xs: &[&'static str], g: usize) -> Product {
 /// - `g`: Group id.
 /// # Returns:
 /// - `TTerm`: Cluster term.
-pub fn term(xs: &[&'static str], g: usize) -> TTerm {
+pub fn term(
+    xs: &[&'static str],
+    g: usize,
+) -> TTerm {
     let (coeff, fac) = fac(xs);
 
     TTerm {
@@ -116,8 +137,12 @@ pub fn term(xs: &[&'static str], g: usize) -> TTerm {
 /// - `tag`: Cluster tag, one of `'t'`, `'l'`, or `'r'`.
 /// # Returns:
 /// - `Vec<TTerm>`: Cluster terms.
-pub fn terms(g: usize, tag: char) -> Vec<TTerm> {
-    specs::EXCS.iter()
+pub fn terms(
+    g: usize,
+    tag: char,
+) -> Vec<TTerm> {
+    specs::EXCS
+        .iter()
         .map(|x| {
             let xs = specs::tlabels(x.f, tag);
             term(&xs, g)

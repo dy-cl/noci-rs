@@ -85,7 +85,7 @@ pub fn run_real_post_reference(
             wicks,
         ));
     }
-    
+
     #[cfg(feature = "nocc")]
     if input.noccmc.is_some() {
         let no = {

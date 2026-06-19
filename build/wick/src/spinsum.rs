@@ -80,7 +80,10 @@ fn gram0(ps: &[Vec<usize>]) -> Vec<Vec<Rat>> {
 /// - `b`: Right-hand side.
 /// # Returns:
 /// - `Option<Vec<Rat>>`: Solution with free variables set to zero.
-pub fn solve(mut a: Vec<Vec<Rat>>, b: Vec<Rat>) -> Option<Vec<Rat>> {
+pub fn solve(
+    mut a: Vec<Vec<Rat>>,
+    b: Vec<Rat>,
+) -> Option<Vec<Rat>> {
     let rows = a.len();
 
     if rows == 0 {
@@ -154,7 +157,8 @@ pub fn solve(mut a: Vec<Vec<Rat>>, b: Vec<Rat>) -> Option<Vec<Rat>> {
 /// # Returns:
 /// - `i64`: Sign.
 pub fn sgn(p: &[usize]) -> i64 {
-    let n = (0..p.len()).cartesian_product(0..p.len())
+    let n = (0..p.len())
+        .cartesian_product(0..p.len())
         .filter(|&(i, j)| i < j && p[i] > p[j])
         .count();
 
@@ -182,7 +186,10 @@ pub fn inv(p: &[usize]) -> Vec<usize> {
 /// - `q`: Inner permutation.
 /// # Returns:
 /// - `Vec<usize>`: Composition.
-pub fn comp(p: &[usize], q: &[usize]) -> Vec<usize> {
+pub fn comp(
+    p: &[usize],
+    q: &[usize],
+) -> Vec<usize> {
     (0..p.len()).map(|i| p[q[i]]).collect()
 }
 

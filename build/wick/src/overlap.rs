@@ -26,7 +26,8 @@ pub fn expr(name: &str) -> Expr {
 /// # Returns:
 /// - `()`: Calls `emit` once per metric block.
 pub fn chunks(mut emit: impl FnMut(String, Expr)) {
-    let prog = crate::progress::Prog::new("overlap::chunks metric blocks", crate::specs::BLOCKS.len());
+    let prog =
+        crate::progress::Prog::new("overlap::chunks metric blocks", crate::specs::BLOCKS.len());
 
     for b in crate::specs::BLOCKS {
         emit(b.name.to_string(), expr(b.name));

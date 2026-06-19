@@ -137,7 +137,10 @@ pub type Expr = Vec<Term>;
 /// # Returns:
 /// - `Idx`: Core index.
 pub const fn c(name: &'static str) -> Idx {
-    Idx { name, space: Space::Core }
+    Idx {
+        name,
+        space: Space::Core,
+    }
 }
 
 /// Construct an active index.
@@ -146,7 +149,10 @@ pub const fn c(name: &'static str) -> Idx {
 /// # Returns:
 /// - `Idx`: Active index.
 pub const fn a(name: &'static str) -> Idx {
-    Idx { name, space: Space::Active }
+    Idx {
+        name,
+        space: Space::Active,
+    }
 }
 
 /// Construct a virtual index.
@@ -155,5 +161,8 @@ pub const fn a(name: &'static str) -> Idx {
 /// # Returns:
 /// - `Idx`: Virtual index.
 pub const fn v(name: &'static str) -> Idx {
-    Idx { name, space: Space::Virtual }
+    Idx {
+        name,
+        space: Space::Virtual,
+    }
 }

@@ -78,13 +78,19 @@ fn tensor_kinds() -> BTreeMap<String, u8> {
 /// - `items`: Class names and bincode class payloads.
 /// # Returns:
 /// - `ResidualTermSet`: Decoded residual term table.
-fn residual_terms(order: u8, items: &[(&str, &[u8])]) -> ResidualTermSet {
+fn residual_terms(
+    order: u8,
+    items: &[(&str, &[u8])],
+) -> ResidualTermSet {
     ResidualTermSet {
         version: 1,
         order,
         space_kinds: space_kinds(),
         tensor_kinds: tensor_kinds(),
-        classes: items.iter().map(|&(name, bytes)| (name.to_string(), decode_class(bytes))).collect(),
+        classes: items
+            .iter()
+            .map(|&(name, bytes)| (name.to_string(), decode_class(bytes)))
+            .collect(),
     }
 }
 

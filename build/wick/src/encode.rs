@@ -1,15 +1,18 @@
 // encode.rs
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use num_rational::Ratio;
 use num_traits::Zero;
 use rayon::prelude::*;
 
 use crate::ir::{Expr, Idx, Space, Tensor, TensorKind, Term};
-use crate::schema::{GeneratedTerm, OverlapBlockTerms, OverlapTermSet, ResidualClassTerms, ResidualTermSet, TensorFactor};
-use crate::specs::{idx, BlockSpec, ExcSpec, BLOCKS, EXCS};
+use crate::schema::{
+    GeneratedTerm, OverlapBlockTerms, OverlapTermSet, ResidualClassTerms, ResidualTermSet,
+    TensorFactor,
+};
+use crate::specs::{BLOCKS, BlockSpec, EXCS, ExcSpec, idx};
 
 type Rat = Ratio<i64>;
 
@@ -149,8 +152,12 @@ fn inds(t: &Term) -> Vec<Idx> {
 /// - `x`: Symbolic index.
 /// # Returns:
 /// - `IKey`: Encoded index.
-fn ikey(ids: &BTreeMap<Idx, IKey>, x: Idx) -> IKey {
-    *ids.get(&x).unwrap_or_else(|| panic!("missing canonical id for index {}", x.name))
+fn ikey(
+    ids: &BTreeMap<Idx, IKey>,
+    x: Idx,
+) -> IKey {
+    *ids.get(&x)
+        .unwrap_or_else(|| panic!("missing canonical id for index {}", x.name))
 }
 
 /// Build one encoded tensor factor from an index map.
@@ -159,7 +166,10 @@ fn ikey(ids: &BTreeMap<Idx, IKey>, x: Idx) -> IKey {
 /// - `ids`: Index map.
 /// # Returns:
 /// - `FKey`: Encoded tensor factor.
-fn fkey(x: &Tensor, ids: &BTreeMap<Idx, IKey>) -> FKey {
+fn fkey(
+    x: &Tensor,
+    ids: &BTreeMap<Idx, IKey>,
+) -> FKey {
     FKey {
         kind: tk(x.kind),
         upper: x.upper.iter().map(|&i| ikey(ids, i)).collect(),
@@ -173,7 +183,10 @@ fn fkey(x: &Tensor, ids: &BTreeMap<Idx, IKey>) -> FKey {
 /// - `free`: Free-index map.
 /// # Returns:
 /// - `()`: Mutates `out`.
-fn insert_free(out: &mut BTreeMap<Idx, IKey>, free: &BTreeMap<Idx, u16>) {
+fn insert_free(
+    out: &mut BTreeMap<Idx, IKey>,
+    free: &BTreeMap<Idx, u16>,
+) {
     for (&x, &id) in free {
         out.insert(x, IKey::Free(id));
     }
@@ -187,7 +200,12 @@ fn insert_free(out: &mut BTreeMap<Idx, IKey>, free: &BTreeMap<Idx, u16>) {
 /// - `x`: Symbolic index.
 /// # Returns:
 /// - `()`: Mutates `out`.
-fn assign(out: &mut BTreeMap<Idx, IKey>, free: &BTreeMap<Idx, u16>, next: &mut [u16; 3], x: Idx) {
+fn assign(
+    out: &mut BTreeMap<Idx, IKey>,
+    free: &BTreeMap<Idx, u16>,
+    next: &mut [u16; 3],
+    x: Idx,
+) {
     if free.contains_key(&x) || out.contains_key(&x) {
         return;
     }
@@ -205,7 +223,10 @@ fn assign(out: &mut BTreeMap<Idx, IKey>, free: &BTreeMap<Idx, u16>, next: &mut [
 /// - `free`: Free-index map.
 /// # Returns:
 /// - `BTreeMap<Idx, IKey>`: Initial index map.
-fn initial(t: &Term, free: &BTreeMap<Idx, u16>) -> BTreeMap<Idx, IKey> {
+fn initial(
+    t: &Term,
+    free: &BTreeMap<Idx, u16>,
+) -> BTreeMap<Idx, IKey> {
     let mut out = BTreeMap::new();
     let mut next = [0u16; 3];
 
@@ -224,7 +245,10 @@ fn initial(t: &Term, free: &BTreeMap<Idx, u16>) -> BTreeMap<Idx, IKey> {
 /// - `ids`: Current index map.
 /// # Returns:
 /// - `Vec<(Idx, Idx)>`: Raw delta pairs, oriented and sorted.
-fn ordered_deltas(t: &Term, ids: &BTreeMap<Idx, IKey>) -> Vec<(Idx, Idx)> {
+fn ordered_deltas(
+    t: &Term,
+    ids: &BTreeMap<Idx, IKey>,
+) -> Vec<(Idx, Idx)> {
     let mut out = Vec::new();
 
     for d in &t.deltas {
@@ -248,7 +272,10 @@ fn ordered_deltas(t: &Term, ids: &BTreeMap<Idx, IKey>) -> Vec<(Idx, Idx)> {
 /// - `ids`: Current index map.
 /// # Returns:
 /// - `Vec<&Tensor>`: Tensor factors sorted by encoded representation.
-fn ordered_tensors<'a>(t: &'a Term, ids: &BTreeMap<Idx, IKey>) -> Vec<&'a Tensor> {
+fn ordered_tensors<'a>(
+    t: &'a Term,
+    ids: &BTreeMap<Idx, IKey>,
+) -> Vec<&'a Tensor> {
     let mut out = t.tensors.iter().collect::<Vec<_>>();
 
     out.sort_by_key(|x| fkey(x, ids));
@@ -262,7 +289,11 @@ fn ordered_tensors<'a>(t: &'a Term, ids: &BTreeMap<Idx, IKey>) -> Vec<&'a Tensor
 /// - `ids`: Current index map.
 /// # Returns:
 /// - `BTreeMap<Idx, IKey>`: Refined index map.
-fn refine(t: &Term, free: &BTreeMap<Idx, u16>, ids: &BTreeMap<Idx, IKey>) -> BTreeMap<Idx, IKey> {
+fn refine(
+    t: &Term,
+    free: &BTreeMap<Idx, u16>,
+    ids: &BTreeMap<Idx, IKey>,
+) -> BTreeMap<Idx, IKey> {
     let mut out = BTreeMap::new();
     let mut next = [0u16; 3];
 
@@ -292,7 +323,10 @@ fn refine(t: &Term, free: &BTreeMap<Idx, u16>, ids: &BTreeMap<Idx, IKey>) -> BTr
 /// - `free`: Free-index map.
 /// # Returns:
 /// - `TKey`: Canonical term key without coefficient.
-fn key(t: &Term, free: &BTreeMap<Idx, u16>) -> TKey {
+fn key(
+    t: &Term,
+    free: &BTreeMap<Idx, u16>,
+) -> TKey {
     let mut ids = initial(t, free);
 
     for _ in 0..8 {
@@ -361,7 +395,11 @@ fn dummies(k: &TKey) -> BTreeSet<(u8, u16)> {
 /// - `x`: Encoded index.
 /// # Returns:
 /// - `()`: Mutates `out`.
-fn push_loop(out: &mut Vec<u16>, ids: &BTreeMap<(u8, u16), u16>, x: IKey) {
+fn push_loop(
+    out: &mut Vec<u16>,
+    ids: &BTreeMap<(u8, u16), u16>,
+    x: IKey,
+) {
     if let IKey::Dummy(s, n) = x {
         let id = ids[&(s, n)];
 
@@ -377,7 +415,10 @@ fn push_loop(out: &mut Vec<u16>, ids: &BTreeMap<(u8, u16), u16>, x: IKey) {
 /// - `ids`: Runtime dummy-id map.
 /// # Returns:
 /// - `u16`: Runtime class-local index id.
-fn rid(x: IKey, ids: &BTreeMap<(u8, u16), u16>) -> u16 {
+fn rid(
+    x: IKey,
+    ids: &BTreeMap<(u8, u16), u16>,
+) -> u16 {
     match x {
         IKey::Free(i) => i,
         IKey::Dummy(s, n) => ids[&(s, n)],
@@ -390,7 +431,10 @@ fn rid(x: IKey, ids: &BTreeMap<(u8, u16), u16>) -> u16 {
 /// - `n`: Dummy number.
 /// # Returns:
 /// - `String`: Generated dummy label.
-fn dummy_name(space: u8, n: u16) -> String {
+fn dummy_name(
+    space: u8,
+    n: u16,
+) -> String {
     match space {
         0 => format!("dc{n}"),
         1 => format!("da{n}"),
@@ -406,7 +450,11 @@ fn dummy_name(space: u8, n: u16) -> String {
 /// - `c`: Coefficient to add.
 /// # Returns:
 /// - `()`: Mutates `map`.
-fn addkey(map: &mut HashMap<TKey, Rat>, k: TKey, c: Rat) {
+fn addkey(
+    map: &mut HashMap<TKey, Rat>,
+    k: TKey,
+    c: Rat,
+) {
     if c.is_zero() {
         return;
     }
@@ -431,7 +479,10 @@ fn addkey(map: &mut HashMap<TKey, Rat>, k: TKey, c: Rat) {
 /// - `src`: Source term map.
 /// # Returns:
 /// - `()`: Mutates `dst`.
-fn mergemap(dst: &mut HashMap<TKey, Rat>, src: HashMap<TKey, Rat>) {
+fn mergemap(
+    dst: &mut HashMap<TKey, Rat>,
+    src: HashMap<TKey, Rat>,
+) {
     for (k, c) in src {
         addkey(dst, k, c);
     }
@@ -466,12 +517,18 @@ impl Acc {
     /// # Returns:
     /// - `Acc`: Empty accumulator.
     fn new(free: Vec<Idx>) -> Self {
-        let free_ids = free.iter()
+        let free_ids = free
+            .iter()
             .enumerate()
             .map(|(i, &x)| (x, i as u16))
             .collect();
 
-        Self { free, free_ids, terms: HashMap::new(), seen: 0 }
+        Self {
+            free,
+            free_ids,
+            terms: HashMap::new(),
+            seen: 0,
+        }
     }
 
     /// Add one symbolic expression to the global canonical accumulator.
@@ -479,11 +536,15 @@ impl Acc {
     /// - `e`: Symbolic expression chunk.
     /// # Returns:
     /// - `()`: Mutates `self`.
-    fn addexpr(&mut self, e: Expr) {
+    fn addexpr(
+        &mut self,
+        e: Expr,
+    ) {
         let n = e.len();
         let free = &self.free_ids;
 
-        let local = e.into_par_iter()
+        let local = e
+            .into_par_iter()
             .fold(HashMap::new, |mut acc, t| {
                 let k = key(&t, free);
                 let c = coeff(&t);
@@ -501,7 +562,11 @@ impl Acc {
         mergemap(&mut self.terms, local);
 
         if encprog() {
-            crate::progress::mem(format!("encode chunk terms: {n}, raw terms: {}, unique terms: {}", self.seen, self.terms.len()));
+            crate::progress::mem(format!(
+                "encode chunk terms: {n}, raw terms: {}, unique terms: {}",
+                self.seen,
+                self.terms.len()
+            ));
         }
     }
 
@@ -511,7 +576,9 @@ impl Acc {
     /// # Returns:
     /// - `(Vec<(String, u8)>, BTreeMap<(u8, u16), u16>)`: Runtime indices and dummy ids.
     fn table(&self) -> (Vec<(String, u8)>, BTreeMap<(u8, u16), u16>) {
-        let mut indices = self.free.iter()
+        let mut indices = self
+            .free
+            .iter()
             .map(|x| (x.name.to_string(), sp(x.space)))
             .collect::<Vec<_>>();
 
@@ -538,7 +605,10 @@ impl Acc {
     /// - `ids`: Runtime dummy-id map.
     /// # Returns:
     /// - `Vec<GeneratedTerm>`: Runtime generated terms.
-    fn terms(&self, ids: &BTreeMap<(u8, u16), u16>) -> Vec<GeneratedTerm> {
+    fn terms(
+        &self,
+        ids: &BTreeMap<(u8, u16), u16>,
+    ) -> Vec<GeneratedTerm> {
         let mut out = Vec::new();
 
         for (k, c) in sorted(&self.terms) {
@@ -562,14 +632,20 @@ impl Acc {
             out.push(GeneratedTerm(
                 [*c.numer(), *c.denom()],
                 loops,
-                k.deltas.iter().map(|d| [rid(d[0], ids), rid(d[1], ids)]).collect(),
-                k.tensors.iter().map(|f| {
-                    TensorFactor(
-                        f.kind,
-                        f.upper.iter().map(|&x| rid(x, ids)).collect(),
-                        f.lower.iter().map(|&x| rid(x, ids)).collect(),
-                    )
-                }).collect(),
+                k.deltas
+                    .iter()
+                    .map(|d| [rid(d[0], ids), rid(d[1], ids)])
+                    .collect(),
+                k.tensors
+                    .iter()
+                    .map(|f| {
+                        TensorFactor(
+                            f.kind,
+                            f.upper.iter().map(|&x| rid(x, ids)).collect(),
+                            f.lower.iter().map(|&x| rid(x, ids)).collect(),
+                        )
+                    })
+                    .collect(),
             ));
         }
 
@@ -586,7 +662,11 @@ impl Acc {
         let (indices, ids) = self.table();
         let terms = self.terms(&ids);
 
-        ResidualClassTerms { indices, free, terms }
+        ResidualClassTerms {
+            indices,
+            free,
+            terms,
+        }
     }
 
     /// Convert to one overlap block table.
@@ -594,9 +674,14 @@ impl Acc {
     /// - `b`: Block specification.
     /// # Returns:
     /// - `OverlapBlockTerms`: Runtime overlap block terms.
-    fn overlap(self, b: BlockSpec) -> OverlapBlockTerms {
+    fn overlap(
+        self,
+        b: BlockSpec,
+    ) -> OverlapBlockTerms {
         let left_free = (0..b.lf.len()).map(|i| i as u16).collect::<Vec<_>>();
-        let right_free = (b.lf.len()..b.lf.len() + b.rf.len()).map(|i| i as u16).collect::<Vec<_>>();
+        let right_free = (b.lf.len()..b.lf.len() + b.rf.len())
+            .map(|i| i as u16)
+            .collect::<Vec<_>>();
         let (indices, ids) = self.table();
         let terms = self.terms(&ids);
 
@@ -626,7 +711,10 @@ fn rfree(x: ExcSpec) -> Vec<Idx> {
 /// # Returns:
 /// - `Vec<Idx>`: Free indices.
 fn bfree(b: BlockSpec) -> Vec<Idx> {
-    b.lf.iter().chain(b.rf.iter()).map(|&name| idx(name)).collect()
+    b.lf.iter()
+        .chain(b.rf.iter())
+        .map(|&name| idx(name))
+        .collect()
 }
 
 /// Generate one compact metric block.
@@ -647,8 +735,12 @@ fn block_terms(b: BlockSpec) -> OverlapBlockTerms {
 /// - `name`: Excitation-class name.
 /// # Returns:
 /// - `ResidualClassTerms`: Runtime residual class terms.
-pub fn residual_class(order: u8, name: &str) -> ResidualClassTerms {
-    let x = EXCS.iter()
+pub fn residual_class(
+    order: u8,
+    name: &str,
+) -> ResidualClassTerms {
+    let x = EXCS
+        .iter()
         .copied()
         .find(|x| x.name == name)
         .unwrap_or_else(|| panic!("unknown excitation class {name}"));
@@ -675,7 +767,10 @@ pub fn overlap_terms() -> OverlapTermSet {
         version: 1,
         space_kinds: space_kinds(),
         tensor_kinds: tensor_kinds(),
-        blocks: BLOCKS.iter().map(|&b| (b.name.to_string(), block_terms(b))).collect(),
+        blocks: BLOCKS
+            .iter()
+            .map(|&b| (b.name.to_string(), block_terms(b)))
+            .collect(),
     }
 }
 
@@ -690,6 +785,9 @@ pub fn residual_terms(order: u8) -> ResidualTermSet {
         order,
         space_kinds: space_kinds(),
         tensor_kinds: tensor_kinds(),
-        classes: EXCS.iter().map(|&x| (x.name.to_string(), residual_class(order, x.name))).collect(),
+        classes: EXCS
+            .iter()
+            .map(|&x| (x.name.to_string(), residual_class(order, x.name)))
+            .collect(),
     }
 }

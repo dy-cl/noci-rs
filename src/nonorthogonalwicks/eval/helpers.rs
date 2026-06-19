@@ -5,7 +5,7 @@ use ndarray::{Array2, ArrayView2, s};
 
 use crate::ExcitationSpin;
 #[cfg(feature = "nocc")]
-use crate::maths::{adjoint};
+use crate::maths::adjoint;
 use crate::maths::det;
 use crate::noci::NOCIScalar;
 use crate::time_call;
