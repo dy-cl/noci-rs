@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use itertools::Itertools;
 use num_traits::Zero;
@@ -58,10 +59,7 @@ impl Store {
     /// - `x`: Delta factor.
     /// # Returns:
     /// - `Id`: One-based delta id.
-    fn delta(
-        &mut self,
-        x: Delta,
-    ) -> Id {
+    fn delta(&mut self, x: Delta) -> Id {
         if let Some(&id) = self.ds.get(&x) {
             return id;
         }
@@ -79,10 +77,7 @@ impl Store {
     /// - `x`: Tensor factor.
     /// # Returns:
     /// - `Id`: One-based tensor id.
-    fn tensor(
-        &mut self,
-        x: Tensor,
-    ) -> Id {
+    fn tensor(&mut self, x: Tensor) -> Id {
         if let Some(&id) = self.ts.get(&x) {
             return id;
         }
@@ -97,10 +92,8 @@ impl Store {
 }
 
 /// Sort one canonical run and combine equal adjacent keys.
-///
 /// # Arguments:
 /// - `run`: Canonical terms to reduce.
-///
 /// # Returns:
 /// - `()`: Sorts and reduces `run` in place.
 fn reducerun(run: &mut Vec<RunTerm>) {
@@ -124,19 +117,13 @@ fn reducerun(run: &mut Vec<RunTerm>) {
 }
 
 /// Merge two sorted unique canonical runs.
-///
 /// # Arguments:
 /// - `left`: First sorted run.
 /// - `right`: Second sorted run.
 /// - `out`: Reusable output run.
-///
 /// # Returns:
 /// - `()`: Drains both inputs into `out`.
-fn mergeruns(
-    left: &mut Vec<RunTerm>,
-    right: &mut Vec<RunTerm>,
-    out: &mut Vec<RunTerm>,
-) {
+fn mergeruns(left: &mut Vec<RunTerm>, right: &mut Vec<RunTerm>, out: &mut Vec<RunTerm>) {
     out.clear();
     out.reserve(left.len() + right.len());
 
@@ -214,6 +201,7 @@ impl Acc {
             scratch,
             ..
         } = self;
+
         mergeruns(terms, pending, scratch);
         std::mem::swap(terms, scratch);
     }
@@ -224,11 +212,7 @@ impl Acc {
     /// - `c`: Coefficient.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    fn addkey(
-        &mut self,
-        key: TermKey,
-        c: Rat,
-    ) {
+    fn addkey(&mut self, key: TermKey, c: Rat) {
         if c.is_zero() {
             return;
         }
@@ -238,16 +222,13 @@ impl Acc {
             self.flush();
         }
     }
-
+    
     /// Add one term to the accumulator.
     /// # Arguments:
     /// - `x`: Term to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addterm(
-        &mut self,
-        mut x: Term,
-    ) {
+    pub fn addterm(&mut self, mut x: Term) {
         x.deltas.sort_unstable();
 
         x.tensors = x.tensors.into_iter().map(ten).collect();
@@ -273,62 +254,61 @@ impl Acc {
     /// - `other`: Accumulator to merge.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn merge(
-        &mut self,
-        mut other: Acc,
-    ) {
-        self.flush();
-        other.flush();
+    pub fn merge(&mut self, mut other: Acc) {
+        crate::time_call!(crate::timers::canonical::add_merge, {
+            self.flush();
+            other.flush();
 
-        if other.terms.is_empty() {
-            return;
-        }
-
-        if self.terms.is_empty() {
-            *self = other;
-            return;
-        }
-
-        let Acc {
-            store, mut terms, ..
-        } = other;
-
-        let mut dmap = Vec::with_capacity(store.d.len() + 1);
-        dmap.push(0);
-        for d in store.d {
-            dmap.push(self.store.delta(d));
-        }
-
-        let mut tmap = Vec::with_capacity(store.t.len() + 1);
-        tmap.push(0);
-        for t in store.t {
-            tmap.push(self.store.tensor(t));
-        }
-
-        for ((ds, ts), _) in &mut terms {
-            for i in ds.iter_mut() {
-                *i = dmap[*i as usize];
+            if other.terms.is_empty() {
+                return;
             }
 
-            for i in ts.iter_mut() {
-                *i = tmap[*i as usize];
+            if self.terms.is_empty() {
+                *self = other;
+                return;
             }
-        }
 
-        reducerun(&mut terms);
+            let Acc {
+                store, mut terms, ..
+            } = other;
 
-        if terms.is_empty() {
-            return;
-        }
+            let mut dmap = Vec::with_capacity(store.d.len() + 1);
+            dmap.push(0);
+            for d in store.d {
+                dmap.push(self.store.delta(d));
+            }
 
-        let Acc {
-            terms: left,
-            scratch,
-            ..
-        } = self;
+            let mut tmap = Vec::with_capacity(store.t.len() + 1);
+            tmap.push(0);
+            for t in store.t {
+                tmap.push(self.store.tensor(t));
+            }
 
-        mergeruns(left, &mut terms, scratch);
-        std::mem::swap(left, scratch);
+            for ((ds, ts), _) in &mut terms {
+                for i in ds.iter_mut() {
+                    *i = dmap[*i as usize];
+                }
+
+                for i in ts.iter_mut() {
+                    *i = tmap[*i as usize];
+                }
+            }
+
+            reducerun(&mut terms);
+
+            if terms.is_empty() {
+                return;
+            }
+
+            let Acc {
+                terms: left,
+                scratch,
+                ..
+            } = self;
+
+            mergeruns(left, &mut terms, scratch);
+            std::mem::swap(left, scratch);
+        });
     }
 
     /// Add one expression to the accumulator.
@@ -336,10 +316,7 @@ impl Acc {
     /// - `e`: Expression to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addexpr(
-        &mut self,
-        e: Expr,
-    ) {
+    pub fn addexpr(&mut self, e: Expr) {
         for x in e {
             self.addterm(x);
         }
@@ -399,7 +376,19 @@ impl Acc {
     /// # Returns:
     /// - `Expr`: Canonical expression.
     pub fn finish(self) -> Expr {
-        sum(spar(self.intoexpr()))
+        crate::time_call!(crate::timers::canonical::add_finish, {
+            let e = crate::time_call!(crate::timers::canonical::add_intoexpr, {
+                self.intoexpr()
+            });
+
+            let e = crate::time_call!(crate::timers::canonical::add_spar, {
+                spar(e)
+            });
+
+            crate::time_call!(crate::timers::canonical::add_final_sum, {
+                sum(e)
+            })
+        })
     }
 }
 
@@ -411,7 +400,10 @@ impl Acc {
 pub fn canon(e: Expr) -> Expr {
     let mut acc = Acc::new();
 
-    acc.addexpr(e);
+    crate::time_call!(crate::timers::canonical::add_accumulate, {
+        acc.addexpr(e);
+    });
+
     acc.finish()
 }
 
@@ -519,6 +511,7 @@ fn spar(e: Expr) -> Expr {
             .or_default()
             .entry(p)
             .or_insert_with(Rat::zero);
+
         *v += c;
     }
 
@@ -555,10 +548,7 @@ fn spar(e: Expr) -> Expr {
 /// - `x`: Actual ordering.
 /// # Returns:
 /// - `Option<Vec<usize>>`: Permutation.
-fn perm(
-    base: &[Idx],
-    x: &[Idx],
-) -> Option<Vec<usize>> {
+fn perm(base: &[Idx], x: &[Idx]) -> Option<Vec<usize>> {
     let mut out = Vec::with_capacity(x.len());
 
     for y in x {
@@ -568,16 +558,15 @@ fn perm(
     Some(out)
 }
 
-/// Find the sparsest equivalent orbit coefficient vector.
+/// Find the sparsest spin-equivalent coefficient vector within the configured
+/// maximum support size. If no smaller representation is found within the
+/// limit, return the original coefficient vector.
 /// # Arguments:
 /// - `n`: Cumulant rank.
-/// - `cs`: Coefficients by lower permutation.
+/// - `cs`: Coefficients indexed by lower-index permutation.
 /// # Returns:
-/// - `BTreeMap<Vec<usize>, Rat>`: Sparse coefficients.
-fn best(
-    n: usize,
-    cs: BTreeMap<Vec<usize>, Rat>,
-) -> BTreeMap<Vec<usize>, Rat> {
+/// - `BTreeMap<Vec<usize>, Rat>`: Exact representation no larger than `cs`.
+fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
     let cs = cs
         .into_iter()
         .filter(|(_, c)| !c.is_zero())
@@ -587,35 +576,70 @@ fn best(
         return cs;
     }
 
+    let original_support = cs.len();
+    let limit = original_support.min(max_support_size());
+
+    if limit == 0 {
+        return cs;
+    }
+
     let (ps, g) = spinsum::data(n).expect("Cached spin sparsifier rank missing.");
     let y = img(ps, g, &cs);
-    let m = cs.len();
 
-    for size in 1..=m {
-        for sup in (0..ps.len()).combinations(size) {
+    for size in 1..=limit {
+        for support in (0..ps.len()).combinations(size) {
             let a = (0..ps.len())
-                .map(|r| sup.iter().map(|&c| g[r][c].clone()).collect::<Vec<_>>())
+                .map(|row| {
+                    support
+                        .iter()
+                        .map(|&column| g[row][column].clone())
+                        .collect::<Vec<_>>()
+                })
                 .collect::<Vec<_>>();
 
             let Some(x) = spinsum::solve(a, y.clone()) else {
                 continue;
             };
 
-            let out = sup
+            let out = support
                 .iter()
                 .copied()
                 .zip(x)
-                .filter(|(_, c)| !c.is_zero())
-                .map(|(i, c)| (ps[i].clone(), c))
+                .filter(|(_, coefficient)| !coefficient.is_zero())
+                .map(|(index, coefficient)| (ps[index].clone(), coefficient))
                 .collect::<BTreeMap<_, _>>();
 
-            if out.len() <= size {
+            if out.len() < original_support {
                 return out;
             }
         }
     }
 
     cs
+}
+
+/// Return the maximum support size searched during spin sparsification.
+/// A value of zero disables support searching. If the environment variable is
+/// unset, the original exhaustive behaviour is retained.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `usize`: Maximum support size to search.
+fn maxs() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+
+    *VALUE.get_or_init(|| {
+        match std::env::var("WICK_MAX_SUPPORT_SIZE") {
+            Ok(value) => value.parse::<usize>().unwrap_or_else(|_| {
+                panic!(
+                    "WICK_MAX_SUPPORT_SIZE must be a non-negative integer, got `{}`",
+                    value
+                )
+            }),
+            Err(std::env::VarError::NotPresent) => usize::MAX,
+            Err(error) => panic!("Could not read WICK_MAX_SUPPORT_SIZE: {}", error),
+        }
+    })
 }
 
 /// Project coefficients through the spin Gram matrix.
@@ -625,11 +649,7 @@ fn best(
 /// - `cs`: Coefficients.
 /// # Returns:
 /// - `Vec<Rat>`: Projected vector.
-fn img(
-    ps: &[Vec<usize>],
-    g: &[Vec<Rat>],
-    cs: &BTreeMap<Vec<usize>, Rat>,
-) -> Vec<Rat> {
+fn img(ps: &[Vec<usize>], g: &[Vec<Rat>], cs: &BTreeMap<Vec<usize>, Rat>) -> Vec<Rat> {
     (0..ps.len())
         .map(|i| {
             let mut x = Rat::zero();

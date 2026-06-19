@@ -1,14 +1,18 @@
-use std::time::Instant;
-
 #[test]
-#[ignore = "expensive encode benchmark"]
+#[ignore]
 fn encoder2atoa() {
-    let t = Instant::now();
-    let x = wick_build::encode::residual_class(2, "AToA");
+    wick_build::timers::reset_all();
 
-    eprintln!(
+    let start = std::time::Instant::now();
+    let terms = wick_build::encode::residual_class(2, "AToA");
+    let elapsed = start.elapsed();
+    
+    wick_build::timers::print_all();
+
+    println!(
         "[bench]: R2(AToA) encoded terms: {}, elapsed: {:?}",
-        x.terms.len(),
-        t.elapsed()
+        terms.terms.len(),
+        elapsed
     );
 }
+
