@@ -577,7 +577,7 @@ fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
     }
 
     let original_support = cs.len();
-    let limit = original_support.min(max_support_size());
+    let limit = original_support.min(maxs());
 
     if limit == 0 {
         return cs;
