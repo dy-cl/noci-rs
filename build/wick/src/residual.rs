@@ -462,7 +462,8 @@ pub fn r2(
 
                 r2hterm(base.clone(), true, &bra, l, r, h, |k, e| {
                     subchunks += 1;
-                    if std::env::var_os("WICK_PROGRESS").is_some() && subchunks % 100 == 0 {
+                    if std::env::var_os("WICK_PROGRESS").is_some() && subchunks.is_multiple_of(100)
+                    {
                         eprintln!(
                             "[wick-time] residual::r2({name}) {base}: subchunks {subchunks}, elapsed {:?}.",
                             start.elapsed()

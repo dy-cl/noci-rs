@@ -161,11 +161,7 @@ impl Filter {
         y: &[Ratio<i64>],
     ) -> Self {
         let mats = GramMats::cached(n, g);
-        let yr = mats
-            .rows
-            .iter()
-            .map(|&row| y[row].clone())
-            .collect::<Vec<_>>();
+        let yr = mats.rows.iter().map(|&row| y[row]).collect::<Vec<_>>();
         let b = int::scale_vector(&yr);
         let sb = b
             .as_ref()
@@ -193,11 +189,6 @@ impl Filter {
         self.mats.map(|mats| mats.rows.as_slice()).unwrap_or(&[])
     }
 
-    /// Return reduced Gram rank.
-    /// # Arguments:
-    /// - None.
-    /// # Returns:
-    /// - `usize`: Reduced row count.
     /// Start one incremental modular span state.
     /// # Arguments:
     /// - None.
@@ -360,9 +351,9 @@ impl State {
                 continue;
             }
 
-            for j in piv..self.n {
+            for (j, xj) in x.iter_mut().enumerate().take(self.n).skip(piv) {
                 let y = field::multiply_fast_u16(q, self.rows[i][j]);
-                x[j] = field::subtract_fast_u16(x[j], y);
+                *xj = field::subtract_fast_u16(*xj, y);
             }
         }
     }
@@ -431,10 +422,10 @@ fn independent_cols(
 
         for (i, &row) in rows.iter().enumerate() {
             for (j, &old) in cols.iter().enumerate() {
-                a[i][j] = g[row][old].clone();
+                a[i][j] = g[row][old];
             }
 
-            a[i][cols.len()] = g[row][col].clone();
+            a[i][cols.len()] = g[row][col];
         }
 
         let next = rational_rank(a);
@@ -467,9 +458,9 @@ fn rational_rank(mut a: Vec<Vec<Ratio<i64>>>) -> usize {
         };
 
         a.swap(rank, piv);
-        let q = a[rank][col].clone();
+        let q = a[rank][col];
         for j in col..cols {
-            a[rank][j] /= q.clone();
+            a[rank][j] /= q;
         }
 
         for row in 0..rows {
@@ -477,13 +468,13 @@ fn rational_rank(mut a: Vec<Vec<Ratio<i64>>>) -> usize {
                 continue;
             }
 
-            let q = a[row][col].clone();
+            let q = a[row][col];
             if q.is_zero() {
                 continue;
             }
 
             for j in col..cols {
-                let x = q.clone() * a[rank][j].clone();
+                let x = q * a[rank][j];
                 a[row][j] -= x;
             }
         }
@@ -529,9 +520,9 @@ pub fn solve_system(
 
         a.swap(row, p);
 
-        let q = a[row][col].clone();
+        let q = a[row][col];
         for j in col..=cols {
-            a[row][j] /= q.clone();
+            a[row][j] /= q;
         }
 
         for r in 0..rows {
@@ -539,14 +530,14 @@ pub fn solve_system(
                 continue;
             }
 
-            let q = a[r][col].clone();
+            let q = a[r][col];
 
             if q.is_zero() {
                 continue;
             }
 
             for j in col..=cols {
-                let x = q.clone() * a[row][j].clone();
+                let x = q * a[row][j];
                 a[r][j] -= x;
             }
         }
@@ -559,8 +550,8 @@ pub fn solve_system(
         }
     }
 
-    for r in row..rows {
-        if (0..cols).all(|c| a[r][c].is_zero()) && !a[r][cols].is_zero() {
+    for item in a.iter().take(rows).skip(row) {
+        if item[..cols].iter().all(|x| x.is_zero()) && !item[cols].is_zero() {
             return None;
         }
     }
@@ -568,7 +559,7 @@ pub fn solve_system(
     let mut x = vec![Ratio::<i64>::zero(); cols];
 
     for (r, col) in piv.into_iter().enumerate() {
-        x[col] = a[r][cols].clone();
+        x[col] = a[r][cols];
     }
 
     Some(x)
@@ -625,7 +616,7 @@ fn solven<const C: usize>(
     let mut a = rows
         .iter()
         .enumerate()
-        .map(|(i, &r)| (std::array::from_fn(|c| g[r][s[c]].clone()), b[i].clone()))
+        .map(|(i, &r)| (std::array::from_fn(|c| g[r][s[c]]), b[i]))
         .collect::<Vec<([Ratio<i64>; C], Ratio<i64>)>>();
 
     let mut piv = Vec::new();
@@ -638,9 +629,9 @@ fn solven<const C: usize>(
 
         a.swap(row, p);
 
-        let q = a[row].0[col].clone();
+        let q = a[row].0[col];
         for j in col..C {
-            a[row].0[j] /= q.clone();
+            a[row].0[j] /= q;
         }
         a[row].1 /= q;
 
@@ -649,18 +640,18 @@ fn solven<const C: usize>(
                 continue;
             }
 
-            let q = a[r].0[col].clone();
+            let q = a[r].0[col];
 
             if q.is_zero() {
                 continue;
             }
 
             for j in col..C {
-                let x = q.clone() * a[row].0[j].clone();
+                let x = q * a[row].0[j];
                 a[r].0[j] -= x;
             }
 
-            let x = q * a[row].1.clone();
+            let x = q * a[row].1;
             a[r].1 -= x;
         }
 
@@ -681,7 +672,7 @@ fn solven<const C: usize>(
     let mut x = std::array::from_fn::<_, C, _>(|_| Ratio::<i64>::zero());
 
     for (r, col) in piv.into_iter().enumerate() {
-        x[col] = a[r].1.clone();
+        x[col] = a[r].1;
     }
 
     Some(x.into_iter().collect())
@@ -702,11 +693,7 @@ fn solve_selected(
 ) -> Option<Vec<Ratio<i64>>> {
     let a = rows
         .iter()
-        .map(|&row| {
-            s.iter()
-                .map(|&column| g[row][column].clone())
-                .collect::<Vec<_>>()
-        })
+        .map(|&row| s.iter().map(|&column| g[row][column]).collect::<Vec<_>>())
         .collect::<Vec<_>>();
 
     solve_system(a, b.to_vec())
@@ -730,7 +717,7 @@ pub fn gram_image(
 
             for (j, p) in ps.iter().enumerate() {
                 if let Some(c) = cs.get(p) {
-                    x += g[i][j].clone() * c.clone();
+                    x += g[i][j] * *c;
                 }
             }
 
@@ -753,11 +740,7 @@ pub fn basis_solution(
 ) -> Option<(Vec<usize>, Vec<Ratio<i64>>)> {
     let data = GramBasis::cached(n)?;
     let basis_cols = data.basis.as_slice();
-    let yr = data
-        .rows
-        .iter()
-        .map(|&row| y[row].clone())
-        .collect::<Vec<_>>();
+    let yr = data.rows.iter().map(|&row| y[row]).collect::<Vec<_>>();
     let z = solve_selected(g, &yr, basis_cols, &data.rows)?;
 
     Some((basis_cols.to_vec(), z))

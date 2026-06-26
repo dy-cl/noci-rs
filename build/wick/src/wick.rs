@@ -18,8 +18,10 @@ use crate::ir::{
 
 type Id = u32;
 type ProjKey = (usize, u8, u8);
+type Projection = Vec<(Vec<usize>, Ratio<i64>)>;
+type ProjectionTable = BTreeMap<ProjKey, Projection>;
 
-static PROJ: OnceLock<BTreeMap<ProjKey, Vec<(Vec<usize>, Ratio<i64>)>>> = OnceLock::new();
+static PROJ: OnceLock<ProjectionTable> = OnceLock::new();
 
 /// One numeric Wick product row.
 #[derive(Clone, Debug)]
@@ -376,12 +378,12 @@ fn val(
 /// - `us`: Upper spin labels.
 /// - `ls`: Lower spin labels.
 /// # Returns:
-/// - `Vec<(Vec<usize>, Ratio<i64>)>`: Lower-index permutations and coefficients.
+/// - `Projection`: Lower-index permutations and coefficients.
 fn proj(
     r: usize,
     us: &[Spin],
     ls: &[Spin],
-) -> Vec<(Vec<usize>, Ratio<i64>)> {
+) -> Projection {
     crate::time_call!(crate::timers::wick::add_proj, {
         let key = (r, sbits(us), sbits(ls));
         PROJ.get_or_init(ptab)[&key].clone()
@@ -392,8 +394,8 @@ fn proj(
 /// # Arguments:
 /// - None.
 /// # Returns:
-/// - `BTreeMap<ProjKey, Vec<(Vec<usize>, Ratio<i64>)>>`: Projection table.
-fn ptab() -> BTreeMap<ProjKey, Vec<(Vec<usize>, Ratio<i64>)>> {
+/// - `ProjectionTable`: Projection table.
+fn ptab() -> ProjectionTable {
     crate::time_call!(crate::timers::wick::add_ptab, {
         let mut out = BTreeMap::new();
 
@@ -415,12 +417,12 @@ fn ptab() -> BTreeMap<ProjKey, Vec<(Vec<usize>, Ratio<i64>)>> {
 /// - `us`: Upper spin bits.
 /// - `ls`: Lower spin bits.
 /// # Returns:
-/// - `Vec<(Vec<usize>, Ratio<i64>)>`: Lower-index permutations and coefficients.
+/// - `Projection`: Lower-index permutations and coefficients.
 fn pval(
     r: usize,
     us: u8,
     ls: u8,
-) -> Vec<(Vec<usize>, Ratio<i64>)> {
+) -> Projection {
     crate::time_call!(crate::timers::wick::add_pval, {
         let data = gram::GramBasis::cached(r).expect("Cached spin projection rank missing.");
         let ps = data.ps.as_slice();
@@ -997,6 +999,11 @@ fn eval1cstream(
                 }
             };
 
+            let mut emit = |row| {
+                add(&mut acc, row);
+                flush(&mut acc);
+            };
+
             walkc(
                 full,
                 &bs,
@@ -1004,8 +1011,7 @@ fn eval1cstream(
                 want,
                 &mut cur,
                 &mut tail_memo,
-                &mut acc,
-                &mut flush,
+                &mut emit,
             );
         }
 
@@ -1239,7 +1245,7 @@ fn eval1c(
             e: SmallVec::new(),
         };
         let mut tail_memo = BTreeMap::new();
-        let mut flush = |_: &mut Acc| {};
+        let mut emit = |row| add(&mut acc, row);
 
         walkc(
             full,
@@ -1248,8 +1254,7 @@ fn eval1c(
             want,
             &mut cur,
             &mut tail_memo,
-            &mut acc,
-            &mut flush,
+            &mut emit,
         );
 
         out(&s, acc)
@@ -1264,10 +1269,9 @@ fn eval1c(
 /// - `want`: Required GNO-group mask.
 /// - `cur`: Current partial row.
 /// - `tail_memo`: Memo table for connected suffix enumeration.
-/// - `acc`: Final numeric accumulator.
-/// - `flush`: Accumulator flush callback.
+/// - `emit`: Completed connected row callback.
 /// # Returns:
-/// - `()`: Mutates `acc`.
+/// - `()`: Calls `emit` for each completed row.
 fn walkc(
     left: u64,
     bs: &[Block],
@@ -1275,11 +1279,10 @@ fn walkc(
     want: u64,
     cur: &mut Row,
     tail_memo: &mut BTreeMap<u64, Vec<Row>>,
-    acc: &mut Acc,
-    flush: &mut impl FnMut(&mut Acc),
+    emit: &mut impl FnMut(Row),
 ) {
     crate::time_call!(crate::timers::wick::add_walkc, {
-        walkc_inner(left, bs, by_pos, want, cur, tail_memo, acc, flush)
+        walkc_inner(left, bs, by_pos, want, cur, tail_memo, emit)
     });
 }
 
@@ -1291,13 +1294,11 @@ fn walkc_inner(
     want: u64,
     cur: &mut Row,
     tail_memo: &mut BTreeMap<u64, Vec<Row>>,
-    acc: &mut Acc,
-    flush: &mut impl FnMut(&mut Acc),
+    emit: &mut impl FnMut(Row),
 ) {
     if rootseen(want, &cur.e) == want {
         for tail in walk(left, bs, by_pos, false, tail_memo) {
-            add(acc, joinrow(cur, &tail));
-            flush(acc);
+            emit(joinrow(cur, &tail));
         }
 
         return;
@@ -1346,7 +1347,7 @@ fn walkc_inner(
             cur.t.extend_from_slice(&v.t);
             cur.e.push(b.g);
 
-            walkc_inner(rest, bs, by_pos, want, cur, tail_memo, acc, flush);
+            walkc_inner(rest, bs, by_pos, want, cur, tail_memo, emit);
 
             cur.d.truncate(nd);
             cur.t.truncate(nt);

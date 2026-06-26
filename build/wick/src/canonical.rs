@@ -119,7 +119,7 @@ fn reducerun(run: &mut Vec<RunTerm>) {
     let mut write = 0usize;
     for read in 0..run.len() {
         if write > 0 && run[write - 1].0 == run[read].0 {
-            let c = run[read].1.clone();
+            let c = run[read].1;
             run[write - 1].1 += c;
         } else {
             if write != read {
@@ -762,14 +762,22 @@ fn bestn(
 
     let filter = Filter::new(n, g, &y);
     local.gram_rank = filter.rows().len();
-    let yr = filter
-        .rows()
-        .iter()
-        .map(|&row| y[row].clone())
-        .collect::<Vec<_>>();
+    let yr = filter.rows().iter().map(|&row| y[row]).collect::<Vec<_>>();
     let columns = cols(ps, &fallback);
+
     let found = {
-        let mut search = SupportSearch::new(&columns, &filter, g, &yr, &y, ps, &mut local, limit);
+        let mut search = SupportSearch {
+            columns: &columns,
+            filter: &filter,
+            g,
+            yr: &yr,
+            y: &y,
+            ps,
+            support: Vec::with_capacity(limit),
+            state: filter.state(),
+            stats: &mut local,
+        };
+
         search.run(limit)
     };
 
@@ -794,7 +802,7 @@ fn bestn(
     if let Some((key, scale)) = key {
         bput(key, bnorm(&fallback, &scale));
     }
-    done(&mut local, stats.as_deref_mut());
+    done(&mut local, stats);
     (fallback, local)
 }
 
@@ -859,9 +867,7 @@ fn bnorm(
     cs: &BTreeMap<Vec<usize>, Ratio<i64>>,
     scale: &Ratio<i64>,
 ) -> BTreeMap<Vec<usize>, Ratio<i64>> {
-    cs.iter()
-        .map(|(p, c)| (p.clone(), c.clone() / scale.clone()))
-        .collect()
+    cs.iter().map(|(p, c)| (p.clone(), *c / *scale)).collect()
 }
 
 /// Multiply one coefficient map by one scale.
@@ -874,9 +880,7 @@ fn bscale(
     cs: BTreeMap<Vec<usize>, Ratio<i64>>,
     scale: &Ratio<i64>,
 ) -> BTreeMap<Vec<usize>, Ratio<i64>> {
-    cs.into_iter()
-        .map(|(p, c)| (p, c * scale.clone()))
-        .collect()
+    cs.into_iter().map(|(p, c)| (p, c * *scale)).collect()
 }
 
 /// Get one sparsifier cache entry.
@@ -1033,41 +1037,6 @@ struct SupportSearch<'a> {
 }
 
 impl<'a> SupportSearch<'a> {
-    /// Create one support search.
-    /// # Arguments:
-    /// - `columns`: Candidate column order.
-    /// - `filter`: Exact rejection filter.
-    /// - `g`: Spin Gram matrix.
-    /// - `yr`: Reduced target image.
-    /// - `y`: Full target image.
-    /// - `ps`: Lower-index permutations.
-    /// - `stats`: Search stats.
-    /// - `limit`: Maximum searched support size.
-    /// # Returns:
-    /// - `SupportSearch`: Search state.
-    fn new(
-        columns: &'a [usize],
-        filter: &'a Filter,
-        g: &'a [Vec<Ratio<i64>>],
-        yr: &'a [Ratio<i64>],
-        y: &'a [Ratio<i64>],
-        ps: &'a [Vec<usize>],
-        stats: &'a mut BestStats,
-        limit: usize,
-    ) -> Self {
-        Self {
-            columns,
-            filter,
-            g,
-            yr,
-            y,
-            ps,
-            support: Vec::with_capacity(limit),
-            state: filter.state(),
-            stats,
-        }
-    }
-
     /// Search all support sizes up to a limit.
     /// # Arguments:
     /// - `limit`: Maximum searched support size.

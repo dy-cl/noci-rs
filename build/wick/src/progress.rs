@@ -64,7 +64,7 @@ impl Prog {
 
         let n = self.done.fetch_add(1, Ordering::Relaxed) + 1;
 
-        if n == self.total || n % self.step == 0 {
+        if n == self.total || n.is_multiple_of(self.step) {
             let pct = if self.total == 0 {
                 100.0
             } else {

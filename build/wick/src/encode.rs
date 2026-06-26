@@ -4,7 +4,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -74,6 +74,15 @@ static RUN_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// One serialized run entry.
 type RunEntry = (TKey, [i64; 2]);
+
+/// Runtime index names and spaces.
+type RuntimeIndexTable = Vec<(String, u8)>;
+
+/// Runtime dummy-index id map.
+type DummyIds = BTreeMap<(u8, u16), u16>;
+
+/// Runtime index table and dummy ids.
+type RuntimeTable = (RuntimeIndexTable, DummyIds);
 
 /// One sorted encoded run file.
 #[derive(Clone, Debug)]
@@ -1013,7 +1022,7 @@ impl Acc {
                     .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
                 merged += 1;
 
-                if encprog() && merged % 1_000_000 == 0 {
+                if encprog() && merged.is_multiple_of(1_000_000) {
                     eprintln!(
                         "[wick-time] encode: merge terms: {merged}, elapsed {:?}.",
                         self.start.elapsed()
@@ -1036,8 +1045,8 @@ impl Acc {
     /// # Arguments:
     /// - None.
     /// # Returns:
-    /// - `(Vec<(String, u8)>, BTreeMap<(u8, u16), u16>)`: Runtime indices and dummy ids.
-    fn table(&self) -> (Vec<(String, u8)>, BTreeMap<(u8, u16), u16>) {
+    /// - `RuntimeTable`: Runtime indices and dummy ids.
+    fn table(&self) -> RuntimeTable {
         let mut indices = self
             .free
             .iter()
@@ -1069,7 +1078,7 @@ impl Acc {
     /// - `Vec<GeneratedTerm>`: Runtime generated terms.
     fn terms(
         &self,
-        ids: &BTreeMap<(u8, u16), u16>,
+        ids: &DummyIds,
     ) -> Vec<GeneratedTerm> {
         let mut out = Vec::new();
 
@@ -1088,11 +1097,11 @@ impl Acc {
     /// # Arguments:
     /// - `path`: Final sorted run path.
     /// # Returns:
-    /// - `(Vec<(String, u8)>, BTreeMap<(u8, u16), u16>)`: Runtime indices and dummy ids.
+    /// - `RuntimeTable`: Runtime indices and dummy ids.
     fn table_run(
         &self,
-        path: &PathBuf,
-    ) -> (Vec<(String, u8)>, BTreeMap<(u8, u16), u16>) {
+        path: &Path,
+    ) -> RuntimeTable {
         if encprog() {
             eprintln!(
                 "[wick-time] encode: build index table from encoded run, elapsed {:?}.",
@@ -1106,7 +1115,7 @@ impl Acc {
             .map(|x| (x.name.to_string(), sp(x.space)))
             .collect::<Vec<_>>();
         let mut seen = BTreeSet::new();
-        let mut input = RunReader::open(path.clone());
+        let mut input = RunReader::open(path.to_path_buf());
 
         while let Some((k, _)) = input.next() {
             seen.extend(dummies(&k));
@@ -1132,8 +1141,8 @@ impl Acc {
     /// - `Vec<GeneratedTerm>`: Runtime generated terms.
     fn terms_run(
         &self,
-        path: &PathBuf,
-        ids: &BTreeMap<(u8, u16), u16>,
+        path: &Path,
+        ids: &DummyIds,
     ) -> Vec<GeneratedTerm> {
         if encprog() {
             eprintln!(
@@ -1143,7 +1152,7 @@ impl Acc {
         }
 
         let mut out = Vec::new();
-        let mut input = RunReader::open(path.clone());
+        let mut input = RunReader::open(path.to_path_buf());
         let mut n = 0usize;
 
         while let Some((k, c)) = input.next() {
@@ -1154,7 +1163,7 @@ impl Acc {
             out.push(term(&k, &c, ids));
             n += 1;
 
-            if encprog() && n % 1_000_000 == 0 {
+            if encprog() && n.is_multiple_of(1_000_000) {
                 eprintln!(
                     "[wick-time] encode: generated terms: {n}, elapsed {:?}.",
                     self.start.elapsed()
