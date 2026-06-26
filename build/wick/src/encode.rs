@@ -532,7 +532,7 @@ fn mergemap(
 fn sorted(terms: &HashMap<TKey, Ratio<i64>>) -> Vec<(&TKey, &Ratio<i64>)> {
     let mut out = terms.iter().collect::<Vec<_>>();
 
-    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+    out.sort_by_key(|(a, _)| *a);
 
     out
 }

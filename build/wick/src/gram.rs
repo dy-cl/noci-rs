@@ -458,26 +458,8 @@ fn rational_rank(mut a: Vec<Vec<Ratio<i64>>>) -> usize {
         };
 
         a.swap(rank, piv);
-        let q = a[rank][col];
-        for j in col..cols {
-            a[rank][j] /= q;
-        }
 
-        for row in 0..rows {
-            if row == rank {
-                continue;
-            }
-
-            let q = a[row][col];
-            if q.is_zero() {
-                continue;
-            }
-
-            for j in col..cols {
-                let x = q * a[rank][j];
-                a[row][j] -= x;
-            }
-        }
+        eliminate_column(&mut a, rank, col, cols);
 
         rank += 1;
         if rank == rows {
@@ -486,6 +468,45 @@ fn rational_rank(mut a: Vec<Vec<Ratio<i64>>>) -> usize {
     }
 
     rank
+}
+
+/// Normalize one pivot row and eliminate its column from all other rows.
+/// # Arguments:
+/// - `a`: Matrix.
+/// - `pivot`: Pivot row.
+/// - `col`: Pivot column.
+/// - `end`: Exclusive end column for row operations.
+/// # Returns:
+/// - `()`: Updates `a`.
+fn eliminate_column(
+    a: &mut [Vec<Ratio<i64>>],
+    pivot: usize,
+    col: usize,
+    end: usize,
+) {
+    let q = a[pivot][col];
+
+    for value in &mut a[pivot][col..end] {
+        *value /= q;
+    }
+
+    let pivot_row = a[pivot][col..end].to_vec();
+
+    for (row, values) in a.iter_mut().enumerate() {
+        if row == pivot {
+            continue;
+        }
+
+        let q = values[col];
+
+        if q.is_zero() {
+            continue;
+        }
+
+        for (value, &pivot_value) in values[col..end].iter_mut().zip(&pivot_row) {
+            *value -= q * pivot_value;
+        }
+    }
 }
 
 /// Solve a rational linear system if consistent.
@@ -520,27 +541,7 @@ pub fn solve_system(
 
         a.swap(row, p);
 
-        let q = a[row][col];
-        for j in col..=cols {
-            a[row][j] /= q;
-        }
-
-        for r in 0..rows {
-            if r == row {
-                continue;
-            }
-
-            let q = a[r][col];
-
-            if q.is_zero() {
-                continue;
-            }
-
-            for j in col..=cols {
-                let x = q * a[row][j];
-                a[r][j] -= x;
-            }
-        }
+        eliminate_column(&mut a, row, col, cols + 1);
 
         piv.push(col);
         row += 1;

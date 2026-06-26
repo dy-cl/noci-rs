@@ -205,19 +205,23 @@ fn consistent_u64(
         a.swap(r, piv);
 
         let q = invert_u64(a[r][c], p).unwrap();
-        for j in c..=cols {
-            a[r][j] = a[r][j] * q % p;
+
+        for value in &mut a[r][c..=cols] {
+            *value = *value * q % p;
         }
 
-        for i in 0..rows {
-            if i == r || a[i][c] == 0 {
+        let pivot_row = a[r];
+
+        for (i, row) in a.iter_mut().enumerate().take(rows) {
+            if i == r || row[c] == 0 {
                 continue;
             }
 
-            let q = a[i][c];
-            for j in c..=cols {
-                let x = q * a[r][j] % p;
-                a[i][j] = (a[i][j] + p - x) % p;
+            let q = row[c];
+
+            for (value, &pivot_value) in row[c..=cols].iter_mut().zip(&pivot_row[c..=cols]) {
+                let x = q * pivot_value % p;
+                *value = (*value + p - x) % p;
             }
         }
 
