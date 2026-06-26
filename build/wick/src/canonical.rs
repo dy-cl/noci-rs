@@ -1,15 +1,17 @@
 // canonical.rs
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "timings")]
+use std::time::Instant;
 
-use itertools::Itertools;
+use num_rational::Ratio;
 use num_traits::Zero;
 use smallvec::SmallVec;
 
+use crate::gram::{self, Filter, State};
 use crate::ir::{Delta, Expr, Idx, Rational, Tensor, TensorKind, Term};
-use crate::spinsum::{self, Rat};
 
 /// High-rank cumulant orbit key.
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -37,8 +39,17 @@ type TermKey = (SmallVec<[Id; 4]>, SmallVec<[Id; 8]>);
 /// Maximum number of uncombined canonical terms.
 const PENDING_LIMIT: usize = 262_144;
 
+/// Maximum cached sparsifier results.
+const BEST_CACHE: usize = 4096;
+
 /// Canonical term key and coefficient.
-type RunTerm = (TermKey, Rat);
+type RunTerm = (TermKey, Ratio<i64>);
+
+/// Sparsifier cache key.
+type BestKey = (usize, BTreeMap<Vec<usize>, Ratio<i64>>);
+
+/// Sparsifier cache value.
+type BestVal = (BestKey, BTreeMap<Vec<usize>, Ratio<i64>>);
 
 /// Interned canonical factors.
 #[derive(Clone, Debug, Default)]
@@ -59,7 +70,10 @@ impl Store {
     /// - `x`: Delta factor.
     /// # Returns:
     /// - `Id`: One-based delta id.
-    fn delta(&mut self, x: Delta) -> Id {
+    fn delta(
+        &mut self,
+        x: Delta,
+    ) -> Id {
         if let Some(&id) = self.ds.get(&x) {
             return id;
         }
@@ -77,7 +91,10 @@ impl Store {
     /// - `x`: Tensor factor.
     /// # Returns:
     /// - `Id`: One-based tensor id.
-    fn tensor(&mut self, x: Tensor) -> Id {
+    fn tensor(
+        &mut self,
+        x: Tensor,
+    ) -> Id {
         if let Some(&id) = self.ts.get(&x) {
             return id;
         }
@@ -123,7 +140,11 @@ fn reducerun(run: &mut Vec<RunTerm>) {
 /// - `out`: Reusable output run.
 /// # Returns:
 /// - `()`: Drains both inputs into `out`.
-fn mergeruns(left: &mut Vec<RunTerm>, right: &mut Vec<RunTerm>, out: &mut Vec<RunTerm>) {
+fn mergeruns(
+    left: &mut Vec<RunTerm>,
+    right: &mut Vec<RunTerm>,
+    out: &mut Vec<RunTerm>,
+) {
     out.clear();
     out.reserve(left.len() + right.len());
 
@@ -212,7 +233,11 @@ impl Acc {
     /// - `c`: Coefficient.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    fn addkey(&mut self, key: TermKey, c: Rat) {
+    fn addkey(
+        &mut self,
+        key: TermKey,
+        c: Ratio<i64>,
+    ) {
         if c.is_zero() {
             return;
         }
@@ -222,13 +247,16 @@ impl Acc {
             self.flush();
         }
     }
-    
+
     /// Add one term to the accumulator.
     /// # Arguments:
     /// - `x`: Term to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addterm(&mut self, mut x: Term) {
+    pub fn addterm(
+        &mut self,
+        mut x: Term,
+    ) {
         x.deltas.sort_unstable();
 
         x.tensors = x.tensors.into_iter().map(ten).collect();
@@ -246,7 +274,7 @@ impl Acc {
             .map(|t| self.store.tensor(t))
             .collect::<SmallVec<[Id; 8]>>();
 
-        self.addkey((ds, ts), Rat::new(x.coeff.num, x.coeff.den));
+        self.addkey((ds, ts), Ratio::<i64>::new(x.coeff.num, x.coeff.den));
     }
 
     /// Merge another accumulator into this accumulator.
@@ -254,7 +282,10 @@ impl Acc {
     /// - `other`: Accumulator to merge.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn merge(&mut self, mut other: Acc) {
+    pub fn merge(
+        &mut self,
+        mut other: Acc,
+    ) {
         crate::time_call!(crate::timers::canonical::add_merge, {
             self.flush();
             other.flush();
@@ -316,7 +347,10 @@ impl Acc {
     /// - `e`: Expression to add.
     /// # Returns:
     /// - `()`: Mutates the accumulator.
-    pub fn addexpr(&mut self, e: Expr) {
+    pub fn addexpr(
+        &mut self,
+        e: Expr,
+    ) {
         for x in e {
             self.addterm(x);
         }
@@ -377,17 +411,9 @@ impl Acc {
     /// - `Expr`: Canonical expression.
     pub fn finish(self) -> Expr {
         crate::time_call!(crate::timers::canonical::add_finish, {
-            let e = crate::time_call!(crate::timers::canonical::add_intoexpr, {
-                self.intoexpr()
-            });
-
-            let e = crate::time_call!(crate::timers::canonical::add_spar, {
-                spar(e)
-            });
-
-            crate::time_call!(crate::timers::canonical::add_final_sum, {
-                sum(e)
-            })
+            let e = crate::time_call!(crate::timers::canonical::add_intoexpr, { self.intoexpr() });
+            let e = crate::time_call!(crate::timers::canonical::add_spar, { spar(e) });
+            crate::time_call!(crate::timers::canonical::add_final_sum, { sum(e) })
         })
     }
 }
@@ -458,7 +484,7 @@ fn rank(k: TensorKind) -> Option<usize> {
 /// - `Expr`: Sparsified expression.
 fn spar(e: Expr) -> Expr {
     let mut out = Vec::new();
-    let mut gs = BTreeMap::<OrbitKey, BTreeMap<Vec<usize>, Rat>>::new();
+    let mut gs = BTreeMap::<OrbitKey, BTreeMap<Vec<usize>, Ratio<i64>>>::new();
 
     for term in e {
         let hs = term
@@ -505,12 +531,12 @@ fn spar(e: Expr) -> Expr {
             lo,
         };
 
-        let c = Rat::new(term.coeff.num, term.coeff.den);
+        let c = Ratio::<i64>::new(term.coeff.num, term.coeff.den);
         let v = gs
             .entry(key)
             .or_default()
             .entry(p)
-            .or_insert_with(Rat::zero);
+            .or_insert_with(Ratio::<i64>::zero);
 
         *v += c;
     }
@@ -548,7 +574,10 @@ fn spar(e: Expr) -> Expr {
 /// - `x`: Actual ordering.
 /// # Returns:
 /// - `Option<Vec<usize>>`: Permutation.
-fn perm(base: &[Idx], x: &[Idx]) -> Option<Vec<usize>> {
+fn perm(
+    base: &[Idx],
+    x: &[Idx],
+) -> Option<Vec<usize>> {
     let mut out = Vec::with_capacity(x.len());
 
     for y in x {
@@ -558,109 +587,611 @@ fn perm(base: &[Idx], x: &[Idx]) -> Option<Vec<usize>> {
     Some(out)
 }
 
-/// Find the sparsest spin-equivalent coefficient vector within the configured
-/// maximum support size. If no smaller representation is found within the
-/// limit, return the original coefficient vector.
+/// Find the sparsest spin-equivalent coefficient vector below a basis fallback.
 /// # Arguments:
 /// - `n`: Cumulant rank.
 /// - `cs`: Coefficients indexed by lower-index permutation.
 /// # Returns:
-/// - `BTreeMap<Vec<usize>, Rat>`: Exact representation no larger than `cs`.
-fn best(n: usize, cs: BTreeMap<Vec<usize>, Rat>) -> BTreeMap<Vec<usize>, Rat> {
+/// - `BTreeMap<Vec<usize>, Ratio<i64>>`: Exact representation no larger than `cs`.
+fn best(
+    n: usize,
+    cs: BTreeMap<Vec<usize>, Ratio<i64>>,
+) -> BTreeMap<Vec<usize>, Ratio<i64>> {
+    bestn(n, cs, None).0
+}
+
+/// One sparsifier profiling record.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `BestStats`: Aggregate search statistics.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BestStats {
+    /// Cumulant rank.
+    pub(crate) rank: usize,
+    /// Input support size.
+    pub(crate) input: usize,
+    /// Gram rank.
+    pub(crate) gram_rank: usize,
+    /// Basis fallback support size.
+    pub(crate) basis_support: usize,
+    /// Effective searched support limit.
+    pub(crate) limit: usize,
+    /// Candidate supports visited by candidate support size.
+    pub(crate) visited_by_size: BTreeMap<usize, u64>,
+    /// Candidate supports rejected before exact solve.
+    pub(crate) rejected: u64,
+    /// Exact integer span checks performed.
+    pub(crate) checks: u64,
+    /// Exact rational solves performed.
+    pub(crate) solves: u64,
+    /// Successful returned support size.
+    pub(crate) success_size: Option<usize>,
+    /// Whether the known fallback was returned.
+    pub(crate) fallback_return: bool,
+    /// Time spent in support-size enumeration.
+    pub(crate) enumerate_ns: u64,
+    /// Time spent in exact cheap rejection.
+    pub(crate) reject_ns: u64,
+    /// Time spent in exact rational solve.
+    pub(crate) solve_ns: u64,
+    /// Total single-call elapsed time.
+    pub(crate) elapsed_ns: u64,
+}
+
+impl BestStats {
+    /// Count one visited candidate support.
+    /// # Arguments:
+    /// - `size`: Candidate support size.
+    /// # Returns:
+    /// - `()`: Updates this stats record.
+    fn visited(
+        &mut self,
+        size: usize,
+    ) {
+        #[cfg(feature = "timings")]
+        {
+            *self.visited_by_size.entry(size).or_default() += 1;
+        }
+        #[cfg(not(feature = "timings"))]
+        let _ = size;
+    }
+
+    /// Count one pre-solve rejection.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Updates this stats record when enabled.
+    fn reject(&mut self) {
+        #[cfg(feature = "timings")]
+        {
+            self.rejected += 1;
+        }
+    }
+
+    /// Count one exact integer span check.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Updates this stats record when enabled.
+    fn check(&mut self) {
+        #[cfg(feature = "timings")]
+        {
+            self.checks += 1;
+        }
+    }
+
+    /// Count one exact solve.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Updates this stats record when enabled.
+    fn solve(&mut self) {
+        #[cfg(feature = "timings")]
+        {
+            self.solves += 1;
+        }
+    }
+}
+
+/// Find the sparsest equivalent vector below a deterministic fallback.
+/// # Arguments:
+/// - `n`: Cumulant rank.
+/// - `cs`: Coefficients indexed by lower-index permutation.
+/// - `stats`: Optional stats sink.
+/// # Returns:
+/// - `(BTreeMap<Vec<usize>, Ratio<i64>>, BestStats)`: Representation and stats.
+fn bestn(
+    n: usize,
+    cs: BTreeMap<Vec<usize>, Ratio<i64>>,
+    mut stats: Option<&mut BestStats>,
+) -> (BTreeMap<Vec<usize>, Ratio<i64>>, BestStats) {
+    #[cfg(feature = "timings")]
+    let start = Instant::now();
+    let mut local = BestStats::default();
+
     let cs = cs
         .into_iter()
         .filter(|(_, c)| !c.is_zero())
         .collect::<BTreeMap<_, _>>();
+    local.rank = n;
 
     if cs.is_empty() {
-        return cs;
+        done(&mut local, stats.as_deref_mut());
+        return (cs, local);
     }
 
     let original_support = cs.len();
-    let limit = original_support.min(maxs());
+    local.input = original_support;
+
+    let cache = n >= 4 && original_support >= 8;
+    let key = cache.then(|| bkey(n, &cs));
+    if let Some((key, scale)) = &key
+        && let Some(out) = bget(key)
+    {
+        let out = bscale(out, scale);
+        local.basis_support = out.len();
+        local.limit = out.len().saturating_sub(1);
+        local.success_size = Some(out.len());
+        #[cfg(feature = "timings")]
+        {
+            local.elapsed_ns = start.elapsed().as_nanos() as u64;
+        }
+        done(&mut local, stats.as_deref_mut());
+        return (out, local);
+    }
+
+    let data = gram::GramBasis::cached(n).expect("Cached spin sparsifier rank missing.");
+    let ps = data.ps.as_slice();
+    let g = data.g.as_slice();
+    let y = gram::gram_image(ps, g, &cs);
+    let (fallback, fallback_support) = fallback(n, ps, g, &y, &cs);
+    local.basis_support = fallback_support;
+    let limit = fallback_support.saturating_sub(1);
+    local.limit = limit;
 
     if limit == 0 {
-        return cs;
-    }
-
-    let (ps, g) = spinsum::data(n).expect("Cached spin sparsifier rank missing.");
-    let y = img(ps, g, &cs);
-
-    for size in 1..=limit {
-        for support in (0..ps.len()).combinations(size) {
-            let a = (0..ps.len())
-                .map(|row| {
-                    support
-                        .iter()
-                        .map(|&column| g[row][column].clone())
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-
-            let Some(x) = spinsum::solve(a, y.clone()) else {
-                continue;
-            };
-
-            let out = support
-                .iter()
-                .copied()
-                .zip(x)
-                .filter(|(_, coefficient)| !coefficient.is_zero())
-                .map(|(index, coefficient)| (ps[index].clone(), coefficient))
-                .collect::<BTreeMap<_, _>>();
-
-            if out.len() < original_support {
-                return out;
-            }
+        local.fallback_return = true;
+        #[cfg(feature = "timings")]
+        {
+            local.elapsed_ns = start.elapsed().as_nanos() as u64;
         }
+        done(&mut local, stats.as_deref_mut());
+        return (fallback, local);
     }
 
-    cs
+    let filter = Filter::new(n, g, &y);
+    local.gram_rank = filter.rows().len();
+    let yr = filter
+        .rows()
+        .iter()
+        .map(|&row| y[row].clone())
+        .collect::<Vec<_>>();
+    let columns = cols(ps, &fallback);
+    let found = {
+        let mut search = SupportSearch::new(&columns, &filter, g, &yr, &y, ps, &mut local, limit);
+        search.run(limit)
+    };
+
+    if let Some(out) = found {
+        local.success_size = Some(out.len());
+        #[cfg(feature = "timings")]
+        {
+            local.elapsed_ns = start.elapsed().as_nanos() as u64;
+        }
+        if let Some((key, scale)) = key {
+            bput(key, bnorm(&out, &scale));
+        }
+        done(&mut local, stats.as_deref_mut());
+        return (out, local);
+    }
+
+    local.fallback_return = true;
+    #[cfg(feature = "timings")]
+    {
+        local.elapsed_ns = start.elapsed().as_nanos() as u64;
+    }
+    if let Some((key, scale)) = key {
+        bput(key, bnorm(&fallback, &scale));
+    }
+    done(&mut local, stats.as_deref_mut());
+    (fallback, local)
 }
 
-/// Return the maximum support size searched during spin sparsification.
-/// A value of zero disables support searching. If the environment variable is
-/// unset, the original exhaustive behaviour is retained.
+/// Build the deterministic search fallback.
+/// # Arguments:
+/// - `n`: Cumulant rank.
+/// - `ps`: Permutations.
+/// - `g`: Spin Gram matrix.
+/// - `y`: Full target image.
+/// - `cs`: Original coefficients.
+/// # Returns:
+/// - `(BTreeMap<Vec<usize>, Ratio<i64>>, usize)`: Fallback map and support.
+fn fallback(
+    n: usize,
+    ps: &[Vec<usize>],
+    g: &[Vec<Ratio<i64>>],
+    y: &[Ratio<i64>],
+    cs: &BTreeMap<Vec<usize>, Ratio<i64>>,
+) -> (BTreeMap<Vec<usize>, Ratio<i64>>, usize) {
+    let basis = gram::basis_solution(n, g, y).map(|(support, x)| {
+        support
+            .into_iter()
+            .zip(x)
+            .filter(|(_, coefficient)| !coefficient.is_zero())
+            .map(|(index, coefficient)| (ps[index].clone(), coefficient))
+            .collect::<BTreeMap<_, _>>()
+    });
+
+    if let Some(out) = basis
+        && out.len() < cs.len()
+    {
+        let support = out.len();
+        return (out, support);
+    }
+
+    (cs.clone(), cs.len())
+}
+
+/// Build one normalized sparsifier cache key.
+/// # Arguments:
+/// - `n`: Cumulant rank.
+/// - `cs`: Exact coefficient map.
+/// # Returns:
+/// - `(BestKey, Ratio<i64>)`: Normalized key and scale factor.
+fn bkey(
+    n: usize,
+    cs: &BTreeMap<Vec<usize>, Ratio<i64>>,
+) -> (BestKey, Ratio<i64>) {
+    let scale = cs.values().next().cloned().unwrap();
+    let norm = bnorm(cs, &scale);
+
+    ((n, norm), scale)
+}
+
+/// Divide one coefficient map by one scale.
+/// # Arguments:
+/// - `cs`: Exact coefficient map.
+/// - `scale`: Nonzero scale factor.
+/// # Returns:
+/// - `BTreeMap<Vec<usize>, Ratio<i64>>`: Normalized coefficient map.
+fn bnorm(
+    cs: &BTreeMap<Vec<usize>, Ratio<i64>>,
+    scale: &Ratio<i64>,
+) -> BTreeMap<Vec<usize>, Ratio<i64>> {
+    cs.iter()
+        .map(|(p, c)| (p.clone(), c.clone() / scale.clone()))
+        .collect()
+}
+
+/// Multiply one coefficient map by one scale.
+/// # Arguments:
+/// - `cs`: Exact coefficient map.
+/// - `scale`: Scale factor.
+/// # Returns:
+/// - `BTreeMap<Vec<usize>, Ratio<i64>>`: Scaled coefficient map.
+fn bscale(
+    cs: BTreeMap<Vec<usize>, Ratio<i64>>,
+    scale: &Ratio<i64>,
+) -> BTreeMap<Vec<usize>, Ratio<i64>> {
+    cs.into_iter()
+        .map(|(p, c)| (p, c * scale.clone()))
+        .collect()
+}
+
+/// Get one sparsifier cache entry.
+/// # Arguments:
+/// - `key`: Exact sparsifier input key.
+/// # Returns:
+/// - `Option<BTreeMap<Vec<usize>, Ratio<i64>>>`: Cached result.
+fn bget(key: &BestKey) -> Option<BTreeMap<Vec<usize>, Ratio<i64>>> {
+    let mut cache = bcache().lock().unwrap();
+    let index = cache.iter().position(|(k, _)| k == key)?;
+    let item = cache.remove(index).unwrap();
+    let out = item.1.clone();
+    cache.push_back(item);
+    Some(out)
+}
+
+/// Put one sparsifier cache entry.
+/// # Arguments:
+/// - `key`: Exact sparsifier input key.
+/// - `out`: Exact sparsifier output.
+/// # Returns:
+/// - `()`: Updates cache.
+fn bput(
+    key: BestKey,
+    out: BTreeMap<Vec<usize>, Ratio<i64>>,
+) {
+    let mut cache = bcache().lock().unwrap();
+
+    if let Some(index) = cache.iter().position(|(k, _)| k == &key) {
+        cache.remove(index);
+    }
+
+    cache.push_back((key, out));
+
+    if cache.len() > BEST_CACHE {
+        cache.pop_front();
+    }
+}
+
+/// Return sparsifier result cache.
 /// # Arguments:
 /// - None.
 /// # Returns:
-/// - `usize`: Maximum support size to search.
-fn maxs() -> usize {
-    static VALUE: OnceLock<usize> = OnceLock::new();
+/// - `&'static Mutex<VecDeque<BestVal>>`: Shared bounded cache.
+fn bcache() -> &'static Mutex<VecDeque<BestVal>> {
+    static CACHE: OnceLock<Mutex<VecDeque<BestVal>>> = OnceLock::new();
 
-    *VALUE.get_or_init(|| {
-        match std::env::var("WICK_MAX_SUPPORT_SIZE") {
-            Ok(value) => value.parse::<usize>().unwrap_or_else(|_| {
-                panic!(
-                    "WICK_MAX_SUPPORT_SIZE must be a non-negative integer, got `{}`",
-                    value
-                )
-            }),
-            Err(std::env::VarError::NotPresent) => usize::MAX,
-            Err(error) => panic!("Could not read WICK_MAX_SUPPORT_SIZE: {}", error),
-        }
-    })
+    CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-/// Project coefficients through the spin Gram matrix.
+/// Finish one sparsifier stats record.
+/// # Arguments:
+/// - `local`: Current call stats.
+/// - `stats`: Optional aggregate stats sink.
+/// # Returns:
+/// - `()`: Updates global and requested stats.
+fn done(
+    local: &mut BestStats,
+    stats: Option<&mut BestStats>,
+) {
+    #[cfg(feature = "timings")]
+    {
+        crate::timers::canonical::add_best_rank(local.rank);
+        crate::timers::canonical::add_best_input(local.input);
+        crate::timers::canonical::add_best_gram_rank(local.gram_rank);
+        crate::timers::canonical::add_best_basis_support(local.basis_support);
+        crate::timers::canonical::add_best_limit(local.limit);
+        for (&size, &count) in &local.visited_by_size {
+            crate::timers::canonical::add_best_visited(size, count);
+        }
+        crate::timers::canonical::add_best_rejected(local.rejected);
+        crate::timers::canonical::add_best_checks(local.checks);
+        crate::timers::canonical::add_best_solves(local.solves);
+        if let Some(size) = local.success_size {
+            crate::timers::canonical::add_best_success(size);
+        }
+        if local.fallback_return {
+            crate::timers::canonical::add_best_fallback_return();
+        }
+        crate::timers::canonical::add_best_enumerate(local.enumerate_ns);
+        crate::timers::canonical::add_best_reject_time(local.reject_ns);
+        crate::timers::canonical::add_best_solve_time(local.solve_ns);
+        crate::timers::canonical::add_best_max(local.elapsed_ns);
+    }
+
+    if let Some(stats) = stats {
+        for (&size, &count) in &local.visited_by_size {
+            *stats.visited_by_size.entry(size).or_default() += count;
+        }
+
+        stats.rejected += local.rejected;
+        stats.checks += local.checks;
+        stats.solves += local.solves;
+        stats.success_size = local.success_size;
+        stats.fallback_return |= local.fallback_return;
+        stats.enumerate_ns += local.enumerate_ns;
+        stats.reject_ns += local.reject_ns;
+        stats.solve_ns += local.solve_ns;
+        stats.elapsed_ns += local.elapsed_ns;
+    }
+}
+
+/// Return all candidate columns in deterministic order.
 /// # Arguments:
 /// - `ps`: Permutations.
-/// - `g`: Gram matrix.
-/// - `cs`: Coefficients.
+/// - `cs`: Input coefficient map.
 /// # Returns:
-/// - `Vec<Rat>`: Projected vector.
-fn img(ps: &[Vec<usize>], g: &[Vec<Rat>], cs: &BTreeMap<Vec<usize>, Rat>) -> Vec<Rat> {
-    (0..ps.len())
-        .map(|i| {
-            let mut x = Rat::zero();
+/// - `Vec<usize>`: Candidate column order.
+fn cols(
+    ps: &[Vec<usize>],
+    cs: &BTreeMap<Vec<usize>, Ratio<i64>>,
+) -> Vec<usize> {
+    let mut out = Vec::with_capacity(ps.len());
 
-            for (j, p) in ps.iter().enumerate() {
-                if let Some(c) = cs.get(p) {
-                    x += g[i][j].clone() * c.clone();
-                }
+    for (i, p) in ps.iter().enumerate() {
+        if cs.contains_key(p) {
+            out.push(i);
+        }
+    }
+
+    for (i, p) in ps.iter().enumerate() {
+        if !cs.contains_key(p) {
+            out.push(i);
+        }
+    }
+
+    out
+}
+
+/// Depth-first candidate-support search.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `SupportSearch`: Search state.
+struct SupportSearch<'a> {
+    /// Candidate column order.
+    columns: &'a [usize],
+    /// Exact rejection filter.
+    filter: &'a Filter,
+    /// Spin Gram matrix.
+    g: &'a [Vec<Ratio<i64>>],
+    /// Reduced target image.
+    yr: &'a [Ratio<i64>],
+    /// Full target image.
+    y: &'a [Ratio<i64>],
+    /// Lower-index permutations.
+    ps: &'a [Vec<usize>],
+    /// Current candidate support stack.
+    support: Vec<usize>,
+    /// Incremental modular span state.
+    state: Option<State>,
+    /// Search stats.
+    stats: &'a mut BestStats,
+}
+
+impl<'a> SupportSearch<'a> {
+    /// Create one support search.
+    /// # Arguments:
+    /// - `columns`: Candidate column order.
+    /// - `filter`: Exact rejection filter.
+    /// - `g`: Spin Gram matrix.
+    /// - `yr`: Reduced target image.
+    /// - `y`: Full target image.
+    /// - `ps`: Lower-index permutations.
+    /// - `stats`: Search stats.
+    /// - `limit`: Maximum searched support size.
+    /// # Returns:
+    /// - `SupportSearch`: Search state.
+    fn new(
+        columns: &'a [usize],
+        filter: &'a Filter,
+        g: &'a [Vec<Ratio<i64>>],
+        yr: &'a [Ratio<i64>],
+        y: &'a [Ratio<i64>],
+        ps: &'a [Vec<usize>],
+        stats: &'a mut BestStats,
+        limit: usize,
+    ) -> Self {
+        Self {
+            columns,
+            filter,
+            g,
+            yr,
+            y,
+            ps,
+            support: Vec::with_capacity(limit),
+            state: filter.state(),
+            stats,
+        }
+    }
+
+    /// Search all support sizes up to a limit.
+    /// # Arguments:
+    /// - `limit`: Maximum searched support size.
+    /// # Returns:
+    /// - `Option<BTreeMap<Vec<usize>, Ratio<i64>>>`: First exact smaller representation.
+    fn run(
+        &mut self,
+        limit: usize,
+    ) -> Option<BTreeMap<Vec<usize>, Ratio<i64>>> {
+        for size in 1..=limit {
+            #[cfg(feature = "timings")]
+            let enum_start = Instant::now();
+            let found = self.walk(0, size);
+            #[cfg(feature = "timings")]
+            {
+                let elapsed = enum_start.elapsed();
+                self.stats.enumerate_ns += elapsed.as_nanos() as u64;
             }
 
-            x
-        })
-        .collect()
+            if found.is_some() {
+                return found;
+            }
+        }
+
+        None
+    }
+
+    /// Search one support size in deterministic order.
+    /// # Arguments:
+    /// - `start`: First column-order index allowed at this depth.
+    /// - `want`: Desired candidate support size.
+    /// # Returns:
+    /// - `Option<BTreeMap<Vec<usize>, Ratio<i64>>>`: First exact smaller representation.
+    fn walk(
+        &mut self,
+        start: usize,
+        want: usize,
+    ) -> Option<BTreeMap<Vec<usize>, Ratio<i64>>> {
+        if self.support.len() == want {
+            return self.check(want);
+        }
+
+        let need = want - self.support.len();
+        let last = self.columns.len() + 1 - need;
+
+        for i in start..last {
+            let col = self.columns[i];
+            let rank = self
+                .state
+                .as_mut()
+                .map(|state| state.push(self.filter, col));
+            self.support.push(col);
+            if let Some(out) = self.walk(i + 1, want) {
+                return Some(out);
+            }
+            self.support.pop();
+            if let Some(rank) = rank
+                && let Some(state) = self.state.as_mut()
+            {
+                state.pop(rank);
+            }
+        }
+
+        None
+    }
+
+    /// Check the current support.
+    /// # Arguments:
+    /// - `want`: Desired candidate support size.
+    /// # Returns:
+    /// - `Option<BTreeMap<Vec<usize>, Ratio<i64>>>`: Exact representation if valid.
+    fn check(
+        &mut self,
+        want: usize,
+    ) -> Option<BTreeMap<Vec<usize>, Ratio<i64>>> {
+        self.stats.visited(want);
+
+        #[cfg(feature = "timings")]
+        let reject_start = Instant::now();
+        let plausible = self
+            .state
+            .as_ref()
+            .map(|state| state.span())
+            .unwrap_or(true);
+        let (plausible, checked) = if plausible {
+            self.filter.span_stats(&self.support)
+        } else {
+            (false, false)
+        };
+        if checked {
+            self.stats.check();
+        }
+        #[cfg(feature = "timings")]
+        {
+            self.stats.reject_ns += reject_start.elapsed().as_nanos() as u64;
+        }
+
+        if !plausible {
+            self.stats.reject();
+            return None;
+        }
+
+        #[cfg(feature = "timings")]
+        let solve_start = Instant::now();
+        self.stats.solve();
+        let x = gram::solve_rows(self.g, self.yr, &self.support, self.filter.rows())?;
+        #[cfg(feature = "timings")]
+        {
+            self.stats.solve_ns += solve_start.elapsed().as_nanos() as u64;
+        }
+
+        let out = self
+            .support
+            .iter()
+            .copied()
+            .zip(x)
+            .filter(|(_, coefficient)| !coefficient.is_zero())
+            .map(|(index, coefficient)| (self.ps[index].clone(), coefficient))
+            .collect::<BTreeMap<_, _>>();
+
+        if gram::gram_image(self.ps, self.g, &out) == self.y {
+            return Some(out);
+        }
+
+        None
+    }
 }

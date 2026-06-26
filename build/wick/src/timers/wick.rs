@@ -96,7 +96,10 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this timing collection in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.store_delta.merge_from(&other.store_delta);
         self.store_tensor.merge_from(&other.store_tensor);
         self.spin.merge_from(&other.spin);
@@ -185,8 +188,16 @@ add_counter!(add_spinbatch, spinbatch, "spin-batch setting lookup");
 add_counter!(add_spinpar, spinpar, "spin-parallelism setting lookup");
 add_counter!(add_streamqueue, streamqueue, "stream-queue setting lookup");
 add_counter!(add_accflush, accflush, "accumulator-flush setting lookup");
-add_counter!(add_eval1cstream, eval1cstream, "streamed connected spin-string evaluation");
-add_counter!(add_evalcstream, evalcstream, "connected streaming-wrapper evaluation");
+add_counter!(
+    add_eval1cstream,
+    eval1cstream,
+    "streamed connected spin-string evaluation"
+);
+add_counter!(
+    add_evalcstream,
+    evalcstream,
+    "connected streaming-wrapper evaluation"
+);
 add_counter!(add_eval0, eval0, "non-connected evaluator implementation");
 add_counter!(add_eval1, eval1, "non-connected spin-string evaluation");
 add_counter!(add_evalc0, evalc0, "connected evaluator implementation");
@@ -195,4 +206,8 @@ add_counter!(add_walkc, walkc, "connected recursive enumeration");
 add_counter!(add_joinrow, joinrow, "connected prefix-suffix joining");
 add_counter!(add_rootseen, rootseen, "root-component construction");
 add_counter!(add_canconnect, canconnect, "partial-connectivity checking");
-add_counter!(add_canconnect1, canconnect1, "candidate-connectivity checking");
+add_counter!(
+    add_canconnect1,
+    canconnect1,
+    "candidate-connectivity checking"
+);

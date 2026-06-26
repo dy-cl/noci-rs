@@ -24,7 +24,11 @@ fn sum(counters: &[Counter]) -> Counter {
 /// - `indent`: Number of leading spaces.
 /// # Returns:
 /// - `()`: Prints one timing row.
-fn print_counter(label: &str, counter: Counter, indent: usize) {
+fn print_counter(
+    label: &str,
+    counter: Counter,
+    indent: usize,
+) {
     let avg = counter
         .ns
         .checked_div(counter.calls)
@@ -41,6 +45,49 @@ fn print_counter(label: &str, counter: Counter, indent: usize) {
     );
 }
 
+/// Print one nonzero histogram.
+/// # Arguments:
+/// - `label`: Histogram label.
+/// - `xs`: Histogram buckets.
+/// - `indent`: Number of leading spaces.
+/// # Returns:
+/// - `()`: Prints one compact histogram row.
+fn print_hist(
+    label: &str,
+    xs: &[u64],
+    indent: usize,
+) {
+    let body = xs
+        .iter()
+        .enumerate()
+        .filter(|&(_, &n)| n > 0)
+        .map(|(i, &n)| format!("{i}:{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    println!("{}{}: {{{}}}", " ".repeat(indent), label, body);
+}
+
+/// Print one elapsed nanosecond total.
+/// # Arguments:
+/// - `label`: Counter label.
+/// - `ns`: Elapsed nanoseconds.
+/// - `indent`: Number of leading spaces.
+/// # Returns:
+/// - `()`: Prints one duration row.
+fn print_ns(
+    label: &str,
+    ns: u64,
+    indent: usize,
+) {
+    println!(
+        "{}{}: {:?}",
+        " ".repeat(indent),
+        label,
+        std::time::Duration::from_nanos(ns),
+    );
+}
+
 /// Print one timing counter relative to a parent counter.
 /// # Arguments:
 /// - `label`: Counter label.
@@ -49,10 +96,13 @@ fn print_counter(label: &str, counter: Counter, indent: usize) {
 /// - `indent`: Number of leading spaces.
 /// # Returns:
 /// - `()`: Prints one relative timing row.
-fn print_relative_counter(label: &str, counter: Counter, parent: Counter, indent: usize) {
-    let avg = std::time::Duration::from_nanos(
-        counter.ns.checked_div(counter.calls).unwrap_or(0),
-    );
+fn print_relative_counter(
+    label: &str,
+    counter: Counter,
+    parent: Counter,
+    indent: usize,
+) {
+    let avg = std::time::Duration::from_nanos(counter.ns.checked_div(counter.calls).unwrap_or(0));
 
     let pct = if parent.ns > 0 {
         100.0 * counter.ns as f64 / parent.ns as f64
@@ -144,16 +194,82 @@ pub fn print(timings: Totals) {
         timings.canonical.finish,
         5,
     );
+    print_hist(
+        "Cumulant sparsifier calls by rank",
+        &timings.canonical.best.calls_by_rank,
+        5,
+    );
+    print_hist(
+        "Cumulant sparsifier input support",
+        &timings.canonical.best.input_support,
+        5,
+    );
+    print_hist(
+        "Cumulant sparsifier Gram rank",
+        &timings.canonical.best.gram_rank,
+        5,
+    );
+    print_hist(
+        "Cumulant sparsifier basis fallback support",
+        &timings.canonical.best.basis_support,
+        5,
+    );
+    print_hist(
+        "Cumulant sparsifier search limit",
+        &timings.canonical.best.limit,
+        5,
+    );
+    print_hist(
+        "Cumulant sparsifier candidates by size",
+        &timings.canonical.best.visited,
+        5,
+    );
+    println!(
+        "     Cumulant sparsifier pre-solve rejections: {}",
+        timings.canonical.best.rejected
+    );
+    println!(
+        "     Cumulant sparsifier exact integer checks: {}",
+        timings.canonical.best.checks
+    );
+    println!(
+        "     Cumulant sparsifier exact solves: {}",
+        timings.canonical.best.solves
+    );
+    print_hist(
+        "Cumulant sparsifier success support",
+        &timings.canonical.best.success,
+        5,
+    );
+    println!(
+        "     Cumulant sparsifier basis fallback returns: {}",
+        timings.canonical.best.fallback_returns
+    );
+    print_ns(
+        "Cumulant sparsifier enumeration time",
+        timings.canonical.best.enumerate_ns,
+        5,
+    );
+    print_ns(
+        "Cumulant sparsifier pre-solve rejection time",
+        timings.canonical.best.reject_ns,
+        5,
+    );
+    print_ns(
+        "Cumulant sparsifier exact solve time",
+        timings.canonical.best.solve_ns,
+        5,
+    );
+    print_ns(
+        "Cumulant sparsifier max call",
+        timings.canonical.best.max_ns,
+        5,
+    );
 
     println!("{}", "-".repeat(100));
 
     println!("Non-overlapping Wick generation timings");
-    print_relative_counter(
-        "Spin-string expansion",
-        timings.wick.spin,
-        wick_total,
-        2,
-    );
+    print_relative_counter("Spin-string expansion", timings.wick.spin, wick_total, 2);
     print_relative_counter(
         "Non-connected spin-string evaluation",
         timings.wick.eval1,
@@ -195,59 +311,23 @@ pub fn print(timings: Totals) {
         timings.wick.blocks,
         5,
     );
-    print_counter(
-        "Intern Wick delta factors",
-        timings.wick.store_delta,
-        5,
-    );
-    print_counter(
-        "Intern Wick tensor factors",
-        timings.wick.store_tensor,
-        5,
-    );
+    print_counter("Intern Wick delta factors", timings.wick.store_delta, 5);
+    print_counter("Intern Wick tensor factors", timings.wick.store_tensor, 5);
 
     println!("{}", "-".repeat(100));
 
     println!("Wick spin-projection timings");
-    print_counter(
-        "Spin-projection lookup",
-        timings.wick.proj,
-        2,
-    );
-    print_counter(
-        "Projection-table construction",
-        timings.wick.ptab,
-        5,
-    );
-    print_counter(
-        "Individual projection construction",
-        timings.wick.pval,
-        5,
-    );
-    print_counter(
-        "Pack spin labels",
-        timings.wick.sbits,
-        5,
-    );
-    print_counter(
-        "Extract spin bits",
-        timings.wick.bit,
-        5,
-    );
+    print_counter("Spin-projection lookup", timings.wick.proj, 2);
+    print_counter("Projection-table construction", timings.wick.ptab, 5);
+    print_counter("Individual projection construction", timings.wick.pval, 5);
+    print_counter("Pack spin labels", timings.wick.sbits, 5);
+    print_counter("Extract spin bits", timings.wick.bit, 5);
 
     println!("{}", "-".repeat(100));
 
     println!("Wick enumeration timings");
-    print_counter(
-        "Exact-cover suffix enumeration",
-        timings.wick.walk,
-        2,
-    );
-    print_counter(
-        "Connected recursive enumeration",
-        timings.wick.walkc,
-        2,
-    );
+    print_counter("Exact-cover suffix enumeration", timings.wick.walk, 2);
+    print_counter("Connected recursive enumeration", timings.wick.walkc, 2);
     print_relative_counter(
         "Choose exact-cover pivot",
         timings.wick.pick,
@@ -300,34 +380,21 @@ pub fn print(timings: Totals) {
     println!("{}", "-".repeat(100));
 
     println!("Wick numeric accumulation and decoding timings");
-    print_counter(
-        "Accumulate numeric rows",
-        timings.wick.add,
-        2,
-    );
+    print_counter("Accumulate numeric rows", timings.wick.add, 2);
     print_relative_counter(
         "Sort numeric factor ids",
         timings.wick.sortids,
         timings.wick.add,
         5,
     );
-    print_counter(
-        "Decode numeric rows",
-        timings.wick.out,
-        2,
-    );
+    print_counter("Decode numeric rows", timings.wick.out, 2);
     print_relative_counter(
         "Construct numeric rows",
         timings.wick.row,
         timings.wick.out,
         5,
     );
-    print_relative_counter(
-        "Extract mask bits",
-        timings.wick.bits,
-        timings.wick.out,
-        5,
-    );
+    print_relative_counter("Extract mask bits", timings.wick.bits, timings.wick.out, 5);
     print_relative_counter(
         "Construct position masks",
         timings.wick.mask,
@@ -344,55 +411,23 @@ pub fn print(timings: Totals) {
     println!("{}", "-".repeat(100));
 
     println!("Overlapping Wick wrapper timings");
-    print_counter(
-        "Public non-connected evaluator",
-        timings.wick.eval,
-        2,
-    );
-    print_counter(
-        "Public connected evaluator",
-        timings.wick.evalc,
-        2,
-    );
+    print_counter("Public non-connected evaluator", timings.wick.eval, 2);
+    print_counter("Public connected evaluator", timings.wick.evalc, 2);
     print_counter(
         "Non-connected evaluator implementation",
         timings.wick.eval0,
         2,
     );
-    print_counter(
-        "Connected evaluator implementation",
-        timings.wick.evalc0,
-        2,
-    );
-    print_counter(
-        "Connected streaming wrapper",
-        timings.wick.evalcstream,
-        2,
-    );
+    print_counter("Connected evaluator implementation", timings.wick.evalc0, 2);
+    print_counter("Connected streaming wrapper", timings.wick.evalcstream, 2);
 
     println!("{}", "-".repeat(100));
 
     println!("Wick streaming configuration timings");
-    print_counter(
-        "Read spin-batch setting",
-        timings.wick.spinbatch,
-        2,
-    );
-    print_counter(
-        "Read spin-parallelism setting",
-        timings.wick.spinpar,
-        2,
-    );
-    print_counter(
-        "Read stream-queue setting",
-        timings.wick.streamqueue,
-        2,
-    );
-    print_counter(
-        "Read accumulator-flush setting",
-        timings.wick.accflush,
-        2,
-    );
+    print_counter("Read spin-batch setting", timings.wick.spinbatch, 2);
+    print_counter("Read spin-parallelism setting", timings.wick.spinpar, 2);
+    print_counter("Read stream-queue setting", timings.wick.streamqueue, 2);
+    print_counter("Read accumulator-flush setting", timings.wick.accflush, 2);
 
     println!("{}", "=".repeat(100));
 }

@@ -8,6 +8,7 @@ default = []
 timings = []
 
 [dependencies]
+bincode = "1"
 itertools = "0.13"
 num-rational = "0.4"
 num-traits = "0.2"

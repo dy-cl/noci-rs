@@ -1,11 +1,18 @@
 // encode.rs
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter, ErrorKind};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
+use bincode::Options;
 use num_rational::Ratio;
 use num_traits::Zero;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::ir::{Expr, Idx, Space, Tensor, TensorKind, Term};
 use crate::schema::{
@@ -14,10 +21,8 @@ use crate::schema::{
 };
 use crate::specs::{BLOCKS, BlockSpec, EXCS, ExcSpec, idx};
 
-type Rat = Ratio<i64>;
-
 /// Canonical encoded symbolic index.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize)]
 enum IKey {
     /// Free external index.
     Free(u16),
@@ -26,7 +31,7 @@ enum IKey {
 }
 
 /// Canonical encoded tensor factor.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize)]
 struct FKey {
     /// Tensor kind.
     kind: u8,
@@ -37,7 +42,7 @@ struct FKey {
 }
 
 /// Canonical encoded term without its coefficient.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize)]
 struct TKey {
     /// Delta factors.
     deltas: Vec<[IKey; 2]>,
@@ -52,9 +57,31 @@ struct Acc {
     /// Free-index map.
     free_ids: BTreeMap<Idx, u16>,
     /// Globally combined terms.
-    terms: HashMap<TKey, Rat>,
+    terms: HashMap<TKey, Ratio<i64>>,
+    /// Sorted flushed run files.
+    runs: Vec<RunFile>,
     /// Number of raw terms seen.
     seen: usize,
+    /// Encoding start time.
+    start: Instant,
+}
+
+/// Maximum in-memory encoded terms before flushing to disk.
+const FLUSH_TERMS: usize = 250_000;
+
+/// Unique encoded-run file counter.
+static RUN_ID: AtomicUsize = AtomicUsize::new(0);
+
+/// One serialized run entry.
+type RunEntry = (TKey, [i64; 2]);
+
+/// One sorted encoded run file.
+#[derive(Clone, Debug)]
+struct RunFile {
+    /// Run path.
+    path: PathBuf,
+    /// Merge level.
+    level: usize,
 }
 
 /// Encode orbital space.
@@ -356,8 +383,8 @@ fn key(
 /// # Arguments:
 /// - `t`: Term.
 /// # Returns:
-/// - `Rat`: Rational coefficient.
-fn coeff(t: &Term) -> Rat {
+/// - `Ratio<i64>`: Rational coefficient.
+fn coeff(t: &Term) -> Ratio<i64> {
     Ratio::new(t.coeff.num, t.coeff.den)
 }
 
@@ -451,9 +478,9 @@ fn dummy_name(
 /// # Returns:
 /// - `()`: Mutates `map`.
 fn addkey(
-    map: &mut HashMap<TKey, Rat>,
+    map: &mut HashMap<TKey, Ratio<i64>>,
     k: TKey,
-    c: Rat,
+    c: Ratio<i64>,
 ) {
     if c.is_zero() {
         return;
@@ -480,8 +507,8 @@ fn addkey(
 /// # Returns:
 /// - `()`: Mutates `dst`.
 fn mergemap(
-    dst: &mut HashMap<TKey, Rat>,
-    src: HashMap<TKey, Rat>,
+    dst: &mut HashMap<TKey, Ratio<i64>>,
+    src: HashMap<TKey, Ratio<i64>>,
 ) {
     for (k, c) in src {
         addkey(dst, k, c);
@@ -492,13 +519,219 @@ fn mergemap(
 /// # Arguments:
 /// - `terms`: Canonical term map.
 /// # Returns:
-/// - `Vec<(&TKey, &Rat)>`: Deterministically sorted term entries.
-fn sorted(terms: &HashMap<TKey, Rat>) -> Vec<(&TKey, &Rat)> {
+/// - `Vec<(&TKey, &Ratio<i64>)>`: Deterministically sorted term entries.
+fn sorted(terms: &HashMap<TKey, Ratio<i64>>) -> Vec<(&TKey, &Ratio<i64>)> {
     let mut out = terms.iter().collect::<Vec<_>>();
 
     out.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     out
+}
+
+/// Build one generated term.
+/// # Arguments:
+/// - `k`: Encoded term key.
+/// - `c`: Term coefficient.
+/// - `ids`: Runtime dummy-id map.
+/// # Returns:
+/// - `GeneratedTerm`: Runtime generated term.
+fn term(
+    k: &TKey,
+    c: &Ratio<i64>,
+    ids: &BTreeMap<(u8, u16), u16>,
+) -> GeneratedTerm {
+    let mut loops = Vec::new();
+
+    for d in &k.deltas {
+        push_loop(&mut loops, ids, d[0]);
+        push_loop(&mut loops, ids, d[1]);
+    }
+
+    for f in &k.tensors {
+        for &x in f.upper.iter().chain(f.lower.iter()) {
+            push_loop(&mut loops, ids, x);
+        }
+    }
+
+    GeneratedTerm(
+        [*c.numer(), *c.denom()],
+        loops,
+        k.deltas
+            .iter()
+            .map(|d| [rid(d[0], ids), rid(d[1], ids)])
+            .collect(),
+        k.tensors
+            .iter()
+            .map(|f| {
+                TensorFactor(
+                    f.kind,
+                    f.upper.iter().map(|&x| rid(x, ids)).collect(),
+                    f.lower.iter().map(|&x| rid(x, ids)).collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Return a unique temporary run path.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `PathBuf`: Temporary run path.
+fn runpath() -> PathBuf {
+    let id = RUN_ID.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let root = std::env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = root.join(format!("noci-wick-encode-{pid}"));
+
+    fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("failed to create {}: {e}", dir.display()));
+    dir.join(format!("run-{id}.bin"))
+}
+
+/// Remove one temporary run file.
+/// # Arguments:
+/// - `path`: Run path.
+/// # Returns:
+/// - `()`: Removes the file and empty parent directory.
+fn removerun(path: &PathBuf) {
+    let _ = fs::remove_file(path);
+
+    if let Some(dir) = path.parent() {
+        let _ = fs::remove_dir(dir);
+    }
+}
+
+/// Convert one rational coefficient to a serialized pair.
+/// # Arguments:
+/// - `x`: Rational coefficient.
+/// # Returns:
+/// - `[i64; 2]`: Numerator and denominator.
+fn rpair(x: &Ratio<i64>) -> [i64; 2] {
+    [*x.numer(), *x.denom()]
+}
+
+/// Convert one serialized coefficient pair to a rational.
+/// # Arguments:
+/// - `x`: Numerator and denominator.
+/// # Returns:
+/// - `Ratio<i64>`: Rational coefficient.
+fn ratio(x: [i64; 2]) -> Ratio<i64> {
+    Ratio::new(x[0], x[1])
+}
+
+/// Write one sorted encoded run.
+/// # Arguments:
+/// - `path`: Output path.
+/// - `xs`: Sorted encoded entries.
+/// # Returns:
+/// - `()`: Writes one temporary run.
+fn writerun(
+    path: &PathBuf,
+    xs: &[(TKey, Ratio<i64>)],
+) {
+    let file =
+        File::create(path).unwrap_or_else(|e| panic!("failed to create {}: {e}", path.display()));
+    let mut out = BufWriter::new(file);
+    let options = bincode::DefaultOptions::new().with_varint_encoding();
+
+    for (k, c) in xs {
+        let entry = (k, rpair(c));
+        options
+            .serialize_into(&mut out, &entry)
+            .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+    }
+}
+
+/// Read one sorted encoded run.
+struct RunReader {
+    /// Input path.
+    path: PathBuf,
+    /// Bincode input.
+    input: BufReader<File>,
+}
+
+impl RunReader {
+    /// Open one sorted encoded run.
+    /// # Arguments:
+    /// - `path`: Input path.
+    /// # Returns:
+    /// - `RunReader`: Run reader.
+    fn open(path: PathBuf) -> Self {
+        let file =
+            File::open(&path).unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display()));
+
+        Self {
+            path,
+            input: BufReader::new(file),
+        }
+    }
+
+    /// Read one encoded entry.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `Option<(TKey, Ratio<i64>)>`: Next entry if present.
+    fn next(&mut self) -> Option<(TKey, Ratio<i64>)> {
+        let options = bincode::DefaultOptions::new().with_varint_encoding();
+
+        match options.deserialize_from::<_, RunEntry>(&mut self.input) {
+            Ok((k, c)) => Some((k, ratio(c))),
+            Err(e) => {
+                if let bincode::ErrorKind::Io(ref err) = *e
+                    && err.kind() == ErrorKind::UnexpectedEof
+                {
+                    return None;
+                }
+
+                panic!("failed to read {}: {e}", self.path.display());
+            }
+        }
+    }
+}
+
+/// One run merge heap entry.
+#[derive(Clone, Debug)]
+struct Head {
+    /// Encoded key.
+    key: TKey,
+    /// Coefficient.
+    coeff: Ratio<i64>,
+    /// Run index.
+    run: usize,
+}
+
+impl Eq for Head {}
+
+impl PartialEq for Head {
+    fn eq(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.key == other.key && self.run == other.run
+    }
+}
+
+impl Ord for Head {
+    fn cmp(
+        &self,
+        other: &Self,
+    ) -> std::cmp::Ordering {
+        other
+            .key
+            .cmp(&self.key)
+            .then_with(|| other.run.cmp(&self.run))
+    }
+}
+
+impl PartialOrd for Head {
+    fn partial_cmp(
+        &self,
+        other: &Self,
+    ) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Return whether encoder progress should be printed.
@@ -527,8 +760,44 @@ impl Acc {
             free,
             free_ids,
             terms: HashMap::new(),
+            runs: Vec::new(),
             seen: 0,
+            start: Instant::now(),
         }
+    }
+
+    /// Flush the in-memory encoded map to a sorted run.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Writes one temporary run and clears memory.
+    fn flush(&mut self) {
+        if self.terms.is_empty() {
+            return;
+        }
+
+        let mut out = self.terms.drain().collect::<Vec<_>>();
+
+        out.sort_by(|(a, _), (b, _)| a.cmp(b));
+        out.retain(|(_, c)| !c.is_zero());
+
+        if out.is_empty() {
+            return;
+        }
+
+        let path = runpath();
+        if encprog() {
+            eprintln!(
+                "[wick-time] encode: flush run {}, raw terms: {}, unique terms: {}, elapsed {:?}.",
+                self.runs.len() + 1,
+                self.seen,
+                out.len(),
+                self.start.elapsed()
+            );
+        }
+        writerun(&path, &out);
+        self.runs.push(RunFile { path, level: 0 });
+        self.compact();
     }
 
     /// Add one symbolic expression to the global canonical accumulator.
@@ -561,6 +830,10 @@ impl Acc {
         self.seen += n;
         mergemap(&mut self.terms, local);
 
+        if self.terms.len() >= FLUSH_TERMS {
+            self.flush();
+        }
+
         if encprog() {
             crate::progress::mem(format!(
                 "encode chunk terms: {n}, raw terms: {}, unique terms: {}",
@@ -568,6 +841,195 @@ impl Acc {
                 self.terms.len()
             ));
         }
+    }
+
+    /// Merge all sorted runs into one sorted run.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `Option<PathBuf>`: Final sorted run path, if flushed.
+    fn run(&mut self) -> Option<PathBuf> {
+        if !self.runs.is_empty() {
+            self.flush();
+        }
+
+        match self.runs.len() {
+            0 => None,
+            1 => {
+                if encprog() {
+                    eprintln!(
+                        "[wick-time] encode: using one flushed run, elapsed {:?}.",
+                        self.start.elapsed()
+                    );
+                }
+                Some(self.runs[0].path.clone())
+            }
+            _ => {
+                while self.runs.len() > 1 {
+                    self.compact1();
+                }
+
+                Some(self.runs[0].path.clone())
+            }
+        }
+    }
+
+    /// Compact runs with matching levels.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Merges runs until no equal levels remain.
+    fn compact(&mut self) {
+        loop {
+            let mut found = None;
+
+            'outer: for i in 0..self.runs.len() {
+                for j in i + 1..self.runs.len() {
+                    if self.runs[i].level == self.runs[j].level {
+                        found = Some((i, j));
+                        break 'outer;
+                    }
+                }
+            }
+
+            let Some((i, j)) = found else {
+                break;
+            };
+
+            self.merge2(i, j);
+        }
+    }
+
+    /// Compact one pair of runs.
+    /// # Arguments:
+    /// - None.
+    /// # Returns:
+    /// - `()`: Merges one pair of runs.
+    fn compact1(&mut self) {
+        if self.runs.len() <= 1 {
+            return;
+        }
+
+        let mut pair = (0, 1);
+        let mut level = self.runs[0].level.min(self.runs[1].level);
+
+        for i in 0..self.runs.len() {
+            for j in i + 1..self.runs.len() {
+                let next = self.runs[i].level.min(self.runs[j].level);
+                if next < level {
+                    level = next;
+                    pair = (i, j);
+                }
+            }
+        }
+
+        self.merge2(pair.0, pair.1);
+    }
+
+    /// Merge two sorted runs into one sorted run.
+    /// # Arguments:
+    /// - `i`: First run index.
+    /// - `j`: Second run index.
+    /// # Returns:
+    /// - `()`: Replaces both inputs with one higher-level run.
+    fn merge2(
+        &mut self,
+        i: usize,
+        j: usize,
+    ) {
+        let right = self.runs.remove(j);
+        let left = self.runs.remove(i);
+        let level = left.level.max(right.level) + 1;
+        let inputs = [left.path, right.path];
+
+        if encprog() {
+            eprintln!(
+                "[wick-time] encode: merge start, level: {level}, runs: 2, elapsed {:?}.",
+                self.start.elapsed()
+            );
+        }
+
+        let path = self.merge_paths(&inputs);
+
+        for path in &inputs {
+            removerun(path);
+        }
+
+        self.runs.push(RunFile { path, level });
+    }
+
+    /// Merge sorted run paths into one sorted run.
+    /// # Arguments:
+    /// - `paths`: Input run paths.
+    /// # Returns:
+    /// - `PathBuf`: Merged run path.
+    fn merge_paths(
+        &self,
+        paths: &[PathBuf],
+    ) -> PathBuf {
+        let mut readers = paths
+            .iter()
+            .cloned()
+            .map(RunReader::open)
+            .collect::<Vec<_>>();
+        let mut heap = BinaryHeap::new();
+
+        for (run, reader) in readers.iter_mut().enumerate() {
+            if let Some((key, coeff)) = reader.next() {
+                heap.push(Head { key, coeff, run });
+            }
+        }
+
+        let path = runpath();
+        let file = File::create(&path)
+            .unwrap_or_else(|e| panic!("failed to create {}: {e}", path.display()));
+        let mut out = BufWriter::new(file);
+        let options = bincode::DefaultOptions::new().with_varint_encoding();
+        let mut merged = 0usize;
+
+        while let Some(head) = heap.pop() {
+            let key = head.key;
+            let mut coeff = head.coeff;
+            let run = head.run;
+
+            if let Some((key, coeff)) = readers[run].next() {
+                heap.push(Head { key, coeff, run });
+            }
+
+            while heap.peek().map(|x| &x.key) == Some(&key) {
+                let head = heap.pop().unwrap();
+                coeff += head.coeff;
+                let run = head.run;
+
+                if let Some((key, coeff)) = readers[run].next() {
+                    heap.push(Head { key, coeff, run });
+                }
+            }
+
+            if !coeff.is_zero() {
+                let entry = (key, rpair(&coeff));
+                options
+                    .serialize_into(&mut out, &entry)
+                    .unwrap_or_else(|e| panic!("failed to write {}: {e}", path.display()));
+                merged += 1;
+
+                if encprog() && merged % 1_000_000 == 0 {
+                    eprintln!(
+                        "[wick-time] encode: merge terms: {merged}, elapsed {:?}.",
+                        self.start.elapsed()
+                    );
+                }
+            }
+        }
+
+        if encprog() {
+            eprintln!(
+                "[wick-time] encode: merge end, terms: {merged}, elapsed {:?}.",
+                self.start.elapsed()
+            );
+        }
+
+        path
     }
 
     /// Build the common runtime index table.
@@ -616,37 +1078,88 @@ impl Acc {
                 continue;
             }
 
-            let mut loops = Vec::new();
+            out.push(term(k, c, ids));
+        }
 
-            for d in &k.deltas {
-                push_loop(&mut loops, ids, d[0]);
-                push_loop(&mut loops, ids, d[1]);
+        out
+    }
+
+    /// Build the common runtime index table from a run.
+    /// # Arguments:
+    /// - `path`: Final sorted run path.
+    /// # Returns:
+    /// - `(Vec<(String, u8)>, BTreeMap<(u8, u16), u16>)`: Runtime indices and dummy ids.
+    fn table_run(
+        &self,
+        path: &PathBuf,
+    ) -> (Vec<(String, u8)>, BTreeMap<(u8, u16), u16>) {
+        if encprog() {
+            eprintln!(
+                "[wick-time] encode: build index table from encoded run, elapsed {:?}.",
+                self.start.elapsed()
+            );
+        }
+
+        let mut indices = self
+            .free
+            .iter()
+            .map(|x| (x.name.to_string(), sp(x.space)))
+            .collect::<Vec<_>>();
+        let mut seen = BTreeSet::new();
+        let mut input = RunReader::open(path.clone());
+
+        while let Some((k, _)) = input.next() {
+            seen.extend(dummies(&k));
+        }
+
+        let mut ids = BTreeMap::new();
+
+        for (s, n) in seen {
+            let id = indices.len() as u16;
+
+            ids.insert((s, n), id);
+            indices.push((dummy_name(s, n), s));
+        }
+
+        (indices, ids)
+    }
+
+    /// Convert a run to generated terms.
+    /// # Arguments:
+    /// - `path`: Final sorted run path.
+    /// - `ids`: Runtime dummy-id map.
+    /// # Returns:
+    /// - `Vec<GeneratedTerm>`: Runtime generated terms.
+    fn terms_run(
+        &self,
+        path: &PathBuf,
+        ids: &BTreeMap<(u8, u16), u16>,
+    ) -> Vec<GeneratedTerm> {
+        if encprog() {
+            eprintln!(
+                "[wick-time] encode: build generated terms from encoded run, elapsed {:?}.",
+                self.start.elapsed()
+            );
+        }
+
+        let mut out = Vec::new();
+        let mut input = RunReader::open(path.clone());
+        let mut n = 0usize;
+
+        while let Some((k, c)) = input.next() {
+            if c.is_zero() {
+                continue;
             }
 
-            for f in &k.tensors {
-                for &x in f.upper.iter().chain(f.lower.iter()) {
-                    push_loop(&mut loops, ids, x);
-                }
-            }
+            out.push(term(&k, &c, ids));
+            n += 1;
 
-            out.push(GeneratedTerm(
-                [*c.numer(), *c.denom()],
-                loops,
-                k.deltas
-                    .iter()
-                    .map(|d| [rid(d[0], ids), rid(d[1], ids)])
-                    .collect(),
-                k.tensors
-                    .iter()
-                    .map(|f| {
-                        TensorFactor(
-                            f.kind,
-                            f.upper.iter().map(|&x| rid(x, ids)).collect(),
-                            f.lower.iter().map(|&x| rid(x, ids)).collect(),
-                        )
-                    })
-                    .collect(),
-            ));
+            if encprog() && n % 1_000_000 == 0 {
+                eprintln!(
+                    "[wick-time] encode: generated terms: {n}, elapsed {:?}.",
+                    self.start.elapsed()
+                );
+            }
         }
 
         out
@@ -657,10 +1170,23 @@ impl Acc {
     /// - None.
     /// # Returns:
     /// - `ResidualClassTerms`: Runtime residual class terms.
-    fn residual(self) -> ResidualClassTerms {
+    fn residual(mut self) -> ResidualClassTerms {
         let free = (0..self.free.len()).map(|i| i as u16).collect();
-        let (indices, ids) = self.table();
-        let terms = self.terms(&ids);
+        let run = self.run();
+        let (indices, ids) = if let Some(path) = &run {
+            self.table_run(path)
+        } else {
+            self.table()
+        };
+        let terms = if let Some(path) = &run {
+            self.terms_run(path, &ids)
+        } else {
+            self.terms(&ids)
+        };
+
+        if let Some(path) = run {
+            removerun(&path);
+        }
 
         ResidualClassTerms {
             indices,

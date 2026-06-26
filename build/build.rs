@@ -3,6 +3,7 @@
 use std::env;
 use std::fmt::Write;
 use std::fs;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use bincode::Options;
@@ -33,16 +34,29 @@ fn status(msg: impl std::fmt::Display) {
     println!("cargo:warning={msg}");
 }
 
-/// Serialize one generated table.
+/// Write one generated table.
 /// # Arguments:
 /// - `x`: Generated table.
+/// - `path`: Output path.
 /// # Returns:
-/// - `Vec<u8>`: Bincode payload.
-fn bytes<T: Serialize>(x: &T) -> Vec<u8> {
+/// - `()`: Writes bincode payload.
+fn write_table<T: Serialize>(
+    x: &T,
+    path: &Path,
+) {
+    let file = fs::File::create(path)
+        .unwrap_or_else(|e| panic!("failed to create {}: {e}", path.display()));
+    let mut out = BufWriter::new(file);
+
     bincode::DefaultOptions::new()
         .with_varint_encoding()
-        .serialize(x)
-        .expect("failed to serialize generated terms")
+        .serialize_into(&mut out, x)
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to serialize generated terms to {}: {e}",
+                path.display()
+            )
+        });
 }
 
 /// Copy one cached file into `OUT_DIR`.
@@ -91,10 +105,8 @@ fn ensure<T: Serialize>(
 
     status(format!("serializing generated terms: {name}"));
 
-    let data = bytes(&data);
-
-    fs::write(cache, &data).unwrap_or_else(|e| panic!("failed to write {}: {e}", cache.display()));
-    fs::write(out, data).unwrap_or_else(|e| panic!("failed to write {}: {e}", out.display()));
+    write_table(&data, cache);
+    copy(cache, out);
 
     status(format!(
         "ready generated terms: {name}, bytes: {}",

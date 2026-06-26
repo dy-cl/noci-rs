@@ -10,8 +10,6 @@ use crate::ir::{Expr, Product, Rational, Tensor, TensorKind, Term};
 use crate::specs;
 use crate::wick;
 
-type Rat = Ratio<i64>;
-
 /// Build a rational coefficient.
 /// # Arguments:
 /// - `n`: Numerator.
@@ -52,8 +50,8 @@ fn mulh(
     c: Rational,
     fac: Tensor,
 ) -> Term {
-    let a = Rat::new(x.coeff.num, x.coeff.den);
-    let b = Rat::new(c.num, c.den);
+    let a = Ratio::<i64>::new(x.coeff.num, x.coeff.den);
+    let b = Ratio::<i64>::new(c.num, c.den);
     let q = a * b;
 
     x.coeff = Rational {
@@ -74,8 +72,8 @@ fn mulr(
     a: Rational,
     b: Rational,
 ) -> Rational {
-    let x = Rat::new(a.num, a.den);
-    let y = Rat::new(b.num, b.den);
+    let x = Ratio::<i64>::new(a.num, a.den);
+    let y = Ratio::<i64>::new(b.num, b.den);
     let q = x * y;
 
     Rational {
@@ -458,11 +456,18 @@ pub fn r2(
             for (hk, h) in split {
                 let base = format!("l{li}_r{ri}_h{hk}");
                 let mut subchunks = 0usize;
+                let start = std::time::Instant::now();
 
                 crate::progress::mem(format!("residual::r2({name}) start {base}"));
 
                 r2hterm(base.clone(), true, &bra, l, r, h, |k, e| {
                     subchunks += 1;
+                    if std::env::var_os("WICK_PROGRESS").is_some() && subchunks % 100 == 0 {
+                        eprintln!(
+                            "[wick-time] residual::r2({name}) {base}: subchunks {subchunks}, elapsed {:?}.",
+                            start.elapsed()
+                        );
+                    }
                     crate::progress::mem(format!(
                         "residual::r2({name}) emit {k} terms: {}",
                         e.len()

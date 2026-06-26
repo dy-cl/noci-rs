@@ -6,7 +6,7 @@ fn encoder2atoa() {
     let start = std::time::Instant::now();
     let terms = wick_build::encode::residual_class(2, "AToA");
     let elapsed = start.elapsed();
-    
+
     wick_build::timers::print_all();
 
     println!(
@@ -15,4 +15,3 @@ fn encoder2atoa() {
         elapsed
     );
 }
-

@@ -2,12 +2,14 @@
 
 mod canonical;
 mod cluster;
+mod field;
 mod gno;
+mod gram;
 mod hamiltonian;
+mod int;
 mod progress;
 mod schema;
 mod specs;
-mod spinsum;
 
 pub mod encode;
 pub mod ir;
@@ -21,4 +23,3 @@ pub use schema::{
     GeneratedTerm, OverlapBlockTerms, OverlapTermSet, ResidualClassTerms, ResidualTermSet,
     TensorFactor,
 };
-

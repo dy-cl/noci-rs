@@ -23,7 +23,10 @@ impl Counter {
     /// # Returns:
     /// - `()`: Updates the accumulated time and call count.
     #[inline(always)]
-    pub fn add_ns(&mut self, ns: u64) {
+    pub fn add_ns(
+        &mut self,
+        ns: u64,
+    ) {
         self.ns += ns;
         self.calls += 1;
     }
@@ -44,7 +47,10 @@ impl Counter {
     /// # Returns:
     /// - `()`: Updates this counter in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Counter) {
+    pub fn merge_from(
+        &mut self,
+        other: &Counter,
+    ) {
         self.ns += other.ns;
         self.calls += other.calls;
     }
@@ -66,7 +72,10 @@ impl Totals {
     /// # Returns:
     /// - `()`: Updates this timing collection in place.
     #[inline(always)]
-    pub fn merge_from(&mut self, other: &Totals) {
+    pub fn merge_from(
+        &mut self,
+        other: &Totals,
+    ) {
         self.canonical.merge_from(&other.canonical);
         self.wick.merge_from(&other.wick);
     }
