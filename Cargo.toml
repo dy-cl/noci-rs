@@ -5,7 +5,7 @@ edition = "2024"
 build = "build/build.rs"
 
 [build-dependencies]
-wick-build = {path = "build/wick"}
+wick-build = {path = "build/wick", optional = true}
 bincode = {version = "1"}
 serde = {version = "1", features = ["derive", "rc"]}
 serde_json = {version = "1", features = ["std"], default-features = false}
@@ -38,7 +38,7 @@ members = [
 [features]
 default = []
 timings = []
-nocc = []
+nocc = ["dep:wick-build"]
 
 [profile.release]
 opt-level = 3
