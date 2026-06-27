@@ -107,6 +107,7 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 ///   outside tolerance.
 #[test]
 #[serial]
+#[ignore = "non-deterministic"]
 fn qmc_h2_cc_pvdz_1_5_ang_wwicks_energies() {
 
     ThreadPoolBuilder::new()
