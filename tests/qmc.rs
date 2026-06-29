@@ -144,14 +144,15 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 /// - If stdout or stderr are not valid UTF-8.
 /// - If the binary exits with a non-zero status.
 fn qmc_report_energies(fixture: &str) -> Vec<f64> {
-    let exe = std::env::var("CARGO_BIN_EXE_noci-rs")
-        .unwrap_or_else(|_| "target/debug/noci-rs".to_string());
+    let exe = env!("CARGO_BIN_EXE_noci-rs");
     let input_path = fixture_dir(fixture).join("input.lua");
+
     let output = Command::new(exe)
         .env("RAYON_NUM_THREADS", "1")
         .arg(input_path)
         .output()
         .unwrap();
+
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
 
