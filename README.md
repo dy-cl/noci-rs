@@ -1,60 +1,109 @@
+
 <p align="center">
-  <img src="assets/logo.png" alt="Logo" width="220">
+  <img src="assets/logo.png" alt="noci-rs logo" width="180">
 </p>
 
 <h1 align="center">noci-rs</h1>
 
-`noci-rs` is a Rust code for non-orthogonal configuration interaction (NOCI), selected NOCI (SNOCI), and deterministic or stochastic NOCI-QMC calculations on molecular systems. It drives PySCF to generate one- and two-electron integrals, builds non-orthogonal SCF determinant bases, and evaluates reference and selected non-orthogonal CI spaces.
+<p align="center">
+  Nonorthogonal electronic-structure methods in Rust.
+</p>
 
-[![tests](https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml/badge.svg)](https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml)
-[![Clippy](https://github.com/dy-cl/noci-rs/actions/workflows/clippy.yml/badge.svg?branch=main)](https://github.com/dy-cl/noci-rs/actions/workflows/clippy.yml)
-[![codecov](https://codecov.io/gh/dy-cl/noci-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/dy-cl/noci-rs)
+<p align="center">
+  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml">
+    <img
+      src="https://github.com/dy-cl/noci-rs/actions/workflows/tests.yml/badge.svg"
+      alt="Tests"
+    >
+  </a>
+  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/clippy.yml">
+    <img
+      src="https://github.com/dy-cl/noci-rs/actions/workflows/clippy.yml/badge.svg?branch=main"
+      alt="Clippy"
+    >
+  </a>
+  <a href="https://codecov.io/gh/dy-cl/noci-rs">
+    <img
+      src="https://codecov.io/gh/dy-cl/noci-rs/branch/main/graph/badge.svg"
+      alt="Code coverage"
+    >
+  </a>
+</p>
 
-## Current Capabilities
+<p align="center">
+  <a href="#example-results">Results</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#methods">Methods</a> ·
+  <a href="#input-reference">Input reference</a> ·
+  <a href="#citation">Citation</a>
+</p>
 
-- **SCF reference generation**
-  - RHF and UHF SCF solutions with DIIS acceleration.
-  - MOM-style state recipes with spin-density bias, spatial-density bias, and occupied-virtual excitation seeds.
-  - SCF metadynamics for discovering multiple RHF/UHF solutions.
-  - Holomorphic SCF (`h-SCF`) optimisation for complex continuations of selected MOM states.
-  - Geometry scans, with converged states from one geometry reused as seeds for the next.
+---
 
-- **Reference NOCI**
-  - NOCI basis construction from selected real or holomorphic SCF states.
-  - Optional excited determinant generation from user-selected excitation orders, or all available orders.
-  - Hamiltonian, overlap, and Fock matrix element generation.
-  - Matrix elements via generalised Slater-Condon rules, extended non-orthogonal Wick's theorem, or orthogonal shortcuts where applicable.
-  - Wick intermediate storage in RAM or disk-backed cache.
-  - Rayon-parallel matrix builds and MPI distribution for shared calculations.
+`noci-rs` is an electronic-structure package for calculations in nonorthogonal determinant spaces. It supports reference nonorthogonal configuration interaction calculations, NOCI-PT2 corrections, selected NOCI calculations, and stochastic NOCI-QMC propagation. Experimental nonorthogonal coupled-cluster and NOCCMC methods are also under development.
 
-- **Selected NOCI (SNOCI)**
-  - Iterative candidate generation and determinant selection.
-  - NOCI-PT2 based candidate scoring.
-  - GMRES solution of projected candidate-space equations.
-  - Diagonal or Woodbury preconditioning.
-  - Optional imaginary shifts for complex SNOCI/NOCI-PT2.
+The package uses PySCF to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Nonorthogonal matrix elements are evaluated using the generalised Slater–Condon rules, the extended nonorthogonal Wick's theorem, or orthogonal shortcuts where possible. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCI-QMC and SNOCI/NOCI-PT2.
 
-- **NOCI-QMC propagation**
-  - Deterministic imaginary-time propagation with optional dynamic shift.
-  - Stochastic NOCI-QMC propagation with MPI and Rayon parallelism.
-  - Uniform, heat-bath, and approximate heat-bath excitation generation.
-  - Propagator choices: `unshifted`, `shifted`, `doubly-shifted`, `difference-doubly-shifted-u1`, and `difference-doubly-shifted-u2`.
+## Example Results
 
-- **Output and restart support**
-  - Text reports for SCF states, reference NOCI, SNOCI, NOCI-PT2, deterministic propagation, stochastic propagation, and timings.
-  - Optional HDF5 output for orbitals and matrices.
-  - Optional deterministic coefficient and excitation histogram output.
-  - Optional stochastic restart read/write files.
+<p align="center">
+  <img
+    src="assets/results/ErrorFromFCI.png"
+    width="820"
+  >
+</p>
 
-## Requirements
+<p align="center">
+  <em>
+    Absolute correlation-energy error relative to FCI, |E<sub>corr</sub> − E<sub>corr</sub><sup>FCI</sup>|, as a function of determinant count for linear H<sub>n</sub> chains (n = 2, 4, 6, 8, 10) in the cc-pVDZ basis at an interatomic separation of 1.5 Å. NOCISD(3)-QMC and NOCISDT(3)-QMC improve upon truncated CI calculations of comparable excitation rank.
+  </em>
+</p>
 
-- Rust toolchain with Cargo.
+<p align="center">
+  <img
+    src="assets/results/F2_cc-pVDZ_NOCIPT2_Holomorphic_SCAN.png"
+    width="820"
+  >
+</p>
+
+<p align="center">
+  <em>
+    NOCI-PT2(3) calculation for F<sub>2</sub> in the cc-pVDZ basis. The NOCI-PT2 method recovers much of the dynamical correlation absent from reference NOCI, shown by good agreement with the CCSD(T) energies.
+  </em>
+</p>
+
+<p align="center">
+  <img
+    src="assets/results/LiH_cc-pVDZ_difference-doubly-shifted_2_8.png"
+    width="820"
+  >
+</p>
+
+<p align="center">
+  <em>
+    Typical evolution of the projected energy, overlap-transformed shift, and non-overlap-transformed shift in a LiH/cc-pVDZ NOCISD(3)-QMC calculation at 2.8 Å.
+  </em>
+</p>
+
+The corresponding input files are available in [`inputs/examples/`](inputs/examples/).
+
+## Project Status
+
+> [!IMPORTANT]
+> `noci-rs` is research software under active development. Input formats, numerical interfaces, and experimental methods may change.
+
+## Quick Start
+
+### Requirements
+
+- Rust 1.90.0 with Cargo. The repository's `rust-toolchain.toml`
+  automatically selects this toolchain when using `rustup`.
+- Python 3 with PySCF, NumPy, and h5py.
 - HDF5 development libraries compatible with the `hdf5` Rust crate.
-- OpenBLAS/LAPACK libraries for `ndarray-linalg`.
-- MPI compiler/runtime.
-- Python 3 with PySCF.
+- OpenBLAS and LAPACK.
+- An MPI compiler and runtime.
 
-## Build
+### Build
 
 ```bash
 git clone https://github.com/dy-cl/noci-rs
@@ -62,32 +111,38 @@ cd noci-rs
 cargo build --release
 ```
 
-Timing counters are available with:
+Detailed timing counters can be enabled with:
 
 ```bash
 cargo build --release --features timings
 ```
 
-## Run
+> [!WARNING]
+> Do not currently build using `--features nocc` or `--all-features` unless developing the experimental NOCC implementation. Compile-time generation of the NOCC overlap and residual terms can take a substantial amount of time. This is currently being optimised.
+
+### Run
+
+For one MPI rank with a specified number of Rayon worker threads:
 
 ```bash
-mpirun -np X ./target/release/noci-rs input.lua > output.out
+RAYON_NUM_THREADS=X ./target/release/noci-rs input.lua > output.out
 ```
 
-For one MPI rank:
+For distributed-memory execution in combination with Rayon:
 
 ```bash
-cargo run -- input.lua
+RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs input.lua > output.out
 ```
 
-Input examples live under `inputs/`.
+Example inputs are provided under [`inputs/`](inputs/).
 
-## Minimal Example
+### Minimal Reference NOCI Example
 
 ```lua
+-- Stretched H2 geometry with multireference character.
 mol = {
     basis = "cc-pVDZ",
-    r = {1.50},
+    r = 1.5,
     unit = "Ang",
     atoms = function(r)
         return {
@@ -97,56 +152,114 @@ mol = {
     end,
 }
 
-scf = {
-    max_cycle = 10000,
-    e_tol = 1e-10,
-    diis = {space = 8},
-}
-
+-- Use MOM to obtain the RHF state and two symmetry-broken UHF states.
 states = {
     mom = {
-        {label = "RHF", noci = true},
-        {label = "UHF (+, -)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
-        {label = "UHF (-, +)", spin_bias = {pattern = {-1, 1}, pol = 0.75}, noci = true},
-    }
-}
-
-excit = {
-    orders = {1, 2},
-}
-
-wicks = {
-    enabled = true,
-    compare = false,
-    storage = "ram",
-    cachedir = ".",
+        {
+            label = "RHF",
+            noci = true,
+        },
+        {
+            label = "UHF (+, -)",
+            spin_bias = {
+                pattern = {1, -1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-, +)",
+            spin_bias = {
+                pattern = {-1, 1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+    },
 }
 ```
 
-## Input Tables
+Run this input with:
 
-Input files are Lua scripts. Required top-level tables:
+```bash
+RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua > output.out
+```
 
-- `mol`: basis, unit, scan coordinate(s), and atoms.
-- `states`: MOM recipes or SCF metadynamics settings.
+## Methods
 
-Optional top-level tables:
+### SCF-State Generation
 
-- `scf`: SCF and h-SCF convergence settings.
-- `excit`: determinant excitation generation.
-- `prop`: shared propagation timestep and propagator.
-- `det`: deterministic propagation settings.
-- `qmc`: stochastic NOCI-QMC settings.
-- `snoci`: selected NOCI and NOCI-PT2 settings.
-- `noccmc`: NOCCMC settings.
-- `write`: optional file output and restart settings.
-- `wicks`: extended non-orthogonal Wick's theorem settings.
+- RHF and UHF SCF solutions with DIIS acceleration.
+- MOM state recipes using spin-density bias, spatial-density bias, and occupied–virtual excitation seeds.
+- SCF metadynamics for discovering multiple RHF and UHF solutions.
+- Holomorphic SCF optimisation for complex continuations of selected MOM states.
+- Geometry scans that reuse converged states as guesses at subsequent geometries.
 
-## Common Options
+### Nonorthogonal Configuration Interaction
+
+- Reference NOCI using selected real or holomorphic SCF states.
+- Hamiltonian, overlap, and generalised Fock matrix construction.
+- Generalised Slater–Condon, extended nonorthogonal Wick's theorem, and orthogonal matrix-element implementations.
+- Wick's intermediates stored in memory or using a disk-backed cache.
+
+### Selected NOCI and NOCI-PT2
+
+- Iterative candidate generation and determinant selection.
+- NOCI-PT2 candidate scoring and perturbative energy corrections.
+- GMRES solution of projected candidate-space equations.
+- Diagonal and Woodbury preconditioners.
+- Optional imaginary shifts.
+- Can use holomorphic SCF states.
+
+### NOCI-QMC
+
+- Deterministic imaginary-time propagation with an optional dynamic shift.
+- Signed-walker stochastic propagation.
+- Uniform and heat-bath excitation generators.
+- Various propagators for nonorthogonal and overcomplete spaces.
+- MPI and Rayon parallelism.
+- Currently only supports real SCF states.
+
+### Parallelism
+
+- Rayon-parallel determinant-pair matrix-element evaluation when constructing a full matrix.
+- MPI parallelism for stochastic propagation and distributed NOCI-PT2 and SNOCI calculations.
+- Shared-memory Rayon parallelism within each MPI process for stochastic propagation and NOCI-PT2/SNOCI calculations.
+- Shared-memory Wick's theorem intermediates across MPI ranks on each node.
+
+### Output and Restart Support
+
+- Text reports for SCF, reference NOCI, SNOCI, NOCI-PT2, and stochastic propagation.
+- Optional detailed timing counters when built with the `timings` feature.
+- Optional HDF5 orbital output.
+- Optional plain-text Hamiltonian and overlap matrices.
+- Deterministic coefficient and excitation-histogram output.
+- Stochastic restart input and output.
+
+
+## Input Reference
+
+Input files are Lua scripts.
+
+The required top-level tables are:
+
+- `mol`: molecular geometry, basis set, units, and scan coordinates.
+- `states`: MOM state recipes or SCF metadynamics settings.
+
+The optional top-level tables are:
+
+- `scf`: conventional and holomorphic SCF convergence settings.
+- `excit`: excitation orders for SNOCI and NOCI-QMC spaces.
+- `prop`: timestep and propagator shared by deterministic and stochastic propagation.
+- `det`: deterministic propagation.
+- `qmc`: stochastic NOCI-QMC.
+- `snoci`: selected NOCI and NOCI-PT2.
+- `write`: optional output files and restart settings.
+- `wicks`: extended nonorthogonal Wick settings.
 
 ### Molecule
 
-`mol.r` may be a number or a Lua table of scan points. `mol.atoms` may be a static atom-string table or a function of `r`.
+The `mol` table defines the molecular geometry, basis set, units, and optional geometry scan. `mol.r` may be a single number or a Lua table of scan points. `mol.atoms` may be a static table of atom strings or a function of `r`.
 
 ```lua
 mol = {
@@ -162,37 +275,109 @@ mol = {
 }
 ```
 
+### SCF
+
+The optional `scf` table controls convergence of conventional RHF and UHF calculations together with the quasi-Newton optimisation used for holomorphic SCF states.
+
+```lua
+scf = {
+    max_cycle = 1e5,
+    e_tol = 1e-12,
+    fds_sdf_tol = 1e-8,
+    d_tol = 1e-4,
+    do_fci = false,
+
+    diis = {
+        space = 8,
+    },
+
+    h = {
+        max_cycle = 1e2,
+        g_tol = 1e-10,
+        sr1_tol = 1e-12,
+        denom_tol = 1e-10,
+        max_step = 5e-1,
+        line_steps = 1e1,
+        line_shrink = 5e-1,
+        history = 2e1,
+    },
+}
+```
+
+The outer entries control conventional SCF convergence. The nested `scf.h` table controls holomorphic SCF optimisation, including the gradient threshold, SR1 updates, maximum orbital-rotation step, backtracking line search, and optimisation history.
+
 ### States
 
-MOM recipes support `spin_bias`, `spatial_bias`, `excit`, `noci`, `holomorphic`, and `partner`.
+MOM recipes support `spin_bias`, `spatial_bias`, `excit`, `noci`,
+`holomorphic`, and `partner`.
 
 ```lua
 states = {
     mom = {
-        {label = "RHF", noci = true},
-        {label = "UHF (+, -)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
-        {label = "RHF excited", excit = {spin = "both", occ = -1, vir = 0}, noci = false},
-        {label = "h-UHF (+, -)", holomorphic = true, partner = "UHF (+, -)", noci = true},
-    }
+        {
+            label = "RHF",
+            noci = true,
+        },
+        {
+            label = "UHF (+, -)",
+            spin_bias = {
+                pattern = {1, -1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-, +)",
+            spin_bias = {
+                pattern = {-1, 1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "h-UHF (+, -)",
+            holomorphic = true,
+            spin_bias = {
+                pattern = {1, -1},
+                pol = 0.75,
+            },
+            partner = "UHF (+, -)",
+            noci = true,
+        },
+        {
+            label = "h-UHF (-, +)",
+            holomorphic = true,
+            spin_bias = {
+                pattern = {-1, 1},
+                pol = 0.75,
+            },
+            partner = "UHF (-, +)",
+            noci = true,
+        },
+    },
 }
 ```
 
-Metadynamics is an alternative to MOM recipes:
+SCF metadynamics may be used instead of explicitly specified MOM recipes:
 
 ```lua
 states = {
     metadynamics = {
-        nstates_rhf = 2,
-        nstates_uhf = 4,
+        nstates_rhf = 1,
+        nstates_uhf = 2,
         spinpol = 0.75,
         spatialpol = 0.75,
         lambda = 0.5,
-        max_attempts = 100,
-    }
+        max_attempts = 1e2,
+    },
 }
 ```
 
+This avoids requiring *a priori* knowledge of the SCF states.
+
 ### Excitations
+
+The `excit` table defines the excitation orders used to construct post-reference determinant spaces for deterministic and stochastic NOCI-QMC calculations and for SNOCI candidate generation.
 
 ```lua
 excit = {
@@ -200,64 +385,96 @@ excit = {
 }
 ```
 
-Use `excit.all = true` instead of `orders` to generate all supported excitation orders.
+Use `excit.all = true` instead of `orders` to generate every supported excitation order.
 
 ### Propagation
 
-`prop` is required when `det` or `qmc` is present.
+The `prop` table specifies the imaginary-time timestep and propagator used by deterministic or stochastic NOCI-QMC calculations. It is required when either the `det` or `qmc` table is present.
 
 ```lua
 prop = {
     dt = 1e-4,
     propagator = "difference-doubly-shifted-u2",
 }
+```
 
+Available propagators are:
+
+- `unshifted`
+- `shifted`
+- `doubly-shifted`
+- `difference-doubly-shifted-u1`
+- `difference-doubly-shifted-u2`
+
+### Deterministic Propagation
+
+The `det` table enables deterministic imaginary-time propagation over the generated excitation space by constructing the full Hamiltonian and overlap matrices.
+
+```lua
 det = {
-    max_steps = 10000,
+    max_steps = 1e5,
     dynamic_shift = true,
-    dynamic_shift_alpha = 0.1,
+    dynamic_shift_alpha = 1e-1,
     e_tol = 1e-10,
-}
-
-qmc = {
-    initial_population = 100,
-    target_population = 100000,
-    shift_damping = 5e-4,
-    ncycles = 10,
-    nreports = 1000,
-    excitation_gen = "uniform",
-    seed = 12345,
 }
 ```
 
-### SNOCI
+These options control the maximum number of propagation steps, convergence threshold, and optional dynamic population shift.
+
+### Stochastic Propagation
+
+The `qmc` table enables stochastic imaginary-time propagation using a signed walker population.
+
+```lua
+qmc = {
+    initial_population = 1e2,
+    target_population = 1e5,
+    shift_damping = 5e-4,
+    ncycles = 1e1,
+    nreports = 1e3,
+    excitation_gen = "uniform",
+    seed = 92774801300236626,
+}
+```
+
+Available excitation generators are:
+
+- `uniform`
+- `heat-bath`
+
+Exact heat-bath sampling is very expensive.
+
+### Selected NOCI and NOCI-PT2
+
+The `snoci` table enables iterative selected NOCI calculations. Excited determinants are generated from the orders specified in `excit`, scored using their NOCI-PT2 contributions, and added to the variational NOCI space.
 
 ```lua
 snoci = {
     sigma = 1e-6,
     tol = 1e-8,
-    max_iter = 100,
-    max_add = 1,
-    max_dim = 100,
+    max_iter = 1e2,
+    max_add = 5e0,
+    max_dim = 1e2,
     preconditioner = "woodbury",
-    imag_shift = {0.0},
+    imag_shift = {
+      0.0
+    },
+
     gmres = {
-        max_iter = 100,
-        restart = 200,
+        max_iter = 1e2,
+        restart = 2e2,
         res_tol = 1e-8,
         metric_tol = 1e-8,
-        full_m = false,
+        full_m = true,
     },
 }
 ```
 
-### NOCCMC
-
-```lua
-noccmc = {}
-```
+A NOCI-PT2-only calculation may be performed by limiting the selected NOCI procedure to one iteration. Although arbitrary excitation orders are currently accepted, the rigorous NOCI-PT2 first-order interacting space consists of single and double excitations.
 
 ### Output
+
+The `write` table controls optional output files, restart files, and the amount of information printed during a calculation.
 
 ```lua
 write = {
@@ -272,7 +489,11 @@ write = {
 }
 ```
 
-### Wick Intermediates
+Orbital data are written in HDF5 format. Hamiltonian and overlap matrices are written as plain text. Stochastic calculations can read and write restart files.
+
+### Wick's Intermediates
+
+The `wicks` table controls evaluation and storage of intermediates used by the extended nonorthogonal Wick's theorem.
 
 ```lua
 wicks = {
@@ -283,76 +504,33 @@ wicks = {
 }
 ```
 
-Set `storage = "disk"` to use disk-backed Wick intermediate storage.
+Set `storage = "disk"` to use a disk-backed cache. When `compare = true`, Wick-based matrix elements are checked against the generalised Slater–Condon implementation.
 
-## Selected Defaults
+### Defaults
 
-- `scf.max_cycle = 10000`
-- `scf.e_tol = 1e-12`
-- `scf.fds_sdf_tol = 1e-8`
-- `scf.d_tol = 1e-4`
-- `scf.diis.space = 8`
-- `scf.do_fci = false`
-- `scf.h.max_cycle = 100`
-- `scf.h.g_tol = 1e-10`
-- `scf.h.sr1_tol = 1e-12`
-- `scf.h.denom_tol = 1e-10`
-- `scf.h.max_step = 0.5`
-- `scf.h.line_steps = 12`
-- `scf.h.line_shrink = 0.5`
-- `scf.h.history = 20`
-- `excit.orders = {1, 2}`
-- `excit.all = false`
-- `prop.dt = 1e-4`
-- `prop.propagator = "unshifted"`
-- `det.max_steps = 10000`
-- `det.dynamic_shift = true`
-- `det.dynamic_shift_alpha = 0.1`
-- `det.e_tol = 1e-10`
-- `qmc.initial_population = 100`
-- `qmc.target_population = 100000`
-- `qmc.shift_damping = 5e-4`
-- `qmc.ncycles = 10`
-- `qmc.nreports = 1000`
-- `qmc.excitation_gen = "uniform"`
-- `qmc.seed = nil`
-- `snoci.sigma = 1e-6`
-- `snoci.tol = 1e-8`
-- `snoci.imag_shift = {0.0}`
-- `snoci.max_iter = 100`
-- `snoci.max_add = 1`
-- `snoci.max_dim = 100`
-- `snoci.preconditioner = "woodbury"`
-- `snoci.gmres.max_iter = 100`
-- `snoci.gmres.res_tol = 1e-8`
-- `snoci.gmres.metric_tol = 1e-8`
-- `snoci.gmres.restart = 200`
-- `snoci.gmres.full_m = false`
-- `write.verbose = true`
-- `write.write_dir = "outputs/"`
-- `write.write_deterministic_coeffs = false`
-- `write.write_orbitals = false`
-- `write.write_excitation_hist = false`
-- `write.write_matrices = false`
-- `write.write_restart = nil`
-- `write.read_restart = nil`
-- `wicks.enabled = true`
-- `wicks.compare = false`
-- `wicks.storage = "ram"`
-- `wicks.cachedir = "."`
+Defaults are defined by the input structures under
+[`src/input/`](src/input/).
 
-## References
+## Citation
 
-[1] Tracy P Hamilton and Peter Pulay. Direct Inversion in the Iterative Subspace (DIIS) Optimization of Open-shell, Excited-state, and Small Multiconfiguration SCF Wavefunctions. *The Journal of Chemical Physics*, 84(10):5728-5734, 1986.
+`noci-rs` is not yet associated with a dedicated software publication. Until one is available, cite the repository and the relevant method publications listed below.
 
-[2] Alex J. W. Thom and Martin Head-Gordon. Locating Multiple Self-consistent Field Solutions: An Approach Inspired by Metadynamics. *Physical Review Letters*, 101(19):193001, 2008.
+### Method References
 
-[3] Andrew T. B. Gilbert, Nicholas A. Besley, and Peter M. W. Gill. Self-Consistent Field Calculations of Excited States Using the Maximum Overlap Method (MOM). *The Journal of Physical Chemistry A*, 112(50):13164-13171, 2008.
+1. Tracy P. Hamilton and Peter Pulay. Direct inversion in the iterative subspace optimisation of open-shell, excited-state, and small multiconfiguration SCF wave functions. *The Journal of Chemical Physics* **84**, 5728–5734 (1986).
 
-[4] Istvan Mayer. *Simple Theorems, Proofs, and Derivations in Quantum Chemistry*. Springer Science & Business Media, 2003.
+2. Alex J. W. Thom and Martin Head-Gordon. Locating multiple self-consistent field solutions: An approach inspired by metadynamics. *Physical Review Letters* **101**, 193001 (2008).
 
-[5] Hugh G. A. Burton. Generalized Nonorthogonal Matrix Elements. II: Extension to Arbitrary Excitations. *The Journal of Chemical Physics*, 157(20), 2022.
+3. Andrew T. B. Gilbert, Nicholas A. Besley, and Peter M. W. Gill. Self-consistent field calculations of excited states using the maximum overlap method. *The Journal of Physical Chemistry A* **112**, 13164–13171 (2008).
 
-[6] Adam A. Holmes, Hitesh J. Changlani, and C. J. Umrigar. Efficient Heat-Bath Sampling in Fock Space. *Journal of Chemical Theory and Computation*, 12(4):1561-1571, 2016.
+4. István Mayer. *Simple Theorems, Proofs, and Derivations in Quantum Chemistry*. Springer (2003).
 
-[7] Hugh G. A. Burton and Alex J. W. Thom. Reaching full correlation through nonorthogonal configuration interaction: A second-order perturbative approach. *Journal of Chemical Theory and Computation*, 16(9):5586-5600, 2020.
+5. Hugh G. A. Burton. Generalized nonorthogonal matrix elements II: Extension to arbitrary excitations. *The Journal of Chemical Physics* **157**, 204109 (2022).
+
+6. Adam A. Holmes, Hitesh J. Changlani, and C. J. Umrigar. Efficient heat-bath sampling in Fock space. *Journal of Chemical Theory and Computation* **12**, 1561–1571 (2016).
+
+7. Hugh G. A. Burton and Alex J. W. Thom. Reaching full correlation through nonorthogonal configuration interaction: A second-order perturbative approach. *Journal of Chemical Theory and Computation* **16**, 5586–5600 (2020).
+
+## Licence
+
+This project is distributed under the terms given in [`LICENSE`](LICENSE).
