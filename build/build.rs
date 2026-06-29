@@ -10,18 +10,8 @@ mod nocc {
     use serde::Serialize;
 
     const CLASSES: &[&str] = &[
-        "CToA",
-        "AToA",
-        "AToV",
-        "CAToAV",
-        "CAToVA",
-        "CAToVV",
-        "CCToAV",
-        "CCToAA",
-        "CAToAA",
-        "AAToAV",
-        "AAToVV",
-        "AAToAA",
+        "CToA", "AToA", "AToV", "CAToAV", "CAToVA", "CAToVV", "CCToAV", "CCToAA", "CAToAA",
+        "AAToAV", "AAToVV", "AAToAA",
     ];
 
     /// Return whether cached generated terms should be forcibly regenerated.
@@ -80,11 +70,7 @@ mod nocc {
         dst: &Path,
     ) {
         fs::copy(src, dst).unwrap_or_else(|e| {
-            panic!(
-                "failed to copy {} to {}: {e}",
-                src.display(),
-                dst.display()
-            )
+            panic!("failed to copy {} to {}: {e}", src.display(), dst.display())
         });
     }
 

@@ -2,6 +2,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde::de::DeserializeOwned;
 
@@ -32,6 +33,24 @@ pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
     let expected: T =
         serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, ao, expected)
+}
+
+/// Return a process-local lock and Universe for tests that initialise MPI.
+/// # Returns
+/// - `(MutexGuard<'static, ()>, &'static mpi::environment::Universe)`: Guard held while MPI is used
+///   and the process-global MPI universe.
+pub fn mpi_universe() -> (MutexGuard<'static, ()>, &'static mpi::environment::Universe) {
+    static MPI_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static MPI_UNIVERSE: OnceLock<mpi::environment::Universe> = OnceLock::new();
+
+    let lock = MPI_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("MPI test lock poisoned");
+    let universe =
+        MPI_UNIVERSE.get_or_init(|| mpi::initialize().expect("MPI initialisation failed"));
+
+    (lock, universe)
 }
 
 /// Generate the `data.h5` file for a fixture which contains AO integrals.
