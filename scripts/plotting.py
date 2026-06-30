@@ -99,6 +99,70 @@ def readQMC(path: Path) -> pd.DataFrame:
 
     return df
 
+def findDeterministicQMC(path: Path):
+    """
+    Find where the deterministic propagation table starts.
+    """
+    start = None
+    nrows = 0
+    inQMC = False
+
+    with open(path, "r") as f:
+        for lineno, line in enumerate(f):
+            if not inQMC:
+                if (
+                    line.lstrip().startswith("iter")
+                    and "|dE|" in line
+                    and "Shift (Es)" in line
+                    and "Shift (EsS)" in line
+                    and "||C||" in line
+                    and "||SC||" in line
+                ):
+                    start = lineno + 1
+                    inQMC = True
+                continue
+
+            if line.startswith("===="):
+                break
+
+            s = line.lstrip()
+            if not s:
+                continue
+
+            if s[0].isdigit():
+                nrows += 1
+
+    if start is None:
+        raise ValueError("Deterministic propagation table header not found")
+
+    return start, nrows
+
+
+def readDeterministicQMC(path: Path) -> pd.DataFrame:
+    """
+    Read the deterministic propagation table from an output file.
+    """
+    start, nrows = findDeterministicQMC(path)
+
+    return pd.read_csv(
+        path,
+        sep = r"\s+",
+        header = None,
+        skiprows = start,
+        nrows = nrows,
+        names = [
+            "iter",
+            "energy",
+            "de",
+            "es",
+            "ess",
+            "nwc",
+            "nwsc",
+            "metric_norm",
+        ],
+        engine = "c",
+    )
+
 def readDeterministicCoefficients(path: Path) -> pd.DataFrame:
     """
     Read in deterministic coefficient lines from a deterministic NOCIQMC output file and create a pandas dataframe.
@@ -589,6 +653,53 @@ def plotNW(args):
     formatAxes(xlabel = r"Iteration / $\tau$", ylabel = r"$N_w(\tau)$", legend = True)
     finish(args)
 
+def plotDeterministicNW(args):
+    """
+    Plot deterministic coefficient populations against iteration.
+    """
+    df = readDeterministicQMC(args.path)
+
+    iterEs, _ = shiftChange(df["es"])
+    iterEsS, _ = shiftChange(df["ess"])
+
+    setStyle()
+    plt.figure()
+
+    plt.plot(
+        df["iter"],
+        df["nwc"],
+        label = r"$\|C(\tau)\|_1$",
+        linewidth = LINEWIDTH,
+    )
+    plt.plot(
+        df["iter"],
+        df["nwsc"],
+        label = r"$\|SC(\tau)\|_1$",
+        linewidth = LINEWIDTH,
+    )
+
+    if iterEs is not None:
+        plt.axvline(
+            df["iter"].iloc[iterEs],
+            linestyle = "--",
+            linewidth = LINEWIDTH,
+            color = "tab:blue",
+        )
+
+    if iterEsS is not None:
+        plt.axvline(
+            df["iter"].iloc[iterEsS],
+            linestyle = "--",
+            linewidth = LINEWIDTH,
+            color = "tab:orange",
+        )
+
+    formatAxes(
+        xlabel = r"Iteration / $\tau$",
+        ylabel = "Population",
+        legend = True,
+    )
+    finish(args)
 
 def plotProjectedShift(args):
     """
@@ -609,6 +720,65 @@ def plotProjectedShift(args):
         plt.axvline(iterEsS, linestyle = "--", linewidth = LINEWIDTH, color = "tab:orange")
     plt.plot(df["iter"], df["ecorr"], label = r"$E_{\mathrm{Proj}}(\tau)$", linewidth = LINEWIDTH, color = "tab:green")
     formatAxes(xlabel = r"Iteration / $\tau$", ylabel = "Energy / Ha", legend = True, legendLoc = "lower right")
+    finish(args)
+
+def plotDeterministicProjectedShift(args):
+    """
+    Plot deterministic energy and shift trajectories against iteration.
+    """
+    df = readDeterministicQMC(args.path)
+
+    iterEs, _ = shiftChange(df["es"])
+    iterEsS, _ = shiftChange(df["ess"])
+
+    setStyle()
+    plt.figure()
+
+    plt.plot(
+        df["iter"],
+        df["es"],
+        label = r"$E_s(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+    )
+    plt.plot(
+        df["iter"],
+        df["ess"],
+        label = r"$E_s^S(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+    )
+
+    if iterEs is not None:
+        plt.axvline(
+            df["iter"].iloc[iterEs],
+            linestyle = "--",
+            linewidth = LINEWIDTH,
+            color = "tab:blue",
+        )
+
+    if iterEsS is not None:
+        plt.axvline(
+            df["iter"].iloc[iterEsS],
+            linestyle = "--",
+            linewidth = LINEWIDTH,
+            color = "tab:orange",
+        )
+
+    plt.plot(
+        df["iter"],
+        df["energy"],
+        label = r"$E(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:green",
+    )
+
+    formatAxes(
+        xlabel = r"Iteration / $\tau$",
+        ylabel = "Energy / Ha",
+        legend = True,
+        legendLoc = "lower right",
+    )
     finish(args)
 
 def plotShoulder(args):
@@ -655,6 +825,16 @@ def buildParser():
     p.add_argument("--space", choices = ["relevant", "null"], default = "relevant")
     addCommonArgs(p)
     p.set_defaults(func = plotDeterministicCoefficients)
+
+    p = subparsers.add_parser("deterministic-population")
+    p.add_argument("path", type = Path)
+    addCommonArgs(p)
+    p.set_defaults(func = plotDeterministicNW)
+
+    p = subparsers.add_parser("deterministic-projected-shift")
+    p.add_argument("path", type = Path)
+    addCommonArgs(p)
+    p.set_defaults(func = plotDeterministicProjectedShift)
 
     p = subparsers.add_parser("energy")
     p.add_argument("path", type = Path)
