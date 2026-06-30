@@ -27,7 +27,7 @@ pub fn fixture_dir(name: &str) -> PathBuf {
 pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
     let dir = fixture_dir(name);
     let input = load_input(dir.join("input.lua").to_str().unwrap());
-    generate_data_h5(&dir, &input);
+    generate_data_h5_for_geometry(&dir, &input, 0, "data.h5");
     let input = load_input(dir.join("input.lua").to_str().unwrap());
     let ao = read_integrals(dir.join("data.h5").to_str().unwrap());
     let expected: T =
@@ -53,17 +53,23 @@ pub fn mpi_universe() -> (MutexGuard<'static, ()>, &'static mpi::environment::Un
     (lock, universe)
 }
 
-/// Generate the `data.h5` file for a fixture which contains AO integrals.
+/// Generate an HDF5 data file for one fixture geometry.
 /// # Arguments:
 /// - `dir`: Fixture directory from which to run `generate.py`.
 /// - `input`: User input specifications for this fixture.
-fn generate_data_h5(
+/// - `geometry`: Geometry index to generate.
+/// - `out`: Output HDF5 file name.
+/// # Returns
+/// - `()`: Writes the requested HDF5 data file.
+fn generate_data_h5_for_geometry(
     dir: &std::path::Path,
     input: &Input,
+    geometry: usize,
+    out: &str,
 ) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let generate_py = root.join("scripts/generate.py");
-    let atoms: Vec<String> = input.mol.geoms[0].clone();
+    let atoms: Vec<String> = input.mol.geoms[geometry].clone();
     let atomsj = serde_json::to_string(&atoms).unwrap();
 
     Command::new("python3")
@@ -75,7 +81,7 @@ fn generate_data_h5(
         .arg("--unit")
         .arg(&input.mol.unit)
         .arg("--out")
-        .arg("data.h5")
+        .arg(out)
         .arg("--fci")
         .arg(if input.scf.do_fci { "true" } else { "false" })
         .current_dir(dir)

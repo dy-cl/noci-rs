@@ -6,7 +6,7 @@ use ndarray::{Array2, ArrayView2, s};
 use crate::ExcitationSpin;
 #[cfg(feature = "nocc")]
 use crate::maths::adjoint;
-use crate::maths::det;
+use crate::maths::{det, minor as build_minor, mix_columns};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -449,7 +449,7 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
     mut f: impl FnMut(usize, &[T], &[T], T),
 ) {
     let lm1 = minor.l.saturating_sub(1);
-    minor_generic(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
+    build_minor(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
     if let Some(det_minor) =
         adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
     {
@@ -567,65 +567,6 @@ pub(super) fn for_each_m_combination(
     }
 }
 
-/// Copy columns from det0 or det1 into output according to bitstring.
-/// # Arguments:
-/// - `out`: Output mixed determinant.
-/// - `det0`: Branch-zero determinant.
-/// - `det1`: Branch-one determinant.
-/// - `n`: Determinant dimension.
-/// - `bits`: Bitstring selecting branch-one columns.
-/// # Returns
-/// - `()`: Writes mixed determinant.
-#[inline(always)]
-fn mix_columns<T: NOCIScalar>(
-    out: &mut [T],
-    det0: &[T],
-    det1: &[T],
-    n: usize,
-    bits: u64,
-) {
-    for c in 0..n {
-        let src = if bit(bits, c) == 0 { det0 } else { det1 };
-        for r in 0..n {
-            out[idx(n, r, c)] = src[idx(n, r, c)];
-        }
-    }
-}
-
-/// Form minor by deleting row i and column j from full matrix.
-/// # Arguments:
-/// - `out`: Output minor storage.
-/// - `full`: Full determinant storage.
-/// - `n`: Dimension of full determinant.
-/// - `i`: Row to remove.
-/// - `j`: Column to remove.
-/// # Returns
-/// - `()`: Writes minor.
-#[inline(always)]
-fn minor_generic<T: NOCIScalar>(
-    out: &mut [T],
-    full: &[T],
-    n: usize,
-    i: usize,
-    j: usize,
-) {
-    let mut rr = 0;
-    for r in 0..n {
-        if r == i {
-            continue;
-        }
-        let mut cc = 0;
-        for c in 0..n {
-            if c == j {
-                continue;
-            }
-            out[idx(n - 1, rr, cc)] = full[idx(n, r, c)];
-            cc += 1;
-        }
-        rr += 1;
-    }
-}
-
 /// Compute determinant and adjugate transpose/cofactor matrix.
 /// # Arguments:
 /// - `adjt`: Output adjugate-transpose/cofactor matrix.
@@ -658,7 +599,7 @@ fn adjugate_transpose_generic<T: NOCIScalar>(
     let mut minor = vec![<T as From<f64>>::from(0.0); (n - 1) * (n - 1)];
     for r in 0..n {
         for c in 0..n {
-            minor_generic(&mut minor, full, n, r, c);
+            build_minor(&mut minor, full, n, r, c);
             let md = det_or_zero(&minor, n - 1);
             let sign = if ((r + c) & 1) == 0 { 1.0 } else { -1.0 };
             adjt[idx(n, r, c)] = <T as From<f64>>::from(sign) * md;

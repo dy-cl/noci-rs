@@ -5,11 +5,11 @@ use ndarray::Array1;
 use serde::Deserialize;
 use serial_test::serial;
 
-use noci_rs::noci::NOCIData;
-
 use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
 use noci_rs::deterministic::{projected_energy, propagate};
-use noci_rs::noci::{build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy};
+use noci_rs::noci::{
+    NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
+};
 
 /// Expected exact energies for a deterministic NOCI-QMC fixture.
 #[derive(Deserialize)]

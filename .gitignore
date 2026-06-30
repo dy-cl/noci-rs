@@ -7,6 +7,7 @@ inputs/*
 outputs/
 wickscache/
 tests/fixtures/**/data.h5
+tests/fixtures/**/data_*.h5
 .cargo/
 scaling*
 data.h5
@@ -15,4 +16,3 @@ src/nocc/terms/*
 build/generated/*
 Cargo.lock
 .codex
-
