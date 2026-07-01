@@ -281,11 +281,13 @@ fn projected_energy_local(
 }
 
 /// Add the contribution from a sparse set of determinant updates to the local `p_{\Gamma}` block.
+/// Work is assigned dynamically one determinant at a time to persistent Rayon worker states.
 /// # Arguments:
 /// - `plocal`: Local portion of `p_{\Gamma}` on this rank.
 /// - `updates`: Sparse determinant population updates to apply.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local run metadata.
+/// - `workers`: Persistent propagation and Wick scratch state for each Rayon worker.
 /// # Returns
 /// - `()`: Adds the contribution from `updates` into `plocal`.
 fn add_plocal(
@@ -293,17 +295,31 @@ fn add_plocal(
     updates: &[PopulationUpdate],
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
+    workers: &mut [Mutex<ThreadPropagation>],
 ) {
     // Fast exit.
-    if updates.is_empty() {
+    if updates.is_empty() || plocal.is_empty() {
         return;
     }
 
-    // Parallel iteration over rank local elements of `p_\Gamma`, for each local owned determinant
-    // `\Gamma` we accumulate `\sum_\Omega S_{\Gamma, \Omega} dN_\Omega` over the updates.
-    plocal.par_iter_mut().enumerate().for_each_init(
-        WickScratchSpin::new,
-        |scratch, (k, pgamma)| {
+    let nlocal = plocal.len();
+    let next = AtomicUsize::new(0);
+    let workers_shared: &[Mutex<ThreadPropagation>] = workers;
+
+    // Each Rayon worker retains one Wick scratch object and dynamically claims one local
+    // determinant at a time. Results are stored in the worker state and applied after the
+    // broadcast so no synchronisation is needed for writes to `plocal`.
+    rayon::broadcast(|context| {
+        let tid = context.index();
+        let mut worker = workers_shared[tid].lock().unwrap();
+        worker.clear_overlap();
+
+        loop {
+            let k = next.fetch_add(1, Ordering::Relaxed);
+            if k >= nlocal {
+                break;
+            }
+
             let gamma = run.owned[k];
             let mut dp = 0.0;
             for (iup, up) in updates.iter().enumerate() {
@@ -316,11 +332,18 @@ fn add_plocal(
                     );
                 }
                 let omega = up.det as usize;
-                dp += find_s(data, gamma, omega, scratch) * up.dn as f64;
+                dp += find_s(data, gamma, omega, worker.scratch.as_mut()) * up.dn as f64;
             }
-            *pgamma += dp;
-        },
-    );
+            worker.overlap.push((k, dp));
+        }
+    });
+
+    for worker in workers.iter_mut() {
+        let worker = worker.get_mut().unwrap();
+        for (k, dp) in worker.overlap.drain(..) {
+            plocal[k] += dp;
+        }
+    }
 }
 
 /// Update the vector `p_{\Gamma} = \sum_\Omega S_{\Gamma,\Omega} N_{\Omega}`.
@@ -331,6 +354,7 @@ fn add_plocal(
 /// - `run`: Rank-local run metadata.
 /// - `mpi`: Reusable MPI scratch space.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `workers`: Persistent propagation and Wick scratch state for each Rayon worker.
 /// # Returns
 /// - `bool`: `true` if any determinant populations changed globally in this iteration.
 fn update_p(
@@ -340,6 +364,7 @@ fn update_p(
     run: &QMCRunInfo,
     mpi: &mut MPIScratch,
     world: &impl CommunicatorCollectives,
+    workers: &mut [Mutex<ThreadPropagation>],
 ) -> bool {
     time_call!(crate::timers::stochastic::add_update_p, {
         // Gather number of updates that each rank will send to this rank.
@@ -378,7 +403,7 @@ fn update_p(
 
             // Apply this ranks own updates to `plocal` whilst the all-gather is occuring.
             time_call!(crate::timers::stochastic::add_update_p_local_overlap, {
-                add_plocal(plocal, dlocal, data, run);
+                add_plocal(plocal, dlocal, data, run, workers);
             });
 
             // Now we must wait for the all gather to finish before we read the remote updates.
@@ -390,8 +415,8 @@ fn update_p(
         // Apply remote updates from all other ranks to `plocal`. We avoid double counting by
         // excluding the local slice.
         time_call!(crate::timers::stochastic::add_update_p_apply, {
-            add_plocal(plocal, &mpi.gather_recv[..locallow], data, run);
-            add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run);
+            add_plocal(plocal, &mpi.gather_recv[..locallow], data, run, workers);
+            add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run, workers);
         });
         true
     })
@@ -936,6 +961,7 @@ pub fn qmc_step(
             &run,
             &mut mpiscratch,
             world,
+            &mut workers,
         );
 
         // If populations haven't changed we can end the report here early.
