@@ -16,3 +16,4 @@ src/nocc/terms/*
 build/generated/*
 Cargo.lock
 .codex
+uprof

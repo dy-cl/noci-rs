@@ -189,11 +189,11 @@ impl<T: NOCIScalar> ProjPropagator<T> {
         let identityn = Array2::<T>::eye(hnn.nrows());
         let identityfac = T::from_real(1.0) + dt * es;
 
-        let urr = identityr.mapv(|z| identityfac * z)
-            - (&hrr - &srr.mapv(|z| es_s * z)).mapv(|z| dt * z);
+        let urr =
+            identityr.mapv(|z| identityfac * z) - (&hrr - &srr.mapv(|z| es_s * z)).mapv(|z| dt * z);
 
-        let unn = identityn.mapv(|z| identityfac * z)
-            - (&hnn - &snn.mapv(|z| es_s * z)).mapv(|z| dt * z);
+        let unn =
+            identityn.mapv(|z| identityfac * z) - (&hnn - &snn.mapv(|z| es_s * z)).mapv(|z| dt * z);
 
         let unr = (&hnr - &snr.mapv(|z| es_s * z)).mapv(|z| -dt * z);
 
@@ -269,11 +269,7 @@ pub fn propagate<T: NOCIScalar>(
     let pop_c0 = c0.iter().map(|z| z.abs()).sum::<f64>();
     let pop_sc0 = sc0.iter().map(|z| z.abs()).sum::<f64>();
 
-    if !pop_c0.is_finite()
-        || !pop_sc0.is_finite()
-        || pop_c0 <= 0.0
-        || pop_sc0 <= 0.0
-    {
+    if !pop_c0.is_finite() || !pop_sc0.is_finite() || pop_c0 <= 0.0 || pop_sc0 <= 0.0 {
         println!(
             "Invalid initial deterministic populations: ||C|| = {}, ||SC|| = {}.",
             pop_c0, pop_sc0
@@ -345,14 +341,7 @@ pub fn propagate<T: NOCIScalar>(
     println!("{}", "=".repeat(140));
     println!(
         "{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-        "iter",
-        "E",
-        "|dE|",
-        "Shift (Es)",
-        "Shift (EsS)",
-        "||C||",
-        "||SC||",
-        "C^†SC"
+        "iter", "E", "|dE|", "Shift (Es)", "Shift (EsS)", "||C||", "||SC||", "C^†SC"
     );
 
     // Print initial row.
@@ -365,14 +354,7 @@ pub fn propagate<T: NOCIScalar>(
 
     println!(
         "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-        0,
-        e_prev,
-        0.0,
-        es,
-        es_s,
-        pop_c0,
-        pop_sc0,
-        den0
+        0, e_prev, 0.0, es, es_s, pop_c0, pop_sc0, den0
     );
 
     for it in 0..det.max_steps {
@@ -427,11 +409,7 @@ pub fn propagate<T: NOCIScalar>(
         let c1norm = c_new_norm.iter().map(|z| z.abs()).sum::<f64>();
         let sc1norm = sc.iter().map(|z| z.abs()).sum::<f64>();
 
-        if !c1norm.is_finite()
-            || !sc1norm.is_finite()
-            || c1norm <= 0.0
-            || sc1norm <= 0.0
-        {
+        if !c1norm.is_finite() || !sc1norm.is_finite() || c1norm <= 0.0 || sc1norm <= 0.0 {
             println!(
                 "Invalid deterministic populations at iter {}: ||C|| = {}, ||SC|| = {}.",
                 it + 1,

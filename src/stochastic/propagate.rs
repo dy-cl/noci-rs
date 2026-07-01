@@ -3,8 +3,8 @@ use mpi::collective::SystemOperation;
 use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
 use mpi::traits::*;
-use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
 use super::state::{

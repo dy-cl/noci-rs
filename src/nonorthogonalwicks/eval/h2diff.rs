@@ -279,50 +279,35 @@ fn lg_h2_diff_m0_22<T: NOCIScalar>(
         let mut contrib =
             w.ab.vab0[0][0] * deta * detb - (deta_c0 + deta_c1) * detb - (detb_c0 + detb_c1) * deta;
 
-        let cofa = [
-            a11,
-            <T as From<f64>>::from(-1.0) * a10,
-            <T as From<f64>>::from(-1.0) * a01,
-            a00,
-        ];
-        let cofb = [
-            b11,
-            <T as From<f64>>::from(-1.0) * b10,
-            <T as From<f64>>::from(-1.0) * b01,
-            b00,
-        ];
+        let n2 = n * n;
+        let a00_base = (r0a * n + c0a) * n2;
+        let a01_base = (r0a * n + c1a) * n2;
+        let a10_base = (r1a * n + c0a) * n2;
+        let a11_base = (r1a * n + c1a) * n2;
 
-        for i in 0..2 {
-            let ra = rows_a[i];
-            for j in 0..2 {
-                let ca = cols_a[j];
-                let cof = cofa[idx(2, i, j)];
+        let b00_idx = r0b * n + c0b;
+        let b01_idx = r0b * n + c1b;
+        let b10_idx = r1b * n + c0b;
+        let b11_idx = r1b * n + c1b;
 
-                let x00 = iisl[idx4(n, ra, ca, r0b, c0b)];
-                let x10 = iisl[idx4(n, ra, ca, r1b, c0b)];
-                let x01 = iisl[idx4(n, ra, ca, r0b, c1b)];
-                let x11 = iisl[idx4(n, ra, ca, r1b, c1b)];
+        let ii00 = b11 * iisl[a00_base + b00_idx]
+            - b10 * iisl[a00_base + b01_idx]
+            - b01 * iisl[a00_base + b10_idx]
+            + b00 * iisl[a00_base + b11_idx];
+        let ii01 = b11 * iisl[a01_base + b00_idx]
+            - b10 * iisl[a01_base + b01_idx]
+            - b01 * iisl[a01_base + b10_idx]
+            + b00 * iisl[a01_base + b11_idx];
+        let ii10 = b11 * iisl[a10_base + b00_idx]
+            - b10 * iisl[a10_base + b01_idx]
+            - b01 * iisl[a10_base + b10_idx]
+            + b00 * iisl[a10_base + b11_idx];
+        let ii11 = b11 * iisl[a11_base + b00_idx]
+            - b10 * iisl[a11_base + b01_idx]
+            - b01 * iisl[a11_base + b10_idx]
+            + b00 * iisl[a11_base + b11_idx];
 
-                contrib += <T as From<f64>>::from(0.5) * cof * (x00 * b11 - b01 * x10);
-                contrib += <T as From<f64>>::from(0.5) * cof * (b00 * x11 - x01 * b10);
-            }
-        }
-
-        for i in 0..2 {
-            let rb = rows_b[i];
-            for j in 0..2 {
-                let cb = cols_b[j];
-                let cof = cofb[idx(2, i, j)];
-
-                let x00 = iisl[idx4(n, r0a, c0a, rb, cb)];
-                let x10 = iisl[idx4(n, r1a, c0a, rb, cb)];
-                let x01 = iisl[idx4(n, r0a, c1a, rb, cb)];
-                let x11 = iisl[idx4(n, r1a, c1a, rb, cb)];
-
-                contrib += <T as From<f64>>::from(0.5) * cof * (x00 * a11 - a01 * x10);
-                contrib += <T as From<f64>>::from(0.5) * cof * (a00 * x11 - x01 * a10);
-            }
-        }
+        contrib += a11 * ii00 - a10 * ii01 - a01 * ii10 + a00 * ii11;
 
         (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
             * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
@@ -493,11 +478,6 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(
 
             let iisl = w.ab.iiab_slice(0, 0, 0, 0);
 
-            let layout_a = ReplacementLayout {
-                n,
-                rows: rows_a,
-                cols: cols_a,
-            };
             let layout_b = ReplacementLayout {
                 n,
                 rows: rows_b,
@@ -524,32 +504,7 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(
                                 )
                             },
                         );
-                        contrib += <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
-                    }
-                }
-            }
-
-            for (i, &rb) in rows_b.iter().enumerate() {
-                for (j, &cb) in cols_b.iter().enumerate() {
-                    let cofb = diff.adjt_detb.as_slice()[idx(lb, i, j)];
-
-                    for k in 0..la {
-                        let corr = column_replacement_correction(
-                            la,
-                            deta0,
-                            diff.adjt_deta.as_slice(),
-                            k,
-                            |r| {
-                                ii_replacement(
-                                    iisl,
-                                    layout_a,
-                                    DetIndex { row: r, col: k },
-                                    DetIndex { row: rb, col: cb },
-                                    false,
-                                )
-                            },
-                        );
-                        contrib += <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
+                        contrib += cofa * (det_detb + corr);
                     }
                 }
             }
@@ -666,11 +621,6 @@ fn lg_h2_diff_gen<T: NOCIScalar>(
                     contrib -= (det_detb + corr) * det_deta;
                 }
 
-                let layout_a = ReplacementLayout {
-                    n,
-                    rows: rows_a,
-                    cols: cols_a,
-                };
                 let layout_b = ReplacementLayout {
                     n,
                     rows: rows_b,
@@ -701,39 +651,11 @@ fn lg_h2_diff_gen<T: NOCIScalar>(
                                     )
                                 },
                             );
-                            contrib += <T as From<f64>>::from(0.5) * cofa * (det_detb + corr);
+                            contrib += cofa * (det_detb + corr);
                         }
                     }
                 }
 
-                for (i, &rb) in rows_b.iter().enumerate() {
-                    for (j, &cb) in cols_b.iter().enumerate() {
-                        let cofb = scratch.adjt_detb.as_slice()[idx(lb, i, j)];
-                        let mb1 = bit(bits_b, j + 1);
-
-                        for k in 0..la {
-                            let mak = bit(bits_a, k + 1);
-                            let iisl = w.ab.iiab_slice(ma0, mak, mb0, mb1);
-
-                            let corr = column_replacement_correction(
-                                la,
-                                scratch.deta_mix.as_slice(),
-                                scratch.adjt_deta.as_slice(),
-                                k,
-                                |r| {
-                                    ii_replacement(
-                                        iisl,
-                                        layout_a,
-                                        DetIndex { row: r, col: k },
-                                        DetIndex { row: rb, col: cb },
-                                        false,
-                                    )
-                                },
-                            );
-                            contrib += <T as From<f64>>::from(0.5) * cofb * (det_deta + corr);
-                        }
-                    }
-                }
                 acc += contrib;
             },
         );

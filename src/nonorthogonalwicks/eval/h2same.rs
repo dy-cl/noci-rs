@@ -135,10 +135,9 @@ fn lg_h2_same_m0_l2<T: NOCIScalar>(
         let det_c1 = a00 * v1 - v0 * a10;
 
         let jsl = w.j_slice(0);
-        let jterm = jsl[idx4(n, r0, c0, r1, c1)]
-            - jsl[idx4(n, r0, c1, r1, c0)]
-            - jsl[idx4(n, r1, c0, r0, c1)]
-            + jsl[idx4(n, r1, c1, r0, c0)];
+        let direct = jsl[idx4(n, r0, c0, r1, c1)];
+        let exchange = jsl[idx4(n, r0, c1, r1, c0)];
+        let jterm = <T as From<f64>>::from(2.0) * (direct - exchange);
 
         w.phase
             * <T as From<f64>>::from(w.tilde_s_prod)
