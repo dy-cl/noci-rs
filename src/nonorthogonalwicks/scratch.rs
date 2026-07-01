@@ -1,5 +1,81 @@
 // nonorthogonalwicks/scratch.rs
+use std::ops::{Deref, DerefMut};
+
 use crate::noci::NOCIScalar;
+
+/// Reusable index storage with a logical length independent of allocation size.
+/// The backing allocation is retained when the logical length changes.
+pub struct IndexVec {
+    data: Vec<usize>,
+    len: usize,
+}
+
+impl Default for IndexVec {
+    fn default() -> Self {
+        Self {
+            data: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
+impl IndexVec {
+    /// Get the logical contents of the index storage as an immutable slice.
+    /// # Arguments:
+    /// - `self`: Index storage.
+    /// # Returns
+    /// - `&[usize]`: Immutable logical index slice.
+    #[inline(always)]
+    pub fn as_slice(&self) -> &[usize] {
+        &self.data[..self.len]
+    }
+
+    /// Get the logical contents of the index storage as a mutable slice.
+    /// # Arguments:
+    /// - `self`: Index storage.
+    /// # Returns
+    /// - `&mut [usize]`: Mutable logical index slice.
+    #[inline(always)]
+    pub fn as_mut_slice(&mut self) -> &mut [usize] {
+        &mut self.data[..self.len]
+    }
+
+    /// Ensure the storage can hold at least `len` indices and set the logical length.
+    /// # Arguments:
+    /// - `self`: Index storage to resize.
+    /// - `len`: Required logical length.
+    /// # Returns
+    /// - `()`: Grows storage if required and updates the logical length.
+    #[inline(always)]
+    pub fn ensure(
+        &mut self,
+        len: usize,
+    ) {
+        if self.len == len {
+            return;
+        }
+        if self.data.len() < len {
+            self.data.resize(len, 0);
+        }
+        self.len = len;
+    }
+}
+
+impl Deref for IndexVec {
+    type Target = [usize];
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for IndexVec {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
 
 pub struct Vec1<T> {
     data: Vec<T>,
@@ -39,6 +115,9 @@ impl<T: Clone + From<f64>> Vec1<T> {
         &mut self,
         len: usize,
     ) {
+        if self.len == len {
+            return;
+        }
         if self.data.len() < len {
             self.data.resize(len, <T as From<f64>>::from(0.0));
         }
@@ -99,6 +178,9 @@ impl<T: Clone + From<f64>> Vec2<T> {
         nrows: usize,
         ncols: usize,
     ) {
+        if self.nrows == nrows && self.ncols == ncols {
+            return;
+        }
         let need = nrows * ncols;
         if self.data.len() < need {
             self.data.resize(need, <T as From<f64>>::from(0.0));
@@ -155,8 +237,10 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
 }
 
 pub struct WickScratch<T: NOCIScalar> {
-    pub rows: Vec<usize>,
-    pub cols: Vec<usize>,
+    pub rows: IndexVec,
+    pub cols: IndexVec,
+    same_rank: Option<usize>,
+    diff_rank: Option<(usize, usize)>,
 
     pub det0: Vec2<T>,
     pub det1: Vec2<T>,
@@ -211,8 +295,10 @@ pub struct WickScratch<T: NOCIScalar> {
 impl<T: NOCIScalar> Default for WickScratch<T> {
     fn default() -> Self {
         Self {
-            rows: Vec::new(),
-            cols: Vec::new(),
+            rows: IndexVec::default(),
+            cols: IndexVec::default(),
+            same_rank: None,
+            diff_rank: None,
             det0: Vec2::default(),
             det1: Vec2::default(),
             det_mix: Vec2::default(),
@@ -290,15 +376,12 @@ impl<T: NOCIScalar> WickScratch<T> {
         &mut self,
         l: usize,
     ) {
-        self.rows.clear();
-        self.cols.clear();
-
-        if self.rows.capacity() < l {
-            self.rows.reserve_exact(l - self.rows.capacity());
+        if self.same_rank == Some(l) {
+            return;
         }
-        if self.cols.capacity() < l {
-            self.cols.reserve_exact(l - self.cols.capacity());
-        }
+        self.same_rank = Some(l);
+        self.rows.ensure(l);
+        self.cols.ensure(l);
 
         self.det0.ensure(l, l);
         self.det1.ensure(l, l);
@@ -334,6 +417,11 @@ impl<T: NOCIScalar> WickScratch<T> {
         la: usize,
         lb: usize,
     ) {
+        if self.diff_rank == Some((la, lb)) {
+            return;
+        }
+        self.diff_rank = Some((la, lb));
+
         self.deta0.ensure(la, la);
         self.deta1.ensure(la, la);
         self.deta_mix.ensure(la, la);

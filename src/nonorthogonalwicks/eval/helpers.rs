@@ -11,7 +11,7 @@ use crate::noci::NOCIScalar;
 use crate::time_call;
 
 use super::super::layout::{idx, idx4};
-use super::super::scratch::{Vec2, WickScratch};
+use super::super::scratch::{IndexVec, Vec2, WickScratch};
 use super::super::view::{SameSpinView, WicksPairView};
 
 /// Row and column layout for determinant replacement operations.
@@ -473,59 +473,28 @@ pub(super) fn construct_determinant_indices_gen(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     nmo: usize,
-    rows: &mut Vec<usize>,
-    cols: &mut Vec<usize>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen,
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
-            rows.clear();
-            cols.clear();
             let need = nl + ng;
-            if rows.capacity() < need {
-                rows.reserve_exact(need - rows.capacity());
-            }
-            if cols.capacity() < need {
-                cols.reserve_exact(need - cols.capacity());
-            }
+            rows.ensure(need);
+            cols.ensure(need);
+            let rows = rows.as_mut_slice();
+            let cols = cols.as_mut_slice();
 
-            if nl == 0 && ng == 0 {
-                return;
-            }
+            rows[..nl].copy_from_slice(&l_ex.parts);
+            cols[..nl].copy_from_slice(&l_ex.holes);
 
-            if nl > 0 && ng == 0 {
-                for &a in &l_ex.parts {
-                    rows.push(a);
-                }
-                for &i in &l_ex.holes {
-                    cols.push(i);
-                }
-                return;
+            for (row, &hole) in rows[nl..].iter_mut().zip(&g_ex.holes) {
+                *row = nmo + hole;
             }
-
-            if nl == 0 && ng > 0 {
-                for &i in &g_ex.holes {
-                    rows.push(nmo + i);
-                }
-                for &a in &g_ex.parts {
-                    cols.push(nmo + a);
-                }
-                return;
-            }
-
-            for &a in &l_ex.parts {
-                rows.push(a);
-            }
-            for &i in &g_ex.holes {
-                rows.push(nmo + i);
-            }
-            for &i in &l_ex.holes {
-                cols.push(i);
-            }
-            for &a in &g_ex.parts {
-                cols.push(nmo + a);
+            for (col, &part) in cols[nl..].iter_mut().zip(&g_ex.parts) {
+                *col = nmo + part;
             }
         }
     )

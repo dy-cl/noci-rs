@@ -1,5 +1,5 @@
 // nonorthogonalwicks/eval/prepare.rs
-use super::super::scratch::WickScratch;
+use super::super::scratch::{IndexVec, WickScratch};
 use super::super::view::SameSpinView;
 use super::helpers::construct_determinant_indices_gen;
 use crate::ExcitationSpin;
@@ -52,11 +52,7 @@ fn prepare_same_m0<T: NOCIScalar>(
         let l = l_ex.holes.len() + g_ex.holes.len();
 
         match l {
-            0 => {
-                scratch.ensure_same(0);
-                scratch.rows.clear();
-                scratch.cols.clear();
-            }
+            0 => scratch.ensure_same(0),
             1 => {
                 scratch.ensure_same(1);
                 construct_determinant_indices(
@@ -363,8 +359,8 @@ fn construct_determinant_indices(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     nmo: usize,
-    rows: &mut Vec<usize>,
-    cols: &mut Vec<usize>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices,
@@ -396,31 +392,25 @@ pub(super) fn construct_determinant_indices_l1(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     nmo: usize,
-    rows: &mut Vec<usize>,
-    cols: &mut Vec<usize>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l1,
         {
             let nl = l_ex.holes.len();
-
-            rows.clear();
-            cols.clear();
-
-            if rows.capacity() < 1 {
-                rows.reserve_exact(1 - rows.capacity());
-            }
-            if cols.capacity() < 1 {
-                cols.reserve_exact(1 - cols.capacity());
-            }
+            rows.ensure(1);
+            cols.ensure(1);
+            let rows = rows.as_mut_slice();
+            let cols = cols.as_mut_slice();
 
             unsafe {
                 if nl == 1 {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(0));
+                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                    *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
                 } else {
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                    *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
+                    *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
                 }
             }
         }
@@ -441,41 +431,35 @@ pub(super) fn construct_determinant_indices_l2(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     nmo: usize,
-    rows: &mut Vec<usize>,
-    cols: &mut Vec<usize>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l2,
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
-
-            rows.clear();
-            cols.clear();
-
-            if rows.capacity() < 2 {
-                rows.reserve_exact(2 - rows.capacity());
-            }
-            if cols.capacity() < 2 {
-                cols.reserve_exact(2 - cols.capacity());
-            }
+            rows.ensure(2);
+            cols.ensure(2);
+            let rows = rows.as_mut_slice();
+            let cols = cols.as_mut_slice();
 
             unsafe {
                 if nl == 2 {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(*l_ex.parts.get_unchecked(1));
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(1));
+                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                    *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
+                    *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                    *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
                 } else if ng == 2 {
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                    *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
+                    *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(1);
+                    *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
+                    *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(1);
                 } else {
-                    rows.push(*l_ex.parts.get_unchecked(0));
-                    rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                    cols.push(*l_ex.holes.get_unchecked(0));
-                    cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                    *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(0);
+                    *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                    *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(0);
                 }
             }
         }
@@ -499,62 +483,52 @@ pub(super) fn construct_determinant_indices_l3(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     nmo: usize,
-    rows: &mut Vec<usize>,
-    cols: &mut Vec<usize>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l3,
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
-
-            rows.clear();
-            cols.clear();
-
-            if rows.capacity() < 3 {
-                rows.reserve_exact(3 - rows.capacity());
-            }
-            if cols.capacity() < 3 {
-                cols.reserve_exact(3 - cols.capacity());
-            }
+            rows.ensure(3);
+            cols.ensure(3);
+            let rows = rows.as_mut_slice();
+            let cols = cols.as_mut_slice();
 
             unsafe {
                 match (nl, ng) {
                     (3, 0) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(*l_ex.parts.get_unchecked(1));
-                        rows.push(*l_ex.parts.get_unchecked(2));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(*l_ex.holes.get_unchecked(1));
-                        cols.push(*l_ex.holes.get_unchecked(2));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = *l_ex.parts.get_unchecked(2);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = *l_ex.holes.get_unchecked(2);
                     }
                     (2, 1) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(*l_ex.parts.get_unchecked(1));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(*l_ex.holes.get_unchecked(1));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(0);
                     }
                     (1, 2) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(0);
+                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(0);
+                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(1);
                     }
                     (0, 3) => {
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(2));
-
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(2));
+                        *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(2);
+                        *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(2);
                     }
                     _ => unreachable!(),
                 }
@@ -577,81 +551,70 @@ pub(super) fn construct_determinant_indices_l4(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     nmo: usize,
-    rows: &mut Vec<usize>,
-    cols: &mut Vec<usize>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l4,
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
-
-            rows.clear();
-            cols.clear();
-
-            if rows.capacity() < 4 {
-                rows.reserve_exact(4 - rows.capacity());
-            }
-            if cols.capacity() < 4 {
-                cols.reserve_exact(4 - cols.capacity());
-            }
+            rows.ensure(4);
+            cols.ensure(4);
+            let rows = rows.as_mut_slice();
+            let cols = cols.as_mut_slice();
 
             unsafe {
                 match (nl, ng) {
                     (4, 0) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(*l_ex.parts.get_unchecked(1));
-                        rows.push(*l_ex.parts.get_unchecked(2));
-                        rows.push(*l_ex.parts.get_unchecked(3));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(*l_ex.holes.get_unchecked(1));
-                        cols.push(*l_ex.holes.get_unchecked(2));
-                        cols.push(*l_ex.holes.get_unchecked(3));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = *l_ex.parts.get_unchecked(2);
+                        *rows.get_unchecked_mut(3) = *l_ex.parts.get_unchecked(3);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = *l_ex.holes.get_unchecked(2);
+                        *cols.get_unchecked_mut(3) = *l_ex.holes.get_unchecked(3);
                     }
                     (3, 1) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(*l_ex.parts.get_unchecked(1));
-                        rows.push(*l_ex.parts.get_unchecked(2));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(*l_ex.holes.get_unchecked(1));
-                        cols.push(*l_ex.holes.get_unchecked(2));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = *l_ex.parts.get_unchecked(2);
+                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = *l_ex.holes.get_unchecked(2);
+                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(0);
                     }
                     (2, 2) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(*l_ex.parts.get_unchecked(1));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(*l_ex.holes.get_unchecked(1));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(0);
+                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(0);
+                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(1);
                     }
                     (1, 3) => {
-                        rows.push(*l_ex.parts.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(2));
-
-                        cols.push(*l_ex.holes.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(2));
+                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(0);
+                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(1);
+                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(2);
+                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(0);
+                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(1);
+                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(2);
                     }
                     (0, 4) => {
-                        rows.push(nmo + *g_ex.holes.get_unchecked(0));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(1));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(2));
-                        rows.push(nmo + *g_ex.holes.get_unchecked(3));
-
-                        cols.push(nmo + *g_ex.parts.get_unchecked(0));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(1));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(2));
-                        cols.push(nmo + *g_ex.parts.get_unchecked(3));
+                        *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
+                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(1);
+                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(2);
+                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(3);
+                        *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
+                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(1);
+                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(2);
+                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(3);
                     }
                     _ => unreachable!(),
                 }
