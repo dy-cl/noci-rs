@@ -4,19 +4,12 @@ use std::ops::{Deref, DerefMut};
 use crate::noci::NOCIScalar;
 
 /// Reusable index storage with a logical length independent of allocation size.
-/// The backing allocation is retained when the logical length changes.
+#[derive(Default)]
 pub struct IndexVec {
+    /// Retained backing storage for the indices.
     data: Vec<usize>,
+    /// Number of indices currently in use.
     len: usize,
-}
-
-impl Default for IndexVec {
-    fn default() -> Self {
-        Self {
-            data: Vec::new(),
-            len: 0,
-        }
-    }
 }
 
 impl IndexVec {
@@ -64,6 +57,9 @@ impl IndexVec {
 impl Deref for IndexVec {
     type Target = [usize];
 
+    /// Return the active indices as an immutable slice.
+    /// # Returns
+    /// - `&[usize]`: Active indices.
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
         self.as_slice()
@@ -71,18 +67,27 @@ impl Deref for IndexVec {
 }
 
 impl DerefMut for IndexVec {
+    /// Return the active indices as a mutable slice.
+    /// # Returns
+    /// - `&mut [usize]`: Active indices.
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
 
+/// Reusable one-dimensional storage with a logical length independent of allocation size.
 pub struct Vec1<T> {
+    /// Retained backing storage for the values.
     data: Vec<T>,
+    /// Number of values currently in use.
     len: usize,
 }
 
 impl<T> Default for Vec1<T> {
+    /// Construct empty reusable one-dimensional storage.
+    /// # Returns
+    /// - `Self`: Empty storage with zero logical length.
     fn default() -> Self {
         Self {
             data: Vec::new(),
