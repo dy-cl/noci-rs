@@ -1,4 +1,7 @@
 // stochastic/propagate.rs
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use mpi::collective::SystemOperation;
 use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
@@ -407,7 +410,7 @@ fn update_p(
 /// - `()`: Updates the local delta vector, optional excitation histogram, and MPI send buffers.
 fn acc_pack_updates(
     mc: &mut MCState,
-    prop: PropagationResult,
+    prop: &mut PropagationResult,
     input: &Input,
     ndets: usize,
     nranks: usize,
@@ -415,7 +418,7 @@ fn acc_pack_updates(
 ) {
     time_call!(crate::timers::stochastic::add_acc_pack_updates, {
         // Add the `delta` for local determinants.
-        for (det, dn) in prop.local {
+        for (det, dn) in prop.local.drain(..) {
             add_delta(mc, det, dn);
         }
 
@@ -423,12 +426,15 @@ fn acc_pack_updates(
         if input.write.write_excitation_hist
             && let Some(hist) = mc.excitation_hist.as_mut()
         {
-            for p in prop.samples {
+            for p in prop.samples.drain(..) {
                 hist.add(p);
             }
+        } else {
+            prop.samples.clear();
         }
 
         pack_spawn_updates(&prop.remote, ndets, nranks, scratch);
+        prop.remote.clear();
     })
 }
 
@@ -446,7 +452,7 @@ fn acc_pack_updates(
 /// - `()`: Updates `mc.delta` in place.
 fn accumulate_updates(
     mc: &mut MCState,
-    prop: PropagationResult,
+    prop: &mut PropagationResult,
     input: &Input,
     mpi: &mut MPIScratch,
     world: &impl CommunicatorCollectives,
@@ -534,96 +540,67 @@ fn pack_spawn_updates(
 }
 
 /// Perform spawning and death/cloning steps over the currently occupied determinants.
+/// Work is assigned dynamically one determinant at a time to persistent Rayon worker states.
 /// # Arguments:
 /// - `it`: Current iteration number.
 /// - `mc`: Contains the current Monte Carlo state.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local run metadata.
-/// - `scratchsize`: Maximum sizes required for per-thread Wick scratch space.
 /// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `workers`: Persistent propagation state for each Rayon worker.
+/// - `result`: Reusable combined propagation result storage.
 /// # Returns
-/// - `PropagationResult`: Local and remote population updates together with spawning probability samples.
+/// - `()`: Fills `result` with local, remote, and histogram updates.
 fn propagate_iteration(
     it: usize,
     mc: &MCState,
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
-    scratchsize: &ScratchSize,
     shifts: Shifts,
-) -> PropagationResult {
+    workers: &mut [Mutex<ThreadPropagation>],
+    result: &mut PropagationResult,
+) {
     time_call!(crate::timers::stochastic::add_propagate_iteration, {
-        // Closure to initialise per Rayon thread state. Each thread gets individual RNG seed and
-        // scratch space for non-orthogonal Wick's theorem calculations.
-        let initialise = || -> ThreadPropagation {
-            let tid = rayon::current_thread_index().unwrap_or(0) as u64;
-            ThreadPropagation {
-                local: Vec::new(),
-                remote: Vec::new(),
-                samples: Vec::new(),
-                rng: SmallRng::seed_from_u64(
-                    run.rank_seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15)),
-                ),
-                scratch: Box::new(WickScratchSpin::with_sizes(
-                    scratchsize.maxsame,
-                    scratchsize.maxla,
-                    scratchsize.maxlb,
-                )),
-            }
-        };
-
-        // Closure to carry out the spawning, death and cloning propagation steps. Exits early if a
-        // determinant has zero population.
-        let propagate = |mut acc: ThreadPropagation, &gamma: &usize| -> ThreadPropagation {
-            let ngamma = mc.walkers.get(gamma);
-            if ngamma == 0 {
-                return acc;
-            }
-
-            acc.death_cloning(gamma, ngamma, shifts, data, &run.diagonal_hs);
-            acc.spawning(gamma, ngamma, shifts, data, run);
-            acc
-        };
-
-        // Closure to combine two thread local accumulators by appending update vectors.
-        let merge = |mut a: ThreadPropagation, mut b: ThreadPropagation| -> ThreadPropagation {
-            a.local.append(&mut b.local);
-            a.remote.append(&mut b.remote);
-            a.samples.append(&mut b.samples);
-            a
-        };
+        result.clear();
 
         let occ = mc.walkers.occ();
-        let nthreads = rayon::current_num_threads();
-        let min_parallel_occ = nthreads * 32;
+        if !occ.is_empty() {
+            let next = AtomicUsize::new(0);
+            let workers_shared: &[Mutex<ThreadPropagation>] = workers;
 
-        let acc = if occ.len() < min_parallel_occ {
-            occ.iter().fold(initialise(), propagate)
-        } else {
-            let mut occ_sorted = occ.to_vec();
-            occ_sorted.sort_unstable_by_key(|&gamma| data.basis[gamma].parent);
-            let min_len = (occ.len() / (nthreads * 4)).max(1);
-            occ_sorted
-                .par_iter()
-                .with_min_len(min_len)
-                .fold(initialise, propagate)
-                .reduce(
-                    || ThreadPropagation {
-                        local: Vec::new(),
-                        remote: Vec::new(),
-                        samples: Vec::new(),
-                        rng: SmallRng::seed_from_u64(0),
-                        scratch: Box::new(WickScratchSpin::new()),
-                    },
-                    merge,
-                )
-        };
+            rayon::broadcast(|context| {
+                let tid = context.index();
+                let mut worker = workers_shared[tid].lock().unwrap();
+                worker.clear();
+                worker.rng = SmallRng::seed_from_u64(
+                    run.rank_seed ^ tid as u64 ^ (it as u64).wrapping_mul(0x9E3779B97F4A7C15),
+                );
 
-        PropagationResult {
-            local: acc.local,
-            remote: acc.remote,
-            samples: acc.samples,
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= occ.len() {
+                        break;
+                    }
+
+                    let gamma = occ[i];
+                    let ngamma = mc.walkers.get(gamma);
+                    if ngamma == 0 {
+                        continue;
+                    }
+
+                    worker.death_cloning(gamma, ngamma, shifts, data, &run.diagonal_hs);
+                    worker.spawning(gamma, ngamma, shifts, data, run);
+                }
+            });
         }
-    })
+
+        for worker in workers.iter_mut() {
+            let worker = worker.get_mut().unwrap();
+            result.local.append(&mut worker.local);
+            result.remote.append(&mut worker.remote);
+            result.samples.append(&mut worker.samples);
+        }
+    });
 }
 
 /// Compute the local non-overlap and overlap-transformed population statistics.
@@ -853,6 +830,18 @@ pub fn qmc_step(
         diagonal_hs,
     };
 
+    let mut workers = (0..rayon::current_num_threads())
+        .map(|tid| {
+            Mutex::new(ThreadPropagation::with_sizes(
+                run.rank_seed ^ tid as u64,
+                scratchsize.maxsame,
+                scratchsize.maxla,
+                scratchsize.maxlb,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut propagation_result = PropagationResult::new();
+
     // Thread local scratch for Wick's theorem and for MPI communicattion.
     let mut scratch = WickScratchSpin::new();
     let mut mpiscratch = MPIScratch::new(run.nranks);
@@ -908,12 +897,20 @@ pub fn qmc_step(
             };
 
             // Perform spawning, death, cloning and annhilation.
-            let prop = propagate_iteration(iter, &state.mc, data, &run, &scratchsize, shifts);
+            propagate_iteration(
+                iter,
+                &state.mc,
+                data,
+                &run,
+                shifts,
+                &mut workers,
+                &mut propagation_result,
+            );
 
             // Accumulate local updates, assemble the remote updates and send with MPI.
             accumulate_updates(
                 &mut state.mc,
-                prop,
+                &mut propagation_result,
                 data.input,
                 &mut mpiscratch,
                 world,
