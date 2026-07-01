@@ -1,9 +1,12 @@
 // nonorthogonalwicks/view.rs
+use std::ops::Deref;
 use std::ptr::NonNull;
 
 use ndarray::ArrayView2;
 
-use super::types::{DiffSpinOffset, PairMeta, PairOffset, SameSpinOffset};
+use super::types::{
+    DiffSpinMeta, DiffSpinOffset, PairMeta, PairOffset, SameSpinMeta, SameSpinOffset,
+};
 use crate::noci::NOCIScalar;
 
 /// Storage for data which allows the Wicks objects to be viewed.
@@ -116,34 +119,23 @@ impl<T: NOCIScalar> WicksView<T> {
         gp: usize,
     ) -> WicksPairView<'_, T> {
         let idx = self.idx(lp, gp);
+        let meta = &self.meta[idx];
+        let off = &self.off[idx];
 
         let aa = SameSpinView {
-            nmo: self.meta[idx].aa.nmo,
-            m: self.meta[idx].aa.m,
-            tilde_s_prod: self.meta[idx].aa.tilde_s_prod,
-            phase: self.meta[idx].aa.phase,
-            f0f: self.meta[idx].aa.f0f,
-            f0h: self.meta[idx].aa.f0h,
-            v0: self.meta[idx].aa.v0,
+            meta: &meta.aa,
             w: self,
-            off: &self.off[idx].aa,
+            off: &off.aa,
         };
         let bb = SameSpinView {
-            nmo: self.meta[idx].bb.nmo,
-            m: self.meta[idx].bb.m,
-            tilde_s_prod: self.meta[idx].bb.tilde_s_prod,
-            phase: self.meta[idx].bb.phase,
-            f0f: self.meta[idx].bb.f0f,
-            f0h: self.meta[idx].bb.f0h,
-            v0: self.meta[idx].bb.v0,
+            meta: &meta.bb,
             w: self,
-            off: &self.off[idx].bb,
+            off: &off.bb,
         };
         let ab = DiffSpinView {
-            nmo: self.meta[idx].ab.nmo,
-            vab0: self.meta[idx].ab.vab0,
+            meta: &meta.ab,
             w: self,
-            off: &self.off[idx].ab,
+            off: &off.ab,
         };
 
         WicksPairView { aa, bb, ab }
@@ -189,24 +181,25 @@ impl<T: NOCIScalar> WicksView<T> {
 // Read only view of same-spin Wick's intermediates.
 #[derive(Clone, Copy)]
 pub(crate) struct SameSpinView<'a, T: NOCIScalar> {
-    /// Number of molecular orbitals for this spin block.
-    pub(crate) nmo: usize,
-    /// Number of zero-overlap orbital pairs in the biorthogonal basis for this spin block.
-    pub(crate) m: usize,
-    /// Product of the non-zero singular values, i.e. the reduced overlap for this spin block.
-    pub(crate) tilde_s_prod: f64,
-    /// Overall phase associated with this same-spin block.
-    pub(crate) phase: T,
-    /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
-    pub(crate) f0f: [T; 2],
-    /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
-    pub(crate) f0h: [T; 2],
-    /// Zeroth-order two-body scalar contributions for the allowed branch combinations.
-    pub(crate) v0: [T; 3],
+    /// Metadata and scalar intermediates for this same-spin reference pair.
+    pub(crate) meta: &'a SameSpinMeta<T>,
     /// Parent view providing access to the contiguous tensor slab.
     pub(crate) w: &'a WicksView<T>,
     /// Offsets for all same-spin intermediates belonging to this reference pair.
     pub(crate) off: &'a SameSpinOffset,
+}
+
+impl<T: NOCIScalar> Deref for SameSpinView<'_, T> {
+    type Target = SameSpinMeta<T>;
+
+    /// Borrow the same-spin metadata for transparent field access.
+    /// # Arguments:
+    /// - `self`: Same-spin Wick view.
+    /// # Returns
+    /// - `&SameSpinMeta<T>`: Borrowed same-spin metadata.
+    fn deref(&self) -> &Self::Target {
+        self.meta
+    }
 }
 
 impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
@@ -309,14 +302,25 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
 /// Read only view of diff-spin Wick's intermediates.
 #[derive(Clone, Copy)]
 pub(crate) struct DiffSpinView<'a, T: NOCIScalar> {
-    /// Number of molecular orbitals for this different-spin block.
-    pub(crate) nmo: usize,
-    /// Zeroth-order mixed-spin Vab scalar contributions for the branch combinations.
-    pub(crate) vab0: [[T; 2]; 2],
+    /// Metadata and scalar intermediates for this different-spin reference pair.
+    pub(crate) meta: &'a DiffSpinMeta<T>,
     /// Parent view providing access to the contiguous tensor slab.
     w: &'a WicksView<T>,
     /// Offsets for all different-spin intermediates belonging to this reference pair.
     off: &'a DiffSpinOffset,
+}
+
+impl<T: NOCIScalar> Deref for DiffSpinView<'_, T> {
+    type Target = DiffSpinMeta<T>;
+
+    /// Borrow the different-spin metadata for transparent field access.
+    /// # Arguments:
+    /// - `self`: Different-spin Wick view.
+    /// # Returns
+    /// - `&DiffSpinMeta<T>`: Borrowed different-spin metadata.
+    fn deref(&self) -> &Self::Target {
+        self.meta
+    }
 }
 
 impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
