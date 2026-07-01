@@ -3,8 +3,8 @@ use mpi::collective::SystemOperation;
 use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
 use mpi::traits::*;
-use rand::SeedableRng;
 use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use rayon::prelude::*;
 
 use super::state::{
@@ -37,11 +37,20 @@ pub(in crate::stochastic) fn find_s(
 ) -> f64 {
     // Get the sorted pair of indices
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
-    calculate_s_pair(
-        data,
-        DetPair::new(&data.basis[a], &data.basis[b]),
-        Some(scratch),
-    )
+    let ldet = &data.basis[a];
+    let gdet = &data.basis[b];
+
+    if ldet.parent == gdet.parent
+        && let Some(mocache) = data.mocache
+        && mocache[ldet.parent].orthogonal_slater_condon
+    {
+        if ldet.oa == gdet.oa && ldet.ob == gdet.ob {
+            return (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+        }
+        return 0.0;
+    }
+
+    calculate_s_pair(data, DetPair::new(ldet, gdet), Some(scratch))
 }
 
 /// Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
@@ -262,10 +271,8 @@ fn projected_energy_local(
         .map_init(WickScratchSpin::new, |scratch, up| {
             let gamma = up.det as usize;
             let dn = up.dn as f64;
-            (
-                dn * find_hs(data, iref, gamma, scratch).0,
-                dn * find_s(data, iref, gamma, scratch),
-            )
+            let (h, s) = find_hs(data, iref, gamma, scratch);
+            (dn * h, dn * s)
         })
         .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
 }
@@ -296,7 +303,15 @@ fn add_plocal(
         |scratch, (k, pgamma)| {
             let gamma = run.owned[k];
             let mut dp = 0.0;
-            for up in updates {
+            for (iup, up) in updates.iter().enumerate() {
+                if let Some(next) = updates.get(iup + 1)
+                    && let Some(wicks) = data.wicks
+                {
+                    wicks.prefetch_pair(
+                        data.basis[gamma].parent,
+                        data.basis[next.det as usize].parent,
+                    );
+                }
                 let omega = up.det as usize;
                 dp += find_s(data, gamma, omega, scratch) * up.dn as f64;
             }
@@ -548,11 +563,11 @@ fn propagate_iteration(
                 rng: SmallRng::seed_from_u64(
                     run.rank_seed ^ tid ^ ((it as u64).wrapping_mul(0x9E3779B97F4A7C15)),
                 ),
-                scratch: WickScratchSpin::with_sizes(
+                scratch: Box::new(WickScratchSpin::with_sizes(
                     scratchsize.maxsame,
                     scratchsize.maxla,
                     scratchsize.maxlb,
-                ),
+                )),
             }
         };
 
@@ -564,7 +579,7 @@ fn propagate_iteration(
                 return acc;
             }
 
-            acc.death_cloning(gamma, ngamma, shifts, data);
+            acc.death_cloning(gamma, ngamma, shifts, data, &run.diagonal_hs);
             acc.spawning(gamma, ngamma, shifts, data, run);
             acc
         };
@@ -577,22 +592,31 @@ fn propagate_iteration(
             a
         };
 
-        // Carry out the above closures via parallel fold over occupied determinants.
-        let acc = mc
-            .walkers
-            .occ()
-            .par_iter()
-            .fold(initialise, propagate)
-            .reduce(
-                || ThreadPropagation {
-                    local: Vec::new(),
-                    remote: Vec::new(),
-                    samples: Vec::new(),
-                    rng: SmallRng::seed_from_u64(0),
-                    scratch: WickScratchSpin::new(),
-                },
-                merge,
-            );
+        let occ = mc.walkers.occ();
+        let nthreads = rayon::current_num_threads();
+        let min_parallel_occ = nthreads * 32;
+
+        let acc = if occ.len() < min_parallel_occ {
+            occ.iter().fold(initialise(), propagate)
+        } else {
+            let mut occ_sorted = occ.to_vec();
+            occ_sorted.sort_unstable_by_key(|&gamma| data.basis[gamma].parent);
+            let min_len = (occ.len() / (nthreads * 4)).max(1);
+            occ_sorted
+                .par_iter()
+                .with_min_len(min_len)
+                .fold(initialise, propagate)
+                .reduce(
+                    || ThreadPropagation {
+                        local: Vec::new(),
+                        remote: Vec::new(),
+                        samples: Vec::new(),
+                        rng: SmallRng::seed_from_u64(0),
+                        scratch: Box::new(WickScratchSpin::new()),
+                    },
+                    merge,
+                )
+        };
 
         PropagationResult {
             local: acc.local,
@@ -793,6 +817,30 @@ pub fn qmc_step(
     let base_seed = qmc.seed.unwrap_or_else(rand::random);
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
 
+    // Precompute largest possible size needed for the non-orthogonal Wick's theorem scratch space.
+    let scratchsize = {
+        let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
+        ScratchSize {
+            maxsame,
+            maxla,
+            maxlb,
+        }
+    };
+
+    let diagonal_hs: Vec<(f64, f64)> = (0..ndets)
+        .into_par_iter()
+        .map_init(
+            || {
+                WickScratchSpin::with_sizes(
+                    scratchsize.maxsame,
+                    scratchsize.maxla,
+                    scratchsize.maxlb,
+                )
+            },
+            |scratch, i| find_hs(data, i, i, scratch),
+        )
+        .collect();
+
     let owned = owned(irank, ndets, nranks);
     let run = QMCRunInfo {
         irank,
@@ -802,16 +850,7 @@ pub fn qmc_step(
         iref: 0,
         base_seed,
         rank_seed,
-    };
-
-    // Precompute largest possible size needed for the non-orthogonal Wick's theorem scratch space.
-    let scratchsize = {
-        let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
-        ScratchSize {
-            maxsame,
-            maxla,
-            maxlb,
-        }
+        diagonal_hs,
     };
 
     // Thread local scratch for Wick's theorem and for MPI communicattion.

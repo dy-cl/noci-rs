@@ -141,6 +141,57 @@ pub fn print_report(
 
     println!("{}", "-".repeat(100));
 
+    if input.qmc.is_some() {
+        println!("Stochastic NOCI-QMC timings");
+        print_counter(
+            "Total stochastic NOCI-QMC time",
+            res.timings.stochastic.run_qmc_stochastic_noci,
+            2,
+        );
+        print_counter("Full QMC step", res.timings.stochastic.qmc_step, 2);
+        print_counter(
+            "Initialise QMC walkers",
+            res.timings.stochastic.step.initialise_walkers,
+            4,
+        );
+        print_counter(
+            "Spawn/death propagation",
+            res.timings.stochastic.step.propagate_iteration,
+            4,
+        );
+        print_counter(
+            "Accumulate spawned updates",
+            res.timings.stochastic.step.acc_pack_updates,
+            4,
+        );
+        print_counter(
+            "Apply population delta",
+            res.timings.stochastic.step.apply_delta,
+            4,
+        );
+        print_counter(
+            "Update overlap-transformed population",
+            res.timings.stochastic.step.update_p,
+            4,
+        );
+        print_counter(
+            "Update projected energy",
+            res.timings.stochastic.step.update_projected_energy,
+            4,
+        );
+        print_counter(
+            "Compute population statistics",
+            res.timings.stochastic.step.compute_populations,
+            4,
+        );
+        print_counter(
+            "Observable all-reduce",
+            res.timings.stochastic.step.observables_allreduce,
+            4,
+        );
+        println!("{}", "-".repeat(100));
+    }
+
     if input.snoci.is_some() {
         print_counter("Total SNOCI time", res.timings.snoci.run_snoci, 0);
         print_counter("Full SNOCI step", res.timings.snoci.snoci_step, 2);

@@ -36,7 +36,7 @@ excit = {
 }
 
 prop = {
-    dt = 1e-3,
+    dt = 1e-2,
     propagator = "difference-doubly-shifted-u2",
 }
 

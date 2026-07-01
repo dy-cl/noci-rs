@@ -9,7 +9,7 @@ use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
-use super::propagate::find_hs;
+use super::propagate::{coupling, find_hs};
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
@@ -50,6 +50,8 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) base_seed: u64,
     /// Rank-specific seed derived from the base seed.
     pub(in crate::stochastic) rank_seed: u64,
+    /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
+    pub(in crate::stochastic) diagonal_hs: Vec<(f64, f64)>,
 }
 
 /// Storage for maximum size required for Wick's scratch.
@@ -444,7 +446,7 @@ pub(in crate::stochastic) struct ThreadPropagation {
     /// Thread local RNG.
     pub(in crate::stochastic) rng: SmallRng,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
-    pub(in crate::stochastic) scratch: WickScratchSpin<f64>,
+    pub(in crate::stochastic) scratch: Box<WickScratchSpin<f64>>,
 }
 
 impl ThreadPropagation {
@@ -462,8 +464,9 @@ impl ThreadPropagation {
         ngamma: i64,
         shifts: Shifts,
         data: &NOCIData<'_, f64>,
+        diagonal_hs: &[(f64, f64)],
     ) {
-        let (hgg, sgg) = find_hs(data, gamma, gamma, &mut self.scratch);
+        let (hgg, sgg) = diagonal_hs[gamma];
 
         let pdeath = match data.input.prop_ref().propagator {
             Propagator::Unshifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s),
@@ -526,16 +529,82 @@ impl ThreadPropagation {
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
     ) {
+        let qmc = data.input.qmc.as_ref().unwrap();
+        let prop = data.input.prop_ref();
+        let dt = prop.dt;
+        let write_excitation_hist = data.input.write.write_excitation_hist;
         let parent_sign = if ngamma > 0 { 1 } else { -1 };
         let nwalkers = ngamma.unsigned_abs();
 
+        if let ExcitationGen::Uniform = qmc.excitation_gen
+            && data.wicks.is_some()
+        {
+            let ndets = data.basis.len();
+            let pgen = 1.0 / ((ndets - 1) as f64);
+            let sample_uniform = |rng: &mut SmallRng| -> (usize, f64) {
+                let mut lambda = rng.gen_range(0..(ndets - 1));
+                if lambda >= gamma {
+                    lambda += 1;
+                }
+                (lambda, rng.gen_range(0.0..1.0))
+            };
+
+            let (mut lambda, mut u) = sample_uniform(&mut self.rng);
+            for iwalker in 0..nwalkers {
+                let next = if iwalker + 1 < nwalkers {
+                    let next = sample_uniform(&mut self.rng);
+                    if let Some(wicks) = data.wicks {
+                        wicks.prefetch_pair(data.basis[next.0].parent, data.basis[gamma].parent);
+                    }
+                    Some(next)
+                } else {
+                    None
+                };
+
+                let (hlg, slg) = find_hs(data, lambda, gamma, &mut self.scratch);
+                let k = coupling(hlg, slg, shifts.es_s, shifts.es, &prop.propagator);
+                let pspawn = dt * k.abs() / pgen;
+                if write_excitation_hist {
+                    self.samples.push(pspawn);
+                }
+
+                let m = pspawn.floor() as i64;
+                let frac = pspawn - (m as f64);
+                let nchildren = m + if u < frac { 1 } else { 0 };
+                if nchildren != 0 {
+                    let sign = if k > 0.0 { 1 } else { -1 };
+                    let child_sign = -sign * parent_sign;
+                    let dn = child_sign * nchildren;
+
+                    if run.nranks == 1 {
+                        self.local.push((lambda, dn));
+                    } else {
+                        let destination = owner(lambda, run.ndets, run.nranks);
+                        if destination == run.irank {
+                            self.local.push((lambda, dn));
+                        } else {
+                            self.remote.push(PopulationUpdate {
+                                det: lambda as u64,
+                                dn,
+                            });
+                        }
+                    }
+                }
+
+                if let Some(next) = next {
+                    (lambda, u) = next;
+                }
+            }
+            return;
+        }
+
         let mut hb: Option<HeatBath> = None;
-        if let ExcitationGen::HeatBath = data.input.qmc.as_ref().unwrap().excitation_gen {
+        if let ExcitationGen::HeatBath = qmc.excitation_gen {
             hb = Some(init_heat_bath(gamma, shifts, data, &mut self.scratch));
         }
 
         for _ in 0..nwalkers {
-            let (pgen, k, lambda) = match data.input.qmc.as_ref().unwrap().excitation_gen {
+            let (pgen, k, lambda) = match qmc.excitation_gen {
                 ExcitationGen::Uniform => {
                     pgen_uniform(gamma, shifts, data, &mut self.rng, &mut self.scratch)
                 }
@@ -550,8 +619,8 @@ impl ThreadPropagation {
                 ExcitationGen::ApproximateHeatBath => unimplemented!(),
             };
 
-            let pspawn = data.input.prop_ref().dt * k.abs() / pgen;
-            if data.input.write.write_excitation_hist {
+            let pspawn = dt * k.abs() / pgen;
+            if write_excitation_hist {
                 self.samples.push(pspawn);
             }
 
