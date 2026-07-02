@@ -41,7 +41,7 @@ qmc = {
 
 wicks = {
     enabled = true,
-    compare = true,
+    compare = false,
     storage = "ram",
     cachedir = ".",
 }
