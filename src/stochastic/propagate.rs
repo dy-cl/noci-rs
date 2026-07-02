@@ -280,6 +280,52 @@ fn projected_energy_local(
         .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
 }
 
+/// Build contiguous determinant ranges for each parent reference.
+/// # Arguments
+/// - `data`: Immutable stochastic propagation data.
+/// # Returns
+/// - `Vec<(usize, usize)>`: Half-open determinant ranges keyed by parent.
+fn parent_ranges(data: &NOCIData<'_, f64>) -> Vec<(usize, usize)> {
+    let nparents = data
+        .basis
+        .iter()
+        .map(|det| det.parent)
+        .max()
+        .map(|p| p + 1)
+        .unwrap_or(0);
+
+    let mut ranges = vec![(usize::MAX, 0usize); nparents];
+
+    for (idet, det) in data.basis.iter().enumerate() {
+        let range = &mut ranges[det.parent];
+        range.0 = range.0.min(idet);
+        range.1 = range.1.max(idet + 1);
+    }
+
+    ranges
+}
+
+/// Build orthogonal same-parent overlap flags for each parent reference.
+/// # Arguments
+/// - `data`: Immutable stochastic propagation data.
+/// - `nparents`: Number of parent references.
+/// # Returns
+/// - `Vec<bool>`: Whether each parent uses orthogonal Slater-Condon overlap.
+fn parent_orthogonal(
+    data: &NOCIData<'_, f64>,
+    nparents: usize,
+) -> Vec<bool> {
+    let mut out = vec![false; nparents];
+
+    if let Some(mocache) = data.mocache {
+        for (parent, flag) in out.iter_mut().enumerate() {
+            *flag = mocache[parent].orthogonal_slater_condon;
+        }
+    }
+
+    out
+}
+
 /// Add the contribution from a sparse set of determinant updates to the local `p_{\Gamma}` block.
 /// Work is assigned dynamically one determinant at a time to persistent Rayon worker states.
 /// # Arguments:
@@ -321,18 +367,40 @@ fn add_plocal(
             }
 
             let gamma = run.owned[k];
+            let gamma_parent = data.basis[gamma].parent;
+            let gamma_parent_orthogonal = run.parent_orthogonal[gamma_parent];
+
             let mut dp = 0.0;
-            for (iup, up) in updates.iter().enumerate() {
-                if let Some(next) = updates.get(iup + 1)
-                    && let Some(wicks) = data.wicks
-                {
-                    wicks.prefetch_pair(
-                        data.basis[gamma].parent,
-                        data.basis[next.det as usize].parent,
-                    );
+            let mut iup = 0usize;
+
+            while iup < updates.len() {
+                let update_parent = data.basis[updates[iup].det as usize].parent;
+                let parent_end = run.parent_ranges[update_parent].1 as u64;
+
+                let mut next_parent = iup + 1;
+
+                while next_parent < updates.len() && updates[next_parent].det < parent_end {
+                    next_parent += 1;
                 }
-                let omega = up.det as usize;
-                dp += find_s(data, gamma, omega, worker.scratch.as_mut()) * up.dn as f64;
+                let update_range = &updates[iup..next_parent];
+
+                if gamma_parent_orthogonal && update_parent == gamma_parent {
+                    if let Ok(i) = update_range.binary_search_by_key(&(gamma as u64), |up| up.det) {
+                        dp += update_range[i].dn as f64;
+                    }
+                    iup = next_parent;
+                    continue;
+                }
+
+                if let Some(wicks) = data.wicks {
+                    wicks.prefetch_pair(gamma_parent, update_parent);
+                }
+
+                for up in update_range {
+                    let omega = up.det as usize;
+                    dp += find_s(data, gamma, omega, worker.scratch.as_mut()) * up.dn as f64;
+                }
+                iup = next_parent;
             }
             worker.overlap.push((k, dp));
         }
@@ -415,8 +483,14 @@ fn update_p(
         // Apply remote updates from all other ranks to `plocal`. We avoid double counting by
         // excluding the local slice.
         time_call!(crate::timers::stochastic::add_update_p_apply, {
-            add_plocal(plocal, &mpi.gather_recv[..locallow], data, run, workers);
-            add_plocal(plocal, &mpi.gather_recv[localhigh..], data, run, workers);
+            let (local_and_left, right) = mpi.gather_recv.split_at_mut(localhigh);
+            let (left, _) = local_and_left.split_at_mut(locallow);
+
+            left.sort_unstable_by_key(|update| update.det);
+            right.sort_unstable_by_key(|update| update.det);
+
+            add_plocal(plocal, left, data, run, workers);
+            add_plocal(plocal, right, data, run, workers);
         });
         true
     })
@@ -844,6 +918,8 @@ pub fn qmc_step(
         .collect();
 
     let owned = owned(irank, ndets, nranks);
+    let parent_ranges = parent_ranges(data);
+    let parent_orthogonal = parent_orthogonal(data, parent_ranges.len());
     let run = QMCRunInfo {
         irank,
         nranks,
@@ -853,6 +929,8 @@ pub fn qmc_step(
         base_seed,
         rank_seed,
         diagonal_hs,
+        parent_ranges,
+        parent_orthogonal,
     };
 
     let mut workers = (0..rayon::current_num_threads())

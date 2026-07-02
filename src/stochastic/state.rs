@@ -52,6 +52,10 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) rank_seed: u64,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
     pub(in crate::stochastic) diagonal_hs: Vec<(f64, f64)>,
+    /// Contiguous determinant index range for each parent reference.
+    pub(in crate::stochastic) parent_ranges: Vec<(usize, usize)>,
+    /// Whether each parent reference uses orthogonal Slater-Condon overlap rules.
+    pub(in crate::stochastic) parent_orthogonal: Vec<bool>,
 }
 
 /// Storage for maximum size required for Wick's scratch.
