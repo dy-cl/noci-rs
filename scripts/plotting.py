@@ -38,6 +38,52 @@ ISHIFTREGEX = re.compile(
     r"(?:iShift\s*=|i\s*:)\s*([+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)"
 )
 
+LIVE_READ_ERRORS = (
+    OSError,
+    ValueError,
+    pd.errors.EmptyDataError,
+    pd.errors.ParserError,
+)
+
+
+def addTrajectoryArgs(parser):
+    """
+    Add arguments for trajectory plots, including interactive live updating.
+    """
+    addCommonArgs(parser)
+    parser.add_argument(
+        "--live",
+        action = "store_true",
+        help = "Update the interactive Matplotlib window as the output file grows.",
+    )
+    parser.add_argument(
+        "--interval",
+        type = float,
+        default = 2.0,
+        help = "Seconds between live plot updates.",
+    )
+
+
+def showLive(args, fig, update):
+    """
+    Show a Matplotlib window and update it while it remains open.
+    """
+    if args.save is not None:
+        raise ValueError("--live cannot be combined with --save")
+
+    plt.show(block = False)
+
+    while plt.fignum_exists(fig.number):
+        try:
+            update()
+        except LIVE_READ_ERRORS:
+            # The file may temporarily contain a partially written final line.
+            pass
+
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+        plt.pause(args.interval)
+
 def findQMC(path: Path):
     """
     Find where QMC starts.
@@ -632,26 +678,260 @@ def plotExcitationHist(args):
     )
     finish(args)
 
+def plotProjectedShift(args):
+    """
+    Plot projected and shift energies against iteration.
+    """
+    if not args.live:
+        df = readQMC(args.path)
+
+        iterEs, _ = shiftChange(df["es"])
+        iterEsS, _ = shiftChange(df["ess"])
+
+        setStyle()
+        plt.figure()
+        plt.plot(
+            df["iter"],
+            df["es"],
+            label = r"$E_s(\tau)$",
+            linewidth = LINEWIDTH,
+            color = "tab:blue",
+        )
+        plt.plot(
+            df["iter"],
+            df["ess"],
+            label = r"$E_s^S(\tau)$",
+            linewidth = LINEWIDTH,
+            color = "tab:orange",
+        )
+        if iterEs is not None:
+            plt.axvline(
+                df["iter"].iloc[iterEs],
+                linestyle = "--",
+                linewidth = LINEWIDTH,
+                color = "tab:blue",
+            )
+        if iterEsS is not None:
+            plt.axvline(
+                df["iter"].iloc[iterEsS],
+                linestyle = "--",
+                linewidth = LINEWIDTH,
+                color = "tab:orange",
+            )
+        plt.plot(
+            df["iter"],
+            df["ecorr"],
+            label = r"$E_{\mathrm{Proj}}(\tau)$",
+            linewidth = LINEWIDTH,
+            color = "tab:green",
+        )
+        formatAxes(
+            xlabel = r"Iteration / $\tau$",
+            ylabel = "Energy / Ha",
+            legend = True,
+            legendLoc = "lower right",
+        )
+        finish(args)
+        return
+
+    setStyle()
+    fig, ax = plt.subplots()
+
+    lineEs, = ax.plot(
+        [],
+        [],
+        label = r"$E_s(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+    )
+    lineEsS, = ax.plot(
+        [],
+        [],
+        label = r"$E_s^S(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+    )
+    lineEproj, = ax.plot(
+        [],
+        [],
+        label = r"$E_{\mathrm{Proj}}(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:green",
+    )
+
+    shiftEsLine = ax.axvline(
+        0.0,
+        linestyle = "--",
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+        visible = False,
+    )
+    shiftEsSLine = ax.axvline(
+        0.0,
+        linestyle = "--",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+        visible = False,
+    )
+
+    formatAxes(
+        xlabel = r"Iteration / $\tau$",
+        ylabel = "Energy / Ha",
+        legend = True,
+        legendLoc = "lower right",
+    )
+
+    def update():
+        df = readQMC(args.path).dropna(
+            subset = ["iter", "es", "ess", "ecorr"]
+        )
+        if df.empty:
+            return
+
+        x = df["iter"].to_numpy()
+
+        lineEs.set_data(x, df["es"].to_numpy())
+        lineEsS.set_data(x, df["ess"].to_numpy())
+        lineEproj.set_data(x, df["ecorr"].to_numpy())
+
+        iterEs, _ = shiftChange(df["es"])
+        iterEsS, _ = shiftChange(df["ess"])
+
+        if iterEs is not None:
+            value = df["iter"].iloc[iterEs]
+            shiftEsLine.set_xdata([value, value])
+            shiftEsLine.set_visible(True)
+        else:
+            shiftEsLine.set_visible(False)
+
+        if iterEsS is not None:
+            value = df["iter"].iloc[iterEsS]
+            shiftEsSLine.set_xdata([value, value])
+            shiftEsSLine.set_visible(True)
+        else:
+            shiftEsSLine.set_visible(False)
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(args, fig, update)
 
 def plotNW(args):
     """
     Plot walker populations against iteration.
     """
-    df = readQMC(args.path)
-    
-    iterEs, _ = shiftChange(df["es"])
-    iterEsS, _ = shiftChange(df["ess"])
+    if not args.live:
+        df = readQMC(args.path)
+
+        iterEs, _ = shiftChange(df["es"])
+        iterEsS, _ = shiftChange(df["ess"])
+
+        setStyle()
+        plt.figure()
+        plt.plot(
+            df["iter"],
+            df["nwc"],
+            label = r"$N_w(\tau)$",
+            linewidth = LINEWIDTH,
+        )
+        plt.plot(
+            df["iter"],
+            df["nwsc"],
+            label = r"$\tilde{N}_w(\tau)$",
+            linewidth = LINEWIDTH,
+        )
+        if iterEs is not None:
+            plt.axvline(
+                df["iter"].iloc[iterEs],
+                linestyle = "--",
+                linewidth = LINEWIDTH,
+                color = "tab:blue",
+            )
+        if iterEsS is not None:
+            plt.axvline(
+                df["iter"].iloc[iterEsS],
+                linestyle = "--",
+                linewidth = LINEWIDTH,
+                color = "tab:orange",
+            )
+        formatAxes(
+            xlabel = r"Iteration / $\tau$",
+            ylabel = r"$N_w(\tau)$",
+            legend = True,
+        )
+        finish(args)
+        return
 
     setStyle()
-    plt.figure()
-    plt.plot(df["iter"], df["nwc"], label = r"$N_w(\tau)$", linewidth = LINEWIDTH)
-    plt.plot(df["iter"], df["nwsc"], label = r"$\tilde{N}_w(\tau)$", linewidth = LINEWIDTH)
-    if iterEs is not None:
-        plt.axvline(iterEs, linestyle = "--", linewidth = LINEWIDTH, color = "tab:blue")
-    if iterEsS is not None:
-        plt.axvline(iterEsS, linestyle = "--", linewidth = LINEWIDTH, color = "tab:orange")
-    formatAxes(xlabel = r"Iteration / $\tau$", ylabel = r"$N_w(\tau)$", legend = True)
-    finish(args)
+    fig, ax = plt.subplots()
+
+    lineNw, = ax.plot(
+        [],
+        [],
+        label = r"$N_w(\tau)$",
+        linewidth = LINEWIDTH,
+    )
+    lineNwS, = ax.plot(
+        [],
+        [],
+        label = r"$\tilde{N}_w(\tau)$",
+        linewidth = LINEWIDTH,
+    )
+
+    shiftEsLine = ax.axvline(
+        0.0,
+        linestyle = "--",
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+        visible = False,
+    )
+    shiftEsSLine = ax.axvline(
+        0.0,
+        linestyle = "--",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+        visible = False,
+    )
+
+    formatAxes(
+        xlabel = r"Iteration / $\tau$",
+        ylabel = r"$N_w(\tau)$",
+        legend = True,
+    )
+
+    def update():
+        df = readQMC(args.path).dropna(
+            subset = ["iter", "nwc", "nwsc", "es", "ess"]
+        )
+        if df.empty:
+            return
+
+        x = df["iter"].to_numpy()
+
+        lineNw.set_data(x, df["nwc"].to_numpy())
+        lineNwS.set_data(x, df["nwsc"].to_numpy())
+
+        iterEs, _ = shiftChange(df["es"])
+        iterEsS, _ = shiftChange(df["ess"])
+
+        if iterEs is not None:
+            value = df["iter"].iloc[iterEs]
+            shiftEsLine.set_xdata([value, value])
+            shiftEsLine.set_visible(True)
+        else:
+            shiftEsLine.set_visible(False)
+
+        if iterEsS is not None:
+            value = df["iter"].iloc[iterEsS]
+            shiftEsSLine.set_xdata([value, value])
+            shiftEsSLine.set_visible(True)
+        else:
+            shiftEsSLine.set_visible(False)
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(args, fig, update)
 
 def plotDeterministicNW(args):
     """
@@ -701,76 +981,105 @@ def plotDeterministicNW(args):
     )
     finish(args)
 
-def plotProjectedShift(args):
-    """
-    Plot projected and shift energies against iteration.
-    """
-    df = readQMC(args.path)
-    
-    iterEs, _ = shiftChange(df["es"])
-    iterEsS, _ = shiftChange(df["ess"])
-
-    setStyle()
-    plt.figure()
-    plt.plot(df["iter"], df["es"], label = r"$E_s(\tau)$", linewidth = LINEWIDTH, color = "tab:blue")
-    plt.plot(df["iter"], df["ess"], label = r"$E_s^S(\tau)$", linewidth = LINEWIDTH, color = "tab:orange")
-    if iterEs is not None:
-        plt.axvline(iterEs, linestyle = "--", linewidth = LINEWIDTH, color = "tab:blue")
-    if iterEsS is not None:
-        plt.axvline(iterEsS, linestyle = "--", linewidth = LINEWIDTH, color = "tab:orange")
-    plt.plot(df["iter"], df["ecorr"], label = r"$E_{\mathrm{Proj}}(\tau)$", linewidth = LINEWIDTH, color = "tab:green")
-    formatAxes(xlabel = r"Iteration / $\tau$", ylabel = "Energy / Ha", legend = True, legendLoc = "lower right")
-    finish(args)
-
 def plotDeterministicProjectedShift(args):
     """
     Plot deterministic energy and shift trajectories against iteration.
     """
-    df = readDeterministicQMC(args.path)
+    if not args.live:
+        df = readDeterministicQMC(args.path)
 
-    iterEs, _ = shiftChange(df["es"])
-    iterEsS, _ = shiftChange(df["ess"])
+        iterEs, _ = shiftChange(df["es"])
+        iterEsS, _ = shiftChange(df["ess"])
 
-    setStyle()
-    plt.figure()
+        setStyle()
+        plt.figure()
 
-    plt.plot(
-        df["iter"],
-        df["es"],
-        label = r"$E_s(\tau)$",
-        linewidth = LINEWIDTH,
-        color = "tab:blue",
-    )
-    plt.plot(
-        df["iter"],
-        df["ess"],
-        label = r"$E_s^S(\tau)$",
-        linewidth = LINEWIDTH,
-        color = "tab:orange",
-    )
-
-    if iterEs is not None:
-        plt.axvline(
-            df["iter"].iloc[iterEs],
-            linestyle = "--",
+        plt.plot(
+            df["iter"],
+            df["es"],
+            label = r"$E_s(\tau)$",
             linewidth = LINEWIDTH,
             color = "tab:blue",
         )
-
-    if iterEsS is not None:
-        plt.axvline(
-            df["iter"].iloc[iterEsS],
-            linestyle = "--",
+        plt.plot(
+            df["iter"],
+            df["ess"],
+            label = r"$E_s^S(\tau)$",
             linewidth = LINEWIDTH,
             color = "tab:orange",
         )
 
-    plt.plot(
-        df["iter"],
-        df["energy"],
+        if iterEs is not None:
+            plt.axvline(
+                df["iter"].iloc[iterEs],
+                linestyle = "--",
+                linewidth = LINEWIDTH,
+                color = "tab:blue",
+            )
+
+        if iterEsS is not None:
+            plt.axvline(
+                df["iter"].iloc[iterEsS],
+                linestyle = "--",
+                linewidth = LINEWIDTH,
+                color = "tab:orange",
+            )
+
+        plt.plot(
+            df["iter"],
+            df["energy"],
+            label = r"$E(\tau)$",
+            linewidth = LINEWIDTH,
+            color = "tab:green",
+        )
+
+        formatAxes(
+            xlabel = r"Iteration / $\tau$",
+            ylabel = "Energy / Ha",
+            legend = True,
+            legendLoc = "lower right",
+        )
+        finish(args)
+        return
+
+    setStyle()
+    fig, ax = plt.subplots()
+
+    lineEs, = ax.plot(
+        [],
+        [],
+        label = r"$E_s(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+    )
+    lineEsS, = ax.plot(
+        [],
+        [],
+        label = r"$E_s^S(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+    )
+    lineEnergy, = ax.plot(
+        [],
+        [],
         label = r"$E(\tau)$",
         linewidth = LINEWIDTH,
         color = "tab:green",
+    )
+
+    shiftEsLine = ax.axvline(
+        0.0,
+        linestyle = "--",
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+        visible = False,
+    )
+    shiftEsSLine = ax.axvline(
+        0.0,
+        linestyle = "--",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+        visible = False,
     )
 
     formatAxes(
@@ -779,23 +1088,128 @@ def plotDeterministicProjectedShift(args):
         legend = True,
         legendLoc = "lower right",
     )
-    finish(args)
+
+    def update():
+        df = readDeterministicQMC(args.path).dropna(
+            subset = ["iter", "energy", "es", "ess"]
+        )
+        if df.empty:
+            return
+
+        x = df["iter"].to_numpy()
+
+        lineEs.set_data(x, df["es"].to_numpy())
+        lineEsS.set_data(x, df["ess"].to_numpy())
+        lineEnergy.set_data(x, df["energy"].to_numpy())
+
+        iterEs, _ = shiftChange(df["es"])
+        iterEsS, _ = shiftChange(df["ess"])
+
+        if iterEs is not None:
+            value = df["iter"].iloc[iterEs]
+            shiftEsLine.set_xdata([value, value])
+            shiftEsLine.set_visible(True)
+        else:
+            shiftEsLine.set_visible(False)
+
+        if iterEsS is not None:
+            value = df["iter"].iloc[iterEsS]
+            shiftEsSLine.set_xdata([value, value])
+            shiftEsSLine.set_visible(True)
+        else:
+            shiftEsSLine.set_visible(False)
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(args, fig, update)
 
 def plotShoulder(args):
     """
     Plot total to reference ratios against walker number.
     """
-    df = readQMC(args.path)
+    if not args.live:
+        df = readQMC(args.path)
 
-    ratioC = df["nwc"] / df["nrefc"]
-    ratioSC = df["nwsc"] / df["nrefsc"]
+        ratioC = df["nwc"] / df["nrefc"]
+        ratioSC = df["nwsc"] / df["nrefsc"]
+
+        setStyle()
+        plt.figure()
+        plt.plot(
+            df["nwsc"],
+            ratioSC,
+            linewidth = LINEWIDTH,
+            color = "tab:orange",
+            label = (
+                r"$\frac{\tilde N_w(\tau)}"
+                r"{\tilde N_{w,\mathrm{ref}}}$"
+            ),
+        )
+        plt.plot(
+            df["nwc"],
+            ratioC,
+            linewidth = LINEWIDTH,
+            color = "tab:blue",
+            label = r"$\frac{N_w(\tau)}{N_{w,\mathrm{ref}}}$",
+        )
+        formatAxes(legend = True)
+        finish(args)
+        return
 
     setStyle()
-    plt.figure()
-    plt.plot(df["nwsc"], ratioSC, linewidth = LINEWIDTH, color = "tab:orange", label = r"$\frac{\tilde N_w(\tau)}{\tilde N_{w,\mathrm{ref}}}$")
-    plt.plot(df["nwc"], ratioC, linewidth = LINEWIDTH, color = "tab:blue", label = r"$\frac{N_w(\tau)}{N_{w,\mathrm{ref}}}$")
+    fig, ax = plt.subplots()
+
+    lineSC, = ax.plot(
+        [],
+        [],
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+        label = (
+            r"$\frac{\tilde N_w(\tau)}"
+            r"{\tilde N_{w,\mathrm{ref}}}$"
+        ),
+    )
+    lineC, = ax.plot(
+        [],
+        [],
+        linewidth = LINEWIDTH,
+        color = "tab:blue",
+        label = r"$\frac{N_w(\tau)}{N_{w,\mathrm{ref}}}$",
+    )
+
     formatAxes(legend = True)
-    finish(args)
+
+    def update():
+        df = readQMC(args.path).dropna(
+            subset = ["nwc", "nrefc", "nwsc", "nrefsc"]
+        )
+        if df.empty:
+            return
+
+        df = df[
+            (df["nrefc"] != 0.0)
+            & (df["nrefsc"] != 0.0)
+        ]
+        if df.empty:
+            return
+
+        ratioC = df["nwc"] / df["nrefc"]
+        ratioSC = df["nwsc"] / df["nrefsc"]
+
+        lineSC.set_data(
+            df["nwsc"].to_numpy(),
+            ratioSC.to_numpy(),
+        )
+        lineC.set_data(
+            df["nwc"].to_numpy(),
+            ratioC.to_numpy(),
+        )
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(args, fig, update)
 
 def setStyle():
     """
@@ -830,10 +1244,10 @@ def buildParser():
     p.add_argument("path", type = Path)
     addCommonArgs(p)
     p.set_defaults(func = plotDeterministicNW)
-
+    
     p = subparsers.add_parser("deterministic-projected-shift")
     p.add_argument("path", type = Path)
-    addCommonArgs(p)
+    addTrajectoryArgs(p)
     p.set_defaults(func = plotDeterministicProjectedShift)
 
     p = subparsers.add_parser("energy")
@@ -883,21 +1297,21 @@ def buildParser():
     p.add_argument("path", type = Path)
     addCommonArgs(p)
     p.set_defaults(func = plotExcitationHist)
-
+    
     p = subparsers.add_parser("nw")
     p.add_argument("path", type = Path)
-    addCommonArgs(p)
+    addTrajectoryArgs(p)
     p.set_defaults(func = plotNW)
-
+    
     p = subparsers.add_parser("projected-shift")
     p.add_argument("path", type = Path)
     p.add_argument("--propagator", "-p", type = str, default = None)
-    addCommonArgs(p)
+    addTrajectoryArgs(p)
     p.set_defaults(func = plotProjectedShift)
-
+    
     p = subparsers.add_parser("shoulder")
     p.add_argument("path", type = Path)
-    addCommonArgs(p)
+    addTrajectoryArgs(p)
     p.set_defaults(func = plotShoulder)
 
     return parser
