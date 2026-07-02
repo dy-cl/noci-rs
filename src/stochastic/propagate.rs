@@ -951,6 +951,7 @@ pub fn qmc_step(
         // Last global iteration count for this report.
         let end = (report + 1) * qmc.ncycles - 1;
 
+        pendingd.sort_unstable_by_key(|update| update.det);
         compress_updates(&mut pendingd);
 
         // Update the vector `p_{\Gamma}`.
