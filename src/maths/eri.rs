@@ -27,67 +27,57 @@ pub fn eri_ao2mo(
     let nmo_r = c_lam_r.ncols();
     let nmo_s = c_sig_s.ncols();
 
-    let mut t1 = Array4::<f64>::zeros((nbas, nbas, nbas, nmo_s));
-    for mu in 0..nbas {
-        for nu in 0..nbas {
-            for lam in 0..nbas {
-                for s in 0..nmo_s {
-                    let mut acc = 0.0;
-                    for sig in 0..nbas {
-                        acc += eri[(mu, nu, lam, sig)] * c_sig_s[(sig, s)];
-                    }
-                    t1[(mu, nu, lam, s)] = acc;
-                }
-            }
-        }
-    }
+    let eri_std = eri.as_standard_layout();
+    let eri_rows = eri_std
+        .view()
+        .into_shape((nbas * nbas * nbas, nbas))
+        .unwrap();
+    let t1 = eri_rows
+        .dot(c_sig_s)
+        .into_shape((nbas, nbas, nbas, nmo_s))
+        .unwrap();
 
-    let mut t2 = Array4::<f64>::zeros((nbas, nbas, nmo_r, nmo_s));
-    for mu in 0..nbas {
-        for nu in 0..nbas {
-            for r in 0..nmo_r {
-                for s in 0..nmo_s {
-                    let mut acc = 0.0;
-                    for lam in 0..nbas {
-                        acc += t1[(mu, nu, lam, s)] * c_lam_r[(lam, r)];
-                    }
-                    t2[(mu, nu, r, s)] = acc;
-                }
-            }
-        }
-    }
+    let t1_lam_last = t1
+        .view()
+        .permuted_axes([0, 1, 3, 2])
+        .as_standard_layout()
+        .to_owned();
+    let t2 = t1_lam_last
+        .view()
+        .into_shape((nbas * nbas * nmo_s, nbas))
+        .unwrap()
+        .dot(c_lam_r)
+        .into_shape((nbas, nbas, nmo_s, nmo_r))
+        .unwrap();
 
-    let mut t3 = Array4::<f64>::zeros((nbas, nmo_q, nmo_r, nmo_s));
-    for mu in 0..nbas {
-        for q in 0..nmo_q {
-            for r in 0..nmo_r {
-                for s in 0..nmo_s {
-                    let mut acc = 0.0;
-                    for nu in 0..nbas {
-                        acc += t2[(mu, nu, r, s)] * c_nu_q[(nu, q)];
-                    }
-                    t3[(mu, q, r, s)] = acc;
-                }
-            }
-        }
-    }
+    let t2_nu_last = t2
+        .view()
+        .permuted_axes([0, 2, 3, 1])
+        .as_standard_layout()
+        .to_owned();
+    let t3 = t2_nu_last
+        .view()
+        .into_shape((nbas * nmo_s * nmo_r, nbas))
+        .unwrap()
+        .dot(c_nu_q)
+        .into_shape((nbas, nmo_s, nmo_r, nmo_q))
+        .unwrap();
 
-    let mut out = Array4::<f64>::zeros((nmo_p, nmo_q, nmo_r, nmo_s));
-    for p in 0..nmo_p {
-        for q in 0..nmo_q {
-            for r in 0..nmo_r {
-                for s in 0..nmo_s {
-                    let mut acc = 0.0;
-                    for mu in 0..nbas {
-                        acc += t3[(mu, q, r, s)] * c_mu_p[(mu, p)];
-                    }
-                    out[(p, q, r, s)] = acc;
-                }
-            }
-        }
-    }
-
-    out
+    let t3_mu_last = t3
+        .view()
+        .permuted_axes([1, 2, 3, 0])
+        .as_standard_layout()
+        .to_owned();
+    t3_mu_last
+        .view()
+        .into_shape((nmo_s * nmo_r * nmo_q, nbas))
+        .unwrap()
+        .dot(c_mu_p)
+        .into_shape((nmo_s, nmo_r, nmo_q, nmo_p))
+        .unwrap()
+        .permuted_axes([3, 2, 1, 0])
+        .as_standard_layout()
+        .to_owned()
 }
 
 /// Transform ERIs from AO to complex MO basis with Hermitian bra-side conjugation as:
@@ -114,67 +104,60 @@ pub fn eri_ao2mo_complex_hermitian(
     let nmo_r = c_lam_r.ncols();
     let nmo_s = c_sig_s.ncols();
 
-    let mut t1 = Array4::<Complex64>::zeros((nbas, nbas, nbas, nmo_s));
-    for mu in 0..nbas {
-        for nu in 0..nbas {
-            for lam in 0..nbas {
-                for s in 0..nmo_s {
-                    let mut acc = Complex64::new(0.0, 0.0);
-                    for sig in 0..nbas {
-                        acc += c_sig_s[(sig, s)] * eri[(mu, nu, lam, sig)];
-                    }
-                    t1[(mu, nu, lam, s)] = acc;
-                }
-            }
-        }
-    }
+    let eri_complex = eri.as_standard_layout().mapv(|x| Complex64::new(x, 0.0));
+    let c_lam_r_conj = c_lam_r.mapv(|x| x.conj());
+    let c_mu_p_conj = c_mu_p.mapv(|x| x.conj());
 
-    let mut t2 = Array4::<Complex64>::zeros((nbas, nbas, nmo_r, nmo_s));
-    for mu in 0..nbas {
-        for nu in 0..nbas {
-            for r in 0..nmo_r {
-                for s in 0..nmo_s {
-                    let mut acc = Complex64::new(0.0, 0.0);
-                    for lam in 0..nbas {
-                        acc += t1[(mu, nu, lam, s)] * c_lam_r[(lam, r)].conj();
-                    }
-                    t2[(mu, nu, r, s)] = acc;
-                }
-            }
-        }
-    }
+    let eri_rows = eri_complex
+        .view()
+        .into_shape((nbas * nbas * nbas, nbas))
+        .unwrap();
+    let t1 = eri_rows
+        .dot(c_sig_s)
+        .into_shape((nbas, nbas, nbas, nmo_s))
+        .unwrap();
 
-    let mut t3 = Array4::<Complex64>::zeros((nbas, nmo_q, nmo_r, nmo_s));
-    for mu in 0..nbas {
-        for q in 0..nmo_q {
-            for r in 0..nmo_r {
-                for s in 0..nmo_s {
-                    let mut acc = Complex64::new(0.0, 0.0);
-                    for nu in 0..nbas {
-                        acc += t2[(mu, nu, r, s)] * c_nu_q[(nu, q)];
-                    }
-                    t3[(mu, q, r, s)] = acc;
-                }
-            }
-        }
-    }
+    let t1_lam_last = t1
+        .view()
+        .permuted_axes([0, 1, 3, 2])
+        .as_standard_layout()
+        .to_owned();
+    let t2 = t1_lam_last
+        .view()
+        .into_shape((nbas * nbas * nmo_s, nbas))
+        .unwrap()
+        .dot(&c_lam_r_conj)
+        .into_shape((nbas, nbas, nmo_s, nmo_r))
+        .unwrap();
 
-    let mut out = Array4::<Complex64>::zeros((nmo_p, nmo_q, nmo_r, nmo_s));
-    for p in 0..nmo_p {
-        for q in 0..nmo_q {
-            for r in 0..nmo_r {
-                for s in 0..nmo_s {
-                    let mut acc = Complex64::new(0.0, 0.0);
-                    for mu in 0..nbas {
-                        acc += t3[(mu, q, r, s)] * c_mu_p[(mu, p)].conj();
-                    }
-                    out[(p, q, r, s)] = acc;
-                }
-            }
-        }
-    }
+    let t2_nu_last = t2
+        .view()
+        .permuted_axes([0, 2, 3, 1])
+        .as_standard_layout()
+        .to_owned();
+    let t3 = t2_nu_last
+        .view()
+        .into_shape((nbas * nmo_s * nmo_r, nbas))
+        .unwrap()
+        .dot(c_nu_q)
+        .into_shape((nbas, nmo_s, nmo_r, nmo_q))
+        .unwrap();
 
-    out
+    let t3_mu_last = t3
+        .view()
+        .permuted_axes([1, 2, 3, 0])
+        .as_standard_layout()
+        .to_owned();
+    t3_mu_last
+        .view()
+        .into_shape((nmo_s * nmo_r * nmo_q, nbas))
+        .unwrap()
+        .dot(&c_mu_p_conj)
+        .into_shape((nmo_s, nmo_r, nmo_q, nmo_p))
+        .unwrap()
+        .permuted_axes([3, 2, 1, 0])
+        .as_standard_layout()
+        .to_owned()
 }
 
 /// Scalar type accepted by Hermitian ERI AO-to-MO transformation dispatch.
