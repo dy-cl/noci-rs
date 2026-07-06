@@ -4,32 +4,20 @@ use std::path::Path;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use super::restart::RestartState;
-use super::state::{ExcitationHist, PropagationState, Walkers};
-
-use super::restart::write_restart_hdf5;
-use super::state::{PopulationStats, QMCRunInfo, Shifts};
+use super::restart::{RestartState, write_restart_hdf5};
+use super::state::{ExcitationHist, PopulationStats, PropagationState, QMCRunInfo};
 
 /// Print the iteration table header on rank zero.
 /// # Arguments:
 /// - `irank`: Rank of the current MPI process.
-/// # Returns
+/// # Returns:
 /// - `()`: Writes the table header to stdout on rank zero.
 pub(in crate::stochastic) fn print_header(irank: usize) {
     if irank == 0 {
-        println!("{}", "=".repeat(100));
+        println!("{}", "=".repeat(132));
         println!(
-            "{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-            "iter",
-            "E",
-            "Ecorr",
-            "Shift (Es)",
-            "Shift (EsS)",
-            "Nw (||C||)",
-            "Nref (||C||)",
-            "Nw (||SC||)",
-            "Nref (||SC||)",
-            "Nocc"
+            "{:<8} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+            "iter", "E", "Ecorr", "Shift", "Nw", "Nref", "Nsampled", "NsampledOcc",
         );
     }
 }
@@ -37,9 +25,9 @@ pub(in crate::stochastic) fn print_header(irank: usize) {
 /// Print the initial iteration line on rank zero.
 /// # Arguments:
 /// - `irank`: Rank of the current MPI process.
-/// - `state`: Propagation state containing QMC stats.
+/// - `state`: Propagation state containing QMC statistics.
 /// - `e0`: Energy of the first basis determinant.
-/// # Returns
+/// # Returns:
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
 pub(in crate::stochastic) fn print_initial_row(
     irank: usize,
@@ -48,58 +36,15 @@ pub(in crate::stochastic) fn print_initial_row(
 ) {
     if irank == 0 {
         println!(
-            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
             0,
             state.eprojcur,
             state.eprojcur - e0,
             0.0,
-            0.0,
-            state.prev_pop.nwc as f64,
-            state.prev_pop.nrefc as f64,
-            state.prev_pop.nwsc,
-            state.prev_pop.nrefsc,
-            state.prev_pop.noccdets
-        );
-    }
-}
-
-/// Print an iteration line using the cached population statistics stored in the run state.
-/// This is used when no population changes occurred during an iteration and so we exit early.
-/// # Arguments:
-/// - `irank`: Rank of the current MPI process.
-/// - `iter`: Iteration number to print.
-/// - `state`: Propagation state containing QMC stats.
-/// - `e0`: Energy of the first basis determinant.
-/// - `es`: Non-overlap transformed shift energy.
-/// # Returns
-/// - `()`: Writes the cached iteration line to stdout on rank zero.
-pub(in crate::stochastic) fn print_cached_row(
-    irank: usize,
-    iter: usize,
-    state: &PropagationState,
-    e0: f64,
-    es: f64,
-) {
-    let es_corr = if state.reached_c { es - e0 } else { 0.0 };
-    let es_s_corr = if state.reached_sc {
-        state.es_s - e0
-    } else {
-        0.0
-    };
-
-    if irank == 0 {
-        println!(
-            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-            iter,
-            state.eprojcur,
-            state.eprojcur - e0,
-            es_corr,
-            es_s_corr,
-            state.cur_pop.nwc as f64,
-            state.cur_pop.nrefc as f64,
-            state.cur_pop.nwsc,
-            state.cur_pop.nrefsc,
-            state.cur_pop.noccdets
+            state.prev_pop.nw,
+            state.prev_pop.nref,
+            state.prev_pop.nsampled,
+            state.prev_pop.nsampledo,
         );
     }
 }
@@ -108,11 +53,11 @@ pub(in crate::stochastic) fn print_cached_row(
 /// # Arguments:
 /// - `irank`: Rank of the current MPI process.
 /// - `iter`: Iteration number to print.
-/// - `state`: Propagation state containing QMC stats.
+/// - `state`: Propagation state containing QMC statistics.
 /// - `stats`: Population statistics computed for the current iteration.
 /// - `e0`: Energy of the first basis determinant.
-/// - `es`: Non-overlap transformed shift energy.
-/// # Returns
+/// - `shift`: Population-control shift.
+/// # Returns:
 /// - `()`: Writes the current iteration line to stdout on rank zero.
 pub(in crate::stochastic) fn print_row(
     irank: usize,
@@ -120,83 +65,71 @@ pub(in crate::stochastic) fn print_row(
     state: &PropagationState,
     stats: &PopulationStats,
     e0: f64,
-    es: f64,
+    shift: f64,
 ) {
-    let es_corr = if state.reached_c { es - e0 } else { 0.0 };
-    let es_s_corr = if state.reached_sc {
-        state.es_s - e0
-    } else {
-        0.0
-    };
-
     if irank == 0 {
         println!(
-            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
+            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
             iter,
             state.eprojcur,
             state.eprojcur - e0,
-            es_corr,
-            es_s_corr,
-            stats.nwc as f64,
-            stats.nrefc as f64,
-            stats.nwsc,
-            stats.nrefsc,
-            stats.noccdets
+            if state.reached { shift } else { 0.0 },
+            stats.nw,
+            stats.nref,
+            stats.nsampled,
+            stats.nsampledo,
         );
     }
 }
 
-/// Check for a `STOP` file, write a restart if required, and return early from the
-/// stochastic propagation.
+/// Check for a `STOP` file, write a restart if required, and return early.
 /// # Arguments:
-/// - `it`: Current report number.
+/// - `report`: Current report number.
 /// - `state`: Propagation state containing QMC bookkeeping data.
-/// - `shifts`: Current non-overlap and overlap-transformed shifts.
-/// - `run`: Rank-local run metadata.
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `restart_path`: File path to write restart file to.
-/// # Returns
-/// - `Option<(f64, Option<ExcitationHist>)>`: Final return values if a stop was requested, otherwise `None`.
+/// - `shift`: Current population-control shift.
+/// - `run`: Rank-local propagation metadata.
+/// - `world`: MPI communicator.
+/// - `restart_path`: Optional restart file path.
+/// # Returns:
+/// - `Option<(f64, Option<ExcitationHist>)>`: Final result if stopping.
 pub(in crate::stochastic) fn check_stop(
     report: usize,
     state: &mut PropagationState,
-    shifts: Shifts,
+    shift: f64,
     run: &QMCRunInfo,
     world: &impl Communicator,
     restart_path: Option<&String>,
 ) -> Option<(f64, Option<ExcitationHist>)> {
     let mut stop = 0;
+
     if run.irank == 0 && Path::new("STOP").exists() {
         stop = 1;
     }
+
     world.process_at_rank(0).broadcast_into(&mut stop);
 
     if stop == 0 {
         return None;
     }
 
-    let rs = RestartState {
+    let restart = RestartState {
         report,
-        es: shifts.es,
-        es_s: shifts.es_s,
-        nwprevc: state.prev_pop.nwc,
-        nrefprevc: state.prev_pop.nrefc,
-        nwprevsc: state.prev_pop.nwsc,
-        nrefprevsc: state.prev_pop.nrefsc,
-        walkers: std::mem::replace(&mut state.mc.walkers, Walkers::new(run.ndets)),
-        noccdets: state.prev_pop.noccdets,
-        pg: std::mem::take(&mut state.mc.pg),
+        shift,
+        nwprev: state.prev_pop.nw,
+        nrefprev: state.prev_pop.nref,
+        populations: std::mem::take(&mut state.mc.populations),
         excitation_hist: state.mc.excitation_hist.take(),
         base_seed: Some(run.base_seed),
     };
 
-    let restart_path = restart_path.map(|s| s.as_str()).unwrap_or("RESTART.H5");
-    write_restart_hdf5(restart_path, world, &rs, run.ndets).unwrap();
+    let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
+
+    write_restart_hdf5(restart_path, world, &restart).unwrap();
 
     if run.irank == 0 {
         let _ = std::fs::remove_file("STOP");
-        println!("STOP detected, Wrote {restart_path} and exiting");
+        println!("STOP detected, wrote {restart_path} and exiting");
     }
 
-    Some((state.eprojcur, rs.excitation_hist))
+    Some((state.eprojcur, restart.excitation_hist))
 }

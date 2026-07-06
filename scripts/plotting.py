@@ -117,33 +117,28 @@ def findQMC(path: Path):
 
 def readQMC(path: Path) -> pd.DataFrame:
     """
-    Read the QMC table from an output file.
+    Read the range-preserving stochastic QMC table from an output file.
     """
-
     start, nrows = findQMC(path)
-    try:
-        df = pd.read_csv(
-            path,
-            sep = r"\s+",
-            header = None,
-            skiprows = start,
-            nrows = nrows,
-            names = ["iter", "eproj", "ecorr", "es", "ess", "nwc", "nrefc", "nwsc", "nrefsc", "nocc"],
-            engine = "c",
-        )
-    except Exception:
-        df = pd.read_csv(
-            path,
-            sep = r"\s+",
-            header = None,
-            skiprows = start,
-            nrows = nrows,
-            names = ["iter", "eproj", "ecorr", "es", "ess", "nwc", "nrefc", "nwsc", "nrefsc"],
-            engine = "c",
-        )
-        df["nocc"] = np.nan
 
-    return df
+    return pd.read_csv(
+        path,
+        sep = r"\s+",
+        header = None,
+        skiprows = start,
+        nrows = nrows,
+        names = [
+            "iter",
+            "eproj",
+            "ecorr",
+            "shift",
+            "nw",
+            "nref",
+            "nsampled",
+            "nsampledo",
+        ],
+        engine = "c",
+    )
 
 def findDeterministicQMC(path: Path):
     """
@@ -258,6 +253,35 @@ def shiftChange(series: pd.Series):
         idx = int(mask.argmax())
         return idx, arr[idx]
     return None, None
+
+def qmcShiftCorrelation(df: pd.DataFrame):
+    """
+    Convert the total QMC shift to a correlation-energy shift.
+
+    Before population control begins, the printed shift is zero. Those
+    entries are returned as NaN so they are not drawn as physical shifts.
+    """
+    iterShift, _ = shiftChange(df["shift"])
+
+    shiftCorr = pd.Series(
+        np.nan,
+        index = df.index,
+        dtype = float,
+    )
+
+    if iterShift is None:
+        return shiftCorr, None
+
+    referenceEnergy = np.nanmedian(
+        df["eproj"] - df["ecorr"]
+    )
+
+    shiftCorr.iloc[iterShift:] = (
+        df["shift"].iloc[iterShift:]
+        - referenceEnergy
+    )
+
+    return shiftCorr, iterShift
 
 def readEnergy(path: Path) -> pd.DataFrame:
     """
@@ -680,136 +704,123 @@ def plotExcitationHist(args):
 
 def plotProjectedShift(args):
     """
-    Plot projected and shift energies against iteration.
+    Plot projected and population-control shift correlation energies.
     """
     if not args.live:
-        df = readQMC(args.path)
+        df = readQMC(args.path).dropna(
+            subset = [
+                "iter",
+                "eproj",
+                "ecorr",
+                "shift",
+            ]
+        )
 
-        iterEs, _ = shiftChange(df["es"])
-        iterEsS, _ = shiftChange(df["ess"])
+        shiftCorr, iterShift = qmcShiftCorrelation(df)
 
         setStyle()
         plt.figure()
+
         plt.plot(
             df["iter"],
-            df["es"],
-            label = r"$E_s(\tau)$",
+            df["ecorr"],
+            label = r"$E_{\mathrm{Proj,corr}}(\tau)$",
             linewidth = LINEWIDTH,
-            color = "tab:blue",
+            color = "tab:green",
         )
-        plt.plot(
-            df["iter"],
-            df["ess"],
-            label = r"$E_s^S(\tau)$",
-            linewidth = LINEWIDTH,
-            color = "tab:orange",
-        )
-        if iterEs is not None:
+
+        if iterShift is not None:
+            plt.plot(
+                df["iter"],
+                shiftCorr,
+                label = r"$E_{s,\mathrm{corr}}(\tau)$",
+                linewidth = LINEWIDTH,
+                color = "tab:blue",
+            )
+
             plt.axvline(
-                df["iter"].iloc[iterEs],
+                df["iter"].iloc[iterShift],
                 linestyle = "--",
                 linewidth = LINEWIDTH,
                 color = "tab:blue",
             )
-        if iterEsS is not None:
-            plt.axvline(
-                df["iter"].iloc[iterEsS],
-                linestyle = "--",
-                linewidth = LINEWIDTH,
-                color = "tab:orange",
-            )
-        plt.plot(
-            df["iter"],
-            df["ecorr"],
-            label = r"$E_{\mathrm{Proj}}(\tau)$",
-            linewidth = LINEWIDTH,
-            color = "tab:green",
-        )
+
         formatAxes(
             xlabel = r"Iteration / $\tau$",
-            ylabel = "Energy / Ha",
+            ylabel = "Correlation energy / Ha",
             legend = True,
             legendLoc = "lower right",
         )
+
         finish(args)
         return
 
     setStyle()
     fig, ax = plt.subplots()
 
-    lineEs, = ax.plot(
+    lineShift, = ax.plot(
         [],
         [],
-        label = r"$E_s(\tau)$",
+        label = r"$E_{s,\mathrm{corr}}(\tau)$",
         linewidth = LINEWIDTH,
         color = "tab:blue",
     )
-    lineEsS, = ax.plot(
-        [],
-        [],
-        label = r"$E_s^S(\tau)$",
-        linewidth = LINEWIDTH,
-        color = "tab:orange",
-    )
+
     lineEproj, = ax.plot(
         [],
         [],
-        label = r"$E_{\mathrm{Proj}}(\tau)$",
+        label = r"$E_{\mathrm{Proj,corr}}(\tau)$",
         linewidth = LINEWIDTH,
         color = "tab:green",
     )
 
-    shiftEsLine = ax.axvline(
+    shiftLine = ax.axvline(
         0.0,
         linestyle = "--",
         linewidth = LINEWIDTH,
         color = "tab:blue",
-        visible = False,
-    )
-    shiftEsSLine = ax.axvline(
-        0.0,
-        linestyle = "--",
-        linewidth = LINEWIDTH,
-        color = "tab:orange",
         visible = False,
     )
 
     formatAxes(
         xlabel = r"Iteration / $\tau$",
-        ylabel = "Energy / Ha",
+        ylabel = "Correlation energy / Ha",
         legend = True,
         legendLoc = "lower right",
     )
 
     def update():
         df = readQMC(args.path).dropna(
-            subset = ["iter", "es", "ess", "ecorr"]
+            subset = [
+                "iter",
+                "eproj",
+                "ecorr",
+                "shift",
+            ]
         )
+
         if df.empty:
             return
 
         x = df["iter"].to_numpy()
+        shiftCorr, iterShift = qmcShiftCorrelation(df)
 
-        lineEs.set_data(x, df["es"].to_numpy())
-        lineEsS.set_data(x, df["ess"].to_numpy())
-        lineEproj.set_data(x, df["ecorr"].to_numpy())
+        lineEproj.set_data(
+            x,
+            df["ecorr"].to_numpy(),
+        )
 
-        iterEs, _ = shiftChange(df["es"])
-        iterEsS, _ = shiftChange(df["ess"])
+        lineShift.set_data(
+            x,
+            shiftCorr.to_numpy(),
+        )
 
-        if iterEs is not None:
-            value = df["iter"].iloc[iterEs]
-            shiftEsLine.set_xdata([value, value])
-            shiftEsLine.set_visible(True)
+        if iterShift is not None:
+            value = df["iter"].iloc[iterShift]
+            shiftLine.set_xdata([value, value])
+            shiftLine.set_visible(True)
         else:
-            shiftEsLine.set_visible(False)
-
-        if iterEsS is not None:
-            value = df["iter"].iloc[iterEsS]
-            shiftEsSLine.set_xdata([value, value])
-            shiftEsSLine.set_visible(True)
-        else:
-            shiftEsSLine.set_visible(False)
+            shiftLine.set_visible(False)
 
         ax.relim()
         ax.autoscale_view()
@@ -818,47 +829,53 @@ def plotProjectedShift(args):
 
 def plotNW(args):
     """
-    Plot walker populations against iteration.
+    Plot persistent and sampled-source populations against iteration.
     """
     if not args.live:
-        df = readQMC(args.path)
+        df = readQMC(args.path).dropna(
+            subset = [
+                "iter",
+                "shift",
+                "nw",
+                "nsampled",
+            ]
+        )
 
-        iterEs, _ = shiftChange(df["es"])
-        iterEsS, _ = shiftChange(df["ess"])
+        iterShift, _ = shiftChange(df["shift"])
 
         setStyle()
         plt.figure()
+
         plt.plot(
             df["iter"],
-            df["nwc"],
+            df["nw"],
             label = r"$N_w(\tau)$",
             linewidth = LINEWIDTH,
+            color = "tab:blue",
         )
+
         plt.plot(
             df["iter"],
-            df["nwsc"],
-            label = r"$\tilde{N}_w(\tau)$",
+            df["nsampled"],
+            label = r"$N_{\mathrm{sampled}}(\tau)$",
             linewidth = LINEWIDTH,
+            color = "tab:orange",
         )
-        if iterEs is not None:
+
+        if iterShift is not None:
             plt.axvline(
-                df["iter"].iloc[iterEs],
+                df["iter"].iloc[iterShift],
                 linestyle = "--",
                 linewidth = LINEWIDTH,
                 color = "tab:blue",
             )
-        if iterEsS is not None:
-            plt.axvline(
-                df["iter"].iloc[iterEsS],
-                linestyle = "--",
-                linewidth = LINEWIDTH,
-                color = "tab:orange",
-            )
+
         formatAxes(
             xlabel = r"Iteration / $\tau$",
-            ylabel = r"$N_w(\tau)$",
+            ylabel = "Population",
             legend = True,
         )
+
         finish(args)
         return
 
@@ -870,63 +887,64 @@ def plotNW(args):
         [],
         label = r"$N_w(\tau)$",
         linewidth = LINEWIDTH,
-    )
-    lineNwS, = ax.plot(
-        [],
-        [],
-        label = r"$\tilde{N}_w(\tau)$",
-        linewidth = LINEWIDTH,
+        color = "tab:blue",
     )
 
-    shiftEsLine = ax.axvline(
+    lineSampled, = ax.plot(
+        [],
+        [],
+        label = r"$N_{\mathrm{sampled}}(\tau)$",
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+    )
+
+    shiftLine = ax.axvline(
         0.0,
         linestyle = "--",
         linewidth = LINEWIDTH,
         color = "tab:blue",
         visible = False,
     )
-    shiftEsSLine = ax.axvline(
-        0.0,
-        linestyle = "--",
-        linewidth = LINEWIDTH,
-        color = "tab:orange",
-        visible = False,
-    )
 
     formatAxes(
         xlabel = r"Iteration / $\tau$",
-        ylabel = r"$N_w(\tau)$",
+        ylabel = "Population",
         legend = True,
     )
 
     def update():
         df = readQMC(args.path).dropna(
-            subset = ["iter", "nwc", "nwsc", "es", "ess"]
+            subset = [
+                "iter",
+                "shift",
+                "nw",
+                "nsampled",
+            ]
         )
+
         if df.empty:
             return
 
         x = df["iter"].to_numpy()
 
-        lineNw.set_data(x, df["nwc"].to_numpy())
-        lineNwS.set_data(x, df["nwsc"].to_numpy())
+        lineNw.set_data(
+            x,
+            df["nw"].to_numpy(),
+        )
 
-        iterEs, _ = shiftChange(df["es"])
-        iterEsS, _ = shiftChange(df["ess"])
+        lineSampled.set_data(
+            x,
+            df["nsampled"].to_numpy(),
+        )
 
-        if iterEs is not None:
-            value = df["iter"].iloc[iterEs]
-            shiftEsLine.set_xdata([value, value])
-            shiftEsLine.set_visible(True)
+        iterShift, _ = shiftChange(df["shift"])
+
+        if iterShift is not None:
+            value = df["iter"].iloc[iterShift]
+            shiftLine.set_xdata([value, value])
+            shiftLine.set_visible(True)
         else:
-            shiftEsLine.set_visible(False)
-
-        if iterEsS is not None:
-            value = df["iter"].iloc[iterEsS]
-            shiftEsSLine.set_xdata([value, value])
-            shiftEsSLine.set_visible(True)
-        else:
-            shiftEsSLine.set_visible(False)
+            shiftLine.set_visible(False)
 
         ax.relim()
         ax.autoscale_view()
@@ -1126,84 +1144,87 @@ def plotDeterministicProjectedShift(args):
 
 def plotShoulder(args):
     """
-    Plot total to reference ratios against walker number.
+    Plot the persistent total-to-reference population ratio against population.
     """
     if not args.live:
-        df = readQMC(args.path)
+        df = readQMC(args.path).dropna(
+            subset = [
+                "nw",
+                "nref",
+            ]
+        )
 
-        ratioC = df["nwc"] / df["nrefc"]
-        ratioSC = df["nwsc"] / df["nrefsc"]
+        df = df[df["nref"] != 0.0]
+
+        ratio = df["nw"] / df["nref"]
 
         setStyle()
         plt.figure()
+
         plt.plot(
-            df["nwsc"],
-            ratioSC,
-            linewidth = LINEWIDTH,
-            color = "tab:orange",
-            label = (
-                r"$\frac{\tilde N_w(\tau)}"
-                r"{\tilde N_{w,\mathrm{ref}}}$"
-            ),
-        )
-        plt.plot(
-            df["nwc"],
-            ratioC,
+            df["nw"],
+            ratio,
             linewidth = LINEWIDTH,
             color = "tab:blue",
-            label = r"$\frac{N_w(\tau)}{N_{w,\mathrm{ref}}}$",
+            label = (
+                r"$\frac{N_w(\tau)}"
+                r"{N_{w,\mathrm{ref}}(\tau)}$"
+            ),
         )
-        formatAxes(legend = True)
+
+        formatAxes(
+            xlabel = r"$N_w(\tau)$",
+            ylabel = (
+                r"$N_w(\tau)"
+                r"/N_{w,\mathrm{ref}}(\tau)$"
+            ),
+            legend = True,
+        )
+
         finish(args)
         return
 
     setStyle()
     fig, ax = plt.subplots()
 
-    lineSC, = ax.plot(
-        [],
-        [],
-        linewidth = LINEWIDTH,
-        color = "tab:orange",
-        label = (
-            r"$\frac{\tilde N_w(\tau)}"
-            r"{\tilde N_{w,\mathrm{ref}}}$"
-        ),
-    )
-    lineC, = ax.plot(
+    lineRatio, = ax.plot(
         [],
         [],
         linewidth = LINEWIDTH,
         color = "tab:blue",
-        label = r"$\frac{N_w(\tau)}{N_{w,\mathrm{ref}}}$",
+        label = (
+            r"$\frac{N_w(\tau)}"
+            r"{N_{w,\mathrm{ref}}(\tau)}$"
+        ),
     )
 
-    formatAxes(legend = True)
+    formatAxes(
+        xlabel = r"$N_w(\tau)$",
+        ylabel = (
+            r"$N_w(\tau)"
+            r"/N_{w,\mathrm{ref}}(\tau)$"
+        ),
+        legend = True,
+    )
 
     def update():
         df = readQMC(args.path).dropna(
-            subset = ["nwc", "nrefc", "nwsc", "nrefsc"]
+            subset = [
+                "nw",
+                "nref",
+            ]
         )
+
+        df = df[df["nref"] != 0.0]
+
         if df.empty:
             return
 
-        df = df[
-            (df["nrefc"] != 0.0)
-            & (df["nrefsc"] != 0.0)
-        ]
-        if df.empty:
-            return
+        ratio = df["nw"] / df["nref"]
 
-        ratioC = df["nwc"] / df["nrefc"]
-        ratioSC = df["nwsc"] / df["nrefsc"]
-
-        lineSC.set_data(
-            df["nwsc"].to_numpy(),
-            ratioSC.to_numpy(),
-        )
-        lineC.set_data(
-            df["nwc"].to_numpy(),
-            ratioC.to_numpy(),
+        lineRatio.set_data(
+            df["nw"].to_numpy(),
+            ratio.to_numpy(),
         )
 
         ax.relim()
@@ -1305,7 +1326,6 @@ def buildParser():
     
     p = subparsers.add_parser("projected-shift")
     p.add_argument("path", type = Path)
-    p.add_argument("--propagator", "-p", type = str, default = None)
     addTrajectoryArgs(p)
     p.set_defaults(func = plotProjectedShift)
     

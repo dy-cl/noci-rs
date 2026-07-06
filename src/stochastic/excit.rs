@@ -2,34 +2,53 @@
 use rand::Rng;
 use rand::rngs::SmallRng;
 
-use super::state::{HeatBath, Shifts};
+use super::state::HeatBath;
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
-use super::propagate::{coupling, find_hs};
+use super::propagate::find_hs;
 
-/// Initialise exact heat-bath excitation generation data for determinant `gamma`.
+/// Evaluate the shifted off-diagonal coupling
+/// T_{\Lambda\Gamma}(\Delta\tau) = H_{\Lambda\Gamma} - E_s(\Delta \tau) S_{\Lambda\Gamma}).
 /// # Arguments:
-/// - `gamma`: Parent determinant index.
-/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `hlg`: Hamiltonian matrix element H_{\Lambda\Gamma}.
+/// - `slg`: Overlap matrix element S_{\Lambda\Gamma}.
+/// - `shift`: Current population-control shift E_s(\Delta \tau).
+/// # Returns:
+/// - `f64`: Shifted coupling (T_{\Lambda\Gamma}(\Delta \tau).
+pub(in crate::stochastic) fn coupling(
+    hlg: f64,
+    slg: f64,
+    shift: f64,
+) -> f64 {
+    hlg - shift * slg
+}
+
+/// Construct exact heat-bath excitation-generation data for determinant
+/// \(\Gamma\). For every \Lambda \neq \Gamma, the heat-bath weight is
+/// w_{\Lambda\Gamma} = |T_{\Lambda\Gamma}(\Delta \tau)|. The total weight is
+/// W_\Gamma = \sum_{\Lambda \neq \Gamma}w_{\Lambda\Gamma}.
+/// # Arguments:
+/// - `gamma`: Parent determinant index \Gamma\.
+/// - `shift`: Current population-control shift E_s(\Delta \tau).
 /// - `data`: Immutable stochastic propagation data.
-/// - `scratch`: Scratch space for Wick's quantities.
-/// # Returns
-/// - `HeatBath`: Precomputed heat-bath excitation generation data for determinant `gamma`.
+/// - `scratch`: Scratch space for nonorthogonal Wick quantities.
+/// # Returns:
+/// - `HeatBath`: Couplings and cumulative weights for sampling children.
 pub(in crate::stochastic) fn init_heat_bath(
     gamma: usize,
-    shifts: Shifts,
+    shift: f64,
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> HeatBath {
     let ndets = data.basis.len();
-    // \Sum_{\Lambda \neq \Gamma} |H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma}
+    // Total weight W_Gamma = \sum_{\Lambda != \Gamma} |T_{\Lambda \Gamma}(\Delta \tau)|.
     let mut sumlg = 0.0_f64;
-    // Cumulative sums A_n = \sum_{i=1}^n |H_{i\Gamma} - E_s^S(\tau)S_{i\Gamma}|.
+    // Cumulative weights A_n = \sum_{i = 1}^n |T_{i \Gamma}(\Delta \tau)|.
     let mut cumulatives: Vec<f64> = Vec::new();
     // Corresponding Lambda indices to the cumulatives.
     let mut lambdas: Vec<usize> = Vec::new();
-    // H_{\Lambda\Gamma} - E_s^S(\tau)S_{\Lambda\Gamma} for a given Lambda.
+    // Signed shifted couplings T_{\Lambda \Gamma}(\Delta \tau).
     let mut ks: Vec<f64> = Vec::new();
 
     cumulatives.reserve(ndets - 1);
@@ -41,13 +60,7 @@ pub(in crate::stochastic) fn init_heat_bath(
             continue;
         }
         let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
-        let k = coupling(
-            hlg,
-            slg,
-            shifts.es_s,
-            shifts.es,
-            &data.input.prop_ref().propagator,
-        );
+        let k = coupling(hlg, slg, shift);
 
         sumlg += k.abs();
         cumulatives.push(sumlg);
@@ -62,18 +75,20 @@ pub(in crate::stochastic) fn init_heat_bath(
     }
 }
 
-/// Propose a determinant for spawning using a uniform excitation scheme.
+/// Sample an off-diagonal child determinant uniformly. The generation probability is
+/// P_{\mathrm{Gen}}(\Lambda|\Gamma) = 1/(N_{\mathrm{det}}-1)\) for every \Lambda \neq \Gamma\.
 /// # Arguments:
-/// - `gamma`: Index of determinant being spawned from.
-/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `gamma`: Parent determinant index \Gamma.
+/// - `shift`: Current population-control shift E_s(\Delta \tau).
 /// - `data`: Immutable stochastic propagation data.
-/// - `rng`: Random number generator.
-/// - `scratch`: Scratch space for Wick's quantities.
-/// # Returns
-/// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
+/// - `rng`: Random-number generator.
+/// - `scratch`: Scratch space for nonorthogonal Wick quantities.
+/// # Returns:
+/// - `(f64, f64, usize)`: Generation probability P_{\mathrm{Gen}}(\Lambda|\Gamma),
+///   shifted coupling T_{\Lambda\Gamma}(\Delta \tau), and sampled child index \Lambda.
 pub(in crate::stochastic) fn pgen_uniform(
     gamma: usize,
-    shifts: Shifts,
+    shift: f64,
     data: &NOCIData<'_, f64>,
     rng: &mut SmallRng,
     scratch: &mut WickScratchSpin<f64>,
@@ -87,31 +102,31 @@ pub(in crate::stochastic) fn pgen_uniform(
     }
 
     let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
-    let k = coupling(
-        hlg,
-        slg,
-        shifts.es_s,
-        shifts.es,
-        &data.input.prop_ref().propagator,
-    );
+    let k = coupling(hlg, slg, shift);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
     (pgen, k, lambda)
 }
 
-/// Propose a determinant for spawning using the exact heat-bath excitation scheme.
+/// Sample an off-diagonal child determinant from the exact heat-bath
+/// distribution. For nonzero total weight, P_{\mathrm{gen}}(\Lambda\Gamma)
+/// = |T_{\Lambda\Gamma}(\Delta \tau)| / W_\Gamma, if W_\Gamma = 0,
+/// the function falls back to uniform sampling.
 /// # Arguments:
-/// - `gamma`: Index of determinant being spawned from.
-/// - `shifts`: Current non-overlap and overlap-transformed shifts.
+/// - `gamma`: Parent determinant index \(\Gamma\).
+/// - `shift`: Current population-control shift \(E_s\), used by the
+///   uniform fallback.
 /// - `data`: Immutable stochastic propagation data.
-/// - `rng`: Random number generator.
-/// - `hb`: Precomputed heat-bath excitation generation data.
-/// - `scratch`: Scratch space for Wick's quantities.
-/// # Returns
-/// - `(f64, f64, usize)`: Generation probability, coupling, and selected determinant index.
+/// - `rng`: Random-number generator.
+/// - `hb`: Exact heat-bath data constructed for the same determinant
+///   and shift.
+/// - `scratch`: Scratch space used for nonorthogonal Wick's quantities.
+/// # Returns:
+/// - `(f64, f64, usize)`: Generation probability P_{\mathrm{Gen}}(\Lambda|\Gamma),
+///   shifted coupling T_{\Lambda\Gamma}(\Delta \tau), and sampled child index \Lambda.
 pub(in crate::stochastic) fn pgen_heat_bath(
     gamma: usize,
-    shifts: Shifts,
+    shift: f64,
     data: &NOCIData<'_, f64>,
     rng: &mut SmallRng,
     hb: &HeatBath,
@@ -126,13 +141,7 @@ pub(in crate::stochastic) fn pgen_heat_bath(
             lambda += 1;
         }
         let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
-        let k = coupling(
-            hlg,
-            slg,
-            shifts.es_s,
-            shifts.es,
-            &data.input.prop_ref().propagator,
-        );
+        let k = coupling(hlg, slg, shift);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
     }

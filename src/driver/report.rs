@@ -150,13 +150,13 @@ pub fn print_report(
         );
         print_counter("Full QMC step", res.timings.stochastic.qmc_step, 2);
         print_counter(
-            "Initialise QMC walkers",
-            res.timings.stochastic.step.initialise_walkers,
+            "Initialise QMC population",
+            res.timings.stochastic.step.initialise_populations,
             4,
         );
         print_counter(
             "Spawn/death propagation",
-            res.timings.stochastic.step.propagate_iteration,
+            res.timings.stochastic.step.generate_population_changes,
             4,
         );
         print_counter(
@@ -166,27 +166,22 @@ pub fn print_report(
         );
         print_counter(
             "Apply population delta",
-            res.timings.stochastic.step.apply_delta,
+            res.timings.stochastic.step.take_population_changes,
             4,
         );
         print_counter(
-            "Update overlap-transformed population",
-            res.timings.stochastic.step.update_p,
+            "Apply overlap-transformed population",
+            res.timings.stochastic.step.apply_overlap_changes,
             4,
         );
         print_counter(
-            "Update projected energy",
-            res.timings.stochastic.step.update_projected_energy,
+            "Calculate projected energy",
+            res.timings.stochastic.step.compute_projected_energy,
             4,
         );
         print_counter(
             "Compute population statistics",
-            res.timings.stochastic.step.compute_populations,
-            4,
-        );
-        print_counter(
-            "Observable all-reduce",
-            res.timings.stochastic.step.observables_allreduce,
+            res.timings.stochastic.step.compute_population_stats,
             4,
         );
         println!("{}", "-".repeat(100));

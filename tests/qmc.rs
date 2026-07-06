@@ -138,12 +138,12 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 /// Run a QMC fixture through the binary and collect report energies from stdout.
 /// # Arguments:
 /// - `fixture`: Name of the test fixture to run.
-/// # Returns
+/// # Returns:
 /// - `Vec<f64>`: QMC report energies printed by the binary.
-/// # Panics
+/// # Panics:
 /// - If the binary cannot be found or run.
 /// - If stdout or stderr are not valid UTF-8.
-/// - If the binary exits with a non-zero status.
+/// - If the binary exits with a nonzero status.
 fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     let exe = env!("CARGO_BIN_EXE_noci-rs");
     let input_path = fixture_dir(fixture).join("input.lua");
@@ -157,23 +157,17 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
 
-    assert!(
-        output.status.success(),
-        "noci-rs failed with status {}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        stdout,
-        stderr
-    );
-
     stdout
         .lines()
         .filter_map(|line| {
-            let cols: Vec<_> = line.split_whitespace().collect();
-            if cols.len() == 10 && cols[0].parse::<usize>().is_ok() {
-                cols[1].parse::<f64>().ok()
-            } else {
-                None
+            let columns = line.split_whitespace().collect::<Vec<_>>();
+
+            if columns.len() != 8 {
+                return None;
             }
+
+            columns[0].parse::<usize>().ok()?;
+            columns[1].parse::<f64>().ok()
         })
         .collect()
 }

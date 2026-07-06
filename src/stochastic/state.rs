@@ -2,36 +2,37 @@
 use mpi::traits::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use rand_distr::{Binomial, Distribution};
 
-use crate::input::{ExcitationGen, Propagator};
+use crate::input::ExcitationGen;
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
-use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
-use super::propagate::{coupling, find_hs};
+use super::excit::{coupling, init_heat_bath, pgen_heat_bath, pgen_uniform};
+use super::propagate::{find_hs, stochastic_population_cutoff};
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
 pub struct QMCTimings {
-    /// Time spent constructing the initial walker population and derived state.
-    pub initialise_walkers: f64,
-    /// Time spent generating spawning and death/cloning events.
-    pub spawn_death_collect: f64,
-    /// Time spent accumulating thread-local updates into rank-local buffers.
-    pub acc_pack: f64,
-    /// Time spent exchanging population updates between MPI ranks.
-    pub mpi_exchange_updates: f64,
-    /// Time spent unpacking received updates and adding them to the local delta.
-    pub unpack_acc_recieved: f64,
-    /// Time spent applying the accumulated population delta to walkers.
-    pub apply_delta: f64,
-    /// Time spent updating the overlap-transformed population vector p.
-    pub update_p: f64,
-    /// Time spent computing current walker population statistics.
-    pub calc_populations: f64,
-    /// Time spent updating the projected-energy estimator.
-    pub eproj: f64,
+    /// Time spent constructing the initial population.
+    pub initialise_populations: f64,
+    /// Time spent constructing sparse unbiased samples.
+    pub sample_populations: f64,
+    /// Time spent generating the pre-overlap population change.
+    pub generate_population_changes: f64,
+    /// Time spent accumulating thread-local changes and packing changes.
+    pub acc_pack_updates: f64,
+    /// Time spent exchanging spawned population changes between MPI ranks.
+    pub exchange_population_changes: f64,
+    /// Time spent adding received population changes to the local accumulator.
+    pub unpack_population_changes: f64,
+    /// Time spent draining the change accumulator into a sparse list.
+    pub drain_population_changes: f64,
+    /// Time spent applying the overlap-transformed change N \leftarrow N + S\Delta.
+    pub apply_overlap_changes: f64,
+    /// Time spent computing persistent and sampled population statistics.
+    pub compute_population_stats: f64,
+    /// Time spent computing the projected-energy numerator and denominator.
+    pub compute_projected_energy: f64,
 }
 
 /// Storage for rank-local data layouts and metadata.
@@ -44,12 +45,12 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) ndets: usize,
     /// Global determinant indices owned by this rank.
     pub(in crate::stochastic) owned: Vec<usize>,
-    /// Reference determinant index used in projected-energy estimates.
-    pub(in crate::stochastic) iref: usize,
     /// User- or randomly-selected base seed for the full run.
     pub(in crate::stochastic) base_seed: u64,
     /// Rank-specific seed derived from the base seed.
     pub(in crate::stochastic) rank_seed: u64,
+    /// Reference-row Hamiltonian and overlap elements aligned with `owned`.
+    pub(in crate::stochastic) reference_hs: Vec<(f64, f64)>,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
     pub(in crate::stochastic) diagonal_hs: Vec<(f64, f64)>,
     /// Contiguous determinant index range for each parent reference.
@@ -68,129 +69,116 @@ pub(in crate::stochastic) struct ScratchSize {
     pub(in crate::stochastic) maxlb: usize,
 }
 
-/// Storage for Current shift values used during propagation.
-#[derive(Clone, Copy)]
-pub(in crate::stochastic) struct Shifts {
-    /// Current non-overlap-transformed shift.
-    pub(in crate::stochastic) es: f64,
-    /// Current overlap-transformed shift.
-    pub(in crate::stochastic) es_s: f64,
-}
-
-/// Storage for walker information.
-pub(crate) struct Walkers {
-    // Signed population vector length n determinants.
-    pop: Vec<i64>,
-    // List of indices with non-zero population.
+/// Storage for a sparse real population vector.
+pub(crate) struct SparsePopulations {
+    /// Signed real population vector over the full determinant space.
+    pop: Vec<f64>,
+    /// Determinant indices with nonzero population.
     occ: Vec<usize>,
-    // Position of index in `occ` or usize::MAX if not present, length n determinants.
+    /// Position of each determinant in `occ`, or `usize::MAX` if unoccupied.
     pos: Vec<usize>,
 }
 
-impl Walkers {
-    /// Construct empty walker object for n determinants.
+impl SparsePopulations {
+    /// Construct empty sparse population storage.
     /// # Arguments:
     /// - `n`: Number of determinants.
-    /// # Returns
-    /// - `Walkers`: Empty walker storage for `n` determinants.
+    /// # Returns:
+    /// - `SparsePopulations`: Empty population storage.
     pub(crate) fn new(n: usize) -> Self {
         Self {
-            pop: vec![0; n],
+            pop: vec![0.0; n],
             occ: Vec::new(),
             pos: vec![usize::MAX; n],
         }
     }
 
-    /// Return the current population of determinant i.
+    /// Return the population on determinant `i`.
     /// # Arguments:
-    /// - `self`: Object containing information about current walkers.
-    /// - `i`: Determinant index of choice.
-    /// # Returns
-    /// - `i64`: Current signed walker population on determinant `i`.
+    /// - `self`: Sparse population storage.
+    /// - `i`: Determinant index.
+    /// # Returns:
+    /// - `f64`: Signed real population.
+    #[inline(always)]
     pub(crate) fn get(
         &self,
         i: usize,
-    ) -> i64 {
+    ) -> f64 {
         self.pop[i]
     }
 
-    /// Return a list of occupied determinant indices.
+    /// Return the occupied determinant indices.
     /// # Arguments:
-    /// - `self`: Object containing information about current walkers.
-    /// # Returns
-    /// - `&[usize]`: Slice of occupied determinant indices.
+    /// - `self`: Sparse population storage.
+    /// # Returns:
+    /// - `&[usize]`: Occupied determinant indices.
+    #[inline(always)]
     pub(crate) fn occ(&self) -> &[usize] {
         &self.occ
     }
 
-    /// Add dn (change in population) to determinant i, modifying pop, occ and pos as required
+    /// Add a real population change to determinant `i`.
     /// # Arguments:
-    /// - `self`: Object containing information about current walkers.
-    /// - `i`: Determinant index of choice.
-    /// - `dn`: Change in population of determinant i.
-    /// # Returns
-    /// - `()`: Updates the walker storage in place.
+    /// - `self`: Sparse population storage.
+    /// - `i`: Determinant index.
+    /// - `dn`: Signed real population change.
+    /// # Returns:
+    /// - `()`: Updates the sparse population storage.
     pub(crate) fn add(
         &mut self,
         i: usize,
-        dn: i64,
+        dn: f64,
     ) {
-        // No changes to be made.
-        if dn == 0 {
+        if dn == 0.0 {
             return;
         }
 
         unsafe {
-            // Update population vector.
             let pop = self.pop.get_unchecked_mut(i);
             let old = *pop;
             let new = old + dn;
             *pop = new;
 
-            // If old population of determinant i was 0 and we are introducing population we must
-            // add determinant i to the occupied list and store its position in pos.
-            if old == 0 && new != 0 {
+            if old == 0.0 && new != 0.0 {
                 let p = self.occ.len();
-                // Position of determinant i in occupied list is the current end.
                 *self.pos.get_unchecked_mut(i) = p;
                 self.occ.push(i);
                 return;
             }
-            // If old population of determinant i was not 0 and we have removed population we must
-            // remove i from the occupied list and remove its position from pos.
-            if old != 0 && new == 0 {
-                // Find where i is in occ. Should not return usize::MAX.
+
+            if old != 0.0 && new == 0.0 {
                 let p = *self.pos.get_unchecked(i);
-                // Pop the last occupied determinant index from occ.
                 let last = self.occ.pop().unwrap_unchecked();
 
-                // If the popped element is not i, then i was somewhere in the middle of occ and we
-                // lmust move the popped element (last) to position p where i used to be. The position of
-                // last is then updated in the position vector. If the popped element is i then we do
-                // nothing as we have directly removed it by popping.
                 if last != i {
-                    // move last into position p
                     *self.occ.get_unchecked_mut(p) = last;
                     *self.pos.get_unchecked_mut(last) = p;
                 }
 
-                // Position i is no longer occupied.
                 *self.pos.get_unchecked_mut(i) = usize::MAX;
             }
         }
     }
 
-    /// Compute the total walker population 1-norm.
+    /// Remove all populations while retaining allocated storage.
     /// # Arguments:
-    /// - `self`: Object containing information about current walkers.
-    /// # Returns
-    /// - `i64`: Total walker population 1-norm.
-    pub(crate) fn norm(&self) -> i64 {
-        self.occ.iter().map(|&i| self.pop[i].abs()).sum()
+    /// - `self`: Sparse population storage.
+    /// # Returns:
+    /// - `()`: Clears every occupied population.
+    pub(crate) fn clear(&mut self) {
+        for i in self.occ.drain(..) {
+            self.pop[i] = 0.0;
+            self.pos[i] = usize::MAX;
+        }
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.pop.len()
+    /// Compute the population 1-norm.
+    /// # Arguments:
+    /// - `self`: Sparse population storage.
+    /// # Returns:
+    /// - `f64`: Population 1-norm.
+    pub(crate) fn norm(&self) -> f64 {
+        self.occ.iter().map(|&i| self.pop[i].abs()).sum()
     }
 }
 
@@ -222,7 +210,7 @@ pub fn owner(
 /// - `ndets`: Number of determinants.
 /// - `nranks`: Number of MPI ranks.
 /// # Returns
-/// - `(Vec<usize>, Vec<usize>)`: Owned determinant indices.
+/// - `Vec<usize>`: Global determinant indices owned by this rank.
 pub fn owned(
     irank: usize,
     ndets: usize,
@@ -238,201 +226,119 @@ pub fn owned(
     owned
 }
 
-/// Take initialised walker population as a full vector and remove population from the vector if a
-/// given index is not owned by the thread in question. This is obviously quite wasteful keeping a
-/// full vector of ndets for each thread, and initialising population just to remove it but it is
-/// simple to do for now.
-/// # Arguments
-/// - `w`: Contains information about determinant populations, indices, and occupations.
-/// - `irank`: Rank of current thread.
-/// - `nranks`: Total number of threads.
-/// # Returns
-/// - `Walkers`: Walker population restricted to determinants owned by the current rank.
-pub(crate) fn local_walkers(
-    mut w: Walkers,
-    irank: usize,
-    nranks: usize,
-) -> Walkers {
-    let occ = w.occ().to_vec();
-    for i in occ {
-        if owner(i, w.len(), nranks) != irank {
-            let ni = w.get(i);
-            w.add(i, -ni)
-        }
-    }
-    w
-}
-
-/// Storage for Monte Carlo state.
+/// Storage for the range-preserving Monte Carlo state.
 pub(in crate::stochastic) struct MCState {
-    /// Walker distribution.
-    pub(in crate::stochastic) walkers: Walkers,
-    /// Changes to walker population of length n determinants.
-    pub(in crate::stochastic) delta: Vec<i64>,
-    /// Indices for which delta[i] != 0, i.e., determinants with changed population.
+    /// Persistent local portion of the real population vector.
+    pub(in crate::stochastic) populations: Vec<f64>,
+    /// Temporary sparse real population vector used for spawning.
+    pub(in crate::stochastic) sampled: SparsePopulations,
+    /// Accumulated real population changes over the full determinant space.
+    pub(in crate::stochastic) delta: Vec<f64>,
+    /// Determinants for which `delta[i]` is nonzero.
     pub(in crate::stochastic) changed: Vec<usize>,
-    /// Incrementally updated p_{\Gamma} = \sum_{\Omega} S_{\Gamma\Omega} N_{\Omega}.
-    pub(in crate::stochastic) pg: Vec<f64>,
-    /// Histogrammed samples of P_{\text{Spawn}} for excit gen diagnostics.
+    /// Histogrammed spawning magnitudes.
     pub(in crate::stochastic) excitation_hist: Option<ExcitationHist>,
 }
 
-/// Storage for the incrementally updated projected-energy.
+/// Storage for the current projected-energy numerator and denominator.
 #[derive(Clone, Copy)]
 pub(in crate::stochastic) struct ProjectedEnergyUpdate {
-    /// Reference determinant index used in the projection.
-    pub(in crate::stochastic) iref: usize,
-    /// Running numerator of the projected-energy estimator.
+    /// Numerator of the projected-energy estimator.
     pub(in crate::stochastic) num: f64,
-    /// Running denominator of the projected-energy estimator.
+    /// Denominator of the projected-energy estimator.
     pub(in crate::stochastic) den: f64,
 }
 
-/// Storage for current walker populations in both the raw and overlap-transformed sense.
+/// Storage for current persistent and sampled population statistics.
 #[derive(Clone, Copy)]
 pub(in crate::stochastic) struct PopulationStats {
-    /// Non-overlap transformed walker populations.
-    pub(in crate::stochastic) nwc: i64,
-    /// Non-overlap transformed reference walker populations.
-    pub(in crate::stochastic) nrefc: i64,
-    /// Overlap-transformed walker populations.
-    pub(in crate::stochastic) nwsc: f64,
-    /// Overlap-transformed reference walker populations.
-    pub(in crate::stochastic) nrefsc: f64,
-    /// Number of determinants currently occupied.
-    pub(in crate::stochastic) noccdets: i64,
+    /// Persistent population 1-norm |N|_1.
+    pub(in crate::stochastic) nw: f64,
+    /// Persistent population 1-norm on the reference determinants.
+    pub(in crate::stochastic) nref: f64,
+    /// Sampled-population 1-norm |\tilde N|_1.
+    pub(in crate::stochastic) nsampled: f64,
+    /// Number of nonzero sampled populations | \tilde N|_0.
+    pub(in crate::stochastic) nsampledo: i64,
 }
 
 impl PopulationStats {
-    /// Construct raw and overlap-transformed walker population container.
+    /// Construct population statistics.
     /// # Arguments:
-    /// - `nwc`: Total non-overlap transformed walker population.
-    /// - `nrefc`: Total non-overlap transformed reference walker population.
-    /// - `nwsc`: Total overlap-transformed walker population.
-    /// - `nrefsc`: Total overlap-transformed reference walker population.
-    /// - `noccdets`: Number of currently occupied determinants.
-    /// # Returns
-    /// - `PopulationStats`: Walker population statistics.
+    /// - `nw`: Persistent population 1-norm.
+    /// - `nref`: Persistent reference population 1-norm.
+    /// - `nsampled`: Sampled-population population 1-norm.
+    /// - `nsampledo`: Number of sampled-population determinants.
+    /// # Returns:
+    /// - `PopulationStats`: Population statistics.
     pub(in crate::stochastic) fn new(
-        nwc: i64,
-        nrefc: i64,
-        nwsc: f64,
-        nrefsc: f64,
-        noccdets: i64,
+        nw: f64,
+        nref: f64,
+        nsampled: f64,
+        nsampledo: i64,
     ) -> Self {
         Self {
-            nwc,
-            nrefc,
-            nwsc,
-            nrefsc,
-            noccdets,
+            nw,
+            nref,
+            nsampled,
+            nsampledo,
         }
     }
 }
 
-/// Storage for QMC step bookkeeping data.
+/// Storage for QMC propagation bookkeeping.
 pub(in crate::stochastic) struct PropagationState {
     /// Full Monte Carlo state.
     pub(in crate::stochastic) mc: MCState,
-    /// Incrementally updated projected-energy.
+    /// Current projected-energy numerator and denominator.
     pub(in crate::stochastic) pe: ProjectedEnergyUpdate,
-    /// Overlap transformed shift.
-    pub(in crate::stochastic) es_s: f64,
-    /// Walker populations at previous shift update.
+    /// Population statistics at the previous shift update.
     pub(in crate::stochastic) prev_pop: PopulationStats,
-    /// Current walker populations.
+    /// Current population statistics.
     pub(in crate::stochastic) cur_pop: PopulationStats,
-    /// From where did iterations begin (was a restart file used?).
+    /// Report from which propagation begins.
     pub(in crate::stochastic) start_report: usize,
-    /// Has the overlap-transformed population reached the target.
-    pub(in crate::stochastic) reached_sc: bool,
-    /// Has the non-overlap-transformed population reached the target.
-    pub(in crate::stochastic) reached_c: bool,
-    /// Current projected-energy.
+    /// Whether the persistent population has reached its target.
+    pub(in crate::stochastic) reached: bool,
+    /// Current projected energy.
     pub(in crate::stochastic) eprojcur: f64,
 }
 
 impl PropagationState {
-    /// Construct propagation state from the Monte Carlo state, projected-energy,
-    /// shift, and population bookkeeping quantities.
+    /// Construct a propagation state.
     /// # Arguments:
     /// - `mc`: Monte Carlo state.
-    /// - `pe`: Incrementally updated projected-energy.
-    /// - `es_s`: Overlap transformed shift.
+    /// - `pe`: Projected-energy data.
     /// - `start_report`: Report from which propagation begins.
-    /// - `reached_sc`: Has the overlap-transformed population reached the target.
-    /// - `reached_c`: Has the non-overlap-transformed population reached the target.
-    /// - `prev_pop`: Walker populations at the previous shift update.
-    /// # Returns
+    /// - `reached`: Whether the target population has been reached.
+    /// - `prev_pop`: Population statistics at the previous shift update.
+    /// # Returns:
     /// - `PropagationState`: Initialised propagation state.
     pub(in crate::stochastic) fn new(
         mc: MCState,
         pe: ProjectedEnergyUpdate,
-        es_s: f64,
         start_report: usize,
-        reached_sc: bool,
-        reached_c: bool,
+        reached: bool,
         prev_pop: PopulationStats,
     ) -> Self {
         let eprojcur = pe.num / pe.den;
+
         Self {
             mc,
             pe,
-            es_s,
             prev_pop,
             cur_pop: prev_pop,
             start_report,
-            reached_sc,
-            reached_c,
+            reached,
             eprojcur,
         }
-    }
-
-    /// Construct propagation state for a run beginning from iteration zero.
-    /// # Arguments:
-    /// - `mc`: Monte Carlo state.
-    /// - `pe`: Incrementally updated projected-energy.
-    /// - `es_s`: Overlap transformed shift.
-    /// - `prev_pop`: Initial walker populations.
-    /// # Returns
-    /// - `PropagationState`: Propagation state for a stochastic run from iteration zero.
-    pub(in crate::stochastic) fn fresh(
-        mc: MCState,
-        pe: ProjectedEnergyUpdate,
-        es_s: f64,
-        prev_pop: PopulationStats,
-    ) -> Self {
-        Self::new(mc, pe, es_s, 0, false, false, prev_pop)
-    }
-
-    /// Construct propagation state for a run resumed from a restart file.
-    /// # Arguments:
-    /// - `mc`: Monte Carlo state.
-    /// - `pe`: Incrementally updated projected-energy.
-    /// - `es_s`: Overlap transformed shift.
-    /// - `start_report`: Report from which propagation resumes.
-    /// - `reached_sc`: Has the overlap-transformed population reached the target.
-    /// - `reached_c`: Has the non-overlap-transformed population reached the target.
-    /// - `prev_pop`: Walker populations stored at the previous shift update.
-    /// # Returns
-    /// - `PropagationState`: Propagation state for a restarted stochastic run.
-    pub(in crate::stochastic) fn restart(
-        mc: MCState,
-        pe: ProjectedEnergyUpdate,
-        es_s: f64,
-        start_report: usize,
-        reached_sc: bool,
-        reached_c: bool,
-        prev_pop: PopulationStats,
-    ) -> Self {
-        Self::new(mc, pe, es_s, start_report, reached_sc, reached_c, prev_pop)
     }
 }
 
 /// Storage for results of a single propagation step.
 pub(in crate::stochastic) struct PropagationResult {
     /// Population updates for determinants owned by current rank.
-    pub(in crate::stochastic) local: Vec<(usize, i64)>,
+    pub(in crate::stochastic) local: Vec<(usize, f64)>,
     /// Population updates for determinants owned by another rank.
     pub(in crate::stochastic) remote: Vec<PopulationUpdate>,
     /// Excitation generation samples.
@@ -467,7 +373,7 @@ impl PropagationResult {
 /// Storage for per thread propagation quantities.
 pub(in crate::stochastic) struct ThreadPropagation {
     /// Population changes generated by this thread that belong to determinants owned by current MPI rank.
-    pub(in crate::stochastic) local: Vec<(usize, i64)>,
+    pub(in crate::stochastic) local: Vec<(usize, f64)>,
     /// Population changes generated by this thread that belong to determinants owned by another MPI rank.
     pub(in crate::stochastic) remote: Vec<PopulationUpdate>,
     /// Excitation generation samples.
@@ -526,136 +432,106 @@ impl ThreadPropagation {
         self.overlap.clear();
     }
 
-    /// Perform the diagonal death and cloning step for a parent determinant.
+    /// Generate the diagonal real population change for one sampled determinant.
     /// # Arguments:
-    /// - `gamma`: Index of parent determinant `\Gamma`.
-    /// - `ngamma`: Walker population on determinant `\Gamma`.
-    /// - `shifts`: Current non-overlap and overlap-transformed shifts.
+    /// - `gamma`: Parent determinant index.
+    /// - `population`: Real sampled population on `gamma`.
+    /// - `shift`: Current population-control shift.
     /// - `data`: Immutable stochastic propagation data.
-    /// # Returns
-    /// - `()`: Appends local death/cloning population updates to `self.local`.
-    pub(in crate::stochastic) fn death_cloning(
+    /// - `diagonal_hs`: Cached diagonal Hamiltonian and overlap elements.
+    /// # Returns:
+    /// - `()`: Appends the diagonal population change to `self.local`.
+    pub(in crate::stochastic) fn diagonal_population_change(
         &mut self,
         gamma: usize,
-        ngamma: i64,
-        shifts: Shifts,
+        population: f64,
+        shift: f64,
         data: &NOCIData<'_, f64>,
         diagonal_hs: &[(f64, f64)],
     ) {
         let (hgg, sgg) = diagonal_hs[gamma];
+        let coupling = hgg - shift * sgg;
+        let dn = -data.input.prop_ref().dt * coupling * population;
 
-        let pdeath = match data.input.prop_ref().propagator {
-            Propagator::Unshifted => data.input.prop_ref().dt * (hgg - sgg * shifts.es_s),
-            Propagator::Shifted => {
-                data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es_s)
-            }
-            Propagator::DoublyShifted => {
-                data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - shifts.es)
-            }
-            Propagator::DifferenceDoublyShiftedU1 => {
-                data.input.prop_ref().dt
-                    * (hgg - sgg * 0.5 * (shifts.es_s + shifts.es) - (shifts.es - shifts.es_s))
-            }
-            Propagator::DifferenceDoublyShiftedU2 => {
-                data.input.prop_ref().dt * (hgg - sgg * shifts.es_s - (shifts.es - shifts.es_s))
-            }
-        };
-        if pdeath == 0.0 {
-            return;
+        if dn != 0.0 {
+            self.local.push((gamma, dn));
         }
-
-        let p = pdeath.abs();
-        let parent_sign = if ngamma > 0 { 1 } else { -1 };
-        let n = ngamma.abs();
-        let m = p.floor() as i64;
-        let frac = p - (m as f64);
-        let extra = if frac > 0.0 {
-            Binomial::new(n as u64, frac).unwrap().sample(&mut self.rng) as i64
-        } else {
-            0
-        };
-        let nevents = n * m + extra;
-        if nevents == 0 {
-            return;
-        }
-
-        let dn = if pdeath > 0.0 {
-            -parent_sign
-        } else {
-            parent_sign
-        };
-        self.local.push((gamma, dn * nevents));
     }
 
-    /// Perform the off-diagonal spawning step for a parent determinant.
+    /// Generate off-diagonal real population changes from one sampled determinant.
     /// # Arguments:
-    /// - `gamma`: Index of parent determinant `\Gamma`.
-    /// - `ngamma`: Walker population on determinant `\Gamma`.
-    /// - `shifts`: Current non-overlap and overlap-transformed shifts.
+    /// - `gamma`: Parent determinant index.
+    /// - `population`: Real sampled population on `gamma`.
+    /// - `shift`: Current population-control shift.
     /// - `data`: Immutable stochastic propagation data.
-    /// - `run`: Rank-local run metadata.
-    /// # Returns
-    /// - `()`: Appends local and remote spawning updates to `self.local` and `self.remote`,
-    ///   and excitation histogram samples to `self.samples`.
+    /// - `run`: Rank-local propagation metadata.
+    /// # Returns:
+    /// - `()`: Appends local and remote real population changes.
     pub(in crate::stochastic) fn spawning(
         &mut self,
         gamma: usize,
-        ngamma: i64,
-        shifts: Shifts,
+        population: f64,
+        shift: f64,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
     ) {
+        if population == 0.0 {
+            return;
+        }
+
         let qmc = data.input.qmc.as_ref().unwrap();
-        let prop = data.input.prop_ref();
-        let dt = prop.dt;
+        let dt = data.input.prop_ref().dt;
         let write_excitation_hist = data.input.write.write_excitation_hist;
-        let parent_sign = if ngamma > 0 { 1 } else { -1 };
-        let nwalkers = ngamma.unsigned_abs();
+
+        let nattempts = population.abs().ceil().max(1.0) as usize;
+        let parent_population = population / nattempts as f64;
 
         if let ExcitationGen::Uniform = qmc.excitation_gen
             && data.wicks.is_some()
         {
             let ndets = data.basis.len();
-            let pgen = 1.0 / ((ndets - 1) as f64);
-            let sample_uniform = |rng: &mut SmallRng| -> (usize, f64) {
-                let mut lambda = rng.gen_range(0..(ndets - 1));
+            let pgen = 1.0 / (ndets - 1) as f64;
+
+            let sample_uniform = |rng: &mut SmallRng| -> usize {
+                let mut lambda = rng.gen_range(0..ndets - 1);
                 if lambda >= gamma {
                     lambda += 1;
                 }
-                (lambda, rng.gen_range(0.0..1.0))
+                lambda
             };
 
-            let (mut lambda, mut u) = sample_uniform(&mut self.rng);
-            for iwalker in 0..nwalkers {
-                let next = if iwalker + 1 < nwalkers {
+            let mut lambda = sample_uniform(&mut self.rng);
+
+            for iattempt in 0..nattempts {
+                let next = if iattempt + 1 < nattempts {
                     let next = sample_uniform(&mut self.rng);
+
                     if let Some(wicks) = data.wicks {
-                        wicks.prefetch_pair(data.basis[next.0].parent, data.basis[gamma].parent);
+                        wicks.prefetch_pair(data.basis[next].parent, data.basis[gamma].parent);
                     }
+
                     Some(next)
                 } else {
                     None
                 };
 
-                let (hlg, slg) = find_hs(data, lambda, gamma, &mut self.scratch);
-                let k = coupling(hlg, slg, shifts.es_s, shifts.es, &prop.propagator);
-                let pspawn = dt * k.abs() / pgen;
+                let (hlg, slg) = find_hs(data, lambda, gamma, self.scratch.as_mut());
+
+                let k = coupling(hlg, slg, shift);
+                let raw = -dt * k * parent_population / pgen;
+
                 if write_excitation_hist {
-                    self.samples.push(pspawn);
+                    self.samples.push(raw.abs());
                 }
 
-                let m = pspawn.floor() as i64;
-                let frac = pspawn - (m as f64);
-                let nchildren = m + if u < frac { 1 } else { 0 };
-                if nchildren != 0 {
-                    let sign = if k > 0.0 { 1 } else { -1 };
-                    let child_sign = -sign * parent_sign;
-                    let dn = child_sign * nchildren;
+                let dn = stochastic_population_cutoff(raw, qmc.spawn_cutoff, &mut self.rng);
 
+                if dn != 0.0 {
                     if run.nranks == 1 {
                         self.local.push((lambda, dn));
                     } else {
                         let destination = owner(lambda, run.ndets, run.nranks);
+
                         if destination == run.irank {
                             self.local.push((lambda, dn));
                         } else {
@@ -668,58 +544,54 @@ impl ThreadPropagation {
                 }
 
                 if let Some(next) = next {
-                    (lambda, u) = next;
+                    lambda = next;
                 }
             }
+
             return;
         }
 
-        let mut hb: Option<HeatBath> = None;
-        if let ExcitationGen::HeatBath = qmc.excitation_gen {
-            hb = Some(init_heat_bath(gamma, shifts, data, &mut self.scratch));
-        }
+        let heat_bath = if let ExcitationGen::HeatBath = qmc.excitation_gen {
+            Some(init_heat_bath(gamma, shift, data, self.scratch.as_mut()))
+        } else {
+            None
+        };
 
-        for _ in 0..nwalkers {
+        for _ in 0..nattempts {
             let (pgen, k, lambda) = match qmc.excitation_gen {
                 ExcitationGen::Uniform => {
-                    pgen_uniform(gamma, shifts, data, &mut self.rng, &mut self.scratch)
+                    pgen_uniform(gamma, shift, data, &mut self.rng, self.scratch.as_mut())
                 }
                 ExcitationGen::HeatBath => pgen_heat_bath(
                     gamma,
-                    shifts,
+                    shift,
                     data,
                     &mut self.rng,
-                    hb.as_ref().unwrap(),
-                    &mut self.scratch,
+                    heat_bath.as_ref().unwrap(),
+                    self.scratch.as_mut(),
                 ),
-                ExcitationGen::ApproximateHeatBath => unimplemented!(),
+                ExcitationGen::ApproximateHeatBath => {
+                    unimplemented!()
+                }
             };
 
-            let pspawn = dt * k.abs() / pgen;
+            let raw = -dt * k * parent_population / pgen;
+
             if write_excitation_hist {
-                self.samples.push(pspawn);
+                self.samples.push(raw.abs());
             }
 
-            let m = pspawn.floor() as i64;
-            let frac = pspawn - (m as f64);
-            let extra = if self.rng.gen_range(0.0..1.0) < frac {
-                1
-            } else {
-                0
-            };
-            let nchildren = m + extra;
-            if nchildren == 0 {
+            let dn = stochastic_population_cutoff(raw, qmc.spawn_cutoff, &mut self.rng);
+
+            if dn == 0.0 {
                 continue;
             }
-
-            let sign = if k > 0.0 { 1 } else { -1 };
-            let child_sign = -sign * parent_sign;
-            let dn = child_sign * nchildren;
 
             if run.nranks == 1 {
                 self.local.push((lambda, dn));
             } else {
                 let destination = owner(lambda, run.ndets, run.nranks);
+
                 if destination == run.irank {
                     self.local.push((lambda, dn));
                 } else {
@@ -733,15 +605,14 @@ impl ThreadPropagation {
     }
 }
 
-/// Storage for population update communication across ranks. Is also used for computation of
-/// \tilde{N}_w. In this case we interpret dn as the total population.
+/// Storage for a sparse real population change communicated across MPI ranks.
 #[repr(C)]
 #[derive(Copy, Clone, Equivalence)]
 pub(crate) struct PopulationUpdate {
-    /// Determinant index to which this population update applies.
+    /// Determinant index to which the population change applies.
     pub det: u64,
-    /// Signed population change on the determinant, or total population when used for \tilde{N}_w.
-    pub dn: i64,
+    /// Signed real population change.
+    pub dn: f64,
 }
 
 /// Storage for heat-bath excitation related quantities.
@@ -799,7 +670,7 @@ impl ExcitationHist {
         }
     }
 
-    /// Add a computed spawning probability to the histogram.
+    /// Add the absolute magnitude of an unrounded spawned population change.
     /// # Arguments:
     /// `self`: ExcitationHist.
     /// - `pspawn`: Spawning probability as defined in population dynamics routines.
