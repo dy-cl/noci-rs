@@ -17,7 +17,7 @@ use super::state::{
     ThreadPropagation,
 };
 use crate::input::Input;
-use crate::noci::{DetPair, NOCIData, OverlapFactor};
+use crate::noci::{DetPair, NOCIData, OverlapFactor, OverlapFactorScratch};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
@@ -250,71 +250,27 @@ pub(crate) fn gather_all_populations<'a>(
     })
 }
 
-/// Apply sparse pre-overlap population changes to the rank-local
-/// populations. For each locally owned determinant \Gamma, this evaluates
-/// \delta N_\Gamma = \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega and applies
-/// N_\Gamma \leftarrow N_\Gamma + \delta N_\Gamma.
+/// Apply \delta N_\Gamma = \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega.
 /// # Arguments:
 /// - `populations`: Rank-local persistent populations N_\Gamma.
-/// - `updates`: Sparse pre-overlap changes \Delta_\Omega\.
-/// - `data`: Immutable stochastic propagation data.
-/// - `overlap_factor`: Reusable spin overlap factors.
-/// - `run`: Rank-local propagation metadata.
-/// - `workers`: Persistent thread-local Wick scratch storage.
+/// - `updates`: Sparse pre-overlap changes \Omega, \Delta_\Omega.
+/// - `data`: Immutable NOCI data.
+/// - `overlap_factor`: Precomputed determinant and spin-component mappings.
+/// - `targets`: Global determinant indices for rank-local rows.
+/// - `scratch`: Reusable allocation storage for one application of S\Delta.
 /// # Returns:
-/// - `()`: Adds S\Delta to the populations.
-fn apply_population_changes_local(
+/// - `()`: Applies N_\Gamma \leftarrow N_\Gamma + \delta N_\Gamma.
+fn apply_population_changes_local<I>(
     populations: &mut [f64],
-    updates: &[PopulationUpdate],
+    updates: I,
     data: &NOCIData<'_, f64>,
     overlap_factor: &OverlapFactor,
-    run: &QMCRunInfo,
-    workers: &mut [Mutex<ThreadPropagation>],
-) {
-    if updates.is_empty() || populations.is_empty() {
-        return;
-    }
-
-    let nlocal = populations.len();
-    let next = AtomicUsize::new(0);
-    let workers_shared: &[Mutex<ThreadPropagation>] = workers;
-
-    rayon::broadcast(|context| {
-        let tid = context.index();
-        let mut worker = workers_shared[tid].lock().unwrap();
-        worker.clear_overlap();
-
-        loop {
-            let k = next.fetch_add(1, Ordering::Relaxed);
-            if k >= nlocal {
-                break;
-            }
-
-            let gamma = run.owned[k];
-            let dp = {
-                let ThreadPropagation {
-                    wick_scratch,
-                    overlap_scratch,
-                    ..
-                } = &mut *worker;
-                overlap_factor.apply_row(
-                    gamma,
-                    updates.iter().map(|up| (up.det as usize, up.dn)),
-                    data,
-                    wick_scratch.as_mut(),
-                    overlap_scratch,
-                )
-            };
-            worker.overlap.push((k, dp));
-        }
-    });
-
-    for worker in workers.iter_mut() {
-        let worker = worker.get_mut().unwrap();
-        for (k, dp) in worker.overlap.drain(..) {
-            populations[k] += dp;
-        }
-    }
+    targets: &[usize],
+    scratch: &mut OverlapFactorScratch,
+) where
+    I: IntoIterator<Item = (usize, f64)>,
+{
+    overlap_factor.apply(populations, targets, updates, data, scratch);
 }
 
 /// Apply the global overlap-transformed population change.
@@ -333,7 +289,7 @@ fn apply_population_changes_local(
 /// - `run`: Rank-local run metadata.
 /// - `mpi`: Reusable MPI scratch space.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `workers`: Persistent propagation and Wick scratch state for each Rayon worker.
+/// - `scratch`: Reusable overlap allocation storage for grouped S\Delta application.
 /// # Returns
 /// - `()`: Applies the global overlap-transformed population change.
 fn apply_overlap_population_changes(
@@ -344,7 +300,7 @@ fn apply_overlap_population_changes(
     run: &QMCRunInfo,
     mpi: &mut MPIScratch,
     world: &impl CommunicatorCollectives,
-    workers: &mut [Mutex<ThreadPropagation>],
+    scratch: &mut OverlapFactorScratch,
 ) {
     time_call!(crate::timers::stochastic::add_apply_overlap_changes, {
         // Gather number of updates that each rank will send to this rank.
@@ -390,11 +346,11 @@ fn apply_overlap_population_changes(
                 {
                     apply_population_changes_local(
                         populations,
-                        dlocal,
+                        dlocal.iter().map(|up| (up.det as usize, up.dn)),
                         data,
                         overlap_factor,
-                        run,
-                        workers,
+                        &run.owned,
+                        scratch,
                     );
                 }
             );
@@ -418,19 +374,19 @@ fn apply_overlap_population_changes(
 
                 apply_population_changes_local(
                     populations,
-                    left,
+                    left.iter().map(|up| (up.det as usize, up.dn)),
                     data,
                     overlap_factor,
-                    run,
-                    workers,
+                    &run.owned,
+                    scratch,
                 );
                 apply_population_changes_local(
                     populations,
-                    right,
+                    right.iter().map(|up| (up.det as usize, up.dn)),
                     data,
                     overlap_factor,
-                    run,
-                    workers,
+                    &run.owned,
+                    scratch,
                 );
             }
         );
@@ -923,11 +879,11 @@ pub fn qmc_step(
                 scratchsize.maxsame,
                 scratchsize.maxla,
                 scratchsize.maxlb,
-                &overlap_factor,
             ))
         })
         .collect::<Vec<_>>();
     let mut propagation_result = PropagationResult::new();
+    let mut overlap_scratch = overlap_factor.scratch();
 
     // Thread local scratch for Wick's theorem and for MPI communicattion.
     let mut scratch = WickScratchSpin::new();
@@ -1016,7 +972,7 @@ pub fn qmc_step(
             &run,
             &mut mpiscratch,
             world,
-            &mut workers,
+            &mut overlap_scratch,
         );
 
         let end = (report + 1) * qmc.ncycles;

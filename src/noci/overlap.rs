@@ -4,22 +4,126 @@ use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
 use crate::nonorthogonalwicks::{lg_overlap, prepare_same};
 use crate::time_call;
+use rayon::prelude::*;
 
 use super::naive::{build_s_pair, occ_coeffs};
 use super::types::{DetPair, NOCIData, NOCIScalar};
 
-/// Thread-local scratch for determinant to spin mappings.
+#[derive(Clone, Copy)]
+struct SpinUpdate {
+    /// Global determinant index \Omega receiving the pre-overlap update.
+    det: usize,
+    /// Source-parent local a component ID a_\Omega.
+    a: usize,
+    /// Source-parent local b component ID b_\Omega.
+    b: usize,
+    /// Sparse pre-overlap update value \Delta_\Omega.
+    dn: f64,
+}
+
+struct ParentUpdates {
+    /// Source parent P for all sparse D^P_{ab} entries.
+    parent: usize,
+    /// Sparse non-zero entries of D^P_{ab}.
+    entries: Vec<SpinUpdate>,
+    /// Active source a component IDs for this application.
+    aids: Vec<usize>,
+    /// Active source b component IDs for this application.
+    bids: Vec<usize>,
+    /// Source-parent a ID to active position map.
+    apos: Vec<usize>,
+    /// Source-parent b ID to active position map.
+    bpos: Vec<usize>,
+}
+
+#[derive(Default)]
+struct ParentSpinSpace {
+    /// Representative determinant for each parent-local a component.
+    areps: Vec<usize>,
+    /// Representative determinant for each parent-local b component.
+    breps: Vec<usize>,
+    /// Representative determinant for each parent-local occupation pair.
+    oreps: Vec<usize>,
+    /// Occupation-pair ID keyed by determinant offset from `first_det`.
+    oids: Vec<usize>,
+    /// First determinant index belonging to this parent.
+    first_det: usize,
+    /// One-past-last determinant index belonging to this parent when parent blocks are contiguous.
+    last_det: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LocalTarget {
+    /// Rank-local population row receiving \delta N_\Gamma.
+    local: usize,
+    /// Global determinant index \Gamma.
+    det: usize,
+    /// Target-parent local a component ID a_\Gamma.
+    a: usize,
+    /// Target-parent local b component ID b_\Gamma.
+    b: usize,
+}
+
+#[derive(Clone, Copy)]
+struct OrthogonalTarget {
+    /// Rank-local population row for an orthogonal same-parent target.
+    local: usize,
+    /// Product of target determinant spin phases.
+    phase: f64,
+}
+
+struct OrthogonalTargetGroup {
+    /// Parent-local occupation-pair ID.
+    oid: usize,
+    /// Targets sharing this occupation pair.
+    targets: Vec<OrthogonalTarget>,
+}
+
+struct LocalParentBlock {
+    /// Target parent Q for all local rows in this block.
+    parent: usize,
+    /// Rank-local target rows in this parent block.
+    targets: Vec<LocalTarget>,
+    /// Active target a component IDs.
+    aids: Vec<usize>,
+    /// Active target b component IDs.
+    bids: Vec<usize>,
+    /// Target-parent a ID to active position map.
+    apos: Vec<usize>,
+    /// Target-parent b ID to active position map.
+    bpos: Vec<usize>,
+    /// Same-parent orthogonal occupation groups.
+    orthogonal: Vec<OrthogonalTargetGroup>,
+    /// Parent-local occupation-pair ID to target occupation-group position.
+    opos: Vec<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OverlapContraction {
+    /// Evaluate S\Delta by looping over sparse source updates for each target row.
+    SparseRows,
+    /// Form T_{\bar a b} before applying B^{QP}_{\bar b_\Gamma b}.
+    AFirst,
+    /// Form U_{a\bar b} before applying A^{QP}_{\bar a_\Gamma a}.
+    BFirst,
+}
+
+/// Reusable storage for one application of S\Delta.
 pub(crate) struct OverlapFactorScratch {
-    /// Cached alpha same-spin overlap values.
-    avals: Vec<f64>,
-    /// Epoch stamps for cached alpha values.
-    astamps: Vec<u32>,
-    /// Cached beta same-spin overlap values.
-    bvals: Vec<f64>,
-    /// Epoch stamps for cached beta values.
-    bstamps: Vec<u32>,
-    /// Current cache-validity epoch.
-    epoch: u32,
+    /// Sparse updates grouped by source parent.
+    updates: Vec<ParentUpdates>,
+    /// Source parents touched by the current update list.
+    active_parents: Vec<usize>,
+    /// Rank-local accumulated \delta N_\Gamma values.
+    increments: Vec<f64>,
+    /// Temporary A^{QP}_{\bar a a} factor table.
+    afac: Vec<f64>,
+    /// Temporary B^{QP}_{\bar b b} factor table.
+    bfac: Vec<f64>,
+    /// Temporary blocked contraction table T or U.
+    intermediate: Vec<f64>,
+    /// Temporary per-target output values for one parent block.
+    values: Vec<f64>,
 }
 
 /// Precomputed determinant to spin mappings for reusing alpha and beta overlap factors.
@@ -32,6 +136,8 @@ pub(crate) struct OverlapFactor {
     ma: usize,
     /// Largest number of unique beta spin components in one parent reference.
     mb: usize,
+    /// Parent-local determinant ranges and spin representatives.
+    parents: Vec<ParentSpinSpace>,
 }
 
 impl OverlapFactor {
@@ -47,167 +153,690 @@ impl OverlapFactor {
         // Generate determinant IDs.
         let ma = assign_aids(data, &mut aids);
         let mb = assign_bids(data, &mut bids);
+        let parents = build_parent_spin_spaces(data, &aids, &bids);
 
-        Self { aids, bids, ma, mb }
+        Self {
+            aids,
+            bids,
+            ma,
+            mb,
+            parents,
+        }
     }
 
-    /// Construct parent-local alpha and beta component IDs for every determinant.
+    /// Construct reusable storage for one full application of S\Delta.
+    /// Temporary factor tables and contraction buffers are allocated once, but their numerical
+    /// values are cleared or overwritten on every application and are never reused as overlap data.
     /// # Arguments:
     /// - `self`: Immutable sparse overlap action plan.
     /// # Returns:
-    /// - `OverlapActionScratch`: Thread-local sparse overlap scratch.
+    /// - `OverlapFactorScratch`: Empty allocation storage for grouped updates and factor tables.
     pub(crate) fn scratch(&self) -> OverlapFactorScratch {
-        let na = 2 * self.ma;
-        let nb = 2 * self.mb;
-
+        let mut updates = Vec::with_capacity(self.parents.len());
+        for parent in 0..self.parents.len() {
+            updates.push(ParentUpdates::new(parent, self.ma, self.mb));
+        }
         OverlapFactorScratch {
-            avals: vec![0.0; na],
-            astamps: vec![0; na],
-            bvals: vec![0.0; nb],
-            bstamps: vec![0; nb],
-            epoch: 0,
+            updates,
+            active_parents: Vec::new(),
+            increments: Vec::new(),
+            afac: Vec::new(),
+            bfac: Vec::new(),
+            intermediate: Vec::new(),
+            values: Vec::new(),
         }
     }
 
-    /// Evaluate one row of \delta p_\Gamma = \sum_\Omega S_{\Gamma\Omega}\delta n_\Omega from an ordered
-    /// list of population changes. Reuse alpha and beta overlap factors shared by determinants with
-    /// common spin components.
+    /// Apply \delta N_\Gamma = \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega.
+    /// Orthogonal same-parent blocks are applied directly, while cross-parent blocks use
+    /// S_{\Gamma\Omega} = A^{QP}_{\bar a_\Gamma a_\Omega}B^{QP}_{\bar b_\Gamma b_\Omega}.
+    /// Temporary factor tables are rebuilt for each overlap application and are not cached across iterations.
     /// # Arguments:
-    /// - `gamma`: Determinant \Gamma defining the overlap row.
-    /// - `updates`: Ordered pairs \((\Omega,\delta n_\Omega)\).
+    /// - `populations`: Rank-local persistent populations N_\Gamma.
+    /// - `targets`: Global determinant index for each rank-local row in `populations`.
+    /// - `updates`: Sparse pre-overlap changes \Omega, \Delta_\Omega.
     /// - `data`: Shared NOCI data.
-    /// - `wick_scratch`: Scratch space for Wick's calculations.
-    /// - `scratch`: Thread-local reusable overlap factor scratch.
+    /// - `scratch`: Reusable allocation storage for one application of S\Delta.
     /// # Returns:
-    /// - `f64`: \delta p_\Gamma = \sum_\Omega S_{\Gamma\Omega}\delta n_\Omega.
-    pub(crate) fn apply_row<I>(
+    /// - `()`: Applies N_\Gamma \leftarrow N_\Gamma + \delta N_\Gamma.
+    pub(crate) fn apply<I>(
         &self,
-        gamma: usize,
+        populations: &mut [f64],
+        targets: &[usize],
         updates: I,
         data: &NOCIData<'_, f64>,
-        wick_scratch: &mut WickScratchSpin<f64>,
         scratch: &mut OverlapFactorScratch,
-    ) -> f64
-    where
+    ) where
         I: IntoIterator<Item = (usize, f64)>,
     {
-        let mut parent = usize::MAX;
-        let mut dp = 0.0;
-
-        // Prevent overflow of the epoch counter.
-        if scratch.epoch == u32::MAX {
-            // If we do overflow invalidate cache entries and restart counter.
-            scratch.astamps.fill(0);
-            scratch.bstamps.fill(0);
-            scratch.epoch = 1;
-        } else {
-            // Otherwise increment as usual.
-            scratch.epoch += 1;
+        if populations.is_empty() {
+            return;
         }
 
-        for (omega, dn) in updates {
-            // Early exit for a zero population change.
+        self.group_updates(updates, data, scratch);
+        if scratch.active_parents.is_empty() {
+            return;
+        }
+
+        scratch.increments.clear();
+        scratch.increments.resize(populations.len(), 0.0);
+
+        let target_blocks = self.build_target_blocks(targets, data);
+
+        for source_parent in scratch.active_parents.clone() {
+            let mut source = std::mem::replace(
+                &mut scratch.updates[source_parent],
+                ParentUpdates::empty(source_parent),
+            );
+            if source.entries.is_empty() {
+                scratch.updates[source_parent] = source;
+                continue;
+            }
+            for target in &target_blocks {
+                self.apply_parent_pair(target, &source, data, scratch);
+            }
+            source.clear();
+            scratch.updates[source_parent] = source;
+        }
+
+        // Apply the completed S\Delta contribution to the persistent populations.
+        populations
+            .iter_mut()
+            .zip(scratch.increments.iter())
+            .for_each(|(n, dn)| *n += dn);
+
+        scratch.active_parents.clear();
+        scratch.afac.clear();
+        scratch.bfac.clear();
+        scratch.intermediate.clear();
+        scratch.values.clear();
+    }
+
+    /// Group sparse updates by source parent and active spin components.
+    /// This constructs D^P_{ab} in sparse form for the current S\Delta application.
+    /// # Arguments:
+    /// - `updates`: Sparse determinant changes \Omega, \Delta_\Omega.
+    /// - `data`: Shared NOCI data used to map determinants to parents.
+    /// - `scratch`: Reusable grouped-update storage cleared and refilled for this application.
+    /// # Returns:
+    /// - `()`: Fills `scratch.updates` and `scratch.active_parents`.
+    fn group_updates<I>(
+        &self,
+        updates: I,
+        data: &NOCIData<'_, f64>,
+        scratch: &mut OverlapFactorScratch,
+    ) where
+        I: IntoIterator<Item = (usize, f64)>,
+    {
+        for &parent in &scratch.active_parents {
+            scratch.updates[parent].clear();
+        }
+        scratch.active_parents.clear();
+
+        for (det, dn) in updates {
             if dn == 0.0 {
                 continue;
             }
 
-            // Alpha and Beta IDs `aids` and `bids` are local to one parent. When the parent
-            // changes we must invalidate previous factors calculated with the previous parent.
-            if data.basis[omega].parent != parent {
-                // Prevent overflow of the epoch counter.
-                if parent != usize::MAX {
-                    if scratch.epoch == u32::MAX {
-                        scratch.astamps.fill(0);
-                        scratch.bstamps.fill(0);
-                        scratch.epoch = 1;
-                    } else {
-                        scratch.epoch += 1;
-                    }
-                }
+            let parent = data.basis[det].parent;
+            if scratch.updates[parent].entries.is_empty() {
+                scratch.active_parents.push(parent);
+            }
+            scratch.updates[parent].push(det, self.aids[det], self.bids[det], dn);
+        }
+    }
 
-                // Record that parent has been updated.
-                parent = data.basis[omega].parent;
+    /// Build target parent blocks for the rank-local rows receiving S\Delta.
+    /// Each block records active target spin components and same-parent occupation groups.
+    /// # Arguments:
+    /// - `targets`: Global determinant index for each rank-local population row.
+    /// - `data`: Shared NOCI data used to read determinant parents and occupations.
+    /// # Returns:
+    /// - `Vec<LocalParentBlock>`: Non-empty target blocks grouped by parent Q.
+    fn build_target_blocks(
+        &self,
+        targets: &[usize],
+        data: &NOCIData<'_, f64>,
+    ) -> Vec<LocalParentBlock> {
+        let mut blocks = (0..self.parents.len())
+            .map(|parent| LocalParentBlock {
+                parent,
+                targets: Vec::new(),
+                aids: Vec::new(),
+                bids: Vec::new(),
+                apos: vec![usize::MAX; self.parents[parent].areps.len()],
+                bpos: vec![usize::MAX; self.parents[parent].breps.len()],
+                orthogonal: Vec::new(),
+                opos: vec![usize::MAX; self.parents[parent].oreps.len()],
+            })
+            .collect::<Vec<_>>();
+
+        for (local, &det) in targets.iter().enumerate() {
+            let parent = data.basis[det].parent;
+            let a = self.aids[det];
+            let b = self.bids[det];
+            let block = &mut blocks[parent];
+
+            // Add the a component to the active set on its first occurrence.
+            if block.apos[a] == usize::MAX {
+                block.apos[a] = block.aids.len();
+                block.aids.push(a);
+            }
+            // Add the b component to the active set on its first occurrence.
+            if block.bpos[b] == usize::MAX {
+                block.bpos[b] = block.bids.len();
+                block.bids.push(b);
             }
 
-            // Order determinant pair consistently with overlap evaluators.
-            let (ldet, gdet, left) = if gamma <= omega {
-                (&data.basis[gamma], &data.basis[omega], true)
-            } else {
-                (&data.basis[omega], &data.basis[gamma], false)
-            };
-
-            // If \Gamma parent is the same as the current parent we can
-            // use the fast orthogonal overlap matrix element path.
-            if data.basis[gamma].parent == parent {
-                dp += calculate_s_pair_orthogonal(ldet, gdet) * dn;
-                continue;
-            }
-
-            // Otherwise we use the naive path if no Wicks.
-            if !data.input.wicks.enabled {
-                dp += calculate_s_pair_naive(data, ldet, gdet) * dn;
-                continue;
-            }
-
-            // Retrieve the Wick intermediates used by the cached alpha and beta path.
-            let Some(wicks) = data.wicks else {
-                dp += calculate_s_pair_naive(data, ldet, gdet) * dn;
-                continue;
-            };
-
-            // Same spin component can occur on either side of ordered determinant pair.
-            // Therefore we keep two slots for each ID.
-            let orient = usize::from(left);
-            let aslot = 2 * self.aids[omega] + orient;
-            let bslot = 2 * self.bids[omega] + orient;
-
-            // Construct Wicks view if a spin factor not already cached.
-            let mut pair: Option<WicksPairView<'_, f64>> = None;
-
-            // If the stamp matches we have already evaluated this alpha
-            // component for the current \Gamma.
-            let sa = if scratch.astamps[aslot] == scratch.epoch {
-                scratch.avals[aslot]
-            } else {
-                // Otherwise we need to calculate it.
-                let w = get_pair(wicks, ldet.parent, gdet.parent, &mut pair);
-                let sa = calculate_s_alpha_pair_wicks(ldet, gdet, &w, wick_scratch);
-
-                // Cache the alpha factor for later determinants.
-                scratch.avals[aslot] = sa;
-                scratch.astamps[aslot] = scratch.epoch;
-                sa
-            };
-
-            // Early exit for if the overlap matrix element is zero.
-            if sa == 0.0 {
-                continue;
-            }
-
-            // If the stamp matches we have already evaluated this beta
-            // component for the current \Gamma.
-            let sb = if scratch.bstamps[bslot] == scratch.epoch {
-                scratch.bvals[bslot]
-            } else {
-                // Otherwise we need to calculate it.
-                let w = get_pair(wicks, ldet.parent, gdet.parent, &mut pair);
-                let sb = calculate_s_beta_pair_wicks(ldet, gdet, &w, wick_scratch);
-
-                // Cache the beta factor for later determinants.
-                scratch.bvals[bslot] = sb;
-                scratch.bstamps[bslot] = scratch.epoch;
-                sb
-            };
-
-            // Early exit for if the overlap matrix element is zero.
-            if sb == 0.0 {
-                continue;
-            }
-
-            dp += sa * sb * dn;
+            block.targets.push(LocalTarget { local, det, a, b });
         }
 
-        dp
+        for block in &mut blocks {
+            self.build_orthogonal_groups(block, data);
+        }
+
+        blocks.retain(|block| !block.targets.is_empty());
+        blocks
+    }
+
+    /// Group same-parent orthogonal targets by occupation bitstrings.
+    /// Direct same-parent overlap then matches D^P entries by (o_a,o_b) and determinant phases.
+    /// # Arguments:
+    /// - `block`: Target parent block whose orthogonal groups are rebuilt.
+    /// - `data`: Shared NOCI data used to read occupation bitstrings and phases.
+    /// # Returns:
+    /// - `()`: Fills `block.orthogonal` without storing numerical overlap factors.
+    fn build_orthogonal_groups(
+        &self,
+        block: &mut LocalParentBlock,
+        data: &NOCIData<'_, f64>,
+    ) {
+        block.orthogonal.clear();
+        for target in &block.targets {
+            let det = &data.basis[target.det];
+            let oid =
+                self.parents[block.parent].oids[target.det - self.parents[block.parent].first_det];
+            let phase = det.pha * det.phb;
+            if block.opos[oid] != usize::MAX {
+                let group = &mut block.orthogonal[block.opos[oid]];
+                group.targets.push(OrthogonalTarget {
+                    local: target.local,
+                    phase,
+                });
+            } else {
+                block.opos[oid] = block.orthogonal.len();
+                block.orthogonal.push(OrthogonalTargetGroup {
+                    oid,
+                    targets: vec![OrthogonalTarget {
+                        local: target.local,
+                        phase,
+                    }],
+                });
+            }
+        }
+    }
+
+    /// Apply one source-parent to target-parent contribution.
+    /// The method chooses direct orthogonal matching, sparse rows, or a blocked spin factorisation.
+    /// # Arguments:
+    /// - `target`: Rank-local target block for parent Q.
+    /// - `source`: Source parent P grouped D^P updates.
+    /// - `data`: Shared NOCI data and Wick intermediates.
+    /// - `scratch`: Reusable storage for factors, contractions, and output increments.
+    /// # Returns:
+    /// - `()`: Adds the QP contribution to `scratch.increments`.
+    fn apply_parent_pair(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+        data: &NOCIData<'_, f64>,
+        scratch: &mut OverlapFactorScratch,
+    ) {
+        if target.parent == source.parent
+            && let Some(mocache) = data.mocache
+            && mocache[target.parent].orthogonal_slater_condon
+        {
+            self.apply_orthogonal_parent_pair(target, source, data, scratch);
+            return;
+        }
+        if target.parent == source.parent {
+            self.apply_sparse_parent_pair(target, source, data, scratch);
+            return;
+        }
+
+        let contraction = self.select_contraction(target, source);
+        if contraction == OverlapContraction::SparseRows || !data.input.wicks.enabled {
+            self.apply_sparse_parent_pair(target, source, data, scratch);
+            return;
+        }
+
+        let Some(wicks) = data.wicks else {
+            self.apply_sparse_parent_pair(target, source, data, scratch);
+            return;
+        };
+
+        self.build_factor_tables(target, source, data, wicks, scratch);
+        match contraction {
+            OverlapContraction::AFirst => self.apply_a_first(target, source, scratch),
+            OverlapContraction::BFirst => self.apply_b_first(target, source, scratch),
+            OverlapContraction::SparseRows => {}
+        }
+    }
+
+    /// Select how to apply one cross-parent block of S\Delta.
+    /// Sparse QMC update lists can be cheaper as direct rows because blocked contractions must first
+    /// build A^{QP}_{\bar a a} and B^{QP}_{\bar b b} for every active spin-component pair.
+    /// This deterministic cost model keeps `SparseRows` unless blocked factor construction and the
+    /// selected contraction order both give a clear reduction in estimated work.
+    /// # Arguments:
+    /// - `target`: Rank-local target parent block.
+    /// - `source`: Sparse source-parent D^P entries and active spin IDs.
+    /// # Returns:
+    /// - `OverlapContraction`: `SparseRows`, `AFirst`, or `BFirst` selected by the cost model.
+    fn select_contraction(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+    ) -> OverlapContraction {
+        let nt = target.targets.len();
+        let ne = source.entries.len();
+        let nta = target.aids.len();
+        let ntb = target.bids.len();
+        let nsa = source.aids.len();
+        let nsb = source.bids.len();
+
+        let row_factors = nt.saturating_mul(nsa.saturating_add(nsb));
+        let row_products = nt.saturating_mul(ne);
+        let block_factors = nta
+            .saturating_mul(nsa)
+            .saturating_add(ntb.saturating_mul(nsb));
+        let a_products = nta
+            .saturating_mul(ne)
+            .saturating_add(nt.saturating_mul(nsb));
+        let b_products = ntb
+            .saturating_mul(ne)
+            .saturating_add(nt.saturating_mul(nsa));
+
+        let block_min_gain = 2usize;
+        if block_factors.saturating_mul(block_min_gain) < row_factors
+            && a_products.min(b_products).saturating_mul(block_min_gain) < row_products
+        {
+            if a_products <= b_products {
+                OverlapContraction::AFirst
+            } else {
+                OverlapContraction::BFirst
+            }
+        } else {
+            OverlapContraction::SparseRows
+        }
+    }
+
+    /// Apply same-parent orthogonal contributions by occupation matching.
+    /// This avoids Wick evaluation and reproduces the determinant phase product.
+    /// # Arguments:
+    /// - `target`: Rank-local target block with occupation groups.
+    /// - `source`: Same-parent source updates D^P_{ab}.
+    /// - `data`: Shared NOCI data used to read source occupations and phases.
+    /// - `scratch`: Reusable values and increment storage.
+    /// # Returns:
+    /// - `()`: Adds the same-parent orthogonal contribution to `scratch.increments`.
+    fn apply_orthogonal_parent_pair(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+        data: &NOCIData<'_, f64>,
+        scratch: &mut OverlapFactorScratch,
+    ) {
+        scratch.values.clear();
+        scratch
+            .values
+            .resize(self.parents[source.parent].oreps.len(), 0.0);
+
+        // Accumulate source D^P entries by occupation ID.
+        for entry in &source.entries {
+            let sdet = &data.basis[entry.det];
+            let sphase = sdet.pha * sdet.phb;
+            let oid =
+                self.parents[source.parent].oids[entry.det - self.parents[source.parent].first_det];
+            scratch.values[oid] += sphase * entry.dn;
+        }
+
+        // Apply target phases to the occupation-group contribution.
+        for group in &target.orthogonal {
+            let value = scratch.values[group.oid];
+            if value == 0.0 {
+                continue;
+            }
+            for t in &group.targets {
+                scratch.increments[t.local] += t.phase * value;
+            }
+        }
+    }
+
+    /// Apply one parent block by direct sparse rows.
+    /// This fallback is selected for sparse updates and non-Wick overlap evaluation.
+    /// # Arguments:
+    /// - `target`: Rank-local target parent block.
+    /// - `source`: Sparse source-parent D^P entries.
+    /// - `data`: Shared NOCI data used by the general overlap evaluator.
+    /// - `scratch`: Reusable per-target value and increment storage.
+    /// # Returns:
+    /// - `()`: Adds sparse-row S\Delta values to `scratch.increments`.
+    fn apply_sparse_parent_pair(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+        data: &NOCIData<'_, f64>,
+        scratch: &mut OverlapFactorScratch,
+    ) {
+        scratch.values.clear();
+        scratch.values.resize(target.targets.len(), 0.0);
+
+        scratch
+            .values
+            .par_iter_mut()
+            .zip(target.targets.par_iter())
+            .for_each_init(WickScratchSpin::new, |wick_scratch, (value, target)| {
+                let mut dp = 0.0;
+                for entry in &source.entries {
+                    let (a, b) = if target.det <= entry.det {
+                        (target.det, entry.det)
+                    } else {
+                        (entry.det, target.det)
+                    };
+                    let ldet = &data.basis[a];
+                    let gdet = &data.basis[b];
+                    let s = if data.input.wicks.enabled && data.wicks.is_none() {
+                        calculate_s_pair_naive(data, ldet, gdet)
+                    } else {
+                        calculate_s_pair(data, DetPair::new(ldet, gdet), Some(wick_scratch))
+                    };
+                    dp += s * entry.dn;
+                }
+                *value = dp;
+            });
+
+        for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
+            if *value != 0.0 {
+                scratch.increments[target.local] += value;
+            }
+        }
+    }
+
+    /// Build A^{QP}_{\bar a a} and B^{QP}_{\bar b b} for active spin components.
+    /// Each factor value is recomputed for this S\Delta application using representative determinants.
+    /// # Arguments:
+    /// - `target`: Target parent block defining active \bar a and \bar b rows.
+    /// - `source`: Source parent updates defining active a and b columns.
+    /// - `data`: Shared NOCI determinant data.
+    /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
+    /// - `scratch`: Reusable `afac` and `bfac` storage overwritten for this parent pair.
+    /// # Returns:
+    /// - `()`: Fills `scratch.afac` and `scratch.bfac` for the current QP block.
+    fn build_factor_tables(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+        data: &NOCIData<'_, f64>,
+        wicks: &WicksView<f64>,
+        scratch: &mut OverlapFactorScratch,
+    ) {
+        let nta = target.aids.len();
+        let ntb = target.bids.len();
+        let nsa = source.aids.len();
+        let nsb = source.bids.len();
+
+        scratch.afac.clear();
+        scratch.bfac.clear();
+        scratch.afac.resize(nta * nsa, 0.0);
+        scratch.bfac.resize(ntb * nsb, 0.0);
+
+        let (lp, gp, target_left) =
+            if self.parents[target.parent].first_det <= self.parents[source.parent].first_det {
+                (target.parent, source.parent, true)
+            } else {
+                (source.parent, target.parent, false)
+            };
+        wicks.prefetch_pair(lp, gp);
+
+        // Build A rows independently; each task owns one output row.
+        scratch
+            .afac
+            .par_chunks_mut(nsa)
+            .zip(target.aids.par_iter())
+            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &ta)| {
+                let pair = wicks.pair(lp, gp);
+                let tdet = self.parents[target.parent].areps[ta];
+                for (col, &sa) in source.aids.iter().enumerate() {
+                    let sdet = self.parents[source.parent].areps[sa];
+                    let (ldet, gdet) = if target_left {
+                        (&data.basis[tdet], &data.basis[sdet])
+                    } else {
+                        (&data.basis[sdet], &data.basis[tdet])
+                    };
+                    row[col] = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
+                }
+            });
+
+        // Build B rows independently; each task owns one output row.
+        scratch
+            .bfac
+            .par_chunks_mut(nsb)
+            .zip(target.bids.par_iter())
+            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &tb)| {
+                let pair = wicks.pair(lp, gp);
+                let tdet = self.parents[target.parent].breps[tb];
+                for (col, &sb) in source.bids.iter().enumerate() {
+                    let sdet = self.parents[source.parent].breps[sb];
+                    let (ldet, gdet) = if target_left {
+                        (&data.basis[tdet], &data.basis[sdet])
+                    } else {
+                        (&data.basis[sdet], &data.basis[tdet])
+                    };
+                    row[col] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
+                }
+            });
+    }
+
+    /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
+    /// The final target rows multiply T by B^{QP}_{\bar b_\Gamma b}.
+    /// # Arguments:
+    /// - `target`: Target parent block defining \bar a_\Gamma and \bar b_\Gamma rows.
+    /// - `source`: Sparse source-parent D^P entries and active positions.
+    /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
+    /// # Returns:
+    /// - `()`: Adds the A-first blocked contribution to `scratch.increments`.
+    fn apply_a_first(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+        scratch: &mut OverlapFactorScratch,
+    ) {
+        let nta = target.aids.len();
+        let nsb = source.bids.len();
+        let nsa = source.aids.len();
+
+        scratch.intermediate.clear();
+        scratch.intermediate.resize(nta * nsb, 0.0);
+
+        // Form T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
+        scratch
+            .intermediate
+            .par_chunks_mut(nsb)
+            .enumerate()
+            .for_each(|(ta_pos, row)| {
+                let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+                for entry in &source.entries {
+                    let sa_pos = source.apos[entry.a];
+                    let sb_pos = source.bpos[entry.b];
+                    row[sb_pos] += arow[sa_pos] * entry.dn;
+                }
+            });
+
+        scratch.values.clear();
+        scratch.values.resize(target.targets.len(), 0.0);
+
+        // Finish \delta N_\Gamma^{QP} = \sum_b T_{\bar a_\Gamma b}B^{QP}_{\bar b_\Gamma b}.
+        scratch
+            .values
+            .par_iter_mut()
+            .zip(target.targets.par_iter())
+            .for_each(|(value, t)| {
+                let ta_pos = target.apos[t.a];
+                let tb_pos = target.bpos[t.b];
+                let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+                *value = trow.iter().zip(brow.iter()).map(|(x, y)| x * y).sum();
+            });
+
+        for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
+            if *value != 0.0 {
+                scratch.increments[target.local] += value;
+            }
+        }
+    }
+
+    /// Apply U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.
+    /// The final target rows multiply U by A^{QP}_{\bar a_\Gamma a}.
+    /// # Arguments:
+    /// - `target`: Target parent block defining \bar a_\Gamma and \bar b_\Gamma rows.
+    /// - `source`: Sparse source-parent D^P entries and active positions.
+    /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
+    /// # Returns:
+    /// - `()`: Adds the B-first blocked contribution to `scratch.increments`.
+    fn apply_b_first(
+        &self,
+        target: &LocalParentBlock,
+        source: &ParentUpdates,
+        scratch: &mut OverlapFactorScratch,
+    ) {
+        let ntb = target.bids.len();
+        let nsa = source.aids.len();
+        let nsb = source.bids.len();
+
+        scratch.intermediate.clear();
+        scratch.intermediate.resize(ntb * nsa, 0.0);
+
+        // Form U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.
+        scratch
+            .intermediate
+            .par_chunks_mut(nsa)
+            .enumerate()
+            .for_each(|(tb_pos, row)| {
+                let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+                for entry in &source.entries {
+                    let sa_pos = source.apos[entry.a];
+                    let sb_pos = source.bpos[entry.b];
+                    row[sa_pos] += entry.dn * brow[sb_pos];
+                }
+            });
+
+        scratch.values.clear();
+        scratch.values.resize(target.targets.len(), 0.0);
+
+        // Finish \delta N_\Gamma^{QP} = \sum_a A^{QP}_{\bar a_\Gamma a}U_{a\bar b_\Gamma}.
+        scratch
+            .values
+            .par_iter_mut()
+            .zip(target.targets.par_iter())
+            .for_each(|(value, t)| {
+                let ta_pos = target.apos[t.a];
+                let tb_pos = target.bpos[t.b];
+                let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+                let urow = &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
+                *value = arow.iter().zip(urow.iter()).map(|(x, y)| x * y).sum();
+            });
+
+        for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
+            if *value != 0.0 {
+                scratch.increments[target.local] += value;
+            }
+        }
+    }
+}
+
+impl ParentUpdates {
+    /// Construct a temporary empty placeholder while a source block is moved out of scratch.
+    /// # Arguments:
+    /// - `parent`: Source parent P represented by the placeholder.
+    /// # Returns:
+    /// - `ParentUpdates`: Empty block without allocated position maps.
+    fn empty(parent: usize) -> Self {
+        Self {
+            parent,
+            entries: Vec::new(),
+            aids: Vec::new(),
+            bids: Vec::new(),
+            apos: Vec::new(),
+            bpos: Vec::new(),
+        }
+    }
+
+    /// Construct empty grouped storage for one source parent.
+    /// # Arguments:
+    /// - `parent`: Source parent P represented by this update block.
+    /// - `na`: Maximum number of parent-local a components.
+    /// - `nb`: Maximum number of parent-local b components.
+    /// # Returns:
+    /// - `ParentUpdates`: Empty D^P storage with inactive position maps.
+    fn new(
+        parent: usize,
+        na: usize,
+        nb: usize,
+    ) -> Self {
+        Self {
+            parent,
+            entries: Vec::new(),
+            aids: Vec::new(),
+            bids: Vec::new(),
+            apos: vec![usize::MAX; na],
+            bpos: vec![usize::MAX; nb],
+        }
+    }
+
+    /// Add one sparse D^P_{ab} entry and record active spin IDs on first occurrence.
+    /// # Arguments:
+    /// - `det`: Source determinant \Omega.
+    /// - `a`: Source-parent local a component ID a_\Omega.
+    /// - `b`: Source-parent local b component ID b_\Omega.
+    /// - `dn`: Sparse pre-overlap update \Delta_\Omega.
+    /// # Returns:
+    /// - `()`: Appends one sparse entry and updates active ID maps.
+    fn push(
+        &mut self,
+        det: usize,
+        a: usize,
+        b: usize,
+        dn: f64,
+    ) {
+        if self.apos[a] == usize::MAX {
+            self.apos[a] = self.aids.len();
+            self.aids.push(a);
+        }
+        if self.bpos[b] == usize::MAX {
+            self.bpos[b] = self.bids.len();
+            self.bids.push(b);
+        }
+        self.entries.push(SpinUpdate { det, a, b, dn });
+    }
+
+    /// Clear D^P_{ab} while invalidating only IDs active in the last application.
+    /// # Arguments:
+    /// - `self`: Grouped source-parent updates to clear.
+    /// # Returns:
+    /// - `()`: Clears entries and active IDs while retaining allocation capacity.
+    fn clear(&mut self) {
+        for &a in &self.aids {
+            self.apos[a] = usize::MAX;
+        }
+
+        for &b in &self.bids {
+            self.bpos[b] = usize::MAX;
+        }
+
+        self.entries.clear();
+        self.aids.clear();
+        self.bids.clear();
     }
 }
 
@@ -360,29 +989,89 @@ fn assign_bids(
     maxu.max(next)
 }
 
-/// Return a Wick pair view, constructing it at most once for the current update.
+/// Build parent-local spin and occupation representative tables.
+/// The a and b representatives provide determinant rows for A^{QP}_{\bar a a} and
+/// B^{QP}_{\bar b b}; occupation IDs provide direct same-parent orthogonal matching by existing
+/// determinant `oa` and `ob` bitstrings. These tables contain only determinant IDs and parent-local
+/// IDs, not overlap factors, so no numerical S values persist across QMC iterations.
 /// # Arguments:
-/// - `wicks`: Wick intermediates for all parent pairs.
-/// - `lp`: Left parent reference index.
-/// - `gp`: Right parent reference index.
-/// - `pair`: Optional cached pair view for the current update.
+/// - `data`: Shared NOCI data defining determinant parents.
+/// - `aids`: Parent-local a component IDs keyed by determinant.
+/// - `bids`: Parent-local b component IDs keyed by determinant.
 /// # Returns:
-/// - `WicksPairView<'_, f64>`: Wick pair view for the ordered parent pair.
-#[inline(always)]
-fn get_pair<'a>(
-    wicks: &'a WicksView<f64>,
-    lp: usize,
-    gp: usize,
-    pair: &mut Option<WicksPairView<'a, f64>>,
-) -> WicksPairView<'a, f64> {
-    if let Some(w) = *pair {
-        w
-    } else {
-        wicks.prefetch_pair(lp, gp);
-        let w = wicks.pair(lp, gp);
-        *pair = Some(w);
-        w
+/// - `Vec<ParentSpinSpace>`: Per-parent determinant ranges, spin representatives, occupation representatives, and occupation IDs.
+fn build_parent_spin_spaces(
+    data: &NOCIData<'_, f64>,
+    aids: &[usize],
+    bids: &[usize],
+) -> Vec<ParentSpinSpace> {
+    let nparents = data
+        .basis
+        .iter()
+        .map(|det| det.parent)
+        .max()
+        .map(|parent| parent + 1)
+        .unwrap_or(0);
+    let mut parents = (0..nparents)
+        .map(|_| ParentSpinSpace {
+            areps: Vec::new(),
+            breps: Vec::new(),
+            oreps: Vec::new(),
+            oids: Vec::new(),
+            first_det: usize::MAX,
+            last_det: 0,
+        })
+        .collect::<Vec<_>>();
+
+    for (det, state) in data.basis.iter().enumerate() {
+        let parent = &mut parents[state.parent];
+        parent.first_det = parent.first_det.min(det);
+        parent.last_det = parent.last_det.max(det + 1);
+
+        // Store the first determinant representative for this a component.
+        if parent.areps.len() <= aids[det] {
+            parent.areps.resize(aids[det] + 1, usize::MAX);
+        }
+        if parent.areps[aids[det]] == usize::MAX {
+            parent.areps[aids[det]] = det;
+        }
+
+        // Store the first determinant representative for this b component.
+        if parent.breps.len() <= bids[det] {
+            parent.breps.resize(bids[det] + 1, usize::MAX);
+        }
+        if parent.breps[bids[det]] == usize::MAX {
+            parent.breps[bids[det]] = det;
+        }
     }
+
+    for parent in &mut parents {
+        if parent.first_det != usize::MAX {
+            parent
+                .oids
+                .resize(parent.last_det - parent.first_det, usize::MAX);
+        }
+    }
+
+    for (det, state) in data.basis.iter().enumerate() {
+        let parent = &mut parents[state.parent];
+        let oid = parent
+            .oreps
+            .iter()
+            .position(|&rep| {
+                let rep = &data.basis[rep];
+                rep.oa == state.oa && rep.ob == state.ob
+            })
+            .unwrap_or_else(|| {
+                parent.oreps.push(det);
+                parent.oreps.len() - 1
+            });
+
+        // Store the occupation ID in determinant order for direct same-parent matching.
+        parent.oids[det - parent.first_det] = oid;
+    }
+
+    parents
 }
 
 /// Wrapper function which dispatches to overlap matrix-element evaluation routines depending on
