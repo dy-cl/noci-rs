@@ -9,7 +9,7 @@ import numpy as np
 import math
 
 # Plateau picking quantities.
-MINN = 8 # At later levels if we have too few blocks the data can become noist.
+MINN = 8 # At later levels if we have too few blocks the data can become noisy.
 NEXT = 1 # Require the next N levels to be consistent within given error bars.
 PLATEAUTOL = 0.25 # How much error can change between levels before it is not a plateau.
 
@@ -43,17 +43,19 @@ def extract(path: Path) -> pd.DataFrame:
         r"(?:\d+(?:\.\d*)?|\.\d+)"
         r"(?:[eE][+-]?\d+)?"
     )
-    
+
     pattern = re.compile(
         rf"^\s*"
         rf"(?P<iter>\d+)\s+"
+        rf"(?P<eprojnum>{floatPattern})\s+"
+        rf"(?P<eprojden>{floatPattern})\s+"
         rf"(?P<eproj>{floatPattern})\s+"
         rf"(?P<ecorr>{floatPattern})\s+"
-        rf"(?P<shift>{floatPattern})\s+"
+        rf"(?P<eshift>{floatPattern})\s+"
         rf"(?P<nw>{floatPattern})\s+"
         rf"(?P<nref>{floatPattern})\s+"
-        rf"(?P<nsampled>{floatPattern})\s+"
-        rf"(?P<nsampledo>\d+)"
+        rf"(?P<nsample>{floatPattern})\s+"
+        rf"(?P<ndetsampled>\d+)"
         rf"\s*$"
     )
 
@@ -69,27 +71,31 @@ def extract(path: Path) -> pd.DataFrame:
             rows.append(
                 (
                     int(match.group("iter")),
+                    float(match.group("eprojnum")),
+                    float(match.group("eprojden")),
                     float(match.group("eproj")),
                     float(match.group("ecorr")),
-                    float(match.group("shift")),
+                    float(match.group("eshift")),
                     float(match.group("nw")),
                     float(match.group("nref")),
-                    float(match.group("nsampled")),
-                    int(match.group("nsampledo")),
+                    float(match.group("nsample")),
+                    int(match.group("ndetsampled")),
                 )
             )
 
     return pd.DataFrame(
         rows,
         columns = [
-            "iter",
-            "eproj",
-            "ecorr",
-            "shift",
-            "nw",
-            "nref",
-            "nsampled",
-            "nsampledo",
+            "Iter",
+            "EProjNum",
+            "EProjDen",
+            "EProj",
+            "ECorr",
+            "EShift",
+            "NW",
+            "NRef",
+            "NSample",
+            "NDet (Sampled)",
         ],
     )
 
@@ -100,21 +106,21 @@ def prepareObservables(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     referenceEnergy = np.nanmedian(
-        df["eproj"] - df["ecorr"]
+        df["EProj"] - df["ECorr"]
     )
 
     shiftActive = ~np.isclose(
-        df["shift"].to_numpy(dtype = float),
+        df["EShift"].to_numpy(dtype = float),
         0.0,
     )
 
-    df["shiftcorr"] = np.where(
+    df["EShiftCorr"] = np.where(
         shiftActive,
-        df["shift"] - referenceEnergy,
+        df["EShift"] - referenceEnergy,
         np.nan,
     )
 
-    return df 
+    return df
 
 def blocking(xi) -> pd.DataFrame:
     levels = []
@@ -137,31 +143,56 @@ def blocking(xi) -> pd.DataFrame:
         dsigma2 = math.sqrt(2.0 / (n - 1)) * sigma2
         dsigma = sigma / math.sqrt(2.0 * (n - 1))
 
-        levels.append((level, n, xbar, c0, sigma2, sigma, dsigma2, dsigma))
-        
+        levels.append(
+            (
+                level,
+                n,
+                xbar,
+                c0,
+                sigma2,
+                sigma,
+                dsigma2,
+                dsigma,
+            )
+        )
+
         # If the data set is odd we must remove 1 element for this to work.
         if n % 2 == 1:
             xi = xi[:-1]
-            n -= 1 
-        # X'_i = (1 / 2) (x_{2i - 1} + x_{2i}). Equation 20 of Flyvbjerg-Petersen
+            n -= 1
+
+        # X'_i = (1 / 2) (x_{2i - 1} + x_{2i}). Equation 20 of Flyvbjerg-Petersen.
         xi = 0.5 * (xi[0::2] + xi[1::2])
 
         level += 1
 
-    return pd.DataFrame(levels, columns = ["Level", "N", "Xbar", "c0", "sigma2", "sigma", "dsigma2", "dsigma"])
+    return pd.DataFrame(
+        levels,
+        columns = [
+            "Level",
+            "N",
+            "Xbar",
+            "c0",
+            "sigma2",
+            "sigma",
+            "dsigma2",
+            "dsigma",
+        ],
+    )
 
 def plateau(data) -> Optional[int]:
     n = data["N"].to_numpy()
     sigma = data["sigma"].to_numpy()
     dsigma = data["dsigma"].to_numpy()
 
-    # Discard levels which have less then our miminum number of blocks.
+    # Discard levels which have less than our minimum number of blocks.
     valid = np.where(n >= MINN)[0]
+
     # If there are less than two of these we have nothing to do.
     if valid.size < 2:
         return None
 
-    # Highest blocking level still having more than miminum number of blocks.
+    # Highest blocking level still having more than minimum number of blocks.
     last = valid[-1]
 
     # Iterate low blocking to higher blocking and compare consecutive levels
@@ -198,29 +229,31 @@ def main() -> None:
     if args.start is None:
         active = df[
             ~np.isclose(
-                df["shift"].to_numpy(dtype = float),
+                df["EShift"].to_numpy(dtype = float),
                 0.0,
             )
         ]
 
-        start = int(active["iter"].iloc[0])
+        start = int(active["Iter"].iloc[0])
         print(
             f"Using first active-shift iteration as start: {start}"
         )
     else:
         start = args.start
 
-    df = df[df["iter"] >= start].copy()
+    df = df[df["Iter"] >= start].copy()
 
     columns = [
-        "eproj",
-        "ecorr",
-        "shift",
-        "shiftcorr",
-        "nw",
-        "nref",
-        "nsampled",
-        "nsampledo",
+        "EProjNum",
+        "EProjDen",
+        "EProj",
+        "ECorr",
+        "EShift",
+        "EShiftCorr",
+        "NW",
+        "NRef",
+        "NSample",
+        "NDet (Sampled)",
     ]
 
     for column in columns:
@@ -268,4 +301,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

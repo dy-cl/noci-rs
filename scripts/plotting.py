@@ -95,9 +95,23 @@ def findQMC(path: Path):
     with open(path, "r") as f:
         for lineno, line in enumerate(f):
             if not inqmc:
-                if line.lstrip().startswith("iter"):
+                header = line.lstrip()
+
+                if (
+                    header.startswith("Iter")
+                    and "EProjNum" in header
+                    and "EProjDen" in header
+                    and "EProj" in header
+                    and "ECorr" in header
+                    and "EShift" in header
+                    and "NW" in header
+                    and "NRef" in header
+                    and "NSample" in header
+                    and "NDet (Sampled)" in header
+                ):
                     start = lineno + 1
                     inqmc = True
+
                 continue
 
             if line.startswith("===="):
@@ -106,8 +120,8 @@ def findQMC(path: Path):
             s = line.lstrip()
             if not s:
                 continue
-            c = s[0]
-            if c.isdigit() or c == "-":
+
+            if s[0].isdigit():
                 nrows += 1
 
     if start is None:
@@ -117,7 +131,7 @@ def findQMC(path: Path):
 
 def readQMC(path: Path) -> pd.DataFrame:
     """
-    Read the range-preserving stochastic QMC table from an output file.
+    Read the stochastic QMC table from an output file.
     """
     start, nrows = findQMC(path)
 
@@ -128,14 +142,16 @@ def readQMC(path: Path) -> pd.DataFrame:
         skiprows = start,
         nrows = nrows,
         names = [
-            "iter",
-            "eproj",
-            "ecorr",
-            "shift",
-            "nw",
-            "nref",
-            "nsampled",
-            "nsampledo",
+            "Iter",
+            "EProjNum",
+            "EProjDen",
+            "EProj",
+            "ECorr",
+            "EShift",
+            "NW",
+            "NRef",
+            "NSample",
+            "NDet (Sampled)",
         ],
         engine = "c",
     )
@@ -261,7 +277,7 @@ def qmcShiftCorrelation(df: pd.DataFrame):
     Before population control begins, the printed shift is zero. Those
     entries are returned as NaN so they are not drawn as physical shifts.
     """
-    iterShift, _ = shiftChange(df["shift"])
+    iterShift, _ = shiftChange(df["EShift"])
 
     shiftCorr = pd.Series(
         np.nan,
@@ -273,11 +289,11 @@ def qmcShiftCorrelation(df: pd.DataFrame):
         return shiftCorr, None
 
     referenceEnergy = np.nanmedian(
-        df["eproj"] - df["ecorr"]
+        df["EProj"] - df["ECorr"]
     )
 
     shiftCorr.iloc[iterShift:] = (
-        df["shift"].iloc[iterShift:]
+        df["EShift"].iloc[iterShift:]
         - referenceEnergy
     )
 
@@ -709,10 +725,10 @@ def plotProjectedShift(args):
     if not args.live:
         df = readQMC(args.path).dropna(
             subset = [
-                "iter",
-                "eproj",
-                "ecorr",
-                "shift",
+                "Iter",
+                "EProj",
+                "ECorr",
+                "EShift",
             ]
         )
 
@@ -722,8 +738,8 @@ def plotProjectedShift(args):
         plt.figure()
 
         plt.plot(
-            df["iter"],
-            df["ecorr"],
+            df["Iter"],
+            df["ECorr"],
             label = r"$E_{\mathrm{Proj,corr}}(\tau)$",
             linewidth = LINEWIDTH,
             color = "tab:green",
@@ -731,7 +747,7 @@ def plotProjectedShift(args):
 
         if iterShift is not None:
             plt.plot(
-                df["iter"],
+                df["Iter"],
                 shiftCorr,
                 label = r"$E_{s,\mathrm{corr}}(\tau)$",
                 linewidth = LINEWIDTH,
@@ -739,7 +755,7 @@ def plotProjectedShift(args):
             )
 
             plt.axvline(
-                df["iter"].iloc[iterShift],
+                df["Iter"].iloc[iterShift],
                 linestyle = "--",
                 linewidth = LINEWIDTH,
                 color = "tab:blue",
@@ -792,22 +808,22 @@ def plotProjectedShift(args):
     def update():
         df = readQMC(args.path).dropna(
             subset = [
-                "iter",
-                "eproj",
-                "ecorr",
-                "shift",
+                "Iter",
+                "EProj",
+                "ECorr",
+                "EShift",
             ]
         )
 
         if df.empty:
             return
 
-        x = df["iter"].to_numpy()
+        x = df["Iter"].to_numpy()
         shiftCorr, iterShift = qmcShiftCorrelation(df)
 
         lineEproj.set_data(
             x,
-            df["ecorr"].to_numpy(),
+            df["ECorr"].to_numpy(),
         )
 
         lineShift.set_data(
@@ -816,7 +832,7 @@ def plotProjectedShift(args):
         )
 
         if iterShift is not None:
-            value = df["iter"].iloc[iterShift]
+            value = df["Iter"].iloc[iterShift]
             shiftLine.set_xdata([value, value])
             shiftLine.set_visible(True)
         else:
@@ -834,29 +850,29 @@ def plotNW(args):
     if not args.live:
         df = readQMC(args.path).dropna(
             subset = [
-                "iter",
-                "shift",
-                "nw",
-                "nsampled",
+                "Iter",
+                "EShift",
+                "NW",
+                "NSample",
             ]
         )
 
-        iterShift, _ = shiftChange(df["shift"])
+        iterShift, _ = shiftChange(df["EShift"])
 
         setStyle()
         plt.figure()
 
         plt.plot(
-            df["iter"],
-            df["nw"],
+            df["Iter"],
+            df["NW"],
             label = r"$N_w(\tau)$",
             linewidth = LINEWIDTH,
             color = "tab:blue",
         )
 
         plt.plot(
-            df["iter"],
-            df["nsampled"],
+            df["Iter"],
+            df["NSample"],
             label = r"$N_{\mathrm{sampled}}(\tau)$",
             linewidth = LINEWIDTH,
             color = "tab:orange",
@@ -864,7 +880,7 @@ def plotNW(args):
 
         if iterShift is not None:
             plt.axvline(
-                df["iter"].iloc[iterShift],
+                df["Iter"].iloc[iterShift],
                 linestyle = "--",
                 linewidth = LINEWIDTH,
                 color = "tab:blue",
@@ -915,32 +931,32 @@ def plotNW(args):
     def update():
         df = readQMC(args.path).dropna(
             subset = [
-                "iter",
-                "shift",
-                "nw",
-                "nsampled",
+                "Iter",
+                "EShift",
+                "NW",
+                "NSample",
             ]
         )
 
         if df.empty:
             return
 
-        x = df["iter"].to_numpy()
+        x = df["Iter"].to_numpy()
 
         lineNw.set_data(
             x,
-            df["nw"].to_numpy(),
+            df["NW"].to_numpy(),
         )
 
         lineSampled.set_data(
             x,
-            df["nsampled"].to_numpy(),
+            df["NSample"].to_numpy(),
         )
 
-        iterShift, _ = shiftChange(df["shift"])
+        iterShift, _ = shiftChange(df["EShift"])
 
         if iterShift is not None:
-            value = df["iter"].iloc[iterShift]
+            value = df["Iter"].iloc[iterShift]
             shiftLine.set_xdata([value, value])
             shiftLine.set_visible(True)
         else:
@@ -1149,20 +1165,20 @@ def plotShoulder(args):
     if not args.live:
         df = readQMC(args.path).dropna(
             subset = [
-                "nw",
-                "nref",
+                "NW",
+                "NRef",
             ]
         )
 
-        df = df[df["nref"] != 0.0]
+        df = df[df["NRef"] != 0.0]
 
-        ratio = df["nw"] / df["nref"]
+        ratio = df["NW"] / df["NRef"]
 
         setStyle()
         plt.figure()
 
         plt.plot(
-            df["nw"],
+            df["NW"],
             ratio,
             linewidth = LINEWIDTH,
             color = "tab:blue",
@@ -1210,20 +1226,20 @@ def plotShoulder(args):
     def update():
         df = readQMC(args.path).dropna(
             subset = [
-                "nw",
-                "nref",
+                "NW",
+                "NRef",
             ]
         )
 
-        df = df[df["nref"] != 0.0]
+        df = df[df["NRef"] != 0.0]
 
         if df.empty:
             return
 
-        ratio = df["nw"] / df["nref"]
+        ratio = df["NW"] / df["NRef"]
 
         lineRatio.set_data(
-            df["nw"].to_numpy(),
+            df["NW"].to_numpy(),
             ratio.to_numpy(),
         )
 

@@ -16,8 +16,8 @@ pub(in crate::stochastic) fn print_header(irank: usize) {
     if irank == 0 {
         println!("{}", "=".repeat(132));
         println!(
-            "{:<8} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-            "iter", "E", "Ecorr", "Shift", "Nw", "Nref", "Nsampled", "NsampledOcc",
+            "{:<8} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
+            "Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift", "NW", "NRef", "NSample", "NDet (Sampled)",
         );
     }
 }
@@ -36,8 +36,10 @@ pub(in crate::stochastic) fn print_initial_row(
 ) {
     if irank == 0 {
         println!(
-            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
+            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
             0,
+            state.pe.num,
+            state.pe.den,
             state.eprojcur,
             state.eprojcur - e0,
             0.0,
@@ -69,8 +71,10 @@ pub(in crate::stochastic) fn print_row(
 ) {
     if irank == 0 {
         println!(
-            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
+            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
             iter,
+            state.pe.num,
+            state.pe.den,
             state.eprojcur,
             state.eprojcur - e0,
             if state.reached { shift } else { 0.0 },
