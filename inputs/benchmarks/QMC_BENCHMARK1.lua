@@ -29,11 +29,13 @@ prop = {
 qmc = {
     initial_population = 1e3,
     target_population = 1e5,
-    ncycles = 10,
-    nreports = 5000,
-    shift_damping = 0.0005,
+    ncycles = 1e1,
+    nreports = 5e3,
+    shift_damping = 5e-4,
+    sampling_cutoff = 1e0,
+    spawn_cutoff = 1e0,
     excitation_gen = 'uniform',
-    seed = 1,
+    seed = 1e0,
 }
 
 wicks = {

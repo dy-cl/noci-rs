@@ -108,23 +108,37 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_s_pair_wicks, {
-        let lp = ldet.parent;
-        let gp = gdet.parent;
-        let w = &wicks.pair(lp, gp);
+        let w = wicks.pair(ldet.parent, gdet.parent);
 
         let ex_la = &ldet.excitation.alpha;
         let ex_ga = &gdet.excitation.alpha;
         let ex_lb = &ldet.excitation.beta;
         let ex_gb = &gdet.excitation.beta;
 
+        let la = ex_la.holes.len() + ex_ga.holes.len();
+        let lb = ex_lb.holes.len() + ex_gb.holes.len();
+
+        if w.aa.m > la || w.bb.m > lb {
+            return <T as From<f64>>::from(0.0);
+        }
+
         let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
         let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
+        let zero = <T as From<f64>>::from(0.0);
 
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
         let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
 
+        if sa == zero {
+            return zero;
+        }
+
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
         let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+
+        if sb == zero {
+            return zero;
+        }
 
         sa * sb
     })
