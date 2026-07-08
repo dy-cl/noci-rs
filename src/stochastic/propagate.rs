@@ -17,7 +17,7 @@ use super::state::{
     ThreadPropagation,
 };
 use crate::input::Input;
-use crate::noci::{DetPair, NOCIData};
+use crate::noci::{DetPair, NOCIData, OverlapFactor};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
@@ -250,52 +250,6 @@ pub(crate) fn gather_all_populations<'a>(
     })
 }
 
-/// Build contiguous determinant ranges for each parent reference.
-/// # Arguments
-/// - `data`: Immutable stochastic propagation data.
-/// # Returns
-/// - `Vec<(usize, usize)>`: Half-open determinant ranges keyed by parent.
-fn parent_ranges(data: &NOCIData<'_, f64>) -> Vec<(usize, usize)> {
-    let nparents = data
-        .basis
-        .iter()
-        .map(|det| det.parent)
-        .max()
-        .map(|p| p + 1)
-        .unwrap_or(0);
-
-    let mut ranges = vec![(usize::MAX, 0usize); nparents];
-
-    for (idet, det) in data.basis.iter().enumerate() {
-        let range = &mut ranges[det.parent];
-        range.0 = range.0.min(idet);
-        range.1 = range.1.max(idet + 1);
-    }
-
-    ranges
-}
-
-/// Build orthogonal same-parent overlap flags for each parent reference.
-/// # Arguments
-/// - `data`: Immutable stochastic propagation data.
-/// - `nparents`: Number of parent references.
-/// # Returns
-/// - `Vec<bool>`: Whether each parent uses orthogonal Slater-Condon overlap.
-fn parent_orthogonal(
-    data: &NOCIData<'_, f64>,
-    nparents: usize,
-) -> Vec<bool> {
-    let mut out = vec![false; nparents];
-
-    if let Some(mocache) = data.mocache {
-        for (parent, flag) in out.iter_mut().enumerate() {
-            *flag = mocache[parent].orthogonal_slater_condon;
-        }
-    }
-
-    out
-}
-
 /// Apply sparse pre-overlap population changes to the rank-local
 /// populations. For each locally owned determinant \Gamma, this evaluates
 /// \delta N_\Gamma = \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega and applies
@@ -304,6 +258,7 @@ fn parent_orthogonal(
 /// - `populations`: Rank-local persistent populations N_\Gamma.
 /// - `updates`: Sparse pre-overlap changes \Delta_\Omega\.
 /// - `data`: Immutable stochastic propagation data.
+/// - `overlap_factor`: Reusable spin overlap factors.
 /// - `run`: Rank-local propagation metadata.
 /// - `workers`: Persistent thread-local Wick scratch storage.
 /// # Returns:
@@ -312,6 +267,7 @@ fn apply_population_changes_local(
     populations: &mut [f64],
     updates: &[PopulationUpdate],
     data: &NOCIData<'_, f64>,
+    overlap_factor: &OverlapFactor,
     run: &QMCRunInfo,
     workers: &mut [Mutex<ThreadPropagation>],
 ) {
@@ -335,41 +291,20 @@ fn apply_population_changes_local(
             }
 
             let gamma = run.owned[k];
-            let gamma_parent = data.basis[gamma].parent;
-            let gamma_parent_orthogonal = run.parent_orthogonal[gamma_parent];
-
-            let mut dp = 0.0;
-            let mut iup = 0usize;
-
-            while iup < updates.len() {
-                let update_parent = data.basis[updates[iup].det as usize].parent;
-                let parent_end = run.parent_ranges[update_parent].1 as u64;
-
-                let mut next_parent = iup + 1;
-
-                while next_parent < updates.len() && updates[next_parent].det < parent_end {
-                    next_parent += 1;
-                }
-                let update_range = &updates[iup..next_parent];
-
-                if gamma_parent_orthogonal && update_parent == gamma_parent {
-                    if let Ok(i) = update_range.binary_search_by_key(&(gamma as u64), |up| up.det) {
-                        dp += update_range[i].dn;
-                    }
-                    iup = next_parent;
-                    continue;
-                }
-
-                if let Some(wicks) = data.wicks {
-                    wicks.prefetch_pair(gamma_parent, update_parent);
-                }
-
-                for up in update_range {
-                    let omega = up.det as usize;
-                    dp += find_s(data, gamma, omega, worker.scratch.as_mut()) * up.dn;
-                }
-                iup = next_parent;
-            }
+            let dp = {
+                let ThreadPropagation {
+                    wick_scratch,
+                    overlap_scratch,
+                    ..
+                } = &mut *worker;
+                overlap_factor.apply_row(
+                    gamma,
+                    updates.iter().map(|up| (up.det as usize, up.dn)),
+                    data,
+                    wick_scratch.as_mut(),
+                    overlap_scratch,
+                )
+            };
             worker.overlap.push((k, dp));
         }
     });
@@ -394,6 +329,7 @@ fn apply_population_changes_local(
 /// - `populations`: Rank-local persistent populations.
 /// - `dlocal`: Local determinant population changes.
 /// - `data`: Immutable stochastic propagation data.
+/// - `overlap_factor`: Reusable spin overlap factors.
 /// - `run`: Rank-local run metadata.
 /// - `mpi`: Reusable MPI scratch space.
 /// - `world`: MPI communicator object (MPI_COMM_WORLD).
@@ -404,6 +340,7 @@ fn apply_overlap_population_changes(
     populations: &mut [f64],
     dlocal: &[PopulationUpdate],
     data: &NOCIData<'_, f64>,
+    overlap_factor: &OverlapFactor,
     run: &QMCRunInfo,
     mpi: &mut MPIScratch,
     world: &impl CommunicatorCollectives,
@@ -451,7 +388,14 @@ fn apply_overlap_population_changes(
             time_call!(
                 crate::timers::stochastic::add_apply_local_overlap_changes,
                 {
-                    apply_population_changes_local(populations, dlocal, data, run, workers);
+                    apply_population_changes_local(
+                        populations,
+                        dlocal,
+                        data,
+                        overlap_factor,
+                        run,
+                        workers,
+                    );
                 }
             );
 
@@ -472,8 +416,22 @@ fn apply_overlap_population_changes(
                 left.sort_unstable_by_key(|update| update.det);
                 right.sort_unstable_by_key(|update| update.det);
 
-                apply_population_changes_local(populations, left, data, run, workers);
-                apply_population_changes_local(populations, right, data, run, workers);
+                apply_population_changes_local(
+                    populations,
+                    left,
+                    data,
+                    overlap_factor,
+                    run,
+                    workers,
+                );
+                apply_population_changes_local(
+                    populations,
+                    right,
+                    data,
+                    overlap_factor,
+                    run,
+                    workers,
+                );
             }
         );
     })
@@ -946,8 +904,7 @@ pub fn qmc_step(
         )
         .collect::<Vec<_>>();
 
-    let parent_ranges = parent_ranges(data);
-    let parent_orthogonal = parent_orthogonal(data, parent_ranges.len());
+    let overlap_factor = OverlapFactor::new(data);
     let run = QMCRunInfo {
         irank,
         nranks,
@@ -957,8 +914,6 @@ pub fn qmc_step(
         rank_seed,
         reference_hs,
         diagonal_hs,
-        parent_ranges,
-        parent_orthogonal,
     };
 
     let mut workers = (0..rayon::current_num_threads())
@@ -968,6 +923,7 @@ pub fn qmc_step(
                 scratchsize.maxsame,
                 scratchsize.maxla,
                 scratchsize.maxlb,
+                &overlap_factor,
             ))
         })
         .collect::<Vec<_>>();
@@ -1056,6 +1012,7 @@ pub fn qmc_step(
             &mut state.mc.populations,
             &population_changes,
             data,
+            &overlap_factor,
             &run,
             &mut mpiscratch,
             world,

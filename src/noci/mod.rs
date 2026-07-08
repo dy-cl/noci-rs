@@ -19,7 +19,7 @@ pub use naive::noci_density;
 pub(crate) use naive::occ_coeffs;
 #[cfg(feature = "nocc")]
 pub(crate) use naive::{build_s_pair, pair_density};
-pub(crate) use overlap::calculate_s_pair;
+pub(crate) use overlap::{OverlapFactor, OverlapFactorScratch, calculate_s_pair};
 pub(crate) use types::{DetPair, FockData};
 pub use types::{FockMOCache, MOCache};
 pub use types::{NOCIData, NOCIScalar};

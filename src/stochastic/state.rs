@@ -4,7 +4,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use crate::input::ExcitationGen;
-use crate::noci::NOCIData;
+use crate::noci::{NOCIData, OverlapFactor, OverlapFactorScratch};
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 use super::excit::{coupling, init_heat_bath, pgen_heat_bath, pgen_uniform};
@@ -53,10 +53,6 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) reference_hs: Vec<(f64, f64)>,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
     pub(in crate::stochastic) diagonal_hs: Vec<(f64, f64)>,
-    /// Contiguous determinant index range for each parent reference.
-    pub(in crate::stochastic) parent_ranges: Vec<(usize, usize)>,
-    /// Whether each parent reference uses orthogonal Slater-Condon overlap rules.
-    pub(in crate::stochastic) parent_orthogonal: Vec<bool>,
 }
 
 /// Storage for maximum size required for Wick's scratch.
@@ -383,7 +379,9 @@ pub(in crate::stochastic) struct ThreadPropagation {
     /// Thread local RNG.
     pub(in crate::stochastic) rng: SmallRng,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
-    pub(in crate::stochastic) scratch: Box<WickScratchSpin<f64>>,
+    pub(in crate::stochastic) wick_scratch: Box<WickScratchSpin<f64>>,
+    /// Thread-local scratch for sparse overlap application.
+    pub(in crate::stochastic) overlap_scratch: OverlapFactorScratch,
 }
 
 impl ThreadPropagation {
@@ -393,6 +391,7 @@ impl ThreadPropagation {
     /// - `maxsame`: Maximum same-spin scratch dimension.
     /// - `maxla`: Maximum alpha-spin different-spin scratch dimension.
     /// - `maxlb`: Maximum beta-spin different-spin scratch dimension.
+    /// - `overlap_factor`: Reusable overlap spin factors.
     /// # Returns
     /// - `ThreadPropagation`: Initialised per-thread propagation storage.
     pub(in crate::stochastic) fn with_sizes(
@@ -400,6 +399,7 @@ impl ThreadPropagation {
         maxsame: usize,
         maxla: usize,
         maxlb: usize,
+        overlap_factor: &OverlapFactor,
     ) -> Self {
         Self {
             local: Vec::new(),
@@ -407,7 +407,8 @@ impl ThreadPropagation {
             samples: Vec::new(),
             overlap: Vec::new(),
             rng: SmallRng::seed_from_u64(seed),
-            scratch: Box::new(WickScratchSpin::with_sizes(maxsame, maxla, maxlb)),
+            wick_scratch: Box::new(WickScratchSpin::with_sizes(maxsame, maxla, maxlb)),
+            overlap_scratch: overlap_factor.scratch(),
         }
     }
 
@@ -515,7 +516,7 @@ impl ThreadPropagation {
                     None
                 };
 
-                let (hlg, slg) = find_hs(data, lambda, gamma, self.scratch.as_mut());
+                let (hlg, slg) = find_hs(data, lambda, gamma, self.wick_scratch.as_mut());
 
                 let k = coupling(hlg, slg, shift);
                 let raw = -dt * k * parent_population / pgen;
@@ -552,23 +553,32 @@ impl ThreadPropagation {
         }
 
         let heat_bath = if let ExcitationGen::HeatBath = qmc.excitation_gen {
-            Some(init_heat_bath(gamma, shift, data, self.scratch.as_mut()))
+            Some(init_heat_bath(
+                gamma,
+                shift,
+                data,
+                self.wick_scratch.as_mut(),
+            ))
         } else {
             None
         };
 
         for _ in 0..nattempts {
             let (pgen, k, lambda) = match qmc.excitation_gen {
-                ExcitationGen::Uniform => {
-                    pgen_uniform(gamma, shift, data, &mut self.rng, self.scratch.as_mut())
-                }
+                ExcitationGen::Uniform => pgen_uniform(
+                    gamma,
+                    shift,
+                    data,
+                    &mut self.rng,
+                    self.wick_scratch.as_mut(),
+                ),
                 ExcitationGen::HeatBath => pgen_heat_bath(
                     gamma,
                     shift,
                     data,
                     &mut self.rng,
                     heat_bath.as_ref().unwrap(),
-                    self.scratch.as_mut(),
+                    self.wick_scratch.as_mut(),
                 ),
                 ExcitationGen::ApproximateHeatBath => {
                     unimplemented!()

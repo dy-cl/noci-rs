@@ -22,8 +22,6 @@ excit = {orders = {1, 2}}
 
 prop = {
     dt = 1e-4,
-    max_steps = 5e4,
-    propagator = "difference-doubly-shifted-u2",
 }
 
 qmc = {
@@ -33,7 +31,7 @@ qmc = {
     nreports = 5e3,
     shift_damping = 5e-4,
     sampling_cutoff = 1e0,
-    spawn_cutoff = 1e0,
+    spawn_cutoff = 0.25,
     excitation_gen = 'uniform',
     seed = 1e0,
 }
