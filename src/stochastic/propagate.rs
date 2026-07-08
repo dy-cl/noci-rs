@@ -832,6 +832,19 @@ pub fn qmc_step(
 
     let owned = owned(irank, ndets, nranks);
 
+    let reference = ref_indices
+        .iter()
+        .filter_map(|&i| {
+            let coefficient = c0[i];
+
+            if coefficient == 0.0 {
+                None
+            } else {
+                Some((i, coefficient))
+            }
+        })
+        .collect::<Vec<_>>();
+    
     let diagonal_hs: Vec<(f64, f64)> = (0..ndets)
         .into_par_iter()
         .map_init(
@@ -856,7 +869,19 @@ pub fn qmc_step(
                     scratchsize.maxlb,
                 )
             },
-            |scratch, &gamma| find_hs(data, 0, gamma, scratch),
+            |scratch, &gamma| {
+                let mut h = 0.0;
+                let mut s = 0.0;
+
+                for &(i, coefficient) in &reference {
+                    let (hig, sig) = find_hs(data, i, gamma, scratch);
+
+                    h += coefficient * hig;
+                    s += coefficient * sig;
+                }
+
+                (h, s)
+            },
         )
         .collect::<Vec<_>>();
 

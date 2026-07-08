@@ -124,9 +124,6 @@ def findQMC(path: Path):
             if s[0].isdigit():
                 nrows += 1
 
-    if start is None:
-        raise ValueError("QMC table header not found")
-
     return start, nrows
 
 def readQMC(path: Path) -> pd.DataFrame:
@@ -737,19 +734,12 @@ def plotProjectedShift(args):
         setStyle()
         plt.figure()
 
-        plt.plot(
-            df["Iter"],
-            df["ECorr"],
-            label = r"$E_{\mathrm{Proj,corr}}(\tau)$",
-            linewidth = LINEWIDTH,
-            color = "tab:green",
-        )
 
         if iterShift is not None:
             plt.plot(
                 df["Iter"],
                 shiftCorr,
-                label = r"$E_{s,\mathrm{corr}}(\tau)$",
+                label = r"$E_s^S(\tau)$",
                 linewidth = LINEWIDTH,
                 color = "tab:blue",
             )
@@ -761,9 +751,17 @@ def plotProjectedShift(args):
                 color = "tab:blue",
             )
 
+        plt.plot(
+            df["Iter"],
+            df["ECorr"],
+            label = r"$E_{\mathrm{Proj}}(\tau)$",
+            linewidth = LINEWIDTH,
+            color = "tab:green",
+        )
+
         formatAxes(
             xlabel = r"Iteration / $\tau$",
-            ylabel = "Correlation energy / Ha",
+            ylabel = "Energy / Ha",
             legend = True,
             legendLoc = "lower right",
         )
@@ -777,7 +775,7 @@ def plotProjectedShift(args):
     lineShift, = ax.plot(
         [],
         [],
-        label = r"$E_{s,\mathrm{corr}}(\tau)$",
+        label = r"$E_s^S(\tau)$",
         linewidth = LINEWIDTH,
         color = "tab:blue",
     )
@@ -785,7 +783,7 @@ def plotProjectedShift(args):
     lineEproj, = ax.plot(
         [],
         [],
-        label = r"$E_{\mathrm{Proj,corr}}(\tau)$",
+        label = r"$E_{\mathrm{Proj}}(\tau)$",
         linewidth = LINEWIDTH,
         color = "tab:green",
     )
@@ -800,7 +798,7 @@ def plotProjectedShift(args):
 
     formatAxes(
         xlabel = r"Iteration / $\tau$",
-        ylabel = "Correlation energy / Ha",
+        ylabel = "Energy / Ha",
         legend = True,
         legendLoc = "lower right",
     )
@@ -1248,6 +1246,137 @@ def plotShoulder(args):
 
     showLive(args, fig, update)
 
+def plotReferenceOverlap(args):
+    """
+    Plot the normalised projected-energy denominator against iteration.
+    """
+    if not args.live:
+        df = readQMC(args.path).dropna(
+            subset = [
+                "Iter",
+                "EProjDen",
+                "NW",
+            ]
+        )
+
+        df = df[df["NW"] != 0.0]
+
+        overlap = df["EProjDen"] / df["NW"]
+        average = overlap.rolling(
+            window = args.window,
+            min_periods = 1,
+        ).mean()
+
+        setStyle()
+        plt.figure()
+
+        plt.plot(
+            df["Iter"],
+            overlap,
+            linewidth = 1,
+            alpha = 0.25,
+            color = "tab:blue",
+            label = (
+                r"$\frac{E_{\mathrm{ProjDen}}(\tau)}{N_w(\tau)}$"
+            ),
+        )
+
+        plt.plot(
+            df["Iter"],
+            average,
+            linewidth = LINEWIDTH,
+            color = "tab:orange",
+            label = (
+                rf"Rolling mean, ${args.window}$ samples"
+            ),
+        )
+
+        formatAxes(
+            xlabel = r"Iteration / $\tau$",
+            ylabel = (
+                r"$\frac{\langle \Psi_{\mathrm{Ref}} | \Psi(\tau) \rangle}"
+                r"{N_w(\tau)}$"
+            ),
+            legend = True,
+        )
+
+        plt.grid(True)
+        finish(args)
+        return
+
+    setStyle()
+    fig, ax = plt.subplots()
+
+    lineOverlap, = ax.plot(
+        [],
+        [],
+        linewidth = 1,
+        alpha = 0.7,
+        color = "tab:blue",
+        label = (
+            r"$\frac{\langle \Psi_{\mathrm{Ref}} | \Psi(\tau) \rangle}"
+            r"{N_w(\tau)}$"
+        ),
+    )
+
+    lineAverage, = ax.plot(
+        [],
+        [],
+        linewidth = LINEWIDTH,
+        color = "tab:orange",
+        label = (
+            r"$\overline{\frac{\langle \Psi_{\mathrm{Ref}}"
+            r" | \Psi(\tau) \rangle}{N_w(\tau)}}$"
+        ),
+    )
+
+    formatAxes(
+        xlabel = r"Iteration / $\tau$",
+        ylabel = (
+            r"$\frac{\langle \Psi_{\mathrm{Ref}} | \Psi(\tau) \rangle}"
+            r"{N_w(\tau)}$"
+        ),
+        legend = True,
+    )
+
+    ax.grid(True)
+
+    def update():
+        df = readQMC(args.path).dropna(
+            subset = [
+                "Iter",
+                "EProjDen",
+                "NW",
+            ]
+        )
+
+        df = df[df["NW"] != 0.0]
+
+        if df.empty:
+            return
+
+        x = df["Iter"].to_numpy()
+        overlap = df["EProjDen"] / df["NW"]
+        average = overlap.rolling(
+            window = args.window,
+            min_periods = 1,
+        ).mean()
+
+        lineOverlap.set_data(
+            x,
+            overlap.to_numpy(),
+        )
+
+        lineAverage.set_data(
+            x,
+            average.to_numpy(),
+        )
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(args, fig, update)
+
 def setStyle():
     """
     Choose a uniform font for all plotting purposes.
@@ -1349,6 +1478,17 @@ def buildParser():
     p.add_argument("path", type = Path)
     addTrajectoryArgs(p)
     p.set_defaults(func = plotShoulder)
+
+    p = subparsers.add_parser("reference-overlap")
+    p.add_argument("path", type = Path)
+    p.add_argument(
+        "--window",
+        type = int,
+        default = 1000,
+        help = "Number of output samples used in the rolling mean.",
+    )
+    addTrajectoryArgs(p)
+    p.set_defaults(func = plotReferenceOverlap)
 
     return parser
 
