@@ -140,42 +140,6 @@ impl<T: NOCIScalar> WicksView<T> {
 
         WicksPairView { aa, bb, ab }
     }
-
-    /// Prefetch likely-used Wick's intermediates for a reference pair.
-    /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `lp`: Left parent reference index.
-    /// - `gp`: Right parent reference index.
-    /// # Returns
-    /// - `()`: Issues best-effort CPU prefetch hints.
-    #[inline(always)]
-    pub(crate) fn prefetch_pair(
-        &self,
-        lp: usize,
-        gp: usize,
-    ) {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-
-            let idx = self.idx(lp, gp);
-            _mm_prefetch((&self.meta[idx] as *const PairMeta<T>).cast(), _MM_HINT_T0);
-            _mm_prefetch((&self.off[idx] as *const PairOffset).cast(), _MM_HINT_T0);
-
-            let off = &self.off[idx];
-            let slab = self.slab_ptr();
-            _mm_prefetch(slab.add(off.aa.x[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.aa.y[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.aa.fh[0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.aa.v[0][0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.x[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.y[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.fh[0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.v[0][0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.ab.vab[0][0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.ab.iiab[0][0][0][0]).cast(), _MM_HINT_T0);
-        }
-    }
 }
 
 // Read only view of same-spin Wick's intermediates.

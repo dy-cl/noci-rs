@@ -489,10 +489,6 @@ impl ThreadPropagation {
                 let next = if iattempt + 1 < nattempts {
                     let next = sample_uniform(&mut self.rng);
 
-                    if let Some(wicks) = data.wicks {
-                        wicks.prefetch_pair(data.basis[next].parent, data.basis[gamma].parent);
-                    }
-
                     Some(next)
                 } else {
                     None

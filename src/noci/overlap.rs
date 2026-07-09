@@ -597,7 +597,6 @@ impl OverlapFactor {
             } else {
                 (source.parent, target.parent, false)
             };
-        wicks.prefetch_pair(lp, gp);
 
         // Build A rows independently; each task owns one output row.
         scratch

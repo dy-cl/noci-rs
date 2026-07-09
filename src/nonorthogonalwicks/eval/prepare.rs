@@ -16,6 +16,7 @@ use crate::time_call;
 /// - `scratch`: Scratch space for Wick's quantities.
 /// # Returns
 /// - `()`: Prepares the required same-spin scratch quantities in place.
+#[inline(always)]
 pub fn prepare_same<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
@@ -52,9 +53,9 @@ fn prepare_same_m0<T: NOCIScalar>(
         let l = l_ex.holes.len() + g_ex.holes.len();
 
         match l {
-            0 => scratch.ensure_same(0),
+            0 => {}
             1 => {
-                scratch.ensure_same(1);
+                scratch.ensure_same_m0(1);
                 construct_determinant_indices(
                     l_ex,
                     g_ex,
@@ -65,7 +66,7 @@ fn prepare_same_m0<T: NOCIScalar>(
                 prepare_same_m0_l1(w, scratch);
             }
             2 => {
-                scratch.ensure_same(2);
+                scratch.ensure_same_m0(2);
                 construct_determinant_indices(
                     l_ex,
                     g_ex,
