@@ -23,7 +23,7 @@ use crate::time_call;
 
 use super::init::{initialise_qmc_state, max_scratch_sizes};
 use super::report::{check_stop, print_header, print_initial_row, print_row};
-use super::state::{owned, owner};
+use super::state::owner;
 use crate::noci::{calculate_hs_pair, calculate_s_pair};
 
 /// Find overlap matrix element S_{ij}.
@@ -161,7 +161,7 @@ pub(crate) fn exchange_population_changes<'a>(
         {
             let nranks = world.size() as usize;
 
-            // Exchange only the per-rank message sizes.
+            // Gather every rank's per-destination message sizes.
             // After this, `recv_counts[peer]` contains how many updates rank `peer` will send to the
             // current rank.
             time_call!(
@@ -303,6 +303,23 @@ fn apply_overlap_population_changes(
     scratch: &mut OverlapFactorScratch,
 ) {
     time_call!(crate::timers::stochastic::add_apply_overlap_changes, {
+        if run.nranks == 1 {
+            time_call!(
+                crate::timers::stochastic::add_apply_local_overlap_changes,
+                {
+                    apply_population_changes_local(
+                        populations,
+                        dlocal.iter().map(|up| (up.det as usize, up.dn)),
+                        data,
+                        overlap_factor,
+                        &run.owned,
+                        scratch,
+                    );
+                }
+            );
+            return;
+        }
+
         // Gather number of updates that each rank will send to this rank.
         let nsend = dlocal.len() as i32;
         time_call!(
@@ -323,66 +340,30 @@ fn apply_overlap_population_changes(
             return;
         }
 
-        // Size recieve buffer to hold all updates from all ranks and calculate slice boundaries
-        // that correspond to this rank's own constribution in the gathered buffer. These will
-        // later be skipped during the apply step to avoid double counting.
+        // Size recieve buffer to hold all updates from all ranks.
         mpi.gather_recv
             .resize(ntot, PopulationUpdate { det: 0, dn: 0.0 });
-        let locallow = mpi.gather_displs[run.irank] as usize;
-        let localhigh = locallow + mpi.gather_counts[run.irank] as usize;
 
         let mut recv = PartitionMut::new(
             &mut mpi.gather_recv[..],
             &mpi.gather_counts[..],
             &mpi.gather_displs[..],
         );
-        mpi::request::scope(|scope| {
-            // Perform non-blocking all-gather such that the local computation can be overlapped.
-            let req = world.immediate_all_gather_varcount_into(scope, dlocal, &mut recv);
-
-            // Apply this ranks own updates to `populations` whilst the all-gather is occuring.
-            time_call!(
-                crate::timers::stochastic::add_apply_local_overlap_changes,
-                {
-                    apply_population_changes_local(
-                        populations,
-                        dlocal.iter().map(|up| (up.det as usize, up.dn)),
-                        data,
-                        overlap_factor,
-                        &run.owned,
-                        scratch,
-                    );
-                }
-            );
-
-            // Now we must wait for the all gather to finish before we read the remote updates.
-            time_call!(crate::timers::stochastic::add_wait_overlap_change_gather, {
-                req.wait();
-            })
+        time_call!(crate::timers::stochastic::add_wait_overlap_change_gather, {
+            world.all_gather_varcount_into(dlocal, &mut recv);
         });
 
-        // Apply remote updates from all other ranks to `populations`. We avoid double counting by
-        // excluding the local slice.
+        // Apply all report updates in one pass. This avoids regrouping local and remote updates
+        // separately, which is more expensive than the small all-gather wait on these workloads.
         time_call!(
             crate::timers::stochastic::add_apply_remote_overlap_changes,
             {
-                let (local_and_left, right) = mpi.gather_recv.split_at_mut(localhigh);
-                let (left, _) = local_and_left.split_at_mut(locallow);
-
-                left.sort_unstable_by_key(|update| update.det);
-                right.sort_unstable_by_key(|update| update.det);
+                mpi.gather_recv.sort_unstable_by_key(|update| update.det);
+                coalesce_population_updates(&mut mpi.gather_recv);
 
                 apply_population_changes_local(
                     populations,
-                    left.iter().map(|up| (up.det as usize, up.dn)),
-                    data,
-                    overlap_factor,
-                    &run.owned,
-                    scratch,
-                );
-                apply_population_changes_local(
-                    populations,
-                    right.iter().map(|up| (up.det as usize, up.dn)),
+                    mpi.gather_recv.iter().map(|up| (up.det as usize, up.dn)),
                     data,
                     overlap_factor,
                     &run.owned,
@@ -425,7 +406,7 @@ fn accumulate_generated_updates(
             prop.samples.clear();
         }
 
-        scratch.send_contig.append(&mut prop.remote);
+        scratch.send_ranked.append(&mut prop.remote);
         prop.remote.clear();
     })
 }
@@ -452,13 +433,12 @@ fn coalesce_population_updates(updates: &mut Vec<PopulationUpdate>) {
 
 /// Prepare accumulated remote spawned population updates for exchange.
 /// # Arguments:
-/// - `ndets`: Number of determinants in the stochastic basis.
 /// - `nranks`: Number of MPI ranks.
+/// - `det_owner`: MPI owner rank for each global determinant.
 /// - `scratch`: Reusable MPI scratch space.
 /// # Returns
 /// - `()`: Fills `send_counts`, `send_displacements`, and `send_contig` in `scratch`.
 fn prepare_spawn_update_exchange(
-    ndets: usize,
     nranks: usize,
     scratch: &mut MPIScratch,
 ) {
@@ -472,16 +452,31 @@ fn prepare_spawn_update_exchange(
     // Sort by (destination rank, determinant) so duplicates for the same peer
     // are adjacent and each peer still occupies one contiguous block.
     scratch
-        .send_contig
-        .sort_unstable_by_key(|up| (owner(up.det as usize, ndets, nranks), up.det));
+        .send_ranked
+        .sort_unstable_by_key(|&(peer, up)| (peer, up.det));
 
-    // Merge repeated updates to the same determinant.
-    coalesce_population_updates(&mut scratch.send_contig);
+    let mut out = 0usize;
+    for i in 0..scratch.send_ranked.len() {
+        let (peer, up) = scratch.send_ranked[i];
 
-    // Recount after compression.
-    for up in &scratch.send_contig {
-        let peer = owner(up.det as usize, ndets, nranks);
-        scratch.send_counts[peer] += 1;
+        if out > 0
+            && scratch.send_ranked[out - 1].0 == peer
+            && scratch.send_ranked[out - 1].1.det == up.det
+        {
+            scratch.send_ranked[out - 1].1.dn += up.dn;
+        } else {
+            scratch.send_ranked[out] = (peer, up);
+            out += 1;
+        }
+    }
+    scratch.send_ranked.truncate(out);
+
+    scratch.send_contig.clear();
+    for &(peer, up) in &scratch.send_ranked {
+        if up.dn != 0.0 {
+            scratch.send_counts[peer] += 1;
+            scratch.send_contig.push(up);
+        }
     }
 
     // Build displacements for the already-packed contiguous buffer.
@@ -505,15 +500,15 @@ fn exchange_accumulated_updates(
     mc: &mut MCState,
     mpi: &mut MPIScratch,
     world: &impl CommunicatorCollectives,
-    ndets: usize,
-    nranks: usize,
+    run: &QMCRunInfo,
 ) {
-    if nranks <= 1 {
+    if run.nranks <= 1 {
         mpi.send_contig.clear();
+        mpi.send_ranked.clear();
         return;
     }
 
-    prepare_spawn_update_exchange(ndets, nranks, mpi);
+    prepare_spawn_update_exchange(run.nranks, mpi);
     let received = exchange_population_changes(world, mpi);
 
     time_call!(crate::timers::stochastic::add_unpack_population_changes, {
@@ -523,6 +518,7 @@ fn exchange_accumulated_updates(
     });
 
     mpi.send_contig.clear();
+    mpi.send_ranked.clear();
 }
 
 /// Generate one stochastic estimate of the pre-overlap population change.
@@ -626,12 +622,73 @@ pub(in crate::stochastic) fn projected_energy(
         let local = [num_local, den_local];
         let mut global = [0.0; 2];
 
-        world.all_reduce_into(&local, &mut global, SystemOperation::sum());
+        if run.nranks == 1 {
+            global = local;
+        } else {
+            world.all_reduce_into(&local, &mut global, SystemOperation::sum());
+        }
 
         ProjectedEnergyUpdate {
             num: global[0],
             den: global[1],
         }
+    })
+}
+
+/// Compute population statistics and projected energy with one MPI reduction.
+/// # Arguments:
+/// - `mc`: Current Monte Carlo state.
+/// - `isref`: Reference-determinant mask.
+/// - `run`: Rank-local propagation metadata.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `(PopulationStats, ProjectedEnergyUpdate)`: Global population statistics and projected energy.
+fn population_stats_projected_energy(
+    mc: &MCState,
+    isref: &[bool],
+    run: &QMCRunInfo,
+    world: &impl Communicator,
+) -> (PopulationStats, ProjectedEnergyUpdate) {
+    time_call!(crate::timers::stochastic::add_compute_population_stats, {
+        let (nw_local, nref_local, num_local, den_local) = mc
+            .populations
+            .par_iter()
+            .enumerate()
+            .zip(run.reference_hs.par_iter())
+            .map(|((k, &population), &(h, s))| {
+                let abs = population.abs();
+                let nref = if isref[run.owned[k]] { abs } else { 0.0 };
+
+                (abs, nref, population * h, population * s)
+            })
+            .reduce(
+                || (0.0, 0.0, 0.0, 0.0),
+                |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3),
+            );
+
+        let local = [
+            nw_local,
+            nref_local,
+            mc.sampled.norm(),
+            mc.sampled.occ().len() as f64,
+            num_local,
+            den_local,
+        ];
+        let mut global = [0.0; 6];
+
+        if run.nranks == 1 {
+            global = local;
+        } else {
+            world.all_reduce_into(&local, &mut global, SystemOperation::sum());
+        }
+
+        (
+            PopulationStats::new(global[0], global[1], global[2], global[3] as i64),
+            ProjectedEnergyUpdate {
+                num: global[4],
+                den: global[5],
+            },
+        )
     })
 }
 
@@ -692,50 +749,6 @@ pub(in crate::stochastic) fn stochastic_population_cutoff(
     } else {
         0.0
     }
-}
-
-/// Compute global statistics for the persistent and sampled populations.
-/// # Arguments:
-/// - `mc`: Current Monte Carlo state.
-/// - `isref`: Reference-determinant mask.
-/// - `run`: Rank-local propagation metadata.
-/// - `world`: MPI communicator.
-/// # Returns:
-/// - `PopulationStats`: Global population statistics.
-fn population_stats(
-    mc: &MCState,
-    isref: &[bool],
-    run: &QMCRunInfo,
-    world: &impl Communicator,
-) -> PopulationStats {
-    time_call!(crate::timers::stochastic::add_compute_population_stats, {
-        let nw_local = mc
-            .populations
-            .iter()
-            .map(|population| population.abs())
-            .sum::<f64>();
-
-        let nref_local = mc
-            .populations
-            .iter()
-            .enumerate()
-            .filter(|(k, _)| isref[run.owned[*k]])
-            .map(|(_, population)| population.abs())
-            .sum::<f64>();
-
-        let local = [
-            nw_local,
-            nref_local,
-            mc.sampled.norm(),
-            mc.sampled.occ().len() as f64,
-        ];
-
-        let mut global = [0.0; 4];
-
-        world.all_reduce_into(&local, &mut global, SystemOperation::sum());
-
-        PopulationStats::new(global[0], global[1], global[2], global[3] as i64)
-    })
 }
 
 /// Update the single population-control shift.
@@ -817,7 +830,22 @@ pub fn qmc_step(
         }
     };
 
-    let owned = owned(irank, ndets, nranks);
+    let det_owner = if nranks == 1 {
+        vec![0; ndets]
+    } else {
+        (0..ndets)
+            .map(|det| owner(det, ndets, nranks))
+            .collect::<Vec<_>>()
+    };
+    let owned = if nranks == 1 {
+        (0..ndets).collect::<Vec<_>>()
+    } else {
+        det_owner
+            .iter()
+            .enumerate()
+            .filter_map(|(det, &owner)| if owner == irank { Some(det) } else { None })
+            .collect::<Vec<_>>()
+    };
 
     let reference = ref_indices
         .iter()
@@ -881,6 +909,7 @@ pub fn qmc_step(
         irank,
         nranks,
         ndets,
+        det_owner,
         owned,
         base_seed,
         rank_seed,
@@ -971,7 +1000,7 @@ pub fn qmc_step(
             );
         }
 
-        exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, ndets, nranks);
+        exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
 
         let mut population_changes = take_population_changes(&mut state.mc);
 
@@ -992,9 +1021,8 @@ pub fn qmc_step(
 
         let end = (report + 1) * qmc.ncycles;
 
-        let stats = population_stats(&state.mc, &isref, &run, world);
-
-        state.pe = projected_energy(&state.mc.populations, &run, world);
+        let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
+        state.pe = pe;
 
         state.eprojcur = state.pe.num / state.pe.den;
 

@@ -119,7 +119,9 @@ pub(in crate::stochastic) fn check_stop(
         stop = 1;
     }
 
-    world.process_at_rank(0).broadcast_into(&mut stop);
+    if run.nranks > 1 {
+        world.process_at_rank(0).broadcast_into(&mut stop);
+    }
 
     if stop == 0 {
         return None;

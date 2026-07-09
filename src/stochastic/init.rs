@@ -7,7 +7,7 @@ use super::propagate::{find_s, gather_all_populations, projected_energy};
 use super::restart::read_restart_hdf5;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, PropagationState,
-    QMCRunInfo, SparsePopulations, owner,
+    QMCRunInfo, SparsePopulations,
 };
 use crate::SCFState;
 use crate::noci::NOCIData;
@@ -38,9 +38,7 @@ pub(in crate::stochastic) fn initialise_populations(
         let local = c0
             .iter()
             .enumerate()
-            .filter(|(i, population)| {
-                **population != 0.0 && owner(*i, run.ndets, run.nranks) == run.irank
-            })
+            .filter(|(i, population)| **population != 0.0 && run.det_owner[*i] == run.irank)
             .map(|(i, &population)| PopulationUpdate {
                 det: i as u64,
                 dn: population,
