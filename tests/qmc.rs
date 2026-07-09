@@ -155,21 +155,35 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
         .unwrap();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
 
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let columns = line.split_whitespace().collect::<Vec<_>>();
+    let mut eproj = None;
+    let mut energies = Vec::new();
+    for line in stdout.lines() {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.first() == Some(&"Iter") {
+            eproj = columns.iter().position(|&column| column == "EProj");
+            continue;
+        }
 
-            if columns.len() != 8 {
-                return None;
-            }
+        let Some(col) = eproj else {
+            continue;
+        };
+        if columns
+            .first()
+            .and_then(|column| column.parse::<usize>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        if let Some(energy) = columns
+            .get(col)
+            .and_then(|column| column.parse::<f64>().ok())
+        {
+            energies.push(energy);
+        }
+    }
 
-            columns[0].parse::<usize>().ok()?;
-            columns[1].parse::<f64>().ok()
-        })
-        .collect()
+    energies
 }
 
 /// Check that a short QMC trajectory is finite, bounded and moving downward.
