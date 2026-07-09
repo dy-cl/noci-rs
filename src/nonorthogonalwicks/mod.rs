@@ -9,7 +9,7 @@ mod view;
 
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
 pub(crate) use scratch::WickScratchSpin;
-pub(crate) use types::{DiffSpinMeta, PairMeta, SameSpinMeta};
+pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
 
 pub use storage::WicksShared;
 pub(crate) use storage::{WicksDiskMeta, WicksRma};

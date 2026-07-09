@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::noci::NOCIScalar;
 
+/// Zero-overlap counts used to assign pair-adaptive rank-four tensor offsets.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PairZeroCounts {
+    /// Number of alpha zero-overlap orbital pairs.
+    pub(crate) ma: usize,
+    /// Number of beta zero-overlap orbital pairs.
+    pub(crate) mb: usize,
+}
+
 /// Storage for same-spin metadata and lightweight scalars that we can store outside the shared
 /// memory region.
 #[derive(Clone, Serialize, Deserialize, Debug)]

@@ -10,6 +10,20 @@ use crate::{AoData, DetState};
 use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
 use crate::noci::{NOCIScalar, occ_coeffs};
 
+/// Ten symmetry-unique branch combinations represented by the compressed same-spin J slots.
+pub(crate) const SAME_SPIN_J_BRANCHES: [(usize, usize, usize, usize); 10] = [
+    (0, 0, 0, 0),
+    (0, 0, 0, 1),
+    (0, 0, 1, 0),
+    (0, 0, 1, 1),
+    (0, 1, 0, 1),
+    (0, 1, 1, 0),
+    (0, 1, 1, 1),
+    (1, 0, 1, 0),
+    (1, 0, 1, 1),
+    (1, 1, 1, 1),
+];
+
 /// Owning struct for the same-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
@@ -30,8 +44,8 @@ pub struct SameSpinBuild<T: NOCIScalar> {
     pub v0: [T; 3],
     /// Same-spin V[mi][mj][mk] intermediates.
     pub v: [[[Array2<T>; 2]; 2]; 2],
-    /// Compressed same-spin J[mi][mj][mk][ml] tensors.
-    pub j: [Array4<T>; 10],
+    /// Reachable compressed same-spin J slot and tensor pairs.
+    pub j: Vec<(usize, Array4<T>)>,
     /// Product of the non-zero singular values for this same-spin block.
     pub tilde_s_prod: f64,
     /// Overall phase associated with this same-spin block.
@@ -172,11 +186,12 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         // {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
         let mut v0 = [<T as From<f64>>::from(0.0); 3];
         v0[0] = T::einsum_ba_ab(&jkao[0], &mao[0]);
-        if m > 1 {
+        if m >= 1 {
+            // With one zero-overlap pair, the barred assignment can appear on either contraction.
             v0[1] = <T as From<f64>>::from(2.0) * T::einsum_ba_ab(&jkao[0], &mao[1]);
+        }
+        if m >= 2 {
             v0[2] = T::einsum_ba_ab(&jkao[1], &mao[1]);
-        } else {
-            v0[1] = <T as From<f64>>::from(0.0);
         }
 
         // Construct {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} intermediates for two electron
@@ -215,25 +230,19 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         //      ((\mu\nu|\tau\sigma) - (\mu\sigma|\tau\nu)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. Only 10 of 16 4D tensors of J need be stored due to symmetry.
-        let combos: [(usize, usize, usize, usize); 10] = [
-            (0, 0, 0, 0),
-            (0, 0, 0, 1),
-            (0, 0, 1, 0),
-            (0, 0, 1, 1),
-            (0, 1, 0, 1),
-            (0, 1, 1, 0),
-            (0, 1, 1, 1),
-            (1, 0, 1, 0),
-            (1, 0, 1, 1),
-            (1, 1, 1, 1),
-        ];
-        let blocks: Vec<Array4<T>> = combos
+        let combos: Vec<(usize, (usize, usize, usize, usize))> = SAME_SPIN_J_BRANCHES
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(_, branch)| branch.0 + branch.1 + branch.2 + branch.3 <= m)
+            .collect();
+        let j: Vec<(usize, Array4<T>)> = combos
             .into_par_iter()
             .map_init(
                 || -> ERIAO2MOScratch<T> {
                     T::new_eri_ao2mo_scratch(eri, 2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo)
                 },
-                |scratch, (mi, mj, mk, ml)| {
+                |scratch, (slot, (mi, mj, mk, ml))| {
                     let mut blk = Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo));
                     T::eri_ao2mo_hermitian_into(
                         eri,
@@ -257,11 +266,10 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
                             }
                         }
                     }
-                    blk
+                    (slot, blk)
                 },
             )
             .collect();
-        let j: [Array4<T>; 10] = blocks.try_into().unwrap();
 
         Self {
             x,
@@ -278,6 +286,48 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
             m,
             nmo,
         }
+    }
+
+    /// Count zero-overlap occupied orbital pairs without forming rotated coefficient matrices.
+    /// This is used before slab allocation to plan only reachable rank-four branch storage.
+    /// # Arguments:
+    /// - `s_munu`: AO overlap matrix.
+    /// - `g_c`: Ket/reference MO coefficient matrix.
+    /// - `go`: Ket/reference occupancy bitstring.
+    /// - `l_c`: Bra/reference MO coefficient matrix.
+    /// - `lo`: Bra/reference occupancy bitstring.
+    /// - `tol`: Tolerance for whether a singular value is considered zero.
+    /// # Returns
+    /// - `usize`: Number of zero-overlap orbital pairs.
+    pub(crate) fn count_zero_overlap_pairs(
+        s_munu: &Array2<f64>,
+        g_c: &Array2<T>,
+        go: u128,
+        l_c: &Array2<T>,
+        lo: u128,
+        tol: f64,
+    ) -> usize {
+        let l_c_occ = occ_coeffs(l_c, lo);
+        let g_c_occ = occ_coeffs(g_c, go);
+        let lg_s = Self::occupied_overlap(s_munu, &l_c_occ, &g_c_occ);
+        let (_, s, _) = lg_s.svd(false, false).unwrap();
+        s.iter().filter(|&&sk| sk.abs() <= tol).count()
+    }
+
+    /// Build the occupied-overlap matrix S_{ij}^{\Lambda\Gamma} = \sum_{\mu\nu} C_{\mu i}^{\Lambda *} S_{\mu\nu} C_{\nu j}^{\Gamma}.
+    /// # Arguments:
+    /// - `s_munu`: AO overlap matrix.
+    /// - `l_c_occ`: Occupied coefficients for determinant \Lambda.
+    /// - `g_c_occ`: Occupied coefficients for determinant \Gamma.
+    /// # Returns
+    /// - `Array2<T>`: Occupied-orbital overlap matrix.
+    fn occupied_overlap(
+        s_munu: &Array2<f64>,
+        l_c_occ: &Array2<T>,
+        g_c_occ: &Array2<T>,
+    ) -> Array2<T> {
+        let s = real2_as::<T>(s_munu);
+        adjoint(l_c_occ).dot(&s).dot(g_c_occ)
     }
 
     /// Perform singular value decomposition on the occupied orbital overlap matrix {}^{\Lambda\Gamma} S_{ij} as:
@@ -299,10 +349,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         g_c_occ: &Array2<T>,
         _tol: f64,
     ) -> (Array1<f64>, Array2<T>, Array2<T>, T) {
-        let s = real2_as::<T>(s_munu);
-
-        let lg_s = adjoint(l_c_occ).dot(&s).dot(g_c_occ);
-
+        let lg_s = Self::occupied_overlap(s_munu, l_c_occ, g_c_occ);
         let (u, lg_tilde_s, v_dag) = lg_s.svd(true, true).unwrap();
         let u = u.unwrap();
         let v = adjoint(&v_dag.unwrap());
@@ -545,8 +592,8 @@ pub struct DiffSpinBuild<T: NOCIScalar> {
     pub vba0: [[T; 2]; 2],
     /// Mixed-spin Vba[mb0][ma0][mbk] intermediates.
     pub vba: [[[Array2<T>; 2]; 2]; 2],
-    /// Mixed-spin IIab[ma0][mak][mb0][mbj] tensors.
-    pub iiab: [[[[Array4<T>; 2]; 2]; 2]; 2],
+    /// Reachable mixed-spin IIab tensors indexed by `(ma0, maj, mb0, mbj)`.
+    pub iiab: Vec<((usize, usize, usize, usize), Array4<T>)>,
 }
 
 impl<T: NOCIScalar> DiffSpinBuild<T> {
@@ -605,6 +652,8 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             .enumerate()
             .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
             .collect();
+        let ma = zerosa.len();
+        let mb = zerosb.len();
 
         // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices.
         let (m0a, m1a) = SameSpinBuild::construct_m(
@@ -621,18 +670,18 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             &zerosb,
             tol,
         );
-        let ma = [&m0a, &m1a];
-        let mb = [&m0b, &m1b];
+        let mao_a = [&m0a, &m1a];
+        let mao_b = [&m0b, &m1b];
 
         // Construct only the Coulomb contraction of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k},
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k}. No exchange here due to differing spins.
         let ja = [
-            SameSpinBuild::build_j_coulomb(eri, ma[0]),
-            SameSpinBuild::build_j_coulomb(eri, ma[1]),
+            SameSpinBuild::build_j_coulomb(eri, mao_a[0]),
+            SameSpinBuild::build_j_coulomb(eri, mao_a[1]),
         ];
         let jb = [
-            SameSpinBuild::build_j_coulomb(eri, mb[0]),
-            SameSpinBuild::build_j_coulomb(eri, mb[1]),
+            SameSpinBuild::build_j_coulomb(eri, mao_b[0]),
+            SameSpinBuild::build_j_coulomb(eri, mao_b[1]),
         ];
 
         // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}.
@@ -644,18 +693,18 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         let mut vba0 = [[z; 2]; 2];
         for i in 0..2 {
             for j in 0..2 {
-                vab0[i][j] = T::einsum_ba_ab(&ja[i], mb[j]);
-                vba0[j][i] = T::einsum_ba_ab(&jb[j], ma[i]);
+                vab0[i][j] = T::einsum_ba_ab(&ja[i], mao_b[j]);
+                vba0[j][i] = T::einsum_ba_ab(&jb[j], mao_a[i]);
             }
         }
 
         // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and
         // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
         // down the line. Again analogous to the same spin case but with spin resolved quantities.
-        let (cx_a0, xc_a0) = Self::build_cx_xc(ma[0], s_munu, l_ca, g_ca, 0);
-        let (cx_a1, xc_a1) = Self::build_cx_xc(ma[1], s_munu, l_ca, g_ca, 1);
-        let (cx_b0, xc_b0) = Self::build_cx_xc(mb[0], s_munu, l_cb, g_cb, 0);
-        let (cx_b1, xc_b1) = Self::build_cx_xc(mb[1], s_munu, l_cb, g_cb, 1);
+        let (cx_a0, xc_a0) = Self::build_cx_xc(mao_a[0], s_munu, l_ca, g_ca, 0);
+        let (cx_a1, xc_a1) = Self::build_cx_xc(mao_a[1], s_munu, l_ca, g_ca, 1);
+        let (cx_b0, xc_b0) = Self::build_cx_xc(mao_b[0], s_munu, l_cb, g_cb, 0);
+        let (cx_b1, xc_b1) = Self::build_cx_xc(mao_b[1], s_munu, l_cb, g_cb, 1);
         let cx_a = [&cx_a0, &cx_a1];
         let xc_a = [&xc_a0, &xc_a1];
         let cx_b = [&cx_b0, &cx_b1];
@@ -714,14 +763,22 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. This is unsuprisngly analogous to the 4-index J tensor in SameSpin.
         let combos: Vec<(usize, usize, usize, usize)> = (0..2)
-            .flat_map(|mi| {
-                (0..2).flat_map(move |mj| {
-                    (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
+            .flat_map(|ma0| {
+                (0..2).flat_map(move |maj| {
+                    (0..2).flat_map(move |mb0| {
+                        (0..2).filter_map(move |mbj| {
+                            if ma0 + maj <= ma && mb0 + mbj <= mb {
+                                Some((ma0, maj, mb0, mbj))
+                            } else {
+                                None
+                            }
+                        })
+                    })
                 })
             })
             .collect();
 
-        let mut blocks = combos
+        let iiab: Vec<((usize, usize, usize, usize), Array4<T>)> = combos
             .into_par_iter()
             .map_init(
                 || -> ERIAO2MOScratch<T> {
@@ -738,16 +795,10 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
                         blk.view_mut(),
                         scratch,
                     );
-                    blk
+                    ((ma0, maj, mb0, mbj), blk)
                 },
             )
-            .collect::<Vec<_>>()
-            .into_iter();
-        let iiab: [[[[Array4<T>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| {
-                std::array::from_fn(|_| std::array::from_fn(|_| blocks.next().unwrap()))
-            })
-        });
+            .collect();
 
         Self {
             vab0,
