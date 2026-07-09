@@ -844,7 +844,7 @@ pub fn qmc_step(
             }
         })
         .collect::<Vec<_>>();
-    
+
     let diagonal_hs: Vec<(f64, f64)> = (0..ndets)
         .into_par_iter()
         .map_init(

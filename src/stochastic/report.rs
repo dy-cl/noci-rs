@@ -17,7 +17,16 @@ pub(in crate::stochastic) fn print_header(irank: usize) {
         println!("{}", "=".repeat(132));
         println!(
             "{:<8} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-            "Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift", "NW", "NRef", "NSample", "NDet (Sampled)",
+            "Iter",
+            "EProjNum",
+            "EProjDen",
+            "EProj",
+            "ECorr",
+            "EShift",
+            "NW",
+            "NRef",
+            "NSample",
+            "NDet (Sampled)",
         );
     }
 }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::input::Spin;
 use crate::{AoData, DetState};
 
-use crate::maths::{adjoint, eri_ao2mo_hermitian_as, real2_as};
+use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
 use crate::noci::{NOCIScalar, occ_coeffs};
 
 /// Owning struct for the same-spin computed intermediates.
@@ -215,8 +215,6 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         //      ((\mu\nu|\tau\sigma) - (\mu\sigma|\tau\nu)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. Only 10 of 16 4D tensors of J need be stored due to symmetry.
-        let mut j: [Array4<T>; 10] =
-            std::array::from_fn(|_| Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo)));
         let combos: [(usize, usize, usize, usize); 10] = [
             (0, 0, 0, 0),
             (0, 0, 0, 1),
@@ -229,24 +227,41 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
             (1, 0, 1, 1),
             (1, 1, 1, 1),
         ];
-        let blocks: Vec<(usize, Array4<T>)> = combos
+        let blocks: Vec<Array4<T>> = combos
             .into_par_iter()
-            .enumerate()
-            .map(|(s, (mi, mj, mk, ml))| {
-                let mut blk = eri_ao2mo_hermitian_as(eri, &cx[mi], &xc[mj], &cx[mk], &xc[ml]);
-                let ex = blk
-                    .view()
-                    .permuted_axes([0, 2, 1, 3])
-                    .to_owned()
-                    .as_standard_layout()
-                    .to_owned();
-                blk -= &ex;
-                (s, blk.as_standard_layout().to_owned())
-            })
+            .map_init(
+                || -> ERIAO2MOScratch<T> {
+                    T::new_eri_ao2mo_scratch(eri, 2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo)
+                },
+                |scratch, (mi, mj, mk, ml)| {
+                    let mut blk = Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo));
+                    T::eri_ao2mo_hermitian_into(
+                        eri,
+                        &cx[mi],
+                        &xc[mj],
+                        &cx[mk],
+                        &xc[ml],
+                        blk.view_mut(),
+                        scratch,
+                    );
+                    for p in 0..2 * nmo {
+                        for s in 0..2 * nmo {
+                            for q in 0..2 * nmo {
+                                blk[(p, q, q, s)] = z;
+                                for r in q + 1..2 * nmo {
+                                    let a = blk[(p, q, r, s)];
+                                    let b = blk[(p, r, q, s)];
+                                    blk[(p, q, r, s)] = a - b;
+                                    blk[(p, r, q, s)] = b - a;
+                                }
+                            }
+                        }
+                    }
+                    blk
+                },
+            )
             .collect();
-        for (s, blk) in blocks {
-            j[s] = blk;
-        }
+        let j: [Array4<T>; 10] = blocks.try_into().unwrap();
 
         Self {
             x,
@@ -698,16 +713,6 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         //      ((\mu\nu|\tau\sigma)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. This is unsuprisngly analogous to the 4-index J tensor in SameSpin.
-        let mut iiab: [[[[Array4<T>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| {
-                std::array::from_fn(|_| {
-                    std::array::from_fn(|_| {
-                        Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))
-                    })
-                })
-            })
-        });
-
         let combos: Vec<(usize, usize, usize, usize)> = (0..2)
             .flat_map(|mi| {
                 (0..2).flat_map(move |mj| {
@@ -716,21 +721,33 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             })
             .collect();
 
-        type IIabBlock<T> = ((usize, usize, usize, usize), Array4<T>);
-
-        let blocks: Vec<IIabBlock<T>> = combos
+        let mut blocks = combos
             .into_par_iter()
-            .map(|(ma0, maj, mb0, mbj)| {
-                let blk = eri_ao2mo_hermitian_as(eri, cx_a[ma0], xc_a[maj], cx_b[mb0], xc_b[mbj])
-                    .as_standard_layout()
-                    .to_owned();
-                ((ma0, maj, mb0, mbj), blk)
+            .map_init(
+                || -> ERIAO2MOScratch<T> {
+                    T::new_eri_ao2mo_scratch(eri, 2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo)
+                },
+                |scratch, (ma0, maj, mb0, mbj)| {
+                    let mut blk = Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo));
+                    T::eri_ao2mo_hermitian_into(
+                        eri,
+                        cx_a[ma0],
+                        xc_a[maj],
+                        cx_b[mb0],
+                        xc_b[mbj],
+                        blk.view_mut(),
+                        scratch,
+                    );
+                    blk
+                },
+            )
+            .collect::<Vec<_>>()
+            .into_iter();
+        let iiab: [[[[Array4<T>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
+            std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::array::from_fn(|_| blocks.next().unwrap()))
             })
-            .collect();
-
-        for ((ma0, maj, mb0, mbj), blk) in blocks {
-            iiab[ma0][maj][mb0][mbj] = blk;
-        }
+        });
 
         Self {
             vab0,
