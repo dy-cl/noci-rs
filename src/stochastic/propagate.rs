@@ -394,22 +394,18 @@ fn apply_overlap_population_changes(
 }
 
 /// Accumulate all local population updates into the global delta vector, update the local
-/// excitation histogram if requested, and pack remote updates into per-rank MPI send buffers.
+/// excitation histogram if requested, and retain remote updates for report-end exchange.
 /// # Arguments:
 /// - `mc`: Contains the current Monte Carlo state.
 /// - `prop`: Population updates generated in the spawning and death/cloning step.
 /// - `input`: User specified input options.
-/// - `nranks`: Total number of MPI ranks.
-/// - `ndets`: Total number of determinants.
 /// - `scratch`: Reusable MPI communication scratch.
 /// # Returns
-/// - `()`: Updates the local delta vector, optional excitation histogram, and MPI send buffers.
-fn acc_pack_updates(
+/// - `()`: Updates the local delta vector, optional excitation histogram, and remote update buffer.
+fn accumulate_generated_updates(
     mc: &mut MCState,
     prop: &mut PropagationResult,
     input: &Input,
-    ndets: usize,
-    nranks: usize,
     scratch: &mut MPIScratch,
 ) {
     time_call!(crate::timers::stochastic::add_acc_pack_updates, {
@@ -429,45 +425,9 @@ fn acc_pack_updates(
             prop.samples.clear();
         }
 
-        pack_spawn_updates(&prop.remote, ndets, nranks, scratch);
+        scratch.send_contig.append(&mut prop.remote);
         prop.remote.clear();
     })
-}
-
-/// Accumulate thread-local updates into the global delta vector and exchange any remote
-/// updates across MPI ranks.
-/// # Arguments:
-/// - `mc`: Contains the current Monte Carlo state.
-/// - `prop`: Population updates generated in the spawning and death/cloning step.
-/// - `input`: User specified input options.
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
-/// - `nranks`: Total number of MPI ranks.
-/// - `ndets`: Total number of determinants.
-/// - `mpi`: Reusable MPI communication scratch.
-/// # Returns
-/// - `()`: Updates `mc.delta` in place.
-fn accumulate_updates(
-    mc: &mut MCState,
-    prop: &mut PropagationResult,
-    input: &Input,
-    mpi: &mut MPIScratch,
-    world: &impl CommunicatorCollectives,
-    ndets: usize,
-    nranks: usize,
-) {
-    // Sort updates into local and remote events based on determinant ownership.
-    acc_pack_updates(mc, prop, input, ndets, nranks, mpi);
-
-    // Exchange updates with all other ranks.
-    if nranks > 1 {
-        let received = exchange_population_changes(world, mpi);
-
-        time_call!(crate::timers::stochastic::add_unpack_population_changes, {
-            for &update in received {
-                add_delta(mc, update.det as usize, update.dn);
-            }
-        });
-    }
 }
 
 /// Combine repeated consecutive determinant updates in place.
@@ -490,16 +450,14 @@ fn coalesce_population_updates(updates: &mut Vec<PopulationUpdate>) {
     updates.retain(|up| up.dn != 0.0);
 }
 
-/// Pack remote spawned population updates into a contiguous buffer grouped by destination rank.
+/// Prepare accumulated remote spawned population updates for exchange.
 /// # Arguments:
-/// - `remote`: Remote spawned population updates.
 /// - `ndets`: Number of determinants in the stochastic basis.
 /// - `nranks`: Number of MPI ranks.
 /// - `scratch`: Reusable MPI scratch space.
 /// # Returns
 /// - `()`: Fills `send_counts`, `send_displacements`, and `send_contig` in `scratch`.
-fn pack_spawn_updates(
-    remote: &[PopulationUpdate],
+fn prepare_spawn_update_exchange(
     ndets: usize,
     nranks: usize,
     scratch: &mut MPIScratch,
@@ -510,10 +468,6 @@ fn pack_spawn_updates(
     for x in scratch.send_displacements.iter_mut() {
         *x = 0;
     }
-
-    // Copy remote updates into the reusable contiguous buffer.
-    scratch.send_contig.clear();
-    scratch.send_contig.extend(remote.iter().cloned());
 
     // Sort by (destination rank, determinant) so duplicates for the same peer
     // are adjacent and each peer still occupies one contiguous block.
@@ -536,6 +490,39 @@ fn pack_spawn_updates(
         scratch.send_displacements[peer] = nsend as i32;
         nsend += scratch.send_counts[peer] as usize;
     }
+}
+
+/// Exchange report-accumulated remote spawn updates and add received updates to `delta`.
+/// # Arguments:
+/// - `mc`: Contains the current Monte Carlo state.
+/// - `mpi`: Reusable MPI communication scratch.
+/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `ndets`: Total number of determinants.
+/// - `nranks`: Total number of MPI ranks.
+/// # Returns
+/// - `()`: Adds received remote updates to `mc.delta`.
+fn exchange_accumulated_updates(
+    mc: &mut MCState,
+    mpi: &mut MPIScratch,
+    world: &impl CommunicatorCollectives,
+    ndets: usize,
+    nranks: usize,
+) {
+    if nranks <= 1 {
+        mpi.send_contig.clear();
+        return;
+    }
+
+    prepare_spawn_update_exchange(ndets, nranks, mpi);
+    let received = exchange_population_changes(world, mpi);
+
+    time_call!(crate::timers::stochastic::add_unpack_population_changes, {
+        for &update in received {
+            add_delta(mc, update.det as usize, update.dn);
+        }
+    });
+
+    mpi.send_contig.clear();
 }
 
 /// Generate one stochastic estimate of the pre-overlap population change.
@@ -845,8 +832,8 @@ pub fn qmc_step(
         })
         .collect::<Vec<_>>();
 
-    let diagonal_hs: Vec<(f64, f64)> = (0..ndets)
-        .into_par_iter()
+    let local_diagonal_hs: Vec<(f64, f64)> = owned
+        .par_iter()
         .map_init(
             || {
                 WickScratchSpin::with_sizes(
@@ -855,9 +842,13 @@ pub fn qmc_step(
                     scratchsize.maxlb,
                 )
             },
-            |scratch, i| find_hs(data, i, i, scratch),
+            |scratch, &gamma| find_hs(data, gamma, gamma, scratch),
         )
         .collect();
+    let mut diagonal_hs = vec![(0.0, 0.0); ndets];
+    for (&gamma, hs) in owned.iter().zip(local_diagonal_hs) {
+        diagonal_hs[gamma] = hs;
+    }
 
     let reference_hs = owned
         .par_iter()
@@ -972,16 +963,15 @@ pub fn qmc_step(
                 &mut propagation_result,
             );
 
-            accumulate_updates(
+            accumulate_generated_updates(
                 &mut state.mc,
                 &mut propagation_result,
                 data.input,
                 &mut mpiscratch,
-                world,
-                ndets,
-                nranks,
             );
         }
+
+        exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, ndets, nranks);
 
         let mut population_changes = take_population_changes(&mut state.mc);
 
