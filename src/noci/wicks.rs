@@ -50,6 +50,7 @@ fn build_wicks_pair<T: NOCIScalar>(
             phase: aa.phase,
             m: aa.m,
             nmo: aa.nmo,
+            nocc: ri.oa.count_ones() as usize,
             f0h: aa.f0h,
             f0f: aa.f0f,
             v0: aa.v0,
@@ -59,12 +60,13 @@ fn build_wicks_pair<T: NOCIScalar>(
             phase: bb.phase,
             m: bb.m,
             nmo: bb.nmo,
+            nocc: ri.ob.count_ones() as usize,
             f0h: bb.f0h,
             f0f: bb.f0f,
             v0: bb.v0,
         },
         ab: DiffSpinMeta {
-            nmo: ab.vab[0][0][0].nrows() / 2,
+            nmo: ab.vab[0][0][0].nrows(),
             vab0: ab.vab0,
             vba0: ab.vba0,
         },
@@ -135,7 +137,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
     let irank = world.rank();
 
     let plans = plan_wicks_pairs(ao, noci_reference_basis, tol);
-    let (offset, tensor_len) = assign_offsets(&plans, nmo);
+    let (offset, tensor_len) = assign_offsets(&plans, nmo, ao.n);
     drop(plans);
     let nbytes = tensor_len * std::mem::size_of::<T>();
 

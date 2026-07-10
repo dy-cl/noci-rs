@@ -10,6 +10,7 @@ use noci_rs::deterministic::{projected_energy, propagate};
 use noci_rs::noci::{
     NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
 };
+use noci_rs::scf::occ_first;
 
 /// Expected exact energies for a deterministic NOCI-QMC fixture.
 #[derive(Deserialize)]
@@ -42,6 +43,7 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     for (i, st) in noci_reference_basis.iter_mut().enumerate() {
         st.parent = i;
     }
+    let noci_reference_basis: Vec<_> = noci_reference_basis.iter().map(occ_first).collect();
     let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
 
     let (e_ref, c0, _dt_hs_ref) =
@@ -98,6 +100,7 @@ fn run_deterministic_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     for (i, st) in noci_reference_basis.iter_mut().enumerate() {
         st.parent = i;
     }
+    let noci_reference_basis: Vec<_> = noci_reference_basis.iter().map(occ_first).collect();
     let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
 
     let (_mpi_lock, universe) = mpi_universe();

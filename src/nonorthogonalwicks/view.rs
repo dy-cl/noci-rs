@@ -171,9 +171,9 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.
     /// # Returns
-    /// - `usize`: Tensor dimension `2 * nmo`.
+    /// - `usize`: Tensor dimension `nmo`.
     pub(crate) fn n(&self) -> usize {
-        2 * self.nmo
+        self.nmo
     }
 
     /// Get a view to the `X[mi]` matrix.
@@ -200,6 +200,36 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         mi: usize,
     ) -> ArrayView2<'_, T> {
         self.w.view2(self.off.y[mi], self.n())
+    }
+
+    /// Get a view to the basis-space `X[mi]` contraction matrix used for RDM indices.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi`: Zero distribution selector.
+    /// # Returns
+    /// - `ArrayView2<'_, T>`: Basis-space X contraction matrix.
+    #[cfg(feature = "nocc")]
+    pub(crate) fn xrdm(
+        &self,
+        mi: usize,
+        nbas: usize,
+    ) -> ArrayView2<'_, T> {
+        self.w.view2(self.off.xrdm[mi], nbas)
+    }
+
+    /// Get a view to the basis-space `Y[mi]` contraction matrix used for RDM indices.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi`: Zero distribution selector.
+    /// # Returns
+    /// - `ArrayView2<'_, T>`: Basis-space Y contraction matrix.
+    #[cfg(feature = "nocc")]
+    pub(crate) fn yrdm(
+        &self,
+        mi: usize,
+        nbas: usize,
+    ) -> ArrayView2<'_, T> {
+        self.w.view2(self.off.yrdm[mi], nbas)
     }
 
     /// Get a slice of the transpoed Hamiltonian `F[mi][mj]` tensor.
@@ -292,9 +322,9 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     /// # Arguments:
     /// - `self`: View to diff-spin Wick's intermediates.
     /// # Returns
-    /// - `usize`: Tensor dimension `2 * nmo`.
+    /// - `usize`: Tensor dimension `nmo`.
     pub(crate) fn n(&self) -> usize {
-        2 * self.nmo
+        self.nmo
     }
 
     /// Get a slice of the transpoed `Vab[ma0][mb0][mak]` tensor.

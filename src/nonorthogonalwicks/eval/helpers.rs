@@ -3,7 +3,6 @@
 #[cfg(feature = "nocc")]
 use ndarray::{Array2, ArrayView2, s};
 
-use crate::ExcitationSpin;
 #[cfg(feature = "nocc")]
 use crate::maths::adjoint;
 use crate::maths::{det, minor as build_minor, mix_columns};
@@ -11,7 +10,7 @@ use crate::noci::NOCIScalar;
 use crate::time_call;
 
 use super::super::layout::{idx, idx4};
-use super::super::scratch::{IndexVec, Vec2, WickScratch};
+use super::super::scratch::{Vec2, WickScratch};
 use super::super::view::{SameSpinView, WicksPairView};
 
 /// Row and column layout for determinant replacement operations.
@@ -82,43 +81,42 @@ pub(super) fn det_or_zero<T: NOCIScalar>(
     det_slice(a, n).unwrap_or(<T as From<f64>>::from(0.0))
 }
 
-/// Extend a Wick contraction determinant with RDM-basis rows and columns.
+/// Extend a compact Wick contraction determinant with RDM-basis rows and columns.
 /// # Arguments:
-/// - `d`: Wick contraction determinant indexed in `[left determinant MOs; right determinant MOs]`.
+/// - `w`: Same-spin Wick's reference-pair intermediates.
+/// - `d`: Wick contraction matrix in the compact excitation row and column spaces.
+/// - `d_rdm`: Corresponding contraction matrix in the external RDM basis.
 /// - `l_c`: Left determinant orbital coefficients in the RDM basis.
 /// - `g_c`: Right determinant orbital coefficients in the RDM basis.
-/// - `nmo`: Number of determinant orbitals in one spin block.
-/// # Returns:
-/// - `Array2<T>`: Extended Wick contraction determinant whose original determinant-orbital block
-///   is unchanged, and whose final rows and columns open RDM-basis operators.
+/// # Returns
+/// - `Array2<T>`: Extended Wick contraction matrix whose final rows and columns open RDM-basis operators.
 #[inline(always)]
 #[cfg(feature = "nocc")]
 pub(super) fn extend_rdm_d<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
     d: &ArrayView2<'_, T>,
+    d_rdm: &ArrayView2<'_, T>,
     l_c: &Array2<T>,
     g_c: &Array2<T>,
-    nmo: usize,
 ) -> Array2<T> {
-    let npair = 2 * nmo;
     let nrdm = l_c.nrows();
-    let mut out = Array2::<T>::zeros((npair + nrdm, npair + nrdm));
+    let mut out = Array2::<T>::zeros((w.nmo + nrdm, w.nmo + nrdm));
 
-    out.slice_mut(s![0..npair, 0..npair]).assign(d);
+    let (row_c, col_c) = contraction_orbitals(l_c, g_c, w.nocc);
 
-    let left_rows = d.slice(s![0..nmo, ..]).to_owned();
-    let right_cols = d.slice(s![.., nmo..npair]).to_owned();
-    let g_dag = adjoint(g_c);
+    let rdm_rows = d_rdm.dot(&col_c);
+    let rdm_cols = adjoint(&row_c).dot(d_rdm);
 
-    let rdm_rows = l_c.dot(&left_rows);
-    let rdm_cols = right_cols.dot(&g_dag);
-    let rdm_block = rdm_rows.slice(s![.., nmo..npair]).dot(&g_dag);
+    out.slice_mut(s![0..w.nmo, 0..w.nmo]).assign(d);
 
-    out.slice_mut(s![npair..npair + nrdm, 0..npair])
+    out.slice_mut(s![w.nmo..w.nmo + nrdm, 0..w.nmo])
         .assign(&rdm_rows);
-    out.slice_mut(s![0..npair, npair..npair + nrdm])
+
+    out.slice_mut(s![0..w.nmo, w.nmo..w.nmo + nrdm])
         .assign(&rdm_cols);
-    out.slice_mut(s![npair..npair + nrdm, npair..npair + nrdm])
-        .assign(&rdm_block);
+
+    out.slice_mut(s![w.nmo..w.nmo + nrdm, w.nmo..w.nmo + nrdm])
+        .assign(d_rdm);
 
     out
 }
@@ -455,49 +453,6 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
     {
         f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
     }
-}
-
-/// Construct the row and column indices used for a contraction determinant.
-/// Indices are written in the concatenated orbital space `[Lambda orbitals; Gamma orbitals]`,
-/// so any Gamma index is offset by `nmo`.
-/// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `nmo`: Number of molecular orbitals in a single determinant.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
-/// # Returns
-/// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
-#[inline(always)]
-pub(super) fn construct_determinant_indices_gen(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
-    nmo: usize,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen,
-        {
-            let nl = l_ex.holes.len();
-            let ng = g_ex.holes.len();
-            let need = nl + ng;
-            rows.ensure(need);
-            cols.ensure(need);
-            let rows = rows.as_mut_slice();
-            let cols = cols.as_mut_slice();
-
-            rows[..nl].copy_from_slice(&l_ex.parts);
-            cols[..nl].copy_from_slice(&l_ex.holes);
-
-            for (row, &hole) in rows[nl..].iter_mut().zip(&g_ex.holes) {
-                *row = nmo + hole;
-            }
-            for (col, &part) in cols[nl..].iter_mut().zip(&g_ex.parts) {
-                *col = nmo + part;
-            }
-        }
-    )
 }
 
 /// Call `f` for every bitstring of length `l` containing exactly `m` set bits.

@@ -1,7 +1,10 @@
 // scf/occupation.rs
 
-use ndarray::{Array1, Array2};
+use std::sync::Arc;
 
+use ndarray::{Array1, Array2, Axis, s};
+
+use crate::maths::adjoint;
 use crate::{DetState, StateScalar};
 
 pub struct SpinOccupation {
@@ -43,25 +46,84 @@ impl SpinOccupation {
     }
 }
 
+/// Extract occupied and virtual orbital indices from one occupation bitstring.
+/// # Arguments:
+/// - `nmo`: Number of molecular orbitals.
+/// - `occ`: Occupation bitstring.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>)`: Occupied and virtual orbital indices.
+fn orbital_occupation(
+    nmo: usize,
+    occ: u128,
+) -> (Vec<usize>, Vec<usize>) {
+    let occupied = (0..nmo).filter(|&p| ((occ >> p) & 1u128) == 1).collect();
+
+    let virtuals = (0..nmo).filter(|&p| ((occ >> p) & 1u128) == 0).collect();
+
+    (occupied, virtuals)
+}
+
+/// Reorder one determinant state's MO columns so occupied orbitals precede virtual orbitals.
+/// Occupied and virtual orbitals each preserve their original relative order.
+/// # Arguments:
+/// - `st`: Determinant state to clone into occupied-first orbital order.
+/// # Returns
+/// - `DetState<T>`: Clone of `st` in occupied-first orbital order.
+pub fn occ_first<T: StateScalar>(st: &DetState<T>) -> DetState<T> {
+    let (aocc, avirt) = orbital_occupation(st.ca.ncols(), st.oa);
+    let naocc = aocc.len();
+
+    let aorder: Vec<usize> = aocc.into_iter().chain(avirt).collect();
+
+    let ca = st.ca.select(Axis(1), &aorder);
+    let ca_occ = ca.slice(s![.., 0..naocc]).to_owned();
+
+    let da = ca_occ.dot(&adjoint(&ca_occ));
+
+    let oa = if naocc == 128 {
+        u128::MAX
+    } else {
+        (1u128 << naocc) - 1
+    };
+
+    let (bocc, bvirt) = orbital_occupation(st.cb.ncols(), st.ob);
+    let nbocc = bocc.len();
+
+    let border: Vec<usize> = bocc.into_iter().chain(bvirt).collect();
+
+    let cb = st.cb.select(Axis(1), &border);
+    let cb_occ = cb.slice(s![.., 0..nbocc]).to_owned();
+
+    let db = cb_occ.dot(&adjoint(&cb_occ));
+
+    let ob = if nbocc == 128 {
+        u128::MAX
+    } else {
+        (1u128 << nbocc) - 1
+    };
+
+    let mut out = st.clone();
+
+    out.ca = Arc::new(ca);
+    out.cb = Arc::new(cb);
+    out.da = Arc::new(da);
+    out.db = Arc::new(db);
+
+    out.oa = oa;
+    out.ob = ob;
+
+    out
+}
+
 /// Extract occupied and virtual orbital indices from determinant occupation bitstrings.
 /// # Arguments:
 /// - `st`: Determinant state whose orbital occupations are being inspected.
-/// # Returns:
+/// # Returns
 /// - `SpinOccupation`: Occupied and virtual MO indices for alpha and beta spin.
 pub fn spin_occupation<T: StateScalar>(st: &DetState<T>) -> SpinOccupation {
-    let occ_alpha: Vec<usize> = (0..st.ca.ncols())
-        .filter(|&p| ((st.oa >> p) & 1u128) == 1)
-        .collect();
-    let occ_beta: Vec<usize> = (0..st.cb.ncols())
-        .filter(|&p| ((st.ob >> p) & 1u128) == 1)
-        .collect();
+    let (occ_alpha, virt_alpha) = orbital_occupation(st.ca.ncols(), st.oa);
 
-    let virt_alpha: Vec<usize> = (0..st.ca.ncols())
-        .filter(|&p| ((st.oa >> p) & 1u128) == 0)
-        .collect();
-    let virt_beta: Vec<usize> = (0..st.cb.ncols())
-        .filter(|&p| ((st.ob >> p) & 1u128) == 0)
-        .collect();
+    let (occ_beta, virt_beta) = orbital_occupation(st.cb.ncols(), st.ob);
 
     SpinOccupation {
         occ_alpha,

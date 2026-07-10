@@ -1,10 +1,11 @@
 // nonorthogonalwicks/eval/prepare.rs
 use super::super::scratch::{IndexVec, WickScratch};
 use super::super::view::SameSpinView;
-use super::helpers::construct_determinant_indices_gen;
+
 use crate::ExcitationSpin;
-use crate::maths::build_d;
 use crate::noci::NOCIScalar;
+
+use crate::maths::build_d;
 use crate::time_call;
 
 /// Prepare shared same-spin scratch quantities used by overlap and Hamiltonian evaluations.
@@ -34,7 +35,8 @@ pub fn prepare_same<T: NOCIScalar>(
 
 /// Prepare shared same-spin scratch quantities for the zero-overlap case `m = 0`.
 /// Only the `det0` branch is required, so the second branch determinant is not built.
-/// For small excitation rank, dispatches further to specialized `l = 1` and `l = 2` kernels.
+/// For small excitation rank, dispatches further to specialized `l = 1`, `l = 2`,
+/// `l = 3` and `l = 4` kernels.
 /// # Arguments:
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
 /// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
@@ -52,72 +54,35 @@ fn prepare_same_m0<T: NOCIScalar>(
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
         let l = l_ex.holes.len() + g_ex.holes.len();
 
-        match l {
-            0 => {}
-            1 => {
-                scratch.ensure_same_m0(1);
-                construct_determinant_indices(
-                    l_ex,
-                    g_ex,
-                    w.nmo,
-                    &mut scratch.rows,
-                    &mut scratch.cols,
-                );
-                prepare_same_m0_l1(w, scratch);
+        if l > 0 {
+            match l {
+                1 => scratch.ensure_same_m0(1),
+                2 => scratch.ensure_same_m0(2),
+                3 => scratch.ensure_same(3),
+                4 => scratch.ensure_same(4),
+                _ => scratch.ensure_same(l),
             }
-            2 => {
-                scratch.ensure_same_m0(2);
-                construct_determinant_indices(
-                    l_ex,
-                    g_ex,
-                    w.nmo,
-                    &mut scratch.rows,
-                    &mut scratch.cols,
-                );
-                prepare_same_m0_l2(w, scratch);
-            }
-            3 => {
-                scratch.ensure_same(3);
-                construct_determinant_indices(
-                    l_ex,
-                    g_ex,
-                    w.nmo,
-                    &mut scratch.rows,
-                    &mut scratch.cols,
-                );
-                prepare_same_m0_l3(w, scratch);
-            }
-            4 => {
-                scratch.ensure_same(4);
-                construct_determinant_indices(
-                    l_ex,
-                    g_ex,
-                    w.nmo,
-                    &mut scratch.rows,
-                    &mut scratch.cols,
-                );
-                prepare_same_m0_l4(w, scratch);
-            }
-            _ => {
-                scratch.ensure_same(l);
-                construct_determinant_indices(
-                    l_ex,
-                    g_ex,
-                    w.nmo,
-                    &mut scratch.rows,
-                    &mut scratch.cols,
-                );
 
-                let x0 = w.x(0);
-                let y0 = w.y(0);
-                build_d(
-                    scratch.det0.as_mut_slice(),
-                    l,
-                    &x0,
-                    &y0,
-                    scratch.rows.as_slice(),
-                    scratch.cols.as_slice(),
-                );
+            construct_determinant_indices(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
+
+            match l {
+                1 => prepare_same_m0_l1(w, scratch),
+                2 => prepare_same_m0_l2(w, scratch),
+                3 => prepare_same_m0_l3(w, scratch),
+                4 => prepare_same_m0_l4(w, scratch),
+                _ => {
+                    let x0 = w.x(0);
+                    let y0 = w.y(0);
+
+                    build_d(
+                        scratch.det0.as_mut_slice(),
+                        l,
+                        &x0,
+                        &y0,
+                        scratch.rows.as_slice(),
+                        scratch.cols.as_slice(),
+                    );
+                }
             }
         }
     })
@@ -318,7 +283,7 @@ pub fn prepare_same_gen<T: NOCIScalar>(
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);
 
-        construct_determinant_indices(l_ex, g_ex, w.nmo, &mut scratch.rows, &mut scratch.cols);
+        construct_determinant_indices(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
 
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -344,22 +309,20 @@ pub fn prepare_same_gen<T: NOCIScalar>(
     })
 }
 
-/// Construct the row and column indices used for a same-spin contraction determinant.
-/// Dispatches to specialised small-rank kernels for `l = 1..4` and otherwise falls back to the
-/// generic determinant-index construction routine.
+/// Construct the row and column indices used for a contraction determinant.
 /// # Arguments:
 /// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
 /// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `nmo`: Number of molecular orbitals in a single determinant.
+/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
 /// - `rows`: Output row indices.
 /// - `cols`: Output column indices.
 /// # Returns
 /// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-fn construct_determinant_indices(
+fn construct_determinant_indices<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
-    nmo: usize,
+    w: &SameSpinView<'_, T>,
     rows: &mut IndexVec,
     cols: &mut IndexVec,
 ) {
@@ -369,11 +332,11 @@ fn construct_determinant_indices(
             let l = l_ex.holes.len() + g_ex.holes.len();
 
             match l {
-                1 => construct_determinant_indices_l1(l_ex, g_ex, nmo, rows, cols),
-                2 => construct_determinant_indices_l2(l_ex, g_ex, nmo, rows, cols),
-                3 => construct_determinant_indices_l3(l_ex, g_ex, nmo, rows, cols),
-                4 => construct_determinant_indices_l4(l_ex, g_ex, nmo, rows, cols),
-                _ => construct_determinant_indices_gen(l_ex, g_ex, nmo, rows, cols),
+                1 => construct_determinant_indices_l1(l_ex, g_ex, w, rows, cols),
+                2 => construct_determinant_indices_l2(l_ex, g_ex, w, rows, cols),
+                3 => construct_determinant_indices_l3(l_ex, g_ex, w, rows, cols),
+                4 => construct_determinant_indices_l4(l_ex, g_ex, w, rows, cols),
+                _ => construct_determinant_indices_gen(l_ex, g_ex, w, rows, cols),
             }
         }
     )
@@ -383,16 +346,16 @@ fn construct_determinant_indices(
 /// # Arguments:
 /// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
 /// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `nmo`: Number of molecular orbitals in a single determinant.
+/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
 /// - `rows`: Output row indices.
 /// - `cols`: Output column indices.
 /// # Returns
 /// - `()`: Writes the rank-1 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l1(
+pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
-    nmo: usize,
+    w: &SameSpinView<'_, T>,
     rows: &mut IndexVec,
     cols: &mut IndexVec,
 ) {
@@ -400,18 +363,22 @@ pub(super) fn construct_determinant_indices_l1(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l1,
         {
             let nl = l_ex.holes.len();
+            let nocc = w.nocc;
+            let nvirt = w.nmo - nocc;
+
             rows.ensure(1);
             cols.ensure(1);
+
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
             unsafe {
                 if nl == 1 {
-                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
+                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0) - nocc;
                     *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
                 } else {
-                    *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
-                    *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
+                    *rows.get_unchecked_mut(0) = nvirt + *g_ex.holes.get_unchecked(0);
+                    *cols.get_unchecked_mut(0) = *g_ex.parts.get_unchecked(0);
                 }
             }
         }
@@ -422,16 +389,16 @@ pub(super) fn construct_determinant_indices_l1(
 /// # Arguments:
 /// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
 /// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `nmo`: Number of molecular orbitals in a single determinant.
+/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
 /// - `rows`: Output row indices.
 /// - `cols`: Output column indices.
 /// # Returns
 /// - `()`: Writes the rank-2 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l2(
+pub(super) fn construct_determinant_indices_l2<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
-    nmo: usize,
+    w: &SameSpinView<'_, T>,
     rows: &mut IndexVec,
     cols: &mut IndexVec,
 ) {
@@ -440,27 +407,24 @@ pub(super) fn construct_determinant_indices_l2(
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
+            let nocc = w.nocc;
+            let nvirt = w.nmo - nocc;
+
             rows.ensure(2);
             cols.ensure(2);
+
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
             unsafe {
-                if nl == 2 {
-                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                    *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
-                    *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                    *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
-                } else if ng == 2 {
-                    *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
-                    *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(1);
-                    *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
-                    *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(1);
-                } else {
-                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                    *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(0);
-                    *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                    *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(0);
+                for k in 0..nl {
+                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                }
+                for k in 0..ng {
+                    let i = nl + k;
+                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
                 }
             }
         }
@@ -468,22 +432,21 @@ pub(super) fn construct_determinant_indices_l2(
 }
 
 /// Construct the row and column indices used for a rank-3 contraction determinant.
-/// Preserves the exact ordering used by `construct_determinant_indices`, but avoids the generic
-/// branching and loops for the hot `l = 3` path. Indices are written in the concatenated orbital
-/// space `[Lambda orbitals; Gamma orbitals]`, so any Gamma index is offset by `nmo`.
+/// Preserves the exact ordering used by `construct_determinant_indices`, with all bra (`Lambda`)
+/// indices followed by all ket (`Gamma`) indices.
 /// # Arguments:
 /// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
 /// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `nmo`: Number of molecular orbitals in a single determinant.
+/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
 /// - `rows`: Output row indices.
 /// - `cols`: Output column indices.
 /// # Returns
 /// - `()`: Writes the rank-3 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l3(
+pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
-    nmo: usize,
+    w: &SameSpinView<'_, T>,
     rows: &mut IndexVec,
     cols: &mut IndexVec,
 ) {
@@ -492,46 +455,24 @@ pub(super) fn construct_determinant_indices_l3(
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
+            let nocc = w.nocc;
+            let nvirt = w.nmo - nocc;
+
             rows.ensure(3);
             cols.ensure(3);
+
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
             unsafe {
-                match (nl, ng) {
-                    (3, 0) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = *l_ex.parts.get_unchecked(2);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = *l_ex.holes.get_unchecked(2);
-                    }
-                    (2, 1) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(0);
-                    }
-                    (1, 2) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(0);
-                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(0);
-                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(1);
-                    }
-                    (0, 3) => {
-                        *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(2);
-                        *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(2);
-                    }
-                    _ => unreachable!(),
+                for k in 0..nl {
+                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                }
+                for k in 0..ng {
+                    let i = nl + k;
+                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
                 }
             }
         }
@@ -539,19 +480,21 @@ pub(super) fn construct_determinant_indices_l3(
 }
 
 /// Construct the row and column indices used for a rank-4 contraction determinant.
+/// Preserves the exact ordering used by `construct_determinant_indices`, with all bra (`Lambda`)
+/// indices followed by all ket (`Gamma`) indices.
 /// # Arguments:
 /// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
 /// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `nmo`: Number of molecular orbitals in a single determinant.
+/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
 /// - `rows`: Output row indices.
 /// - `cols`: Output column indices.
 /// # Returns
 /// - `()`: Writes the rank-4 contraction determinant indices into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_l4(
+pub(super) fn construct_determinant_indices_l4<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
-    nmo: usize,
+    w: &SameSpinView<'_, T>,
     rows: &mut IndexVec,
     cols: &mut IndexVec,
 ) {
@@ -560,65 +503,73 @@ pub(super) fn construct_determinant_indices_l4(
         {
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
+            let nocc = w.nocc;
+            let nvirt = w.nmo - nocc;
+
             rows.ensure(4);
             cols.ensure(4);
+
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
             unsafe {
-                match (nl, ng) {
-                    (4, 0) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = *l_ex.parts.get_unchecked(2);
-                        *rows.get_unchecked_mut(3) = *l_ex.parts.get_unchecked(3);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = *l_ex.holes.get_unchecked(2);
-                        *cols.get_unchecked_mut(3) = *l_ex.holes.get_unchecked(3);
-                    }
-                    (3, 1) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = *l_ex.parts.get_unchecked(2);
-                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = *l_ex.holes.get_unchecked(2);
-                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(0);
-                    }
-                    (2, 2) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = *l_ex.parts.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(0);
-                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = *l_ex.holes.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(0);
-                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(1);
-                    }
-                    (1, 3) => {
-                        *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(0);
-                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(1);
-                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(2);
-                        *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(0);
-                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(1);
-                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(2);
-                    }
-                    (0, 4) => {
-                        *rows.get_unchecked_mut(0) = nmo + *g_ex.holes.get_unchecked(0);
-                        *rows.get_unchecked_mut(1) = nmo + *g_ex.holes.get_unchecked(1);
-                        *rows.get_unchecked_mut(2) = nmo + *g_ex.holes.get_unchecked(2);
-                        *rows.get_unchecked_mut(3) = nmo + *g_ex.holes.get_unchecked(3);
-                        *cols.get_unchecked_mut(0) = nmo + *g_ex.parts.get_unchecked(0);
-                        *cols.get_unchecked_mut(1) = nmo + *g_ex.parts.get_unchecked(1);
-                        *cols.get_unchecked_mut(2) = nmo + *g_ex.parts.get_unchecked(2);
-                        *cols.get_unchecked_mut(3) = nmo + *g_ex.parts.get_unchecked(3);
-                    }
-                    _ => unreachable!(),
+                for k in 0..nl {
+                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
                 }
+                for k in 0..ng {
+                    let i = nl + k;
+                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
+                }
+            }
+        }
+    )
+}
+
+/// Construct the row and column indices used for a contraction determinant.
+/// Indices are written in the excitation row space V_\Lambda \cup O_\Gamma and
+/// excitation column space O_\Lambda \cup V_\Gamma.
+/// # Arguments:
+/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
+/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
+/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
+/// - `rows`: Output row indices.
+/// - `cols`: Output column indices.
+/// # Returns
+/// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
+#[inline(always)]
+pub(super) fn construct_determinant_indices_gen<T: NOCIScalar>(
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
+    w: &SameSpinView<'_, T>,
+    rows: &mut IndexVec,
+    cols: &mut IndexVec,
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen,
+        {
+            let nl = l_ex.holes.len();
+            let ng = g_ex.holes.len();
+            let need = nl + ng;
+            let nocc = w.nocc;
+            let nvirt = w.nmo - nocc;
+
+            rows.ensure(need);
+            cols.ensure(need);
+
+            let rows = rows.as_mut_slice();
+            let cols = cols.as_mut_slice();
+
+            for k in 0..nl {
+                rows[k] = l_ex.parts[k] - nocc;
+                cols[k] = l_ex.holes[k];
+            }
+
+            for k in 0..ng {
+                let i = nl + k;
+                rows[i] = nvirt + g_ex.holes[k];
+                cols[i] = g_ex.parts[k];
             }
         }
     )

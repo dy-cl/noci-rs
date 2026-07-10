@@ -10,15 +10,22 @@ use crate::noci::NOCIScalar;
 /// # Arguments:
 /// - `plans`: Pair-specific zero-overlap branch plans.
 /// - `nmo`: Number of molecular orbitals.
+/// - `nbas`: Number of basis functions.
 /// # Returns
 /// - `(Vec<PairOffset>, usize)`: Per-pair offset table and total slab length in units of `T`.
 pub fn assign_offsets(
     plans: &[PairZeroCounts],
     nmo: usize,
+    nbas: usize,
 ) -> (Vec<PairOffset>, usize) {
-    let n = 2 * nmo;
-    let nn2 = n * n;
-    let nn4 = n * n * n * n;
+    let nn2 = nmo * nmo;
+    let nn4 = nn2 * nn2;
+
+    #[cfg(feature = "nocc")]
+    let nbas2 = nbas * nbas;
+    #[cfg(not(feature = "nocc"))]
+    let _ = nbas;
+
     let mut off = vec![PairOffset::default(); plans.len()];
     let mut i: usize = 0;
 
@@ -30,6 +37,17 @@ pub fn assign_offsets(
         for mi in 0..2 {
             p.aa.y[mi] = i;
             i += nn2;
+        }
+        #[cfg(feature = "nocc")]
+        {
+            for mi in 0..2 {
+                p.aa.xrdm[mi] = i;
+                i += nbas2;
+            }
+            for mi in 0..2 {
+                p.aa.yrdm[mi] = i;
+                i += nbas2;
+            }
         }
         for mi in 0..2 {
             for mj in 0..2 {
@@ -66,6 +84,17 @@ pub fn assign_offsets(
         for mi in 0..2 {
             p.bb.y[mi] = i;
             i += nn2;
+        }
+        #[cfg(feature = "nocc")]
+        {
+            for mi in 0..2 {
+                p.bb.xrdm[mi] = i;
+                i += nbas2;
+            }
+            for mi in 0..2 {
+                p.bb.yrdm[mi] = i;
+                i += nbas2;
+            }
         }
         for mi in 0..2 {
             for mj in 0..2 {
@@ -146,6 +175,13 @@ pub fn write_same_spin<T: NOCIScalar>(
     write2(slab, o.x[1], &w.x[1]);
     write2(slab, o.y[0], &w.y[0]);
     write2(slab, o.y[1], &w.y[1]);
+    #[cfg(feature = "nocc")]
+    {
+        write2(slab, o.xrdm[0], &w.xrdm[0]);
+        write2(slab, o.xrdm[1], &w.xrdm[1]);
+        write2(slab, o.yrdm[0], &w.yrdm[0]);
+        write2(slab, o.yrdm[1], &w.yrdm[1]);
+    }
 
     for mi in 0..2 {
         for mj in 0..2 {

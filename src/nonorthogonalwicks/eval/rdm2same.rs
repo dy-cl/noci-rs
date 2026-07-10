@@ -4,12 +4,14 @@ use ndarray::{Array2, Array4};
 
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::helpers::{
-    construct_determinant_indices_gen, det_slice, extend_rdm_d, for_each_m_combination,
-};
+
+use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
+use super::prepare::construct_determinant_indices_gen;
+
 use crate::ExcitationSpin;
-use crate::maths::{build_d, mix_columns};
 use crate::noci::NOCIScalar;
+
+use crate::maths::{build_d, mix_columns};
 use crate::time_call;
 
 /// Calculate the same-spin two-body RDM matrix element between two determinants
@@ -20,6 +22,8 @@ use crate::time_call;
 /// - `w`: Same-spin Wick's reference pair intermediates.
 /// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
 /// - `g_ex`: Spin-resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// - `l_c`: Left determinant orbital coefficients in the RDM basis.
+/// - `g_c`: Right determinant orbital coefficients in the RDM basis.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
@@ -51,6 +55,8 @@ pub(crate) fn lg_rdm2_same<T: NOCIScalar>(
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
 /// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
 /// - `g_ex`: Spin-resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// - `l_c`: Left determinant orbital coefficients in the RDM basis.
+/// - `g_c`: Right determinant orbital coefficients in the RDM basis.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
@@ -73,8 +79,10 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
         let zero = <T as From<f64>>::from(0.0);
         let x0 = w.x(0);
         let y0 = w.y(0);
-        let x0p = extend_rdm_d(&x0, l_c, g_c, w.nmo);
-        let y0p = extend_rdm_d(&y0, l_c, g_c, w.nmo);
+        let x0rdm = w.xrdm(0, n);
+        let y0rdm = w.yrdm(0, n);
+        let x0p = extend_rdm_d(w, &x0, &x0rdm, l_c, g_c);
+        let y0p = extend_rdm_d(w, &y0, &y0rdm, l_c, g_c);
         let x0p = x0p.view();
         let y0p = y0p.view();
 
@@ -85,7 +93,7 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
         let mut cols = Vec::with_capacity(dim);
         let mut det0 = vec![zero; dim * dim];
 
-        construct_determinant_indices_gen(l_ex, g_ex, w.nmo, &mut rows_base, &mut cols_base);
+        construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
 
         for p in 0..n {
             for q in 0..n {
@@ -93,11 +101,13 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
                     for s in 0..n {
                         rows.clear();
                         cols.clear();
-                        rows.push(2 * w.nmo + p);
-                        rows.push(2 * w.nmo + q);
+
+                        rows.push(w.nmo + p);
+                        rows.push(w.nmo + q);
                         rows.extend_from_slice(rows_base.as_slice());
-                        cols.push(2 * w.nmo + r);
-                        cols.push(2 * w.nmo + s);
+
+                        cols.push(w.nmo + r);
+                        cols.push(w.nmo + s);
                         cols.extend_from_slice(cols_base.as_slice());
 
                         build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
@@ -113,6 +123,7 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
         }
 
         let _ = scratch;
+
         out
     })
 }
@@ -125,6 +136,8 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
 /// - `w`: Same-spin Wick's reference pair intermediates.
 /// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
 /// - `g_ex`: Spin-resolved excitation array for |{}^\Gamma \Psi\rangle.
+/// - `l_c`: Left determinant orbital coefficients in the RDM basis.
+/// - `g_c`: Right determinant orbital coefficients in the RDM basis.
 /// - `scratch`: Scratch space for Wick's quantities.
 /// - `tol`: Tolerance for singularity handling in determinant evaluation.
 /// # Returns
@@ -149,10 +162,14 @@ fn lg_rdm2_same_gen<T: NOCIScalar>(
         let y0 = w.y(0);
         let x1 = w.x(1);
         let y1 = w.y(1);
-        let x0p = extend_rdm_d(&x0, l_c, g_c, w.nmo);
-        let y0p = extend_rdm_d(&y0, l_c, g_c, w.nmo);
-        let x1p = extend_rdm_d(&x1, l_c, g_c, w.nmo);
-        let y1p = extend_rdm_d(&y1, l_c, g_c, w.nmo);
+        let x0rdm = w.xrdm(0, n);
+        let y0rdm = w.yrdm(0, n);
+        let x1rdm = w.xrdm(1, n);
+        let y1rdm = w.yrdm(1, n);
+        let x0p = extend_rdm_d(w, &x0, &x0rdm, l_c, g_c);
+        let y0p = extend_rdm_d(w, &y0, &y0rdm, l_c, g_c);
+        let x1p = extend_rdm_d(w, &x1, &x1rdm, l_c, g_c);
+        let y1p = extend_rdm_d(w, &y1, &y1rdm, l_c, g_c);
         let x0p = x0p.view();
         let y0p = y0p.view();
         let x1p = x1p.view();
@@ -167,7 +184,7 @@ fn lg_rdm2_same_gen<T: NOCIScalar>(
         let mut det1 = vec![zero; dim * dim];
         let mut detm = vec![zero; dim * dim];
 
-        construct_determinant_indices_gen(l_ex, g_ex, w.nmo, &mut rows_base, &mut cols_base);
+        construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
 
         for p in 0..n {
             for q in 0..n {
@@ -175,11 +192,13 @@ fn lg_rdm2_same_gen<T: NOCIScalar>(
                     for s in 0..n {
                         rows.clear();
                         cols.clear();
-                        rows.push(2 * w.nmo + p);
-                        rows.push(2 * w.nmo + q);
+
+                        rows.push(w.nmo + p);
+                        rows.push(w.nmo + q);
                         rows.extend_from_slice(rows_base.as_slice());
-                        cols.push(2 * w.nmo + r);
-                        cols.push(2 * w.nmo + s);
+
+                        cols.push(w.nmo + r);
+                        cols.push(w.nmo + s);
                         cols.extend_from_slice(cols_base.as_slice());
 
                         build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
@@ -210,6 +229,7 @@ fn lg_rdm2_same_gen<T: NOCIScalar>(
         }
 
         let _ = scratch;
+
         out
     })
 }
