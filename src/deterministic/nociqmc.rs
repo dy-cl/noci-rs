@@ -57,6 +57,9 @@ fn propagator_shifts(
         Propagator::DoublyShifted => (es_s, es),
         Propagator::DifferenceDoublyShiftedU1 => (0.5 * (es + es_s), es - es_s),
         Propagator::DifferenceDoublyShiftedU2 => (es_s, es - es_s),
+        Propagator::DirectOverlap => {
+            panic!("Propagator::DirectOverlap is only implemented for stochastic NOCI-QMC")
+        }
     }
 }
 

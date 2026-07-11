@@ -3,12 +3,13 @@ use mpi::traits::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::input::ExcitationGen;
+use crate::input::{ExcitationGen, Propagator};
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
-use super::excit::{coupling, init_heat_bath, pgen_heat_bath, pgen_uniform};
-use super::propagate::{find_hs, stochastic_population_cutoff};
+use super::common::find_hs;
+use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
+use super::metric::stochastic_population_cutoff;
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
@@ -65,6 +66,92 @@ pub(in crate::stochastic) struct ScratchSize {
     pub(in crate::stochastic) maxla: usize,
     /// Largest beta-spin excitation scratch dimension needed across the basis.
     pub(in crate::stochastic) maxlb: usize,
+}
+
+/// Storage for the shifts used in one stochastic propagation cycle.
+#[derive(Clone, Copy)]
+pub(in crate::stochastic) struct ShiftSpec {
+    /// Current non-overlap-transformed shift.
+    pub(in crate::stochastic) es: f64,
+    /// Current overlap-transformed shift.
+    pub(in crate::stochastic) es_s: f64,
+    /// Propagator approximation.
+    pub(in crate::stochastic) propagator: Propagator,
+}
+
+impl ShiftSpec {
+    /// Construct the direct-overlap shift specification.
+    /// # Arguments:
+    /// - `es`: Population-control shift \(E_s\).
+    /// # Returns:
+    /// - `ShiftSpec`: Shift specification for \(H - E_s S\).
+    pub(in crate::stochastic) fn direct_overlap(es: f64) -> Self {
+        Self {
+            es,
+            es_s: es,
+            propagator: Propagator::DirectOverlap,
+        }
+    }
+
+    /// Return the shift multiplying the overlap matrix.
+    /// # Arguments:
+    /// - `self`: Shift specification.
+    /// # Returns:
+    /// - `f64`: Shift \(E_s^S\) in \(H - E_s^S S\).
+    pub(in crate::stochastic) fn overlap_shift(&self) -> f64 {
+        match self.propagator {
+            Propagator::Unshifted => self.es_s,
+            Propagator::Shifted => self.es_s,
+            Propagator::DoublyShifted => self.es_s,
+            Propagator::DifferenceDoublyShiftedU1 => 0.5 * (self.es + self.es_s),
+            Propagator::DifferenceDoublyShiftedU2 => self.es_s,
+            Propagator::DirectOverlap => self.es,
+        }
+    }
+
+    /// Return the shift multiplying the identity.
+    /// # Arguments:
+    /// - `self`: Shift specification.
+    /// # Returns:
+    /// - `f64`: Shift \(E_s^I\) in \(H - E_s^S S - E_s^I I\).
+    pub(in crate::stochastic) fn identity_shift(&self) -> f64 {
+        match self.propagator {
+            Propagator::Unshifted => 0.0,
+            Propagator::Shifted => self.es_s,
+            Propagator::DoublyShifted => self.es,
+            Propagator::DifferenceDoublyShiftedU1 => self.es - self.es_s,
+            Propagator::DifferenceDoublyShiftedU2 => self.es - self.es_s,
+            Propagator::DirectOverlap => 0.0,
+        }
+    }
+
+    /// Evaluate the off-diagonal shifted coupling.
+    /// # Arguments:
+    /// - `h`: Hamiltonian matrix element \(H_{\Lambda\Gamma}\).
+    /// - `s`: Overlap matrix element \(S_{\Lambda\Gamma}\).
+    /// # Returns:
+    /// - `f64`: \(H_{\Lambda\Gamma} - E_s^S S_{\Lambda\Gamma}\).
+    pub(in crate::stochastic) fn coupling(
+        &self,
+        h: f64,
+        s: f64,
+    ) -> f64 {
+        h - self.overlap_shift() * s
+    }
+
+    /// Evaluate the diagonal residual.
+    /// # Arguments:
+    /// - `h`: Hamiltonian matrix element \(H_{\Gamma\Gamma}\).
+    /// - `s`: Overlap matrix element \(S_{\Gamma\Gamma}\).
+    /// # Returns:
+    /// - `f64`: \(H_{\Gamma\Gamma} - E_s^S S_{\Gamma\Gamma} - E_s^I\).
+    pub(in crate::stochastic) fn diagonal_residual(
+        &self,
+        h: f64,
+        s: f64,
+    ) -> f64 {
+        h - self.overlap_shift() * s - self.identity_shift()
+    }
 }
 
 /// Storage for a sparse real population vector.
@@ -408,12 +495,12 @@ impl ThreadPropagation {
         &mut self,
         gamma: usize,
         population: f64,
-        shift: f64,
+        shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
         diagonal_hs: &[(f64, f64)],
     ) {
         let (hgg, sgg) = diagonal_hs[gamma];
-        let coupling = hgg - shift * sgg;
+        let coupling = shift.diagonal_residual(hgg, sgg);
         let dn = -data.input.prop_ref().dt * coupling * population;
 
         if dn != 0.0 {
@@ -434,7 +521,7 @@ impl ThreadPropagation {
         &mut self,
         gamma: usize,
         population: f64,
-        shift: f64,
+        shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
     ) {
@@ -476,7 +563,7 @@ impl ThreadPropagation {
 
                 let (hlg, slg) = find_hs(data, lambda, gamma, self.wick_scratch.as_mut());
 
-                let k = coupling(hlg, slg, shift);
+                let k = shift.coupling(hlg, slg);
                 let raw = -dt * k * parent_population / pgen;
 
                 if write_excitation_hist {
@@ -516,7 +603,7 @@ impl ThreadPropagation {
         let heat_bath = if let ExcitationGen::HeatBath = qmc.excitation_gen {
             Some(init_heat_bath(
                 gamma,
-                shift,
+                shift.overlap_shift(),
                 data,
                 self.wick_scratch.as_mut(),
             ))
@@ -528,14 +615,14 @@ impl ThreadPropagation {
             let (pgen, k, lambda) = match qmc.excitation_gen {
                 ExcitationGen::Uniform => pgen_uniform(
                     gamma,
-                    shift,
+                    shift.overlap_shift(),
                     data,
                     &mut self.rng,
                     self.wick_scratch.as_mut(),
                 ),
                 ExcitationGen::HeatBath => pgen_heat_bath(
                     gamma,
-                    shift,
+                    shift.overlap_shift(),
                     data,
                     &mut self.rng,
                     heat_bath.as_ref().unwrap(),

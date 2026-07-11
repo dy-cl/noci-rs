@@ -22,6 +22,7 @@ excit = {orders = {1, 2}}
 
 prop = {
     dt = 1e-4,
+    propagator = "direct-overlap",
 }
 
 qmc = {
@@ -42,4 +43,3 @@ wicks = {
     storage = "ram",
     cachedir = ".",
 }
-

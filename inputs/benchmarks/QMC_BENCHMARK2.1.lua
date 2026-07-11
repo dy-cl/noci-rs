@@ -25,6 +25,7 @@ excit = {orders = {1, 2}}
 
 prop = {
     dt = 1e-4,
+    propagator = "difference-doubly-shifted-u2",
 }
 
 qmc = {
@@ -45,4 +46,3 @@ wicks = {
     storage = "ram",
     cachedir = ".",
 }
-

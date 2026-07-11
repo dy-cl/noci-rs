@@ -3,13 +3,13 @@ use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use super::propagate::{find_s, gather_all_populations, projected_energy};
+use super::common::{find_s, gather_all_populations};
+use super::metric::projected_energy;
 use super::restart::read_restart_hdf5;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, PropagationState,
     QMCRunInfo, SparsePopulations,
 };
-use crate::SCFState;
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
@@ -76,30 +76,6 @@ pub(in crate::stochastic) fn initialise_populations(
 
         populations
     })
-}
-
-/// Determine the maximum scratch sizes required for computation of matrix elements using extended
-/// non-orthogonal Wick's theorem depending on the maximum excitation rank present in the basis.
-/// # Arguments:
-/// - `basis`: Full list of the NOCI-QMC basis.
-/// # Returns
-/// - `(usize, usize, usize)`: Maximum same-spin scratch size, alpha excitation size, and beta
-///   excitation size.
-pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
-    let maxexa = basis
-        .iter()
-        .map(|st| st.excitation.alpha.holes.len())
-        .max()
-        .unwrap_or(0);
-    let maxexb = basis
-        .iter()
-        .map(|st| st.excitation.beta.holes.len())
-        .max()
-        .unwrap_or(0);
-    let maxsame = 2 * maxexa.max(maxexb);
-    let maxla = 2 * maxexa;
-    let maxlb = 2 * maxexb;
-    (maxsame, maxla, maxlb)
 }
 
 /// Initialise projected energy, populations, and population totals across ranks.

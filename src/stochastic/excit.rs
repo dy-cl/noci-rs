@@ -6,7 +6,7 @@ use super::state::HeatBath;
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
-use super::propagate::find_hs;
+use super::common::find_hs;
 
 /// Evaluate the shifted off-diagonal coupling
 /// T_{\Lambda\Gamma}(\Delta\tau) = H_{\Lambda\Gamma} - E_s(\Delta \tau) S_{\Lambda\Gamma}).
