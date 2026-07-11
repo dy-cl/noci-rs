@@ -36,10 +36,14 @@ impl Default for ExcitationGen {
 }
 
 pub struct QMCOptions {
-    /// Initial walker population.
-    pub initial_population: i64,
-    /// Target walker population.
-    pub target_population: i64,
+    /// Initial persistent population 1-norm.
+    pub initial_population: f64,
+    /// Target persistent population 1-norm.
+    pub target_population: f64,
+    /// Minimum sampled-population population magnitude.
+    pub sampling_cutoff: f64,
+    /// Minimum spawned population-change magnitude.
+    pub spawn_cutoff: f64,
     /// Shift damping factor.
     pub shift_damping: f64,
     /// Number of QMC cycles per report block.
@@ -53,13 +57,12 @@ pub struct QMCOptions {
 }
 
 impl Default for QMCOptions {
-    /// Return default QMC propagation options.
-    /// # Returns:
-    /// - `Self`: QMC propagation options with default population and shift settings.
     fn default() -> Self {
         Self {
-            initial_population: 100,
-            target_population: 100000,
+            initial_population: 100.0,
+            target_population: 100000.0,
+            sampling_cutoff: 0.0,
+            spawn_cutoff: 0.0,
             shift_damping: 5e-4,
             ncycles: 10,
             nreports: 1000,

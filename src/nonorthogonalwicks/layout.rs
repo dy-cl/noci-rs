@@ -1,28 +1,35 @@
 // nonorthogonalwicks/layout.rs
 use ndarray::{Array2, Array4};
 
-use super::build::{DiffSpinBuild, SameSpinBuild};
-use super::types::{DiffSpinOffset, PairOffset, SameSpinOffset};
+use super::build::{DiffSpinBuild, SAME_SPIN_J_BRANCHES, SameSpinBuild};
+use super::types::{DiffSpinOffset, PairOffset, PairZeroCounts, SameSpinOffset};
 use crate::noci::NOCIScalar;
 
 /// Calculate and store all the required offsets from the beginning of the large contiguous shared
 /// tensor storage to a given matrix or tensor.
 /// # Arguments:
-/// - `nref`: Number of references.
+/// - `plans`: Pair-specific zero-overlap branch plans.
 /// - `nmo`: Number of molecular orbitals.
+/// - `nbas`: Number of basis functions.
 /// # Returns
 /// - `(Vec<PairOffset>, usize)`: Per-pair offset table and total slab length in units of `T`.
 pub fn assign_offsets(
-    nref: usize,
+    plans: &[PairZeroCounts],
     nmo: usize,
+    nbas: usize,
 ) -> (Vec<PairOffset>, usize) {
-    let n = 2 * nmo;
-    let nn2 = n * n;
-    let nn4 = n * n * n * n;
-    let mut off = vec![PairOffset::default(); nref * nref];
+    let nn2 = nmo * nmo;
+    let nn4 = nn2 * nn2;
+
+    #[cfg(feature = "nocc")]
+    let nbas2 = nbas * nbas;
+    #[cfg(not(feature = "nocc"))]
+    let _ = nbas;
+
+    let mut off = vec![PairOffset::default(); plans.len()];
     let mut i: usize = 0;
 
-    for p in off.iter_mut() {
+    for (p, plan) in off.iter_mut().zip(plans.iter()) {
         for mi in 0..2 {
             p.aa.x[mi] = i;
             i += nn2;
@@ -30,6 +37,17 @@ pub fn assign_offsets(
         for mi in 0..2 {
             p.aa.y[mi] = i;
             i += nn2;
+        }
+        #[cfg(feature = "nocc")]
+        {
+            for mi in 0..2 {
+                p.aa.xrdm[mi] = i;
+                i += nbas2;
+            }
+            for mi in 0..2 {
+                p.aa.yrdm[mi] = i;
+                i += nbas2;
+            }
         }
         for mi in 0..2 {
             for mj in 0..2 {
@@ -51,9 +69,12 @@ pub fn assign_offsets(
                 }
             }
         }
-        for s in 0..10 {
-            p.aa.j[s] = i;
-            i += nn4;
+        p.aa.j.fill(usize::MAX);
+        for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
+            if branch.0 + branch.1 + branch.2 + branch.3 <= plan.ma {
+                p.aa.j[slot] = i;
+                i += nn4;
+            }
         }
 
         for mi in 0..2 {
@@ -63,6 +84,17 @@ pub fn assign_offsets(
         for mi in 0..2 {
             p.bb.y[mi] = i;
             i += nn2;
+        }
+        #[cfg(feature = "nocc")]
+        {
+            for mi in 0..2 {
+                p.bb.xrdm[mi] = i;
+                i += nbas2;
+            }
+            for mi in 0..2 {
+                p.bb.yrdm[mi] = i;
+                i += nbas2;
+            }
         }
         for mi in 0..2 {
             for mj in 0..2 {
@@ -84,9 +116,12 @@ pub fn assign_offsets(
                 }
             }
         }
-        for s in 0..10 {
-            p.bb.j[s] = i;
-            i += nn4;
+        p.bb.j.fill(usize::MAX);
+        for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
+            if branch.0 + branch.1 + branch.2 + branch.3 <= plan.mb {
+                p.bb.j[slot] = i;
+                i += nn4;
+            }
         }
 
         for ma0 in 0..2 {
@@ -105,12 +140,15 @@ pub fn assign_offsets(
                 }
             }
         }
+        p.ab.iiab = [[[[usize::MAX; 2]; 2]; 2]; 2];
         for ma0 in 0..2 {
             for maj in 0..2 {
                 for mb0 in 0..2 {
                     for mbj in 0..2 {
-                        p.ab.iiab[ma0][maj][mb0][mbj] = i;
-                        i += nn4;
+                        if ma0 + maj <= plan.ma && mb0 + mbj <= plan.mb {
+                            p.ab.iiab[ma0][maj][mb0][mbj] = i;
+                            i += nn4;
+                        }
                     }
                 }
             }
@@ -137,6 +175,13 @@ pub fn write_same_spin<T: NOCIScalar>(
     write2(slab, o.x[1], &w.x[1]);
     write2(slab, o.y[0], &w.y[0]);
     write2(slab, o.y[1], &w.y[1]);
+    #[cfg(feature = "nocc")]
+    {
+        write2(slab, o.xrdm[0], &w.xrdm[0]);
+        write2(slab, o.xrdm[1], &w.xrdm[1]);
+        write2(slab, o.yrdm[0], &w.yrdm[0]);
+        write2(slab, o.yrdm[1], &w.yrdm[1]);
+    }
 
     for mi in 0..2 {
         for mj in 0..2 {
@@ -155,8 +200,8 @@ pub fn write_same_spin<T: NOCIScalar>(
             }
         }
     }
-    for s in 0..10 {
-        write4ijrc(slab, o.j[s], &w.j[s]);
+    for (slot, blk) in &w.j {
+        write4ijrc(slab, o.j[*slot], blk);
     }
 }
 
@@ -187,18 +232,8 @@ pub fn write_diff_spin<T: NOCIScalar>(
             }
         }
     }
-    for ma0 in 0..2 {
-        for maj in 0..2 {
-            for mb0 in 0..2 {
-                for mbj in 0..2 {
-                    write4rcij(
-                        slab,
-                        o.iiab[ma0][maj][mb0][mbj],
-                        &w.iiab[ma0][maj][mb0][mbj],
-                    );
-                }
-            }
-        }
+    for ((ma0, maj, mb0, mbj), blk) in &w.iiab {
+        write4rcij(slab, o.iiab[*ma0][*maj][*mb0][*mbj], blk);
     }
 }
 

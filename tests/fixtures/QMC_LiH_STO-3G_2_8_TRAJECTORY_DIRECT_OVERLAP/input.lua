@@ -37,7 +37,7 @@ excit = {
 
 prop = {
     dt = 1e-2,
-    propagator = "difference-doubly-shifted-u2",
+    propagator = "direct-overlap",
 }
 
 qmc = {
@@ -45,6 +45,8 @@ qmc = {
     target_population = 500,
     ncycles = 1,
     nreports = 80,
+    sampling_cutoff = 1.0,
+    spawn_cutoff = 0.25,
     excitation_gen = "uniform",
     seed = 1,
 }

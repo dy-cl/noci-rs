@@ -10,8 +10,8 @@ use crate::input::Input;
 use crate::input::Spin;
 use crate::mpiutils::Sharedffi;
 use crate::nonorthogonalwicks::{
-    DiffSpinBuild, DiffSpinMeta, PairMeta, SameSpinBuild, SameSpinMeta, WicksDiskMeta, WicksRma,
-    WicksShared, WicksView,
+    DiffSpinBuild, DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinBuild, SameSpinMeta,
+    WicksDiskMeta, WicksRma, WicksShared, WicksView,
 };
 use crate::{AoData, DetState};
 
@@ -50,6 +50,7 @@ fn build_wicks_pair<T: NOCIScalar>(
             phase: aa.phase,
             m: aa.m,
             nmo: aa.nmo,
+            nocc: ri.oa.count_ones() as usize,
             f0h: aa.f0h,
             f0f: aa.f0f,
             v0: aa.v0,
@@ -59,18 +60,59 @@ fn build_wicks_pair<T: NOCIScalar>(
             phase: bb.phase,
             m: bb.m,
             nmo: bb.nmo,
+            nocc: ri.ob.count_ones() as usize,
             f0h: bb.f0h,
             f0f: bb.f0f,
             v0: bb.v0,
         },
         ab: DiffSpinMeta {
-            nmo: ab.vab[0][0][0].nrows() / 2,
+            nmo: ab.vab[0][0][0].nrows(),
             vab0: ab.vab0,
             vba0: ab.vba0,
         },
     };
 
     (aa, bb, ab, meta)
+}
+
+/// Determine pair-specific alpha and beta zero-overlap counts needed to allocate only reachable rank-four intermediates.
+/// # Arguments:
+/// - `ao`: Contains AO integrals and overlap matrix.
+/// - `refs`: Reference determinants in the flattened pair ordering.
+/// - `tol`: Tolerance for whether a singular value is considered zero.
+/// # Returns
+/// - `Vec<PairZeroCounts>`: Pair-adaptive zero counts ordered by `idx = i * nref + j`.
+fn plan_wicks_pairs<T: NOCIScalar>(
+    ao: &AoData,
+    refs: &[DetState<T>],
+    tol: f64,
+) -> Vec<PairZeroCounts> {
+    let nref = refs.len();
+    let mut plans = Vec::with_capacity(nref * nref);
+
+    for ri in refs {
+        for rj in refs {
+            let ma = SameSpinBuild::count_zero_overlap_pairs(
+                &ao.s,
+                rj.ca.as_ref(),
+                rj.oa,
+                ri.ca.as_ref(),
+                ri.oa,
+                tol,
+            );
+            let mb = SameSpinBuild::count_zero_overlap_pairs(
+                &ao.s,
+                rj.cb.as_ref(),
+                rj.ob,
+                ri.cb.as_ref(),
+                ri.ob,
+                tol,
+            );
+            plans.push(PairZeroCounts { ma, mb });
+        }
+    }
+
+    plans
 }
 
 /// Build the Wick's per reference-pair intermediates and store in a shared memory access region (per node).
@@ -94,7 +136,9 @@ pub fn build_wicks_shared<T: NOCIScalar>(
     let nmo = noci_reference_basis[0].ca.ncols();
     let irank = world.rank();
 
-    let (offset, tensor_len) = assign_offsets(nref, nmo);
+    let plans = plan_wicks_pairs(ao, noci_reference_basis, tol);
+    let (offset, tensor_len) = assign_offsets(&plans, nmo, ao.n);
+    drop(plans);
     let nbytes = tensor_len * std::mem::size_of::<T>();
 
     if irank == 0 {

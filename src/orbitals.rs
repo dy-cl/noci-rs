@@ -7,7 +7,7 @@ use ndarray_linalg::{Eigh, UPLO};
 
 use crate::AoData;
 use crate::DetState;
-use crate::maths::{adjoint, eri_ao2mo, loewdin_x, real2_as};
+use crate::maths::{ERIScalar, adjoint, loewdin_x, real2_as};
 use crate::noci::{NOCIData, NOCIScalar, build_noci_s, noci_density, occ_coeffs};
 
 /// Stores a common orthonormal natural-orbital basis and its occupation partition.
@@ -160,8 +160,13 @@ pub(crate) fn transform_ao_data(
     let h = c.t().dot(&ao.h).dot(c);
     let dm = c.t().dot(&ao.s).dot(&ao.dm).dot(&ao.s).dot(c);
 
-    let eri_coul = eri_ao2mo(&ao.eri_coul, c, c, c, c);
-    let eri_asym = eri_ao2mo(&ao.eri_asym, c, c, c, c);
+    let nmo = c.ncols();
+    let mut eri_coul = ndarray::Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
+    let mut scratch = f64::new_eri_ao2mo_scratch(&ao.eri_coul, nmo, nmo, nmo, nmo);
+    f64::eri_ao2mo_hermitian_into(&ao.eri_coul, c, c, c, c, eri_coul.view_mut(), &mut scratch);
+    let mut eri_asym = ndarray::Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
+    let mut scratch = f64::new_eri_ao2mo_scratch(&ao.eri_asym, nmo, nmo, nmo, nmo);
+    f64::eri_ao2mo_hermitian_into(&ao.eri_asym, c, c, c, c, eri_asym.view_mut(), &mut scratch);
 
     let labels = (0..c.ncols()).map(|i| format!("Orbital {}", i)).collect();
 

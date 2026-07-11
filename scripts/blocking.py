@@ -9,50 +9,143 @@ import numpy as np
 import math
 
 # Plateau picking quantities.
-MINN = 8 # At later levels if we have too few blocks the data can become noist.
+MINN = 8 # At later levels if we have too few blocks the data can become noisy.
 NEXT = 1 # Require the next N levels to be consistent within given error bars.
 PLATEAUTOL = 0.25 # How much error can change between levels before it is not a plateau.
 
 def parse() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("path", type = Path)
-    p.add_argument("--start", type = int)
-    return p.parse_args()
+    """
+    Parse command-line arguments.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "path",
+        type = Path,
+        help = "Path to the noci-rs output file.",
+    )
+    parser.add_argument(
+        "--start",
+        type = int,
+        default = None,
+        help = (
+            "First iteration included in the blocking analysis. "
+            "If omitted, use the first iteration at which the shift is active."
+        ),
+    )
+    return parser.parse_args()
 
-def extract(path) -> pd.DataFrame:
-    floatre = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
-    pattern = (
-        r"^\s*(\d+)\s+"     # iter (int)
-        + floatre + r"\s+"  # E
-        + floatre + r"\s+"  # Ecorr
-        + floatre + r"\s+"  # Es
-        + floatre + r"\s+"  # EsS
-        + floatre + r"\s+"  # Nw (||C||) 
-        + floatre + r"\s+"  # Nref (||C||) 
-        + floatre + r"\s+"  # Nw (||SC||)
-        + floatre + r"\s*" # Nref (||SC||)
-        + r"(\d+)\s*$"      # Nocc
+def extract(path: Path) -> pd.DataFrame:
+    """
+    Extract the stochastic QMC table.
+    """
+    def isQMCHeader(line: str) -> bool:
+        columns = line.split()
+
+        if columns[:6] != ["Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift"]:
+            return False
+
+        return columns[6:] in (
+            ["NWalk", "NRef", "-", "-"],
+            ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
+        )
+
+    floatPattern = (
+        r"[+-]?"
+        r"(?:\d+(?:\.\d*)?|\.\d+)"
+        r"(?:[eE][+-]?\d+)?"
+    )
+    optionalPattern = rf"(?:{floatPattern}|-)"
+
+    pattern = re.compile(
+        rf"^\s*"
+        rf"(\d+)\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({optionalPattern})\s+"
+        rf"({optionalPattern})"
+        rf"\s*$"
     )
 
     rows = []
-    with open(path, "r") as f:
-        for line in f:
-            m = re.match(pattern, line)
-            if not m:
-                continue
-            it = int(m.group(1))
-            eproj = float(m.group(2))
-            ecorr = float(m.group(3))
-            es = float(m.group(4))
-            es_s = float(m.group(5))
-            nwc = float(m.group(6))
-            nrefc = float(m.group(7))
-            nwsc = float(m.group(8))
-            nrefsc = float(m.group(9))
-            nocc = float(m.group(10))
-            rows.append((it, eproj, ecorr, es, es_s, nwc, nrefc, nwsc, nrefsc, nocc))
+    inQMC = False
+    header = None
 
-    df = pd.DataFrame(rows, columns = ["iter", "eproj", "ecorr", "es", "es_s", "nwc", "nrefc", "nwsc", "nrefsc", "nocc"])
+    def optionalFloat(value: str) -> float:
+        return np.nan if value == "-" else float(value)
+
+    with open(path, "r") as output:
+        for line in output:
+            if not inQMC:
+                if isQMCHeader(line):
+                    header = line.split()
+                    inQMC = True
+                continue
+
+            if line.startswith("===="):
+                break
+
+            match = pattern.match(line)
+
+            if match is None:
+                continue
+
+            fields = match.groups()
+
+            rows.append(
+                (
+                    int(fields[0]),
+                    float(fields[1]),
+                    float(fields[2]),
+                    float(fields[3]),
+                    float(fields[4]),
+                    float(fields[5]),
+                    float(fields[6]),
+                    float(fields[7]),
+                    optionalFloat(fields[8]),
+                    optionalFloat(fields[9]),
+                )
+            )
+
+    if header is None:
+        raise ValueError("Stochastic QMC table header not found")
+
+    df = pd.DataFrame(
+        rows,
+    )
+
+    if header[6:] == ["NWalk", "NRef", "-", "-"]:
+        df = df.iloc[:, :8]
+        df.columns = header[:8]
+    else:
+        df.columns = header
+
+    return df.drop_duplicates(subset = ["Iter"], keep = "last")
+
+def prepareObservables(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add derived observables used in blocking analysis.
+    """
+    df = df.copy()
+
+    referenceEnergy = np.nanmedian(
+        df["EProj"] - df["ECorr"]
+    )
+
+    shiftActive = ~np.isclose(
+        df["EShift"].to_numpy(dtype = float),
+        0.0,
+    )
+
+    df["EShiftCorr"] = np.where(
+        shiftActive,
+        df["EShift"] - referenceEnergy,
+        np.nan,
+    )
 
     return df
 
@@ -77,31 +170,56 @@ def blocking(xi) -> pd.DataFrame:
         dsigma2 = math.sqrt(2.0 / (n - 1)) * sigma2
         dsigma = sigma / math.sqrt(2.0 * (n - 1))
 
-        levels.append((level, n, xbar, c0, sigma2, sigma, dsigma2, dsigma))
-        
+        levels.append(
+            (
+                level,
+                n,
+                xbar,
+                c0,
+                sigma2,
+                sigma,
+                dsigma2,
+                dsigma,
+            )
+        )
+
         # If the data set is odd we must remove 1 element for this to work.
         if n % 2 == 1:
             xi = xi[:-1]
-            n -= 1 
-        # X'_i = (1 / 2) (x_{2i - 1} + x_{2i}). Equation 20 of Flyvbjerg-Petersen
+            n -= 1
+
+        # X'_i = (1 / 2) (x_{2i - 1} + x_{2i}). Equation 20 of Flyvbjerg-Petersen.
         xi = 0.5 * (xi[0::2] + xi[1::2])
 
         level += 1
 
-    return pd.DataFrame(levels, columns = ["Level", "N", "Xbar", "c0", "sigma2", "sigma", "dsigma2", "dsigma"])
+    return pd.DataFrame(
+        levels,
+        columns = [
+            "Level",
+            "N",
+            "Xbar",
+            "c0",
+            "sigma2",
+            "sigma",
+            "dsigma2",
+            "dsigma",
+        ],
+    )
 
 def plateau(data) -> Optional[int]:
     n = data["N"].to_numpy()
     sigma = data["sigma"].to_numpy()
     dsigma = data["dsigma"].to_numpy()
 
-    # Discard levels which have less then our miminum number of blocks.
+    # Discard levels which have less than our minimum number of blocks.
     valid = np.where(n >= MINN)[0]
+
     # If there are less than two of these we have nothing to do.
     if valid.size < 2:
         return None
 
-    # Highest blocking level still having more than miminum number of blocks.
+    # Highest blocking level still having more than minimum number of blocks.
     last = valid[-1]
 
     # Iterate low blocking to higher blocking and compare consecutive levels
@@ -127,31 +245,90 @@ def plateau(data) -> Optional[int]:
     return None
 
 def main() -> None:
+    """
+    Extract QMC observables and perform blocking analysis.
+    """
     args = parse()
+
     df = extract(args.path)
+    df = prepareObservables(df)
 
-    df = df[df["iter"] >= args.start]
-    cols = ["eproj", "ecorr", "es", "es_s", "nwc", "nwsc", "nrefsc", "nocc"]
+    if args.start is None:
+        active = df[
+            ~np.isclose(
+                df["EShift"].to_numpy(dtype = float),
+                0.0,
+            )
+        ]
 
-    for col in cols:
-        print(" ")
+        start = int(active["Iter"].iloc[0])
+        print(
+            f"Using first active-shift iteration as start: {start}"
+        )
+    else:
+        start = args.start
 
-        x = df[col].to_numpy(dtype = float)
-        data = blocking(x)
-        print(f"{col}:")
-        print(data[["Level", "N", "Xbar", "c0", "sigma", "dsigma"]].to_string(index = False))
-        
-        # Extract plateau'd row and print.
-        k = plateau(data) 
-        if k is None:
+    df = df[df["Iter"] >= start].copy()
+
+    columns = [
+        "EProjNum",
+        "EProjDen",
+        "EProj",
+        "ECorr",
+        "EShift",
+        "EShiftCorr",
+    ]
+    columns.extend(
+        column
+        for column in ["NWalk", "NRef", "NMetric", "NMetricRef", "NSample", "NSampleOcc"]
+        if column in df.columns
+    )
+
+    for column in columns:
+        if df[column].isna().all():
+            continue
+
+        values = df[column].to_numpy(dtype = float)
+        values = values[np.isfinite(values)]
+
+        print()
+        print(f"{column}:")
+
+        if values.size < 2:
+            print("Insufficient finite samples for blocking.")
+            continue
+
+        data = blocking(values)
+
+        print(
+            data[
+                [
+                    "Level",
+                    "N",
+                    "Xbar",
+                    "c0",
+                    "sigma",
+                    "dsigma",
+                ]
+            ].to_string(index = False)
+        )
+
+        level = plateau(data)
+
+        if level is None:
             print("No plateau detected.")
-        else:
-            row = data.iloc[k]
-            print(f"Plateau found at level: {row['Level']}, N: {row['N']}")
-            print(f"Xbar: {row['Xbar']}")
-            print(f"sigma: {row['sigma']}")
-            print(f"dsigma: {row['dsigma']}")
+            continue
+
+        row = data.iloc[level]
+
+        print(
+            f"Plateau found at level: "
+            f"{int(row['Level'])}, "
+            f"N: {int(row['N'])}"
+        )
+        print(f"Xbar: {row['Xbar']}")
+        print(f"sigma: {row['sigma']}")
+        print(f"dsigma: {row['dsigma']}")
 
 if __name__ == "__main__":
     main()
-

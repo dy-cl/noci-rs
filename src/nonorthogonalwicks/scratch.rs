@@ -408,6 +408,24 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.adjt_det2.ensure(lm1, lm1);
     }
 
+    /// Ensure minimal same-spin scratch storage for specialised zero-overlap low-rank evaluators.
+    /// # Arguments:
+    /// - `self`: Scratch space for Wick's quantities.
+    /// - `l`: Same-spin excitation rank, restricted to `l <= 2`.
+    /// # Returns
+    /// - `()`: Ensures `det0` has the required shape and invalidates incompatible full readiness.
+    #[inline(always)]
+    pub fn ensure_same_m0(
+        &mut self,
+        l: usize,
+    ) {
+        if self.same_rank != Some(l) {
+            self.same_rank = None;
+        }
+
+        self.det0.ensure(l, l);
+    }
+
     /// If the previously allocated size of the scratch space is the not the same in
     /// the different spin case resize all the scratch space quantities to be correct.
     /// # Arguments:

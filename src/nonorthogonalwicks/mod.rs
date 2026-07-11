@@ -9,10 +9,11 @@ mod view;
 
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
 pub(crate) use scratch::WickScratchSpin;
-pub(crate) use types::{DiffSpinMeta, PairMeta, SameSpinMeta};
+pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
 
 pub use storage::WicksShared;
 pub(crate) use storage::{WicksDiskMeta, WicksRma};
+pub(crate) use view::WicksPairView;
 pub use view::WicksView;
 
 pub(crate) use eval::{lg_f, lg_h1, lg_h2_diff, lg_h2_same, lg_overlap, prepare_same};

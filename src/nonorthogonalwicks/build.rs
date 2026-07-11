@@ -7,8 +7,22 @@ use serde::{Deserialize, Serialize};
 use crate::input::Spin;
 use crate::{AoData, DetState};
 
-use crate::maths::{adjoint, eri_ao2mo_hermitian_as, real2_as};
+use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
 use crate::noci::{NOCIScalar, occ_coeffs};
+
+/// Ten symmetry-unique branch combinations represented by the compressed same-spin J slots.
+pub(crate) const SAME_SPIN_J_BRANCHES: [(usize, usize, usize, usize); 10] = [
+    (0, 0, 0, 0),
+    (0, 0, 0, 1),
+    (0, 0, 1, 0),
+    (0, 0, 1, 1),
+    (0, 1, 0, 1),
+    (0, 1, 1, 0),
+    (0, 1, 1, 1),
+    (1, 0, 1, 0),
+    (1, 0, 1, 1),
+    (1, 1, 1, 1),
+];
 
 /// Owning struct for the same-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -18,6 +32,12 @@ pub struct SameSpinBuild<T: NOCIScalar> {
     pub x: [Array2<T>; 2],
     /// Y[mi] contraction matrices for the two branch choices.
     pub y: [Array2<T>; 2],
+    /// X[mi] contraction matrices in the basis used for external RDM indices.
+    #[cfg(feature = "nocc")]
+    pub xrdm: [Array2<T>; 2],
+    /// Y[mi] contraction matrices in the basis used for external RDM indices.
+    #[cfg(feature = "nocc")]
+    pub yrdm: [Array2<T>; 2],
     /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
     pub f0f: [T; 2],
     /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
@@ -30,8 +50,8 @@ pub struct SameSpinBuild<T: NOCIScalar> {
     pub v0: [T; 3],
     /// Same-spin V[mi][mj][mk] intermediates.
     pub v: [[[Array2<T>; 2]; 2]; 2],
-    /// Compressed same-spin J[mi][mj][mk][ml] tensors.
-    pub j: [Array4<T>; 10],
+    /// Reachable compressed same-spin J slot and tensor pairs.
+    pub j: Vec<(usize, Array4<T>)>,
     /// Product of the non-zero singular values for this same-spin block.
     pub tilde_s_prod: f64,
     /// Overall phase associated with this same-spin block.
@@ -75,9 +95,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let nbas = l_c.nrows();
         let z = <T as From<f64>>::from(0.0);
 
-        let mut ccat = Array2::<T>::zeros((nbas, 2 * nmo));
-        ccat.slice_mut(s![.., 0..nmo]).assign(l_c);
-        ccat.slice_mut(s![.., nmo..2 * nmo]).assign(g_c);
+        let nocc = lo.count_ones() as usize;
+        let (rowc, colc) = contraction_orbitals(l_c, g_c, nocc);
 
         let l_c_occ = occ_coeffs(l_c, lo);
         let g_c_occ = occ_coeffs(g_c, go);
@@ -104,25 +123,32 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros, tol);
         let mao: [Array2<T>; 2] = [m0, m1];
 
+        let (x0, y0, x0rdm, y0rdm) = Self::construct_xy(&rowc, &colc, s_munu, &mao[0], true);
+        let (x1, y1, x1rdm, y1rdm) = Self::construct_xy(&rowc, &colc, s_munu, &mao[1], false);
+
         // Construct the {}^{\Gamma\Lambda} X_{ij}^{m_k} and {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices.
-        let (x0, y0) = Self::construct_xy(g_c, l_c, s_munu, &mao[0], true);
-        let (x1, y1) = Self::construct_xy(g_c, l_c, s_munu, &mao[1], false);
-        let x: [Array2<T>; 2] = [x0, x1];
-        let y: [Array2<T>; 2] = [y0, y1];
+        let x = [x0, x1];
+        let y = [y0, y1];
+        #[cfg(feature = "nocc")]
+        let xrdm = [x0rdm, x1rdm];
+        #[cfg(feature = "nocc")]
+        let yrdm = [y0rdm, y1rdm];
+        #[cfg(not(feature = "nocc"))]
+        drop((x0rdm, x1rdm, y0rdm, y1rdm));
 
         // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and
         // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
         // down the line.
         let mut cx: [Array2<T>; 2] = [
-            Array2::<T>::zeros((nbas, 2 * nmo)),
-            Array2::<T>::zeros((nbas, 2 * nmo)),
+            Array2::<T>::zeros((nbas, nmo)),
+            Array2::<T>::zeros((nbas, nmo)),
         ];
         let mut xc: [Array2<T>; 2] = [
-            Array2::<T>::zeros((nbas, 2 * nmo)),
-            Array2::<T>::zeros((nbas, 2 * nmo)),
+            Array2::<T>::zeros((nbas, nmo)),
+            Array2::<T>::zeros((nbas, nmo)),
         ];
         for mi in 0..2 {
-            (cx[mi], xc[mi]) = DiffSpinBuild::build_cx_xc(&mao[mi], s_munu, l_c, g_c, mi);
+            (cx[mi], xc[mi]) = DiffSpinBuild::build_cx_xc(&mao[mi], s_munu, l_c, g_c, lo, go, mi);
         }
 
         // Construct Coulomb and exchange contractions of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k},
@@ -156,14 +182,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         // Initialise {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j} for
         let f0f: [T; 2] = [z, z];
         let ff: [[Array2<T>; 2]; 2] = [
-            [
-                Array2::zeros((2 * nmo, 2 * nmo)),
-                Array2::zeros((2 * nmo, 2 * nmo)),
-            ],
-            [
-                Array2::zeros((2 * nmo, 2 * nmo)),
-                Array2::zeros((2 * nmo, 2 * nmo)),
-            ],
+            [Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo))],
+            [Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo))],
         ];
 
         // Construct {}^{\Lambda\Gamma} V_0^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs) -
@@ -172,11 +192,12 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         // {}^{\Gamma\Lambda} M^{\sigma\tau, m_j}.
         let mut v0 = [<T as From<f64>>::from(0.0); 3];
         v0[0] = T::einsum_ba_ab(&jkao[0], &mao[0]);
-        if m > 1 {
+        if m >= 1 {
+            // With one zero-overlap pair, the barred assignment can appear on either contraction.
             v0[1] = <T as From<f64>>::from(2.0) * T::einsum_ba_ab(&jkao[0], &mao[1]);
+        }
+        if m >= 2 {
             v0[2] = T::einsum_ba_ab(&jkao[1], &mao[1]);
-        } else {
-            v0[1] = <T as From<f64>>::from(0.0);
         }
 
         // Construct {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} intermediates for two electron
@@ -189,7 +210,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         //      {}^{\Lambda\Gamma} V_{ab}^{m_1, m_2, m_3} = \sum_{pq} C_{L,ap}^{m_1} (J_{\mu\nu}^{m_2} - K_{\mu\nu}^{m_2})
         //      C_{R,qb}^{m_3}.
         let mut v: [[[Array2<T>; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| std::array::from_fn(|_| Array2::<T>::zeros((2 * nmo, 2 * nmo))))
+            std::array::from_fn(|_| std::array::from_fn(|_| Array2::<T>::zeros((nmo, nmo))))
         });
         let combos: Vec<(usize, usize, usize)> = (0..2)
             .flat_map(|mi| (0..2).flat_map(move |mj| (0..2).map(move |mk| (mi, mj, mk))))
@@ -215,42 +236,58 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         //      ((\mu\nu|\tau\sigma) - (\mu\sigma|\tau\nu)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. Only 10 of 16 4D tensors of J need be stored due to symmetry.
-        let mut j: [Array4<T>; 10] =
-            std::array::from_fn(|_| Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo)));
-        let combos: [(usize, usize, usize, usize); 10] = [
-            (0, 0, 0, 0),
-            (0, 0, 0, 1),
-            (0, 0, 1, 0),
-            (0, 0, 1, 1),
-            (0, 1, 0, 1),
-            (0, 1, 1, 0),
-            (0, 1, 1, 1),
-            (1, 0, 1, 0),
-            (1, 0, 1, 1),
-            (1, 1, 1, 1),
-        ];
-        let blocks: Vec<(usize, Array4<T>)> = combos
-            .into_par_iter()
+        let combos: Vec<(usize, (usize, usize, usize, usize))> = SAME_SPIN_J_BRANCHES
+            .iter()
+            .copied()
             .enumerate()
-            .map(|(s, (mi, mj, mk, ml))| {
-                let mut blk = eri_ao2mo_hermitian_as(eri, &cx[mi], &xc[mj], &cx[mk], &xc[ml]);
-                let ex = blk
-                    .view()
-                    .permuted_axes([0, 2, 1, 3])
-                    .to_owned()
-                    .as_standard_layout()
-                    .to_owned();
-                blk -= &ex;
-                (s, blk.as_standard_layout().to_owned())
-            })
+            .filter(|&(_, branch)| branch.0 + branch.1 + branch.2 + branch.3 <= m)
             .collect();
-        for (s, blk) in blocks {
-            j[s] = blk;
-        }
+        let j: Vec<(usize, Array4<T>)> = combos
+            .into_par_iter()
+            .map_init(
+                || -> ERIAO2MOScratch<T> { T::new_eri_ao2mo_scratch(eri, nmo, nmo, nmo, nmo) },
+                |scratch, (slot, (mi, mj, mk, ml))| {
+                    let mut blk = Array4::<T>::zeros((nmo, nmo, nmo, nmo));
+                    let mut exch = Array4::<T>::zeros((nmo, nmo, nmo, nmo));
+                    T::eri_ao2mo_hermitian_into(
+                        eri,
+                        &cx[mi],
+                        &xc[mj],
+                        &cx[mk],
+                        &xc[ml],
+                        blk.view_mut(),
+                        scratch,
+                    );
+                    T::eri_ao2mo_hermitian_into(
+                        eri,
+                        &cx[mi],
+                        &cx[mk],
+                        &xc[mj],
+                        &xc[ml],
+                        exch.view_mut(),
+                        scratch,
+                    );
+                    for p in 0..nmo {
+                        for q in 0..nmo {
+                            for r in 0..nmo {
+                                for s in 0..nmo {
+                                    blk[(p, q, r, s)] -= exch[(p, r, q, s)];
+                                }
+                            }
+                        }
+                    }
+                    (slot, blk)
+                },
+            )
+            .collect();
 
         Self {
             x,
             y,
+            #[cfg(feature = "nocc")]
+            xrdm,
+            #[cfg(feature = "nocc")]
+            yrdm,
             f0h,
             fh,
             f0f,
@@ -263,6 +300,48 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
             m,
             nmo,
         }
+    }
+
+    /// Count zero-overlap occupied orbital pairs without forming rotated coefficient matrices.
+    /// This is used before slab allocation to plan only reachable rank-four branch storage.
+    /// # Arguments:
+    /// - `s_munu`: AO overlap matrix.
+    /// - `g_c`: Ket/reference MO coefficient matrix.
+    /// - `go`: Ket/reference occupancy bitstring.
+    /// - `l_c`: Bra/reference MO coefficient matrix.
+    /// - `lo`: Bra/reference occupancy bitstring.
+    /// - `tol`: Tolerance for whether a singular value is considered zero.
+    /// # Returns
+    /// - `usize`: Number of zero-overlap orbital pairs.
+    pub(crate) fn count_zero_overlap_pairs(
+        s_munu: &Array2<f64>,
+        g_c: &Array2<T>,
+        go: u128,
+        l_c: &Array2<T>,
+        lo: u128,
+        tol: f64,
+    ) -> usize {
+        let l_c_occ = occ_coeffs(l_c, lo);
+        let g_c_occ = occ_coeffs(g_c, go);
+        let lg_s = Self::occupied_overlap(s_munu, &l_c_occ, &g_c_occ);
+        let (_, s, _) = lg_s.svd(false, false).unwrap();
+        s.iter().filter(|&&sk| sk.abs() <= tol).count()
+    }
+
+    /// Build the occupied-overlap matrix S_{ij}^{\Lambda\Gamma} = \sum_{\mu\nu} C_{\mu i}^{\Lambda *} S_{\mu\nu} C_{\nu j}^{\Gamma}.
+    /// # Arguments:
+    /// - `s_munu`: AO overlap matrix.
+    /// - `l_c_occ`: Occupied coefficients for determinant \Lambda.
+    /// - `g_c_occ`: Occupied coefficients for determinant \Gamma.
+    /// # Returns
+    /// - `Array2<T>`: Occupied-orbital overlap matrix.
+    fn occupied_overlap(
+        s_munu: &Array2<f64>,
+        l_c_occ: &Array2<T>,
+        g_c_occ: &Array2<T>,
+    ) -> Array2<T> {
+        let s = real2_as::<T>(s_munu);
+        adjoint(l_c_occ).dot(&s).dot(g_c_occ)
     }
 
     /// Perform singular value decomposition on the occupied orbital overlap matrix {}^{\Lambda\Gamma} S_{ij} as:
@@ -284,10 +363,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         g_c_occ: &Array2<T>,
         _tol: f64,
     ) -> (Array1<f64>, Array2<T>, Array2<T>, T) {
-        let s = real2_as::<T>(s_munu);
-
-        let lg_s = adjoint(l_c_occ).dot(&s).dot(g_c_occ);
-
+        let lg_s = Self::occupied_overlap(s_munu, l_c_occ, g_c_occ);
         let (u, lg_tilde_s, v_dag) = lg_s.svd(true, true).unwrap();
         let u = u.unwrap();
         let v = adjoint(&v_dag.unwrap());
@@ -381,33 +457,40 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// # Returns
     /// - `(Array2<T>, Array2<T>)`: The X and Y matrices.
     fn construct_xy(
-        g_c: &Array2<T>,
-        l_c: &Array2<T>,
+        rowc: &Array2<T>,
+        colc: &Array2<T>,
         s_munu: &Array2<f64>,
         gl_m: &Array2<T>,
         subtract: bool,
-    ) -> (Array2<T>, Array2<T>) {
-        let nbas = g_c.nrows();
-        let nmo = g_c.ncols();
-
+    ) -> (Array2<T>, Array2<T>, Array2<T>, Array2<T>) {
         let s = real2_as::<T>(s_munu);
 
-        let mut lg_c = Array2::<T>::zeros((nbas, 2 * nmo));
-        lg_c.slice_mut(s![.., 0..nmo]).assign(l_c);
-        lg_c.slice_mut(s![.., nmo..2 * nmo]).assign(g_c);
+        let xrdm = s.dot(gl_m).dot(&s);
+        let yrdm = if subtract { &xrdm - &s } else { xrdm.clone() };
 
-        let sm = s.dot(gl_m);
-        let sms = sm.dot(&s);
-        let x = adjoint(&lg_c).dot(&sms).dot(&lg_c);
+        let x = adjoint(rowc).dot(&xrdm).dot(colc);
+        let y = adjoint(rowc).dot(&yrdm).dot(colc);
 
-        let ymiddle = if subtract { &sms - &s } else { sms };
-        let y = adjoint(&lg_c).dot(&ymiddle).dot(&lg_c);
-
-        (x, y)
+        (x, y, xrdm, yrdm)
     }
 
     /// Construct the {}^{\Gamma\Lambda} F_0^{m_k} and {}^{\Lambda\Gamma} F_{ab}^{m_i, m_j}
     /// intermediates required for scalar-valued one-body coupling.
+    /// The scalar intermediates are evaluated as
+    /// F_0^{m_k} = \sum_{\mu\nu} M_{\mu\nu}^{m_k} F_{\nu\mu},
+    /// while the external-index intermediates are
+    /// F_{ab}^{m_i,m_j} = \sum_{\mu\nu} (C_X^{m_i})_{\mu a}^* F_{\mu\nu}
+    /// (X_C^{m_j})_{\nu b}.
+    /// # Arguments
+    /// - `s_munu`: AO overlap matrix S_{\mu\nu}.
+    /// - `f_munu`: AO representation of the one-body operator F_{\mu\nu}.
+    /// - `g`: Right reference determinant \Gamma.
+    /// - `l`: Left reference determinant \Lambda.
+    /// - `spin`: Spin sector for which the intermediates are constructed.
+    /// - `tol`: Threshold used to identify zero singular values in the occupied-orbital overlap matrix.
+    /// # Returns
+    /// - `([T; 2], [[Array2<T>; 2]; 2])`: Scalar intermediates F_0^{m_k} for m_k \in \{0,1\}
+    ///   and matrix intermediates F_{ab}^{m_i,m_j} for m_i,m_j \in \{0,1\}.
     pub fn construct_f_scalar(
         s_munu: &Array2<f64>,
         f_munu: &Array2<T>,
@@ -435,8 +518,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let (m0, m1) = Self::construct_m(&tilde_s_occ, &l_tilde_c_occ, &g_tilde_c_occ, &zeros, tol);
         let mao = [&m0, &m1];
 
-        let (cx0, xc0) = DiffSpinBuild::build_cx_xc(mao[0], s_munu, l_c, g_c, 0);
-        let (cx1, xc1) = DiffSpinBuild::build_cx_xc(mao[1], s_munu, l_c, g_c, 1);
+        let (cx0, xc0) = DiffSpinBuild::build_cx_xc(mao[0], s_munu, l_c, g_c, lo, go, 0);
+        let (cx1, xc1) = DiffSpinBuild::build_cx_xc(mao[1], s_munu, l_c, g_c, lo, go, 1);
         let cx = [&cx0, &cx1];
         let xc = [&xc0, &xc1];
 
@@ -519,6 +602,10 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 }
 
 /// Owning struct for the diff-spin computed intermediates.
+type IIMask = (usize, usize, usize, usize);
+type IIABBlock<T> = (IIMask, Array4<T>);
+
+/// Owning struct for the diff-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub struct DiffSpinBuild<T: NOCIScalar> {
@@ -530,8 +617,8 @@ pub struct DiffSpinBuild<T: NOCIScalar> {
     pub vba0: [[T; 2]; 2],
     /// Mixed-spin Vba[mb0][ma0][mbk] intermediates.
     pub vba: [[[Array2<T>; 2]; 2]; 2],
-    /// Mixed-spin IIab[ma0][mak][mb0][mbj] tensors.
-    pub iiab: [[[[Array4<T>; 2]; 2]; 2]; 2],
+    /// Reachable mixed-spin IIab tensors indexed by `(ma0, maj, mb0, mbj)`.
+    pub iiab: Vec<IIABBlock<T>>,
 }
 
 impl<T: NOCIScalar> DiffSpinBuild<T> {
@@ -590,6 +677,8 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             .enumerate()
             .filter_map(|(k, &sk)| if sk.abs() <= tol { Some(k) } else { None })
             .collect();
+        let ma = zerosa.len();
+        let mb = zerosb.len();
 
         // Construct the {}^{\Gamma\Lambda} M^{\sigma\tau, 0} and {}^{\Gamma\Lambda} M^{\sigma\tau, 1} matrices.
         let (m0a, m1a) = SameSpinBuild::construct_m(
@@ -606,18 +695,18 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             &zerosb,
             tol,
         );
-        let ma = [&m0a, &m1a];
-        let mb = [&m0b, &m1b];
+        let mao_a = [&m0a, &m1a];
+        let mao_b = [&m0b, &m1b];
 
         // Construct only the Coulomb contraction of ERIs with  {}^{\Gamma\Lambda} M^{\sigma\tau, m_k},
         // {}^{\Gamma\Lambda} J_{\mu\nu}^{m_k}. No exchange here due to differing spins.
         let ja = [
-            SameSpinBuild::build_j_coulomb(eri, ma[0]),
-            SameSpinBuild::build_j_coulomb(eri, ma[1]),
+            SameSpinBuild::build_j_coulomb(eri, mao_a[0]),
+            SameSpinBuild::build_j_coulomb(eri, mao_a[1]),
         ];
         let jb = [
-            SameSpinBuild::build_j_coulomb(eri, mb[0]),
-            SameSpinBuild::build_j_coulomb(eri, mb[1]),
+            SameSpinBuild::build_j_coulomb(eri, mao_b[0]),
+            SameSpinBuild::build_j_coulomb(eri, mao_b[1]),
         ];
 
         // Construct {}^{\Lambda\Gamma} V_{ab,0}^{m_i, m_j} = \sum_{prqs} ({}^{\Lambda}(pr|qs)) X_{sq}^{m_i} {}^{\Lambda\Gamma}.
@@ -629,18 +718,18 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         let mut vba0 = [[z; 2]; 2];
         for i in 0..2 {
             for j in 0..2 {
-                vab0[i][j] = T::einsum_ba_ab(&ja[i], mb[j]);
-                vba0[j][i] = T::einsum_ba_ab(&jb[j], ma[i]);
+                vab0[i][j] = T::einsum_ba_ab(&ja[i], mao_b[j]);
+                vba0[j][i] = T::einsum_ba_ab(&jb[j], mao_a[i]);
             }
         }
 
         // Calculate the left and right factorisations of the {}^{\Gamma\Lambda} X_{ij}^{m_k} and
         // {}^{\Gamma\Lambda} Y_{ij}^{m_k} matrices, {}^{\Gamma\Lambda} so as to avoid branching
         // down the line. Again analogous to the same spin case but with spin resolved quantities.
-        let (cx_a0, xc_a0) = Self::build_cx_xc(ma[0], s_munu, l_ca, g_ca, 0);
-        let (cx_a1, xc_a1) = Self::build_cx_xc(ma[1], s_munu, l_ca, g_ca, 1);
-        let (cx_b0, xc_b0) = Self::build_cx_xc(mb[0], s_munu, l_cb, g_cb, 0);
-        let (cx_b1, xc_b1) = Self::build_cx_xc(mb[1], s_munu, l_cb, g_cb, 1);
+        let (cx_a0, xc_a0) = Self::build_cx_xc(mao_a[0], s_munu, l_ca, g_ca, loa, goa, 0);
+        let (cx_a1, xc_a1) = Self::build_cx_xc(mao_a[1], s_munu, l_ca, g_ca, loa, goa, 1);
+        let (cx_b0, xc_b0) = Self::build_cx_xc(mao_b[0], s_munu, l_cb, g_cb, lob, gob, 0);
+        let (cx_b1, xc_b1) = Self::build_cx_xc(mao_b[1], s_munu, l_cb, g_cb, lob, gob, 1);
         let cx_a = [&cx_a0, &cx_a1];
         let xc_a = [&xc_a0, &xc_a1];
         let cx_b = [&cx_b0, &cx_b1];
@@ -657,10 +746,10 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         //  Once more this is analogous to the SameSpin case but with exchange removed. The
         //  similarities here hint at a possible generalisation of the code.
         let mut vab: [[[Array2<T>; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| std::array::from_fn(|_| Array2::<T>::zeros((2 * nmo, 2 * nmo))))
+            std::array::from_fn(|_| std::array::from_fn(|_| Array2::<T>::zeros((nmo, nmo))))
         });
         let mut vba: [[[Array2<T>; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| std::array::from_fn(|_| Array2::<T>::zeros((2 * nmo, 2 * nmo))))
+            std::array::from_fn(|_| std::array::from_fn(|_| Array2::<T>::zeros((nmo, nmo))))
         });
         let combos: Vec<(usize, usize, usize)> = (0..2)
             .flat_map(|ma0| (0..2).flat_map(move |mb0| (0..2).map(move |mk| (ma0, mb0, mk))))
@@ -698,39 +787,41 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         //      ((\mu\nu|\tau\sigma)) C_{L,c\tau}^{m_3} C_{R,d\sigma}^{m_4},
         // which is achieved by antisymmetrising the AO integrals and transforming from AO to MO
         // basis. This is unsuprisngly analogous to the 4-index J tensor in SameSpin.
-        let mut iiab: [[[[Array4<T>; 2]; 2]; 2]; 2] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| {
-                std::array::from_fn(|_| {
-                    std::array::from_fn(|_| {
-                        Array4::<T>::zeros((2 * nmo, 2 * nmo, 2 * nmo, 2 * nmo))
+        let combos: Vec<(usize, usize, usize, usize)> = (0..2)
+            .flat_map(|ma0| {
+                (0..2).flat_map(move |maj| {
+                    (0..2).flat_map(move |mb0| {
+                        (0..2).filter_map(move |mbj| {
+                            if ma0 + maj <= ma && mb0 + mbj <= mb {
+                                Some((ma0, maj, mb0, mbj))
+                            } else {
+                                None
+                            }
+                        })
                     })
                 })
             })
-        });
-
-        let combos: Vec<(usize, usize, usize, usize)> = (0..2)
-            .flat_map(|mi| {
-                (0..2).flat_map(move |mj| {
-                    (0..2).flat_map(move |mk| (0..2).map(move |ml| (mi, mj, mk, ml)))
-                })
-            })
             .collect();
 
-        type IIabBlock<T> = ((usize, usize, usize, usize), Array4<T>);
-
-        let blocks: Vec<IIabBlock<T>> = combos
+        let iiab: Vec<IIABBlock<T>> = combos
             .into_par_iter()
-            .map(|(ma0, maj, mb0, mbj)| {
-                let blk = eri_ao2mo_hermitian_as(eri, cx_a[ma0], xc_a[maj], cx_b[mb0], xc_b[mbj])
-                    .as_standard_layout()
-                    .to_owned();
-                ((ma0, maj, mb0, mbj), blk)
-            })
+            .map_init(
+                || -> ERIAO2MOScratch<T> { T::new_eri_ao2mo_scratch(eri, nmo, nmo, nmo, nmo) },
+                |scratch, (ma0, maj, mb0, mbj)| {
+                    let mut blk = Array4::<T>::zeros((nmo, nmo, nmo, nmo));
+                    T::eri_ao2mo_hermitian_into(
+                        eri,
+                        cx_a[ma0],
+                        xc_a[maj],
+                        cx_b[mb0],
+                        xc_b[mbj],
+                        blk.view_mut(),
+                        scratch,
+                    );
+                    ((ma0, maj, mb0, mbj), blk)
+                },
+            )
             .collect();
-
-        for ((ma0, maj, mb0, mbj), blk) in blocks {
-            iiab[ma0][maj][mb0][mbj] = blk;
-        }
 
         Self {
             vab0,
@@ -747,43 +838,91 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
     /// # Arguments:
     /// - `m`: {}^{\Gamma\Lambda} M^{m_k} AO-space M matrix.
     /// - `s`: AO overlap matrix S_{\mu\nu}.
-    /// - `cx`: AO coefficient matrix for \Lambda. Should be renamed.
-    /// - `cw`: AO coefficient matrix for \Gamma. Should be renamed.
+    /// - `l_c`: Bra/reference MO coefficient matrix.
+    /// - `g_c`: Ket/reference MO coefficient matrix.
+    /// - `lo`: Bra/reference occupation bitstring.
+    /// - `go`: Ket/reference occupation bitstring.
     /// - `i`: Selector for m being 0 or 1.
     /// # Returns
     /// - `(Array2<T>, Array2<T>)`: Left and right factorisation matrices.
     fn build_cx_xc(
         m: &Array2<T>,
         s: &Array2<f64>,
-        cx: &Array2<T>,
-        cw: &Array2<T>,
+        l_c: &Array2<T>,
+        g_c: &Array2<T>,
+        lo: u128,
+        go: u128,
         i: usize,
     ) -> (Array2<T>, Array2<T>) {
-        let nao = cx.nrows();
-        let nmo = cx.ncols();
+        let nao = l_c.nrows();
+        let nmo = l_c.ncols();
+
+        let nocc = lo.count_ones() as usize;
+        debug_assert_eq!(nocc, go.count_ones() as usize);
 
         let smat = real2_as::<T>(s);
-        let mut cx_out = Array2::<T>::zeros((nao, 2 * nmo));
-        let mut xc_out = Array2::<T>::zeros((nao, 2 * nmo));
+        let mut cx_full = Array2::<T>::zeros((nao, 2 * nmo));
+        let mut xc_full = Array2::<T>::zeros((nao, 2 * nmo));
 
         let one_minus_i = <T as From<f64>>::from((1 - i) as f64);
 
         let ms = m.dot(&smat);
         let mts = adjoint(m).dot(&smat);
 
-        let cx_scaled = cx.mapv(|z| z * one_minus_i);
-        let cw_scaled = cw.mapv(|z| z * one_minus_i);
+        let l_scaled = l_c.mapv(|z| z * one_minus_i);
+        let g_scaled = g_c.mapv(|z| z * one_minus_i);
 
-        cx_out
+        cx_full
             .slice_mut(s![.., 0..nmo])
-            .assign(&(mts.dot(cx) - &cx_scaled));
-        xc_out.slice_mut(s![.., 0..nmo]).assign(&ms.dot(cx));
-
-        cx_out.slice_mut(s![.., nmo..2 * nmo]).assign(&mts.dot(cw));
-        xc_out
+            .assign(&(mts.dot(l_c) - &l_scaled));
+        cx_full
             .slice_mut(s![.., nmo..2 * nmo])
-            .assign(&(ms.dot(cw) - &cw_scaled));
+            .assign(&mts.dot(g_c));
 
-        (cx_out, xc_out)
+        xc_full.slice_mut(s![.., 0..nmo]).assign(&ms.dot(l_c));
+        xc_full
+            .slice_mut(s![.., nmo..2 * nmo])
+            .assign(&(ms.dot(g_c) - &g_scaled));
+
+        let row_idx: Vec<_> = (nocc..nmo).chain(nmo..nmo + nocc).collect();
+        let col_idx: Vec<_> = (0..nocc).chain(nmo + nocc..2 * nmo).collect();
+
+        (
+            cx_full.select(Axis(1), &row_idx),
+            xc_full.select(Axis(1), &col_idx),
+        )
     }
+}
+
+/// Construct the orbital coefficient matrices spanning the Wick excitation row and column spaces.
+/// The row space is V_\Lambda \cup O_\Gamma and the column space is O_\Lambda \cup V_\Gamma.
+/// # Arguments:
+/// - `l_c`: Left-reference molecular-orbital coefficients.
+/// - `g_c`: Right-reference molecular-orbital coefficients.
+/// - `nocc`: Number of occupied orbitals in this spin sector.
+/// # Returns
+/// - `(Array2<T>, Array2<T>)`: Coefficient matrices for the contraction row and column spaces.
+pub(in crate::nonorthogonalwicks) fn contraction_orbitals<T: NOCIScalar>(
+    l_c: &Array2<T>,
+    g_c: &Array2<T>,
+    nocc: usize,
+) -> (Array2<T>, Array2<T>) {
+    let nbas = l_c.nrows();
+    let nmo = l_c.ncols();
+    let nvirt = nmo - nocc;
+
+    let mut rowc = Array2::<T>::zeros((nbas, nmo));
+    let mut colc = Array2::<T>::zeros((nbas, nmo));
+
+    rowc.slice_mut(s![.., 0..nvirt])
+        .assign(&l_c.slice(s![.., nocc..nmo]));
+    rowc.slice_mut(s![.., nvirt..nmo])
+        .assign(&g_c.slice(s![.., 0..nocc]));
+
+    colc.slice_mut(s![.., 0..nocc])
+        .assign(&l_c.slice(s![.., 0..nocc]));
+    colc.slice_mut(s![.., nocc..nmo])
+        .assign(&g_c.slice(s![.., nocc..nmo]));
+
+    (rowc, colc)
 }

@@ -9,6 +9,7 @@ use crate::input::Input;
 use crate::mpiutils::broadcast;
 use crate::noci::{MOCache, NOCIScalar, build_mo_cache, build_wicks_shared, calculate_noci_energy};
 use crate::nonorthogonalwicks::{WicksShared, WicksView};
+use crate::scf::occ_first;
 use crate::time_call;
 use crate::{AoData, DetState};
 
@@ -82,7 +83,10 @@ pub fn run_reference_space<T>(
 where
     T: NOCIScalar + Serialize + DeserializeOwned,
 {
-    let mut basis = filter_reference_basis(basis);
+    let mut basis: Vec<_> = filter_reference_basis(basis)
+        .iter()
+        .map(occ_first)
+        .collect();
 
     world.barrier();
     broadcast(world, &mut basis);

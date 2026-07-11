@@ -4,12 +4,14 @@ use ndarray::Array2;
 
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::helpers::{
-    construct_determinant_indices_gen, det_slice, extend_rdm_d, for_each_m_combination,
-};
+
+use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
+use super::prepare::construct_determinant_indices_gen;
+
 use crate::ExcitationSpin;
-use crate::maths::{build_d, mix_columns};
 use crate::noci::NOCIScalar;
+
+use crate::maths::{build_d, mix_columns};
 use crate::time_call;
 
 /// Calculate the spin-block one-body RDM matrix element between two determinants
@@ -77,8 +79,8 @@ fn lg_rdm1_m0<T: NOCIScalar>(
         let zero = <T as From<f64>>::from(0.0);
         let x0 = w.x(0);
         let y0 = w.y(0);
-        let x0p = extend_rdm_d(&x0, l_c, g_c, w.nmo);
-        let y0p = extend_rdm_d(&y0, l_c, g_c, w.nmo);
+        let x0p = extend_rdm_d(w, &x0, &w.xrdm(0, n), l_c, g_c);
+        let y0p = extend_rdm_d(w, &y0, &w.yrdm(0, n), l_c, g_c);
         let x0p = x0p.view();
         let y0p = y0p.view();
 
@@ -89,15 +91,17 @@ fn lg_rdm1_m0<T: NOCIScalar>(
         let mut cols = Vec::with_capacity(dim);
         let mut det0 = vec![zero; dim * dim];
 
-        construct_determinant_indices_gen(l_ex, g_ex, w.nmo, &mut rows_base, &mut cols_base);
+        construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
 
         for p in 0..n {
             for q in 0..n {
                 rows.clear();
                 cols.clear();
-                rows.push(2 * w.nmo + p);
+
+                rows.push(w.nmo + p);
                 rows.extend_from_slice(rows_base.as_slice());
-                cols.push(2 * w.nmo + q);
+
+                cols.push(w.nmo + q);
                 cols.extend_from_slice(cols_base.as_slice());
 
                 build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
@@ -111,6 +115,7 @@ fn lg_rdm1_m0<T: NOCIScalar>(
         }
 
         let _ = scratch;
+
         out
     })
 }
@@ -147,10 +152,10 @@ fn lg_rdm1_gen<T: NOCIScalar>(
         let y0 = w.y(0);
         let x1 = w.x(1);
         let y1 = w.y(1);
-        let x0p = extend_rdm_d(&x0, l_c, g_c, w.nmo);
-        let y0p = extend_rdm_d(&y0, l_c, g_c, w.nmo);
-        let x1p = extend_rdm_d(&x1, l_c, g_c, w.nmo);
-        let y1p = extend_rdm_d(&y1, l_c, g_c, w.nmo);
+        let x0p = extend_rdm_d(w, &x0, &w.xrdm(0, n), l_c, g_c);
+        let y0p = extend_rdm_d(w, &y0, &w.yrdm(0, n), l_c, g_c);
+        let x1p = extend_rdm_d(w, &x1, &w.xrdm(1, n), l_c, g_c);
+        let y1p = extend_rdm_d(w, &y1, &w.yrdm(1, n), l_c, g_c);
         let x0p = x0p.view();
         let y0p = y0p.view();
         let x1p = x1p.view();
@@ -165,15 +170,17 @@ fn lg_rdm1_gen<T: NOCIScalar>(
         let mut det1 = vec![zero; dim * dim];
         let mut detm = vec![zero; dim * dim];
 
-        construct_determinant_indices_gen(l_ex, g_ex, w.nmo, &mut rows_base, &mut cols_base);
+        construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
 
         for p in 0..n {
             for q in 0..n {
                 rows.clear();
                 cols.clear();
-                rows.push(2 * w.nmo + p);
+
+                rows.push(w.nmo + p);
                 rows.extend_from_slice(rows_base.as_slice());
-                cols.push(2 * w.nmo + q);
+
+                cols.push(w.nmo + q);
                 cols.extend_from_slice(cols_base.as_slice());
 
                 build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
@@ -202,6 +209,7 @@ fn lg_rdm1_gen<T: NOCIScalar>(
         }
 
         let _ = scratch;
+
         out
     })
 }

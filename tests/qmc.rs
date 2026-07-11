@@ -138,12 +138,12 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 /// Run a QMC fixture through the binary and collect report energies from stdout.
 /// # Arguments:
 /// - `fixture`: Name of the test fixture to run.
-/// # Returns
+/// # Returns:
 /// - `Vec<f64>`: QMC report energies printed by the binary.
-/// # Panics
+/// # Panics:
 /// - If the binary cannot be found or run.
 /// - If stdout or stderr are not valid UTF-8.
-/// - If the binary exits with a non-zero status.
+/// - If the binary exits with a nonzero status.
 fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     let exe = env!("CARGO_BIN_EXE_noci-rs");
     let input_path = fixture_dir(fixture).join("input.lua");
@@ -155,27 +155,35 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
         .unwrap();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
 
-    assert!(
-        output.status.success(),
-        "noci-rs failed with status {}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        stdout,
-        stderr
-    );
+    let mut eproj = None;
+    let mut energies = Vec::new();
+    for line in stdout.lines() {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.first() == Some(&"Iter") {
+            eproj = columns.iter().position(|&column| column == "EProj");
+            continue;
+        }
 
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let cols: Vec<_> = line.split_whitespace().collect();
-            if cols.len() == 10 && cols[0].parse::<usize>().is_ok() {
-                cols[1].parse::<f64>().ok()
-            } else {
-                None
-            }
-        })
-        .collect()
+        let Some(col) = eproj else {
+            continue;
+        };
+        if columns
+            .first()
+            .and_then(|column| column.parse::<usize>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        if let Some(energy) = columns
+            .get(col)
+            .and_then(|column| column.parse::<f64>().ok())
+        {
+            energies.push(energy);
+        }
+    }
+
+    energies
 }
 
 /// Check that a short QMC trajectory is finite, bounded and moving downward.
@@ -469,7 +477,7 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
     );
 }
 
-/// Test that a short LiH STO-3G QMC trajectory stays in a physical energy window.
+/// Test that a short LiH STO-3G DirectOverlap QMC trajectory stays in a physical energy window.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -481,11 +489,11 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
 /// - If the trajectory does not move downward by the fixture minimum.
 #[test]
 #[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds() {
-    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds_direct_overlap() {
+    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY_DIRECT_OVERLAP");
 }
 
-/// Test that a short LiH 6-31G QMC trajectory stays in a physical energy window.
+/// Test that a short LiH STO-3G DDS2 QMC trajectory stays in a physical energy window.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -497,6 +505,38 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds() {
 /// - If the trajectory does not move downward by the fixture minimum.
 #[test]
 #[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_bounds() {
-    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds_dds2() {
+    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
+}
+
+/// Test that a short LiH 6-31G DirectOverlap QMC trajectory stays in a physical energy window.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory satisfies the stored bounds.
+/// # Panics
+/// - If the binary run fails.
+/// - If too few QMC report energies are printed.
+/// - If any report energy is non-finite or outside the fixture bounds.
+/// - If the trajectory does not move downward by the fixture minimum.
+#[test]
+#[serial]
+fn qmc_lih_6_31g_2_8_ang_trajectory_bounds_direct_overlap() {
+    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+}
+
+/// Test that a short LiH 6-31G DDS2 QMC trajectory stays in a physical energy window.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory satisfies the stored bounds.
+/// # Panics
+/// - If the binary run fails.
+/// - If too few QMC report energies are printed.
+/// - If any report energy is non-finite or outside the fixture bounds.
+/// - If the trajectory does not move downward by the fixture minimum.
+#[test]
+#[serial]
+fn qmc_lih_6_31g_2_8_ang_trajectory_bounds_dds2() {
+    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
 }

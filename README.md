@@ -214,7 +214,8 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 ### NOCI-QMC
 
 - Deterministic imaginary-time propagation with an optional dynamic shift.
-- Signed-walker stochastic propagation.
+- Signed-walker stochastic propagation for shifted and difference-doubly-shifted propagators.
+- Direct-overlap stochastic propagation using a real metric population \(N_w = S_{wx}c_x\).
 - Uniform and heat-bath excitation generators.
 - Various propagators for nonorthogonal and overcomplete spaces.
 - MPI and Rayon parallelism.
@@ -405,6 +406,7 @@ Available propagators are:
 - `doubly-shifted`
 - `difference-doubly-shifted-u1`
 - `difference-doubly-shifted-u2`
+- `direct-overlap`
 
 ### Deterministic Propagation
 
@@ -423,7 +425,7 @@ These options control the maximum number of propagation steps, convergence thres
 
 ### Stochastic Propagation
 
-The `qmc` table enables stochastic imaginary-time propagation using a signed walker population.
+The `qmc` table enables stochastic imaginary-time propagation. Shifted and difference-doubly-shifted propagators use the signed-walker population representation. The `direct-overlap` propagator uses a real metric population \(N_w = S_{wx}c_x\) and Fast Randomized Iteration-style compression to sample sparse spawning populations.
 
 ```lua
 qmc = {
@@ -432,6 +434,8 @@ qmc = {
     shift_damping = 5e-4,
     ncycles = 1e1,
     nreports = 1e3,
+    sampling_cutoff = 1.0,
+    spawn_cutoff = 0.25,
     excitation_gen = "uniform",
     seed = 92774801300236626,
 }
@@ -443,6 +447,8 @@ Available excitation generators are:
 - `heat-bath`
 
 Exact heat-bath sampling is very expensive.
+
+For `direct-overlap`, `sampling_cutoff` controls the stochastic compression threshold used to sample the persistent metric population, and `spawn_cutoff` controls the stochastic compression threshold for generated population changes.
 
 ### Selected NOCI and NOCI-PT2
 
@@ -529,7 +535,9 @@ Defaults are defined by the input structures under
 
 6. Adam A. Holmes, Hitesh J. Changlani, and C. J. Umrigar. Efficient heat-bath sampling in Fock space. *Journal of Chemical Theory and Computation* **12**, 1561–1571 (2016).
 
-7. Hugh G. A. Burton and Alex J. W. Thom. Reaching full correlation through nonorthogonal configuration interaction: A second-order perturbative approach. *Journal of Chemical Theory and Computation* **16**, 5586–5600 (2020).
+7. Samuel M. Greene, Robert J. Webber, Jonathan Weare, and Timothy C. Berkelbach. Beyond walkers in stochastic quantum chemistry: Reducing error using fast randomized iteration. *Journal of Chemical Theory and Computation* **15**, 4834–4850 (2019).
+
+8. Hugh G. A. Burton and Alex J. W. Thom. Reaching full correlation through nonorthogonal configuration interaction: A second-order perturbative approach. *Journal of Chemical Theory and Computation* **16**, 5586–5600 (2020).
 
 ## Licence
 

@@ -140,42 +140,6 @@ impl<T: NOCIScalar> WicksView<T> {
 
         WicksPairView { aa, bb, ab }
     }
-
-    /// Prefetch likely-used Wick's intermediates for a reference pair.
-    /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `lp`: Left parent reference index.
-    /// - `gp`: Right parent reference index.
-    /// # Returns
-    /// - `()`: Issues best-effort CPU prefetch hints.
-    #[inline(always)]
-    pub(crate) fn prefetch_pair(
-        &self,
-        lp: usize,
-        gp: usize,
-    ) {
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-
-            let idx = self.idx(lp, gp);
-            _mm_prefetch((&self.meta[idx] as *const PairMeta<T>).cast(), _MM_HINT_T0);
-            _mm_prefetch((&self.off[idx] as *const PairOffset).cast(), _MM_HINT_T0);
-
-            let off = &self.off[idx];
-            let slab = self.slab_ptr();
-            _mm_prefetch(slab.add(off.aa.x[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.aa.y[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.aa.fh[0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.aa.v[0][0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.x[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.y[0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.fh[0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.bb.v[0][0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.ab.vab[0][0][0]).cast(), _MM_HINT_T0);
-            _mm_prefetch(slab.add(off.ab.iiab[0][0][0][0]).cast(), _MM_HINT_T0);
-        }
-    }
 }
 
 // Read only view of same-spin Wick's intermediates.
@@ -207,9 +171,9 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.
     /// # Returns
-    /// - `usize`: Tensor dimension `2 * nmo`.
+    /// - `usize`: Tensor dimension `nmo`.
     pub(crate) fn n(&self) -> usize {
-        2 * self.nmo
+        self.nmo
     }
 
     /// Get a view to the `X[mi]` matrix.
@@ -236,6 +200,36 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         mi: usize,
     ) -> ArrayView2<'_, T> {
         self.w.view2(self.off.y[mi], self.n())
+    }
+
+    /// Get a view to the basis-space `X[mi]` contraction matrix used for RDM indices.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi`: Zero distribution selector.
+    /// # Returns
+    /// - `ArrayView2<'_, T>`: Basis-space X contraction matrix.
+    #[cfg(feature = "nocc")]
+    pub(crate) fn xrdm(
+        &self,
+        mi: usize,
+        nbas: usize,
+    ) -> ArrayView2<'_, T> {
+        self.w.view2(self.off.xrdm[mi], nbas)
+    }
+
+    /// Get a view to the basis-space `Y[mi]` contraction matrix used for RDM indices.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi`: Zero distribution selector.
+    /// # Returns
+    /// - `ArrayView2<'_, T>`: Basis-space Y contraction matrix.
+    #[cfg(feature = "nocc")]
+    pub(crate) fn yrdm(
+        &self,
+        mi: usize,
+        nbas: usize,
+    ) -> ArrayView2<'_, T> {
+        self.w.view2(self.off.yrdm[mi], nbas)
     }
 
     /// Get a slice of the transpoed Hamiltonian `F[mi][mj]` tensor.
@@ -328,9 +322,9 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     /// # Arguments:
     /// - `self`: View to diff-spin Wick's intermediates.
     /// # Returns
-    /// - `usize`: Tensor dimension `2 * nmo`.
+    /// - `usize`: Tensor dimension `nmo`.
     pub(crate) fn n(&self) -> usize {
-        2 * self.nmo
+        self.nmo
     }
 
     /// Get a slice of the transpoed `Vab[ma0][mb0][mak]` tensor.

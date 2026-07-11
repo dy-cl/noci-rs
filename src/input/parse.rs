@@ -360,6 +360,13 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             eprintln!("{msg}");
             std::process::exit(1);
         });
+
+        let sampling_cutoff = qmc_tbl
+            .get("sampling_cutoff")
+            .unwrap_or(defaults.sampling_cutoff);
+
+        let spawn_cutoff = qmc_tbl.get("spawn_cutoff").unwrap_or(defaults.spawn_cutoff);
+
         QMCOptions {
             initial_population: qmc_tbl
                 .get("initial_population")
@@ -374,6 +381,8 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,
             seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
+            sampling_cutoff,
+            spawn_cutoff,
         }
     })
 }

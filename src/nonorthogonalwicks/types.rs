@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::noci::NOCIScalar;
 
+/// Zero-overlap counts used to assign pair-adaptive rank-four tensor offsets.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PairZeroCounts {
+    /// Number of alpha zero-overlap orbital pairs.
+    pub(crate) ma: usize,
+    /// Number of beta zero-overlap orbital pairs.
+    pub(crate) mb: usize,
+}
+
 /// Storage for same-spin metadata and lightweight scalars that we can store outside the shared
 /// memory region.
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -16,6 +25,8 @@ pub(crate) struct SameSpinMeta<T: NOCIScalar> {
     pub(crate) m: usize,
     /// Number of molecular orbitals for this same-spin block.
     pub(crate) nmo: usize,
+    /// Number of occupied orbitals for this same-spin block.
+    pub(crate) nocc: usize,
     /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
     pub(crate) f0f: [T; 2],
     /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
@@ -31,6 +42,7 @@ impl<T: NOCIScalar> Default for SameSpinMeta<T> {
             phase: <T as From<f64>>::from(0.0),
             m: 0,
             nmo: 0,
+            nocc: 0,
             f0f: [<T as From<f64>>::from(0.0); 2],
             f0h: [<T as From<f64>>::from(0.0); 2],
             v0: [<T as From<f64>>::from(0.0); 3],
@@ -68,6 +80,10 @@ pub(crate) struct SameSpinOffset {
     pub(in crate::nonorthogonalwicks) x: [usize; 2],
     /// Offsets to the Y[mi] contraction matrices.
     pub(in crate::nonorthogonalwicks) y: [usize; 2],
+    /// Offsets to the basis-space X[mi] matrices used for external RDM indices.
+    pub(in crate::nonorthogonalwicks) xrdm: [usize; 2],
+    /// Offsets to the basis-space Y[mi] matrices used for external RDM indices.
+    pub(in crate::nonorthogonalwicks) yrdm: [usize; 2],
     /// Offsets to the transposed Hamiltonian one-body F[mi][mj] intermediates.
     pub(in crate::nonorthogonalwicks) fh: [[usize; 2]; 2],
     /// Offsets to the transposed Fock one-body F[mi][mj] intermediates.

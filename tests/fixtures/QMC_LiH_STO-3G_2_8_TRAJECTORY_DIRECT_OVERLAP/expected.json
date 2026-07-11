@@ -1,0 +1,7 @@
+{
+  "min_energy": -8.0,
+  "max_energy": -7.0,
+  "min_samples": 40,
+  "min_energy_span": 0.0001,
+  "min_final_drop": 0.0001
+}
