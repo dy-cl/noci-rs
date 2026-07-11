@@ -602,6 +602,10 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 }
 
 /// Owning struct for the diff-spin computed intermediates.
+type IIMask = (usize, usize, usize, usize);
+type IIABBlock<T> = (IIMask, Array4<T>);
+
+/// Owning struct for the diff-spin computed intermediates.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub struct DiffSpinBuild<T: NOCIScalar> {
@@ -614,7 +618,7 @@ pub struct DiffSpinBuild<T: NOCIScalar> {
     /// Mixed-spin Vba[mb0][ma0][mbk] intermediates.
     pub vba: [[[Array2<T>; 2]; 2]; 2],
     /// Reachable mixed-spin IIab tensors indexed by `(ma0, maj, mb0, mbj)`.
-    pub iiab: Vec<((usize, usize, usize, usize), Array4<T>)>,
+    pub iiab: Vec<IIABBlock<T>>,
 }
 
 impl<T: NOCIScalar> DiffSpinBuild<T> {
@@ -799,7 +803,7 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
             })
             .collect();
 
-        let iiab: Vec<((usize, usize, usize, usize), Array4<T>)> = combos
+        let iiab: Vec<IIABBlock<T>> = combos
             .into_par_iter()
             .map_init(
                 || -> ERIAO2MOScratch<T> { T::new_eri_ao2mo_scratch(eri, nmo, nmo, nmo, nmo) },

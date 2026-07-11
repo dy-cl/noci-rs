@@ -121,8 +121,7 @@ fn apply_population_changes_local<I>(
 /// - `data`: Immutable stochastic propagation data.
 /// - `overlap_factor`: Reusable spin overlap factors.
 /// - `run`: Rank-local run metadata.
-/// - `mpi`: Reusable MPI scratch space.
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `mpi`: MPI communicator and reusable MPI scratch storage.
 /// - `scratch`: Reusable overlap allocation storage for grouped S\Delta application.
 /// # Returns
 /// - `()`: Applies the global overlap-transformed population change.
@@ -132,10 +131,11 @@ fn apply_overlap_population_changes(
     data: &NOCIData<'_, f64>,
     overlap_factor: &OverlapFactor,
     run: &QMCRunInfo,
-    mpi: &mut MPIScratch,
-    world: &impl CommunicatorCollectives,
+    mpi: (&impl CommunicatorCollectives, &mut MPIScratch),
     scratch: &mut OverlapFactorScratch,
 ) {
+    let (world, mpi) = mpi;
+
     time_call!(crate::timers::stochastic::add_apply_overlap_changes, {
         if run.nranks == 1 {
             time_call!(
@@ -828,8 +828,7 @@ pub fn qmc_step(
             data,
             &overlap_factor,
             &run,
-            &mut mpiscratch,
-            world,
+            (world, &mut mpiscratch),
             &mut overlap_scratch,
         );
 

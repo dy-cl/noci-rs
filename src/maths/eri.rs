@@ -20,6 +20,26 @@ pub struct ERIAO2MOScratch<T: ERIScalar> {
     eri_as: Option<Array4<T>>,
 }
 
+/// Coefficient matrices for an AO-to-MO ERI transformation.
+struct AO2MOCoefficients<'a, T: ERIScalar> {
+    /// C_{\mu,p} coefficients.
+    c_mu_p: ArrayView2<'a, T>,
+    /// C_{\nu,q} coefficients.
+    c_nu_q: ArrayView2<'a, T>,
+    /// C_{\lambda,r} coefficients.
+    c_lam_r: ArrayView2<'a, T>,
+    /// C_{\sigma,s} coefficients.
+    c_sig_s: ArrayView2<'a, T>,
+}
+
+/// Scratch buffers for an AO-to-MO ERI transformation.
+struct AO2MOScratch<'a, T: ERIScalar> {
+    /// Reusable contraction and permutation buffer.
+    worka: &'a mut [T],
+    /// Reusable contraction and permutation buffer.
+    workb: &'a mut [T],
+}
+
 /// Scalar type accepted by Hermitian ERI AO-to-MO transformation dispatch.
 pub trait ERIScalar: LinalgScalar + From<f64> {
     /// Construct reusable scratch storage for AO-to-MO ERI transformations.
@@ -115,13 +135,17 @@ impl ERIScalar for f64 {
     ) {
         eri_ao2mo_into(
             eri.view(),
-            c_mu_p.view(),
-            c_nu_q.view(),
-            c_lam_r.view(),
-            c_sig_s.view(),
+            AO2MOCoefficients {
+                c_mu_p: c_mu_p.view(),
+                c_nu_q: c_nu_q.view(),
+                c_lam_r: c_lam_r.view(),
+                c_sig_s: c_sig_s.view(),
+            },
             out,
-            &mut scratch.worka,
-            &mut scratch.workb,
+            AO2MOScratch {
+                worka: &mut scratch.worka,
+                workb: &mut scratch.workb,
+            },
         );
     }
 }
@@ -207,46 +231,44 @@ impl ERIScalar for Complex64 {
 
         eri_ao2mo_into(
             eri_as.view(),
-            c_mu_p_conj,
-            c_nu_q.view(),
-            c_lam_r_conj,
-            c_sig_s.view(),
+            AO2MOCoefficients {
+                c_mu_p: c_mu_p_conj,
+                c_nu_q: c_nu_q.view(),
+                c_lam_r: c_lam_r_conj,
+                c_sig_s: c_sig_s.view(),
+            },
             out,
-            &mut scratch.worka,
-            &mut scratch.workb,
+            AO2MOScratch {
+                worka: &mut scratch.worka,
+                workb: &mut scratch.workb,
+            },
         );
     }
 }
 
-/// Transform typed AO ERIs using preselected effective coefficient matrices and reusable buffers.
+/// Transform typed AO ERIs using preselected coefficient matrices and reusable buffers.
 /// The contraction order is \sigma then \lambda then \nu then \mu.
 /// The final assignment writes [p, q, r, s] into `out`.
 /// # Arguments:
 /// - `eri`: Typed AO ERIs.
-/// - `c_mu_p`: Effective C_{\mu,p} coefficients.
-/// - `c_nu_q`: Effective C_{\nu,q} coefficients.
-/// - `c_lam_r`: Effective C_{\lambda,r} coefficients.
-/// - `c_sig_s`: Effective C_{\sigma,s} coefficients.
+/// - `coefficients`: AO-to-MO coefficient matrices.
 /// - `out`: Output ERIs in [p, q, r, s] order.
-/// - `worka`: Reusable contraction and permutation buffer.
-/// - `workb`: Reusable contraction and permutation buffer.
+/// - `scratch`: Reusable contraction and permutation buffers.
 fn eri_ao2mo_into<T: ERIScalar>(
     eri: ArrayView4<'_, T>,
-    c_mu_p: ArrayView2<'_, T>,
-    c_nu_q: ArrayView2<'_, T>,
-    c_lam_r: ArrayView2<'_, T>,
-    c_sig_s: ArrayView2<'_, T>,
+    coefficients: AO2MOCoefficients<'_, T>,
     mut out: ArrayViewMut4<'_, T>,
-    worka: &mut [T],
-    workb: &mut [T],
+    scratch: AO2MOScratch<'_, T>,
 ) {
     let nbas = eri.shape()[0];
-    let nmop = c_mu_p.ncols();
-    let nmoq = c_nu_q.ncols();
-    let nmor = c_lam_r.ncols();
-    let nmos = c_sig_s.ncols();
+    let nmop = coefficients.c_mu_p.ncols();
+    let nmoq = coefficients.c_nu_q.ncols();
+    let nmor = coefficients.c_lam_r.ncols();
+    let nmos = coefficients.c_sig_s.ncols();
     let alpha = T::from(1.0);
     let beta = T::from(0.0);
+    let worka = scratch.worka;
+    let workb = scratch.workb;
 
     let t1len = nbas * nbas * nbas * nmos;
     let t2len = nbas * nbas * nmos * nmor;
@@ -256,7 +278,7 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let erirows = eri.into_shape((nbas * nbas * nbas, nbas)).unwrap();
     let mut t1rows =
         ArrayViewMut2::from_shape((nbas * nbas * nbas, nmos), &mut worka[..t1len]).unwrap();
-    general_mat_mul(alpha, &erirows, &c_sig_s, beta, &mut t1rows);
+    general_mat_mul(alpha, &erirows, &coefficients.c_sig_s, beta, &mut t1rows);
 
     let src = ArrayView4::from_shape((nbas, nbas, nbas, nmos), &worka[..t1len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nbas, nbas, nmos, nbas), &mut workb[..t1len]).unwrap();
@@ -265,7 +287,7 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let t1rows = ArrayView2::from_shape((nbas * nbas * nmos, nbas), &workb[..t1len]).unwrap();
     let mut t2rows =
         ArrayViewMut2::from_shape((nbas * nbas * nmos, nmor), &mut worka[..t2len]).unwrap();
-    general_mat_mul(alpha, &t1rows, &c_lam_r, beta, &mut t2rows);
+    general_mat_mul(alpha, &t1rows, &coefficients.c_lam_r, beta, &mut t2rows);
 
     let src = ArrayView4::from_shape((nbas, nbas, nmos, nmor), &worka[..t2len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nbas, nmos, nmor, nbas), &mut workb[..t2len]).unwrap();
@@ -274,7 +296,7 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let t2rows = ArrayView2::from_shape((nbas * nmos * nmor, nbas), &workb[..t2len]).unwrap();
     let mut t3rows =
         ArrayViewMut2::from_shape((nbas * nmos * nmor, nmoq), &mut worka[..t3len]).unwrap();
-    general_mat_mul(alpha, &t2rows, &c_nu_q, beta, &mut t3rows);
+    general_mat_mul(alpha, &t2rows, &coefficients.c_nu_q, beta, &mut t3rows);
 
     let src = ArrayView4::from_shape((nbas, nmos, nmor, nmoq), &worka[..t3len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nmos, nmor, nmoq, nbas), &mut workb[..t3len]).unwrap();
@@ -283,7 +305,7 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let t3rows = ArrayView2::from_shape((nmos * nmor * nmoq, nbas), &workb[..t3len]).unwrap();
     let mut t4rows =
         ArrayViewMut2::from_shape((nmos * nmor * nmoq, nmop), &mut worka[..t4len]).unwrap();
-    general_mat_mul(alpha, &t3rows, &c_mu_p, beta, &mut t4rows);
+    general_mat_mul(alpha, &t3rows, &coefficients.c_mu_p, beta, &mut t4rows);
 
     let src = ArrayView4::from_shape((nmos, nmor, nmoq, nmop), &worka[..t4len]).unwrap();
     out.assign(&src.permuted_axes([3, 2, 1, 0]));
