@@ -4,29 +4,31 @@ use std::path::Path;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
+use crate::input::Propagator;
+
 use super::restart::{RestartState, write_restart_hdf5};
 use super::state::{ExcitationHist, PopulationStats, PropagationState, QMCRunInfo};
 
 /// Print the iteration table header on rank zero.
 /// # Arguments:
 /// - `irank`: Rank of the current MPI process.
+/// - `propagator`: Propagator used by the stochastic calculation.
 /// # Returns:
 /// - `()`: Writes the table header to stdout on rank zero.
-pub(in crate::stochastic) fn print_header(irank: usize) {
+pub(in crate::stochastic) fn print_header(
+    irank: usize,
+    propagator: Propagator,
+) {
     if irank == 0 {
+        let (n, nref, naux, naux_occ) = match propagator {
+            Propagator::DirectOverlap => ("NMetric", "NMetricRef", "NSample", "NSampleOcc"),
+            _ => ("NWalk", "NRef", "-", "-"),
+        };
+
         println!("{}", "=".repeat(132));
         println!(
             "{:<8} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-            "Iter",
-            "EProjNum",
-            "EProjDen",
-            "EProj",
-            "ECorr",
-            "EShift",
-            "NW",
-            "NRef",
-            "NSample",
-            "NDet (Sampled)",
+            "Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift", n, nref, naux, naux_occ,
         );
     }
 }
@@ -36,27 +38,44 @@ pub(in crate::stochastic) fn print_header(irank: usize) {
 /// - `irank`: Rank of the current MPI process.
 /// - `state`: Propagation state containing QMC statistics.
 /// - `e0`: Energy of the first basis determinant.
+/// - `propagator`: Propagator used by the stochastic calculation.
 /// # Returns:
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
 pub(in crate::stochastic) fn print_initial_row(
     irank: usize,
     state: &PropagationState,
     e0: f64,
+    propagator: Propagator,
 ) {
     if irank == 0 {
-        println!(
-            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
-            0,
-            state.pe.num,
-            state.pe.den,
-            state.eprojcur,
-            state.eprojcur - e0,
-            0.0,
-            state.prev_pop.nw,
-            state.prev_pop.nref,
-            state.prev_pop.nsampled,
-            state.prev_pop.nsampledo,
-        );
+        match propagator {
+            Propagator::DirectOverlap => println!(
+                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
+                0,
+                state.pe.num,
+                state.pe.den,
+                state.eprojcur,
+                state.eprojcur - e0,
+                0.0,
+                state.prev_pop.nw,
+                state.prev_pop.nref,
+                state.prev_pop.nsampled,
+                state.prev_pop.nsampledo,
+            ),
+            _ => println!(
+                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
+                0,
+                state.pe.num,
+                state.pe.den,
+                state.eprojcur,
+                state.eprojcur - e0,
+                0.0,
+                state.prev_pop.nw,
+                state.prev_pop.nref,
+                "-",
+                "-",
+            ),
+        }
     }
 }
 
@@ -68,6 +87,7 @@ pub(in crate::stochastic) fn print_initial_row(
 /// - `stats`: Population statistics computed for the current iteration.
 /// - `e0`: Energy of the first basis determinant.
 /// - `shift`: Population-control shift.
+/// - `propagator`: Propagator used by the stochastic calculation.
 /// # Returns:
 /// - `()`: Writes the current iteration line to stdout on rank zero.
 pub(in crate::stochastic) fn print_row(
@@ -77,21 +97,37 @@ pub(in crate::stochastic) fn print_row(
     stats: &PopulationStats,
     e0: f64,
     shift: f64,
+    propagator: Propagator,
 ) {
     if irank == 0 {
-        println!(
-            "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
-            iter,
-            state.pe.num,
-            state.pe.den,
-            state.eprojcur,
-            state.eprojcur - e0,
-            if state.reached { shift } else { 0.0 },
-            stats.nw,
-            stats.nref,
-            stats.nsampled,
-            stats.nsampledo,
-        );
+        match propagator {
+            Propagator::DirectOverlap => println!(
+                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
+                iter,
+                state.pe.num,
+                state.pe.den,
+                state.eprojcur,
+                state.eprojcur - e0,
+                if state.reached { shift } else { 0.0 },
+                stats.nw,
+                stats.nref,
+                stats.nsampled,
+                stats.nsampledo,
+            ),
+            _ => println!(
+                "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
+                iter,
+                state.pe.num,
+                state.pe.den,
+                state.eprojcur,
+                state.eprojcur - e0,
+                if state.reached { shift } else { 0.0 },
+                stats.nw,
+                stats.nref,
+                "-",
+                "-",
+            ),
+        }
     }
 }
 

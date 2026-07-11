@@ -38,66 +38,93 @@ def extract(path: Path) -> pd.DataFrame:
     """
     Extract the stochastic QMC table.
     """
+    def isQMCHeader(line: str) -> bool:
+        columns = line.split()
+
+        if columns[:6] != ["Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift"]:
+            return False
+
+        return columns[6:] in (
+            ["NWalk", "NRef", "-", "-"],
+            ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
+        )
+
     floatPattern = (
         r"[+-]?"
         r"(?:\d+(?:\.\d*)?|\.\d+)"
         r"(?:[eE][+-]?\d+)?"
     )
+    optionalPattern = rf"(?:{floatPattern}|-)"
 
     pattern = re.compile(
         rf"^\s*"
-        rf"(?P<iter>\d+)\s+"
-        rf"(?P<eprojnum>{floatPattern})\s+"
-        rf"(?P<eprojden>{floatPattern})\s+"
-        rf"(?P<eproj>{floatPattern})\s+"
-        rf"(?P<ecorr>{floatPattern})\s+"
-        rf"(?P<eshift>{floatPattern})\s+"
-        rf"(?P<nw>{floatPattern})\s+"
-        rf"(?P<nref>{floatPattern})\s+"
-        rf"(?P<nsample>{floatPattern})\s+"
-        rf"(?P<ndetsampled>\d+)"
+        rf"(\d+)\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({floatPattern})\s+"
+        rf"({optionalPattern})\s+"
+        rf"({optionalPattern})"
         rf"\s*$"
     )
 
     rows = []
+    inQMC = False
+    header = None
+
+    def optionalFloat(value: str) -> float:
+        return np.nan if value == "-" else float(value)
 
     with open(path, "r") as output:
         for line in output:
+            if not inQMC:
+                if isQMCHeader(line):
+                    header = line.split()
+                    inQMC = True
+                continue
+
+            if line.startswith("===="):
+                break
+
             match = pattern.match(line)
 
             if match is None:
                 continue
 
+            fields = match.groups()
+
             rows.append(
                 (
-                    int(match.group("iter")),
-                    float(match.group("eprojnum")),
-                    float(match.group("eprojden")),
-                    float(match.group("eproj")),
-                    float(match.group("ecorr")),
-                    float(match.group("eshift")),
-                    float(match.group("nw")),
-                    float(match.group("nref")),
-                    float(match.group("nsample")),
-                    int(match.group("ndetsampled")),
+                    int(fields[0]),
+                    float(fields[1]),
+                    float(fields[2]),
+                    float(fields[3]),
+                    float(fields[4]),
+                    float(fields[5]),
+                    float(fields[6]),
+                    float(fields[7]),
+                    optionalFloat(fields[8]),
+                    optionalFloat(fields[9]),
                 )
             )
 
-    return pd.DataFrame(
+    if header is None:
+        raise ValueError("Stochastic QMC table header not found")
+
+    df = pd.DataFrame(
         rows,
-        columns = [
-            "Iter",
-            "EProjNum",
-            "EProjDen",
-            "EProj",
-            "ECorr",
-            "EShift",
-            "NW",
-            "NRef",
-            "NSample",
-            "NDet (Sampled)",
-        ],
     )
+
+    if header[6:] == ["NWalk", "NRef", "-", "-"]:
+        df = df.iloc[:, :8]
+        df.columns = header[:8]
+    else:
+        df.columns = header
+
+    return df.drop_duplicates(subset = ["Iter"], keep = "last")
 
 def prepareObservables(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -250,13 +277,17 @@ def main() -> None:
         "ECorr",
         "EShift",
         "EShiftCorr",
-        "NW",
-        "NRef",
-        "NSample",
-        "NDet (Sampled)",
     ]
+    columns.extend(
+        column
+        for column in ["NWalk", "NRef", "NMetric", "NMetricRef", "NSample", "NSampleOcc"]
+        if column in df.columns
+    )
 
     for column in columns:
+        if df[column].isna().all():
+            continue
+
         values = df[column].to_numpy(dtype = float)
         values = values[np.isfinite(values)]
 

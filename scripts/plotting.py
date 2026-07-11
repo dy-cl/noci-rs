@@ -45,6 +45,29 @@ LIVE_READ_ERRORS = (
     pd.errors.ParserError,
 )
 
+def isQMCHeader(header: str) -> bool:
+    """
+    Check whether a line is a stochastic QMC table header.
+    """
+    columns = header.split()
+
+    if columns[:6] != ["Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift"]:
+        return False
+
+    return columns[6:] in (
+        ["NWalk", "NRef", "-", "-"],
+        ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
+    )
+
+def qmcPopulationColumns(df: pd.DataFrame):
+    """
+    Return population columns present in a stochastic QMC table.
+    """
+    if "NWalk" in df.columns:
+        return "NWalk", "NRef", None, None
+
+    return "NMetric", "NMetricRef", "NSample", "NSampleOcc"
+
 
 def addTrajectoryArgs(parser):
     """
@@ -97,18 +120,7 @@ def findQMC(path: Path):
             if not inqmc:
                 header = line.lstrip()
 
-                if (
-                    header.startswith("Iter")
-                    and "EProjNum" in header
-                    and "EProjDen" in header
-                    and "EProj" in header
-                    and "ECorr" in header
-                    and "EShift" in header
-                    and "NW" in header
-                    and "NRef" in header
-                    and "NSample" in header
-                    and "NDet (Sampled)" in header
-                ):
+                if isQMCHeader(header):
                     start = lineno + 1
                     inqmc = True
 
@@ -124,6 +136,9 @@ def findQMC(path: Path):
             if s[0].isdigit():
                 nrows += 1
 
+    if start is None:
+        raise ValueError("Stochastic QMC table header not found")
+
     return start, nrows
 
 def readQMC(path: Path) -> pd.DataFrame:
@@ -131,27 +146,37 @@ def readQMC(path: Path) -> pd.DataFrame:
     Read the stochastic QMC table from an output file.
     """
     start, nrows = findQMC(path)
+    header = None
+    with open(path, "r") as f:
+        for line in f:
+            if isQMCHeader(line.lstrip()):
+                header = line.split()
+                break
 
-    return pd.read_csv(
+    if header is None:
+        raise ValueError("Stochastic QMC table header not found")
+
+    df = pd.read_csv(
         path,
         sep = r"\s+",
         header = None,
         skiprows = start,
         nrows = nrows,
-        names = [
-            "Iter",
-            "EProjNum",
-            "EProjDen",
-            "EProj",
-            "ECorr",
-            "EShift",
-            "NW",
-            "NRef",
-            "NSample",
-            "NDet (Sampled)",
-        ],
         engine = "c",
     )
+
+    if header[6:] == ["NWalk", "NRef", "-", "-"]:
+        df = df.iloc[:, :8]
+        df.columns = header[:8]
+    else:
+        df.columns = header
+
+    for column in df.columns:
+        df[column] = pd.to_numeric(df[column], errors = "coerce")
+
+    df["Iter"] = df["Iter"].astype(int)
+
+    return df
 
 def findDeterministicQMC(path: Path):
     """
@@ -846,14 +871,12 @@ def plotNW(args):
     Plot persistent and sampled-source populations against iteration.
     """
     if not args.live:
-        df = readQMC(args.path).dropna(
-            subset = [
-                "Iter",
-                "EShift",
-                "NW",
-                "NSample",
-            ]
-        )
+        df = readQMC(args.path)
+        population, _, sampled, _ = qmcPopulationColumns(df)
+        subset = ["Iter", "EShift", population]
+        if sampled is not None:
+            subset.append(sampled)
+        df = df.dropna(subset = subset)
 
         iterShift, _ = shiftChange(df["EShift"])
 
@@ -862,19 +885,20 @@ def plotNW(args):
 
         plt.plot(
             df["Iter"],
-            df["NW"],
+            df[population],
             label = r"$N_w(\tau)$",
             linewidth = LINEWIDTH,
             color = "tab:blue",
         )
 
-        plt.plot(
-            df["Iter"],
-            df["NSample"],
-            label = r"$N_{\mathrm{sampled}}(\tau)$",
-            linewidth = LINEWIDTH,
-            color = "tab:orange",
-        )
+        if sampled is not None:
+            plt.plot(
+                df["Iter"],
+                df[sampled],
+                label = r"$N_{\mathrm{sampled}}(\tau)$",
+                linewidth = LINEWIDTH,
+                color = "tab:orange",
+            )
 
         if iterShift is not None:
             plt.axvline(
@@ -927,14 +951,12 @@ def plotNW(args):
     )
 
     def update():
-        df = readQMC(args.path).dropna(
-            subset = [
-                "Iter",
-                "EShift",
-                "NW",
-                "NSample",
-            ]
-        )
+        df = readQMC(args.path)
+        population, _, sampled, _ = qmcPopulationColumns(df)
+        subset = ["Iter", "EShift", population]
+        if sampled is not None:
+            subset.append(sampled)
+        df = df.dropna(subset = subset)
 
         if df.empty:
             return
@@ -943,13 +965,17 @@ def plotNW(args):
 
         lineNw.set_data(
             x,
-            df["NW"].to_numpy(),
+            df[population].to_numpy(),
         )
 
-        lineSampled.set_data(
-            x,
-            df["NSample"].to_numpy(),
-        )
+        if sampled is not None:
+            lineSampled.set_data(
+                x,
+                df[sampled].to_numpy(),
+            )
+            lineSampled.set_visible(True)
+        else:
+            lineSampled.set_visible(False)
 
         iterShift, _ = shiftChange(df["EShift"])
 
@@ -1161,22 +1187,19 @@ def plotShoulder(args):
     Plot the persistent total-to-reference population ratio against population.
     """
     if not args.live:
-        df = readQMC(args.path).dropna(
-            subset = [
-                "NW",
-                "NRef",
-            ]
-        )
+        df = readQMC(args.path)
+        population, reference, _, _ = qmcPopulationColumns(df)
+        df = df.dropna(subset = [population, reference])
 
-        df = df[df["NRef"] != 0.0]
+        df = df[df[reference] != 0.0]
 
-        ratio = df["NW"] / df["NRef"]
+        ratio = df[population] / df[reference]
 
         setStyle()
         plt.figure()
 
         plt.plot(
-            df["NW"],
+            df[population],
             ratio,
             linewidth = LINEWIDTH,
             color = "tab:blue",
@@ -1222,22 +1245,19 @@ def plotShoulder(args):
     )
 
     def update():
-        df = readQMC(args.path).dropna(
-            subset = [
-                "NW",
-                "NRef",
-            ]
-        )
+        df = readQMC(args.path)
+        population, reference, _, _ = qmcPopulationColumns(df)
+        df = df.dropna(subset = [population, reference])
 
-        df = df[df["NRef"] != 0.0]
+        df = df[df[reference] != 0.0]
 
         if df.empty:
             return
 
-        ratio = df["NW"] / df["NRef"]
+        ratio = df[population] / df[reference]
 
         lineRatio.set_data(
-            df["NW"].to_numpy(),
+            df[population].to_numpy(),
             ratio.to_numpy(),
         )
 
@@ -1251,17 +1271,13 @@ def plotReferenceOverlap(args):
     Plot the normalised projected-energy denominator against iteration.
     """
     if not args.live:
-        df = readQMC(args.path).dropna(
-            subset = [
-                "Iter",
-                "EProjDen",
-                "NW",
-            ]
-        )
+        df = readQMC(args.path)
+        population, _, _, _ = qmcPopulationColumns(df)
+        df = df.dropna(subset = ["Iter", "EProjDen", population])
 
-        df = df[df["NW"] != 0.0]
+        df = df[df[population] != 0.0]
 
-        overlap = df["EProjDen"] / df["NW"]
+        overlap = df["EProjDen"] / df[population]
         average = overlap.rolling(
             window = args.window,
             min_periods = 1,
@@ -1342,21 +1358,17 @@ def plotReferenceOverlap(args):
     ax.grid(True)
 
     def update():
-        df = readQMC(args.path).dropna(
-            subset = [
-                "Iter",
-                "EProjDen",
-                "NW",
-            ]
-        )
+        df = readQMC(args.path)
+        population, _, _, _ = qmcPopulationColumns(df)
+        df = df.dropna(subset = ["Iter", "EProjDen", population])
 
-        df = df[df["NW"] != 0.0]
+        df = df[df[population] != 0.0]
 
         if df.empty:
             return
 
         x = df["Iter"].to_numpy()
-        overlap = df["EProjDen"] / df["NW"]
+        overlap = df["EProjDen"] / df[population]
         average = overlap.rolling(
             window = args.window,
             min_periods = 1,

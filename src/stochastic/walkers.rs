@@ -247,8 +247,9 @@ pub fn qmc_step(
     state.prev_pop = stats;
     state.cur_pop = stats;
 
-    print_header(irank);
-    print_initial_row(irank, &state, data.basis[0].e);
+    let propagator = data.input.prop_ref().propagator;
+    print_header(irank, propagator);
+    print_initial_row(irank, &state, data.basis[0].e, propagator);
 
     for report in state.start_report..qmc.nreports {
         for cycle in 0..qmc.ncycles {
@@ -314,7 +315,7 @@ pub fn qmc_step(
             return ret;
         }
 
-        print_row(irank, end, &state, &stats, data.basis[0].e, *es);
+        print_row(irank, end, &state, &stats, data.basis[0].e, *es, propagator);
     }
 
     (state.eprojcur, state.mc.excitation_hist)
