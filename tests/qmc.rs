@@ -477,7 +477,7 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
     );
 }
 
-/// Test that a short LiH STO-3G QMC trajectory stays in a physical energy window.
+/// Test that a short LiH STO-3G DirectOverlap QMC trajectory stays in a physical energy window.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -489,11 +489,11 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
 /// - If the trajectory does not move downward by the fixture minimum.
 #[test]
 #[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds() {
-    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds_direct_overlap() {
+    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY_DIRECT_OVERLAP");
 }
 
-/// Test that a short LiH 6-31G QMC trajectory stays in a physical energy window.
+/// Test that a short LiH STO-3G DDS2 QMC trajectory stays in a physical energy window.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -505,6 +505,38 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds() {
 /// - If the trajectory does not move downward by the fixture minimum.
 #[test]
 #[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_bounds() {
-    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds_dds2() {
+    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
+}
+
+/// Test that a short LiH 6-31G DirectOverlap QMC trajectory stays in a physical energy window.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory satisfies the stored bounds.
+/// # Panics
+/// - If the binary run fails.
+/// - If too few QMC report energies are printed.
+/// - If any report energy is non-finite or outside the fixture bounds.
+/// - If the trajectory does not move downward by the fixture minimum.
+#[test]
+#[serial]
+fn qmc_lih_6_31g_2_8_ang_trajectory_bounds_direct_overlap() {
+    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+}
+
+/// Test that a short LiH 6-31G DDS2 QMC trajectory stays in a physical energy window.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory satisfies the stored bounds.
+/// # Panics
+/// - If the binary run fails.
+/// - If too few QMC report energies are printed.
+/// - If any report energy is non-finite or outside the fixture bounds.
+/// - If the trajectory does not move downward by the fixture minimum.
+#[test]
+#[serial]
+fn qmc_lih_6_31g_2_8_ang_trajectory_bounds_dds2() {
+    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
 }

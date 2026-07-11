@@ -8,7 +8,7 @@ scf = {
 }
 
 mol = {
-    basis = '6-31G',
+    basis = 'STO-3G',
     r = {2.8},
     unit = 'Ang',
     atoms = function(r)
@@ -36,7 +36,8 @@ excit = {
 }
 
 prop = {
-    dt = 1e-3,
+    dt = 1e-2,
+    propagator = "direct-overlap",
 }
 
 qmc = {
