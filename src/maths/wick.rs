@@ -30,9 +30,6 @@ pub(crate) fn det_occupied_minor<T: NOCIScalar>(
         }
     }
 
-    assert_eq!(rows.len(), nel);
-    assert!(nel <= c.ncols());
-
     let mut minor = Vec::with_capacity(nel * nel);
     for &r in rows.iter() {
         for col in 0..nel {
@@ -733,7 +730,7 @@ pub(crate) fn det_lu_l5<T: StateScalar>(
 
             let mut c = k + 1;
             while c < N {
-                lu[r * N + c] = lu[r * N + c] - factor * lu[k * N + c];
+                lu[r * N + c] -= factor * lu[k * N + c];
                 c += 1;
             }
             r += 1;
@@ -811,7 +808,7 @@ pub(crate) fn det_lu_l6<T: StateScalar>(
 
             let mut c = k + 1;
             while c < N {
-                lu[r * N + c] = lu[r * N + c] - factor * lu[k * N + c];
+                lu[r * N + c] -= factor * lu[k * N + c];
                 c += 1;
             }
             r += 1;
@@ -844,7 +841,6 @@ pub(crate) fn det_lu_l6<T: StateScalar>(
 fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(
     lu: &mut [T; S],
 ) -> Option<T> {
-    debug_assert_eq!(S, N * N);
     let mut sign = 1.0;
     let mut k = 0usize;
 
@@ -890,7 +886,7 @@ fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(
 
             let mut c = k + 1;
             while c < N {
-                lu[r * N + c] = lu[r * N + c] - factor * lu[k * N + c];
+                lu[r * N + c] -= factor * lu[k * N + c];
                 c += 1;
             }
             r += 1;
@@ -1179,7 +1175,7 @@ mod det_mod {
                 lu[r * n + k] = factor;
 
                 for c in (k + 1)..n {
-                    lu[r * n + c] = lu[r * n + c] - factor * lu[k * n + c];
+                    lu[r * n + c] =- factor * lu[k * n + c];
                 }
             }
         }
