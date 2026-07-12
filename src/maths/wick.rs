@@ -678,6 +678,241 @@ pub fn det<T: StateScalar>(
     }
 }
 
+/// Compute a determinant with partial-pivot LU for a fixed `5 x 5` matrix.
+/// # Arguments:
+/// - `lu`: Mutable row-major `5 x 5` matrix storage overwritten with LU factors.
+/// # Returns
+/// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
+#[inline(always)]
+pub(crate) fn det_lu_l5<T: StateScalar>(
+    lu: &mut [T; 25],
+) -> Option<T> {
+    const N: usize = 5;
+    let mut sign = 1.0;
+    let mut k = 0usize;
+
+    while k < N {
+        let mut pivot = k;
+        let mut pivot_abs = lu[k * N + k].abs();
+
+        if !pivot_abs.is_finite() {
+            return None;
+        }
+
+        let mut r = k + 1;
+        while r < N {
+            let abs = lu[r * N + k].abs();
+            if !abs.is_finite() {
+                return None;
+            }
+            if abs > pivot_abs {
+                pivot = r;
+                pivot_abs = abs;
+            }
+            r += 1;
+        }
+
+        if pivot_abs == 0.0 {
+            return Some(T::from_real(0.0));
+        }
+
+        if pivot != k {
+            let mut c = 0usize;
+            while c < N {
+                lu.swap(k * N + c, pivot * N + c);
+                c += 1;
+            }
+            sign = -sign;
+        }
+
+        let pivot_value = lu[k * N + k];
+        r = k + 1;
+        while r < N {
+            let factor = lu[r * N + k] / pivot_value;
+            lu[r * N + k] = factor;
+
+            let mut c = k + 1;
+            while c < N {
+                lu[r * N + c] = lu[r * N + c] - factor * lu[k * N + c];
+                c += 1;
+            }
+            r += 1;
+        }
+
+        k += 1;
+    }
+
+    let mut det = T::from_real(sign);
+    let mut i = 0usize;
+    while i < N {
+        det *= lu[i * N + i];
+        i += 1;
+    }
+
+    if det.abs().is_finite() {
+        Some(det)
+    } else {
+        None
+    }
+}
+
+/// Compute a determinant with partial-pivot LU for a fixed `6 x 6` matrix.
+/// # Arguments:
+/// - `lu`: Mutable row-major `6 x 6` matrix storage overwritten with LU factors.
+/// # Returns
+/// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
+#[inline(always)]
+pub(crate) fn det_lu_l6<T: StateScalar>(
+    lu: &mut [T; 36],
+) -> Option<T> {
+    const N: usize = 6;
+    let mut sign = 1.0;
+    let mut k = 0usize;
+
+    while k < N {
+        let mut pivot = k;
+        let mut pivot_abs = lu[k * N + k].abs();
+
+        if !pivot_abs.is_finite() {
+            return None;
+        }
+
+        let mut r = k + 1;
+        while r < N {
+            let abs = lu[r * N + k].abs();
+            if !abs.is_finite() {
+                return None;
+            }
+            if abs > pivot_abs {
+                pivot = r;
+                pivot_abs = abs;
+            }
+            r += 1;
+        }
+
+        if pivot_abs == 0.0 {
+            return Some(T::from_real(0.0));
+        }
+
+        if pivot != k {
+            let mut c = 0usize;
+            while c < N {
+                lu.swap(k * N + c, pivot * N + c);
+                c += 1;
+            }
+            sign = -sign;
+        }
+
+        let pivot_value = lu[k * N + k];
+        r = k + 1;
+        while r < N {
+            let factor = lu[r * N + k] / pivot_value;
+            lu[r * N + k] = factor;
+
+            let mut c = k + 1;
+            while c < N {
+                lu[r * N + c] = lu[r * N + c] - factor * lu[k * N + c];
+                c += 1;
+            }
+            r += 1;
+        }
+
+        k += 1;
+    }
+
+    let mut det = T::from_real(sign);
+    let mut i = 0usize;
+    while i < N {
+        det *= lu[i * N + i];
+        i += 1;
+    }
+
+    if det.abs().is_finite() {
+        Some(det)
+    } else {
+        None
+    }
+}
+
+/// Compute a determinant with partial-pivot LU for a fixed small matrix size.
+/// The const rank lets the compiler simplify hot determinant kernels without changing memory use.
+/// # Arguments:
+/// - `lu`: Mutable row-major matrix storage overwritten with LU factors.
+/// # Returns
+/// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
+#[inline(always)]
+fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(
+    lu: &mut [T; S],
+) -> Option<T> {
+    debug_assert_eq!(S, N * N);
+    let mut sign = 1.0;
+    let mut k = 0usize;
+
+    while k < N {
+        let mut pivot = k;
+        let mut pivot_abs = lu[k * N + k].abs();
+
+        if !pivot_abs.is_finite() {
+            return None;
+        }
+
+        let mut r = k + 1;
+        while r < N {
+            let abs = lu[r * N + k].abs();
+            if !abs.is_finite() {
+                return None;
+            }
+            if abs > pivot_abs {
+                pivot = r;
+                pivot_abs = abs;
+            }
+            r += 1;
+        }
+
+        if pivot_abs == 0.0 {
+            return Some(T::from_real(0.0));
+        }
+
+        if pivot != k {
+            let mut c = 0usize;
+            while c < N {
+                lu.swap(k * N + c, pivot * N + c);
+                c += 1;
+            }
+            sign = -sign;
+        }
+
+        let pivot_value = lu[k * N + k];
+        r = k + 1;
+        while r < N {
+            let factor = lu[r * N + k] / pivot_value;
+            lu[r * N + k] = factor;
+
+            let mut c = k + 1;
+            while c < N {
+                lu[r * N + c] = lu[r * N + c] - factor * lu[k * N + c];
+                c += 1;
+            }
+            r += 1;
+        }
+
+        k += 1;
+    }
+
+    let mut det = T::from_real(sign);
+    let mut i = 0usize;
+    while i < N {
+        det *= lu[i * N + i];
+        i += 1;
+    }
+
+    if det.abs().is_finite() {
+        Some(det)
+    } else {
+        None
+    }
+}
+
 mod det_mod {
     use crate::StateScalar;
     use ndarray::ArrayView2;
@@ -837,16 +1072,40 @@ mod det_mod {
         a: &[T],
         n: usize,
     ) -> Option<T> {
-        if n <= 8 {
-            let mut lu = [T::from_real(0.0); 64];
-            lu[..n * n].copy_from_slice(&a[..n * n]);
-            if let Some(d) = det_lu_in_place(&mut lu[..n * n], n) {
-                return Some(d);
+        match n {
+            5 => {
+                let mut lu = [T::from_real(0.0); 25];
+                lu.copy_from_slice(&a[..25]);
+                if let Some(d) = super::det_lu_l5(&mut lu) {
+                    return Some(d);
+                }
             }
-        } else {
-            let mut lu = a[..n * n].to_vec();
-            if let Some(d) = det_lu_in_place(&mut lu, n) {
-                return Some(d);
+            6 => {
+                let mut lu = [T::from_real(0.0); 36];
+                lu.copy_from_slice(&a[..36]);
+                if let Some(d) = super::det_lu_l6(&mut lu) {
+                    return Some(d);
+                }
+            }
+            7 => {
+                let mut lu = [T::from_real(0.0); 49];
+                lu.copy_from_slice(&a[..49]);
+                if let Some(d) = super::det_lu_fixed::<T, 7, 49>(&mut lu) {
+                    return Some(d);
+                }
+            }
+            8 => {
+                let mut lu = [T::from_real(0.0); 64];
+                lu.copy_from_slice(&a[..64]);
+                if let Some(d) = super::det_lu_fixed::<T, 8, 64>(&mut lu) {
+                    return Some(d);
+                }
+            }
+            _ => {
+                let mut lu = a[..n * n].to_vec();
+                if let Some(d) = det_lu_in_place(&mut lu, n) {
+                    return Some(d);
+                }
             }
         }
 
@@ -936,6 +1195,7 @@ mod det_mod {
             None
         }
     }
+
 }
 
 /// Compute the determinant and adjugate transpose of an `n x n` matrix using

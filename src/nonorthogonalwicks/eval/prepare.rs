@@ -35,8 +35,7 @@ pub fn prepare_same<T: NOCIScalar>(
 
 /// Prepare shared same-spin scratch quantities for the zero-overlap case `m = 0`.
 /// Only the `det0` branch is required, so the second branch determinant is not built.
-/// For small excitation rank, dispatches further to specialized `l = 1`, `l = 2`,
-/// `l = 3` and `l = 4` kernels.
+/// For small excitation rank, dispatches further to specialized `l = 1` through `l = 6` kernels.
 /// # Arguments:
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
 /// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
@@ -60,6 +59,8 @@ fn prepare_same_m0<T: NOCIScalar>(
                 2 => scratch.ensure_same_m0(2),
                 3 => scratch.ensure_same(3),
                 4 => scratch.ensure_same(4),
+                5 => scratch.ensure_same(5),
+                6 => scratch.ensure_same(6),
                 _ => scratch.ensure_same(l),
             }
 
@@ -70,6 +71,8 @@ fn prepare_same_m0<T: NOCIScalar>(
                 2 => prepare_same_m0_l2(w, scratch),
                 3 => prepare_same_m0_l3(w, scratch),
                 4 => prepare_same_m0_l4(w, scratch),
+                5 => prepare_same_m0_l5(w, scratch),
+                6 => prepare_same_m0_l6(w, scratch),
                 _ => {
                     let x0 = w.x(0);
                     let y0 = w.y(0);
@@ -262,6 +265,96 @@ fn prepare_same_m0_l4<T: NOCIScalar>(
             det0[15] = *xptr.offset(xr3 + c3 * xstr[1]);
         }
     })
+}
+
+/// Prepare the `l = 5`, `m = 0` same-spin contraction determinant directly.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// # Returns
+/// - `()`: Writes the five-by-five contraction determinant into `scratch.det0`.
+#[inline(always)]
+fn prepare_same_m0_l5<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) {
+    const N: usize = 5;
+    let x0 = w.x(0);
+    let y0 = w.y(0);
+    let xstr = x0.strides();
+    let ystr = y0.strides();
+    let xptr = x0.as_ptr();
+    let yptr = y0.as_ptr();
+    let rows = scratch.rows.as_slice();
+    let cols = scratch.cols.as_slice();
+    let det0 = scratch.det0.as_mut_slice();
+
+    unsafe {
+        let mut i = 0usize;
+        while i < N {
+            let r = *rows.get_unchecked(i) as isize;
+            let xr = r * xstr[0];
+            let yr = r * ystr[0];
+
+            let mut j = 0usize;
+            while j < N {
+                let c = *cols.get_unchecked(j) as isize;
+                *det0.get_unchecked_mut(i * N + j) = if i >= j {
+                    *xptr.offset(xr + c * xstr[1])
+                } else {
+                    *yptr.offset(yr + c * ystr[1])
+                };
+                j += 1;
+            }
+
+            i += 1;
+        }
+    }
+}
+
+/// Prepare the `l = 6`, `m = 0` same-spin contraction determinant directly.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// # Returns
+/// - `()`: Writes the six-by-six contraction determinant into `scratch.det0`.
+#[inline(always)]
+fn prepare_same_m0_l6<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) {
+    const N: usize = 6;
+    let x0 = w.x(0);
+    let y0 = w.y(0);
+    let xstr = x0.strides();
+    let ystr = y0.strides();
+    let xptr = x0.as_ptr();
+    let yptr = y0.as_ptr();
+    let rows = scratch.rows.as_slice();
+    let cols = scratch.cols.as_slice();
+    let det0 = scratch.det0.as_mut_slice();
+
+    unsafe {
+        let mut i = 0usize;
+        while i < N {
+            let r = *rows.get_unchecked(i) as isize;
+            let xr = r * xstr[0];
+            let yr = r * ystr[0];
+
+            let mut j = 0usize;
+            while j < N {
+                let c = *cols.get_unchecked(j) as isize;
+                *det0.get_unchecked_mut(i * N + j) = if i >= j {
+                    *xptr.offset(xr + c * xstr[1])
+                } else {
+                    *yptr.offset(yr + c * ystr[1])
+                };
+                j += 1;
+            }
+
+            i += 1;
+        }
+    }
 }
 
 /// Builds both determinant branches `det0` and `det1`, which are later mixed according to the

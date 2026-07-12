@@ -3,7 +3,7 @@ use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::helpers::mix_dets_same;
 use crate::ExcitationSpin;
-use crate::maths::det;
+use crate::maths::{det, det_lu_l5, det_lu_l6};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -58,6 +58,8 @@ fn lg_overlap_m0<T: NOCIScalar>(
             1 => lg_overlap_m0_l1(w, scratch),
             2 => lg_overlap_m0_l2(w, scratch),
             3 => lg_overlap_m0_l3(w, scratch),
+            5 => lg_overlap_m0_l5(w, scratch),
+            6 => lg_overlap_m0_l6(w, scratch),
             _ => {
                 w.phase
                     * <T as From<f64>>::from(w.tilde_s_prod)
@@ -119,6 +121,40 @@ fn lg_overlap_m0_l3<T: NOCIScalar>(
             * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
                 + d[2] * (d[3] * d[7] - d[4] * d[6]))
     })
+}
+
+/// Calculate the specialized `l = 5`, `m = 0` overlap.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space containing the prepared `det0`.
+/// # Returns
+/// - `T`: Overlap matrix element for `l = 5`.
+#[inline(always)]
+fn lg_overlap_m0_l5<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
+    let mut lu = [T::from_real(0.0); 25];
+    lu.copy_from_slice(&scratch.det0.as_slice()[..25]);
+    let det = det_lu_l5(&mut lu).unwrap_or(<T as From<f64>>::from(0.0));
+    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
+}
+
+/// Calculate the specialized `l = 6`, `m = 0` overlap.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space containing the prepared `det0`.
+/// # Returns
+/// - `T`: Overlap matrix element for `l = 6`.
+#[inline(always)]
+fn lg_overlap_m0_l6<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
+    let mut lu = [T::from_real(0.0); 36];
+    lu.copy_from_slice(&scratch.det0.as_slice()[..36]);
+    let det = det_lu_l6(&mut lu).unwrap_or(<T as From<f64>>::from(0.0));
+    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
 }
 
 /// Calculate overlap matrix elements when all determinant columns are zero-replacement columns,
