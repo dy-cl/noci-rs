@@ -681,7 +681,7 @@ pub fn det<T: StateScalar>(
 mod det_mod {
     use crate::StateScalar;
     use ndarray::ArrayView2;
-    use ndarray_linalg::{Determinant, FactorizeInto, SVD};
+    use ndarray_linalg::{Determinant, SVD};
 
     /// Calculate determinant of a 2 x 2 matrix.
     /// # Arguments:
@@ -837,15 +837,20 @@ mod det_mod {
         a: &[T],
         n: usize,
     ) -> Option<T> {
-        let av = ArrayView2::from_shape((n, n), a).ok()?;
-
-        if let Ok(m) = av.to_owned().factorize_into()
-            && let Ok(d) = m.det()
-            && d.abs().is_finite()
-        {
-            return Some(d);
+        if n <= 8 {
+            let mut lu = [T::from_real(0.0); 64];
+            lu[..n * n].copy_from_slice(&a[..n * n]);
+            if let Some(d) = det_lu_in_place(&mut lu[..n * n], n) {
+                return Some(d);
+            }
+        } else {
+            let mut lu = a[..n * n].to_vec();
+            if let Some(d) = det_lu_in_place(&mut lu, n) {
+                return Some(d);
+            }
         }
 
+        let av = ArrayView2::from_shape((n, n), a).ok()?;
         let (u_opt, s, vt_opt) = av.svd(true, true).ok()?;
         let u = u_opt?;
         let vt = vt_opt?;
@@ -856,6 +861,73 @@ mod det_mod {
         let mut det = det_u * det_vt;
         for &si in s.iter() {
             det *= T::from_real(si);
+        }
+
+        if det.abs().is_finite() {
+            Some(det)
+        } else {
+            None
+        }
+    }
+
+    /// Compute a determinant with partial-pivot LU in caller-provided row-major storage.
+    /// This avoids calling LAPACK for the many tiny determinants in Wick overlap evaluation.
+    /// # Arguments:
+    /// - `lu`: Mutable row-major matrix storage overwritten with LU factors.
+    /// - `n`: Matrix dimension.
+    /// # Returns
+    /// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
+    #[inline(always)]
+    fn det_lu_in_place<T: StateScalar>(
+        lu: &mut [T],
+        n: usize,
+    ) -> Option<T> {
+        let mut sign = 1.0;
+
+        for k in 0..n {
+            let mut pivot = k;
+            let mut pivot_abs = lu[k * n + k].abs();
+
+            if !pivot_abs.is_finite() {
+                return None;
+            }
+
+            for r in (k + 1)..n {
+                let abs = lu[r * n + k].abs();
+                if !abs.is_finite() {
+                    return None;
+                }
+                if abs > pivot_abs {
+                    pivot = r;
+                    pivot_abs = abs;
+                }
+            }
+
+            if pivot_abs == 0.0 {
+                return Some(T::from_real(0.0));
+            }
+
+            if pivot != k {
+                for c in 0..n {
+                    lu.swap(k * n + c, pivot * n + c);
+                }
+                sign = -sign;
+            }
+
+            let pivot_value = lu[k * n + k];
+            for r in (k + 1)..n {
+                let factor = lu[r * n + k] / pivot_value;
+                lu[r * n + k] = factor;
+
+                for c in (k + 1)..n {
+                    lu[r * n + c] = lu[r * n + c] - factor * lu[k * n + c];
+                }
+            }
+        }
+
+        let mut det = T::from_real(sign);
+        for i in 0..n {
+            det *= lu[i * n + i];
         }
 
         if det.abs().is_finite() {

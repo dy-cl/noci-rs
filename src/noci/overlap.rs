@@ -1,5 +1,7 @@
 // noci/overlap.rs
 
+use std::collections::HashMap;
+
 use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
 use crate::nonorthogonalwicks::{lg_overlap, prepare_same};
@@ -1052,16 +1054,15 @@ fn build_parent_spin_spaces(
         }
     }
 
+    let mut occupation_ids = (0..nparents)
+        .map(|_| HashMap::new())
+        .collect::<Vec<HashMap<(u128, u128), usize>>>();
+
     for (det, state) in data.basis.iter().enumerate() {
         let parent = &mut parents[state.parent];
-        let oid = parent
-            .oreps
-            .iter()
-            .position(|&rep| {
-                let rep = &data.basis[rep];
-                rep.oa == state.oa && rep.ob == state.ob
-            })
-            .unwrap_or_else(|| {
+        let oid = *occupation_ids[state.parent]
+            .entry((state.oa, state.ob))
+            .or_insert_with(|| {
                 parent.oreps.push(det);
                 parent.oreps.len() - 1
             });
