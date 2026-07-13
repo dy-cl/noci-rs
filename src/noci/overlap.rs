@@ -2,7 +2,7 @@
 
 use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
-use crate::nonorthogonalwicks::{lg_overlap, prepare_same};
+use crate::nonorthogonalwicks::{lg_overlap, lg_overlap_same_f64, prepare_same};
 use crate::time_call;
 
 use super::naive::{build_s_pair, occ_coeffs};
@@ -161,14 +161,7 @@ pub(in crate::noci) fn calculate_s_alpha_pair_wicks(
 ) -> f64 {
     let l_ex = &ldet.excitation.alpha;
     let g_ex = &gdet.excitation.alpha;
-    let l = l_ex.holes.len() + g_ex.holes.len();
-
-    if w.aa.m > l {
-        return 0.0;
-    }
-
-    prepare_same(&w.aa, l_ex, g_ex, &mut scratch.aa);
-    ldet.pha * gdet.pha * lg_overlap(&w.aa, l_ex, g_ex, &mut scratch.aa)
+    ldet.pha * gdet.pha * lg_overlap_same_f64(&w.aa, l_ex, g_ex, &mut scratch.aa)
 }
 
 /// Calculate the beta same-spin overlap for an ordered Wick pair.
@@ -188,12 +181,5 @@ pub(in crate::noci) fn calculate_s_beta_pair_wicks(
 ) -> f64 {
     let l_ex = &ldet.excitation.beta;
     let g_ex = &gdet.excitation.beta;
-    let l = l_ex.holes.len() + g_ex.holes.len();
-
-    if w.bb.m > l {
-        return 0.0;
-    }
-
-    prepare_same(&w.bb, l_ex, g_ex, &mut scratch.bb);
-    ldet.phb * gdet.phb * lg_overlap(&w.bb, l_ex, g_ex, &mut scratch.bb)
+    ldet.phb * gdet.phb * lg_overlap_same_f64(&w.bb, l_ex, g_ex, &mut scratch.bb)
 }

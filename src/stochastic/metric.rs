@@ -529,7 +529,7 @@ pub(in crate::stochastic) fn sample_populations(
         sampled.clear();
 
         for (k, &population) in populations.iter().enumerate() {
-            let population = stochastic_population_cutoff(population, cutoff, rng);
+            let population = fri(population, cutoff, rng);
 
             if population != 0.0 {
                 sampled.add(run.owned[k], population);
@@ -538,7 +538,7 @@ pub(in crate::stochastic) fn sample_populations(
     });
 }
 
-/// Apply unbiased stochastic rounding to a signed real value.
+/// Apply unbiased FRI stochastic rounding to a signed real value.
 /// For some cutoff c > 0, \mathcal \Phi_c(x) = x when x = 0,
 /// c \leq 0, or |x| \geq c. For 0 < |x| < c, \Phi_c(x) = \text{sign}(x)c
 /// with probability |x| / c, and zero otherwise. The rounding is conditionally unbiased
@@ -549,7 +549,7 @@ pub(in crate::stochastic) fn sample_populations(
 /// - `rng`: Random-number generator.
 /// # Returns:
 /// - `f64`: Unbiased stochastically rounded value.
-pub(in crate::stochastic) fn stochastic_population_cutoff(
+pub(in crate::stochastic) fn fri(
     value: f64,
     cutoff: f64,
     rng: &mut SmallRng,
@@ -563,6 +563,36 @@ pub(in crate::stochastic) fn stochastic_population_cutoff(
     } else {
         0.0
     }
+}
+
+/// Apply FRI compression to sparse population updates in place.
+/// Each update \Delta b_x is replaced by \Phi_c(\Delta b_x), so the compressed
+/// pre-overlap vector remains conditionally unbiased:
+/// \mathbb E[\Phi_c(\Delta b_x) \mid \Delta b_x] = \Delta b_x.
+/// # Arguments:
+/// - `updates`: Coalesced sparse population changes.
+/// - `cutoff`: Minimum nonzero retained magnitude c.
+/// - `rng`: Random-number generator.
+/// # Returns:
+/// - `()`: Replaces `updates` with its sparse FRI-compressed form.
+pub(in crate::stochastic) fn fri_population_updates(
+    updates: &mut Vec<PopulationUpdate>,
+    cutoff: f64,
+    rng: &mut SmallRng,
+) {
+    let mut out = 0usize;
+
+    for i in 0..updates.len() {
+        let mut update = updates[i];
+        update.dn = fri(update.dn, cutoff, rng);
+
+        if update.dn != 0.0 {
+            updates[out] = update;
+            out += 1;
+        }
+    }
+
+    updates.truncate(out);
 }
 
 /// Update the single population-control shift.
@@ -792,7 +822,7 @@ pub fn qmc_step(
             sample_populations(
                 &state.mc.populations,
                 &mut state.mc.sampled,
-                qmc.sampling_cutoff,
+                qmc.sampling_cutoff1,
                 &run,
                 &mut rng,
             );
@@ -822,6 +852,13 @@ pub fn qmc_step(
         population_changes.sort_unstable_by_key(|update| update.det);
 
         coalesce_population_updates(&mut population_changes);
+
+        let mut fri_rng = SmallRng::seed_from_u64(
+            run.rank_seed
+                ^ 0xA0761D6478BD642F
+                ^ (report as u64).wrapping_mul(0xE7037ED1A0B428DB),
+        );
+        fri_population_updates(&mut population_changes, qmc.sampling_cutoff2, &mut fri_rng);
 
         apply_overlap_population_changes(
             &mut state.mc.populations,

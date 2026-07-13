@@ -40,8 +40,10 @@ pub struct QMCOptions {
     pub initial_population: f64,
     /// Target persistent population 1-norm.
     pub target_population: f64,
-    /// Minimum sampled-population population magnitude.
-    pub sampling_cutoff: f64,
+    /// Minimum sampled persistent-population magnitude.
+    pub sampling_cutoff1: f64,
+    /// Minimum sampled pre-overlap population-change magnitude.
+    pub sampling_cutoff2: f64,
     /// Minimum spawned population-change magnitude.
     pub spawn_cutoff: f64,
     /// Shift damping factor.
@@ -61,7 +63,8 @@ impl Default for QMCOptions {
         Self {
             initial_population: 100.0,
             target_population: 100000.0,
-            sampling_cutoff: 0.0,
+            sampling_cutoff1: 0.0,
+            sampling_cutoff2: 0.0,
             spawn_cutoff: 0.0,
             shift_damping: 5e-4,
             ncycles: 10,

@@ -9,7 +9,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 
 use super::common::find_hs;
 use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
-use super::metric::stochastic_population_cutoff;
+use super::metric::fri;
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
@@ -570,7 +570,7 @@ impl ThreadPropagation {
                     self.samples.push(raw.abs());
                 }
 
-                let dn = stochastic_population_cutoff(raw, qmc.spawn_cutoff, &mut self.rng);
+                let dn = fri(raw, qmc.spawn_cutoff, &mut self.rng);
 
                 if dn != 0.0 {
                     if run.nranks == 1 {
@@ -639,7 +639,7 @@ impl ThreadPropagation {
                 self.samples.push(raw.abs());
             }
 
-            let dn = stochastic_population_cutoff(raw, qmc.spawn_cutoff, &mut self.rng);
+            let dn = fri(raw, qmc.spawn_cutoff, &mut self.rng);
 
             if dn == 0.0 {
                 continue;

@@ -15,10 +15,10 @@ use super::types::{DetPair, NOCIData};
 struct SpinUpdate {
     /// Global determinant index \Omega receiving the pre-overlap update.
     det: usize,
-    /// Source-parent local a component ID a_\Omega.
-    a: usize,
-    /// Source-parent local b component ID b_\Omega.
-    b: usize,
+    /// Active source a position for this sparse entry.
+    apos: usize,
+    /// Active source b position for this sparse entry.
+    bpos: usize,
     /// Sparse pre-overlap update value \Delta_\Omega.
     dn: f64,
 }
@@ -36,18 +36,6 @@ struct ParentUpdates {
     apos: Vec<usize>,
     /// Source-parent b ID to active position map.
     bpos: Vec<usize>,
-    /// First sparse entry for each source-parent a ID in the current update list.
-    first_a: Vec<usize>,
-    /// First sparse entry for each source-parent b ID in the current update list.
-    first_b: Vec<usize>,
-    /// Number of sparse entries for each source-parent a ID.
-    count_a: Vec<usize>,
-    /// Number of sparse entries for each source-parent b ID.
-    count_b: Vec<usize>,
-    /// Next sparse entry with the same source-parent a ID.
-    next_a: Vec<usize>,
-    /// Next sparse entry with the same source-parent b ID.
-    next_b: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -138,8 +126,10 @@ pub(crate) struct OverlapFactorScratch {
     intermediate: Vec<f64>,
     /// Temporary per-target output values for one parent block.
     values: Vec<f64>,
-    /// Cached target determinant list for validating reusable target blocks.
-    cached_targets: Vec<usize>,
+    /// Cached target slice pointer for validating reusable target blocks.
+    cached_targets_ptr: *const usize,
+    /// Cached target slice length for validating reusable target blocks.
+    cached_targets_len: usize,
     /// Reusable target parent blocks for a fixed rank-local target list.
     target_blocks: Vec<LocalParentBlock>,
 }
@@ -202,7 +192,8 @@ impl OverlapFactor {
             bfac: Vec::new(),
             intermediate: Vec::new(),
             values: Vec::new(),
-            cached_targets: Vec::new(),
+            cached_targets_ptr: std::ptr::null(),
+            cached_targets_len: 0,
             target_blocks: Vec::new(),
         }
     }
@@ -289,10 +280,12 @@ impl OverlapFactor {
         data: &NOCIData<'_, f64>,
         scratch: &mut OverlapFactorScratch,
     ) -> Vec<LocalParentBlock> {
-        if scratch.cached_targets.as_slice() != targets || scratch.target_blocks.is_empty() {
-            scratch.cached_targets.clear();
-            scratch.cached_targets.extend_from_slice(targets);
-
+        if scratch.target_blocks.is_empty()
+            || scratch.cached_targets_ptr != targets.as_ptr()
+            || scratch.cached_targets_len != targets.len()
+        {
+            scratch.cached_targets_ptr = targets.as_ptr();
+            scratch.cached_targets_len = targets.len();
             self.build_target_blocks(targets, data)
         } else {
             std::mem::take(&mut scratch.target_blocks)
@@ -521,18 +514,12 @@ impl OverlapFactor {
                         WickScratchSpin::new(),
                         Vec::<f64>::new(),
                         Vec::<f64>::new(),
-                        Vec::<usize>::new(),
-                        Vec::<usize>::new(),
                     )
                 },
-                |(wick_scratch, afac, bfac, nz_aids, nz_bids), (value, t)| {
+                |(wick_scratch, afac, bfac), (value, t)| {
                     let pair = wicks.pair(lp, gp);
                     afac.resize(nsa, 0.0);
                     bfac.resize(nsb, 0.0);
-                    nz_aids.clear();
-                    nz_bids.clear();
-                    let mut alpha_work = 0usize;
-                    let mut beta_work = 0usize;
 
                     let tadet = self.parents[target.parent].areps[t.a];
                     let tbdet = self.parents[target.parent].breps[t.b];
@@ -548,11 +535,6 @@ impl OverlapFactor {
 
                         afac[pos] =
                             calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
-
-                        if afac[pos] != 0.0 {
-                            nz_aids.push(sa);
-                            alpha_work = alpha_work.saturating_add(source.count_a[sa]);
-                        }
                     }
 
                     for (pos, &sb) in source.bids.iter().enumerate() {
@@ -564,50 +546,16 @@ impl OverlapFactor {
                         };
 
                         bfac[pos] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
-
-                        if bfac[pos] != 0.0 {
-                            nz_bids.push(sb);
-                            beta_work = beta_work.saturating_add(source.count_b[sb]);
-                        }
                     }
 
-                    // Accumulate sparse D^P_{ab}, using linked component lists when zeros dominate.
+                    // Accumulate sparse D^P_{ab} with factors indexed through active positions.
                     let mut dp = 0.0;
-                    if alpha_work < source.entries.len() && alpha_work <= beta_work {
-                        for &sa in nz_aids.iter() {
-                            let sa_pos = source.apos[sa];
-                            let mut entry_idx = source.first_a[sa];
 
-                            while entry_idx != usize::MAX {
-                                let entry = source.entries[entry_idx];
-                                let sb_pos = source.bpos[entry.b];
+                    for entry in &source.entries {
+                        let sa_pos = entry.apos;
+                        let sb_pos = entry.bpos;
 
-                                dp += afac[sa_pos] * bfac[sb_pos] * entry.dn;
-
-                                entry_idx = source.next_a[entry_idx];
-                            }
-                        }
-                    } else if beta_work < source.entries.len() {
-                        for &sb in nz_bids.iter() {
-                            let sb_pos = source.bpos[sb];
-                            let mut entry_idx = source.first_b[sb];
-
-                            while entry_idx != usize::MAX {
-                                let entry = source.entries[entry_idx];
-                                let sa_pos = source.apos[entry.a];
-
-                                dp += afac[sa_pos] * bfac[sb_pos] * entry.dn;
-
-                                entry_idx = source.next_b[entry_idx];
-                            }
-                        }
-                    } else {
-                        for entry in &source.entries {
-                            let sa_pos = source.apos[entry.a];
-                            let sb_pos = source.bpos[entry.b];
-
-                            dp += afac[sa_pos] * bfac[sb_pos] * entry.dn;
-                        }
+                        dp += afac[sa_pos] * bfac[sb_pos] * entry.dn;
                     }
 
                     *value = dp;
@@ -875,8 +823,8 @@ impl OverlapFactor {
                 let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
 
                 for entry in &source.entries {
-                    let sa_pos = source.apos[entry.a];
-                    let sb_pos = source.bpos[entry.b];
+                    let sa_pos = entry.apos;
+                    let sb_pos = entry.bpos;
 
                     row[sb_pos] += arow[sa_pos] * entry.dn;
                 }
@@ -935,8 +883,8 @@ impl OverlapFactor {
                 let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
 
                 for entry in &source.entries {
-                    let sa_pos = source.apos[entry.a];
-                    let sb_pos = source.bpos[entry.b];
+                    let sa_pos = entry.apos;
+                    let sb_pos = entry.bpos;
 
                     row[sa_pos] += entry.dn * brow[sb_pos];
                 }
@@ -980,12 +928,6 @@ impl ParentUpdates {
             bids: Vec::new(),
             apos: Vec::new(),
             bpos: Vec::new(),
-            first_a: Vec::new(),
-            first_b: Vec::new(),
-            count_a: Vec::new(),
-            count_b: Vec::new(),
-            next_a: Vec::new(),
-            next_b: Vec::new(),
         }
     }
 
@@ -1008,12 +950,6 @@ impl ParentUpdates {
             bids: Vec::new(),
             apos: vec![usize::MAX; na],
             bpos: vec![usize::MAX; nb],
-            first_a: vec![usize::MAX; na],
-            first_b: vec![usize::MAX; nb],
-            count_a: vec![0; na],
-            count_b: vec![0; nb],
-            next_a: Vec::new(),
-            next_b: Vec::new(),
         }
     }
 
@@ -1032,8 +968,6 @@ impl ParentUpdates {
         b: usize,
         dn: f64,
     ) {
-        let idx = self.entries.len();
-
         if self.apos[a] == usize::MAX {
             self.apos[a] = self.aids.len();
             self.aids.push(a);
@@ -1044,15 +978,12 @@ impl ParentUpdates {
             self.bids.push(b);
         }
 
-        self.next_a.push(self.first_a[a]);
-        self.next_b.push(self.first_b[b]);
-
-        self.first_a[a] = idx;
-        self.first_b[b] = idx;
-        self.count_a[a] += 1;
-        self.count_b[b] += 1;
-
-        self.entries.push(SpinUpdate { det, a, b, dn });
+        self.entries.push(SpinUpdate {
+            det,
+            apos: self.apos[a],
+            bpos: self.bpos[b],
+            dn,
+        });
     }
 
     /// Clear D^P_{ab} while invalidating only IDs active in the last application.
@@ -1063,22 +994,15 @@ impl ParentUpdates {
     fn clear(&mut self) {
         for &a in &self.aids {
             self.apos[a] = usize::MAX;
-            self.first_a[a] = usize::MAX;
-            self.count_a[a] = 0;
         }
 
         for &b in &self.bids {
             self.bpos[b] = usize::MAX;
-            self.first_b[b] = usize::MAX;
-            self.count_b[b] = 0;
         }
 
         self.entries.clear();
         self.aids.clear();
         self.bids.clear();
-
-        self.next_a.clear();
-        self.next_b.clear();
     }
 }
 

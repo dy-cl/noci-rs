@@ -202,6 +202,32 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.y[mi], self.n())
     }
 
+    /// Get the `X[mi]` matrix as a flat row-major slice.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi`: Zero distribution selector.
+    /// # Returns
+    /// - `&[T]`: Flat matrix slice for direct scalar kernels.
+    pub(crate) fn x_slice(
+        &self,
+        mi: usize,
+    ) -> &[T] {
+        self.w.slice2(self.off.x[mi], self.n())
+    }
+
+    /// Get the `Y[mi]` matrix as a flat row-major slice.
+    /// # Arguments:
+    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `mi`: Zero distribution selector.
+    /// # Returns
+    /// - `&[T]`: Flat matrix slice for direct scalar kernels.
+    pub(crate) fn y_slice(
+        &self,
+        mi: usize,
+    ) -> &[T] {
+        self.w.slice2(self.off.y[mi], self.n())
+    }
+
     /// Get a view to the basis-space `X[mi]` contraction matrix used for RDM indices.
     /// # Arguments:
     /// - `self`: View to same-spin Wick's intermediates.

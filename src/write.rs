@@ -198,6 +198,9 @@ pub fn print_input(input: &Input) {
             println!("TARGET_POPULATION: {}", q.target_population);
             println!("NCYCLES: {}", q.ncycles);
             println!("NREPORTS: {}", q.nreports);
+            println!("SAMPLING_CUTOFF1: {}", q.sampling_cutoff1);
+            println!("SAMPLING_CUTOFF2: {}", q.sampling_cutoff2);
+            println!("SPAWN_CUTOFF: {}", q.spawn_cutoff);
             println!("SHIFT_DAMPING: {}", q.shift_damping);
             let excitation_gen = match q.excitation_gen {
                 ExcitationGen::Uniform => "uniform",

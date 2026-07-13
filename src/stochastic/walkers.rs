@@ -262,7 +262,7 @@ pub fn qmc_step(
             sample_populations(
                 &state.mc.populations,
                 &mut state.mc.sampled,
-                qmc.sampling_cutoff,
+                qmc.sampling_cutoff1,
                 &run,
                 &mut rng,
             );
