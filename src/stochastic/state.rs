@@ -202,47 +202,22 @@ impl SparsePopulations {
         &self.occ
     }
 
-    /// Add a real population change to determinant `i`.
+    /// Insert a non-zero population into an empty slot after `clear`.
     /// # Arguments:
     /// - `self`: Sparse population storage.
-    /// - `i`: Determinant index.
-    /// - `dn`: Signed real population change.
+    /// - `i`: Determinant index currently absent from `occ`.
+    /// - `population`: Non-zero signed real population.
     /// # Returns:
-    /// - `()`: Updates the sparse population storage.
-    pub(crate) fn add(
+    /// - `()`: Adds the determinant to `occ` and writes its population.
+    pub(crate) fn insert_nonzero(
         &mut self,
         i: usize,
-        dn: f64,
+        population: f64,
     ) {
-        if dn == 0.0 {
-            return;
-        }
-
-        unsafe {
-            let pop = self.pop.get_unchecked_mut(i);
-            let old = *pop;
-            let new = old + dn;
-            *pop = new;
-
-            if old == 0.0 && new != 0.0 {
-                let p = self.occ.len();
-                *self.pos.get_unchecked_mut(i) = p;
-                self.occ.push(i);
-                return;
-            }
-
-            if old != 0.0 && new == 0.0 {
-                let p = *self.pos.get_unchecked(i);
-                let last = self.occ.pop().unwrap_unchecked();
-
-                if last != i {
-                    *self.occ.get_unchecked_mut(p) = last;
-                    *self.pos.get_unchecked_mut(last) = p;
-                }
-
-                *self.pos.get_unchecked_mut(i) = usize::MAX;
-            }
-        }
+        let p = self.occ.len();
+        self.pop[i] = population;
+        self.pos[i] = p;
+        self.occ.push(i);
     }
 
     /// Remove all populations while retaining allocated storage.

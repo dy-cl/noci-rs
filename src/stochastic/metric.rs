@@ -53,19 +53,20 @@ fn add_delta(
     mc.delta[i] += dn;
 }
 
-/// Convert the population-change accumulator `delta` into a sparse
-/// list of any non-zero changes `changes`.
+/// Drain the population-change accumulator `delta` into a sparse list of non-zero changes.
 /// # Arguments:
 /// - `mc`: Current Monte Carlo state.
+/// - `changes`: Reusable output buffer receiving sparse real population changes.
 /// # Returns:
-/// - `Vec<PopulationUpdate>`: Sparse real population changes.
-pub(in crate::stochastic) fn take_population_changes(mc: &mut MCState) -> Vec<PopulationUpdate> {
+/// - `()`: Replaces `changes` with the current sparse population changes.
+pub(in crate::stochastic) fn take_population_changes(
+    mc: &mut MCState,
+    changes: &mut Vec<PopulationUpdate>,
+) {
     time_call!(crate::timers::stochastic::add_take_population_changes, {
-        if mc.changed.is_empty() {
-            Vec::new()
-        } else {
-            let mut changes = Vec::with_capacity(mc.changed.len());
+        changes.clear();
 
+        if !mc.changed.is_empty() {
             for &det in &mc.changed {
                 let dn = mc.delta[det];
                 mc.delta[det] = 0.0;
@@ -79,7 +80,6 @@ pub(in crate::stochastic) fn take_population_changes(mc: &mut MCState) -> Vec<Po
             }
 
             mc.changed.clear();
-            changes
         }
     })
 }
@@ -524,15 +524,80 @@ pub(in crate::stochastic) fn sample_populations(
     cutoff: f64,
     run: &QMCRunInfo,
     rng: &mut SmallRng,
+    chunks: &mut Vec<Vec<(usize, f64)>>,
 ) {
     time_call!(crate::timers::stochastic::add_sample_populations, {
+        if cutoff <= 0.0 {
+            sampled.clear();
+
+            for (k, &population) in populations.iter().enumerate() {
+                if population != 0.0 {
+                    sampled.insert_nonzero(run.owned[k], population);
+                }
+            }
+            return;
+        }
+
+        if populations.len() < 8192 {
+            sampled.clear();
+
+            for (k, &population) in populations.iter().enumerate() {
+                if population == 0.0 {
+                    continue;
+                }
+
+                let abs_population = population.abs();
+
+                if abs_population >= cutoff {
+                    sampled.insert_nonzero(run.owned[k], population);
+                } else if rng.gen_range(0.0..1.0) < abs_population / cutoff {
+                    sampled.insert_nonzero(run.owned[k], population.signum() * cutoff);
+                }
+            }
+
+            return;
+        }
+
+        let nthreads = rayon::current_num_threads().max(1);
+        let chunk_size = populations.len().div_ceil(nthreads).max(1024);
+        let nchunks = populations.len().div_ceil(chunk_size);
+        let seed = rng.r#gen::<u64>();
+
+        chunks.resize_with(nchunks, Vec::new);
+
+        chunks[..nchunks]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(chunk, entries)| {
+                let mut rng = SmallRng::seed_from_u64(
+                    seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15),
+                );
+                let start = chunk * chunk_size;
+                let end = (start + chunk_size).min(populations.len());
+
+                entries.clear();
+
+                for k in start..end {
+                    let population = populations[k];
+                    if population == 0.0 {
+                        continue;
+                    }
+
+                    let abs_population = population.abs();
+
+                    if abs_population >= cutoff {
+                        entries.push((run.owned[k], population));
+                    } else if rng.gen_range(0.0..1.0) < abs_population / cutoff {
+                        entries.push((run.owned[k], population.signum() * cutoff));
+                    }
+                }
+            });
+
         sampled.clear();
 
-        for (k, &population) in populations.iter().enumerate() {
-            let population = fri(population, cutoff, rng);
-
-            if population != 0.0 {
-                sampled.add(run.owned[k], population);
+        for entries in chunks.iter().take(nchunks) {
+            for &(det, population) in entries {
+                sampled.insert_nonzero(det, population);
             }
         }
     });
@@ -570,7 +635,7 @@ pub(in crate::stochastic) fn fri(
 /// pre-overlap vector remains conditionally unbiased:
 /// \mathbb E[\Phi_c(\Delta b_x) \mid \Delta b_x] = \Delta b_x.
 /// # Arguments:
-/// - `updates`: Coalesced sparse population changes.
+/// - `updates`: Sparse population changes.
 /// - `cutoff`: Minimum nonzero retained magnitude c.
 /// - `rng`: Random-number generator.
 /// # Returns:
@@ -811,6 +876,9 @@ pub fn qmc_step(
     print_header(irank, propagator);
     print_initial_row(irank, &state, data.basis[0].e, propagator);
 
+    let mut population_changes = Vec::new();
+    let mut sample_chunks = Vec::new();
+
     for report in state.start_report..qmc.nreports {
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
@@ -825,6 +893,7 @@ pub fn qmc_step(
                 qmc.sampling_cutoff1,
                 &run,
                 &mut rng,
+                &mut sample_chunks,
             );
 
             propagate_iteration(
@@ -847,11 +916,9 @@ pub fn qmc_step(
 
         exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
 
-        let mut population_changes = take_population_changes(&mut state.mc);
+        take_population_changes(&mut state.mc, &mut population_changes);
 
         population_changes.sort_unstable_by_key(|update| update.det);
-
-        coalesce_population_updates(&mut population_changes);
 
         let mut fri_rng = SmallRng::seed_from_u64(
             run.rank_seed

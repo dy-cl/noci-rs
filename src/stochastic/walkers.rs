@@ -251,6 +251,9 @@ pub fn qmc_step(
     print_header(irank, propagator);
     print_initial_row(irank, &state, data.basis[0].e, propagator);
 
+    let mut population_changes = Vec::new();
+    let mut sample_chunks = Vec::new();
+
     for report in state.start_report..qmc.nreports {
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
@@ -265,6 +268,7 @@ pub fn qmc_step(
                 qmc.sampling_cutoff1,
                 &run,
                 &mut rng,
+                &mut sample_chunks,
             );
 
             super::metric::propagate_iteration(
@@ -291,7 +295,7 @@ pub fn qmc_step(
 
         exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
 
-        let mut population_changes = take_population_changes(&mut state.mc);
+        take_population_changes(&mut state.mc, &mut population_changes);
         population_changes.sort_unstable_by_key(|update| update.det);
         coalesce_population_updates(&mut population_changes);
         apply_population_changes(&mut state.mc.populations, &population_changes, &local_pos);
