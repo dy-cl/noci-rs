@@ -75,8 +75,6 @@ struct OrthogonalTarget {
 }
 
 struct OrthogonalTargetGroup {
-    /// Parent-local occupation-pair ID.
-    oid: usize,
     /// Targets sharing this occupation pair.
     targets: Vec<OrthogonalTarget>,
 }
@@ -86,6 +84,10 @@ struct LocalParentBlock {
     parent: usize,
     /// Rank-local target rows in this parent block.
     targets: Vec<LocalTarget>,
+    /// First rank-local row when target rows are contiguous.
+    first_local: usize,
+    /// Whether target local rows are consecutive in `populations`.
+    contiguous_locals: bool,
     /// Active target a component IDs.
     aids: Vec<usize>,
     /// Active target b component IDs.
@@ -116,8 +118,6 @@ pub(crate) struct OverlapFactorScratch {
     updates: Vec<ParentUpdates>,
     /// Source parents touched by the current update list.
     active_parents: Vec<usize>,
-    /// Rank-local accumulated \delta N_\Gamma values.
-    increments: Vec<f64>,
     /// Temporary A^{QP}_{\bar a a} factor table.
     afac: Vec<f64>,
     /// Temporary B^{QP}_{\bar b b} factor table.
@@ -126,6 +126,8 @@ pub(crate) struct OverlapFactorScratch {
     intermediate: Vec<f64>,
     /// Temporary per-target output values for one parent block.
     values: Vec<f64>,
+    /// Temporary active occupation IDs for sparse orthogonal same-parent application.
+    active_oids: Vec<usize>,
     /// Cached target slice pointer for validating reusable target blocks.
     cached_targets_ptr: *const usize,
     /// Cached target slice length for validating reusable target blocks.
@@ -187,11 +189,11 @@ impl OverlapFactor {
         OverlapFactorScratch {
             updates,
             active_parents: Vec::new(),
-            increments: Vec::new(),
             afac: Vec::new(),
             bfac: Vec::new(),
             intermediate: Vec::new(),
             values: Vec::new(),
+            active_oids: Vec::new(),
             cached_targets_ptr: std::ptr::null(),
             cached_targets_len: 0,
             target_blocks: Vec::new(),
@@ -229,9 +231,6 @@ impl OverlapFactor {
             return;
         }
 
-        scratch.increments.clear();
-        scratch.increments.resize(populations.len(), 0.0);
-
         let target_blocks = self.take_target_blocks(targets, data, scratch);
 
         for source_parent in scratch.active_parents.clone() {
@@ -244,7 +243,7 @@ impl OverlapFactor {
                 continue;
             }
             for target in &target_blocks {
-                self.apply_parent_pair(target, &source, data, scratch);
+                self.apply_parent_pair(populations, target, &source, data, scratch);
             }
             source.clear();
             scratch.updates[source_parent] = source;
@@ -252,17 +251,12 @@ impl OverlapFactor {
 
         scratch.target_blocks = target_blocks;
 
-        // Apply the completed S\Delta contribution to the persistent populations.
-        populations
-            .iter_mut()
-            .zip(scratch.increments.iter())
-            .for_each(|(n, dn)| *n += dn);
-
         scratch.active_parents.clear();
         scratch.afac.clear();
         scratch.bfac.clear();
         scratch.intermediate.clear();
         scratch.values.clear();
+        scratch.active_oids.clear();
     }
 
     /// Take reusable target blocks for the current rank-local rows.
@@ -342,6 +336,8 @@ impl OverlapFactor {
             .map(|parent| LocalParentBlock {
                 parent,
                 targets: Vec::new(),
+                first_local: 0,
+                contiguous_locals: true,
                 aids: Vec::new(),
                 bids: Vec::new(),
                 apos: vec![usize::MAX; self.parents[parent].areps.len()],
@@ -356,6 +352,12 @@ impl OverlapFactor {
             let a = self.aids[det];
             let b = self.bids[det];
             let block = &mut blocks[parent];
+
+            if block.targets.is_empty() {
+                block.first_local = local;
+            } else if block.contiguous_locals && local != block.first_local + block.targets.len() {
+                block.contiguous_locals = false;
+            }
 
             // Add the a component to the active set on its first occurrence.
             if block.apos[a] == usize::MAX {
@@ -406,7 +408,6 @@ impl OverlapFactor {
             } else {
                 block.opos[oid] = block.orthogonal.len();
                 block.orthogonal.push(OrthogonalTargetGroup {
-                    oid,
                     targets: vec![OrthogonalTarget {
                         local: target.local,
                         phase,
@@ -427,6 +428,7 @@ impl OverlapFactor {
     /// - `()`: Adds the QP contribution to `scratch.increments`.
     fn apply_parent_pair(
         &self,
+        output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
@@ -436,34 +438,38 @@ impl OverlapFactor {
             && let Some(mocache) = data.mocache
             && mocache[target.parent].orthogonal_slater_condon
         {
-            self.apply_orthogonal_parent_pair(target, source, data, scratch);
+            self.apply_orthogonal_parent_pair(output, target, source, data, scratch);
             return;
         }
         if target.parent == source.parent {
-            self.apply_sparse_parent_pair(target, source, data, scratch);
+            self.apply_sparse_parent_pair(output, target, source, data, scratch);
             return;
         }
 
         if !data.input.wicks.enabled {
-            self.apply_sparse_parent_pair(target, source, data, scratch);
+            self.apply_sparse_parent_pair(output, target, source, data, scratch);
             return;
         }
 
         let Some(wicks) = data.wicks else {
-            self.apply_sparse_parent_pair(target, source, data, scratch);
+            self.apply_sparse_parent_pair(output, target, source, data, scratch);
             return;
         };
 
         let contraction = self.select_contraction(target, source);
         match contraction {
             OverlapContraction::FactorizedRows => {
-                self.apply_factorized_parent_pair(target, source, data, wicks, scratch)
+                self.apply_factorized_parent_pair(output, target, source, data, wicks, scratch)
             }
             OverlapContraction::AFirst | OverlapContraction::BFirst => {
-                self.build_factor_tables(target, source, data, wicks, scratch);
                 match contraction {
-                    OverlapContraction::AFirst => self.apply_a_first(target, source, scratch),
-                    OverlapContraction::BFirst => self.apply_b_first(target, source, scratch),
+                    OverlapContraction::AFirst => {
+                        self.apply_a_first(output, target, source, data, wicks, scratch)
+                    }
+                    OverlapContraction::BFirst => {
+                        self.build_factor_tables(target, source, data, wicks, scratch);
+                        self.apply_b_first(output, target, source, scratch);
+                    }
                     OverlapContraction::FactorizedRows => {}
                 }
             }
@@ -482,9 +488,10 @@ impl OverlapFactor {
     /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
     /// - `scratch`: Reusable value storage receiving one output per target row.
     /// # Returns:
-    /// - `()`: Adds factorized sparse-row S\Delta values to `scratch.increments`.
+    /// - `()`: Adds factorized sparse-row S\Delta values to `output`.
     fn apply_factorized_parent_pair(
         &self,
+        output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
@@ -564,7 +571,7 @@ impl OverlapFactor {
 
         for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {
-                scratch.increments[target.local] += value;
+                output[target.local] += value;
             }
         }
     }
@@ -635,9 +642,10 @@ impl OverlapFactor {
     /// - `data`: Shared NOCI data used to read source occupations and phases.
     /// - `scratch`: Reusable values and increment storage.
     /// # Returns:
-    /// - `()`: Adds the same-parent orthogonal contribution to `scratch.increments`.
+    /// - `()`: Adds the same-parent orthogonal contribution to `output`.
     fn apply_orthogonal_parent_pair(
         &self,
+        output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
@@ -647,6 +655,7 @@ impl OverlapFactor {
         scratch
             .values
             .resize(self.parents[source.parent].oreps.len(), 0.0);
+        scratch.active_oids.clear();
 
         // Accumulate source D^P entries by occupation ID.
         for entry in &source.entries {
@@ -654,17 +663,29 @@ impl OverlapFactor {
             let sphase = sdet.pha * sdet.phb;
             let oid =
                 self.parents[source.parent].oids[entry.det - self.parents[source.parent].first_det];
+
+            scratch.active_oids.push(oid);
             scratch.values[oid] += sphase * entry.dn;
         }
 
-        // Apply target phases to the occupation-group contribution.
-        for group in &target.orthogonal {
-            let value = scratch.values[group.oid];
+        scratch.active_oids.sort_unstable();
+        scratch.active_oids.dedup();
+
+        // Apply target phases only for occupation groups touched by sparse source entries.
+        for &oid in &scratch.active_oids {
+            let value = scratch.values[oid];
             if value == 0.0 {
                 continue;
             }
+
+            let opos = target.opos[oid];
+            if opos == usize::MAX {
+                continue;
+            }
+
+            let group = &target.orthogonal[opos];
             for t in &group.targets {
-                scratch.increments[t.local] += t.phase * value;
+                output[t.local] += t.phase * value;
             }
         }
     }
@@ -677,9 +698,10 @@ impl OverlapFactor {
     /// - `data`: Shared NOCI data used by the general overlap evaluator.
     /// - `scratch`: Reusable per-target value and increment storage.
     /// # Returns:
-    /// - `()`: Adds sparse-row S\Delta values to `scratch.increments`.
+    /// - `()`: Adds sparse-row S\Delta values to `output`.
     fn apply_sparse_parent_pair(
         &self,
+        output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
@@ -714,7 +736,7 @@ impl OverlapFactor {
 
         for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {
-                scratch.increments[target.local] += value;
+                output[target.local] += value;
             }
         }
     }
@@ -793,62 +815,124 @@ impl OverlapFactor {
             });
     }
 
-    /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
-    /// The final target rows multiply T by B^{QP}_{\bar b_\Gamma b}.
+    /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab} without storing A.
+    /// This is the A-first contraction
+    /// \delta N_\Gamma^{QP} = \sum_b T_{\bar a_\Gamma b}B^{QP}_{\bar b_\Gamma b},
+    /// with A factors consumed immediately while forming T. The direct determinant-pair Wick loop
+    /// is avoided because same-spin factors are still reused over target rows and sparse entries.
     /// # Arguments:
     /// - `target`: Target parent block defining \bar a_\Gamma and \bar b_\Gamma rows.
     /// - `source`: Sparse source-parent D^P entries and active positions.
-    /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
+    /// - `data`: Shared NOCI determinant data.
+    /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
+    /// - `scratch`: Reusable intermediate, beta-factor, value, and increment storage.
     /// # Returns:
-    /// - `()`: Adds the A-first blocked contribution to `scratch.increments`.
+    /// - `()`: Adds the A-first blocked contribution to `output`.
     fn apply_a_first(
         &self,
+        output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
+        data: &NOCIData<'_, f64>,
+        wicks: &WicksView<f64>,
         scratch: &mut OverlapFactorScratch,
     ) {
         let nta = target.aids.len();
+        let ntb = target.bids.len();
         let nsb = source.bids.len();
-        let nsa = source.aids.len();
 
         scratch.intermediate.clear();
+        scratch.bfac.clear();
         scratch.intermediate.resize(nta * nsb, 0.0);
+        scratch.bfac.resize(ntb * nsb, 0.0);
 
-        // Form T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
+        let (lp, gp, target_left) =
+            if self.parents[target.parent].first_det <= self.parents[source.parent].first_det {
+                (target.parent, source.parent, true)
+            } else {
+                (source.parent, target.parent, false)
+            };
+
+        // Form T_{\bar a b} directly, consuming A^{QP}_{\bar a a} factors as they are built.
         scratch
             .intermediate
             .par_chunks_mut(nsb)
-            .enumerate()
-            .for_each(|(ta_pos, row)| {
-                let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+            .zip(target.aids.par_iter())
+            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &ta)| {
+                let pair = wicks.pair(lp, gp);
+                let tdet = self.parents[target.parent].areps[ta];
 
                 for entry in &source.entries {
-                    let sa_pos = entry.apos;
-                    let sb_pos = entry.bpos;
+                    let sa = source.aids[entry.apos];
+                    let sdet = self.parents[source.parent].areps[sa];
+                    let (ldet, gdet) = if target_left {
+                        (&data.basis[tdet], &data.basis[sdet])
+                    } else {
+                        (&data.basis[sdet], &data.basis[tdet])
+                    };
+                    let a = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
 
-                    row[sb_pos] += arow[sa_pos] * entry.dn;
+                    row[entry.bpos] += a * entry.dn;
+                }
+            });
+
+        // Build B^{QP}_{\bar b b} rows independently for the final target pass.
+        scratch
+            .bfac
+            .par_chunks_mut(nsb)
+            .zip(target.bids.par_iter())
+            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &tb)| {
+                let pair = wicks.pair(lp, gp);
+                let tdet = self.parents[target.parent].breps[tb];
+                for (col, &sb) in source.bids.iter().enumerate() {
+                    let sdet = self.parents[source.parent].breps[sb];
+                    let (ldet, gdet) = if target_left {
+                        (&data.basis[tdet], &data.basis[sdet])
+                    } else {
+                        (&data.basis[sdet], &data.basis[tdet])
+                    };
+                    row[col] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
                 }
             });
 
         scratch.values.clear();
-        scratch.values.resize(target.targets.len(), 0.0);
 
-        // Finish \delta N_\Gamma^{QP} = \sum_b T_{\bar a_\Gamma b}B^{QP}_{\bar b_\Gamma b}.
-        scratch
-            .values
-            .par_iter_mut()
-            .zip(target.targets.par_iter())
-            .for_each(|(value, t)| {
-                let ta_pos = target.apos[t.a];
-                let tb_pos = target.bpos[t.b];
-                let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
-                *value = trow.iter().zip(brow.iter()).map(|(x, y)| x * y).sum();
-            });
+        if target.contiguous_locals {
+            let first = target.first_local;
+            let increments = &mut output[first..first + target.targets.len()];
 
-        for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
-            if *value != 0.0 {
-                scratch.increments[target.local] += value;
+            // Finish \delta N_\Gamma^{QP} directly into contiguous target rows.
+            increments
+                .par_iter_mut()
+                .zip(target.targets.par_iter())
+                .for_each(|(increment, t)| {
+                    let ta_pos = target.apos[t.a];
+                    let tb_pos = target.bpos[t.b];
+                    let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+
+                    *increment += trow.iter().zip(brow.iter()).map(|(x, y)| x * y).sum::<f64>();
+                });
+        } else {
+            scratch.values.resize(target.targets.len(), 0.0);
+
+            // Finish \delta N_\Gamma^{QP} through a temporary for non-contiguous target rows.
+            scratch
+                .values
+                .par_iter_mut()
+                .zip(target.targets.par_iter())
+                .for_each(|(value, t)| {
+                    let ta_pos = target.apos[t.a];
+                    let tb_pos = target.bpos[t.b];
+                    let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+                    *value = trow.iter().zip(brow.iter()).map(|(x, y)| x * y).sum();
+                });
+
+            for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
+                if *value != 0.0 {
+                    output[target.local] += value;
+                }
             }
         }
     }
@@ -860,9 +944,10 @@ impl OverlapFactor {
     /// - `source`: Sparse source-parent D^P entries and active positions.
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
-    /// - `()`: Adds the B-first blocked contribution to `scratch.increments`.
+    /// - `()`: Adds the B-first blocked contribution to `output`.
     fn apply_b_first(
         &self,
+        output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         scratch: &mut OverlapFactorScratch,
@@ -908,7 +993,7 @@ impl OverlapFactor {
 
         for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {
-                scratch.increments[target.local] += value;
+                output[target.local] += value;
             }
         }
     }
