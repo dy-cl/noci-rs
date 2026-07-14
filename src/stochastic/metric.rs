@@ -569,16 +569,14 @@ pub(in crate::stochastic) fn sample_populations(
             .par_iter_mut()
             .enumerate()
             .for_each(|(chunk, entries)| {
-                let mut rng = SmallRng::seed_from_u64(
-                    seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15),
-                );
+                let mut rng =
+                    SmallRng::seed_from_u64(seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15));
                 let start = chunk * chunk_size;
                 let end = (start + chunk_size).min(populations.len());
 
                 entries.clear();
 
-                for k in start..end {
-                    let population = populations[k];
+                for (k, &population) in populations.iter().enumerate().take(end).skip(start) {
                     if population == 0.0 {
                         continue;
                     }
@@ -921,9 +919,7 @@ pub fn qmc_step(
         population_changes.sort_unstable_by_key(|update| update.det);
 
         let mut fri_rng = SmallRng::seed_from_u64(
-            run.rank_seed
-                ^ 0xA0761D6478BD642F
-                ^ (report as u64).wrapping_mul(0xE7037ED1A0B428DB),
+            run.rank_seed ^ 0xA0761D6478BD642F ^ (report as u64).wrapping_mul(0xE7037ED1A0B428DB),
         );
         fri_population_updates(&mut population_changes, qmc.sampling_cutoff2, &mut fri_rng);
 

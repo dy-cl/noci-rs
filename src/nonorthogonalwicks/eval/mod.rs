@@ -16,8 +16,8 @@ mod rdmksame;
 pub(crate) use h2diff::lg_h2_diff;
 pub(crate) use h2same::lg_h2_same;
 pub(crate) use onebody::{lg_f, lg_h1};
-pub(crate) use overlap::lg_overlap_same_f64;
 pub use overlap::lg_overlap;
+pub(crate) use overlap::lg_overlap_same_f64;
 pub use prepare::prepare_same;
 #[cfg(feature = "nocc")]
 pub(crate) use rdm1::lg_rdm1;

@@ -461,18 +461,16 @@ impl OverlapFactor {
             OverlapContraction::FactorizedRows => {
                 self.apply_factorized_parent_pair(output, target, source, data, wicks, scratch)
             }
-            OverlapContraction::AFirst | OverlapContraction::BFirst => {
-                match contraction {
-                    OverlapContraction::AFirst => {
-                        self.apply_a_first(output, target, source, data, wicks, scratch)
-                    }
-                    OverlapContraction::BFirst => {
-                        self.build_factor_tables(target, source, data, wicks, scratch);
-                        self.apply_b_first(output, target, source, scratch);
-                    }
-                    OverlapContraction::FactorizedRows => {}
+            OverlapContraction::AFirst | OverlapContraction::BFirst => match contraction {
+                OverlapContraction::AFirst => {
+                    self.apply_a_first(output, target, source, data, wicks, scratch)
                 }
-            }
+                OverlapContraction::BFirst => {
+                    self.build_factor_tables(target, source, data, wicks, scratch);
+                    self.apply_b_first(output, target, source, scratch);
+                }
+                OverlapContraction::FactorizedRows => {}
+            },
         }
     }
 
@@ -516,13 +514,7 @@ impl OverlapFactor {
             .par_iter_mut()
             .zip(target.targets.par_iter())
             .for_each_init(
-                || {
-                    (
-                        WickScratchSpin::new(),
-                        Vec::<f64>::new(),
-                        Vec::<f64>::new(),
-                    )
-                },
+                || (WickScratchSpin::new(), Vec::<f64>::new(), Vec::<f64>::new()),
                 |(wick_scratch, afac, bfac), (value, t)| {
                     let pair = wicks.pair(lp, gp);
                     afac.resize(nsa, 0.0);
@@ -540,8 +532,7 @@ impl OverlapFactor {
                             (&data.basis[sdet], &data.basis[tadet])
                         };
 
-                        afac[pos] =
-                            calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
+                        afac[pos] = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
                     }
 
                     for (pos, &sb) in source.bids.iter().enumerate() {
@@ -911,7 +902,11 @@ impl OverlapFactor {
                     let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
                     let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
 
-                    *increment += trow.iter().zip(brow.iter()).map(|(x, y)| x * y).sum::<f64>();
+                    *increment += trow
+                        .iter()
+                        .zip(brow.iter())
+                        .map(|(x, y)| x * y)
+                        .sum::<f64>();
                 });
         } else {
             scratch.values.resize(target.targets.len(), 0.0);

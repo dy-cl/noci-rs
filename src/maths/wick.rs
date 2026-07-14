@@ -681,9 +681,7 @@ pub fn det<T: StateScalar>(
 /// # Returns
 /// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
 #[inline(always)]
-pub(crate) fn det_lu_l5<T: StateScalar>(
-    lu: &mut [T; 25],
-) -> Option<T> {
+pub(crate) fn det_lu_l5<T: StateScalar>(lu: &mut [T; 25]) -> Option<T> {
     const N: usize = 5;
     let mut sign = 1.0;
     let mut k = 0usize;
@@ -759,9 +757,7 @@ pub(crate) fn det_lu_l5<T: StateScalar>(
 /// # Returns
 /// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
 #[inline(always)]
-pub(crate) fn det_lu_l6<T: StateScalar>(
-    lu: &mut [T; 36],
-) -> Option<T> {
+pub(crate) fn det_lu_l6<T: StateScalar>(lu: &mut [T; 36]) -> Option<T> {
     const N: usize = 6;
     let mut sign = 1.0;
     let mut k = 0usize;
@@ -838,9 +834,7 @@ pub(crate) fn det_lu_l6<T: StateScalar>(
 /// # Returns
 /// - `Option<T>`: Determinant of `lu`, or `None` if evaluation produces non-finite values.
 #[inline(always)]
-fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(
-    lu: &mut [T; S],
-) -> Option<T> {
+fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(lu: &mut [T; S]) -> Option<T> {
     let mut sign = 1.0;
     let mut k = 0usize;
 
@@ -1175,7 +1169,7 @@ mod det_mod {
                 lu[r * n + k] = factor;
 
                 for c in (k + 1)..n {
-                    lu[r * n + c] =- factor * lu[k * n + c];
+                    lu[r * n + c] = -factor * lu[k * n + c];
                 }
             }
         }
@@ -1191,7 +1185,6 @@ mod det_mod {
             None
         }
     }
-
 }
 
 /// Compute the determinant and adjugate transpose of an `n x n` matrix using

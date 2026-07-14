@@ -140,8 +140,7 @@ pub(crate) fn lg_overlap_m0_direct_f64(
             let d7 = x0[rows[2] * n + cols[1]];
             let d8 = x0[rows[2] * n + cols[2]];
 
-            pref * (d0 * (d4 * d8 - d5 * d7) - d1 * (d3 * d8 - d5 * d6)
-                + d2 * (d3 * d7 - d4 * d6))
+            pref * (d0 * (d4 * d8 - d5 * d7) - d1 * (d3 * d8 - d5 * d6) + d2 * (d3 * d7 - d4 * d6))
         }
         5 => {
             let mut lu = [0.0; 25];
