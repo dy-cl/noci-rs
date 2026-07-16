@@ -9,7 +9,8 @@ use crate::time_call;
 
 use super::super::layout::{idx, idx4};
 use super::helpers::{
-    bit, column_replacement_correction, get_det_adjt_same, j_replacement, jslot, minor_adjt,
+    bit, column_replacement_correction, column_replacement_det, get_det_adjt_same, j_replacement,
+    jslot, minor_adjt,
 };
 use crate::maths::adjugate_transpose;
 
@@ -68,6 +69,7 @@ fn lg_h2_same_m0<T: NOCIScalar>(
             1 => lg_h2_same_m0_l1(w, scratch),
             2 => lg_h2_same_m0_l2(w, scratch),
             3 => lg_h2_same_m0_l3(w, scratch, tol),
+            4 => lg_h2_same_m0_l4(w, scratch, tol),
             _ => lg_h2_same_m0_gen(w, l_ex, g_ex, scratch, tol),
         }
     })
@@ -240,6 +242,128 @@ fn lg_h2_same_m0_l3<T: NOCIScalar>(
     })
 }
 
+/// Calculate the specialized `l = 4`, `m = 0` same-spin two-electron Hamiltonian matrix element.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space containing the prepared `l = 4` contraction determinant and indices.
+/// - `tol`: Tolerance for singularity handling in determinant evaluation.
+/// # Returns
+/// - `T`: Same-spin two-electron Hamiltonian matrix element for `l = 4`.
+#[inline(always)]
+fn lg_h2_same_m0_l4<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+) -> T {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l4, {
+        let n = w.n();
+        let rows = scratch.rows.as_slice();
+        let cols = scratch.cols.as_slice();
+        let det0 = &scratch.det0.as_slice()[..16];
+
+        if let Some(det) = adjugate_transpose(
+            scratch.adjt_det.as_mut_slice(),
+            scratch.invs.as_mut_slice(),
+            scratch.lu.as_mut_slice(),
+            det0,
+            4,
+            tol,
+        ) {
+            let cof = scratch.adjt_det.as_slice();
+            let vsl = w.v_t_slice(0, 0, 0);
+
+            let r0 = rows[0];
+            let r1 = rows[1];
+            let r2 = rows[2];
+            let r3 = rows[3];
+            let c0 = cols[0];
+            let c1 = cols[1];
+            let c2 = cols[2];
+            let c3 = cols[3];
+
+            let vterm = cof[idx(4, 0, 0)] * vsl[c0 * n + r0]
+                + cof[idx(4, 1, 0)] * vsl[c0 * n + r1]
+                + cof[idx(4, 2, 0)] * vsl[c0 * n + r2]
+                + cof[idx(4, 3, 0)] * vsl[c0 * n + r3]
+                + cof[idx(4, 0, 1)] * vsl[c1 * n + r0]
+                + cof[idx(4, 1, 1)] * vsl[c1 * n + r1]
+                + cof[idx(4, 2, 1)] * vsl[c1 * n + r2]
+                + cof[idx(4, 3, 1)] * vsl[c1 * n + r3]
+                + cof[idx(4, 0, 2)] * vsl[c2 * n + r0]
+                + cof[idx(4, 1, 2)] * vsl[c2 * n + r1]
+                + cof[idx(4, 2, 2)] * vsl[c2 * n + r2]
+                + cof[idx(4, 3, 2)] * vsl[c2 * n + r3]
+                + cof[idx(4, 0, 3)] * vsl[c3 * n + r0]
+                + cof[idx(4, 1, 3)] * vsl[c3 * n + r1]
+                + cof[idx(4, 2, 3)] * vsl[c3 * n + r2]
+                + cof[idx(4, 3, 3)] * vsl[c3 * n + r3];
+
+            let jsl = w.j_slice(0);
+            let mut jterm = <T as From<f64>>::from(0.0);
+
+            for i in 0..4 {
+                let (ri, rr0, rr1, rr2) = match i {
+                    0 => (r0, r1, r2, r3),
+                    1 => (r1, r0, r2, r3),
+                    2 => (r2, r0, r1, r3),
+                    3 => (r3, r0, r1, r2),
+                    _ => unreachable!(),
+                };
+
+                for j in 0..4 {
+                    let (cj, cc0, cc1, cc2) = match j {
+                        0 => (c0, c1, c2, c3),
+                        1 => (c1, c0, c2, c3),
+                        2 => (c2, c0, c1, c3),
+                        3 => (c3, c0, c1, c2),
+                        _ => unreachable!(),
+                    };
+                    let phase = if ((i + j) & 1) == 0 {
+                        <T as From<f64>>::from(1.0)
+                    } else {
+                        <T as From<f64>>::from(-1.0)
+                    };
+
+                    minor_adjt(
+                        det0,
+                        Minor {
+                            l: 4,
+                            row: i,
+                            col: j,
+                        },
+                        &mut scratch.det_mix2,
+                        &mut scratch.adjt_det2,
+                        tol,
+                        |_, _, cof_minor, _| {
+                            let fixed = (ri * n + cj) * n;
+                            let base0 = (fixed + rr0) * n;
+                            let base1 = (fixed + rr1) * n;
+                            let base2 = (fixed + rr2) * n;
+
+                            jterm += phase
+                                * (cof_minor[0] * jsl[base0 + cc0]
+                                    + cof_minor[3] * jsl[base1 + cc0]
+                                    + cof_minor[6] * jsl[base2 + cc0]
+                                    + cof_minor[1] * jsl[base0 + cc1]
+                                    + cof_minor[4] * jsl[base1 + cc1]
+                                    + cof_minor[7] * jsl[base2 + cc1]
+                                    + cof_minor[2] * jsl[base0 + cc2]
+                                    + cof_minor[5] * jsl[base1 + cc2]
+                                    + cof_minor[8] * jsl[base2 + cc2]);
+                        },
+                    );
+                }
+            }
+
+            w.phase
+                * <T as From<f64>>::from(w.tilde_s_prod)
+                * (w.v0[0] * det - <T as From<f64>>::from(2.0) * vterm + jterm)
+        } else {
+            <T as From<f64>>::from(0.0)
+        }
+    })
+}
+
 /// Calculate the same-spin two-electron Hamiltonian matrix element for the general `m = 0` case
 /// with arbitrary excitation rank `l`.
 /// determinant routines.
@@ -309,28 +433,22 @@ fn lg_h2_same_m0_gen<T: NOCIScalar>(
                         &mut scratch.det_mix2,
                         &mut scratch.adjt_det2,
                         tol,
-                        |lm1, det_minor, cof_minor, det_det2| {
+                        |lm1, _det_minor, cof_minor, _det_det2| {
                             for k2 in 0..lm1 {
-                                let corr = column_replacement_correction(
-                                    lm1,
-                                    det_minor,
-                                    cof_minor,
-                                    k2,
-                                    |r| {
-                                        j_replacement(
-                                            jsl,
-                                            layout,
-                                            DetIndex { row: i, col: j },
-                                            DetIndex { row: r, col: k2 },
-                                            DetIndex {
-                                                row: ri_fixed,
-                                                col: cj_fixed,
-                                            },
-                                            false,
-                                        )
-                                    },
-                                );
-                                contrib += phase * (det_det2 + corr);
+                                let det_repl = column_replacement_det(lm1, cof_minor, k2, |r| {
+                                    j_replacement(
+                                        jsl,
+                                        layout,
+                                        DetIndex { row: i, col: j },
+                                        DetIndex { row: r, col: k2 },
+                                        DetIndex {
+                                            row: ri_fixed,
+                                            col: cj_fixed,
+                                        },
+                                        false,
+                                    )
+                                });
+                                contrib += phase * det_repl;
                             }
                         },
                     );
@@ -417,7 +535,7 @@ fn lg_h2_same_gen<T: NOCIScalar>(
                         &mut scratch.det_mix2,
                         &mut scratch.adjt_det2,
                         tol,
-                        |lm1, det_minor, cof_minor, det_det2| {
+                        |lm1, _det_minor, cof_minor, _det_det2| {
                             for k2 in 0..lm1 {
                                 let k_full = if k2 < j { k2 } else { k2 + 1 };
                                 let mk = bit(bits, k_full + 2);
@@ -425,27 +543,21 @@ fn lg_h2_same_gen<T: NOCIScalar>(
 
                                 let jsl = w.j_slice(slot);
 
-                                let corr = column_replacement_correction(
-                                    lm1,
-                                    det_minor,
-                                    cof_minor,
-                                    k2,
-                                    |r| {
-                                        j_replacement(
-                                            jsl,
-                                            layout,
-                                            DetIndex { row: i, col: j },
-                                            DetIndex { row: r, col: k2 },
-                                            DetIndex {
-                                                row: ri_fixed,
-                                                col: cj_fixed,
-                                            },
-                                            swap,
-                                        )
-                                    },
-                                );
+                                let det_repl = column_replacement_det(lm1, cof_minor, k2, |r| {
+                                    j_replacement(
+                                        jsl,
+                                        layout,
+                                        DetIndex { row: i, col: j },
+                                        DetIndex { row: r, col: k2 },
+                                        DetIndex {
+                                            row: ri_fixed,
+                                            col: cj_fixed,
+                                        },
+                                        swap,
+                                    )
+                                });
 
-                                contrib += phase * (det_det2 + corr);
+                                contrib += phase * det_repl;
                             }
                         },
                     );

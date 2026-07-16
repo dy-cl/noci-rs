@@ -5,7 +5,7 @@ use ndarray::{Array2, ArrayView2, s};
 
 #[cfg(feature = "nocc")]
 use crate::maths::adjoint;
-use crate::maths::{det, minor as build_minor, mix_columns};
+use crate::maths::{adjugate_transpose, det, minor as build_minor, mix_columns};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -268,6 +268,35 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
     correction
 }
 
+/// Calculate the determinant obtained by replacing one column using cofactors of the original determinant.
+/// If column \(c\) of a determinant \(D\) is replaced by a new column \(N\), multilinearity gives
+///     \det(D[c \leftarrow N]) = \sum_r N_r A_{rc},
+/// where \(A_{rc}\) is the cofactor of row \(r\) and column \(c\) in the original determinant.
+/// This is equivalent to
+///     \det(D) + \sum_r (N_r - D_{rc}) A_{rc},
+/// but avoids reading the original column when the caller only needs the replaced determinant.
+/// # Arguments:
+/// - `n`: Dimension of the determinant.
+/// - `cof`: Row-major storage of the adjugate-transpose / cofactor matrix.
+/// - `col`: Column index to replace.
+/// - `new_at`: Closure returning the new value for row `r` in the replacement column.
+/// # Returns
+/// - `T`: Determinant after replacing the chosen column.
+#[inline(always)]
+pub(super) fn column_replacement_det<T: NOCIScalar>(
+    n: usize,
+    cof: &[T],
+    col: usize,
+    mut new_at: impl FnMut(usize) -> T,
+) -> T {
+    let mut value = <T as From<f64>>::from(0.0);
+    for r in 0..n {
+        let i = idx(n, r, col);
+        value += new_at(r) * cof[i];
+    }
+    value
+}
+
 /// Form same spin mixed contraction determinants for all allowed bitstrings.
 /// For a same-spin matrix element with excitation rank `l` we require a sum over all possible ways
 /// to distribute `m` zero-overlap orbital pairs across contractions. In determinant form this is a
@@ -506,18 +535,19 @@ fn adjugate_transpose_generic<T: NOCIScalar>(
     n: usize,
     tol: f64,
 ) -> Option<T> {
+    if n <= 4 {
+        let mut invs = [];
+        let mut lu = [];
+        let detv = adjugate_transpose(adjt, &mut invs, &mut lu, full, n, tol)?;
+        if detv.abs() <= tol {
+            return None;
+        }
+        return Some(detv);
+    }
+
     let detv = det_slice(full, n)?;
     if detv.abs() <= tol {
         return None;
-    }
-
-    if n == 0 {
-        return Some(<T as From<f64>>::from(1.0));
-    }
-
-    if n == 1 {
-        adjt[0] = <T as From<f64>>::from(1.0);
-        return Some(detv);
     }
 
     let mut minor = vec![<T as From<f64>>::from(0.0); (n - 1) * (n - 1)];

@@ -82,7 +82,9 @@ fn lg_h2_diff_m0<T: NOCIScalar>(
                     * w.ab.vab0[0][0]
             }
             (1, 1) => lg_h2_diff_m0_11(w, a, b),
+            (1, 2) => lg_h2_diff_m0_12(w, a, b),
             (1, 3) => lg_h2_diff_m0_13(w, diff, a, b, tol),
+            (2, 1) => lg_h2_diff_m0_21(w, a, b),
             (2, 2) => lg_h2_diff_m0_22(w, a, b),
             (3, 1) => lg_h2_diff_m0_31(w, diff, a, b, tol),
             _ => lg_h2_diff_m0_gen(w, l_ex, g_ex, diff, a, b, tol),
@@ -126,6 +128,74 @@ fn lg_h2_diff_m0_11<T: NOCIScalar>(
         (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
             * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
             * term
+    })
+}
+
+/// Calculate the different-spin two-electron Hamiltonian matrix element for the specialized
+/// `(la, lb) = (1, 2)`, `m = 0` case.
+/// # Arguments:
+/// - `w`: Same-spin and different-spin Wick's reference-pair intermediates with zero-overlap counts zero.
+/// - `a`: Prepared same-spin alpha scratch space with `la = 1`.
+/// - `b`: Prepared same-spin beta scratch space with `lb = 2`.
+/// # Returns
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (1, 2)`.
+#[inline(always)]
+fn lg_h2_diff_m0_12<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+) -> T {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_12, {
+        let n = w.ab.n();
+
+        let ra = a.rows[0];
+        let ca = a.cols[0];
+        let deta = a.det0.as_slice()[0];
+
+        let rows_b = &b.rows[..2];
+        let cols_b = &b.cols[..2];
+        let db = b.det0.as_slice();
+
+        let b00 = db[0];
+        let b01 = db[1];
+        let b10 = db[2];
+        let b11 = db[3];
+        let detb = b00 * b11 - b01 * b10;
+
+        let r0b = rows_b[0];
+        let r1b = rows_b[1];
+        let c0b = cols_b[0];
+        let c1b = cols_b[1];
+
+        let vab = w.ab.vab_t_slice(0, 0, 0);
+        let vba = w.ab.vba_t_slice(0, 0, 0);
+        let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+
+        let det_a = vab[ca * n + ra];
+
+        let bu0 = vba[c0b * n + r0b];
+        let bu1 = vba[c0b * n + r1b];
+        let bv0 = vba[c1b * n + r0b];
+        let bv1 = vba[c1b * n + r1b];
+        let detb_c0 = bu0 * b11 - b01 * bu1;
+        let detb_c1 = b00 * bv1 - bv0 * b10;
+
+        let n2 = n * n;
+        let abase = (ra * n + ca) * n2;
+        let b00_idx = r0b * n + c0b;
+        let b01_idx = r0b * n + c1b;
+        let b10_idx = r1b * n + c0b;
+        let b11_idx = r1b * n + c1b;
+        let ii =
+            b11 * iisl[abase + b00_idx] - b10 * iisl[abase + b01_idx] - b01 * iisl[abase + b10_idx]
+                + b00 * iisl[abase + b11_idx];
+
+        let contrib =
+            w.ab.vab0[0][0] * deta * detb - det_a * detb - deta * (detb_c0 + detb_c1) + ii;
+
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+            * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+            * contrib
     })
 }
 
@@ -206,6 +276,74 @@ fn lg_h2_diff_m0_13<T: NOCIScalar>(
         } else {
             <T as From<f64>>::from(0.0)
         }
+    })
+}
+
+/// Calculate the different-spin two-electron Hamiltonian matrix element for the specialized
+/// `(la, lb) = (2, 1)`, `m = 0` case.
+/// # Arguments:
+/// - `w`: Same-spin and different-spin Wick's reference-pair intermediates with zero-overlap counts zero.
+/// - `a`: Prepared same-spin alpha scratch space with `la = 2`.
+/// - `b`: Prepared same-spin beta scratch space with `lb = 1`.
+/// # Returns
+/// - `T`: Different-spin two-electron Hamiltonian matrix element for `(la, lb) = (2, 1)`.
+#[inline(always)]
+fn lg_h2_diff_m0_21<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    a: &WickScratch<T>,
+    b: &WickScratch<T>,
+) -> T {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_21, {
+        let n = w.ab.n();
+
+        let rows_a = &a.rows[..2];
+        let cols_a = &a.cols[..2];
+        let da = a.det0.as_slice();
+
+        let a00 = da[0];
+        let a01 = da[1];
+        let a10 = da[2];
+        let a11 = da[3];
+        let deta = a00 * a11 - a01 * a10;
+
+        let rb = b.rows[0];
+        let cb = b.cols[0];
+        let detb = b.det0.as_slice()[0];
+
+        let r0a = rows_a[0];
+        let r1a = rows_a[1];
+        let c0a = cols_a[0];
+        let c1a = cols_a[1];
+
+        let vab = w.ab.vab_t_slice(0, 0, 0);
+        let vba = w.ab.vba_t_slice(0, 0, 0);
+        let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+
+        let au0 = vab[c0a * n + r0a];
+        let au1 = vab[c0a * n + r1a];
+        let av0 = vab[c1a * n + r0a];
+        let av1 = vab[c1a * n + r1a];
+        let deta_c0 = au0 * a11 - a01 * au1;
+        let deta_c1 = a00 * av1 - av0 * a10;
+
+        let det_b = vba[cb * n + rb];
+
+        let n2 = n * n;
+        let bidx = rb * n + cb;
+        let a00_base = (r0a * n + c0a) * n2;
+        let a01_base = (r0a * n + c1a) * n2;
+        let a10_base = (r1a * n + c0a) * n2;
+        let a11_base = (r1a * n + c1a) * n2;
+        let ii =
+            a11 * iisl[a00_base + bidx] - a10 * iisl[a01_base + bidx] - a01 * iisl[a10_base + bidx]
+                + a00 * iisl[a11_base + bidx];
+
+        let contrib =
+            w.ab.vab0[0][0] * deta * detb - (deta_c0 + deta_c1) * detb - det_b * deta + ii;
+
+        (w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod))
+            * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
+            * contrib
     })
 }
 

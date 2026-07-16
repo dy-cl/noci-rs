@@ -142,6 +142,23 @@ pub(crate) fn lg_overlap_m0_direct_f64(
 
             pref * (d0 * (d4 * d8 - d5 * d7) - d1 * (d3 * d8 - d5 * d6) + d2 * (d3 * d7 - d4 * d6))
         }
+        4 => {
+            let mut d = [0.0; 16];
+
+            for i in 0..4 {
+                let row = rows[i] * n;
+
+                for j in 0..4 {
+                    d[i * 4 + j] = if i >= j {
+                        x0[row + cols[j]]
+                    } else {
+                        y0[row + cols[j]]
+                    };
+                }
+            }
+
+            pref * det4_from_slice(&d)
+        }
         5 => {
             let mut lu = [0.0; 25];
 
@@ -215,6 +232,7 @@ fn lg_overlap_m0<T: NOCIScalar>(
             1 => lg_overlap_m0_l1(w, scratch),
             2 => lg_overlap_m0_l2(w, scratch),
             3 => lg_overlap_m0_l3(w, scratch),
+            4 => lg_overlap_m0_l4(w, scratch),
             5 => lg_overlap_m0_l5(w, scratch),
             6 => lg_overlap_m0_l6(w, scratch),
             _ => {
@@ -280,6 +298,23 @@ fn lg_overlap_m0_l3<T: NOCIScalar>(
     })
 }
 
+/// Calculate the specialized `l = 4`, `m = 0` overlap.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space containing the prepared `det0`.
+/// # Returns
+/// - `T`: Overlap matrix element for `l = 4`.
+#[inline(always)]
+fn lg_overlap_m0_l4<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+) -> T {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l4, {
+        let det = det4_from_slice(&scratch.det0.as_slice()[..16]);
+        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
+    })
+}
+
 /// Calculate the specialized `l = 5`, `m = 0` overlap.
 /// # Arguments:
 /// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
@@ -312,6 +347,72 @@ fn lg_overlap_m0_l6<T: NOCIScalar>(
     lu.copy_from_slice(&scratch.det0.as_slice()[..36]);
     let det = det_lu_l6(&mut lu).unwrap_or(<T as From<f64>>::from(0.0));
     w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
+}
+
+/// Calculate determinant of a 4 x 4 row-major matrix slice.
+/// # Arguments:
+/// - `a`: Row-major matrix entries.
+/// # Returns
+/// - `T`: Determinant of `a`.
+#[inline(always)]
+fn det4_from_slice<T: NOCIScalar>(a: &[T]) -> T {
+    let m00 = {
+        let a11 = a[5];
+        let a12 = a[6];
+        let a13 = a[7];
+        let a21 = a[9];
+        let a22 = a[10];
+        let a23 = a[11];
+        let a31 = a[13];
+        let a32 = a[14];
+        let a33 = a[15];
+        a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31)
+            + a13 * (a21 * a32 - a22 * a31)
+    };
+
+    let m01 = {
+        let a10 = a[4];
+        let a12 = a[6];
+        let a13 = a[7];
+        let a20 = a[8];
+        let a22 = a[10];
+        let a23 = a[11];
+        let a30 = a[12];
+        let a32 = a[14];
+        let a33 = a[15];
+        a10 * (a22 * a33 - a23 * a32) - a12 * (a20 * a33 - a23 * a30)
+            + a13 * (a20 * a32 - a22 * a30)
+    };
+
+    let m02 = {
+        let a10 = a[4];
+        let a11 = a[5];
+        let a13 = a[7];
+        let a20 = a[8];
+        let a21 = a[9];
+        let a23 = a[11];
+        let a30 = a[12];
+        let a31 = a[13];
+        let a33 = a[15];
+        a10 * (a21 * a33 - a23 * a31) - a11 * (a20 * a33 - a23 * a30)
+            + a13 * (a20 * a31 - a21 * a30)
+    };
+
+    let m03 = {
+        let a10 = a[4];
+        let a11 = a[5];
+        let a12 = a[6];
+        let a20 = a[8];
+        let a21 = a[9];
+        let a22 = a[10];
+        let a30 = a[12];
+        let a31 = a[13];
+        let a32 = a[14];
+        a10 * (a21 * a32 - a22 * a31) - a11 * (a20 * a32 - a22 * a30)
+            + a12 * (a20 * a31 - a21 * a30)
+    };
+
+    a[0] * m00 - a[1] * m01 + a[2] * m02 - a[3] * m03
 }
 
 /// Calculate overlap matrix elements when all determinant columns are zero-replacement columns,

@@ -1218,7 +1218,7 @@ pub fn adjugate_transpose<T: StateScalar>(
 }
 
 mod adjt_mod {
-    use super::det_mod::{det2scalar, det3scalar, det4};
+    use super::det_mod::{det2scalar, det3scalar};
     use crate::StateScalar;
     use ndarray::{Array2, ArrayView2};
     use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
@@ -1331,53 +1331,66 @@ mod adjt_mod {
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
-        let det = det4(a);
+        let a00 = a[0];
+        let a01 = a[1];
+        let a02 = a[2];
+        let a03 = a[3];
+        let a10 = a[4];
+        let a11 = a[5];
+        let a12 = a[6];
+        let a13 = a[7];
+        let a20 = a[8];
+        let a21 = a[9];
+        let a22 = a[10];
+        let a23 = a[11];
+        let a30 = a[12];
+        let a31 = a[13];
+        let a32 = a[14];
+        let a33 = a[15];
+
+        let neg = T::from_real(-1.0);
+
+        let c00 = det3scalar(a11, a12, a13, a21, a22, a23, a31, a32, a33);
+        let c01 = neg * det3scalar(a10, a12, a13, a20, a22, a23, a30, a32, a33);
+        let c02 = det3scalar(a10, a11, a13, a20, a21, a23, a30, a31, a33);
+        let c03 = neg * det3scalar(a10, a11, a12, a20, a21, a22, a30, a31, a32);
+
+        let det = a00 * c00 + a01 * c01 + a02 * c02 + a03 * c03;
         if !det.abs().is_finite() {
             return None;
         }
 
-        for i in 0..4 {
-            for j in 0..4 {
-                let mut r = [0usize; 3];
-                let mut c = [0usize; 3];
+        let c10 = neg * det3scalar(a01, a02, a03, a21, a22, a23, a31, a32, a33);
+        let c11 = det3scalar(a00, a02, a03, a20, a22, a23, a30, a32, a33);
+        let c12 = neg * det3scalar(a00, a01, a03, a20, a21, a23, a30, a31, a33);
+        let c13 = det3scalar(a00, a01, a02, a20, a21, a22, a30, a31, a32);
 
-                let mut ri = 0usize;
-                for rr in 0..4 {
-                    if rr == i {
-                        continue;
-                    }
-                    r[ri] = rr;
-                    ri += 1;
-                }
+        let c20 = det3scalar(a01, a02, a03, a11, a12, a13, a31, a32, a33);
+        let c21 = neg * det3scalar(a00, a02, a03, a10, a12, a13, a30, a32, a33);
+        let c22 = det3scalar(a00, a01, a03, a10, a11, a13, a30, a31, a33);
+        let c23 = neg * det3scalar(a00, a01, a02, a10, a11, a12, a30, a31, a32);
 
-                let mut ci = 0usize;
-                for cc in 0..4 {
-                    if cc == j {
-                        continue;
-                    }
-                    c[ci] = cc;
-                    ci += 1;
-                }
+        let c30 = neg * det3scalar(a01, a02, a03, a11, a12, a13, a21, a22, a23);
+        let c31 = det3scalar(a00, a02, a03, a10, a12, a13, a20, a22, a23);
+        let c32 = neg * det3scalar(a00, a01, a03, a10, a11, a13, a20, a21, a23);
+        let c33 = det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22);
 
-                let m00 = a[r[0] * 4 + c[0]];
-                let m01 = a[r[0] * 4 + c[1]];
-                let m02 = a[r[0] * 4 + c[2]];
-                let m10 = a[r[1] * 4 + c[0]];
-                let m11 = a[r[1] * 4 + c[1]];
-                let m12 = a[r[1] * 4 + c[2]];
-                let m20 = a[r[2] * 4 + c[0]];
-                let m21 = a[r[2] * 4 + c[1]];
-                let m22 = a[r[2] * 4 + c[2]];
-
-                let minordet = det3scalar(m00, m01, m02, m10, m11, m12, m20, m21, m22);
-                let sign = if ((i + j) & 1) == 0 {
-                    T::from_real(1.0)
-                } else {
-                    T::from_real(-1.0)
-                };
-                adjt[i * 4 + j] = sign * minordet;
-            }
-        }
+        adjt[0] = c00;
+        adjt[1] = c01;
+        adjt[2] = c02;
+        adjt[3] = c03;
+        adjt[4] = c10;
+        adjt[5] = c11;
+        adjt[6] = c12;
+        adjt[7] = c13;
+        adjt[8] = c20;
+        adjt[9] = c21;
+        adjt[10] = c22;
+        adjt[11] = c23;
+        adjt[12] = c30;
+        adjt[13] = c31;
+        adjt[14] = c32;
+        adjt[15] = c33;
 
         Some(det)
     }

@@ -136,6 +136,7 @@ fn lg_one_body_m0<T: NOCIScalar>(
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * one_body_scalar(w, ob, 0),
             1 => lg_one_body_m0_l1(w, scratch, ob),
             2 => lg_one_body_m0_l2(w, scratch, ob),
+            3 => lg_one_body_m0_l3(w, scratch, tol, ob),
             _ => lg_one_body_m0_gen(w, l_ex, g_ex, scratch, tol, ob),
         }
     })
@@ -213,6 +214,78 @@ fn lg_one_body_m0_l2<T: NOCIScalar>(
         w.phase
             * <T as From<f64>>::from(w.tilde_s_prod)
             * (det * one_body_scalar(w, ob, 0) - det_c0 - det_c1)
+    })
+}
+
+/// Calculate the specialized `l = 3`, `m = 0` one-body matrix element.
+/// # Arguments:
+/// - `w`: Same-spin Wick's reference-pair intermediates with `m = 0`.
+/// - `scratch`: Scratch space containing the prepared `l = 3` contraction determinant and indices.
+/// - `tol`: Tolerance for singularity handling in determinant evaluation.
+/// - `ob`: Selects Hamiltonian or Fock one-body intermediates.
+/// # Returns
+/// - `T`: One-body matrix element for `l = 3`.
+#[inline(always)]
+fn lg_one_body_m0_l3<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+    ob: OneBody,
+) -> T {
+    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l3, {
+        let n = w.n();
+        let det0 = &scratch.det0.as_slice()[..9];
+
+        if let Some(det) = adjugate_transpose(
+            scratch.adjt_det.as_mut_slice(),
+            scratch.invs.as_mut_slice(),
+            scratch.lu.as_mut_slice(),
+            det0,
+            3,
+            tol,
+        ) {
+            let cof = scratch.adjt_det.as_slice();
+            let rows = scratch.rows.as_slice();
+            let cols = scratch.cols.as_slice();
+
+            let r0 = rows[0];
+            let r1 = rows[1];
+            let r2 = rows[2];
+            let c0 = cols[0];
+            let c1 = cols[1];
+            let c2 = cols[2];
+
+            let fsl = match ob {
+                OneBody::H1 => w.fh_t_slice(0, 0),
+                OneBody::Fock => w.ff_t_slice(0, 0),
+            };
+
+            let f00 = fsl[c0 * n + r0];
+            let f10 = fsl[c0 * n + r1];
+            let f20 = fsl[c0 * n + r2];
+            let f01 = fsl[c1 * n + r0];
+            let f11 = fsl[c1 * n + r1];
+            let f21 = fsl[c1 * n + r2];
+            let f02 = fsl[c2 * n + r0];
+            let f12 = fsl[c2 * n + r1];
+            let f22 = fsl[c2 * n + r2];
+
+            let repl = cof[0] * f00
+                + cof[3] * f10
+                + cof[6] * f20
+                + cof[1] * f01
+                + cof[4] * f11
+                + cof[7] * f21
+                + cof[2] * f02
+                + cof[5] * f12
+                + cof[8] * f22;
+
+            w.phase
+                * <T as From<f64>>::from(w.tilde_s_prod)
+                * (det * one_body_scalar(w, ob, 0) - repl)
+        } else {
+            <T as From<f64>>::from(0.0)
+        }
     })
 }
 
