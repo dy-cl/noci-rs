@@ -9,7 +9,6 @@ wickscache/
 tests/fixtures/**/data.h5
 tests/fixtures/**/data_*.h5
 .cargo/
-scaling*
 data.h5
 tools/wick/__pycache__/
 src/nocc/terms/*
