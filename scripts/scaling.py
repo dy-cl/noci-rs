@@ -22,48 +22,26 @@ def runCase(args, mpiRanks: int, rayonThreads: int):
     """
     Run one MPI/Rayon benchmark and return the wall time in milliseconds.
     """
-    nodes = math.ceil(mpiRanks / args.tasksPerNode)
+    repoRoot = args.bin.resolve().parents[2]
 
     environment = os.environ.copy()
     environment["RAYON_NUM_THREADS"] = str(rayonThreads)
     environment["OPENBLAS_NUM_THREADS"] = "1"
     environment["OMP_NUM_THREADS"] = "1"
 
-    if "SLURM_JOB_ID" in environment:
-        allocatedNodes = int(environment.get("SLURM_JOB_NUM_NODES", nodes))
-
-        if nodes > allocatedNodes:
-            raise ValueError(
-                f"MPI={mpiRanks} requires {nodes} nodes, "
-                f"but only {allocatedNodes} are allocated"
-            )
-
-        command = [
-            "srun",
-            "--nodes", str(nodes),
-            "--ntasks", str(mpiRanks),
-            "--cpus-per-task", str(rayonThreads),
-            "--distribution=block:block",
-            "--cpu-bind=cores",
-            "--exclusive",
-            str(args.bin),
-            str(args.input),
-        ]
-    else:
-        command = [
-            "mpirun",
-            "-np", str(mpiRanks),
-            "--map-by",
-            f"ppr:{args.tasksPerNode}:node:PE={rayonThreads}",
-            "--bind-to", "core",
-            str(args.bin),
-            str(args.input),
-        ]
+    command = [
+        "mpirun",
+        "-np", str(mpiRanks),
+        "--map-by",
+        f"ppr:{args.tasksPerNode}:node:PE={rayonThreads}",
+        "--bind-to", "core",
+        str(args.bin.resolve()),
+        str(args.input.resolve()),
+    ]
 
     print(
         f"Running MPI={mpiRanks}, "
-        f"Rayon/rank={rayonThreads}, "
-        f"nodes={nodes}",
+        f"Rayon/rank={rayonThreads}",
         file = sys.stderr,
         flush = True,
     )
@@ -72,6 +50,7 @@ def runCase(args, mpiRanks: int, rayonThreads: int):
 
     subprocess.run(
         command,
+        cwd = repoRoot,
         env = environment,
         stdout = subprocess.DEVNULL,
         check = True,
