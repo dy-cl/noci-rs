@@ -22,6 +22,7 @@ def runCase(args, mpiRanks: int, rayonThreads: int):
     """
     Run one MPI/Rayon benchmark and return the wall time in milliseconds.
     """
+    nodes = math.ceil(mpiRanks / args.tasksPerNode)
     repoRoot = args.bin.resolve().parents[2]
 
     environment = os.environ.copy()
@@ -29,19 +30,44 @@ def runCase(args, mpiRanks: int, rayonThreads: int):
     environment["OPENBLAS_NUM_THREADS"] = "1"
     environment["OMP_NUM_THREADS"] = "1"
 
-    command = [
-        "mpirun",
-        "-np", str(mpiRanks),
-        "--map-by",
-        f"ppr:{args.tasksPerNode}:node:PE={rayonThreads}",
-        "--bind-to", "core",
-        str(args.bin.resolve()),
-        str(args.input.resolve()),
-    ]
+    if "SLURM_JOB_ID" in environment:
+        command = [
+            "srun",
+            "--mpi=pmix",
+            "--nodes", str(nodes),
+            "--ntasks", str(mpiRanks),
+            "--ntasks-per-node", str(args.tasksPerNode),
+            "--cpus-per-task", str(rayonThreads),
+            "--distribution=block:block",
+            "--cpu-bind=cores",
+            "--exclusive",
+            str(args.bin.resolve()),
+            str(args.input.resolve()),
+        ]
+    else:
+        command = [
+            "mpirun",
+            "-np", str(mpiRanks),
+            "bash",
+            "-lc",
+            (
+                "localRank=${OMPI_COMM_WORLD_LOCAL_RANK:-"
+                "${MPI_LOCALRANKID:-${SLURM_LOCALID:-0}}}; "
+                f"start=$((localRank * {rayonThreads})); "
+                f"end=$((start + {rayonThreads} - 1)); "
+                "cpus=$(seq -s, $start $end); "
+                f'exec taskset --cpu-list "$cpus" '
+                f'env RAYON_NUM_THREADS={rayonThreads} '
+                "OPENBLAS_NUM_THREADS=1 "
+                "OMP_NUM_THREADS=1 "
+                f'"{args.bin.resolve()}" "{args.input.resolve()}"'
+            ),
+        ]
 
     print(
         f"Running MPI={mpiRanks}, "
-        f"Rayon/rank={rayonThreads}",
+        f"Rayon/rank={rayonThreads}, "
+        f"nodes={nodes}",
         file = sys.stderr,
         flush = True,
     )
