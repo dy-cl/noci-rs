@@ -16,11 +16,34 @@ use super::common::find_hs;
 /// - `shift`: Current population-control shift E_s(\Delta \tau).
 /// # Returns:
 /// - `f64`: Shifted coupling (T_{\Lambda\Gamma}(\Delta \tau).
+/// # Arguments:
+/// - `lambda`: Child determinant index \(\Lambda\).
+/// - `gamma`: Source determinant index \(\Gamma\).
+/// - `shift`: Current population-control shift \(E_s\).
+/// - `data`: Immutable stochastic propagation data.
+/// - `scratch`: Scratch space for nonorthogonal Wick quantities.
+/// # Returns:
+/// - `f64`: Shifted coupling \(T_{\Lambda\Gamma}\).
 pub(in crate::stochastic) fn coupling(
-    hlg: f64,
-    slg: f64,
+    lambda: usize,
+    gamma: usize,
     shift: f64,
+    data: &NOCIData<'_, f64>,
+    scratch: &mut WickScratchSpin<f64>,
 ) -> f64 {
+    let lambda_det = &data.basis[lambda];
+    let gamma_det = &data.basis[gamma];
+
+    if lambda_det.parent == gamma_det.parent
+        && (lambda_det.oa ^ gamma_det.oa).count_ones()
+            + (lambda_det.ob ^ gamma_det.ob).count_ones()
+            > 4
+    {
+        return 0.0;
+    }
+
+    let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
+
     hlg - shift * slg
 }
 
@@ -59,8 +82,7 @@ pub(in crate::stochastic) fn init_heat_bath(
         if lambda == gamma {
             continue;
         }
-        let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
-        let k = coupling(hlg, slg, shift);
+        let k = coupling(lambda, gamma, shift, data, scratch);
 
         sumlg += k.abs();
         cumulatives.push(sumlg);
@@ -101,8 +123,7 @@ pub(in crate::stochastic) fn pgen_uniform(
         lambda += 1;
     }
 
-    let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
-    let k = coupling(hlg, slg, shift);
+    let k = coupling(lambda, gamma, shift, data, scratch);
     // Uniform generation probability
     let pgen = 1.0 / ((ndets - 1) as f64);
     (pgen, k, lambda)
@@ -140,8 +161,7 @@ pub(in crate::stochastic) fn pgen_heat_bath(
         if lambda >= gamma {
             lambda += 1;
         }
-        let (hlg, slg) = find_hs(data, lambda, gamma, scratch);
-        let k = coupling(hlg, slg, shift);
+        let k = coupling(lambda, gamma, shift, data, scratch);
         let pgen = 1.0 / ((ndets - 1) as f64);
         return (pgen, k, lambda);
     }
