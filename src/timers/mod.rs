@@ -108,6 +108,7 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.lg_overlap_m0_l1);
         $f!($tot.nonorthogonalwicks.lg_overlap_m0_l2);
         $f!($tot.nonorthogonalwicks.lg_overlap_m0_l3);
+        $f!($tot.nonorthogonalwicks.lg_overlap_m0_l4);
         $f!($tot.nonorthogonalwicks.lg_overlap_ml);
         $f!($tot.nonorthogonalwicks.lg_overlap_ml_l1);
         $f!($tot.nonorthogonalwicks.lg_overlap_ml_l2);
@@ -138,13 +139,17 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.lg_one_body_m0_gen);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0_l1);
         $f!($tot.nonorthogonalwicks.lg_one_body_m0_l2);
+        $f!($tot.nonorthogonalwicks.lg_one_body_m0_l3);
         $f!($tot.nonorthogonalwicks.lg_h2_same_m0_gen);
         $f!($tot.nonorthogonalwicks.lg_h2_same_m0_l1);
         $f!($tot.nonorthogonalwicks.lg_h2_same_m0_l2);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_gen);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_11);
+        $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_12);
+        $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_21);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_22);
         $f!($tot.nonorthogonalwicks.lg_h2_same_m0_l3);
+        $f!($tot.nonorthogonalwicks.lg_h2_same_m0_l4);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_13);
         $f!($tot.nonorthogonalwicks.lg_h2_diff_m0_31);
     };

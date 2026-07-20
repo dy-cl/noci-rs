@@ -36,6 +36,8 @@ pub struct Totals {
     pub lg_overlap_m0_l2: Counter,
     /// Total time spent in `lg_overlap_m0_l3`.
     pub lg_overlap_m0_l3: Counter,
+    /// Total time spent in `lg_overlap_m0_l4`.
+    pub lg_overlap_m0_l4: Counter,
     /// Total time spent in `lg_overlap_ml`.
     pub lg_overlap_ml: Counter,
     /// Total time spent in `lg_overlap_ml_l1`.
@@ -94,6 +96,8 @@ pub struct Totals {
     pub lg_one_body_m0_l1: Counter,
     /// Total time spent in `lg_one_body_m0_l2`.
     pub lg_one_body_m0_l2: Counter,
+    /// Total time spent in `lg_one_body_m0_l3`.
+    pub lg_one_body_m0_l3: Counter,
     /// Total time spent in `lg_h2_same_m0_gen`.
     pub lg_h2_same_m0_gen: Counter,
     /// Total time spent in `lg_h2_same_m0_l1`.
@@ -104,10 +108,16 @@ pub struct Totals {
     pub lg_h2_diff_m0_gen: Counter,
     /// Total time spent in `lg_h2_diff_m0_11`.
     pub lg_h2_diff_m0_11: Counter,
+    /// Total time spent in `lg_h2_diff_m0_12`.
+    pub lg_h2_diff_m0_12: Counter,
+    /// Total time spent in `lg_h2_diff_m0_21`.
+    pub lg_h2_diff_m0_21: Counter,
     /// Total time spent in `lg_h2_diff_m0_22`.
     pub lg_h2_diff_m0_22: Counter,
     /// Total time spent in `lg_h2_same_m0_l3`.
     pub lg_h2_same_m0_l3: Counter,
+    /// Total time spent in `lg_h2_same_m0_l4`.
+    pub lg_h2_same_m0_l4: Counter,
     /// Total time spent in `lg_h2_diff_m0_13`.
     pub lg_h2_diff_m0_13: Counter,
     /// Total time spent in `lg_h2_diff_m0_31`.
@@ -145,6 +155,7 @@ impl Totals {
         self.lg_overlap_m0_l1.merge_from(&other.lg_overlap_m0_l1);
         self.lg_overlap_m0_l2.merge_from(&other.lg_overlap_m0_l2);
         self.lg_overlap_m0_l3.merge_from(&other.lg_overlap_m0_l3);
+        self.lg_overlap_m0_l4.merge_from(&other.lg_overlap_m0_l4);
         self.lg_overlap_ml.merge_from(&other.lg_overlap_ml);
         self.lg_overlap_ml_l1.merge_from(&other.lg_overlap_ml_l1);
         self.lg_overlap_ml_l2.merge_from(&other.lg_overlap_ml_l2);
@@ -177,13 +188,17 @@ impl Totals {
             .merge_from(&other.lg_one_body_m0_gen);
         self.lg_one_body_m0_l1.merge_from(&other.lg_one_body_m0_l1);
         self.lg_one_body_m0_l2.merge_from(&other.lg_one_body_m0_l2);
+        self.lg_one_body_m0_l3.merge_from(&other.lg_one_body_m0_l3);
         self.lg_h2_same_m0_gen.merge_from(&other.lg_h2_same_m0_gen);
         self.lg_h2_same_m0_l1.merge_from(&other.lg_h2_same_m0_l1);
         self.lg_h2_same_m0_l2.merge_from(&other.lg_h2_same_m0_l2);
         self.lg_h2_diff_m0_gen.merge_from(&other.lg_h2_diff_m0_gen);
         self.lg_h2_diff_m0_11.merge_from(&other.lg_h2_diff_m0_11);
+        self.lg_h2_diff_m0_12.merge_from(&other.lg_h2_diff_m0_12);
+        self.lg_h2_diff_m0_21.merge_from(&other.lg_h2_diff_m0_21);
         self.lg_h2_diff_m0_22.merge_from(&other.lg_h2_diff_m0_22);
         self.lg_h2_same_m0_l3.merge_from(&other.lg_h2_same_m0_l3);
+        self.lg_h2_same_m0_l4.merge_from(&other.lg_h2_same_m0_l4);
         self.lg_h2_diff_m0_13.merge_from(&other.lg_h2_diff_m0_13);
         self.lg_h2_diff_m0_31.merge_from(&other.lg_h2_diff_m0_31);
     }
@@ -371,6 +386,16 @@ pub fn add_lg_overlap_m0_l2(ns: u64) {
 #[inline(always)]
 pub fn add_lg_overlap_m0_l3(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l3.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_overlap_m0_l4` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_overlap_m0_l4`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_overlap_m0_l4` counter.
+#[inline(always)]
+pub fn add_lg_overlap_m0_l4(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_overlap_m0_l4.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_overlap_ml` counter.
@@ -663,6 +688,16 @@ pub fn add_lg_one_body_m0_l2(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_one_body_m0_l2.add_ns(ns));
 }
 
+/// Add one timed call to the `lg_one_body_m0_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_one_body_m0_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_one_body_m0_l3` counter.
+#[inline(always)]
+pub fn add_lg_one_body_m0_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_one_body_m0_l3.add_ns(ns));
+}
+
 /// Add one timed call to the `lg_h2_same_m0_gen` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0_gen`.
@@ -713,6 +748,26 @@ pub fn add_lg_h2_diff_m0_11(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_11.add_ns(ns));
 }
 
+/// Add one timed call to the `lg_h2_diff_m0_12` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_12`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_12` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_12(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_12.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_diff_m0_21` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_21`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_diff_m0_21` counter.
+#[inline(always)]
+pub fn add_lg_h2_diff_m0_21(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_diff_m0_21.add_ns(ns));
+}
+
 /// Add one timed call to the `lg_h2_diff_m0_22` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_diff_m0_22`.
@@ -731,6 +786,16 @@ pub fn add_lg_h2_diff_m0_22(ns: u64) {
 #[inline(always)]
 pub fn add_lg_h2_same_m0_l3(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0_l3.add_ns(ns));
+}
+
+/// Add one timed call to the `lg_h2_same_m0_l4` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `lg_h2_same_m0_l4`.
+/// # Returns:
+/// - `()`: Updates the current thread local `lg_h2_same_m0_l4` counter.
+#[inline(always)]
+pub fn add_lg_h2_same_m0_l4(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.lg_h2_same_m0_l4.add_ns(ns));
 }
 
 /// Add one timed call to the `lg_h2_diff_m0_13` counter.
