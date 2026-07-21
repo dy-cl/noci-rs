@@ -491,11 +491,12 @@ write = {
     write_deterministic_coeffs = false,
     write_excitation_hist = false,
     write_restart = nil,
+    write_restart_interval = nil,
     read_restart = nil,
 }
 ```
 
-Orbital data are written in HDF5 format. Hamiltonian and overlap matrices are written as plain text. Stochastic calculations can read and write restart files.
+Orbital data are written in HDF5 format. Hamiltonian and overlap matrices are written as plain text. Stochastic calculations can read and write restart files. If `write_restart_interval` is set, a restart file is written every `write_restart_interval` stochastic iterations, and `write_restart_interval` must be divisible by `qmc.ncycles`.
 
 ### Wick's Intermediates
 

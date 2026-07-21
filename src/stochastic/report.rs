@@ -131,6 +131,39 @@ pub(in crate::stochastic) fn print_row(
     }
 }
 
+/// Write the current stochastic propagation state to a restart file.
+/// # Arguments:
+/// - `report`: Current report number.
+/// - `state`: Propagation state containing QMC bookkeeping data.
+/// - `shift`: Current population-control shift.
+/// - `run`: Rank-local propagation metadata.
+/// - `world`: MPI communicator.
+/// - `restart_path`: Optional restart file path.
+/// # Returns:
+/// - `()`: Writes the restart file.
+pub(in crate::stochastic) fn write_restart(
+    report: usize,
+    state: &PropagationState,
+    shift: f64,
+    run: &QMCRunInfo,
+    world: &impl Communicator,
+    restart_path: Option<&String>,
+) {
+    let restart = RestartState {
+        report,
+        shift,
+        nwprev: state.prev_pop.nw,
+        nrefprev: state.prev_pop.nref,
+        populations: state.mc.populations.clone(),
+        excitation_hist: state.mc.excitation_hist.clone(),
+        base_seed: Some(run.base_seed),
+    };
+
+    let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
+
+    write_restart_hdf5(restart_path, world, &restart).unwrap();
+}
+
 /// Check for a `STOP` file, write a restart if required, and return early.
 /// # Arguments:
 /// - `report`: Current report number.

@@ -13,7 +13,7 @@ use super::metric::{
     accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
     sample_populations, take_population_changes, update_shift,
 };
-use super::report::{check_stop, print_header, print_initial_row, print_row};
+use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::state::{
     ExcitationHist, MCState, MPIScratch, PopulationStats, ProjectedEnergyUpdate, PropagationResult,
     PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations, ThreadPropagation,
@@ -94,6 +94,13 @@ pub fn qmc_step(
     world: &impl Communicator,
 ) -> (f64, Option<ExcitationHist>) {
     let qmc = data.input.qmc.as_ref().unwrap();
+
+    if let Some(write_restart_interval) = data.input.write.write_restart_interval
+        && (write_restart_interval == 0 || write_restart_interval % qmc.ncycles != 0)
+    {
+        println!("write_restart_interval must be divisible by qmc.ncycles");
+        std::process::exit(1);
+    }
 
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
@@ -317,6 +324,19 @@ pub fn qmc_step(
             data.input.write.write_restart.as_ref(),
         ) {
             return ret;
+        }
+
+        if let Some(write_restart_interval) = data.input.write.write_restart_interval
+            && end % write_restart_interval == 0
+        {
+            write_restart(
+                report,
+                &state,
+                *es,
+                &run,
+                world,
+                data.input.write.write_restart.as_ref(),
+            );
         }
 
         print_row(irank, end, &state, &stats, data.basis[0].e, *es, propagator);

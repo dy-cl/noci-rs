@@ -265,6 +265,10 @@ pub fn print_input(input: &Input) {
     );
     println!("WRITE_MATRICES: {}", input.write.write_matrices);
     println!("WRITE_RESTART: {:?}", input.write.write_restart);
+    println!(
+        "WRITE_RESTART_INTERVAL: {:?}",
+        input.write.write_restart_interval
+    );
     println!("READ_RESTART: {:?}", input.write.read_restart);
     println!();
 

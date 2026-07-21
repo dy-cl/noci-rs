@@ -15,6 +15,8 @@ pub struct WriteOptions {
     pub write_dir: String,
     /// Optional restart output path.
     pub write_restart: Option<String>,
+    /// Write the stochastic restart every this many iterations.
+    pub write_restart_interval: Option<usize>,
     /// Optional restart input path.
     pub read_restart: Option<String>,
 }
@@ -32,6 +34,7 @@ impl Default for WriteOptions {
             write_matrices: false,
             write_dir: "outputs/".to_string(),
             write_restart: None,
+            write_restart_interval: None,
             read_restart: None,
         }
     }

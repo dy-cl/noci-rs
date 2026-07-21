@@ -242,6 +242,9 @@ fn read_write(write_tbl: Option<Table>) -> WriteOptions {
             write_restart: write_tbl
                 .get("write_restart")
                 .unwrap_or(defaults.write_restart),
+            write_restart_interval: write_tbl
+                .get("write_restart_interval")
+                .unwrap_or(defaults.write_restart_interval),
             read_restart: write_tbl
                 .get("read_restart")
                 .unwrap_or(defaults.read_restart),
