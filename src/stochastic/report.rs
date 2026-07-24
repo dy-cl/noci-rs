@@ -36,6 +36,7 @@ pub(in crate::stochastic) fn print_header(
 /// Print the initial iteration line on rank zero.
 /// # Arguments:
 /// - `irank`: Rank of the current MPI process.
+/// - `iter`: Iteration number to print.
 /// - `state`: Propagation state containing QMC statistics.
 /// - `e0`: Energy of the first basis determinant.
 /// - `propagator`: Propagator used by the stochastic calculation.
@@ -43,6 +44,7 @@ pub(in crate::stochastic) fn print_header(
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
 pub(in crate::stochastic) fn print_initial_row(
     irank: usize,
+    iter: usize,
     state: &PropagationState,
     e0: f64,
     propagator: Propagator,
@@ -51,7 +53,7 @@ pub(in crate::stochastic) fn print_initial_row(
         match propagator {
             Propagator::DirectOverlap => println!(
                 "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
-                0,
+                iter,
                 state.pe.num,
                 state.pe.den,
                 state.eprojcur,
@@ -64,7 +66,7 @@ pub(in crate::stochastic) fn print_initial_row(
             ),
             _ => println!(
                 "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16} {:>16}",
-                0,
+                iter,
                 state.pe.num,
                 state.pe.den,
                 state.eprojcur,

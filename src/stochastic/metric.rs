@@ -879,7 +879,13 @@ pub fn qmc_step(
 
     let propagator = data.input.prop_ref().propagator;
     print_header(irank, propagator);
-    print_initial_row(irank, &state, data.basis[0].e, propagator);
+    print_initial_row(
+        irank,
+        state.start_report * qmc.ncycles,
+        &state,
+        data.basis[0].e,
+        propagator,
+    );
 
     let mut population_changes = Vec::new();
     let mut sample_chunks = Vec::new();
@@ -963,7 +969,7 @@ pub fn qmc_step(
         }
 
         if let Some(write_restart_interval) = data.input.write.write_restart_interval
-            && end % write_restart_interval == 0
+            && end.is_multiple_of(write_restart_interval)
         {
             write_restart(
                 report,

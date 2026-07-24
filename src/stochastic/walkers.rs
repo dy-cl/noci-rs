@@ -14,6 +14,7 @@ use super::metric::{
     sample_populations, take_population_changes, update_shift,
 };
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
+use super::restart::read_restart_hdf5;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, PopulationStats, ProjectedEnergyUpdate, PropagationResult,
     PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations, ThreadPropagation,
@@ -227,36 +228,70 @@ pub fn qmc_step(
     let mut propagation_result = PropagationResult::new();
     let mut mpiscratch = MPIScratch::new(run.nranks);
 
-    let populations = initialise_populations(c0, qmc.initial_population, &run, world);
-    let excitation_hist = if data.input.write.write_excitation_hist {
-        Some(ExcitationHist::new(-60.0, 1e-12, 100))
-    } else {
-        None
-    };
+    let mut state = if let Some(path) = data.input.write.read_restart.as_deref() {
+        if run.irank == 0 {
+            println!("Reading restart from {path}");
+        }
 
-    let mut state = PropagationState::new(
-        MCState {
-            populations,
+        let restart = read_restart_hdf5(path, world).unwrap();
+        *es = restart.shift;
+
+        let mc = MCState {
+            populations: restart.populations,
             sampled: SparsePopulations::new(run.ndets),
             delta: vec![0.0; run.ndets],
             changed: Vec::new(),
-            excitation_hist,
-        },
-        ProjectedEnergyUpdate { num: 0.0, den: 1.0 },
-        0,
-        false,
-        PopulationStats::new(qmc.initial_population, 0.0, 0.0, 0),
-    );
+            excitation_hist: restart.excitation_hist,
+        };
+        let (_, pe) = population_stats_projected_energy(&mc, &isref, &run, world);
+        let prev_pop = PopulationStats::new(restart.nwprev, restart.nrefprev, 0.0, 0);
 
-    let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
-    state.pe = pe;
-    state.eprojcur = state.pe.num / state.pe.den;
-    state.prev_pop = stats;
-    state.cur_pop = stats;
+        PropagationState::new(
+            mc,
+            pe,
+            restart.report + 1,
+            restart.nwprev >= qmc.target_population,
+            prev_pop,
+        )
+    } else {
+        let populations = initialise_populations(c0, qmc.initial_population, &run, world);
+        let excitation_hist = if data.input.write.write_excitation_hist {
+            Some(ExcitationHist::new(-60.0, 1e-12, 100))
+        } else {
+            None
+        };
+
+        let mut state = PropagationState::new(
+            MCState {
+                populations,
+                sampled: SparsePopulations::new(run.ndets),
+                delta: vec![0.0; run.ndets],
+                changed: Vec::new(),
+                excitation_hist,
+            },
+            ProjectedEnergyUpdate { num: 0.0, den: 1.0 },
+            0,
+            false,
+            PopulationStats::new(qmc.initial_population, 0.0, 0.0, 0),
+        );
+
+        let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
+        state.pe = pe;
+        state.eprojcur = state.pe.num / state.pe.den;
+        state.prev_pop = stats;
+        state.cur_pop = stats;
+        state
+    };
 
     let propagator = data.input.prop_ref().propagator;
     print_header(irank, propagator);
-    print_initial_row(irank, &state, data.basis[0].e, propagator);
+    print_initial_row(
+        irank,
+        state.start_report * qmc.ncycles,
+        &state,
+        data.basis[0].e,
+        propagator,
+    );
 
     let mut population_changes = Vec::new();
     let mut sample_chunks = Vec::new();
@@ -327,7 +362,7 @@ pub fn qmc_step(
         }
 
         if let Some(write_restart_interval) = data.input.write.write_restart_interval
-            && end % write_restart_interval == 0
+            && end.is_multiple_of(write_restart_interval)
         {
             write_restart(
                 report,
