@@ -1,5 +1,9 @@
 // snoci/solve.rs
 
+use std::fs::OpenOptions;
+use std::path::Path;
+
+use memmap2::{MmapMut, MmapOptions};
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
@@ -16,6 +20,41 @@ use crate::time_call;
 use crate::{AoData, DetState, input::Input};
 
 use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps};
+
+pub(in crate::snoci) enum CandidateM<T: NOCIScalar> {
+    /// Packed candidate-candidate matrix stored in process memory.
+    RAM(Vec<T>),
+    /// Packed candidate-candidate matrix stored in a writable memory map.
+    Disk(MmapMut),
+}
+
+impl<T: NOCIScalar> CandidateM<T> {
+    pub(in crate::snoci) fn as_slice(&self) -> &[T] {
+        match self {
+            Self::RAM(m) => m.as_slice(),
+            Self::Disk(m) => unsafe {
+                // Mmap length is set from `len * size_of::<T>()` when the packed matrix is built.
+                std::slice::from_raw_parts(
+                    m.as_ptr() as *const T,
+                    m.len() / std::mem::size_of::<T>(),
+                )
+            },
+        }
+    }
+
+    pub(in crate::snoci) fn as_mut_slice(&mut self) -> &mut [T] {
+        match self {
+            Self::RAM(m) => m.as_mut_slice(),
+            Self::Disk(m) => unsafe {
+                // Mmap length is set from `len * size_of::<T>()` when the packed matrix is built.
+                std::slice::from_raw_parts_mut(
+                    m.as_mut_ptr() as *mut T,
+                    m.len() / std::mem::size_of::<T>(),
+                )
+            },
+        }
+    }
+}
 
 /// Build Hamiltonian and overlap matrix elements for the current space and solve the resulting
 /// generalised eigenvalue problem.
@@ -152,41 +191,86 @@ pub(in crate::snoci) fn build_snoci_projection<T: NOCIScalar>(
     })
 }
 
-/// Build the upper triangle of the unprojected candidate-candidate shifted Fock matrix `M`.
+/// Build the upper triangle of the unprojected candidate-candidate shifted Fock matrix `M` in RAM.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
 /// # Returns:
-/// - `Vec<T>`: Packed upper triangle of `M`.
+/// - `CandidateM<T>`: Packed upper triangle of `M`.
 pub(in crate::snoci) fn build_candidate_m<T: NOCIScalar>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>
-) -> Vec<T> {
+) -> CandidateM<T> {
     time_call!(crate::timers::snoci::add_build_candidate_m, {
         let n = op.candidates.len();
-        let mut m = vec![T::from_real(0.0); n * (n + 1) / 2];
+        let len = n
+            .checked_mul(n + 1)
+            .and_then(|x| x.checked_div(2))
+            .expect("packed candidate matrix length overflow");
+        let mut m = Vec::new();
+        m.try_reserve_exact(len)
+            .expect("failed to allocate packed candidate matrix in RAM");
+        m.resize(len, T::from_real(0.0));
 
-        m.par_iter_mut()
-            .enumerate()
-            .for_each_init(WickScratchSpin::new, |scratch, (k, m_ab)| {
-                let mut lo = 0usize;
-                let mut hi = n;
+        let mut m = CandidateM::RAM(m);
+        fill_candidate_m(op, m.as_mut_slice());
+        m
+    })
+}
 
-                while lo < hi {
-                    let mid = lo + (hi - lo).div_ceil(2);
-                    let prefix = mid * (2 * n - mid + 1) / 2;
+/// Build the upper triangle of the unprojected candidate-candidate shifted Fock matrix `M` in a
+/// writable memory map.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `path`: File path for the packed matrix.
+/// # Returns:
+/// - `CandidateM<T>`: File-backed packed upper triangle of `M`.
+pub(in crate::snoci) fn build_candidate_m_disk<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    path: &Path,
+) -> CandidateM<T> {
+    time_call!(crate::timers::snoci::add_build_candidate_m, {
+        let n = op.candidates.len();
+        let len = n
+            .checked_mul(n + 1)
+            .and_then(|x| x.checked_div(2))
+            .expect("packed candidate matrix length overflow");
+        let nbytes = len
+            .checked_mul(std::mem::size_of::<T>())
+            .expect("packed candidate matrix byte size overflow");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        file.set_len(nbytes as u64).unwrap();
 
-                    if prefix <= k {
-                        lo = mid;
-                    } else {
-                        hi = mid - 1;
-                    }
-                }
+        let mmap = unsafe { MmapOptions::new().len(nbytes).map_mut(&file).unwrap() };
+        let mut m = CandidateM::Disk(mmap);
+        fill_candidate_m(op, m.as_mut_slice());
+        m
+    })
+}
 
-                let a = lo;
-                let b = a + (k - a * (2 * n - a + 1) / 2);
+fn fill_candidate_m<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    m: &mut [T],
+) {
+    let n = op.candidates.len();
+    let m_addr = m.as_mut_ptr() as usize;
 
-                let ldet = &op.candidates[a];
-                let gdet = &op.candidates[b];
+    (0..n)
+        .into_par_iter()
+        .for_each_init(WickScratchSpin::new, |scratch, a| {
+            let ldet = &op.candidates[a];
+            let row = a * (2 * n - a + 1) / 2;
+            let row_len = n - a;
+            // Rows in packed upper-triangular storage are disjoint, and each `a` is visited once.
+            let row =
+                unsafe { std::slice::from_raw_parts_mut((m_addr as *mut T).add(row), row_len) };
 
+            for (db, m_ab) in row.iter_mut().enumerate() {
+                let gdet = &op.candidates[a + db];
                 *m_ab = calculate_m_pair(
                     op.data,
                     op.fock,
@@ -194,9 +278,8 @@ pub(in crate::snoci) fn build_candidate_m<T: NOCIScalar>(
                     op.projection.e0,
                     Some(scratch),
                 );
-            });
-        m
-    })
+            }
+        });
 }
 
 /// Build the diagonal of the unprojected candidate-candidate shifted Fock matrix `M`.
@@ -283,32 +366,46 @@ pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
 
         let xs = x.as_slice_memory_order().unwrap();
 
-        if let Some(m) = m {
-            let y: Vec<T> = (0..n)
-                .into_par_iter()
-                .map(|a| {
-                    let mut ya = T::from_real(0.0);
-
-                    for (b, _) in xs.iter().enumerate().take(a) {
-                        let k = b * (2 * n - b + 1) / 2 + (a - b);
-                        ya += m[k].conj() * xs[b];
-                    }
-
-                    let row = a * (2 * n - a + 1) / 2;
-
-                    for (b, _) in xs.iter().enumerate().take(n).skip(a) {
-                        let k = row + (b - a);
-                        ya += m[k] * xs[b];
-                    }
-
-                    ya
-                })
-                .collect();
-            return Array1::from_vec(y);
-        }
-
         let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
         let zero = T::from_real(0.0);
+
+        if let Some(m) = m {
+            let y = (0..n)
+                .into_par_iter()
+                .with_min_len(min_len)
+                .fold(
+                    || vec![zero; n],
+                    |mut y, a| {
+                        let xa = xs[a];
+                        let row_start = a * (2 * n - a + 1) / 2;
+
+                        for (db, &m_ab) in m[row_start..row_start + n - a].iter().enumerate() {
+                            let b = a + db;
+                            let xb = xs[b];
+
+                            if xb != zero {
+                                y[a] += m_ab * xb;
+                            }
+
+                            if b != a && xa != zero {
+                                y[b] += m_ab.conj() * xa;
+                            }
+                        }
+
+                        y
+                    },
+                )
+                .reduce(
+                    || vec![zero; n],
+                    |mut lhs, rhs| {
+                        for i in 0..n {
+                            lhs[i] += rhs[i];
+                        }
+                        lhs
+                    },
+                );
+            return Array1::from_vec(y);
+        }
 
         let y = (0..n)
             .into_par_iter()

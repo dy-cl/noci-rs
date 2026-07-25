@@ -12,10 +12,11 @@ use crate::{DetState, PostSCFData, input::Input};
 
 use super::{
     apply_shifted_omega_m, apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
-    build_candidate_m_diag, build_candidate_s_diag, build_candidate_v, build_omega_v,
-    build_preconditioner, build_snoci_focks, build_snoci_overlaps, build_snoci_projection, gmres,
-    select_candidates, solve_current_space,
+    build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
+    build_omega_v, build_preconditioner, build_snoci_focks, build_snoci_overlaps,
+    build_snoci_projection, gmres, select_candidates, solve_current_space,
 };
+use crate::input::SNOCIFullM;
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::scf::fock;
 
@@ -255,16 +256,30 @@ where
                 print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
             }
 
-            let m = if opts.gmres.full_m {
-                if world.rank() == 0 {
-                    print_build_candidate_m::<T>(op.candidates.len());
+            let m = match opts.gmres.full_m {
+                SNOCIFullM::MatrixFree => None,
+                SNOCIFullM::RAM => {
+                    if world.rank() == 0 {
+                        print_build_candidate_m::<T>(op.candidates.len());
+                    }
+                    Some(build_candidate_m(&op))
                 }
-                Some(build_candidate_m(&op))
-            } else {
-                None
+                SNOCIFullM::Disk => {
+                    if world.rank() == 0 {
+                        print_build_candidate_m::<T>(op.candidates.len());
+                    }
+                    let cachedir = input.wicks.cachedir.as_deref().unwrap_or(".");
+                    let path = std::path::Path::new(cachedir).join(format!(
+                        "snoci_m_rank{}_iter{}.bin",
+                        world.rank(),
+                        it
+                    ));
+                    Some(build_candidate_m_disk(&op, &path))
+                }
             };
 
-            let m_diag = build_candidate_m_diag(&op, m.as_deref());
+            let m_slice = m.as_ref().map(|m| m.as_slice());
+            let m_diag = build_candidate_m_diag(&op, m_slice);
             let shifts = if opts.imag_shifts.is_empty() {
                 vec![0.0]
             } else {
@@ -290,9 +305,9 @@ where
                 let a = gmres(
                     |x| {
                         if world.size() > 1 {
-                            apply_shifted_omega_m_mpi(&op, x, m.as_deref(), world, imag_shift)
+                            apply_shifted_omega_m_mpi(&op, x, m_slice, world, imag_shift)
                         } else {
-                            apply_shifted_omega_m(&op, x, m.as_deref(), imag_shift)
+                            apply_shifted_omega_m(&op, x, m_slice, imag_shift)
                         }
                     },
                     |x| prec.apply(x),
@@ -302,9 +317,9 @@ where
                 );
 
                 let ma = if world.size() > 1 {
-                    apply_shifted_omega_m_mpi(&op, &a.x, m.as_deref(), world, imag_shift)
+                    apply_shifted_omega_m_mpi(&op, &a.x, m_slice, world, imag_shift)
                 } else {
-                    apply_shifted_omega_m(&op, &a.x, m.as_deref(), imag_shift)
+                    apply_shifted_omega_m(&op, &a.x, m_slice, imag_shift)
                 };
 
                 let ama =

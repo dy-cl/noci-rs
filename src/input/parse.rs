@@ -7,8 +7,8 @@ use rlua::{Lua, Table, Value};
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, HSCFOptions,
     Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
-    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SpatialBias, Spin, SpinBias,
-    StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    SCFExcitation, SCFInfo, SNOCIFullM, SNOCIOptions, SNOCIPreconditioner, SpatialBias, Spin,
+    SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -409,6 +409,23 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
         let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
 
         let gmres = if let Some(gmres_tbl) = gmres_tbl {
+            let full_m = match gmres_tbl.get::<_, Value>("full_m") {
+                Ok(Value::Boolean(true)) => SNOCIFullM::RAM,
+                Ok(Value::Boolean(false)) => SNOCIFullM::MatrixFree,
+                Ok(Value::String(s)) => s.to_str().unwrap_or_else(|msg| {
+                    eprintln!("{msg}");
+                    std::process::exit(1);
+                }).parse().unwrap_or_else(|msg| {
+                    eprintln!("{msg}");
+                    std::process::exit(1);
+                }),
+                Ok(Value::Nil) | Err(_) => gmres_defaults.full_m,
+                Ok(_) => {
+                    eprintln!("snoci.gmres.full_m must be a boolean or one of 'ram', 'disk', 'matrix-free'");
+                    std::process::exit(1);
+                }
+            };
+
             GMRESOptions {
                 max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
                 res_tol: gmres_tbl.get("res_tol").unwrap_or(gmres_defaults.res_tol),
@@ -416,7 +433,7 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
                     .get("metric_tol")
                     .unwrap_or(gmres_defaults.metric_tol),
                 restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
-                full_m: gmres_tbl.get("full_m").unwrap_or(gmres_defaults.full_m),
+                full_m,
             }
         } else {
             gmres_defaults

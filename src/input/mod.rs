@@ -19,7 +19,7 @@ pub use parse::load_input;
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, NOCCMCOptions, QMCOptions};
 pub use scf::{DiisOptions, HSCFOptions, SCFInfo};
-pub use snoci::{GMRESOptions, SNOCIOptions, SNOCIPreconditioner};
+pub use snoci::{GMRESOptions, SNOCIFullM, SNOCIOptions, SNOCIPreconditioner};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
 pub use wicks::{WicksOptions, WicksStorage};
 pub use write::WriteOptions;
