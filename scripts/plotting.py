@@ -178,6 +178,25 @@ def readQMC(path: Path) -> pd.DataFrame:
 
     return df
 
+def readQMCFiles(paths) -> pd.DataFrame:
+    """
+    Read and combine stochastic QMC tables from one or more output files.
+    """
+    dfs = [readQMC(path) for path in paths]
+
+    populationColumns = [qmcPopulationColumns(df) for df in dfs]
+    if any(columns != populationColumns[0] for columns in populationColumns[1:]):
+        raise ValueError(
+            "Cannot combine stochastic QMC files with different population columns"
+        )
+
+    return (
+        pd.concat(dfs, ignore_index = True)
+        .sort_values("Iter", kind = "stable")
+        .drop_duplicates(subset = "Iter", keep = "last")
+        .reset_index(drop = True)
+    )
+
 def findDeterministicQMC(path: Path):
     """
     Find where the deterministic propagation table starts.
@@ -745,7 +764,7 @@ def plotProjectedShift(args):
     Plot projected and population-control shift correlation energies.
     """
     if not args.live:
-        df = readQMC(args.path).dropna(
+        df = readQMCFiles(args.paths).dropna(
             subset = [
                 "Iter",
                 "EProj",
@@ -829,7 +848,7 @@ def plotProjectedShift(args):
     )
 
     def update():
-        df = readQMC(args.path).dropna(
+        df = readQMCFiles(args.paths).dropna(
             subset = [
                 "Iter",
                 "EProj",
@@ -871,7 +890,7 @@ def plotNW(args):
     Plot persistent and sampled-source populations against iteration.
     """
     if not args.live:
-        df = readQMC(args.path)
+        df = readQMCFiles(args.paths)
         population, _, sampled, _ = qmcPopulationColumns(df)
         subset = ["Iter", "EShift", population]
         if sampled is not None:
@@ -951,7 +970,7 @@ def plotNW(args):
     )
 
     def update():
-        df = readQMC(args.path)
+        df = readQMCFiles(args.paths)
         population, _, sampled, _ = qmcPopulationColumns(df)
         subset = ["Iter", "EShift", population]
         if sampled is not None:
@@ -1187,7 +1206,7 @@ def plotShoulder(args):
     Plot the persistent total-to-reference population ratio against population.
     """
     if not args.live:
-        df = readQMC(args.path)
+        df = readQMCFiles(args.paths)
         population, reference, _, _ = qmcPopulationColumns(df)
         df = df.dropna(subset = [population, reference])
 
@@ -1245,7 +1264,7 @@ def plotShoulder(args):
     )
 
     def update():
-        df = readQMC(args.path)
+        df = readQMCFiles(args.paths)
         population, reference, _, _ = qmcPopulationColumns(df)
         df = df.dropna(subset = [population, reference])
 
@@ -1271,7 +1290,7 @@ def plotReferenceOverlap(args):
     Plot the normalised projected-energy denominator against iteration.
     """
     if not args.live:
-        df = readQMC(args.path)
+        df = readQMCFiles(args.paths)
         population, _, _, _ = qmcPopulationColumns(df)
         df = df.dropna(subset = ["Iter", "EProjDen", population])
 
@@ -1358,7 +1377,7 @@ def plotReferenceOverlap(args):
     ax.grid(True)
 
     def update():
-        df = readQMC(args.path)
+        df = readQMCFiles(args.paths)
         population, _, _, _ = qmcPopulationColumns(df)
         df = df.dropna(subset = ["Iter", "EProjDen", population])
 
@@ -1477,22 +1496,22 @@ def buildParser():
     p.set_defaults(func = plotExcitationHist)
     
     p = subparsers.add_parser("nw")
-    p.add_argument("path", type = Path)
+    p.add_argument("paths", nargs = "+", type = Path)
     addTrajectoryArgs(p)
     p.set_defaults(func = plotNW)
     
     p = subparsers.add_parser("projected-shift")
-    p.add_argument("path", type = Path)
+    p.add_argument("paths", nargs = "+", type = Path)
     addTrajectoryArgs(p)
     p.set_defaults(func = plotProjectedShift)
     
     p = subparsers.add_parser("shoulder")
-    p.add_argument("path", type = Path)
+    p.add_argument("paths", nargs = "+", type = Path)
     addTrajectoryArgs(p)
     p.set_defaults(func = plotShoulder)
 
     p = subparsers.add_parser("reference-overlap")
-    p.add_argument("path", type = Path)
+    p.add_argument("paths", nargs = "+", type = Path)
     p.add_argument(
         "--window",
         type = int,
