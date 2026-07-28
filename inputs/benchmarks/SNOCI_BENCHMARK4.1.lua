@@ -1,0 +1,51 @@
+scf = {
+    max_cycle = 1e4,
+    e_tol = 1e-12,
+    diis = {
+        space = 8,
+    },
+}
+
+mol = {
+    basis = 'cc-pVDZ',
+    r = {1.5},
+    unit = 'Ang',
+    atoms = function(r)
+        local zs = {-2.5 * r, -1.5 * r, -0.5 * r, 0.5 * r, 1.5 * r, 2.5 * r}
+        return {
+            string.format("H 0 0 %g", zs[1]),
+            string.format("H 0 0 %g", zs[2]),
+            string.format("H 0 0 %g", zs[3]),
+            string.format("H 0 0 %g", zs[4]),
+            string.format("H 0 0 %g", zs[5]),
+            string.format("H 0 0 %g", zs[6]),
+        }
+        end,
+}
+
+excit = {orders = {1, 2}}
+
+snoci = {
+    max_iter = 1,
+    gmres = {
+        max_iter = 512,
+        restart = 256,
+        res_tol = 1e-6,
+        full_m = "ram",
+    },
+}
+
+states = {
+    mom = {
+        {label = "RHF (0, 0, 0, 0, 0, 0)", noci = true},
+        {label = "UHF (1, -1, 1, -1, 1, -1)", spin_bias = {pattern = {1, -1, 1, -1, 1, -1}, pol = 0.75}, noci = true},
+        {label = "UHF (-1 , 1, -1, 1, -1, 1)", spin_bias = {pattern = {-1, 1, -1, 1, -1, 1}, pol = 0.75}, noci = true},
+    },
+}
+
+wicks = {
+    enabled = true,
+    compare = false,
+    storage = "ram",
+    cachedir = ".",
+}

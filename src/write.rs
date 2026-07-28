@@ -235,7 +235,7 @@ pub fn print_input(input: &Input) {
             println!("  RESTART: {}", s.gmres.restart);
             println!("  RES_TOL: {}", s.gmres.res_tol);
             println!("  METRIC_TOL: {}", s.gmres.metric_tol);
-            println!("  FULL_M: {}", s.gmres.full_m);
+            println!("  FULL_M: {}", s.gmres.full_m.as_str());
         }
         None => {
             println!("ENABLED: false");

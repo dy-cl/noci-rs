@@ -11,8 +11,8 @@ pub struct GMRESOptions {
     pub metric_tol: f64,
     /// GMRES restart dimension.
     pub restart: usize,
-    /// Whether to use full projected operator.
-    pub full_m: bool,
+    /// Storage strategy for the full candidate-candidate shifted Fock matrix.
+    pub full_m: SNOCIFullM,
 }
 
 impl Default for GMRESOptions {
@@ -25,7 +25,48 @@ impl Default for GMRESOptions {
             res_tol: 1e-8,
             metric_tol: 1e-8,
             restart: 200,
-            full_m: false,
+            full_m: SNOCIFullM::MatrixFree,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum SNOCIFullM {
+    /// Do not build the full candidate-candidate matrix; evaluate matrix elements during GMRES applies.
+    MatrixFree,
+    /// Build the full packed candidate-candidate matrix in RAM.
+    RAM,
+    /// Build the full packed candidate-candidate matrix in a disk-backed memory map.
+    Disk,
+}
+
+impl SNOCIFullM {
+    /// Return full-M storage strategy as input string.
+    /// # Returns:
+    /// - `&'static str`: String representation used in input parsing and printing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MatrixFree => "false",
+            Self::RAM => "ram",
+            Self::Disk => "disk",
+        }
+    }
+}
+
+impl FromStr for SNOCIFullM {
+    type Err = String;
+
+    /// Parse full-M storage strategy from input string.
+    /// # Arguments:
+    /// - `s`: String specifying full-M storage.
+    /// # Returns:
+    /// - `Result`: Parsed storage strategy if valid string, otherwise error message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "false" | "matrix-free" | "matrix_free" | "none" => Ok(Self::MatrixFree),
+            "true" | "ram" => Ok(Self::RAM),
+            "disk" => Ok(Self::Disk),
+            _ => Err(format!("invalid SNOCI full_m storage: {s}")),
         }
     }
 }
