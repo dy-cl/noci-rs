@@ -2,6 +2,13 @@
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
+use super::write::{
+    print_canonical_wavefunction, print_initial_null_diagnostics, print_overlap_spectrum_gaps,
+    print_projected_matrix_norms, print_projected_propagator_diagnostics,
+    print_projector_spectrum_diagnostics, print_propagation_table_header,
+    print_propagation_table_row, print_retained_subspace_diagnostics,
+};
+use crate::DetState;
 use crate::input::{Input, Propagator};
 use crate::maths::{adjoint, parallel_matvec};
 use crate::noci::NOCIScalar;
@@ -19,7 +26,9 @@ pub struct ProjPropagator<T: NOCIScalar> {
 
 pub struct Projectors<T: NOCIScalar> {
     /// Eigenvectors spanning the relevant subspace of the overlap matrix.
-    ur: Array2<T>,
+    pub(super) ur: Array2<T>,
+    /// Overlap eigenvalues in the relevant subspace.
+    pub(super) lambda_r: Array1<f64>,
     /// Transpose of the relevant-subspace eigenvector matrix.
     ur_dag: Array2<T>,
     /// Eigenvectors spanning the null subspace of the overlap matrix.
@@ -58,9 +67,33 @@ fn propagator_shifts(
         Propagator::DifferenceDoublyShiftedU1 => (0.5 * (es + es_s), es - es_s),
         Propagator::DifferenceDoublyShiftedU2 => (es_s, es - es_s),
         Propagator::DirectOverlap => {
-            panic!("Propagator::DirectOverlap is only implemented for stochastic NOCI-QMC")
+            panic!("Propagator::DirectOverlap cannot be specified in this way.")
         }
     }
+}
+
+/// Diagonalise the Hamiltonian in the canonically orthogonalised relevant subspace.
+/// # Arguments
+/// - `h`: Hamiltonian matrix in the full NOCI-QMC basis.
+/// - `p`: Projectors onto the relevant and null subspaces of the overlap matrix.
+/// # Returns
+/// - `(Array1<f64>, Array2<T>)`: Eigenvalues and eigenvectors in the canonical relevant basis.
+fn diagonalise_retained_hamiltonian<T: NOCIScalar>(
+    h: &Array2<T>,
+    p: &Projectors<T>,
+) -> (Array1<f64>, Array2<T>) {
+    // H_r = U_r^\dagger H U_r.
+    let hr = p.ur_dag.dot(&h.dot(&p.ur));
+    let mut hbar = hr.clone();
+
+    // \bar H_r = \Lambda_r^{-1/2} H_r \Lambda_r^{-1/2}.
+    for i in 0..hbar.nrows() {
+        for j in 0..hbar.ncols() {
+            hbar[(i, j)] *= T::from_real(1.0 / (p.lambda_r[i] * p.lambda_r[j]).sqrt());
+        }
+    }
+
+    hbar.eigh(UPLO::Lower).unwrap()
 }
 
 impl<T: NOCIScalar> Projectors<T> {
@@ -81,42 +114,69 @@ impl<T: NOCIScalar> Projectors<T> {
     ) -> Self {
         // S = U \Lambda U^\dagger
         let (lambda, u) = s.eigh(UPLO::Lower).unwrap();
+        
+        // \lambda_{\text{scale}} = \max(1, \max_i |\lambda_i|)
+        let scale = lambda
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        
+        // Eigenvalue cutoff is user chosen epsilon scaled by scale.
+        let nulltol = eps * scale;
+        let negativetol = 100.0 * nulltol;
+        
+        // Identify largest gap in eigenvalue spectrum of the overlap.
+        print_overlap_spectrum_gaps(&lambda);
 
-        // Split indices of eigenvalues into relevant and null spaces.
-        let mut relevant = Vec::new();
-        let mut null = Vec::new();
+        let mut relevant: Vec<usize> = Vec::new();
+        let mut null: Vec<usize> = Vec::new();
+
         for i in 0..lambda.len() {
-            if lambda[i].abs() > eps {
+            if lambda[i] < -negativetol {
+                // Overlap should be positive semidefinite so a sufficiently large negative
+                // eigenvalue suggests something has gone wrong somewhere.
+                panic!(
+                    "Overlap matrix has significantly negative eigenvalue {}. Null tolerance: {}, negative tolerance: {}.",
+                    lambda[i], nulltol, negativetol,
+                );
+            // Catergorise eigenvalues into null and non-null spaces.
+            } else if lambda[i] > nulltol {
                 relevant.push(i);
             } else {
                 null.push(i);
             }
         }
 
-        // Construct U_{relevant} and U_{null}, i.e., the eigenvector matrices of S corresponding to
-        // the relevant and null subspaces.
+        // Construct U_{\text{relevant}}, that is, the matrix of eigenvectors of retained non-null eigenvalues.
         let mut ur = Array2::<T>::zeros((lambda.len(), relevant.len()));
         for (j, &icol) in relevant.iter().enumerate() {
             let col = u.slice(s![.., icol]);
             ur.slice_mut(s![.., j]).assign(&col);
         }
+        let lambda_r = Array1::from_vec(relevant.iter().map(|&i| lambda[i]).collect());
         let ur_dag = adjoint(&ur);
+        // Construct U_{\text{null}}, that is, the matrix of eigenvectors of discarded null eigenvalues.
         let mut un = Array2::<T>::zeros((lambda.len(), null.len()));
         for (j, &icol) in null.iter().enumerate() {
             let col = u.slice(s![.., icol]);
             un.slice_mut(s![.., j]).assign(&col);
         }
         let un_dag = adjoint(&un);
-
-        println!(
-            "Projectors: eps = {:.3e}, dim(S) = {}, relevant = {}, null = {}",
+        
+        print_projector_spectrum_diagnostics(
             eps,
-            lambda.len(),
-            relevant.len(),
-            null.len()
+            &lambda,
+            scale,
+            nulltol,
+            negativetol,
+            &relevant,
+            &null,
         );
+
         Projectors {
             ur,
+            lambda_r,
             ur_dag,
             un,
             un_dag,
@@ -167,13 +227,53 @@ impl<T: NOCIScalar> ProjPropagator<T> {
         dt: f64,
         prop: &Propagator,
     ) -> Self {
+        if matches!(prop, Propagator::DirectOverlap) {
+            let es_s = T::from_real(es_s);
+            let dt = T::from_real(dt);
+
+            // Actions on relevant and null source subspaces.
+            let hur = h.dot(&p.ur);
+            let hun = h.dot(&p.un);
+            let sur = s.dot(&p.ur);
+            let sun = s.dot(&p.un);
+
+            // (H - EsS S) U_r and (H - EsS S) U_n.
+            let residual_r = hur - sur.mapv(|z| es_s * z);
+
+            let residual_n = hun - sun.mapv(|z| es_s * z);
+
+            // S(H - EsS S) U_r and S(H - EsS S) U_n.
+            let action_r = s.dot(&residual_r);
+            let action_n = s.dot(&residual_n);
+
+            // Project the direct-overlap action into the relevant/null
+            // subspace basis.
+            let arr = p.ur_dag.dot(&action_r);
+            let anr = p.un_dag.dot(&action_r);
+            let arn = p.ur_dag.dot(&action_n);
+            let ann = p.un_dag.dot(&action_n);
+
+            let identity_r = Array2::<T>::eye(arr.nrows());
+            let identity_n = Array2::<T>::eye(ann.nrows());
+
+            let urr = identity_r - arr.mapv(|z| dt * z);
+
+            let unn = identity_n - ann.mapv(|z| dt * z);
+
+            let unr = anr.mapv(|z| -dt * z);
+
+            let urn = arn.mapv(|z| -dt * z);
+
+            return Self { urr, unn, unr, urn };
+        }
+
         let (es_s, es) = propagator_shifts(prop, es_s, es);
 
         let es_s = T::from_real(es_s);
         let es = T::from_real(es);
         let dt = T::from_real(dt);
 
-        // H_{ur} = H U_r, H_{un} = H U_n, S_{ur} = S U_r, S_{un} = S U_n.
+        // H U_r, H U_n, S U_r, and S U_n.
         let hur = h.dot(&p.ur);
         let hun = h.dot(&p.un);
         let sur = s.dot(&p.ur);
@@ -183,20 +283,24 @@ impl<T: NOCIScalar> ProjPropagator<T> {
         let hnn = p.un_dag.dot(&hun);
         let hnr = p.un_dag.dot(&hur);
         let hrn = p.ur_dag.dot(&hun);
+
         let srr = p.ur_dag.dot(&sur);
         let snn = p.un_dag.dot(&sun);
         let snr = p.un_dag.dot(&sur);
         let srn = p.ur_dag.dot(&sun);
 
-        let identityr = Array2::<T>::eye(hrr.nrows());
-        let identityn = Array2::<T>::eye(hnn.nrows());
-        let identityfac = T::from_real(1.0) + dt * es;
+        print_projected_matrix_norms(&sun, &hun, &snn, &hnn, &hrn);
 
-        let urr =
-            identityr.mapv(|z| identityfac * z) - (&hrr - &srr.mapv(|z| es_s * z)).mapv(|z| dt * z);
+        let identity_r = Array2::<T>::eye(hrr.nrows());
+        let identity_n = Array2::<T>::eye(hnn.nrows());
 
-        let unn =
-            identityn.mapv(|z| identityfac * z) - (&hnn - &snn.mapv(|z| es_s * z)).mapv(|z| dt * z);
+        let identity_fac = T::from_real(1.0) + dt * es;
+
+        let urr = identity_r.mapv(|z| identity_fac * z)
+            - (&hrr - &srr.mapv(|z| es_s * z)).mapv(|z| dt * z);
+
+        let unn = identity_n.mapv(|z| identity_fac * z)
+            - (&hnn - &snn.mapv(|z| es_s * z)).mapv(|z| dt * z);
 
         let unr = (&hnr - &snr.mapv(|z| es_s * z)).mapv(|z| -dt * z);
 
@@ -226,18 +330,36 @@ pub fn propagate_step<T: NOCIScalar>(
     dt: f64,
     prop: &Propagator,
 ) -> Array1<T> {
-    let (es_s, es) = propagator_shifts(prop, es_s, es);
+    match prop {
+        Propagator::DirectOverlap => {
+            let es_s = T::from_real(es_s);
+            let dt = T::from_real(dt);
 
-    let es_s = T::from_real(es_s);
-    let es = T::from_real(es);
-    let dt = T::from_real(dt);
+            let hc = parallel_matvec(h, c);
+            let sc = parallel_matvec(s, c);
 
-    let hc = parallel_matvec(h, c);
-    let sc = parallel_matvec(s, c);
+            let residual = hc - sc.mapv(|z| es_s * z);
 
-    let residual = hc - sc.mapv(|z| es_s * z) - c.mapv(|z| es * z);
+            let overlap_residual = parallel_matvec(s, &residual);
 
-    c - &residual.mapv(|z| dt * z)
+            c - &overlap_residual.mapv(|z| dt * z)
+        }
+
+        _ => {
+            let (es_s, es) = propagator_shifts(prop, es_s, es);
+
+            let es_s = T::from_real(es_s);
+            let es = T::from_real(es);
+            let dt = T::from_real(dt);
+
+            let hc = parallel_matvec(h, c);
+            let sc = parallel_matvec(s, c);
+
+            let residual = hc - sc.mapv(|z| es_s * z) - c.mapv(|z| es * z);
+
+            c - &residual.mapv(|z| dt * z)
+        }
+    }
 }
 
 /// Propagate nsteps number of time-step updates or until convergence in the energy.
@@ -248,6 +370,7 @@ pub fn propagate_step<T: NOCIScalar>(
 /// - `es`: Initial value of the non-overlap and overlap-transformed shifts.
 /// - `history`: Storage for coefficient history during propagation.
 /// - `input`: User inputted options.
+/// - `basis`: Original NOCI-QMC determinant basis in the ordering used for H and S.
 /// # Returns
 /// - `Option<Array1<T>>`: Converged coefficient vector if propagation succeeds, otherwise `None`.
 pub fn propagate<T: NOCIScalar>(
@@ -257,19 +380,41 @@ pub fn propagate<T: NOCIScalar>(
     mut es: f64,
     history: &mut Vec<Coefficients<T>>,
     input: &Input,
+    basis: &[DetState<T>],
 ) -> Option<Array1<T>> {
     let mut es_s = es;
-    let mut c_norm = c0.clone();
-    let mut e_prev = projected_energy(h, s, c0);
+    let doverlap = matches!(input.prop_ref().propagator, Propagator::DirectOverlap);
+
+    // There is no identity shift in direct-overlap propagation.
+    if doverlap {
+        es = 0.0;
+    }
+
+    // Old style propagators evolve coefficient vector directly whilst
+    // direct overlap propagation evolves coefficient vector acted on by
+    // the overlap.
+    let mut c_norm = if doverlap {
+        parallel_matvec(s, c0)
+    } else {
+        c0.clone()
+    };
+
+    // Initialise projected.
+    let mut e_prev = projected_energy(h, s, &c_norm);
+
+    // Keep track of algorithmic ampltiudes.
     let mut logamp = 0.0;
+    // Arbitrary maximum change in energy between iterations that
+    // serves to detect if a calculation id diverging. Probably is a better
+    // method of detection.
     let de_max = 10.0;
 
     // Unwrap deterministic propagation specific options.
     let det = input.det.as_ref().unwrap();
 
     // Calculate initial populations.
-    let sc0 = parallel_matvec(s, c0);
-    let pop_c0 = c0.iter().map(|z| z.abs()).sum::<f64>();
+    let sc0 = parallel_matvec(s, &c_norm);
+    let pop_c0 = c_norm.iter().map(|z| z.abs()).sum::<f64>();
     let pop_sc0 = sc0.iter().map(|z| z.abs()).sum::<f64>();
 
     if !pop_c0.is_finite() || !pop_sc0.is_finite() || pop_c0 <= 0.0 || pop_sc0 <= 0.0 {
@@ -289,18 +434,23 @@ pub fn propagate<T: NOCIScalar>(
     // NOCI-QMC basis.
     let mut projectors: Option<Projectors<T>> = None;
     if input.write.write_deterministic_coeffs {
-        let p = Projectors::calculate_projectors(s, 1e-14);
+        let p = Projectors::calculate_projectors(s, det.projector_eps);
+        let (retained_e, retained_c) = diagonalise_retained_hamiltonian(h, &p);
+        print_retained_subspace_diagnostics(&retained_e, &retained_c);
+        print_canonical_wavefunction(
+            &retained_c.slice(s![.., 0]).to_owned(),
+            &p,
+            basis,
+            det.canonical_states_n,
+            det.canonical_terms_m,
+        );
         let (c0_relevant, c0_null) = p.project(&c_norm);
 
         // Calculate diagnostics.
-        println!("{}", "=".repeat(100));
         let sc0n = parallel_matvec(s, &c0_null);
         let hc0n = parallel_matvec(h, &c0_null);
-        println!(
-            "Action of S and H on initial null vector: ||Scn|| = {}, ||Hcn|| = {}.",
-            sc0n.norm(),
-            hc0n.norm()
-        );
+        let cn_norm = c0_null.norm();
+        print_initial_null_diagnostics(&sc0n, &hc0n, cn_norm);
 
         let proj_propagator = ProjPropagator::calculate_projected_propagator(
             h,
@@ -312,53 +462,29 @@ pub fn propagate<T: NOCIScalar>(
             &input.prop_ref().propagator,
         );
 
-        println!(
-            "With initial shifts E_s = {}, E_s^S = {}, ||Unn|| = {}, ||Urr|| = {}, ||Urn|| = {}, ||Unr|| = {}.",
-            es,
-            es_s,
-            proj_propagator.unn.norm(),
-            proj_propagator.urr.norm(),
-            proj_propagator.urn.norm(),
-            proj_propagator.unr.norm()
-        );
-
-        let nnull = proj_propagator.unn.nrows();
-        if nnull > 0 {
-            let (evals_unn, _) = proj_propagator.unn.eigh(UPLO::Lower).unwrap();
-            println!("Null-space propagator Unn eigenvalues: {}", evals_unn);
-        } else {
-            println!("Null-space dimension is 0 (no eigenvalues of propagator Unn).");
-        }
+        print_projected_propagator_diagnostics(&proj_propagator, es, es_s, doverlap);
 
         // Add initial coefficients to the history.
         history.push(Coefficients {
             iter: 0,
-            c_full: c0.clone(),
+            c_full: c_norm.clone(),
             c_relevant: c0_relevant,
             c_null: c0_null,
         });
         projectors = Some(p);
     }
 
-    // Print table header.
-    println!("{}", "=".repeat(140));
-    println!(
-        "{:<6} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16} {:>16}",
-        "iter", "E", "|dE|", "Shift (Es)", "Shift (EsS)", "||C||", "||SC||", "C^†SC"
-    );
+    print_propagation_table_header(doverlap);
 
     // Print initial row.
-    let den0 = c0
+    let den0 = c_norm
         .iter()
         .zip(sc0.iter())
         .map(|(&ci, &sci)| ci.conj() * sci)
         .sum::<T>()
         .re();
 
-    println!(
-        "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-        0, e_prev, 0.0, es, es_s, pop_c0, pop_sc0, den0
-    );
+    print_propagation_table_row(0, (e_prev, 0.0), (es, es_s), (pop_c0, pop_sc0), den0);
 
     for it in 0..det.max_steps {
         // Perform one propagation step using the current shifts.
@@ -441,42 +567,38 @@ pub fn propagate<T: NOCIScalar>(
         // Update the non-overlap and overlap-transformed shifts independently.
         if det.dynamic_shift {
             let fac = det.dynamic_shift_alpha / input.prop_ref().dt;
-            es -= fac * (log_pop_c_new - log_pop_c);
-            es_s -= fac * (log_pop_sc_new - log_pop_sc);
+
+            if doverlap {
+                es_s -= fac * (log_pop_c_new - log_pop_c);
+            } else {
+                es -= fac * (log_pop_c_new - log_pop_c);
+                es_s -= fac * (log_pop_sc_new - log_pop_sc);
+            }
         }
 
         log_pop_c = log_pop_c_new;
         log_pop_sc = log_pop_sc_new;
 
-        // If p exists we are doing projection into subspaces.
         if let Some(ref p) = projectors {
-            let scale = logamp.exp();
+            let scale = T::from_real(logamp.exp());
 
-            // Project coefficients into relevant and null subspaces.
-            let (c_relevant, mut c_null) = p.project(&c_new_norm);
-            c_null.mapv_inplace(|z| z * T::from_real(scale));
+            let (mut c_relevant, mut c_null) = p.project(&c_new_norm);
 
-            // Add coefficients to the history.
+            let mut c_full = c_new_norm.clone();
+
+            c_full.mapv_inplace(|z| z * scale);
+            c_relevant.mapv_inplace(|z| z * scale);
+            c_null.mapv_inplace(|z| z * scale);
+
             history.push(Coefficients {
                 iter: it + 1,
-                c_full: c_new_norm.clone(),
+                c_full,
                 c_relevant,
                 c_null,
             });
         }
 
-        // Print table row.
-        println!(
-            "{:<6} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12}",
-            it + 1,
-            e,
-            de,
-            es,
-            es_s,
-            pop_c,
-            pop_sc,
-            den
-        );
+        print_propagation_table_row(it + 1, (e, de), (es, es_s), (pop_c, pop_sc), den);
 
         // If our energy change between iterations is large we likely have problems with
         // singularity and very low eigenvalues or a time-step that is too large.

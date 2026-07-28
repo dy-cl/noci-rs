@@ -73,7 +73,7 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let es = states[0].e;
 
     let mut coefficients = Vec::new();
-    let cfinal = propagate(&h, &s, &c0qmc, es, &mut coefficients, &input)
+    let cfinal = propagate(&h, &s, &c0qmc, es, &mut coefficients, &input, &basis)
         .expect("deterministic propagation failed");
     let e_det = projected_energy(&h, &s, &cfinal);
 
@@ -142,7 +142,7 @@ fn run_deterministic_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     let es = states[0].e;
 
     let mut coefficients = Vec::new();
-    let cfinal = propagate(&h, &s, &c0qmc, es, &mut coefficients, &input)
+    let cfinal = propagate(&h, &s, &c0qmc, es, &mut coefficients, &input, &basis)
         .expect("deterministic propagation failed");
     let e_det = projected_energy(&h, &s, &cfinal);
 

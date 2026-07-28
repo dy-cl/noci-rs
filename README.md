@@ -418,10 +418,13 @@ det = {
     dynamic_shift = true,
     dynamic_shift_alpha = 1e-1,
     e_tol = 1e-10,
+    projector_eps = 1e-12,
+    canonical_states_n = 10,
+    canonical_terms_m = 10,
 }
 ```
 
-These options control the maximum number of propagation steps, convergence threshold, and optional dynamic population shift.
+These options control the maximum number of propagation steps, convergence threshold, optional dynamic population shift, deterministic projector overlap-eigenvalue cutoff, and retained canonical-state diagnostic output size.
 
 ### Stochastic Propagation
 

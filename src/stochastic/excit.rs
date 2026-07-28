@@ -35,8 +35,7 @@ pub(in crate::stochastic) fn coupling(
     let gamma_det = &data.basis[gamma];
 
     if lambda_det.parent == gamma_det.parent
-        && (lambda_det.oa ^ gamma_det.oa).count_ones()
-            + (lambda_det.ob ^ gamma_det.ob).count_ones()
+        && (lambda_det.oa ^ gamma_det.oa).count_ones() + (lambda_det.ob ^ gamma_det.ob).count_ones()
             > 4
     {
         return 0.0;

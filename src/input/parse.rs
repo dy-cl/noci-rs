@@ -330,6 +330,27 @@ fn read_states(state_tbl: Table) -> StateType {
 fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
     det_tbl.map(|det_tbl| {
         let defaults = DeterministicOptions::default();
+        let projector_eps = det_tbl
+            .get("projector_eps")
+            .unwrap_or(defaults.projector_eps);
+        if !projector_eps.is_finite() || projector_eps <= 0.0 {
+            eprintln!("det.projector_eps must be finite and positive");
+            std::process::exit(1);
+        }
+        let canonical_states_n = det_tbl
+            .get("canonical_states_n")
+            .unwrap_or(defaults.canonical_states_n);
+        if canonical_states_n == 0 {
+            eprintln!("det.canonical_states_n must be positive");
+            std::process::exit(1);
+        }
+        let canonical_terms_m = det_tbl
+            .get("canonical_terms_m")
+            .unwrap_or(defaults.canonical_terms_m);
+        if canonical_terms_m == 0 {
+            eprintln!("det.canonical_terms_m must be positive");
+            std::process::exit(1);
+        }
         DeterministicOptions {
             max_steps: det_tbl.get("max_steps").unwrap_or(defaults.max_steps),
             dynamic_shift: det_tbl
@@ -339,6 +360,9 @@ fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
                 .get("dynamic_shift_alpha")
                 .unwrap_or(defaults.dynamic_shift_alpha),
             e_tol: det_tbl.get("e_tol").unwrap_or(defaults.e_tol),
+            projector_eps,
+            canonical_states_n,
+            canonical_terms_m,
         }
     })
 }

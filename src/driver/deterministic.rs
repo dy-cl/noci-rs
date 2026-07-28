@@ -72,6 +72,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
             };
 
             println!("Initial wavefunction ansatz (C0-QMC): {}", c0qmc);
+            println!("{}", "=".repeat(100));
 
             let ref_indices: Vec<usize> = post
                 .noci_reference_basis
@@ -87,7 +88,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
             let mut coefficients = Vec::new();
 
             let c = time_call!(crate::timers::deterministic::add_propagate, {
-                propagate(&h, &s, &c0qmc, e_shift0, &mut coefficients, input)
+                propagate(&h, &s, &c0qmc, e_shift0, &mut coefficients, input, &basis)
             });
 
             let cfinal = match c {

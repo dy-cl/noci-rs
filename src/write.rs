@@ -183,6 +183,9 @@ pub fn print_input(input: &Input) {
             println!("DYNAMIC_SHIFT: {}", d.dynamic_shift);
             println!("DYNAMIC_SHIFT_ALPHA: {}", d.dynamic_shift_alpha);
             println!("ETOL: {:}", d.e_tol);
+            println!("PROJECTOR_EPS: {:}", d.projector_eps);
+            println!("CANONICAL_STATES_N: {:}", d.canonical_states_n);
+            println!("CANONICAL_TERMS_M: {:}", d.canonical_terms_m);
         }
         None => {
             println!("ENABLED: false");
