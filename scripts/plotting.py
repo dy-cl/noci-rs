@@ -265,6 +265,23 @@ def readDeterministicCoefficients(path: Path) -> pd.DataFrame:
     """
     Read in deterministic coefficient lines from a deterministic NOCIQMC output file and create a pandas dataframe.
     """
+    with open(path, "r") as f:
+        firstLine = f.readline().strip()
+
+    if firstLine == "iter,space,state,coeff":
+        df = pd.read_csv(
+            path,
+            dtype = {
+                "iter": np.int64,
+                "space": "string",
+                "state": np.int64,
+                "coeff": np.float64,
+            },
+            engine = "c",
+            keep_default_na = False,
+        )
+        return df[df["space"].isin(["relevant", "null"])].copy()
+
     rows = []
     currentIter = None
     section = None
@@ -459,35 +476,58 @@ def formatAxes(xlabel = None, ylabel = None, legend = False, legendLoc = None):
 
 def plotDeterministicCoefficients(args):
     """
-    Plot deterministic relevant or null-space coefficients.
+    Plot deterministic relevant and null-space coefficients.
     """
     df = readDeterministicCoefficients(args.path)
-    df = df[df["space"] == args.space].copy()
+    if df.empty:
+        raise ValueError(f"No deterministic coefficients found in {args.path}")
+
+    selectedSpace = args.space
+    backgroundSpace = "null" if selectedSpace == "relevant" else "relevant"
 
     finalIter = df["iter"].max()
-    finalDf = df[df["iter"] == finalIter].copy()
-    finalDf["absCoeff"] = finalDf["coeff"].abs()
 
-    ntop = min(args.ncoeffs, len(finalDf))
-    topStates = finalDf.nlargest(ntop, "absCoeff")["state"].to_numpy()
+    def topStates(space):
+        finalDf = df[(df["iter"] == finalIter) & (df["space"] == space)].copy()
+        finalDf["absCoeff"] = finalDf["coeff"].abs()
+        ntop = min(args.ncoeffs, len(finalDf))
+        return finalDf.nlargest(ntop, "absCoeff")["state"].to_numpy()
+
+    selectedStates = topStates(selectedSpace)
+    backgroundStates = topStates(backgroundSpace)
 
     ylabel = (
         r"$\langle \Psi_{\Lambda} | \hat P_r | \Psi(\tau)\rangle$"
-        if args.space == "relevant"
+        if selectedSpace == "relevant"
         else r"$\langle \Psi_{\Lambda} | \hat P_n | \Psi(\tau)\rangle$"
     )
 
     setStyle()
     plt.figure()
-    cmap = plt.get_cmap("coolwarm")
-    colors = cmap(np.linspace(0, 1, ntop))
+    cmap = plt.get_cmap("summer")
+    selectedColors = cmap(np.linspace(0, 1, max(len(selectedStates), 1)))
 
-    for color, state in zip(colors, topStates):
-        g = df[df["state"] == state].sort_values("iter")
-        if args.space == "relevant":
-            plt.plot(g["iter"], g["coeff"], linewidth = LINEWIDTH, color = color)
-        else:
-            plt.plot(g["iter"], g["coeff"], linewidth = LINEWIDTH, color = "tab:grey")
+    for state in backgroundStates:
+        g = df[(df["space"] == backgroundSpace) & (df["state"] == state)].sort_values("iter")
+        plt.plot(
+            g["iter"],
+            g["coeff"],
+            linewidth = 0.75 * LINEWIDTH,
+            color = "tab:grey",
+            alpha = args.background_alpha,
+            zorder = 1,
+        )
+
+    for color, state in zip(selectedColors, selectedStates):
+        g = df[(df["space"] == selectedSpace) & (df["state"] == state)].sort_values("iter")
+        plt.plot(
+            g["iter"],
+            g["coeff"],
+            linewidth = LINEWIDTH,
+            color = color,
+            alpha = 1.0,
+            zorder = 2,
+        )
 
     formatAxes(xlabel = "Iteration", ylabel = ylabel)
     plt.subplots_adjust(left = 0.15)
@@ -1434,6 +1474,7 @@ def buildParser():
     p.add_argument("path", type = Path)
     p.add_argument("--ncoeffs", type = int, default = 10)
     p.add_argument("--space", choices = ["relevant", "null"], default = "relevant")
+    p.add_argument("--background-alpha", type = float, default = 0.18)
     addCommonArgs(p)
     p.set_defaults(func = plotDeterministicCoefficients)
 

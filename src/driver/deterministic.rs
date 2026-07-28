@@ -107,21 +107,14 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
                 let filepath = format!("{}/{}", input.write.write_dir, "coefficients");
                 let file = File::create(filepath).unwrap();
                 let mut writer = BufWriter::new(file);
+                writeln!(writer, "iter,space,state,coeff").unwrap();
                 for iter in &coefficients {
-                    writeln!(writer, "iter {}", iter.iter).unwrap();
-                    writeln!(writer, "Full coefficients:").unwrap();
-                    for (i, z) in iter.c_full.iter().enumerate() {
-                        writeln!(writer, "{:4} {}", i, z).unwrap();
-                    }
-                    writeln!(writer, "Relevant space coefficients:").unwrap();
                     for (i, z) in iter.c_relevant.iter().enumerate() {
-                        writeln!(writer, "{:4} {}", i, z).unwrap();
+                        writeln!(writer, "{},relevant,{},{}", iter.iter, i, z.re()).unwrap();
                     }
-                    writeln!(writer, "Null space coefficients:").unwrap();
                     for (i, z) in iter.c_null.iter().enumerate() {
-                        writeln!(writer, "{:4} {}", i, z).unwrap();
+                        writeln!(writer, "{},null,{},{}", iter.iter, i, z.re()).unwrap();
                     }
-                    writeln!(writer).unwrap();
                 }
             }
 

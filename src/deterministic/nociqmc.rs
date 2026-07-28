@@ -40,8 +40,6 @@ pub struct Projectors<T: NOCIScalar> {
 pub struct Coefficients<T: NOCIScalar> {
     /// Iteration number at which these coefficients were recorded.
     pub iter: usize,
-    /// Full coefficient vector in the complete NOCI-QMC basis.
-    pub c_full: Array1<T>,
     /// Coefficient vector projected into the relevant subspace.
     pub c_relevant: Array1<T>,
     /// Coefficient vector projected into the null subspace.
@@ -114,18 +112,18 @@ impl<T: NOCIScalar> Projectors<T> {
     ) -> Self {
         // S = U \Lambda U^\dagger
         let (lambda, u) = s.eigh(UPLO::Lower).unwrap();
-        
+
         // \lambda_{\text{scale}} = \max(1, \max_i |\lambda_i|)
         let scale = lambda
             .iter()
             .map(|x| x.abs())
             .fold(0.0_f64, f64::max)
             .max(1.0);
-        
+
         // Eigenvalue cutoff is user chosen epsilon scaled by scale.
         let nulltol = eps * scale;
         let negativetol = 100.0 * nulltol;
-        
+
         // Identify largest gap in eigenvalue spectrum of the overlap.
         print_overlap_spectrum_gaps(&lambda);
 
@@ -163,7 +161,7 @@ impl<T: NOCIScalar> Projectors<T> {
             un.slice_mut(s![.., j]).assign(&col);
         }
         let un_dag = adjoint(&un);
-        
+
         print_projector_spectrum_diagnostics(
             eps,
             &lambda,
@@ -467,7 +465,6 @@ pub fn propagate<T: NOCIScalar>(
         // Add initial coefficients to the history.
         history.push(Coefficients {
             iter: 0,
-            c_full: c_norm.clone(),
             c_relevant: c0_relevant,
             c_null: c0_null,
         });
@@ -584,15 +581,11 @@ pub fn propagate<T: NOCIScalar>(
 
             let (mut c_relevant, mut c_null) = p.project(&c_new_norm);
 
-            let mut c_full = c_new_norm.clone();
-
-            c_full.mapv_inplace(|z| z * scale);
             c_relevant.mapv_inplace(|z| z * scale);
             c_null.mapv_inplace(|z| z * scale);
 
             history.push(Coefficients {
                 iter: it + 1,
-                c_full,
                 c_relevant,
                 c_null,
             });

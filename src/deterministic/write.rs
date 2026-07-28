@@ -10,9 +10,7 @@ use crate::noci::NOCIScalar;
 /// Print the largest gaps between adjacent positive overlap eigenvalues.
 /// # Arguments
 /// - `lambda`: Overlap eigenvalues in ascending order.
-pub(super) fn print_overlap_spectrum_gaps(
-    lambda: &Array1<f64>,
-) {
+pub(super) fn print_overlap_spectrum_gaps(lambda: &Array1<f64>) {
     // Enumerate all positive eigenvalues.
     let positive = lambda
         .iter()
@@ -193,9 +191,7 @@ pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
 /// Print the deterministic propagation table header.
 /// # Arguments
 /// - `doverlap`: Whether direct-overlap propagation is active.
-pub(super) fn print_propagation_table_header(
-    doverlap: bool,
-) {
+pub(super) fn print_propagation_table_header(doverlap: bool) {
     let (
         identity_shift_label,
         overlap_shift_label,

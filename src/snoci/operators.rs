@@ -23,7 +23,7 @@ use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNO
 
 pub(in crate::snoci) enum CandidateM<T: NOCIScalar> {
     /// Packed candidate-candidate matrix stored in process memory.
-    RAM(Vec<T>),
+    Ram(Vec<T>),
     /// Packed candidate-candidate matrix stored in a writable memory map.
     Disk(MmapMut),
 }
@@ -31,7 +31,7 @@ pub(in crate::snoci) enum CandidateM<T: NOCIScalar> {
 impl<T: NOCIScalar> CandidateM<T> {
     pub(in crate::snoci) fn as_slice(&self) -> &[T] {
         match self {
-            Self::RAM(m) => m.as_slice(),
+            Self::Ram(m) => m.as_slice(),
             Self::Disk(m) => unsafe {
                 // Mmap length is set from `len * size_of::<T>()` when the packed matrix is built.
                 std::slice::from_raw_parts(
@@ -44,7 +44,7 @@ impl<T: NOCIScalar> CandidateM<T> {
 
     pub(in crate::snoci) fn as_mut_slice(&mut self) -> &mut [T] {
         match self {
-            Self::RAM(m) => m.as_mut_slice(),
+            Self::Ram(m) => m.as_mut_slice(),
             Self::Disk(m) => unsafe {
                 // Mmap length is set from `len * size_of::<T>()` when the packed matrix is built.
                 std::slice::from_raw_parts_mut(
@@ -210,7 +210,7 @@ pub(in crate::snoci) fn build_candidate_m<T: NOCIScalar>(
             .expect("failed to allocate packed candidate matrix in RAM");
         m.resize(len, T::from_real(0.0));
 
-        let mut m = CandidateM::RAM(m);
+        let mut m = CandidateM::Ram(m);
         fill_candidate_m(op, m.as_mut_slice());
         m
     })
