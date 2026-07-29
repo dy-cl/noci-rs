@@ -84,7 +84,7 @@ fn diagonalise_retained_hamiltonian<T: NOCIScalar>(
     let hr = p.ur_dag.dot(&h.dot(&p.ur));
     let mut hbar = hr.clone();
 
-    // \bar H_r = \Lambda_r^{-1/2} H_r \Lambda_r^{-1/2}.
+    // \bar H_r = x_r^{-1/2} H_r x_r^{-1/2}.
     for i in 0..hbar.nrows() {
         for j in 0..hbar.ncols() {
             hbar[(i, j)] *= T::from_real(1.0 / (p.lambda_r[i] * p.lambda_r[j]).sqrt());
@@ -96,7 +96,7 @@ fn diagonalise_retained_hamiltonian<T: NOCIScalar>(
 
 impl<T: NOCIScalar> Projectors<T> {
     /// Calculate projectors onto the relevant and null subsapces of the overlap matrix S by
-    /// diagonalising S as S = U \Lambda U^\dagger and paritioning the eigenvectors by an
+    /// diagonalising S as S = U x U^\dagger and paritioning the eigenvectors by an
     /// eigenvalue threshold. The null subspace is spanned by eigenvectors with \lambda < eps and
     /// the relevant subsapces by eigenvectors with \lambda > eps. The partioned eigenvector
     /// matrices U_r (relevant) and U_n (null) are used to form the projectors as:
@@ -110,7 +110,7 @@ impl<T: NOCIScalar> Projectors<T> {
         s: &Array2<T>,
         eps: f64,
     ) -> Self {
-        // S = U \Lambda U^\dagger
+        // S = U x U^\dagger
         let (lambda, u) = s.eigh(UPLO::Lower).unwrap();
 
         // \lambda_{\text{scale}} = \max(1, \max_i |\lambda_i|)
@@ -617,8 +617,8 @@ pub fn propagate<T: NOCIScalar>(
     Some(c_norm)
 }
 
-/// E(\tau) = \frac{C^\Lambda\langle\Psi_\Lambda|\hat H|\Psi_\Gamma\rangle C^\Gamma}{C^\Lambda\langle\Psi_\Lambda|\Psi_\Gamma\rangle C^\Gamma}
-/// = \frac{C^\Lambda H_{\Lambda\Gamma}C^{\Gamma} }{C^\Lambda S_{\Lambda\Gamma}C^\Gamma}.
+/// E(\tau) = \frac{C^x\langle\Psi_x|\hat H|\Psi_w\rangle C^w}{C^x\langle\Psi_x|\Psi_w\rangle C^w}
+/// = \frac{C^x H_{xw}C^{w} }{C^x S_{xw}C^w}.
 /// # Arguments
 /// - `h`: NOCI Hamiltonian in full NOCI-QMC basis. Shifted by E_s * S.
 /// - `s`: Overlap matrix in full NOCI-QMC basis.

@@ -6,9 +6,9 @@ use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 
 use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
-use super::overlap::lg_overlap;
+use super::overlap::xw_overlap;
 use super::prepare::construct_determinant_indices_gen;
-use super::rdm1::lg_rdm1;
+use super::rdm1::xw_rdm1;
 
 use crate::ExcitationSpin;
 use crate::noci::NOCIScalar;
@@ -43,7 +43,7 @@ use crate::maths::{build_d, det, mix_columns};
 /// # Returns:
 /// - `T`: Unnormalised same-spin rank-k transition density-matrix element.
 #[inline(always)]
-pub(crate) fn lg_rdm_same_element<T: NOCIScalar>(
+pub(crate) fn xw_rdm_same_element<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
     coeff: (&Array2<T>, &Array2<T>),
@@ -57,7 +57,7 @@ pub(crate) fn lg_rdm_same_element<T: NOCIScalar>(
     let (ps, qs) = indices;
     let k = ps.len();
     // S = \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
-    let s = lg_overlap(w, l_ex, g_ex, scratch);
+    let s = xw_overlap(w, l_ex, g_ex, scratch);
 
     // The rank-zero transition density is the overlap itself.
     if k == 0 {
@@ -68,7 +68,7 @@ pub(crate) fn lg_rdm_same_element<T: NOCIScalar>(
     // {}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}
     // = \det[{}^{xw}\gamma_\sigma{}^{p_i}_{q_j}]_{ij}/S^{k-1}.
     if s.abs() > tol {
-        let g1 = lg_rdm1(w, l_ex, g_ex, l_c, g_c, scratch, tol);
+        let g1 = xw_rdm1(w, l_ex, g_ex, l_c, g_c, scratch, tol);
         let zero = <T as From<f64>>::from(0.0);
         let mut d = vec![zero; k * k];
 
@@ -96,9 +96,9 @@ pub(crate) fn lg_rdm_same_element<T: NOCIScalar>(
     // Evaluate the augmented contraction determinant directly, selecting the m = 0 or m > 0
     // reference-pair path according to the number of zero-overlap orbital pairs.
     if w.m == 0 {
-        lg_rdm_same_element_m0(w, ex, coeff, indices, scratch, tol)
+        xw_rdm_same_element_m0(w, ex, coeff, indices, scratch, tol)
     } else {
-        lg_rdm_same_element_gen(w, ex, coeff, indices, scratch, tol)
+        xw_rdm_same_element_gen(w, ex, coeff, indices, scratch, tol)
     }
 }
 
@@ -119,7 +119,7 @@ pub(crate) fn lg_rdm_same_element<T: NOCIScalar>(
 /// # Returns:
 /// - `T`: Unnormalised same-spin rank-k transition density-matrix element for m = 0.
 #[inline(always)]
-fn lg_rdm_same_element_m0<T: NOCIScalar>(
+fn xw_rdm_same_element_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
     coeff: (&Array2<T>, &Array2<T>),
@@ -213,7 +213,7 @@ fn lg_rdm_same_element_m0<T: NOCIScalar>(
 /// # Returns:
 /// - `T`: Unnormalised same-spin rank-k transition density-matrix element summed over all allowed distributions.
 #[inline(always)]
-fn lg_rdm_same_element_gen<T: NOCIScalar>(
+fn xw_rdm_same_element_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
     coeff: (&Array2<T>, &Array2<T>),

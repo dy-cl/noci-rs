@@ -356,8 +356,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     ) -> usize {
         let l_c_occ = occ_coeffs(l_c, lo);
         let g_c_occ = occ_coeffs(g_c, go);
-        let lg_s = Self::occupied_overlap(s_munu, &l_c_occ, &g_c_occ);
-        let (_, s, _) = lg_s.svd(false, false).unwrap();
+        let xw_s = Self::occupied_overlap(s_munu, &l_c_occ, &g_c_occ);
+        let (_, s, _) = xw_s.svd(false, false).unwrap();
         s.iter().filter(|&&sk| sk.abs() <= tol).count()
     }
 
@@ -403,9 +403,9 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         g_c_occ: &Array2<T>,
     ) -> (Array1<f64>, Array2<T>, Array2<T>, T) {
         // Construct {}^{xw}\mathbf S_{\mathrm{occ}} in the original occupied orbital bases.
-        let lg_s = Self::occupied_overlap(s_munu, l_c_occ, g_c_occ);
+        let xw_s = Self::occupied_overlap(s_munu, l_c_occ, g_c_occ);
         // Singular-value decompose the occupied orbital overlap matrix.
-        let (u, lg_tilde_s, v_dag) = lg_s.svd(true, true).unwrap();
+        let (u, xw_tilde_s, v_dag) = xw_s.svd(true, true).unwrap();
         let u = u.unwrap();
         let v = adjoint(&v_dag.unwrap());
 
@@ -419,7 +419,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         let det_v = v.det().unwrap();
         let ph = det_u * det_v.conj();
 
-        (lg_tilde_s, g_tilde_c, l_tilde_c, ph)
+        (xw_tilde_s, g_tilde_c, l_tilde_c, ph)
     }
 
     /// Construct the AO fundamental contractions {}^{xw}M^{(0)} and {}^{xw}M^{(1)}.
@@ -436,7 +436,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// A fundamental contraction containing more than one zero-overlap orbital pair vanishes, and therefore
     /// no M^{(m_i)} with m_i > 1 is required.
     /// # Arguments:
-    /// - `lg_tilde_s`: Singular values {}^{xw}\tilde S_i of the occupied orbital overlap matrix.
+    /// - `xw_tilde_s`: Singular values {}^{xw}\tilde S_i of the occupied orbital overlap matrix.
     /// - `l_tilde_c_occ`: Paired occupied coefficients {}^x\tilde{\mathbf C}_{\mathrm{occ}}.
     /// - `g_tilde_c_occ`: Paired occupied coefficients {}^w\tilde{\mathbf C}_{\mathrm{occ}}.
     /// - `zeros`: Indices k for which |{}^{xw}\tilde S_k| \leq \mathtt{tol}.
@@ -444,7 +444,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// # Returns
     /// - `(Array2<T>, Array2<T>)`: AO fundamental contraction matrices {}^{xw}M^{(0)} and {}^{xw}M^{(1)}.
     pub fn construct_m(
-        lg_tilde_s: &Array1<f64>,
+        xw_tilde_s: &Array1<f64>,
         l_tilde_c_occ: &Array2<T>,
         g_tilde_c_occ: &Array2<T>,
         zeros: &Vec<usize>,
@@ -458,7 +458,7 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         // do not contribute to {}^{xw}W.
         let mut g_tilde_c_occ_scaled = g_tilde_c_occ.clone();
         for k in 0..nocc {
-            let s = lg_tilde_s[k];
+            let s = xw_tilde_s[k];
             if s.abs() > tol {
                 let scale = <T as From<f64>>::from(1.0 / s);
                 let mut col = g_tilde_c_occ_scaled.column_mut(k);
@@ -471,8 +471,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         }
 
         // Construct the inverse-weighted contribution {}^{xw}W.
-        let mut lg_m0 = g_tilde_c_occ_scaled.dot(&adjoint(l_tilde_c_occ));
-        let mut lg_m1 = Array2::<T>::zeros((nbas, nbas));
+        let mut xw_m0 = g_tilde_c_occ_scaled.dot(&adjoint(l_tilde_c_occ));
+        let mut xw_m1 = Array2::<T>::zeros((nbas, nbas));
 
         // Construct the same-reference {}^{ww}P contribution from the zero-overlap ket orbitals.
         let mut gg_m0 = Array2::<T>::zeros((nbas, nbas));
@@ -485,20 +485,20 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         }
 
         // Add {}^{ww}P to the M^{(0)} matrix.
-        lg_m0 += &gg_m0;
+        xw_m0 += &gg_m0;
 
         // Construct {}^{xw}P. This gives M^{(1)} directly and also contributes to M^{(0)}.
         for &k in zeros {
             for mu in 0..nbas {
                 for nu in 0..nbas {
                     let p = g_tilde_c_occ[(mu, k)] * l_tilde_c_occ[(nu, k)].conj();
-                    lg_m1[(mu, nu)] += p;
-                    lg_m0[(mu, nu)] += p;
+                    xw_m1[(mu, nu)] += p;
+                    xw_m0[(mu, nu)] += p;
                 }
             }
         }
 
-        (lg_m0, lg_m1)
+        (xw_m0, xw_m1)
     }
 
     /// Construct the MO fundamental contractions X^{(m_i)} and Y^{(m_i)} from the AO fundamental contraction M^{(m_i)}.

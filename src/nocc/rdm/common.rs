@@ -4,7 +4,7 @@ use ndarray::Array2;
 
 use crate::maths::det_occupied_minor;
 use crate::noci::{DetPair, NOCIData, NOCIScalar, occ_coeffs};
-use crate::nonorthogonalwicks::{WickScratchSpin, lg_rdm_same_element};
+use crate::nonorthogonalwicks::{WickScratchSpin, xw_rdm_same_element};
 
 /// Split creation and annihilation indices by spin assignment mask.
 /// # Arguments:
@@ -75,7 +75,7 @@ pub(super) fn spin_assignment_rdm_element<T: NOCIScalar>(
     let lb = ldet.excitation.beta.holes.len() + gdet.excitation.beta.holes.len();
 
     let va = if w.aa.m <= la + pa.len() {
-        lg_rdm_same_element(
+        xw_rdm_same_element(
             &w.aa,
             (&ldet.excitation.alpha, &gdet.excitation.alpha),
             (ldet.ca.as_ref(), gdet.ca.as_ref()),
@@ -88,7 +88,7 @@ pub(super) fn spin_assignment_rdm_element<T: NOCIScalar>(
     };
 
     let vb = if w.bb.m <= lb + pb.len() {
-        lg_rdm_same_element(
+        xw_rdm_same_element(
             &w.bb,
             (&ldet.excitation.beta, &gdet.excitation.beta),
             (ldet.cb.as_ref(), gdet.cb.as_ref()),

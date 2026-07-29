@@ -47,7 +47,7 @@ where
     let nl = left.len();
     let nr = right.len();
 
-    // Build list of all upper-triangle and diagonal pairs \Lambda, \Gamma.
+    // Build list of all upper-triangle and diagonal pairs x, w.
     let pairs: Vec<(usize, usize)> = if symmetric {
         (0..nl).flat_map(|i| (i..nr).map(move |j| (i, j))).collect()
     } else {

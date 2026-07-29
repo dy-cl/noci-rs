@@ -25,13 +25,13 @@ use crate::time_call;
 /// # Returns
 /// - `T`: Same-spin overlap matrix element.
 #[inline(always)]
-pub fn lg_overlap<T: NOCIScalar>(
+pub fn xw_overlap<T: NOCIScalar>(
     w: &SameSpinView<T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap, {
         // The contraction determinant has dimension L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
 
@@ -41,11 +41,11 @@ pub fn lg_overlap<T: NOCIScalar>(
         if w.m > l {
             <T as From<f64>>::from(0.0)
         } else if w.m == 0 {
-            lg_overlap_m0(w, l, scratch)
+            xw_overlap_m0(w, l, scratch)
         } else if w.m == l {
-            lg_overlap_ml(w, l, scratch)
+            xw_overlap_ml(w, l, scratch)
         } else {
-            lg_overlap_gen(w, l, scratch)
+            xw_overlap_gen(w, l, scratch)
         }
     })
 }
@@ -65,7 +65,7 @@ pub fn lg_overlap<T: NOCIScalar>(
 /// # Returns
 /// - `f64`: Same-spin overlap excluding excitation phases applied outside the Wick evaluation.
 #[inline(always)]
-pub(crate) fn lg_overlap_same_f64(
+pub(crate) fn xw_overlap_same_f64(
     w: &SameSpinView<'_, f64>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -82,13 +82,13 @@ pub(crate) fn lg_overlap_same_f64(
     // For m = 0 and L \leq 6, construct and evaluate \mathbf D_{\mathrm{ov}}(0,\ldots,0)
     // directly without populating the reusable scratch representation.
     if w.m == 0 && l <= 6 {
-        return lg_overlap_m0_direct_f64(w, l_ex, g_ex);
+        return xw_overlap_m0_direct_f64(w, l_ex, g_ex);
     }
 
     // Prepare the all-m_i = 0 and, where required, all-m_i = 1 contraction determinants
     // before applying the standard overlap evaluation.
     prepare_same(w, l_ex, g_ex, scratch);
-    lg_overlap(w, l_ex, g_ex, scratch)
+    xw_overlap(w, l_ex, g_ex, scratch)
 }
 
 /// Evaluate the same-spin overlap directly when m = 0 and L \leq 6:
@@ -104,7 +104,7 @@ pub(crate) fn lg_overlap_same_f64(
 /// # Returns
 /// - `f64`: Same-spin overlap excluding excitation phases applied outside the Wick evaluation.
 #[inline(always)]
-pub(crate) fn lg_overlap_m0_direct_f64(
+pub(crate) fn xw_overlap_m0_direct_f64(
     w: &SameSpinView<'_, f64>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -261,23 +261,23 @@ pub(crate) fn lg_overlap_m0_direct_f64(
 /// # Returns
 /// - `T`: Same-spin overlap matrix element for m = 0.
 #[inline(always)]
-fn lg_overlap_m0<T: NOCIScalar>(
+fn xw_overlap_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l: usize,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0, {
         // Evaluate {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0) with a
         // fixed-rank kernel where available.
         match l {
             // The empty contraction determinant has determinant one.
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod),
-            1 => lg_overlap_m0_l1(w, scratch),
-            2 => lg_overlap_m0_l2(w, scratch),
-            3 => lg_overlap_m0_l3(w, scratch),
-            4 => lg_overlap_m0_l4(w, scratch),
-            5 => lg_overlap_m0_l5(w, scratch),
-            6 => lg_overlap_m0_l6(w, scratch),
+            1 => xw_overlap_m0_l1(w, scratch),
+            2 => xw_overlap_m0_l2(w, scratch),
+            3 => xw_overlap_m0_l3(w, scratch),
+            4 => xw_overlap_m0_l4(w, scratch),
+            5 => xw_overlap_m0_l5(w, scratch),
+            6 => xw_overlap_m0_l6(w, scratch),
             _ => {
                 // Evaluate the prepared arbitrary-rank contraction determinant directly.
                 w.phase
@@ -296,11 +296,11 @@ fn lg_overlap_m0<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = 1 and m = 0.
 #[inline(always)]
-fn lg_overlap_m0_l1<T: NOCIScalar>(
+fn xw_overlap_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l1, {
         // \det\mathbf D_{\mathrm{ov}}(0) = D_{00}^{(0)}.
         let d = scratch.det0.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * d[0]
@@ -315,11 +315,11 @@ fn lg_overlap_m0_l1<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = 2 and m = 0.
 #[inline(always)]
-fn lg_overlap_m0_l2<T: NOCIScalar>(
+fn xw_overlap_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l2, {
         // \det\mathbf D_{\mathrm{ov}}(0,0) = D_{00}D_{11} - D_{01}D_{10}.
         let d = scratch.det0.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * d[3] - d[1] * d[2])
@@ -334,11 +334,11 @@ fn lg_overlap_m0_l2<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = 3 and m = 0.
 #[inline(always)]
-fn lg_overlap_m0_l3<T: NOCIScalar>(
+fn xw_overlap_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l3, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l3, {
         // Expand \det\mathbf D_{\mathrm{ov}}(0,0,0) along its first row.
         let d = scratch.det0.as_slice();
         w.phase
@@ -356,11 +356,11 @@ fn lg_overlap_m0_l3<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = 4 and m = 0.
 #[inline(always)]
-fn lg_overlap_m0_l4<T: NOCIScalar>(
+fn xw_overlap_m0_l4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_m0_l4, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l4, {
         // Evaluate the prepared rank-four contraction determinant by first-row cofactor expansion.
         let det = det(&scratch.det0.as_slice()[..16], 4).unwrap_or(<T as From<f64>>::from(0.0));
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
@@ -375,7 +375,7 @@ fn lg_overlap_m0_l4<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = 5 and m = 0.
 #[inline(always)]
-fn lg_overlap_m0_l5<T: NOCIScalar>(
+fn xw_overlap_m0_l5<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
@@ -394,7 +394,7 @@ fn lg_overlap_m0_l5<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = 6 and m = 0.
 #[inline(always)]
-fn lg_overlap_m0_l6<T: NOCIScalar>(
+fn xw_overlap_m0_l6<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
@@ -417,20 +417,20 @@ fn lg_overlap_m0_l6<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap matrix element for m = L.
 #[inline(always)]
-fn lg_overlap_ml<T: NOCIScalar>(
+fn xw_overlap_ml<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l: usize,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml, {
         // Evaluate {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1) with a
         // fixed-rank kernel where available.
         match l {
-            // This branch is retained for completeness; lg_overlap dispatches L = m = 0 to the m = 0 path.
+            // This branch is retained for completeness; xw_overlap dispatches L = m = 0 to the m = 0 path.
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod),
-            1 => lg_overlap_ml_l1(w, scratch),
-            2 => lg_overlap_ml_l2(w, scratch),
-            3 => lg_overlap_ml_l3(w, scratch),
+            1 => xw_overlap_ml_l1(w, scratch),
+            2 => xw_overlap_ml_l2(w, scratch),
+            3 => xw_overlap_ml_l3(w, scratch),
             _ => {
                 // Evaluate the prepared arbitrary-rank all-m_i = 1 determinant directly.
                 w.phase
@@ -449,11 +449,11 @@ fn lg_overlap_ml<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = m = 1.
 #[inline(always)]
-fn lg_overlap_ml_l1<T: NOCIScalar>(
+fn xw_overlap_ml_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml_l1, {
         // \det\mathbf D_{\mathrm{ov}}(1) = D_{00}^{(1)}.
         let d = scratch.det1.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * d[0]
@@ -468,11 +468,11 @@ fn lg_overlap_ml_l1<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = m = 2.
 #[inline(always)]
-fn lg_overlap_ml_l2<T: NOCIScalar>(
+fn xw_overlap_ml_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml_l2, {
         // \det\mathbf D_{\mathrm{ov}}(1,1) = D_{00}D_{11} - D_{01}D_{10}.
         let d = scratch.det1.as_slice();
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * d[3] - d[1] * d[2])
@@ -487,11 +487,11 @@ fn lg_overlap_ml_l2<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap for L = m = 3.
 #[inline(always)]
-fn lg_overlap_ml_l3<T: NOCIScalar>(
+fn xw_overlap_ml_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_ml_l3, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml_l3, {
         // Expand \det\mathbf D_{\mathrm{ov}}(1,1,1) along its first row.
         let d = scratch.det1.as_slice();
         w.phase
@@ -514,12 +514,12 @@ fn lg_overlap_ml_l3<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin overlap summed over all \binom{L}{m} allowed distributions.
 #[inline(always)]
-fn lg_overlap_gen<T: NOCIScalar>(
+fn xw_overlap_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l: usize,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_overlap_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_gen, {
         let mut acc = <T as From<f64>>::from(0.0);
 
         // Enumerate the \binom{L}{m} distributions satisfying \sum_i m_i = m and construct

@@ -84,16 +84,16 @@ pub(in crate::stochastic) fn take_population_changes(
     })
 }
 
-/// Apply \delta N_\Gamma = \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega.
+/// Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.
 /// # Arguments:
-/// - `populations`: Rank-local persistent populations N_\Gamma.
+/// - `populations`: Rank-local persistent populations N_w.
 /// - `updates`: Sparse pre-overlap changes \Omega, \Delta_\Omega.
 /// - `data`: Immutable NOCI data.
 /// - `overlap_factor`: Precomputed determinant and spin-component mappings.
 /// - `targets`: Global determinant indices for rank-local rows.
 /// - `scratch`: Reusable allocation storage for one application of S\Delta.
 /// # Returns:
-/// - `()`: Applies N_\Gamma \leftarrow N_\Gamma + \delta N_\Gamma.
+/// - `()`: Applies N_w \leftarrow N_w + \delta N_w.
 fn apply_population_changes_local<I>(
     populations: &mut [f64],
     updates: I,
@@ -111,7 +111,7 @@ fn apply_population_changes_local<I>(
 /// Each rank initially owns a subset of the accumulated changes
 /// \(\Delta_\Omega\). The changes are gathered across MPI ranks and each
 /// rank updates its locally owned persistent populations according to
-/// \(N_\Gamma \leftarrow N_\Gamma + \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega\).
+/// \(N_w \leftarrow N_w + \sum_\Omega S_{w\Omega}\Delta_\Omega\).
 /// Since every change has the form \(S\Delta\), the population vector remains in
 /// \(\operatorname{range}(S)\) provided the initial vector is in
 /// \(\operatorname{range}(S)\), therefore avoiding population growth in the null space.

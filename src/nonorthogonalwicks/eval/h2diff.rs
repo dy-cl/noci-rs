@@ -34,7 +34,7 @@ use crate::maths::adjugate_transpose;
 /// # Returns
 /// - `T`: Different-spin two-body matrix element.
 #[inline(always)]
-pub(crate) fn lg_h2_diff<T: NOCIScalar>(
+pub(crate) fn xw_h2_diff<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     l_ex: &Excitation,
     g_ex: &Excitation,
@@ -43,14 +43,14 @@ pub(crate) fn lg_h2_diff<T: NOCIScalar>(
     b: &WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff, {
         // For m_\alpha = m_\beta = 0, only the all-m_i = 0 contraction determinants contribute.
         // Otherwise, sum the independent distributions satisfying \sum_i m_{\alpha i} = m_\alpha
         // and \sum_i m_{\beta i} = m_\beta.
         if w.aa.m == 0 && w.bb.m == 0 {
-            lg_h2_diff_m0(w, l_ex, g_ex, diff, a, b, tol)
+            xw_h2_diff_m0(w, l_ex, g_ex, diff, a, b, tol)
         } else {
-            lg_h2_diff_gen(w, l_ex, g_ex, diff, a, b, tol)
+            xw_h2_diff_gen(w, l_ex, g_ex, diff, a, b, tol)
         }
     })
 }
@@ -70,7 +70,7 @@ pub(crate) fn lg_h2_diff<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for m_\alpha = m_\beta = 0.
 #[inline(always)]
-fn lg_h2_diff_m0<T: NOCIScalar>(
+fn xw_h2_diff_m0<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     l_ex: &Excitation,
     g_ex: &Excitation,
@@ -79,7 +79,7 @@ fn lg_h2_diff_m0<T: NOCIScalar>(
     b: &WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0, {
         // Determine L_\alpha = L_{x,\alpha} + L_{w,\alpha} and L_\beta = L_{x,\beta} + L_{w,\beta}.
         let l_ex_a = &l_ex.alpha;
         let g_ex_a = &g_ex.alpha;
@@ -98,13 +98,13 @@ fn lg_h2_diff_m0<T: NOCIScalar>(
                     * (w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod))
                     * w.ab.vab0[0][0]
             }
-            (1, 1) => lg_h2_diff_m0_11(w, a, b),
-            (1, 2) => lg_h2_diff_m0_12(w, a, b),
-            (1, 3) => lg_h2_diff_m0_13(w, diff, a, b, tol),
-            (2, 1) => lg_h2_diff_m0_21(w, a, b),
-            (2, 2) => lg_h2_diff_m0_22(w, a, b),
-            (3, 1) => lg_h2_diff_m0_31(w, diff, a, b, tol),
-            _ => lg_h2_diff_m0_gen(w, l_ex, g_ex, diff, a, b, tol),
+            (1, 1) => xw_h2_diff_m0_11(w, a, b),
+            (1, 2) => xw_h2_diff_m0_12(w, a, b),
+            (1, 3) => xw_h2_diff_m0_13(w, diff, a, b, tol),
+            (2, 1) => xw_h2_diff_m0_21(w, a, b),
+            (2, 2) => xw_h2_diff_m0_22(w, a, b),
+            (3, 1) => xw_h2_diff_m0_31(w, diff, a, b, tol),
+            _ => xw_h2_diff_m0_gen(w, l_ex, g_ex, diff, a, b, tol),
         }
     })
 }
@@ -118,12 +118,12 @@ fn lg_h2_diff_m0<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,1).
 #[inline(always)]
-fn lg_h2_diff_m0_11<T: NOCIScalar>(
+fn xw_h2_diff_m0_11<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     a: &WickScratch<T>,
     b: &WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_11, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_11, {
         // Read \det\mathbf D_{\alpha,\mathrm{ov}}, \det\mathbf D_{\beta,\mathrm{ov}} and the m_i = 0 intermediates.
         let n = w.ab.n();
 
@@ -166,12 +166,12 @@ fn lg_h2_diff_m0_11<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,2).
 #[inline(always)]
-fn lg_h2_diff_m0_12<T: NOCIScalar>(
+fn xw_h2_diff_m0_12<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     a: &WickScratch<T>,
     b: &WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_12, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_12, {
         // Read the rank-one \mathbf D_{\alpha,\mathrm{ov}} and rank-two \mathbf D_{\beta,\mathrm{ov}}.
         let n = w.ab.n();
 
@@ -250,14 +250,14 @@ fn lg_h2_diff_m0_12<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,3).
 #[inline(always)]
-fn lg_h2_diff_m0_13<T: NOCIScalar>(
+fn xw_h2_diff_m0_13<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     diff: &mut WickScratch<T>,
     a: &WickScratch<T>,
     b: &WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_13, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_13, {
         // Store \det\mathbf D_{\beta,\mathrm{ov}} and \operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}]_{\xi y}.
         diff.ensure_diff(1, 3);
 
@@ -346,12 +346,12 @@ fn lg_h2_diff_m0_13<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,1).
 #[inline(always)]
-fn lg_h2_diff_m0_21<T: NOCIScalar>(
+fn xw_h2_diff_m0_21<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     a: &WickScratch<T>,
     b: &WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_21, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_21, {
         // Read the rank-two \mathbf D_{\alpha,\mathrm{ov}} and rank-one \mathbf D_{\beta,\mathrm{ov}}.
         let n = w.ab.n();
 
@@ -428,12 +428,12 @@ fn lg_h2_diff_m0_21<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,2).
 #[inline(always)]
-fn lg_h2_diff_m0_22<T: NOCIScalar>(
+fn xw_h2_diff_m0_22<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     a: &WickScratch<T>,
     b: &WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_22, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_22, {
         // Read the two rank-two contraction determinants and their row and column labels.
         let n = w.ab.n();
 
@@ -551,14 +551,14 @@ fn lg_h2_diff_m0_22<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,1).
 #[inline(always)]
-fn lg_h2_diff_m0_31<T: NOCIScalar>(
+fn xw_h2_diff_m0_31<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     diff: &mut WickScratch<T>,
     a: &WickScratch<T>,
     b: &WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_31, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_31, {
         // Store \det\mathbf D_{\alpha,\mathrm{ov}} and \operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}]_{\eta z}.
         diff.ensure_diff(3, 1);
 
@@ -646,7 +646,7 @@ fn lg_h2_diff_m0_31<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element for arbitrary spin-resolved excitation ranks.
 #[inline(always)]
-fn lg_h2_diff_m0_gen<T: NOCIScalar>(
+fn xw_h2_diff_m0_gen<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     l_ex: &Excitation,
     g_ex: &Excitation,
@@ -655,7 +655,7 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(
     b: &WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_m0_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_m0_gen, {
         // Determine L_\alpha and L_\beta and select \mathbf D_{\alpha,\mathrm{ov}}(0,\ldots,0)
         // and \mathbf D_{\beta,\mathrm{ov}}(0,\ldots,0).
         let l_ex_a = &l_ex.alpha;
@@ -787,7 +787,7 @@ fn lg_h2_diff_m0_gen<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Different-spin two-body matrix element summed over all allowed spin-resolved distributions.
 #[inline(always)]
-fn lg_h2_diff_gen<T: NOCIScalar>(
+fn xw_h2_diff_gen<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
     l_ex: &Excitation,
     g_ex: &Excitation,
@@ -796,7 +796,7 @@ fn lg_h2_diff_gen<T: NOCIScalar>(
     b: &WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_diff_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_diff_gen, {
         // Determine L_\alpha and L_\beta and select the all-m_i = 0 and all-m_i = 1
         // contraction determinants for each spin space.
         let l_ex_a = &l_ex.alpha;

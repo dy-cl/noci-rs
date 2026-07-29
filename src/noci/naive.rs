@@ -28,10 +28,10 @@ pub fn occ_coeffs<T: NOCIScalar>(
     c_occ
 }
 
-/// Calculate the reduced occupied MO overlap scalar of {}^{\Lambda\Gamma} \tilde{S} as the product of
-/// all non-zero singular values of the SVD'd {}^{\Lambda\Gamma} \tilde{S}.
+/// Calculate the reduced occupied MO overlap scalar of {}^{xw} \tilde{S} as the product of
+/// all non-zero singular values of the SVD'd {}^{xw} \tilde{S}.
 /// # Arguments
-/// - `tilde_s`: Vector of singular values, the diagonal of {}^{\Lambda\Gamma} \tilde{S}.
+/// - `tilde_s`: Vector of singular values, the diagonal of {}^{xw} \tilde{S}.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
 /// - `(f64, Vec<usize>)`: Product of non-zero singular values and indices
@@ -55,13 +55,13 @@ fn calculate_s_red(
 
 /// Build overlap-related intermediates for a pair of determinants.
 /// An SVD is performed on the occupied MO overlap matrix
-/// {}^{\Lambda\Gamma} S_{ij} = U {}^{\Lambda\Gamma}\tilde{S}_{ij} V^{\dagger},
-/// each set of occupied MOs is rotated to form {}^\Lambda \tilde{C} and
-/// {}^\Gamma \tilde{C}, and the quantities required for the generalised
+/// {}^{xw} S_{ij} = U {}^{xw}\tilde{S}_{ij} V^{\dagger},
+/// each set of occupied MOs is rotated to form {}^x \tilde{C} and
+/// {}^w \tilde{C}, and the quantities required for the generalised
 /// Slater-Condon rules are constructed.
 /// # Arguments:
-/// - `l_c_occ`: Occupied MO coefficient matrix {}^\Lambda C.
-/// - `g_c_occ`: Occupied MO coefficient matrix {}^\Gamma C.
+/// - `l_c_occ`: Occupied MO coefficient matrix {}^x C.
+/// - `g_c_occ`: Occupied MO coefficient matrix {}^w C.
 /// - `s_munu`: AO overlap matrix.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
@@ -144,12 +144,12 @@ pub(crate) fn build_s_pair<T: NOCIScalar>(
     }
 }
 
-/// Calculate {}^{\Lambda\Gamma}P_i^{\mu\nu} = {}^{\Gamma} \tilde{C}_i^\mu {}^{\Lambda}\tilde{C}_i^{\nu *}
-/// co-density matrix where {}^{\Lambda} \tilde{C}_i^\nu and {}^{\Gamma}\tilde{C}_i^\mu are the
-/// rotated MO coefficients of determinants \Lambda and \Gamma respectively.
+/// Calculate {}^{xw}P_i^{\mu\nu} = {}^{w} \tilde{C}_i^\mu {}^{x}\tilde{C}_i^{\nu *}
+/// co-density matrix where {}^{x} \tilde{C}_i^\nu and {}^{w}\tilde{C}_i^\mu are the
+/// rotated MO coefficients of determinants x and w respectively.
 /// # Arguments
-/// - `l_tilde_c_occ`: U rotated occupied MO coefficients for determinant \Lambda.
-/// - `g_tilde_c_occ`: V rotated occupied MO coefficients for determinant \Gamma.
+/// - `l_tilde_c_occ`: U rotated occupied MO coefficients for determinant x.
+/// - `g_tilde_c_occ`: V rotated occupied MO coefficients for determinant w.
 /// - `i`: MO index.
 /// # Returns:
 /// - `Array2<T>`: Co-density matrix for occupied orbital index `i`.
@@ -168,14 +168,14 @@ fn calculate_codensity_p_pair<T: NOCIScalar>(
     munu_p_i
 }
 
-/// Calculate {}^{\Lambda\Gamma}W^{\mu\nu} = \sum_{i} 1 / s_i * {}^{\Gamma}\tilde{C}_i^\mu {}^{\Lambda}\tilde{C}_i^{\nu *}
+/// Calculate {}^{xw}W^{\mu\nu} = \sum_{i} 1 / s_i * {}^{w}\tilde{C}_i^\mu {}^{x}\tilde{C}_i^{\nu *}
 /// weighted co-density matrix where s_i are the singular values of the SVD decomposed MO overlap matrix,
-/// and {}^{\Lambda}\tilde{C}_i^\nu and {}^{\Gamma}\tilde{C}_i^\mu are the occupied rotated MO coefficients of
-/// determinants \Lambda and \Gamma respectively.
+/// and {}^{x}\tilde{C}_i^\nu and {}^{w}\tilde{C}_i^\mu are the occupied rotated MO coefficients of
+/// determinants x and w respectively.
 /// # Arguments:
-/// - `l_tilde_c_occ`: U rotated occupied MO coefficients for determinant \Lambda.
-/// - `g_tilde_c_occ`: V rotated occupied MO coefficients for determinant \Gamma.
-/// - `tilde_s`: Singular values of SVD'd {}^{\Lambda\Gamma} \tilde{S}_{ij}.
+/// - `l_tilde_c_occ`: U rotated occupied MO coefficients for determinant x.
+/// - `g_tilde_c_occ`: V rotated occupied MO coefficients for determinant w.
+/// - `tilde_s`: Singular values of SVD'd {}^{xw} \tilde{S}_{ij}.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
 /// - `Array2<T>`: Weighted co-density matrix.
@@ -199,7 +199,7 @@ fn calculate_codensity_w_pair<T: NOCIScalar>(
     g_tilde_c_occ_scaled.dot(&adjoint(l_tilde_c_occ))
 }
 
-/// Calculate pair density {}^{\Lambda\Gamma} \rho_{ij} using the generalised Slater-Condon rules.
+/// Calculate pair density {}^{xw} \rho_{ij} using the generalised Slater-Condon rules.
 /// # Arguments:
 /// - `pair`: Contains data concerning a pair of determinants.
 /// - `nao`: Number of AOs.
@@ -279,7 +279,7 @@ pub fn noci_density<T: NOCIScalar>(
         )
 }
 /// Calculate one body matrix elements using the generalised
-/// Slater-Condon rules for a pair of determinants \Lambda and \Gamma.
+/// Slater-Condon rules for a pair of determinants x and w.
 /// # Arguments:
 /// - `o`: Operator to obtain matrix elements of.
 /// - `pair`: Contains data concerning a pair of determinants.
@@ -301,7 +301,7 @@ pub(in crate::noci) fn one_electron<T: NOCIScalar>(
 }
 
 /// Calculate one body matrix elements using the generalised
-/// Slater-Condon rules for a pair of determinants \Lambda and \Gamma,
+/// Slater-Condon rules for a pair of determinants x and w,
 /// with a scalar-valued one-body operator.
 /// # Arguments:
 /// - `o`: Operator to obtain matrix elements of.
@@ -325,7 +325,7 @@ pub(in crate::noci) fn one_electron_scalar<T: NOCIScalar>(
 
 /// Calculate two-body matrix elements for electrons of the same spin
 /// using the generalised Slater-Condon rules for a pair of determinants
-/// \Lambda and \Gamma.
+/// x and w.
 /// # Arguments:
 /// - `o`: Antisymmetrised two-electron operator tensor.
 /// - `pair`: Contains data concerning a pair of determinants.
@@ -366,7 +366,7 @@ pub(in crate::noci) fn two_electron_same<T: NOCIScalar>(
 
 /// Calculate two-body matrix elements for electrons of opposite spin
 /// using the generalised Slater-Condon rules for a pair of determinants
-/// \Lambda and \Gamma.
+/// x and w.
 /// # Arguments:
 /// - `o`: Coulomb two-electron operator tensor.
 /// - `pa`: Alpha-spin pair data.

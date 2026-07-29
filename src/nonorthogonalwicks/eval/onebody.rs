@@ -49,15 +49,15 @@ fn one_body_scalar<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-electron Hamiltonian matrix element.
 #[inline(always)]
-pub(crate) fn lg_h1<T: NOCIScalar>(
+pub(crate) fn xw_h1<T: NOCIScalar>(
     w: &SameSpinView<T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h1, {
-        lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::H1)
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h1, {
+        xw_one_body(w, l_ex, g_ex, scratch, tol, OneBody::H1)
     })
 }
 
@@ -73,15 +73,15 @@ pub(crate) fn lg_h1<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Generalised-Fock matrix element.
 #[inline(always)]
-pub(crate) fn lg_f<T: NOCIScalar>(
+pub(crate) fn xw_f<T: NOCIScalar>(
     w: &SameSpinView<T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_f, {
-        lg_one_body(w, l_ex, g_ex, scratch, tol, OneBody::Fock)
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_f, {
+        xw_one_body(w, l_ex, g_ex, scratch, tol, OneBody::Fock)
     })
 }
 
@@ -105,7 +105,7 @@ pub(crate) fn lg_f<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element.
 #[inline(always)]
-fn lg_one_body<T: NOCIScalar>(
+fn xw_one_body<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -116,9 +116,9 @@ fn lg_one_body<T: NOCIScalar>(
     // For m = 0 only the all-m_i = 0 contraction determinant contributes. Otherwise,
     // sum the distributions satisfying \sum_{i=1}^{L+1}m_i = m.
     if w.m == 0 {
-        lg_one_body_m0(w, l_ex, g_ex, scratch, tol, ob)
+        xw_one_body_m0(w, l_ex, g_ex, scratch, tol, ob)
     } else {
-        lg_one_body_gen(w, l_ex, g_ex, scratch, tol, ob)
+        xw_one_body_gen(w, l_ex, g_ex, scratch, tol, ob)
     }
 }
 
@@ -135,7 +135,7 @@ fn lg_one_body<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element for m = 0.
 #[inline(always)]
-fn lg_one_body_m0<T: NOCIScalar>(
+fn xw_one_body_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -143,7 +143,7 @@ fn lg_one_body_m0<T: NOCIScalar>(
     tol: f64,
     ob: OneBody,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0, {
         // Determine the total excitation rank L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
         // Dispatch to direct fixed-rank forms of
@@ -151,10 +151,10 @@ fn lg_one_body_m0<T: NOCIScalar>(
         match l {
             // For L = 0, \det\mathbf D_{\mathrm{ov}} = 1 and there are no replacement columns.
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * one_body_scalar(w, ob, 0),
-            1 => lg_one_body_m0_l1(w, scratch, ob),
-            2 => lg_one_body_m0_l2(w, scratch, ob),
-            3 => lg_one_body_m0_l3(w, scratch, tol, ob),
-            _ => lg_one_body_m0_gen(w, l_ex, g_ex, scratch, tol, ob),
+            1 => xw_one_body_m0_l1(w, scratch, ob),
+            2 => xw_one_body_m0_l2(w, scratch, ob),
+            3 => xw_one_body_m0_l3(w, scratch, tol, ob),
+            _ => xw_one_body_m0_gen(w, l_ex, g_ex, scratch, tol, ob),
         }
     })
 }
@@ -168,12 +168,12 @@ fn lg_one_body_m0<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element for L = 1 and m = 0.
 #[inline(always)]
-fn lg_one_body_m0_l1<T: NOCIScalar>(
+fn xw_one_body_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
     ob: OneBody,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l1, {
         // For L = 1, \mathbf D_{\mathrm{ov}} = [D_{00}] and
         // \det\mathbf D_{\mathrm{ov}}^{0\rightarrow\mathcal F_0} = \mathcal F_{r_0c_0}^{(0,0)}.
         let n = w.n();
@@ -204,12 +204,12 @@ fn lg_one_body_m0_l1<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element for L = 2 and m = 0.
 #[inline(always)]
-fn lg_one_body_m0_l2<T: NOCIScalar>(
+fn xw_one_body_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
     ob: OneBody,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l2, {
         // Evaluate \det\mathbf D_{\mathrm{ov}} = D_{00}D_{11} - D_{01}D_{10}.
         let n = w.n();
         let d = scratch.det0.as_slice();
@@ -263,13 +263,13 @@ fn lg_one_body_m0_l2<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element for L = 3 and m = 0.
 #[inline(always)]
-fn lg_one_body_m0_l3<T: NOCIScalar>(
+fn xw_one_body_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
     ob: OneBody,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_l3, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l3, {
         // Select the rank-three contraction determinant \mathbf D_{\mathrm{ov}}(0,0,0).
         let n = w.n();
         let det0 = &scratch.det0.as_slice()[..9];
@@ -349,7 +349,7 @@ fn lg_one_body_m0_l3<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element for arbitrary L and m = 0.
 #[inline(always)]
-fn lg_one_body_m0_gen<T: NOCIScalar>(
+fn xw_one_body_m0_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -357,7 +357,7 @@ fn lg_one_body_m0_gen<T: NOCIScalar>(
     tol: f64,
     ob: OneBody,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_m0_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_gen, {
         // Determine L = L_x + L_w and select \mathbf D_{\mathrm{ov}}(0,\ldots,0).
         let l = l_ex.holes.len() + g_ex.holes.len();
         let mut acc = <T as From<f64>>::from(0.0);
@@ -415,7 +415,7 @@ fn lg_one_body_m0_gen<T: NOCIScalar>(
 /// # Returns
 /// - `T`: One-body matrix element summed over all allowed distributions.
 #[inline(always)]
-fn lg_one_body_gen<T: NOCIScalar>(
+fn xw_one_body_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -423,7 +423,7 @@ fn lg_one_body_gen<T: NOCIScalar>(
     tol: f64,
     ob: OneBody,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_one_body_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_gen, {
         // Determine L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
 

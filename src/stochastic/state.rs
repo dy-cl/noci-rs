@@ -127,10 +127,10 @@ impl ShiftSpec {
 
     /// Evaluate the off-diagonal shifted coupling.
     /// # Arguments:
-    /// - `h`: Hamiltonian matrix element \(H_{\Lambda\Gamma}\).
-    /// - `s`: Overlap matrix element \(S_{\Lambda\Gamma}\).
+    /// - `h`: Hamiltonian matrix element \(H_{xw}\).
+    /// - `s`: Overlap matrix element \(S_{xw}\).
     /// # Returns:
-    /// - `f64`: \(H_{\Lambda\Gamma} - E_s^S S_{\Lambda\Gamma}\).
+    /// - `f64`: \(H_{xw} - E_s^S S_{xw}\).
     pub(in crate::stochastic) fn coupling(
         &self,
         h: f64,
@@ -141,10 +141,10 @@ impl ShiftSpec {
 
     /// Evaluate the diagonal residual.
     /// # Arguments:
-    /// - `h`: Hamiltonian matrix element \(H_{\Gamma\Gamma}\).
-    /// - `s`: Overlap matrix element \(S_{\Gamma\Gamma}\).
+    /// - `h`: Hamiltonian matrix element \(H_{ww}\).
+    /// - `s`: Overlap matrix element \(S_{ww}\).
     /// # Returns:
-    /// - `f64`: \(H_{\Gamma\Gamma} - E_s^S S_{\Gamma\Gamma} - E_s^I\).
+    /// - `f64`: \(H_{ww} - E_s^S S_{ww} - E_s^I\).
     pub(in crate::stochastic) fn diagonal_residual(
         &self,
         h: f64,
@@ -536,9 +536,9 @@ impl ThreadPropagation {
                     None
                 };
 
-                let (hlg, slg) = find_hs(data, lambda, gamma, self.wick_scratch.as_mut());
+                let (hxw, sxw) = find_hs(data, lambda, gamma, self.wick_scratch.as_mut());
 
-                let k = shift.coupling(hlg, slg);
+                let k = shift.coupling(hxw, sxw);
                 let raw = -dt * k * parent_population / pgen;
 
                 if write_excitation_hist {
@@ -654,7 +654,7 @@ pub(crate) struct PopulationUpdate {
 /// Storage for heat-bath excitation related quantities.
 pub(in crate::stochastic) struct HeatBath {
     /// Total absolute coupling weight over all allowed children.
-    pub(in crate::stochastic) sumlg: f64,
+    pub(in crate::stochastic) sumxw: f64,
     /// Cumulative absolute coupling weights used for inverse-CDF sampling.
     pub(in crate::stochastic) cumulatives: Vec<f64>,
     /// Child determinant indices corresponding to the cumulative weights.

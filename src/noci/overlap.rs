@@ -2,7 +2,7 @@
 
 use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
-use crate::nonorthogonalwicks::{lg_overlap, lg_overlap_same_f64, prepare_same};
+use crate::nonorthogonalwicks::{prepare_same, xw_overlap, xw_overlap_same_f64};
 use crate::time_call;
 
 use super::naive::{build_s_pair, occ_coeffs};
@@ -45,11 +45,11 @@ pub(crate) fn calculate_s_pair<T: NOCIScalar>(
     })
 }
 
-/// Calculate the overlap matrix element between determinants \Lambda and \Gamma using
+/// Calculate the overlap matrix element between determinants x and w using
 /// standard Slater-Condon rules.
 /// # Arguments:
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// # Returns:
 /// - `T`: Overlap matrix element between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
@@ -65,12 +65,12 @@ pub(in crate::noci) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
     })
 }
 
-/// Calculate the overlap matrix element between determinants \Lambda and \Gamma using
+/// Calculate the overlap matrix element between determinants x and w using
 /// generalised Slater-Condon rules.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// # Returns:
 /// - `T`: Overlap matrix element between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_s_pair_naive<T: NOCIScalar>(
@@ -92,11 +92,11 @@ pub(in crate::noci) fn calculate_s_pair_naive<T: NOCIScalar>(
     })
 }
 
-/// Calculate the overlap matrix element between determinants \Lambda and \Gamma
+/// Calculate the overlap matrix element between determinants x and w
 /// using extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
@@ -127,14 +127,14 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
         let zero = <T as From<f64>>::from(0.0);
 
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        let sa = pha * xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
 
         if sa == zero {
             return zero;
         }
 
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        let sb = phb * xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
         if sb == zero {
             return zero;
@@ -161,7 +161,7 @@ pub(in crate::noci) fn calculate_s_alpha_pair_wicks(
 ) -> f64 {
     let l_ex = &ldet.excitation.alpha;
     let g_ex = &gdet.excitation.alpha;
-    ldet.pha * gdet.pha * lg_overlap_same_f64(&w.aa, l_ex, g_ex, &mut scratch.aa)
+    ldet.pha * gdet.pha * xw_overlap_same_f64(&w.aa, l_ex, g_ex, &mut scratch.aa)
 }
 
 /// Calculate the beta same-spin overlap for an ordered Wick pair.
@@ -181,5 +181,5 @@ pub(in crate::noci) fn calculate_s_beta_pair_wicks(
 ) -> f64 {
     let l_ex = &ldet.excitation.beta;
     let g_ex = &gdet.excitation.beta;
-    ldet.phb * gdet.phb * lg_overlap_same_f64(&w.bb, l_ex, g_ex, &mut scratch.bb)
+    ldet.phb * gdet.phb * xw_overlap_same_f64(&w.bb, l_ex, g_ex, &mut scratch.bb)
 }

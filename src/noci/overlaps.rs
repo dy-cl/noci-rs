@@ -56,13 +56,13 @@ struct ParentSpinSpace {
 
 #[derive(Clone, Copy)]
 struct LocalTarget {
-    /// Rank-local population row receiving \delta N_\Gamma.
+    /// Rank-local population row receiving \delta N_w.
     local: usize,
-    /// Global determinant index \Gamma.
+    /// Global determinant index w.
     det: usize,
-    /// Target-parent local a component ID a_\Gamma.
+    /// Target-parent local a component ID a_w.
     a: usize,
-    /// Target-parent local b component ID b_\Gamma.
+    /// Target-parent local b component ID b_w.
     b: usize,
 }
 
@@ -106,9 +106,9 @@ struct LocalParentBlock {
 enum OverlapContraction {
     /// Factorise each target row before looping over sparse source updates.
     FactorizedRows,
-    /// Form T_{\bar a b} before applying B^{QP}_{\bar b_\Gamma b}.
+    /// Form T_{\bar a b} before applying B^{QP}_{\bar b_w b}.
     AFirst,
-    /// Form U_{a\bar b} before applying A^{QP}_{\bar a_\Gamma a}.
+    /// Form U_{a\bar b} before applying A^{QP}_{\bar a_w a}.
     BFirst,
 }
 
@@ -200,18 +200,18 @@ impl OverlapFactor {
         }
     }
 
-    /// Apply \delta N_\Gamma = \sum_\Omega S_{\Gamma\Omega}\Delta_\Omega.
+    /// Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.
     /// Orthogonal same-parent blocks are applied directly, while cross-parent blocks use
-    /// S_{\Gamma\Omega} = A^{QP}_{\bar a_\Gamma a_\Omega}B^{QP}_{\bar b_\Gamma b_\Omega}.
+    /// S_{w\Omega} = A^{QP}_{\bar a_w a_\Omega}B^{QP}_{\bar b_w b_\Omega}.
     /// Temporary factor tables are rebuilt for each overlap application and are not cached across iterations.
     /// # Arguments:
-    /// - `populations`: Rank-local persistent populations N_\Gamma.
+    /// - `populations`: Rank-local persistent populations N_w.
     /// - `targets`: Global determinant index for each rank-local row in `populations`.
     /// - `updates`: Sparse pre-overlap changes \Omega, \Delta_\Omega.
     /// - `data`: Shared NOCI data.
     /// - `scratch`: Reusable allocation storage for one application of S\Delta.
     /// # Returns:
-    /// - `()`: Applies N_\Gamma \leftarrow N_\Gamma + \delta N_\Gamma.
+    /// - `()`: Applies N_w \leftarrow N_w + \delta N_w.
     pub(crate) fn apply<I>(
         &self,
         populations: &mut [f64],
@@ -476,11 +476,11 @@ impl OverlapFactor {
 
     /// Apply one cross-parent block with target-local sparse-row factor reuse.
     /// For each target determinant, this builds A and B factor vectors once and contracts
-    /// \delta N_\Gamma^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.
+    /// \delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.
     /// The direct determinant-pair Wick loop is avoided because it would recompute the same
     /// same-spin factors for every sparse entry sharing a source a or b component.
     /// # Arguments:
-    /// - `target`: Rank-local target parent block Q defining \Gamma = (\bar a,\bar b).
+    /// - `target`: Rank-local target parent block Q defining w = (\bar a,\bar b).
     /// - `source`: Source parent P sparse D^P_{ab} entries and active positions.
     /// - `data`: Shared NOCI determinant data.
     /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
@@ -569,7 +569,7 @@ impl OverlapFactor {
 
     /// Select how to apply one cross-parent block of S\Delta.
     /// The row path factorises each target as
-    /// \delta N_\Gamma^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.
+    /// \delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.
     /// The direct determinant-pair Wick loop is avoided because the weighted model accounts for
     /// same-spin factor reuse instead of charging every sparse product as a full overlap.
     /// Scores are C = 32\,F + M, where F is the number of same-spin Wick factors and M is the
@@ -808,11 +808,11 @@ impl OverlapFactor {
 
     /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab} without storing A.
     /// This is the A-first contraction
-    /// \delta N_\Gamma^{QP} = \sum_b T_{\bar a_\Gamma b}B^{QP}_{\bar b_\Gamma b},
+    /// \delta N_w^{QP} = \sum_b T_{\bar a_w b}B^{QP}_{\bar b_w b},
     /// with A factors consumed immediately while forming T. The direct determinant-pair Wick loop
     /// is avoided because same-spin factors are still reused over target rows and sparse entries.
     /// # Arguments:
-    /// - `target`: Target parent block defining \bar a_\Gamma and \bar b_\Gamma rows.
+    /// - `target`: Target parent block defining \bar a_w and \bar b_w rows.
     /// - `source`: Sparse source-parent D^P entries and active positions.
     /// - `data`: Shared NOCI determinant data.
     /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
@@ -892,7 +892,7 @@ impl OverlapFactor {
             let first = target.first_local;
             let increments = &mut output[first..first + target.targets.len()];
 
-            // Finish \delta N_\Gamma^{QP} directly into contiguous target rows.
+            // Finish \delta N_w^{QP} directly into contiguous target rows.
             increments
                 .par_iter_mut()
                 .zip(target.targets.par_iter())
@@ -911,7 +911,7 @@ impl OverlapFactor {
         } else {
             scratch.values.resize(target.targets.len(), 0.0);
 
-            // Finish \delta N_\Gamma^{QP} through a temporary for non-contiguous target rows.
+            // Finish \delta N_w^{QP} through a temporary for non-contiguous target rows.
             scratch
                 .values
                 .par_iter_mut()
@@ -933,9 +933,9 @@ impl OverlapFactor {
     }
 
     /// Apply U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.
-    /// The final target rows multiply U by A^{QP}_{\bar a_\Gamma a}.
+    /// The final target rows multiply U by A^{QP}_{\bar a_w a}.
     /// # Arguments:
-    /// - `target`: Target parent block defining \bar a_\Gamma and \bar b_\Gamma rows.
+    /// - `target`: Target parent block defining \bar a_w and \bar b_w rows.
     /// - `source`: Sparse source-parent D^P entries and active positions.
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
@@ -973,7 +973,7 @@ impl OverlapFactor {
         scratch.values.clear();
         scratch.values.resize(target.targets.len(), 0.0);
 
-        // Finish \delta N_\Gamma^{QP} = \sum_a A^{QP}_{\bar a_\Gamma a}U_{a\bar b_\Gamma}.
+        // Finish \delta N_w^{QP} = \sum_a A^{QP}_{\bar a_w a}U_{a\bar b_w}.
         scratch
             .values
             .par_iter_mut()

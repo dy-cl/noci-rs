@@ -35,20 +35,20 @@ use crate::maths::adjugate_transpose;
 /// # Returns
 /// - `T`: Same-spin two-body matrix element.
 #[inline(always)]
-pub(crate) fn lg_h2_same<T: NOCIScalar>(
+pub(crate) fn xw_h2_same<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same, {
         // For m = 0 only \mathbf D_{\mathrm{ov}}(0,\ldots,0) contributes. For m > 0,
         // enumerate the distributions satisfying \sum_{i=1}^{L+2}m_i = m.
         if w.m == 0 {
-            lg_h2_same_m0(w, l_ex, g_ex, scratch, tol)
+            xw_h2_same_m0(w, l_ex, g_ex, scratch, tol)
         } else {
-            lg_h2_same_gen(w, l_ex, g_ex, scratch, tol)
+            xw_h2_same_gen(w, l_ex, g_ex, scratch, tol)
         }
     })
 }
@@ -65,25 +65,25 @@ pub(crate) fn lg_h2_same<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for m = 0.
 #[inline(always)]
-fn lg_h2_same_m0<T: NOCIScalar>(
+fn xw_h2_same_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_m0, {
         // Determine the total excitation rank L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
         // Dispatch to direct fixed-rank forms of C_1 + C_2 + C_3.
         match l {
             // For L = 0, C_1 = {}^xV_0^{(0,0)} and C_2 = C_3 = 0.
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * w.v0[0],
-            1 => lg_h2_same_m0_l1(w, scratch),
-            2 => lg_h2_same_m0_l2(w, scratch),
-            3 => lg_h2_same_m0_l3(w, scratch, tol),
-            4 => lg_h2_same_m0_l4(w, scratch, tol),
-            _ => lg_h2_same_m0_gen(w, l_ex, g_ex, scratch, tol),
+            1 => xw_h2_same_m0_l1(w, scratch),
+            2 => xw_h2_same_m0_l2(w, scratch),
+            3 => xw_h2_same_m0_l3(w, scratch, tol),
+            4 => xw_h2_same_m0_l4(w, scratch, tol),
+            _ => xw_h2_same_m0_gen(w, l_ex, g_ex, scratch, tol),
         }
     })
 }
@@ -96,11 +96,11 @@ fn lg_h2_same_m0<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for L = 1 and m = 0.
 #[inline(always)]
-fn lg_h2_same_m0_l1<T: NOCIScalar>(
+fn xw_h2_same_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_m0_l1, {
         // For L = 1, \mathbf D_{\mathrm{ov}} = [D_{00}] and no pair of excitation columns
         // exists for the two-column contribution C_3.
         let n = w.n();
@@ -128,11 +128,11 @@ fn lg_h2_same_m0_l1<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for L = 2 and m = 0.
 #[inline(always)]
-fn lg_h2_same_m0_l2<T: NOCIScalar>(
+fn xw_h2_same_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l2, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_m0_l2, {
         // Evaluate \det\mathbf D_{\mathrm{ov}} = D_{00}D_{11} - D_{01}D_{10}.
         let n = w.n();
         let d = scratch.det0.as_slice();
@@ -183,12 +183,12 @@ fn lg_h2_same_m0_l2<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for L = 3 and m = 0.
 #[inline(always)]
-fn lg_h2_same_m0_l3<T: NOCIScalar>(
+fn xw_h2_same_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l3, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_m0_l3, {
         // Select the rank-three contraction determinant and its row and column labels.
         let n = w.n();
         let rows = scratch.rows.as_slice();
@@ -290,12 +290,12 @@ fn lg_h2_same_m0_l3<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for L = 4 and m = 0.
 #[inline(always)]
-fn lg_h2_same_m0_l4<T: NOCIScalar>(
+fn xw_h2_same_m0_l4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_l4, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_m0_l4, {
         // Select the rank-four contraction determinant and its row and column labels.
         let n = w.n();
         let rows = scratch.rows.as_slice();
@@ -429,14 +429,14 @@ fn lg_h2_same_m0_l4<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for arbitrary L and m = 0.
 #[inline(always)]
-fn lg_h2_same_m0_gen<T: NOCIScalar>(
+fn xw_h2_same_m0_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_m0_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_m0_gen, {
         // Determine L = L_x + L_w and select \mathbf D_{\mathrm{ov}}(0,\ldots,0).
         let l = l_ex.holes.len() + g_ex.holes.len();
         let mut acc = <T as From<f64>>::from(0.0);
@@ -539,14 +539,14 @@ fn lg_h2_same_m0_gen<T: NOCIScalar>(
 /// # Returns
 /// - `T`: Same-spin two-body matrix element summed over all allowed distributions.
 #[inline(always)]
-fn lg_h2_same_gen<T: NOCIScalar>(
+fn xw_h2_same_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_h2_same_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_h2_same_gen, {
         // Determine L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
         let mut acc = <T as From<f64>>::from(0.0);

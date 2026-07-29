@@ -3,7 +3,7 @@
 use ndarray::Array1;
 
 use crate::nonorthogonalwicks::{
-    WickScratchSpin, lg_overlap, lg_rdm1, lg_rdm2_diff, lg_rdm2_same, prepare_same,
+    WickScratchSpin, prepare_same, xw_overlap, xw_rdm1, xw_rdm2_diff, xw_rdm2_same,
 };
 
 use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
@@ -256,7 +256,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
 
         if dosa {
-            sa = lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+            sa = xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
         }
     }
 
@@ -264,7 +264,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
         if dosb {
-            sb = lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+            sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
         }
     }
 
@@ -275,7 +275,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
     };
 
     let g1a = if do1a {
-        Some(lg_rdm1(
+        Some(xw_rdm1(
             &w.aa,
             ex_la,
             ex_ga,
@@ -289,7 +289,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
     };
 
     let g1b = if do1b {
-        Some(lg_rdm1(
+        Some(xw_rdm1(
             &w.bb,
             ex_lb,
             ex_gb,
@@ -320,7 +320,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
                 }
             }
         } else {
-            let g2aa = lg_rdm2_same(
+            let g2aa = xw_rdm2_same(
                 &w.aa,
                 ex_la,
                 ex_ga,
@@ -361,7 +361,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
                 }
             }
         } else {
-            let g2bb = lg_rdm2_same(
+            let g2bb = xw_rdm2_same(
                 &w.bb,
                 ex_lb,
                 ex_gb,
@@ -385,7 +385,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
     }
 
     if do2ab {
-        let g2ab = lg_rdm2_diff(
+        let g2ab = xw_rdm2_diff(
             &w,
             &ldet.excitation,
             &gdet.excitation,

@@ -91,16 +91,16 @@ pub fn print_report(
     let f_pair_total = res.timings.noci.calculate_f_pair;
     let hs_pair_total = res.timings.noci.calculate_hs_pair;
     let one_body_operator_total = crate::timers::Counter {
-        ns: res.timings.nonorthogonalwicks.lg_h1.ns + res.timings.nonorthogonalwicks.lg_f.ns,
-        calls: res.timings.nonorthogonalwicks.lg_h1.calls
-            + res.timings.nonorthogonalwicks.lg_f.calls,
+        ns: res.timings.nonorthogonalwicks.xw_h1.ns + res.timings.nonorthogonalwicks.xw_f.ns,
+        calls: res.timings.nonorthogonalwicks.xw_h1.calls
+            + res.timings.nonorthogonalwicks.xw_f.calls,
     };
 
     let one_body_alg_total = crate::timers::Counter {
-        ns: res.timings.nonorthogonalwicks.lg_one_body_gen.ns
-            + res.timings.nonorthogonalwicks.lg_one_body_m0.ns,
-        calls: res.timings.nonorthogonalwicks.lg_one_body_gen.calls
-            + res.timings.nonorthogonalwicks.lg_one_body_m0.calls,
+        ns: res.timings.nonorthogonalwicks.xw_one_body_gen.ns
+            + res.timings.nonorthogonalwicks.xw_one_body_m0.ns,
+        calls: res.timings.nonorthogonalwicks.xw_one_body_gen.calls
+            + res.timings.nonorthogonalwicks.xw_one_body_m0.calls,
     };
 
     let wick_total = crate::timers::Counter {
@@ -494,68 +494,68 @@ pub fn print_report(
 
     print_relative_counter(
         "Overlap matrix elements",
-        res.timings.nonorthogonalwicks.lg_overlap,
+        res.timings.nonorthogonalwicks.xw_overlap,
         wick_total,
         2,
     );
     print_relative_counter(
         "Overlap matrix elements (m = 0)",
-        res.timings.nonorthogonalwicks.lg_overlap_m0,
-        res.timings.nonorthogonalwicks.lg_overlap,
+        res.timings.nonorthogonalwicks.xw_overlap_m0,
+        res.timings.nonorthogonalwicks.xw_overlap,
         5,
     );
     print_relative_counter(
         "Overlap matrix elements (m = 0, l = 1)",
-        res.timings.nonorthogonalwicks.lg_overlap_m0_l1,
-        res.timings.nonorthogonalwicks.lg_overlap_m0,
+        res.timings.nonorthogonalwicks.xw_overlap_m0_l1,
+        res.timings.nonorthogonalwicks.xw_overlap_m0,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (m = 0, l = 2)",
-        res.timings.nonorthogonalwicks.lg_overlap_m0_l2,
-        res.timings.nonorthogonalwicks.lg_overlap_m0,
+        res.timings.nonorthogonalwicks.xw_overlap_m0_l2,
+        res.timings.nonorthogonalwicks.xw_overlap_m0,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (m = 0, l = 3)",
-        res.timings.nonorthogonalwicks.lg_overlap_m0_l3,
-        res.timings.nonorthogonalwicks.lg_overlap_m0,
+        res.timings.nonorthogonalwicks.xw_overlap_m0_l3,
+        res.timings.nonorthogonalwicks.xw_overlap_m0,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (m = 0, l = 4)",
-        res.timings.nonorthogonalwicks.lg_overlap_m0_l4,
-        res.timings.nonorthogonalwicks.lg_overlap_m0,
+        res.timings.nonorthogonalwicks.xw_overlap_m0_l4,
+        res.timings.nonorthogonalwicks.xw_overlap_m0,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (m = l)",
-        res.timings.nonorthogonalwicks.lg_overlap_ml,
-        res.timings.nonorthogonalwicks.lg_overlap,
+        res.timings.nonorthogonalwicks.xw_overlap_ml,
+        res.timings.nonorthogonalwicks.xw_overlap,
         5,
     );
     print_relative_counter(
         "Overlap matrix elements (m = l, l = 1)",
-        res.timings.nonorthogonalwicks.lg_overlap_ml_l1,
-        res.timings.nonorthogonalwicks.lg_overlap_ml,
+        res.timings.nonorthogonalwicks.xw_overlap_ml_l1,
+        res.timings.nonorthogonalwicks.xw_overlap_ml,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (m = l, l = 2)",
-        res.timings.nonorthogonalwicks.lg_overlap_ml_l2,
-        res.timings.nonorthogonalwicks.lg_overlap_ml,
+        res.timings.nonorthogonalwicks.xw_overlap_ml_l2,
+        res.timings.nonorthogonalwicks.xw_overlap_ml,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (m = l, l = 3)",
-        res.timings.nonorthogonalwicks.lg_overlap_ml_l3,
-        res.timings.nonorthogonalwicks.lg_overlap_ml,
+        res.timings.nonorthogonalwicks.xw_overlap_ml_l3,
+        res.timings.nonorthogonalwicks.xw_overlap_ml,
         8,
     );
     print_relative_counter(
         "Overlap matrix elements (generic)",
-        res.timings.nonorthogonalwicks.lg_overlap_gen,
-        res.timings.nonorthogonalwicks.lg_overlap,
+        res.timings.nonorthogonalwicks.xw_overlap_gen,
+        res.timings.nonorthogonalwicks.xw_overlap,
         5,
     );
 
@@ -570,13 +570,13 @@ pub fn print_report(
     );
     print_relative_counter(
         "Hamiltonian one-body matrix elements",
-        res.timings.nonorthogonalwicks.lg_h1,
+        res.timings.nonorthogonalwicks.xw_h1,
         one_body_operator_total,
         5,
     );
     print_relative_counter(
         "Fock one-body matrix elements",
-        res.timings.nonorthogonalwicks.lg_f,
+        res.timings.nonorthogonalwicks.xw_f,
         one_body_operator_total,
         5,
     );
@@ -590,38 +590,38 @@ pub fn print_report(
     );
     print_relative_counter(
         "One-body matrix elements (generic)",
-        res.timings.nonorthogonalwicks.lg_one_body_gen,
+        res.timings.nonorthogonalwicks.xw_one_body_gen,
         one_body_alg_total,
         5,
     );
     print_relative_counter(
         "One-body matrix elements (m = 0)",
-        res.timings.nonorthogonalwicks.lg_one_body_m0,
+        res.timings.nonorthogonalwicks.xw_one_body_m0,
         one_body_alg_total,
         5,
     );
     print_relative_counter(
         "One-body matrix elements (m = 0, generic)",
-        res.timings.nonorthogonalwicks.lg_one_body_m0_gen,
-        res.timings.nonorthogonalwicks.lg_one_body_m0,
+        res.timings.nonorthogonalwicks.xw_one_body_m0_gen,
+        res.timings.nonorthogonalwicks.xw_one_body_m0,
         8,
     );
     print_relative_counter(
         "One-body matrix elements (m = 0, l = 1)",
-        res.timings.nonorthogonalwicks.lg_one_body_m0_l1,
-        res.timings.nonorthogonalwicks.lg_one_body_m0,
+        res.timings.nonorthogonalwicks.xw_one_body_m0_l1,
+        res.timings.nonorthogonalwicks.xw_one_body_m0,
         8,
     );
     print_relative_counter(
         "One-body matrix elements (m = 0, l = 2)",
-        res.timings.nonorthogonalwicks.lg_one_body_m0_l2,
-        res.timings.nonorthogonalwicks.lg_one_body_m0,
+        res.timings.nonorthogonalwicks.xw_one_body_m0_l2,
+        res.timings.nonorthogonalwicks.xw_one_body_m0,
         8,
     );
     print_relative_counter(
         "One-body matrix elements (m = 0, l = 3)",
-        res.timings.nonorthogonalwicks.lg_one_body_m0_l3,
-        res.timings.nonorthogonalwicks.lg_one_body_m0,
+        res.timings.nonorthogonalwicks.xw_one_body_m0_l3,
+        res.timings.nonorthogonalwicks.xw_one_body_m0,
         8,
     );
 
@@ -629,50 +629,50 @@ pub fn print_report(
 
     print_relative_counter(
         "Same-spin two-electron matrix elements",
-        res.timings.nonorthogonalwicks.lg_h2_same,
+        res.timings.nonorthogonalwicks.xw_h2_same,
         wick_total,
         2,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (generic)",
-        res.timings.nonorthogonalwicks.lg_h2_same_gen,
-        res.timings.nonorthogonalwicks.lg_h2_same,
+        res.timings.nonorthogonalwicks.xw_h2_same_gen,
+        res.timings.nonorthogonalwicks.xw_h2_same,
         5,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (m = 0)",
-        res.timings.nonorthogonalwicks.lg_h2_same_m0,
-        res.timings.nonorthogonalwicks.lg_h2_same,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0,
+        res.timings.nonorthogonalwicks.xw_h2_same,
         5,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (m = 0, generic)",
-        res.timings.nonorthogonalwicks.lg_h2_same_m0_gen,
-        res.timings.nonorthogonalwicks.lg_h2_same_m0,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0_gen,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0,
         8,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (m = 0, l = 1)",
-        res.timings.nonorthogonalwicks.lg_h2_same_m0_l1,
-        res.timings.nonorthogonalwicks.lg_h2_same_m0,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0_l1,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0,
         8,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (m = 0, l = 2)",
-        res.timings.nonorthogonalwicks.lg_h2_same_m0_l2,
-        res.timings.nonorthogonalwicks.lg_h2_same_m0,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0_l2,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0,
         8,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (m = 0, l = 3)",
-        res.timings.nonorthogonalwicks.lg_h2_same_m0_l3,
-        res.timings.nonorthogonalwicks.lg_h2_same_m0,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0_l3,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0,
         8,
     );
     print_relative_counter(
         "Same-spin two-electron matrix elements (m = 0, l = 4)",
-        res.timings.nonorthogonalwicks.lg_h2_same_m0_l4,
-        res.timings.nonorthogonalwicks.lg_h2_same_m0,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0_l4,
+        res.timings.nonorthogonalwicks.xw_h2_same_m0,
         8,
     );
 
@@ -680,62 +680,62 @@ pub fn print_report(
 
     print_relative_counter(
         "Different-spin two-electron matrix elements",
-        res.timings.nonorthogonalwicks.lg_h2_diff,
+        res.timings.nonorthogonalwicks.xw_h2_diff,
         wick_total,
         2,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (generic)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_gen,
-        res.timings.nonorthogonalwicks.lg_h2_diff,
+        res.timings.nonorthogonalwicks.xw_h2_diff_gen,
+        res.timings.nonorthogonalwicks.xw_h2_diff,
         5,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
-        res.timings.nonorthogonalwicks.lg_h2_diff,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff,
         5,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, generic)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_gen,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_gen,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 1, lb = 1)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_11,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_11,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 1, lb = 2)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_12,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_12,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 1, lb = 3)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_13,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_13,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 2, lb = 1)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_21,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_21,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 2, lb = 2)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_22,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_22,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
     print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 3, lb = 1)",
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0_31,
-        res.timings.nonorthogonalwicks.lg_h2_diff_m0,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_31,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );
 

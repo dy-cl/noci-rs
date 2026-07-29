@@ -6,7 +6,7 @@ use crate::{AoData, DetState};
 use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
 use super::overlap::calculate_s_pair_orthogonal;
 use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{lg_h1, lg_h2_diff, lg_h2_same, lg_overlap, prepare_same};
+use crate::nonorthogonalwicks::{prepare_same, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap};
 use crate::time_call;
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
@@ -79,13 +79,13 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
     ((hw, sw), (hdiff + sdiff, f64::max(hdiff, sdiff)))
 }
 
-/// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma using
+/// Calculate both the overlap and Hamiltonian matrix elements between determinants x and w using
 /// standard Slater-Condon rules.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `cache`: MO-basis one and two-electron integral cache for the shared parent determinant.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
@@ -285,12 +285,12 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
     })
 }
 
-/// Calculate both the overlap and Hamiltonian matrix elements between determinants \Lambda and \Gamma
+/// Calculate both the overlap and Hamiltonian matrix elements between determinants x and w
 /// using generalised Slater-Condon rules.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
@@ -331,11 +331,11 @@ pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
 }
 
 /// Calculate both the Hamiltonian and overlap matrix elements between
-/// determinants \Lambda and \Gamma using extended non-orthogonal Wick's theorem.
+/// determinants x and w using extended non-orthogonal Wick's theorem.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `scratch`: Scratch space for Wick's calculations.
@@ -378,14 +378,14 @@ pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
         if dosa || doh1a || doh2aa {
             prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
             if dosa {
-                sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+                sa = pha * xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
             }
         }
 
         if dosb || doh1b || doh2bb {
             prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
             if dosb {
-                sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+                sb = phb * xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
             }
         }
 
@@ -393,10 +393,10 @@ pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
         let mut h2aa = <T as From<f64>>::from(0.0);
         if sb.abs() != 0.0 {
             if doh1a {
-                h1a = lg_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+                h1a = xw_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
             }
             if doh2aa {
-                h2aa = lg_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+                h2aa = xw_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
             }
         }
 
@@ -404,16 +404,16 @@ pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
         let mut h2bb = <T as From<f64>>::from(0.0);
         if sa.abs() != 0.0 {
             if doh1b {
-                h1b = lg_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+                h1b = xw_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
             }
             if doh2bb {
-                h2bb = lg_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+                h2bb = xw_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
             }
         }
 
         let mut h2ab = <T as From<f64>>::from(0.0);
         if doh2ab {
-            h2ab = lg_h2_diff(
+            h2ab = xw_h2_diff(
                 &w,
                 &ldet.excitation,
                 &gdet.excitation,

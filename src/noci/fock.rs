@@ -8,7 +8,7 @@ use crate::{AoData, DetState};
 
 use super::naive::{build_s_pair, occ_coeffs, one_electron_scalar};
 use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{lg_f, lg_overlap, prepare_same};
+use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved. If the determinant pair have the
@@ -76,12 +76,12 @@ pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(
     (fw, (diff, diff))
 }
 
-/// Calculate the Fock matrix element between determinants \Lambda and \Gamma using
+/// Calculate the Fock matrix element between determinants x and w using
 /// standard Slater-Condon rules.
 /// # Arguments:
 /// - `cache`: MO-basis Fock cache for the shared parent determinant.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// # Returns:
 /// - `T`: Fock matrix element between `ldet` and `gdet`.
 fn calculate_f_pair_orthogonal<T: NOCIScalar>(
@@ -127,12 +127,12 @@ fn calculate_f_pair_orthogonal<T: NOCIScalar>(
     })
 }
 
-/// Calculate the Fock matrix element between determinants \Lambda and \Gamma using
+/// Calculate the Fock matrix element between determinants x and w using
 /// generalised Slater-Condon rules.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// - `fa`: NOCI Fock matrix spin alpha.
 /// - `fb`: NOCI Fock matrix spin beta.
 /// # Returns:
@@ -159,11 +159,11 @@ fn calculate_f_pair_naive<T: NOCIScalar>(
     })
 }
 
-/// Calculate the Fock matrix element between determinants \Lambda and \Gamma
+/// Calculate the Fock matrix element between determinants x and w
 /// using extended non-orthogonal Wick's theorem.
 /// # Arguments:
-/// - `ldet`: State \Lambda.
-/// - `gdet`: State \Gamma.
+/// - `ldet`: Bra-reference state x.
+/// - `gdet`: Ket-reference state w.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `scratch`: Scratch space for Wick's calculations.
@@ -191,9 +191,9 @@ fn calculate_f_pair_wicks<T: NOCIScalar>(
         let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
 
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        let sa = pha * lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+        let sa = pha * xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        let sb = phb * lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+        let sb = phb * xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
         if sa.abs() == 0.0 && sb.abs() == 0.0 {
             return <T as From<f64>>::from(0.0);
@@ -201,11 +201,11 @@ fn calculate_f_pair_wicks<T: NOCIScalar>(
 
         let mut f = <T as From<f64>>::from(0.0);
         if sb.abs() != 0.0 {
-            let f1a = lg_f(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+            let f1a = xw_f(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
             f += pha * f1a * sb;
         }
         if sa.abs() != 0.0 {
-            let f1b = lg_f(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+            let f1b = xw_f(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
             f += phb * f1b * sa;
         }
         f

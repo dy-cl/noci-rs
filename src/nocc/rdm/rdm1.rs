@@ -2,7 +2,7 @@
 
 use ndarray::Array1;
 
-use crate::nonorthogonalwicks::{WickScratchSpin, lg_overlap, lg_rdm1, prepare_same};
+use crate::nonorthogonalwicks::{WickScratchSpin, prepare_same, xw_overlap, xw_rdm1};
 
 use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
 
@@ -213,7 +213,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
 
         if dosa {
-            sa = lg_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
+            sa = xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
         }
     }
 
@@ -221,7 +221,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
 
         if dosb {
-            sb = lg_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
+            sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
         }
     }
 
@@ -232,7 +232,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
     };
 
     if sb.abs() > data.tol && do1a {
-        let g1a = lg_rdm1(
+        let g1a = xw_rdm1(
             &w.aa,
             ex_la,
             ex_ga,
@@ -251,7 +251,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
     }
 
     if sa.abs() > data.tol && do1b {
-        let g1b = lg_rdm1(
+        let g1b = xw_rdm1(
             &w.bb,
             ex_lb,
             ex_gb,

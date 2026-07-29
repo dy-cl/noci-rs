@@ -36,7 +36,7 @@ use crate::time_call;
 /// # Returns
 /// - `Array2<T>`: Unnormalised spin-resolved one-body transition density matrix.
 #[inline(always)]
-pub(crate) fn lg_rdm1<T: NOCIScalar>(
+pub(crate) fn xw_rdm1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -45,13 +45,13 @@ pub(crate) fn lg_rdm1<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array2<T> {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm1, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_rdm1, {
         // For m = 0 only \mathbf D_{\mathrm{RDM}}^{pq}(0,\ldots,0) contributes. Otherwise,
         // sum every distribution satisfying \sum_{i=1}^{L+1}m_i = m.
         if w.m == 0 {
-            lg_rdm1_m0(w, l_ex, g_ex, l_c, g_c, scratch, tol)
+            xw_rdm1_m0(w, l_ex, g_ex, l_c, g_c, scratch, tol)
         } else {
-            lg_rdm1_gen(w, l_ex, g_ex, l_c, g_c, scratch, tol)
+            xw_rdm1_gen(w, l_ex, g_ex, l_c, g_c, scratch, tol)
         }
     })
 }
@@ -71,7 +71,7 @@ pub(crate) fn lg_rdm1<T: NOCIScalar>(
 /// # Returns
 /// - `Array2<T>`: One-body transition density matrix for m = 0.
 #[inline(always)]
-fn lg_rdm1_m0<T: NOCIScalar>(
+fn xw_rdm1_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -80,7 +80,7 @@ fn lg_rdm1_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array2<T> {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm1_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_rdm1_m0, {
         // The external RDM basis has dimension n, while the augmented contraction determinant has
         // dimension L + 1 for L = L_x + L_w.
         let n = l_c.nrows();
@@ -164,7 +164,7 @@ fn lg_rdm1_m0<T: NOCIScalar>(
 /// # Returns
 /// - `Array2<T>`: One-body transition density matrix summed over all allowed distributions.
 #[inline(always)]
-fn lg_rdm1_gen<T: NOCIScalar>(
+fn xw_rdm1_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -173,7 +173,7 @@ fn lg_rdm1_gen<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array2<T> {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm1_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_rdm1_gen, {
         // The external RDM basis has dimension n, while the augmented contraction determinant has
         // dimension L + 1 for L = L_x + L_w.
         let n = l_c.nrows();

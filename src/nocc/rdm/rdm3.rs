@@ -2,7 +2,7 @@
 
 use ndarray::Array1;
 
-use crate::nonorthogonalwicks::{WickScratchSpin, lg_overlap, prepare_same};
+use crate::nonorthogonalwicks::{WickScratchSpin, prepare_same, xw_overlap};
 
 use super::common::{spin_assignment_rdm_element, spin_assignment_rdm_element_naive};
 use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs};
@@ -205,13 +205,13 @@ fn rdm3_pair_wicks<T: NOCIScalar>(
         &mut scratch.bb,
     );
 
-    let sa = lg_overlap(
+    let sa = xw_overlap(
         &w.aa,
         &ldet.excitation.alpha,
         &gdet.excitation.alpha,
         &mut scratch.aa,
     );
-    let sb = lg_overlap(
+    let sb = xw_overlap(
         &w.bb,
         &ldet.excitation.beta,
         &gdet.excitation.beta,

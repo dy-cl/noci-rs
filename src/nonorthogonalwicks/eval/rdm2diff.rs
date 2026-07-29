@@ -37,7 +37,7 @@ use crate::time_call;
 /// # Returns
 /// - `Array4<T>`: Unnormalised same-spin two-body transition density matrix.
 #[inline(always)]
-pub(crate) fn lg_rdm2_same<T: NOCIScalar>(
+pub(crate) fn xw_rdm2_same<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -46,13 +46,13 @@ pub(crate) fn lg_rdm2_same<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array4<T> {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm2_same, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_rdm2_same, {
         // For m = 0 only \mathbf D_{\mathrm{RDM}}^{pqrs}(0,\ldots,0) contributes. Otherwise,
         // sum every distribution satisfying \sum_{i=1}^{L+2}m_i = m.
         if w.m == 0 {
-            lg_rdm2_same_m0(w, l_ex, g_ex, l_c, g_c, scratch, tol)
+            xw_rdm2_same_m0(w, l_ex, g_ex, l_c, g_c, scratch, tol)
         } else {
-            lg_rdm2_same_gen(w, l_ex, g_ex, l_c, g_c, scratch, tol)
+            xw_rdm2_same_gen(w, l_ex, g_ex, l_c, g_c, scratch, tol)
         }
     })
 }
@@ -74,7 +74,7 @@ pub(crate) fn lg_rdm2_same<T: NOCIScalar>(
 /// # Returns
 /// - `Array4<T>`: Same-spin two-body transition density matrix for m = 0.
 #[inline(always)]
-fn lg_rdm2_same_m0<T: NOCIScalar>(
+fn xw_rdm2_same_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -83,7 +83,7 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array4<T> {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm2_same_m0, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_rdm2_same_m0, {
         // The external RDM basis has dimension n, while the augmented contraction determinant has
         // dimension L + 2 for L = L_x + L_w.
         let n = l_c.nrows();
@@ -176,7 +176,7 @@ fn lg_rdm2_same_m0<T: NOCIScalar>(
 /// # Returns
 /// - `Array4<T>`: Same-spin two-body transition density matrix summed over all allowed distributions.
 #[inline(always)]
-fn lg_rdm2_same_gen<T: NOCIScalar>(
+fn xw_rdm2_same_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
@@ -185,7 +185,7 @@ fn lg_rdm2_same_gen<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> Array4<T> {
-    time_call!(crate::timers::nonorthogonalwicks::add_lg_rdm2_same_gen, {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_rdm2_same_gen, {
         // The external RDM basis has dimension n, while the augmented contraction determinant has
         // dimension L + 2 for L = L_x + L_w.
         let n = l_c.nrows();
