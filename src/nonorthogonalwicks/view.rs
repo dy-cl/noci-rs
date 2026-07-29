@@ -9,33 +9,34 @@ use super::types::{
 };
 use crate::noci::NOCIScalar;
 
-/// Storage for data which allows the Wicks objects to be viewed.
+/// Read-only address, offset and metadata view over the contiguous slab of precomputed
+/// nonorthogonal Wick intermediates.
 #[derive(Clone)]
 pub struct WicksView<T: NOCIScalar> {
-    /// Pointer to contiguous data which contains all intermediates.
+    /// Pointer to the first entry of the contiguous tensor slab.
     pub(crate) slab: NonNull<T>,
-    /// Length of storage.
+    /// Length of the tensor slab in units of `T`.
     pub(crate) slab_len: usize,
     /// Number of reference determinants.
     pub(crate) nref: usize,
-    /// Offset gives where in the storage each tensor for pair p begins.
+    /// Per-reference-pair offsets locating each stored matrix and tensor.
     pub(crate) off: Vec<PairOffset>,
-    /// Scalars that are cheap to store.
+    /// Per-reference-pair scalar metadata stored outside the tensor slab.
     pub(crate) meta: Vec<PairMeta<T>>,
 }
 
-// Implying that WicksView can be shared across threads.
+// The backing allocation is kept alive by `WicksShared`, and this view exposes only immutable slab access.
 unsafe impl<T: NOCIScalar> Sync for WicksView<T> {}
 unsafe impl<T: NOCIScalar> Send for WicksView<T> {}
 
 impl<T: NOCIScalar> WicksView<T> {
-    /// Map a pair index (lp, gp) into a 1D flattened index.
+    /// Map the ordered reference-pair indices (x,w) to the flattened pair index.
     /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `lp`: Pair index 1.
-    /// - `gp`: Pair index 2.
+    /// - `self`: View over the stored Wick intermediates.
+    /// - `lp`: Bra-reference index x.
+    /// - `gp`: Ket-reference index w.
     /// # Returns
-    /// - `usize`: Flattened pair index.
+    /// - `usize`: Flattened index of the ordered reference pair (x,w).
     fn idx(
         &self,
         lp: usize,
@@ -44,22 +45,22 @@ impl<T: NOCIScalar> WicksView<T> {
         lp * self.nref + gp
     }
 
-    /// Get a pointer to the start of the shared tensor storage.
+    /// Return a pointer to the first entry of the contiguous tensor slab.
     /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
+    /// - `self`: View over the stored Wick intermediates.
     /// # Returns
-    /// - `*const T`: Pointer to the start of the shared tensor slab.
+    /// - `*const T`: Pointer to the first slab entry.
     fn slab_ptr(&self) -> *const T {
         self.slab.as_ptr() as *const T
     }
 
-    /// Read tensor slab beginning at a given offset and interpret the following n * n elements as
-    /// a n by n matrix. Lifetime elision '_ ensures that the ArrayView2 may not outlive the borrow
-    /// of self (WicksView) which in turn is only valid while the remote memory storage is valid.
+    /// Interpret n \times n contiguous slab entries beginning at `off` as a row-major matrix.
+    /// The returned view cannot outlive the borrow of `self`, whose lifetime is tied to the
+    /// backing shared-memory or memory-mapped allocation.
     /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `off`: Offset from the beginning of the tensor slab in units of T.
-    /// - `n`: Size of matrix to be read.
+    /// - `self`: View over the stored Wick intermediates.
+    /// - `off`: Offset from the start of the tensor slab in units of `T`.
+    /// - `n`: Matrix dimension.
     /// # Returns
     /// - `ArrayView2<'_, T>`: Matrix view into the tensor slab.
     fn view2(
@@ -70,14 +71,14 @@ impl<T: NOCIScalar> WicksView<T> {
         unsafe { ArrayView2::from_shape_ptr((n, n), self.slab_ptr().add(off)) }
     }
 
-    /// Read tensor slab beginning at a given offset and interpret the following `n * n` elements
-    /// as a flat row-major matrix slice without constructing an ndarray view.
+    /// Interpret n \times n contiguous slab entries beginning at `off` as a flat row-major
+    /// matrix slice without constructing an ndarray view.
     /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `off`: Offset from the beginning of the tensor slab in units of `T`.
+    /// - `self`: View over the stored Wick intermediates.
+    /// - `off`: Offset from the start of the tensor slab in units of `T`.
     /// - `n`: Matrix dimension.
     /// # Returns
-    /// - `&[T]`: Slice containing the `n * n` matrix entries in row-major order.
+    /// - `&[T]`: Flat row-major matrix slice.
     #[inline(always)]
     fn slice2(
         &self,
@@ -87,14 +88,14 @@ impl<T: NOCIScalar> WicksView<T> {
         unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off), n * n) }
     }
 
-    /// Read tensor slab beginning at a given offset and interpret the following `n * n * n * n`
-    /// elements as a flat row-major rank-4 tensor slice without constructing an ndarray view.
+    /// Interpret n^4 contiguous slab entries beginning at `off` as a flat row-major rank-four
+    /// tensor slice without constructing an ndarray view.
     /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `off`: Offset from the beginning of the tensor slab in units of `T`.
-    /// - `n`: Tensor dimension along each axis.
+    /// - `self`: View over the stored Wick intermediates.
+    /// - `off`: Offset from the start of the tensor slab in units of `T`.
+    /// - `n`: Dimension of each tensor axis.
     /// # Returns
-    /// - `&[T]`: Slice containing the `n^4` tensor entries in row-major order.
+    /// - `&[T]`: Flat row-major rank-four tensor slice.
     #[inline(always)]
     fn slice4(
         &self,
@@ -104,15 +105,14 @@ impl<T: NOCIScalar> WicksView<T> {
         unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off), n * n * n * n) }
     }
 
-    /// Return a view for precomputed intermediates for a given lp, gp. Lifetime elision '_ ensures
-    /// that the ArrayView4 may not outlive the borrow of self (WicksView) which in turn is only valid
-    /// while the remote memory storage is valid.
+    /// Return grouped alpha-alpha, beta-beta and alpha-beta views for an ordered reference pair
+    /// with bra reference x and ket reference w.
     /// # Arguments:
-    /// - `self`: View into Wick's intermediates.
-    /// - `lp`: Pair index 1.
-    /// - `gp`: Pair index 2.
+    /// - `self`: View over the stored Wick intermediates.
+    /// - `lp`: Bra-reference index x.
+    /// - `gp`: Ket-reference index w.
     /// # Returns
-    /// - `WicksPairView<'_, T>`: Grouped view of the same-spin and different-spin intermediates for the pair.
+    /// - `WicksPairView<'_, T>`: Grouped spin-resolved views for the ordered pair (x,w).
     pub(crate) fn pair(
         &self,
         lp: usize,
@@ -142,14 +142,14 @@ impl<T: NOCIScalar> WicksView<T> {
     }
 }
 
-// Read only view of same-spin Wick's intermediates.
+/// Read-only view of the same-spin intermediates for one spin sector of an ordered reference pair.
 #[derive(Clone, Copy)]
 pub(crate) struct SameSpinView<'a, T: NOCIScalar> {
-    /// Metadata and scalar intermediates for this same-spin reference pair.
+    /// Metadata and scalar same-spin intermediates for this reference pair and spin sector.
     pub(crate) meta: &'a SameSpinMeta<T>,
     /// Parent view providing access to the contiguous tensor slab.
     pub(crate) w: &'a WicksView<T>,
-    /// Offsets for all same-spin intermediates belonging to this reference pair.
+    /// Offsets locating the same-spin matrices and tensors in the slab.
     pub(crate) off: &'a SameSpinOffset,
 }
 
@@ -167,21 +167,21 @@ impl<T: NOCIScalar> Deref for SameSpinView<'_, T> {
 }
 
 impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
-    /// Get tensor dimension n.
+    /// Return the molecular-orbital dimension of each stored same-spin matrix or tensor axis.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
+    /// - `self`: Same-spin Wick view.
     /// # Returns
-    /// - `usize`: Tensor dimension `nmo`.
+    /// - `usize`: Molecular-orbital dimension `nmo`.
     pub(crate) fn n(&self) -> usize {
         self.nmo
     }
 
-    /// Get a view to the `X[mi]` matrix.
+    /// Return the X^{(m_i)} fundamental-contraction matrix.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
     /// # Returns
-    /// - `ArrayView2<'_, T>`: View of the `X[mi]` matrix.
+    /// - `ArrayView2<'_, T>`: View of X^{(m_i)}.
     pub(crate) fn x(
         &self,
         mi: usize,
@@ -189,12 +189,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.x[mi], self.n())
     }
 
-    /// Get a view to the `Y[mi]` matrix.
+    /// Return the Y^{(m_i)} fundamental-contraction matrix.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
     /// # Returns
-    /// - `ArrayView2<'_, T>`: View of the `Y[mi]` matrix.
+    /// - `ArrayView2<'_, T>`: View of Y^{(m_i)}.
     pub(crate) fn y(
         &self,
         mi: usize,
@@ -202,12 +202,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.y[mi], self.n())
     }
 
-    /// Get the `X[mi]` matrix as a flat row-major slice.
+    /// Return X^{(m_i)} as a flat row-major slice for specialised scalar kernels.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
     /// # Returns
-    /// - `&[T]`: Flat matrix slice for direct scalar kernels.
+    /// - `&[T]`: Flat row-major X^{(m_i)} matrix.
     pub(crate) fn x_slice(
         &self,
         mi: usize,
@@ -215,12 +215,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.x[mi], self.n())
     }
 
-    /// Get the `Y[mi]` matrix as a flat row-major slice.
+    /// Return Y^{(m_i)} as a flat row-major slice for specialised scalar kernels.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
     /// # Returns
-    /// - `&[T]`: Flat matrix slice for direct scalar kernels.
+    /// - `&[T]`: Flat row-major Y^{(m_i)} matrix.
     pub(crate) fn y_slice(
         &self,
         mi: usize,
@@ -228,12 +228,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.y[mi], self.n())
     }
 
-    /// Get a view to the basis-space `X[mi]` contraction matrix used for RDM indices.
+    /// Return X^{(m_i)} represented in the external RDM basis.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `nbas`: Dimension of the external RDM basis.
     /// # Returns
-    /// - `ArrayView2<'_, T>`: Basis-space X contraction matrix.
+    /// - `ArrayView2<'_, T>`: External-basis X^{(m_i)} matrix.
     #[cfg(feature = "nocc")]
     pub(crate) fn xrdm(
         &self,
@@ -243,12 +244,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.xrdm[mi], nbas)
     }
 
-    /// Get a view to the basis-space `Y[mi]` contraction matrix used for RDM indices.
+    /// Return Y^{(m_i)} represented in the external RDM basis.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi`: Zero distribution selector.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `nbas`: Dimension of the external RDM basis.
     /// # Returns
-    /// - `ArrayView2<'_, T>`: Basis-space Y contraction matrix.
+    /// - `ArrayView2<'_, T>`: External-basis Y^{(m_i)} matrix.
     #[cfg(feature = "nocc")]
     pub(crate) fn yrdm(
         &self,
@@ -258,12 +260,14 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.yrdm[mi], nbas)
     }
 
-    /// Get a slice of the transpoed Hamiltonian `F[mi][mj]` tensor.
+    /// Return the transposed one-column intermediate
+    /// \mathcal F^{(m_i,m_j)} constructed from the one-electron Hamiltonian. The stored
+    /// [z,r] ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi, mj`: Zero distribution selectors.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`, `mj`: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.
     /// # Returns
-    /// - `&[T]`: Slice of the transpoed Hamiltonian `F[mi][mj]` matrix data.
+    /// - `&[T]`: Flat transposed \mathcal F^{(m_i,m_j)} matrix.
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn fh_t_slice(
         &self,
@@ -273,12 +277,14 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.fh[mi][mj], self.n())
     }
 
-    /// Get a slice of the transpoed Fock `F[mi][mj]` tensor.
+    /// Return the transposed one-column intermediate
+    /// \mathcal F^{(m_i,m_j)} constructed from the current generalised-Fock operator. The
+    /// stored [z,r] ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi, mj`: Zero distribution selectors.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`, `mj`: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.
     /// # Returns
-    /// - `&[T]`: Slice of the transpoed Fock `F[mi][mj]` matrix data.
+    /// - `&[T]`: Flat transposed \mathcal F^{(m_i,m_j)} matrix.
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn ff_t_slice(
         &self,
@@ -288,12 +294,16 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.ff[mi][mj], self.n())
     }
 
-    /// Get a slice of the transpoed `V[mi][mj][mk]` tensor.
+    /// Return the transposed same-spin one-column intermediate
+    /// \mathcal V^{(m_1,m_2,m_3)}. Rust storage is ordered as `v[m_1][m_3][m_2]`, and the
+    /// stored [z,r] matrix ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `mi, mj, mk`: Zero distribution selectors.
+    /// - `self`: Same-spin Wick view.
+    /// - `mi`: First assignment m_1.
+    /// - `mj`: Third assignment m_3 in the mathematical ordering.
+    /// - `mk`: Second assignment m_2 in the mathematical ordering.
     /// # Returns
-    /// - `&[T]`: Slice of the transpoed `V[mi][mj][mk]` matrix data.
+    /// - `&[T]`: Flat transposed \mathcal V^{(m_1,m_2,m_3)} matrix.
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn v_t_slice(
         &self,
@@ -304,12 +314,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.v[mi][mj][mk], self.n())
     }
 
-    /// Get a slice of the `J[slot]` tensor.
+    /// Return one symmetry-unique same-spin
+    /// \mathcal J^{(m_1,m_2,m_3,m_4)} tensor in stored [i,j,r,c] evaluator order.
     /// # Arguments:
-    /// - `self`: View to same-spin Wick's intermediates.
-    /// - `slot`: Compressed storage slot for the requested J tensor.
+    /// - `self`: Same-spin Wick view.
+    /// - `slot`: Symmetry-compressed \mathcal J storage slot.
     /// # Returns
-    /// - `&[T]`: Slice of the requested J tensor data.
+    /// - `&[T]`: Flat rank-four \mathcal J tensor.
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn j_slice(
         &self,
@@ -319,14 +330,14 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     }
 }
 
-/// Read only view of diff-spin Wick's intermediates.
+/// Read-only view of the different-spin intermediates for an ordered reference pair.
 #[derive(Clone, Copy)]
 pub(crate) struct DiffSpinView<'a, T: NOCIScalar> {
-    /// Metadata and scalar intermediates for this different-spin reference pair.
+    /// Metadata and scalar different-spin intermediates for this reference pair.
     pub(crate) meta: &'a DiffSpinMeta<T>,
     /// Parent view providing access to the contiguous tensor slab.
     w: &'a WicksView<T>,
-    /// Offsets for all different-spin intermediates belonging to this reference pair.
+    /// Offsets locating the different-spin matrices and tensors in the slab.
     off: &'a DiffSpinOffset,
 }
 
@@ -344,21 +355,24 @@ impl<T: NOCIScalar> Deref for DiffSpinView<'_, T> {
 }
 
 impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
-    /// Get tensor dimension n.
+    /// Return the molecular-orbital dimension of each stored different-spin tensor axis.
     /// # Arguments:
-    /// - `self`: View to diff-spin Wick's intermediates.
+    /// - `self`: Different-spin Wick view.
     /// # Returns
-    /// - `usize`: Tensor dimension `nmo`.
+    /// - `usize`: Molecular-orbital dimension `nmo`.
     pub(crate) fn n(&self) -> usize {
         self.nmo
     }
 
-    /// Get a slice of the transpoed `Vab[ma0][mb0][mak]` tensor.
+    /// Return the transposed alpha-spin one-column intermediate
+    /// \mathcal V^\alpha{}^{(m_{\alpha0},m_{\beta0},m_{\alpha z})} in stored [z,r] order.
     /// # Arguments:
-    /// - `self`: View to diff-spin Wick's intermediates.
-    /// - `ma0, mb0, mak`: Zero distribution selectors.
+    /// - `self`: Different-spin Wick view.
+    /// - `ma0`: Assignment m_{\alpha0} of the alpha-spin operator contraction.
+    /// - `mb0`: Assignment m_{\beta0} of the beta-spin scalar contraction.
+    /// - `mak`: Assignment m_{\alpha z} of the replaced alpha-spin determinant column.
     /// # Returns
-    /// - `&[T]`: Slice of the transpoed `Vab[ma0][mb0][mak]` matrix data.
+    /// - `&[T]`: Flat transposed \mathcal V^\alpha matrix.
     #[inline(always)]
     pub fn vab_t_slice(
         &self,
@@ -369,12 +383,15 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
         self.w.slice2(self.off.vab[ma0][mb0][mak], self.n())
     }
 
-    /// Get a slice of the transpoed `Vba[mb0][ma0][mbk]` tensor.
+    /// Return the transposed beta-spin one-column intermediate
+    /// \mathcal V^\beta{}^{(m_{\beta0},m_{\alpha0},m_{\beta y})} in stored [y,r] order.
     /// # Arguments:
-    /// - `self`: View to diff-spin Wick's intermediates.
-    /// - `mb0, ma0, mbk`: Zero distribution selectors.
+    /// - `self`: Different-spin Wick view.
+    /// - `mb0`: Assignment m_{\beta0} of the beta-spin operator contraction.
+    /// - `ma0`: Assignment m_{\alpha0} of the alpha-spin scalar contraction.
+    /// - `mbk`: Assignment m_{\beta y} of the replaced beta-spin determinant column.
     /// # Returns
-    /// - `&[T]`: Slice of the transpoed `Vba[mb0][ma0][mbk]` matrix data.
+    /// - `&[T]`: Flat transposed \mathcal V^\beta matrix.
     #[inline(always)]
     pub fn vba_t_slice(
         &self,
@@ -385,12 +402,17 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
         self.w.slice2(self.off.vba[mb0][ma0][mbk], self.n())
     }
 
-    /// Get a slice of the `IIab[ma0][maj][mb0][mbj]` tensor.
+    /// Return the different-spin two-column intermediate
+    /// \mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})} in stored
+    /// [r,c,i,j] order.
     /// # Arguments:
-    /// - `self`: View to diff-spin Wick's intermediates.
-    /// - `ma0, maj, mb0, mbj`: Zero distribution selectors.
+    /// - `self`: Different-spin Wick view.
+    /// - `ma0`: Assignment m_{\alpha0}.
+    /// - `maj`: Assignment m_{\alpha z}.
+    /// - `mb0`: Assignment m_{\beta0}.
+    /// - `mbj`: Assignment m_{\beta y}.
     /// # Returns
-    /// - `&[T]`: Slice of the `IIab[ma0][maj][mb0][mbj]` tensor data.
+    /// - `&[T]`: Flat rank-four \mathcal{II} tensor.
     #[inline(always)]
     pub fn iiab_slice(
         &self,
@@ -403,13 +425,13 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 }
 
-/// Storage for views of each type of spin pairing.
+/// Grouped alpha-alpha, beta-beta and alpha-beta views for one ordered reference pair (x,w).
 #[derive(Clone, Copy)]
 pub(crate) struct WicksPairView<'a, T: NOCIScalar> {
-    /// Same-spin alpha-alpha intermediates for the reference pair.
+    /// Same-spin alpha-alpha intermediates.
     pub(crate) aa: SameSpinView<'a, T>,
-    /// Same-spin beta-beta intermediates for the reference pair.
+    /// Same-spin beta-beta intermediates.
     pub(crate) bb: SameSpinView<'a, T>,
-    /// Different-spin alpha-beta intermediates for the reference pair.
+    /// Different-spin alpha-beta intermediates.
     pub(crate) ab: DiffSpinView<'a, T>,
 }

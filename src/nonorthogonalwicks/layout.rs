@@ -5,14 +5,15 @@ use super::build::{DiffSpinBuild, SAME_SPIN_J_BRANCHES, SameSpinBuild};
 use super::types::{DiffSpinOffset, PairOffset, PairZeroCounts, SameSpinOffset};
 use crate::noci::NOCIScalar;
 
-/// Calculate and store all the required offsets from the beginning of the large contiguous shared
-/// tensor storage to a given matrix or tensor.
+/// Assign offsets into the contiguous tensor slab for every ordered reference pair (x,w).
+/// Rank-four tensors are allocated only when their fundamental-contraction assignments can
+/// satisfy the corresponding m_\alpha or m_\beta constraint.
 /// # Arguments:
-/// - `plans`: Pair-specific zero-overlap branch plans.
-/// - `nmo`: Number of molecular orbitals.
-/// - `nbas`: Number of basis functions.
+/// - `plans`: Pair-specific values of m_\alpha and m_\beta.
+/// - `nmo`: Number of molecular orbitals in one reference orbital set.
+/// - `nbas`: Dimension of the external RDM basis.
 /// # Returns
-/// - `(Vec<PairOffset>, usize)`: Per-pair offset table and total slab length in units of `T`.
+/// - `(Vec<PairOffset>, usize)`: Per-pair offset tables and total slab length in units of `T`.
 pub fn assign_offsets(
     plans: &[PairZeroCounts],
     nmo: usize,
@@ -30,6 +31,7 @@ pub fn assign_offsets(
     let mut i: usize = 0;
 
     for (p, plan) in off.iter_mut().zip(plans.iter()) {
+        // Allocate the alpha-spin X^{(m_i)} and Y^{(m_i)} fundamental contractions.
         for mi in 0..2 {
             p.aa.x[mi] = i;
             i += nn2;
@@ -40,6 +42,7 @@ pub fn assign_offsets(
         }
         #[cfg(feature = "nocc")]
         {
+            // Allocate the corresponding alpha-spin contractions in the external RDM basis.
             for mi in 0..2 {
                 p.aa.xrdm[mi] = i;
                 i += nbas2;
@@ -49,6 +52,7 @@ pub fn assign_offsets(
                 i += nbas2;
             }
         }
+        // Allocate the alpha-spin one-body \mathcal F and one-column \mathcal V intermediates.
         for mi in 0..2 {
             for mj in 0..2 {
                 p.aa.fh[mi][mj] = i;
@@ -69,6 +73,8 @@ pub fn assign_offsets(
                 }
             }
         }
+        // Allocate only those symmetry-unique alpha-spin \mathcal J tensors whose four
+        // assignments do not already exceed m_\alpha.
         p.aa.j.fill(usize::MAX);
         for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
             if branch.0 + branch.1 + branch.2 + branch.3 <= plan.ma {
@@ -77,6 +83,7 @@ pub fn assign_offsets(
             }
         }
 
+        // Allocate the beta-spin X^{(m_i)} and Y^{(m_i)} fundamental contractions.
         for mi in 0..2 {
             p.bb.x[mi] = i;
             i += nn2;
@@ -87,6 +94,7 @@ pub fn assign_offsets(
         }
         #[cfg(feature = "nocc")]
         {
+            // Allocate the corresponding beta-spin contractions in the external RDM basis.
             for mi in 0..2 {
                 p.bb.xrdm[mi] = i;
                 i += nbas2;
@@ -96,6 +104,7 @@ pub fn assign_offsets(
                 i += nbas2;
             }
         }
+        // Allocate the beta-spin one-body \mathcal F and one-column \mathcal V intermediates.
         for mi in 0..2 {
             for mj in 0..2 {
                 p.bb.fh[mi][mj] = i;
@@ -116,6 +125,8 @@ pub fn assign_offsets(
                 }
             }
         }
+        // Allocate only those symmetry-unique beta-spin \mathcal J tensors whose four
+        // assignments do not already exceed m_\beta.
         p.bb.j.fill(usize::MAX);
         for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
             if branch.0 + branch.1 + branch.2 + branch.3 <= plan.mb {
@@ -124,6 +135,8 @@ pub fn assign_offsets(
             }
         }
 
+        // Allocate the different-spin one-column intermediates \mathcal V^\alpha and
+        // \mathcal V^\beta for every binary assignment of their three contractions.
         for ma0 in 0..2 {
             for mb0 in 0..2 {
                 for mk in 0..2 {
@@ -140,6 +153,8 @@ pub fn assign_offsets(
                 }
             }
         }
+        // Allocate only those \mathcal{II} tensors whose alpha- and beta-spin assignments
+        // can satisfy their independent constraints.
         p.ab.iiab = [[[[usize::MAX; 2]; 2]; 2]; 2];
         for ma0 in 0..2 {
             for maj in 0..2 {
@@ -158,12 +173,12 @@ pub fn assign_offsets(
     (off, i)
 }
 
-/// Fill the same-spin data owning structs with the same-spin Wick's intermediates using the
-/// prescribed offsets.
+/// Write the same-spin fundamental contractions and \mathcal F, \mathcal V and \mathcal J
+/// intermediates into the contiguous tensor slab using their assigned offsets.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `o`: Offsets into the storage.
-/// - `w`: Owned Wick's intermediates.
+/// - `o`: Same-spin offsets into the slab.
+/// - `w`: Owned same-spin intermediates for one reference pair and spin sector.
 /// # Returns
 /// - `()`: Writes the same-spin intermediates into the slab.
 pub fn write_same_spin<T: NOCIScalar>(
@@ -183,6 +198,7 @@ pub fn write_same_spin<T: NOCIScalar>(
         write2(slab, o.yrdm[1], &w.yrdm[1]);
     }
 
+    // Transpose the one-column matrices so a replacement column with fixed orbital label is contiguous.
     for mi in 0..2 {
         for mj in 0..2 {
             write2t(slab, o.fh[mi][mj], &w.fh[mi][mj]);
@@ -200,19 +216,20 @@ pub fn write_same_spin<T: NOCIScalar>(
             }
         }
     }
+    // Reorder each \mathcal J tensor so the fixed replacement pair precedes the varying pair.
     for (slot, blk) in &w.j {
         write4ijrc(slab, o.j[*slot], blk);
     }
 }
 
-/// Fill the diff-spin data owning structs with the diff-spin Wick's intermediates using the
-/// prescribed offsets.
+/// Write the different-spin \mathcal V^\alpha, \mathcal V^\beta and \mathcal{II}
+/// intermediates into the contiguous tensor slab using their assigned offsets.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `o`: Offsets into the storage.
-/// - `w`: Owned Wick's intermediates.
+/// - `o`: Different-spin offsets into the slab.
+/// - `w`: Owned different-spin intermediates for one reference pair.
 /// # Returns
-/// - `()`: Writes the diff-spin intermediates into the slab.
+/// - `()`: Writes the different-spin intermediates into the slab.
 pub fn write_diff_spin<T: NOCIScalar>(
     slab: &mut [T],
     o: &DiffSpinOffset,
@@ -232,15 +249,16 @@ pub fn write_diff_spin<T: NOCIScalar>(
             }
         }
     }
+    // The constructed and evaluator \mathcal{II} axis orders agree, so no permutation is required.
     for ((ma0, maj, mb0, mbj), blk) in &w.iiab {
         write4rcij(slab, o.iiab[*ma0][*maj][*mb0][*mbj], blk);
     }
 }
 
-/// Copy matrix into tensor slab provided it is contiguous.
+/// Copy a contiguous matrix into the tensor slab without changing its row-major ordering.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `off`: Offset for the start position.
+/// - `off`: Offset of the first matrix entry in units of `T`.
 /// - `a`: Matrix to copy.
 /// # Returns
 /// - `()`: Writes the matrix into the tensor slab.
@@ -253,13 +271,14 @@ pub fn write2<T: NOCIScalar>(
     slab[off..off + src.len()].copy_from_slice(src);
 }
 
-/// Copy transposed matrix into tensor slab provided it is contiguous.
+/// Store a matrix constructed in [r,z] order in transposed [z,r] order. The entries of a
+/// replacement column with fixed z are then contiguous and may be read as `slice[z * n + r]`.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `off`: Offset for the start position.
-/// - `a`: Matrix to copy.
+/// - `off`: Offset of the first stored matrix entry in units of `T`.
+/// - `a`: Matrix to transpose into the slab.
 /// # Returns
-/// - `()`: Writes the matrix into the tensor slab.
+/// - `()`: Writes the transposed matrix into the tensor slab.
 pub fn write2t<T: NOCIScalar>(
     slab: &mut [T],
     off: usize,
@@ -277,10 +296,11 @@ pub fn write2t<T: NOCIScalar>(
     }
 }
 
-/// Copy tensor in [r, c, i, j] form into tensor slab provided it is contiguous.
+/// Copy a rank-four tensor already constructed in [r,c,i,j] order into the slab without
+/// permuting its axes. This is the ordering used by the different-spin \mathcal{II} evaluator.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `off`: Offset for the start position.
+/// - `off`: Offset of the first tensor entry in units of `T`.
 /// - `a`: Tensor to copy.
 /// # Returns
 /// - `()`: Writes the tensor into the tensor slab.
@@ -293,13 +313,14 @@ fn write4rcij<T: NOCIScalar>(
     slab[off..off + src.len()].copy_from_slice(src);
 }
 
-/// Copy tensor in [i, j, r, c] form into tensor slab provided it is contiguous.
+/// Permute a rank-four tensor from constructed [r,c,i,j] order to stored [i,j,r,c] order.
+/// This places the fixed \mathcal J replacement pair before the varying minor entry.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
-/// - `off`: Offset for the start position.
-/// - `a`: Tensor to copy.
+/// - `off`: Offset of the first stored tensor entry in units of `T`.
+/// - `a`: Tensor to permute into the slab.
 /// # Returns
-/// - `()`: Writes the tensor into the tensor slab.
+/// - `()`: Writes the permuted tensor into the tensor slab.
 fn write4ijrc<T: NOCIScalar>(
     slab: &mut [T],
     off: usize,
@@ -343,7 +364,7 @@ pub(in crate::nonorthogonalwicks) fn idx(
     r * ncols + c
 }
 
-/// Convert 4D indices into a flat row-major index for an `n` x `n` x `n` x `n` tensor.
+/// Convert four tensor indices into the row-major flat index of an n \times n \times n \times n tensor.
 /// # Arguments:
 /// - `n`: Dimension of each tensor axis.
 /// - `a`, `b`, `c`, `d`: Tensor indices.

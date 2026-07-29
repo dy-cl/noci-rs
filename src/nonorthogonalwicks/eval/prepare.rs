@@ -8,15 +8,20 @@ use crate::noci::NOCIScalar;
 use crate::maths::build_d;
 use crate::time_call;
 
-/// Prepare shared same-spin scratch quantities used by overlap and Hamiltonian evaluations.
-/// Dispatches to the zero-overlap fast path when `w.m == 0` and otherwise to the full generic path.
+/// Prepare the contraction-determinant quantities shared by the same-spin overlap and Hamiltonian evaluators.
+/// For total excitation rank L = L_x + L_w, the contraction determinant has elements:
+/// (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(m_j)} for i \geq j,
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(m_j)} for i < j.
+/// `scratch.det0` stores \mathbf D_{\mathrm{ov}}(0,\ldots,0); when m > 0, `scratch.det1` also stores
+/// \mathbf D_{\mathrm{ov}}(1,\ldots,1). Mixed distributions are formed later by selecting each
+/// column j according to m_j \in \{0,1\}.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates.
-/// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
-/// - `g_ex`: Spin-resolved excitation array for |{}^\Gamma \Psi\rangle.
-/// - `scratch`: Scratch space for Wick's quantities.
+/// - `w`: Same-spin reference-pair Wick intermediates.
+/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
+/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `scratch`: Scratch storage receiving the determinant labels and endpoint contraction determinants.
 /// # Returns
-/// - `()`: Prepares the required same-spin scratch quantities in place.
+/// - `()`: Writes the required contraction-determinant quantities into `scratch`.
 #[inline(always)]
 pub fn prepare_same<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -25,6 +30,8 @@ pub fn prepare_same<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same, {
+        // With no zero-overlap orbital pairs, the constrained sum requires only
+        // \mathbf D_{\mathrm{ov}}(0,\ldots,0). Otherwise prepare both endpoint determinants.
         if w.m == 0 {
             prepare_same_m0(w, l_ex, g_ex, scratch)
         } else {
@@ -33,16 +40,16 @@ pub fn prepare_same<T: NOCIScalar>(
     })
 }
 
-/// Prepare shared same-spin scratch quantities for the zero-overlap case `m = 0`.
-/// Only the `det0` branch is required, so the second branch determinant is not built.
-/// For small excitation rank, dispatches further to specialized `l = 1` through `l = 6` kernels.
+/// Prepare \mathbf D_{\mathrm{ov}}(0,\ldots,0) when m = 0, so the reference pair contains
+/// no zero-overlap orbital pairs and every column assignment is m_j = 0. Fixed-rank kernels are
+/// used for L = 1,\ldots,6; arbitrary ranks use the general determinant builder.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
-/// - `g_ex`: Spin-resolved excitation array for |{}^\Gamma \Psi\rangle.
-/// - `scratch`: Scratch space for Wick's quantities.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and \mathbf D_{\mathrm{ov}}(0,\ldots,0).
 /// # Returns
-/// - `()`: Prepares the zero-overlap same-spin scratch quantities in place.
+/// - `()`: Writes the m_j = 0 contraction determinant into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -51,9 +58,12 @@ fn prepare_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
+        // The contraction-determinant dimension is L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
 
+        // For L = 0 the empty determinant has value one, so no determinant storage is required.
         if l > 0 {
+            // Allocate the determinant and auxiliary buffers required by the corresponding evaluators.
             match l {
                 1 => scratch.ensure_same_m0(1),
                 2 => scratch.ensure_same_m0(2),
@@ -64,8 +74,10 @@ fn prepare_same_m0<T: NOCIScalar>(
                 _ => scratch.ensure_same(l),
             }
 
+            // Order the labels as V_x followed by O_w for rows and O_x followed by V_w for columns.
             construct_determinant_indices(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
 
+            // Use direct fixed-rank construction where available.
             match l {
                 1 => prepare_same_m0_l1(w, scratch),
                 2 => prepare_same_m0_l2(w, scratch),
@@ -74,9 +86,12 @@ fn prepare_same_m0<T: NOCIScalar>(
                 5 => prepare_same_m0_l5(w, scratch),
                 6 => prepare_same_m0_l6(w, scratch),
                 _ => {
+                    // Select the m_j = 0 X and Y fundamental contractions.
                     let x0 = w.x(0);
                     let y0 = w.y(0);
 
+                    // Fill (\mathbf D_{\mathrm{ov}})_{ij} with X_{r_i c_j}^{(0)} for i \geq j
+                    // and Y_{r_i c_j}^{(0)} for i < j.
                     build_d(
                         scratch.det0.as_mut_slice(),
                         l,
@@ -91,18 +106,21 @@ fn prepare_same_m0<T: NOCIScalar>(
     })
 }
 
-/// Prepare the `l = 1`, `m = 0` same-spin contraction determinant directly.
+/// Prepare the fixed-rank L = 1 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared row and column labels and storage for the rank-1 contraction determinant.
 /// # Returns
-/// - `()`: Writes the one-by-one contraction determinant into `scratch.det0`.
+/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l1, {
+        // For L = 1, \mathbf D_{\mathrm{ov}}(0) = [X_{r_0c_0}^{(0)}].
         let x0 = w.x(0);
         let xstr = x0.strides();
         let xptr = x0.as_ptr();
@@ -110,24 +128,29 @@ fn prepare_same_m0_l1<T: NOCIScalar>(
         let c0 = scratch.cols[0] as isize;
         let det0 = scratch.det0.as_mut_slice();
 
+        // The prepared labels and rank-one buffer make the unchecked access valid.
         unsafe {
             det0[0] = *xptr.offset(r0 * xstr[0] + c0 * xstr[1]);
         }
     })
 }
 
-/// Prepare the `l = 2`, `m = 0` same-spin contraction determinant directly.
+/// Prepare the fixed-rank L = 2 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared row and column labels and storage for the rank-2 contraction determinant.
 /// # Returns
-/// - `()`: Writes the two-by-two contraction determinant into `scratch.det0`.
+/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l2, {
+        // Build \mathbf D_{\mathrm{ov}}(0,0) with X^{(0)} on and below the diagonal
+        // and Y^{(0)} above the diagonal.
         let x0 = w.x(0);
         let y0 = w.y(0);
         let xstr = x0.strides();
@@ -146,6 +169,8 @@ fn prepare_same_m0_l2<T: NOCIScalar>(
 
         let det0 = scratch.det0.as_mut_slice();
 
+        // \mathbf D_{\mathrm{ov}}(0,0) =
+        // \begin{pmatrix}X_{r_0c_0}^{(0)} & Y_{r_0c_1}^{(0)}\\X_{r_1c_0}^{(0)} & X_{r_1c_1}^{(0)}\end{pmatrix}.
         unsafe {
             det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
             det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
@@ -155,18 +180,22 @@ fn prepare_same_m0_l2<T: NOCIScalar>(
     })
 }
 
-/// Prepare the `l = 3`, `m = 0` same-spin contraction determinant directly.
+/// Prepare the fixed-rank L = 3 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared row and column labels and storage for the rank-3 contraction determinant.
 /// # Returns
-/// - `()`: Writes the three-by-three contraction determinant into `scratch.det0`.
+/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l3, {
+        // Build the rank-three \mathbf D_{\mathrm{ov}}(0,0,0) from the m_j = 0
+        // X and Y fundamental contractions.
         let x0 = w.x(0);
         let y0 = w.y(0);
         let xstr = x0.strides();
@@ -189,6 +218,9 @@ fn prepare_same_m0_l3<T: NOCIScalar>(
 
         let det0 = scratch.det0.as_mut_slice();
 
+        // Row i = 0 contains X_{r_0c_0}^{(0)}, Y_{r_0c_1}^{(0)}, Y_{r_0c_2}^{(0)};
+        // row i = 1 contains X_{r_1c_0}^{(0)}, X_{r_1c_1}^{(0)}, Y_{r_1c_2}^{(0)};
+        // row i = 2 contains X_{r_2c_0}^{(0)}, X_{r_2c_1}^{(0)}, X_{r_2c_2}^{(0)}.
         unsafe {
             det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
             det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
@@ -205,18 +237,22 @@ fn prepare_same_m0_l3<T: NOCIScalar>(
     })
 }
 
-/// Prepare the `l = 4`, `m = 0` same-spin contraction determinant directly.
+/// Prepare the fixed-rank L = 4 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared row and column labels and storage for the rank-4 contraction determinant.
 /// # Returns
-/// - `()`: Writes the four-by-four contraction determinant into `scratch.det0`.
+/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l4, {
+        // Build the rank-four \mathbf D_{\mathrm{ov}}(0,0,0,0) from the m_j = 0
+        // X and Y fundamental contractions.
         let x0 = w.x(0);
         let y0 = w.y(0);
         let xstr = x0.strides();
@@ -243,6 +279,8 @@ fn prepare_same_m0_l4<T: NOCIScalar>(
 
         let det0 = scratch.det0.as_mut_slice();
 
+        // Each row switches from X^{(0)} through the diagonal to Y^{(0)} above it:
+        // (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and Y_{r_i c_j}^{(0)} for i < j.
         unsafe {
             det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
             det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
@@ -267,17 +305,21 @@ fn prepare_same_m0_l4<T: NOCIScalar>(
     })
 }
 
-/// Prepare the `l = 5`, `m = 0` same-spin contraction determinant directly.
+/// Prepare the fixed-rank L = 5 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared row and column labels and storage for the rank-5 contraction determinant.
 /// # Returns
-/// - `()`: Writes the five-by-five contraction determinant into `scratch.det0`.
+/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l5<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) {
+    // Construct every element from the rule
+    // (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and Y_{r_i c_j}^{(0)} for i < j.
     const N: usize = 5;
     let x0 = w.x(0);
     let y0 = w.y(0);
@@ -289,6 +331,7 @@ fn prepare_same_m0_l5<T: NOCIScalar>(
     let cols = scratch.cols.as_slice();
     let det0 = scratch.det0.as_mut_slice();
 
+    // The fixed rank and prepared buffers guarantee that all unchecked row, column and determinant accesses are valid.
     unsafe {
         let mut i = 0usize;
         while i < N {
@@ -312,17 +355,21 @@ fn prepare_same_m0_l5<T: NOCIScalar>(
     }
 }
 
-/// Prepare the `l = 6`, `m = 0` same-spin contraction determinant directly.
+/// Prepare the fixed-rank L = 6 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
+/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates with `m = 0`.
-/// - `scratch`: Scratch space whose `rows`, `cols`, and `det0` buffers have already been prepared.
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared row and column labels and storage for the rank-6 contraction determinant.
 /// # Returns
-/// - `()`: Writes the six-by-six contraction determinant into `scratch.det0`.
+/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
 #[inline(always)]
 fn prepare_same_m0_l6<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) {
+    // Construct every element from the rule
+    // (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and Y_{r_i c_j}^{(0)} for i < j.
     const N: usize = 6;
     let x0 = w.x(0);
     let y0 = w.y(0);
@@ -334,6 +381,7 @@ fn prepare_same_m0_l6<T: NOCIScalar>(
     let cols = scratch.cols.as_slice();
     let det0 = scratch.det0.as_mut_slice();
 
+    // The fixed rank and prepared buffers guarantee that all unchecked row, column and determinant accesses are valid.
     unsafe {
         let mut i = 0usize;
         while i < N {
@@ -357,15 +405,17 @@ fn prepare_same_m0_l6<T: NOCIScalar>(
     }
 }
 
-/// Builds both determinant branches `det0` and `det1`, which are later mixed according to the
-/// allowed bitstrings of the nonorthogonal Wick expansion.
+/// Prepare the two endpoint contraction determinants required when m > 0:
+/// \mathbf D_{\mathrm{ov}}(0,\ldots,0) and \mathbf D_{\mathrm{ov}}(1,\ldots,1).
+/// The evaluators subsequently construct each mixed \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)
+/// by selecting column j from the endpoint determinant corresponding to m_j \in \{0,1\}.
 /// # Arguments:
-/// - `w`: Same-spin Wick's reference pair intermediates.
-/// - `l_ex`: Spin-resolved excitation array for |{}^\Lambda \Psi\rangle.
-/// - `g_ex`: Spin-resolved excitation array for |{}^\Gamma \Psi\rangle.
-/// - `scratch`: Scratch space for Wick's quantities.
+/// - `w`: Same-spin reference-pair Wick intermediates.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and both endpoint determinants.
 /// # Returns
-/// - `()`: Prepares the generic same-spin scratch quantities in place.
+/// - `()`: Writes the endpoint contraction determinants into `scratch.det0` and `scratch.det1`.
 pub fn prepare_same_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
@@ -373,11 +423,14 @@ pub fn prepare_same_gen<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
+        // The contraction-determinant dimension is L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);
 
+        // Use the same V_x \cup O_w row ordering and O_x \cup V_w column ordering for both endpoints.
         construct_determinant_indices(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
 
+        // Build \mathbf D_{\mathrm{ov}}(0,\ldots,0) from X^{(0)} and Y^{(0)}.
         let x0 = w.x(0);
         let y0 = w.y(0);
         build_d(
@@ -389,6 +442,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
             scratch.cols.as_slice(),
         );
 
+        // Build \mathbf D_{\mathrm{ov}}(1,\ldots,1) from X^{(1)} and Y^{(1)}.
+        // Mixed distributions are assembled later by selecting each column from one of these endpoints.
         let x1 = w.x(1);
         let y1 = w.y(1);
         build_d(
@@ -402,15 +457,18 @@ pub fn prepare_same_gen<T: NOCIScalar>(
     })
 }
 
-/// Construct the row and column indices used for a contraction determinant.
+/// Construct the row and column labels of the overlap contraction determinant.
+/// Each x-reference excitation pair contributes a particle row a \in V_x and a hole column i \in O_x.
+/// Each w-reference excitation pair then contributes a hole row j \in O_w and a particle column b \in V_w.
+/// The resulting row space is V_x \cup O_w and the column space is O_x \cup V_w.
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
+/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
+/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
+/// - `rows`: Output labels in V_x \cup O_w.
+/// - `cols`: Output labels in O_x \cup V_w.
 /// # Returns
-/// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
+/// - `()`: Writes the ordered contraction-determinant labels into `rows` and `cols`.
 #[inline(always)]
 fn construct_determinant_indices<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
@@ -422,8 +480,10 @@ fn construct_determinant_indices<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices,
         {
+            // The number of row/column pairs is L = L_x + L_w.
             let l = l_ex.holes.len() + g_ex.holes.len();
 
+            // Fixed-rank constructors retain the same x-reference-then-w-reference ordering.
             match l {
                 1 => construct_determinant_indices_l1(l_ex, g_ex, w, rows, cols),
                 2 => construct_determinant_indices_l2(l_ex, g_ex, w, rows, cols),
@@ -435,15 +495,18 @@ fn construct_determinant_indices<T: NOCIScalar>(
     )
 }
 
-/// Construct the row and column indices used for a rank-1 contraction determinant.
+/// Construct the row and column labels for a rank-1 contraction determinant.
+/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
+/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
+/// V_x \cup O_w and O_x \cup V_w respectively.
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
+/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
+/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
+/// - `rows`: Output labels in V_x \cup O_w.
+/// - `cols`: Output labels in O_x \cup V_w.
 /// # Returns
-/// - `()`: Writes the rank-1 contraction determinant indices into `rows` and `cols`.
+/// - `()`: Writes the ordered rank-1 labels into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
@@ -455,6 +518,7 @@ pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l1,
         {
+            // Exactly one excitation pair is present: either L_x = 1 or L_w = 1.
             let nl = l_ex.holes.len();
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
@@ -465,6 +529,7 @@ pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
+            // Compact row labels place V_x before O_w; compact column labels place O_x before V_w.
             unsafe {
                 if nl == 1 {
                     *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0) - nocc;
@@ -478,15 +543,18 @@ pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
     )
 }
 
-/// Construct the row and column indices used for a rank-2 contraction determinant.
+/// Construct the row and column labels for a rank-2 contraction determinant.
+/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
+/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
+/// V_x \cup O_w and O_x \cup V_w respectively.
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
+/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
+/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
+/// - `rows`: Output labels in V_x \cup O_w.
+/// - `cols`: Output labels in O_x \cup V_w.
 /// # Returns
-/// - `()`: Writes the rank-2 contraction determinant indices into `rows` and `cols`.
+/// - `()`: Writes the ordered rank-2 labels into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices_l2<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
@@ -509,6 +577,8 @@ pub(super) fn construct_determinant_indices_l2<T: NOCIScalar>(
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
+            // Write (a_k,i_k) for all x-reference pairs, followed by (j_k,b_k) for all w-reference pairs.
+            // The fixed total rank and ensured buffers make the unchecked accesses valid.
             unsafe {
                 for k in 0..nl {
                     *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
@@ -524,17 +594,18 @@ pub(super) fn construct_determinant_indices_l2<T: NOCIScalar>(
     )
 }
 
-/// Construct the row and column indices used for a rank-3 contraction determinant.
-/// Preserves the exact ordering used by `construct_determinant_indices`, with all bra (`Lambda`)
-/// indices followed by all ket (`Gamma`) indices.
+/// Construct the row and column labels for a rank-3 contraction determinant.
+/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
+/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
+/// V_x \cup O_w and O_x \cup V_w respectively.
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
+/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
+/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
+/// - `rows`: Output labels in V_x \cup O_w.
+/// - `cols`: Output labels in O_x \cup V_w.
 /// # Returns
-/// - `()`: Writes the rank-3 contraction determinant indices into `rows` and `cols`.
+/// - `()`: Writes the ordered rank-3 labels into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
@@ -557,6 +628,8 @@ pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
+            // Write (a_k,i_k) for all x-reference pairs, followed by (j_k,b_k) for all w-reference pairs.
+            // The fixed total rank and ensured buffers make the unchecked accesses valid.
             unsafe {
                 for k in 0..nl {
                     *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
@@ -572,17 +645,18 @@ pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
     )
 }
 
-/// Construct the row and column indices used for a rank-4 contraction determinant.
-/// Preserves the exact ordering used by `construct_determinant_indices`, with all bra (`Lambda`)
-/// indices followed by all ket (`Gamma`) indices.
+/// Construct the row and column labels for a rank-4 contraction determinant.
+/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
+/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
+/// V_x \cup O_w and O_x \cup V_w respectively.
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
+/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
+/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
+/// - `rows`: Output labels in V_x \cup O_w.
+/// - `cols`: Output labels in O_x \cup V_w.
 /// # Returns
-/// - `()`: Writes the rank-4 contraction determinant indices into `rows` and `cols`.
+/// - `()`: Writes the ordered rank-4 labels into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices_l4<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
@@ -605,6 +679,8 @@ pub(super) fn construct_determinant_indices_l4<T: NOCIScalar>(
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
+            // Write (a_k,i_k) for all x-reference pairs, followed by (j_k,b_k) for all w-reference pairs.
+            // The fixed total rank and ensured buffers make the unchecked accesses valid.
             unsafe {
                 for k in 0..nl {
                     *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
@@ -620,17 +696,19 @@ pub(super) fn construct_determinant_indices_l4<T: NOCIScalar>(
     )
 }
 
-/// Construct the row and column indices used for a contraction determinant.
-/// Indices are written in the excitation row space V_\Lambda \cup O_\Gamma and
-/// excitation column space O_\Lambda \cup V_\Gamma.
+/// Construct the row and column labels for an arbitrary-rank contraction determinant.
+/// For L_x bra-reference and L_w ket-reference excitation pairs:
+/// (r_k,c_k) = (a_k,i_k) for 0 \leq k < L_x,
+/// (r_{L_x+k},c_{L_x+k}) = (j_k,b_k) for 0 \leq k < L_w.
+/// Hence the row space is V_x \cup O_w and the column space is O_x \cup V_w.
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra (`Lambda`) determinant.
-/// - `g_ex`: Excitation defining the ket (`Gamma`) determinant.
-/// - `w`: Same-spin Wick's intermediates containing compact orbital indexing data.
-/// - `rows`: Output row indices.
-/// - `cols`: Output column indices.
+/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
+/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
+/// - `rows`: Output labels in V_x \cup O_w.
+/// - `cols`: Output labels in O_x \cup V_w.
 /// # Returns
-/// - `()`: Writes the contraction determinant indices into `rows` and `cols`.
+/// - `()`: Writes the ordered contraction-determinant labels into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices_gen<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
@@ -642,6 +720,7 @@ pub(super) fn construct_determinant_indices_gen<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen,
         {
+            // L_x and L_w determine the two ordered blocks of the determinant labels.
             let nl = l_ex.holes.len();
             let ng = g_ex.holes.len();
             let need = nl + ng;
@@ -654,11 +733,13 @@ pub(super) fn construct_determinant_indices_gen<T: NOCIScalar>(
             let rows = rows.as_mut_slice();
             let cols = cols.as_mut_slice();
 
+            // Map the x-reference pairs to the V_x row block and O_x column block.
             for k in 0..nl {
                 rows[k] = l_ex.parts[k] - nocc;
                 cols[k] = l_ex.holes[k];
             }
 
+            // Append the w-reference pairs in the O_w row block and V_w column block.
             for k in 0..ng {
                 let i = nl + k;
                 rows[i] = nvirt + g_ex.holes[k];

@@ -10,60 +10,67 @@ use super::view::WicksView;
 use crate::mpiutils::Sharedffi;
 use crate::noci::NOCIScalar;
 
+/// Backing allocation used by the contiguous slab of precomputed nonorthogonal Wick intermediates.
 #[allow(dead_code)]
 pub(crate) enum WicksBacking<T: NOCIScalar> {
+    /// Node-shared RMA allocation.
     Shared(WicksRma<T>),
+    /// Read-only file-backed memory map.
     Mmap(Mmap),
+    /// Writable file-backed memory map.
     MmapCow(MmapMut),
 }
 
-/// Storage in which we split the Wicks data into the shared remote memory access (RMA) and a view
-/// for reading said data.
+/// Owner of the backing allocation and its read-only address, offset and metadata view.
+/// Keeping both objects together guarantees that the raw slab pointer in `WicksView` remains
+/// valid for the lifetime of this storage object.
 pub struct WicksShared<T: NOCIScalar> {
-    /// Backing storage for the contiguous Wick's tensor slab.
+    /// Backing allocation for the contiguous Wick tensor slab.
     backing: WicksBacking<T>,
-    /// View of the tensor slab.
+    /// View over the tensor slab and per-reference-pair metadata.
     view: WicksView<T>,
 }
 
 impl<T: NOCIScalar> WicksShared<T> {
-    /// Get a shared reference to the WicksView object.
+    /// Borrow the read-only view over the stored Wick intermediates.
     /// # Arguments:
-    /// - `self`: View and RMA for Wick's intermediates.
+    /// - `self`: Wick storage and associated view.
     /// # Returns
-    /// - `&WicksView<T>`: Shared view of the Wick's intermediates.
+    /// - `&WicksView<T>`: Shared view over the tensor slab.
     pub fn view(&self) -> &WicksView<T> {
         &self.view
     }
 
-    /// Get a mutable reference to the WicksView object.
+    /// Mutably borrow the view metadata without changing the ownership of the backing allocation.
     /// # Arguments:
-    /// - `self`: View and RMA for Wick's intermediates.
+    /// - `self`: Wick storage and associated view.
     /// # Returns
-    /// - `&mut WicksView<T>`: Mutable view of the Wick's intermediates.
+    /// - `&mut WicksView<T>`: Mutable borrow of the slab view and metadata.
     pub fn view_mut(&mut self) -> &mut WicksView<T> {
         &mut self.view
     }
 
-    /// Get a mutable slice over the full contiguous shared tensor storage.
-    /// The returned slice may be used to overwrite stored matrices or tensors in place.
+    /// Return a mutable slice over the full contiguous tensor slab. This is used when initially
+    /// writing intermediates or when overwriting generalised-Fock intermediates in place.
     /// # Arguments:
-    /// - `self`: View and RMA for Wick's intermediates.
+    /// - `self`: Writable Wick storage and associated view.
     /// # Returns
-    /// - `&mut [T]`: Mutable slice over the full shared tensor slab.
+    /// - `&mut [T]`: Mutable slice over the full tensor slab.
+    /// # Panics
+    /// - Panics when the backing allocation is a read-only memory map.
     pub fn slab_mut(&mut self) -> &mut [T] {
         let ptr = self.base_mut_ptr();
         let len = self.view.slab_len;
         unsafe { std::slice::from_raw_parts_mut(ptr, len) }
     }
 
-    /// Return a mutable pointer to the start of the contiguous tensor storage.
+    /// Return a mutable pointer to the first entry of the contiguous tensor slab.
     /// # Arguments:
-    /// - `self`: View and backing storage for Wick's intermediates.
+    /// - `self`: Writable Wick storage and associated view.
     /// # Returns
-    /// - `*mut T`: Mutable pointer to the start of the tensor slab.
+    /// - `*mut T`: Mutable pointer to the first slab entry.
     /// # Panics
-    /// - Panics if the backing storage is read-only.
+    /// - Panics when the backing allocation is a read-only memory map.
     fn base_mut_ptr(&mut self) -> *mut T {
         match &mut self.backing {
             WicksBacking::Shared(rma) => rma.base_ptr as *mut T,
@@ -72,11 +79,12 @@ impl<T: NOCIScalar> WicksShared<T> {
         }
     }
 
-    /// Flush a writable file-backed Wick's slab to disk if present.
+    /// Flush a writable file-backed tensor slab to disk. Shared-memory and read-only mappings
+    /// require no explicit flush through this interface.
     /// # Arguments:
-    /// - `self`: Wick's storage and associated view.
+    /// - `self`: Wick storage and associated view.
     /// # Returns
-    /// - `std::io::Result<()>`: Ok if no flush is required or if flushing succeeds.
+    /// - `std::io::Result<()>`: Success when no flush is required or the writable map is flushed.
     pub(crate) fn flush_mmap(&mut self) -> std::io::Result<()> {
         match &mut self.backing {
             WicksBacking::MmapCow(map) => map.flush(),
@@ -84,12 +92,12 @@ impl<T: NOCIScalar> WicksShared<T> {
         }
     }
 
-    /// Construct shared-memory-backed Wick's storage.
+    /// Construct storage backed by a node-shared RMA allocation.
     /// # Arguments:
-    /// - `rma`: Shared-memory backing region.
-    /// - `view`: View over the contiguous Wick's slab.
+    /// - `rma`: Shared-memory backing allocation.
+    /// - `view`: View over the contiguous Wick tensor slab.
     /// # Returns
-    /// - `WicksShared<T>`: Wick's storage and associated view.
+    /// - `WicksShared<T>`: Shared-memory-backed Wick storage.
     pub(crate) fn from_shared(
         rma: WicksRma<T>,
         view: WicksView<T>,
@@ -100,12 +108,12 @@ impl<T: NOCIScalar> WicksShared<T> {
         }
     }
 
-    /// Construct file-backed read-only Wick's storage.
+    /// Construct storage backed by a read-only file mapping.
     /// # Arguments:
-    /// - `mmap`: Read-only memory map of the Wick's slab.
-    /// - `view`: View over the contiguous Wick's slab.
+    /// - `mmap`: Read-only memory map containing the Wick tensor slab.
+    /// - `view`: View over the mapped tensor slab.
     /// # Returns
-    /// - `WicksShared<T>`: Wick's storage and associated view.
+    /// - `WicksShared<T>`: Read-only file-backed Wick storage.
     pub(crate) fn from_mmap(
         mmap: Mmap,
         view: WicksView<T>,
@@ -116,12 +124,12 @@ impl<T: NOCIScalar> WicksShared<T> {
         }
     }
 
-    /// Construct file-backed writable Wick's storage.
+    /// Construct storage backed by a writable file mapping.
     /// # Arguments:
-    /// - `mmap`: Writable memory map of the Wick's slab.
-    /// - `view`: View over the contiguous Wick's slab.
+    /// - `mmap`: Writable memory map containing the Wick tensor slab.
+    /// - `view`: View over the mapped tensor slab.
     /// # Returns
-    /// - `WicksShared<T>`: Wick's storage and associated view.
+    /// - `WicksShared<T>`: Writable file-backed Wick storage.
     pub(crate) fn from_mmap_cow(
         mmap: MmapMut,
         view: WicksView<T>,
@@ -133,18 +141,19 @@ impl<T: NOCIScalar> WicksShared<T> {
     }
 }
 
-/// Storage for the RMA data of the Wick's objects.
+/// Shared-memory backing for the contiguous Wick tensor slab.
 pub(crate) struct WicksRma<T: NOCIScalar> {
-    /// Shared-memory allocation handle.
+    /// Allocation handle retained to keep the node-shared memory region alive.
     pub(crate) _shared: Sharedffi,
-    /// Raw pointer to the beginning of the shared tensor slab.
+    /// Raw byte pointer to the first entry of the shared tensor slab.
     pub(crate) base_ptr: *mut u8,
     /// Total size of the shared allocation in bytes.
     pub(crate) _nbytes: usize,
-    /// Marker for the scalar type stored in the slab.
+    /// Marker for the scalar type represented by the raw allocation.
     pub(crate) _marker: std::marker::PhantomData<T>,
 }
 
+/// Serialised metadata required to reconstruct a file-backed `WicksView` over a raw tensor slab.
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "T: NOCIScalar")]
 pub(crate) struct WicksDiskMeta<T: NOCIScalar> {
@@ -152,23 +161,23 @@ pub(crate) struct WicksDiskMeta<T: NOCIScalar> {
     pub(crate) version: u32,
     /// Number of reference determinants.
     pub(crate) nref: usize,
-    /// Total slab length in units of T.
+    /// Total slab length in units of `T`.
     pub(crate) slab_len: usize,
-    /// Per-reference-pair offset tables into the contiguous slab.
+    /// Per-reference-pair offset tables into the contiguous tensor slab.
     pub(crate) off: Vec<PairOffset>,
-    /// Per-reference-pair scalar metadata stored outside the slab.
+    /// Per-reference-pair scalar metadata stored outside the tensor slab.
     pub(crate) meta: Vec<PairMeta<T>>,
 }
 
-/// Create a file-backed mutable memory map for the contiguous Wick's tensor slab and
-/// write the associated metadata to disk.
+/// Create a writable file-backed memory map for the contiguous Wick tensor slab. The associated
+/// scalar metadata is initialised in memory and can be serialised separately once construction is complete.
 /// # Arguments:
 /// - `slab_path`: Path to the raw file storing the contiguous tensor slab.
 /// - `nref`: Number of reference determinants.
-/// - `off`: Per-pair offset table into the contiguous tensor slab.
+/// - `off`: Per-reference-pair offset tables into the tensor slab.
 /// - `slab_len`: Total slab length in units of `T`.
 /// # Returns
-/// - `std::io::Result<WicksShared<T>>`: File-backed Wick's storage and view over the mapped slab.
+/// - `std::io::Result<WicksShared<T>>`: Writable file-backed Wick storage and slab view.
 pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
     slab_path: &std::path::Path,
     nref: usize,
@@ -201,13 +210,12 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
     Ok(WicksShared::from_mmap_cow(mmap, view))
 }
 
-/// Load a file-backed read-only memory map for a previously written Wick's tensor slab
-/// together with its serialised metadata.
+/// Load a read-only file-backed tensor slab together with its serialised offsets and scalar metadata.
 /// # Arguments:
 /// - `slab_path`: Path to the raw file storing the contiguous tensor slab.
-/// - `meta_path`: Path to the file storing serialised Wick's metadata.
+/// - `meta_path`: Path to the serialised `WicksDiskMeta` object.
 /// # Returns
-/// - `std::io::Result<WicksShared<T>>`: File-backed Wick's storage and view over the mapped slab.
+/// - `std::io::Result<WicksShared<T>>`: Read-only file-backed Wick storage and slab view.
 pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
     slab_path: &std::path::Path,
     meta_path: &std::path::Path,

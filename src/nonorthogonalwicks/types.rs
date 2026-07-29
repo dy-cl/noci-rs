@@ -3,35 +3,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::noci::NOCIScalar;
 
-/// Zero-overlap counts used to assign pair-adaptive rank-four tensor offsets.
+/// Numbers of zero-overlap occupied-orbital pairs used to allocate only the pair-adaptive
+/// rank-four intermediates that can contribute for an ordered reference pair (x,w).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PairZeroCounts {
-    /// Number of alpha zero-overlap orbital pairs.
+    /// Number m_\alpha of alpha-spin zero-overlap occupied-orbital pairs.
     pub(crate) ma: usize,
-    /// Number of beta zero-overlap orbital pairs.
+    /// Number m_\beta of beta-spin zero-overlap occupied-orbital pairs.
     pub(crate) mb: usize,
 }
 
-/// Storage for same-spin metadata and lightweight scalars that we can store outside the shared
-/// memory region.
+/// Metadata and scalar same-spin intermediates stored outside the shared tensor slab for one
+/// spin sector of an ordered reference pair (x,w).
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub(crate) struct SameSpinMeta<T: NOCIScalar> {
-    /// Product of the non-zero singular values for this same-spin block.
+    /// Product of the non-zero occupied-orbital singular values,
+    /// \prod_{\{i\mid{}^{xw}\tilde S_{\sigma i}\neq0\}}{}^{xw}\tilde S_{\sigma i}.
     pub(crate) tilde_s_prod: f64,
-    /// Overall phase associated with this same-spin block.
+    /// Orbital-pairing phase \phi_\sigma^{xw}; together with `tilde_s_prod` this gives the
+    /// spin-sector reduced overlap {}^{xw}\tilde S_\sigma.
     pub(crate) phase: T,
-    /// Number of zero-overlap orbital pairs in the biorthogonal basis.
+    /// Number m_\sigma of zero-overlap occupied-orbital pairs in this spin sector.
     pub(crate) m: usize,
-    /// Number of molecular orbitals for this same-spin block.
+    /// Number of molecular orbitals in one reference orbital set.
     pub(crate) nmo: usize,
-    /// Number of occupied orbitals for this same-spin block.
+    /// Number of occupied orbitals in this spin sector.
     pub(crate) nocc: usize,
-    /// Zeroth-order Fock one-body scalar contributions for the two branch choices.
+    /// Scalar one-body intermediates {}^xF_0^{(m_1)} constructed from the current
+    /// generalised-Fock operator.
     pub(crate) f0f: [T; 2],
-    /// Zeroth-order Hamiltonian one-body scalar contributions for the two branch choices.
+    /// Scalar one-body intermediates {}^xF_0^{(m_1)} constructed from the one-electron
+    /// Hamiltonian.
     pub(crate) f0h: [T; 2],
-    /// Zeroth-order two-body scalar contributions for the allowed branch combinations.
+    /// Scalar same-spin two-body intermediates {}^xV_0^{(m_1,m_2)}, stored by
+    /// m_1 + m_2. The middle entry contains the combined (0,1) and (1,0) contribution.
     pub(crate) v0: [T; 3],
 }
 
@@ -50,16 +56,18 @@ impl<T: NOCIScalar> Default for SameSpinMeta<T> {
     }
 }
 
-/// Storage for diff-spin metadata and lightweight scalars that we can store outside the shared
-/// memory region.
+/// Metadata and scalar different-spin intermediates stored outside the shared tensor slab for
+/// an ordered reference pair (x,w).
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub(crate) struct DiffSpinMeta<T: NOCIScalar> {
-    /// Number of molecular orbitals for this different-spin block.
+    /// Number of molecular orbitals in one reference orbital set.
     pub(crate) nmo: usize,
-    /// Zeroth-order mixed-spin Vab scalar contributions for the branch combinations.
+    /// Scalar different-spin intermediates
+    /// {}^xV_{\alpha\beta,0}^{(m_{\alpha0},m_{\beta0})}.
     pub(crate) vab0: [[T; 2]; 2],
-    /// Zeroth-order mixed-spin Vba scalar contributions for the branch combinations.
+    /// Scalar different-spin intermediates
+    /// {}^xV_{\beta\alpha,0}^{(m_{\beta0},m_{\alpha0})}.
     pub(crate) vba0: [[T; 2]; 2],
 }
 
@@ -73,39 +81,49 @@ impl<T: NOCIScalar> Default for DiffSpinMeta<T> {
     }
 }
 
-/// Storage for same-spin per reference-pair offset tables into the shared contiguous tensor storage.
+/// Offsets for the same-spin intermediates belonging to one spin sector of an ordered reference
+/// pair (x,w) in the shared contiguous tensor slab.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
 pub(crate) struct SameSpinOffset {
-    /// Offsets to the X[mi] contraction matrices.
+    /// Offsets to the X^{(m_i)} fundamental-contraction matrices.
     pub(in crate::nonorthogonalwicks) x: [usize; 2],
-    /// Offsets to the Y[mi] contraction matrices.
+    /// Offsets to the Y^{(m_i)} fundamental-contraction matrices.
     pub(in crate::nonorthogonalwicks) y: [usize; 2],
-    /// Offsets to the basis-space X[mi] matrices used for external RDM indices.
+    /// Offsets to X^{(m_i)} represented in the external RDM basis.
     pub(in crate::nonorthogonalwicks) xrdm: [usize; 2],
-    /// Offsets to the basis-space Y[mi] matrices used for external RDM indices.
+    /// Offsets to Y^{(m_i)} represented in the external RDM basis.
     pub(in crate::nonorthogonalwicks) yrdm: [usize; 2],
-    /// Offsets to the transposed Hamiltonian one-body F[mi][mj] intermediates.
+    /// Offsets to the transposed one-column intermediates \mathcal F^{(m_i,m_j)}
+    /// constructed from the one-electron Hamiltonian.
     pub(in crate::nonorthogonalwicks) fh: [[usize; 2]; 2],
-    /// Offsets to the transposed Fock one-body F[mi][mj] intermediates.
+    /// Offsets to the transposed one-column intermediates \mathcal F^{(m_i,m_j)}
+    /// constructed from the current generalised-Fock operator.
     pub(crate) ff: [[usize; 2]; 2],
-    /// Offsets to the transposed same-spin V[mi][mj][mk] intermediates.
+    /// Offsets to the transposed same-spin one-column intermediates
+    /// \mathcal V^{(m_1,m_2,m_3)}, stored as `v[m_1][m_3][m_2]`.
     pub(in crate::nonorthogonalwicks) v: [[[usize; 2]; 2]; 2],
-    /// Offsets to the compressed same-spin J tensors.
+    /// Offsets to the ten symmetry-unique same-spin
+    /// \mathcal J^{(m_1,m_2,m_3,m_4)} tensors stored in evaluator axis order.
     pub(in crate::nonorthogonalwicks) j: [usize; 10],
 }
 
-/// Storage for diff-spin per reference-pair offset tables into the shared contiguous tensor storage.
+/// Offsets for the different-spin intermediates of an ordered reference pair (x,w) in the
+/// shared contiguous tensor slab.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
 pub(crate) struct DiffSpinOffset {
-    /// Offsets to the transposed Vab[ma0][mb0][mak] intermediates.
+    /// Offsets to the transposed alpha-spin one-column intermediates
+    /// \mathcal V^\alpha{}^{(m_{\alpha0},m_{\beta0},m_{\alpha z})}.
     pub(in crate::nonorthogonalwicks) vab: [[[usize; 2]; 2]; 2],
-    /// Offsets to the transposed Vba[mb0][ma0][mbk] intermediates.
+    /// Offsets to the transposed beta-spin one-column intermediates
+    /// \mathcal V^\beta{}^{(m_{\beta0},m_{\alpha0},m_{\beta y})}.
     pub(in crate::nonorthogonalwicks) vba: [[[usize; 2]; 2]; 2],
-    /// Offsets to the IIab[ma0][maj][mb0][mbj] tensors.
+    /// Offsets to the different-spin two-column intermediates
+    /// \mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})}.
     pub(in crate::nonorthogonalwicks) iiab: [[[[usize; 2]; 2]; 2]; 2],
 }
 
-/// Storage for all per reference-pair pair offset tables.
+/// Offset tables for the alpha-alpha, beta-beta and alpha-beta intermediates of one ordered
+/// reference pair (x,w).
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub(crate) struct PairOffset {
     /// Same-spin alpha-alpha offset table.
@@ -116,7 +134,8 @@ pub(crate) struct PairOffset {
     pub(crate) ab: DiffSpinOffset,
 }
 
-/// Storage for all pair metadata.
+/// Scalar metadata for the alpha-alpha, beta-beta and alpha-beta intermediates of one ordered
+/// reference pair (x,w).
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub(crate) struct PairMeta<T: NOCIScalar> {

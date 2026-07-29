@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 
 use crate::noci::NOCIScalar;
 
-/// Reusable index storage with a logical length independent of allocation size.
+/// Reusable index storage with a logical length independent of the retained allocation.
 #[derive(Default)]
 pub struct IndexVec {
     /// Retained backing storage for the indices.
@@ -13,32 +13,33 @@ pub struct IndexVec {
 }
 
 impl IndexVec {
-    /// Get the logical contents of the index storage as an immutable slice.
+    /// Return the active indices as an immutable slice.
     /// # Arguments:
-    /// - `self`: Index storage.
+    /// - `self`: Reusable index storage.
     /// # Returns
-    /// - `&[usize]`: Immutable logical index slice.
+    /// - `&[usize]`: Immutable slice containing the active indices.
     #[inline(always)]
     pub fn as_slice(&self) -> &[usize] {
         &self.data[..self.len]
     }
 
-    /// Get the logical contents of the index storage as a mutable slice.
+    /// Return the active indices as a mutable slice.
     /// # Arguments:
-    /// - `self`: Index storage.
+    /// - `self`: Reusable index storage.
     /// # Returns
-    /// - `&mut [usize]`: Mutable logical index slice.
+    /// - `&mut [usize]`: Mutable slice containing the active indices.
     #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [usize] {
         &mut self.data[..self.len]
     }
 
-    /// Ensure the storage can hold at least `len` indices and set the logical length.
+    /// Ensure that the backing allocation can hold `len` indices and set the logical length.
+    /// Existing allocation is retained when it is already large enough.
     /// # Arguments:
-    /// - `self`: Index storage to resize.
+    /// - `self`: Reusable index storage to resize.
     /// - `len`: Required logical length.
     /// # Returns
-    /// - `()`: Grows storage if required and updates the logical length.
+    /// - `()`: Updates the active length and grows the backing storage when required.
     #[inline(always)]
     pub fn ensure(
         &mut self,
@@ -59,7 +60,7 @@ impl Deref for IndexVec {
 
     /// Return the active indices as an immutable slice.
     /// # Returns
-    /// - `&[usize]`: Active indices.
+    /// - `&[usize]`: Immutable slice containing the active indices.
     #[inline(always)]
     fn deref(&self) -> &Self::Target {
         self.as_slice()
@@ -69,23 +70,23 @@ impl Deref for IndexVec {
 impl DerefMut for IndexVec {
     /// Return the active indices as a mutable slice.
     /// # Returns
-    /// - `&mut [usize]`: Active indices.
+    /// - `&mut [usize]`: Mutable slice containing the active indices.
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
 
-/// Reusable one-dimensional storage with a logical length independent of allocation size.
+/// Reusable one-dimensional work storage with a logical length independent of the retained allocation.
 pub struct Vec1<T> {
-    /// Retained backing storage for the values.
+    /// Retained backing storage for the work values.
     data: Vec<T>,
     /// Number of values currently in use.
     len: usize,
 }
 
 impl<T> Default for Vec1<T> {
-    /// Construct empty reusable one-dimensional storage.
+    /// Construct empty reusable one-dimensional work storage.
     /// # Returns
     /// - `Self`: Empty storage with zero logical length.
     fn default() -> Self {
@@ -97,11 +98,11 @@ impl<T> Default for Vec1<T> {
 }
 
 impl<T> Vec1<T> {
-    /// Get the contents of the scratch vector as a mutable slice.
+    /// Return the active work values as a mutable slice.
     /// # Arguments:
-    /// - `self`: Scratch vector.
+    /// - `self`: Reusable work vector.
     /// # Returns
-    /// - `&mut [T]`: Mutable slice.
+    /// - `&mut [T]`: Mutable slice containing the active values.
     #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data[..self.len]
@@ -109,12 +110,13 @@ impl<T> Vec1<T> {
 }
 
 impl<T: Clone + From<f64>> Vec1<T> {
-    /// Ensure the storage can hold at least `len` elements.
+    /// Ensure that the backing allocation can hold `len` values and set the logical length.
+    /// Newly allocated entries are initialised to zero.
     /// # Arguments:
-    /// - `self`: Scratch vector to resize.
+    /// - `self`: Reusable work vector to resize.
     /// - `len`: Required logical length.
     /// # Returns
-    /// - `()`: Grows storage if required and updates length.
+    /// - `()`: Updates the active length and grows the backing storage when required.
     #[inline(always)]
     pub fn ensure(
         &mut self,
@@ -130,13 +132,20 @@ impl<T: Clone + From<f64>> Vec1<T> {
     }
 }
 
+/// Reusable row-major matrix work storage with a logical shape independent of the retained allocation.
 pub struct Vec2<T> {
+    /// Retained backing storage for the matrix entries.
     data: Vec<T>,
+    /// Logical number of rows.
     nrows: usize,
+    /// Logical number of columns.
     ncols: usize,
 }
 
 impl<T> Default for Vec2<T> {
+    /// Construct empty reusable matrix work storage.
+    /// # Returns
+    /// - `Self`: Empty storage with shape 0 \times 0.
     fn default() -> Self {
         Self {
             data: Vec::new(),
@@ -147,21 +156,21 @@ impl<T> Default for Vec2<T> {
 }
 
 impl<T> Vec2<T> {
-    /// Get the contents of the scratch matrix as an immutable slice.
+    /// Return the active row-major matrix entries as an immutable slice.
     /// # Arguments:
-    /// - `self`: Scratch matrix.
+    /// - `self`: Reusable matrix work storage.
     /// # Returns
-    /// - `&[T]`: Immutable slice.
+    /// - `&[T]`: Immutable slice containing `nrows * ncols` active entries.
     #[inline(always)]
     pub fn as_slice(&self) -> &[T] {
         &self.data[..self.nrows * self.ncols]
     }
 
-    /// Get the contents of the scratch matrix as a mutable slice.
+    /// Return the active row-major matrix entries as a mutable slice.
     /// # Arguments:
-    /// - `self`: Scratch matrix.
+    /// - `self`: Reusable matrix work storage.
     /// # Returns
-    /// - `&mut [T]`: Mutable slice.
+    /// - `&mut [T]`: Mutable slice containing `nrows * ncols` active entries.
     #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         let len = self.nrows * self.ncols;
@@ -170,13 +179,14 @@ impl<T> Vec2<T> {
 }
 
 impl<T: Clone + From<f64>> Vec2<T> {
-    /// Ensure the storage can hold at least `nrows * ncols` elements and set the shape.
+    /// Ensure that the backing allocation can hold an `nrows` by `ncols` matrix and set the
+    /// logical shape. Newly allocated entries are initialised to zero.
     /// # Arguments:
-    /// - `self`: Scratch matrix to resize.
+    /// - `self`: Reusable matrix work storage to resize.
     /// - `nrows`: Required number of rows.
     /// - `ncols`: Required number of columns.
     /// # Returns
-    /// - `()`: Grows storage if required and updates the shape.
+    /// - `()`: Updates the logical shape and grows the backing storage when required.
     #[inline(always)]
     pub fn ensure(
         &mut self,
@@ -195,17 +205,20 @@ impl<T: Clone + From<f64>> Vec2<T> {
     }
 }
 
+/// Independent reusable workspaces for the alpha-alpha, beta-beta and different-spin evaluators.
 pub struct WickScratchSpin<T: NOCIScalar> {
+    /// Same-spin alpha-alpha evaluator workspace.
     pub aa: WickScratch<T>,
+    /// Same-spin beta-beta evaluator workspace.
     pub bb: WickScratch<T>,
+    /// Different-spin alpha-beta evaluator workspace.
     pub diff: WickScratch<T>,
 }
 
 impl<T: NOCIScalar> WickScratchSpin<T> {
-    /// Construct empty split scratch storage for Wick's quantities.
-    /// # Arguments:
+    /// Construct empty split Wick work storage.
     /// # Returns
-    /// - `WickScratchSpin<T>`: Default-initialised split scratch storage.
+    /// - `WickScratchSpin<T>`: Default-initialised spin-resolved workspaces.
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -219,14 +232,14 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
         }
     }
 
-    /// Pre-allocate split Wick scratch buffers to the largest sizes needed for
-    /// the current calculation in order to reduce repeated allocations.
+    /// Preallocate the spin-resolved workspaces to the largest contraction-determinant
+    /// dimensions required by the current calculation.
     /// # Arguments:
-    /// - `maxsame`: Maximum total excitation rank required for same-spin terms.
-    /// - `maxla`: Maximum total alpha-spin excitation rank required for different-spin terms.
-    /// - `maxlb`: Maximum total beta-spin excitation rank required for different-spin terms.
+    /// - `maxsame`: Maximum same-spin contraction-determinant dimension L.
+    /// - `maxla`: Maximum alpha-spin dimension L_\alpha for different-spin terms.
+    /// - `maxlb`: Maximum beta-spin dimension L_\beta for different-spin terms.
     /// # Returns
-    /// - `WickScratchSpin<T>`: Split scratch storage with the requested capacities reserved.
+    /// - `WickScratchSpin<T>`: Split work storage with the requested capacities retained.
     #[inline]
     pub fn with_sizes(
         maxsame: usize,
@@ -241,59 +254,99 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
     }
 }
 
+/// Reusable determinant, cofactor and numerical-factorisation storage used while evaluating
+/// nonorthogonal Wick matrix elements. The same object can be resized and reused across
+/// determinant pairs and excitation ranks without repeated allocation.
 pub struct WickScratch<T: NOCIScalar> {
+    /// Compact row indices in V_x \cup O_w, ordered as the bra excitation particles
+    /// followed by the ket excitation holes.
     pub rows: IndexVec,
+    /// Compact column indices in O_x \cup V_w, ordered as the bra excitation holes
+    /// followed by the ket excitation particles.
     pub cols: IndexVec,
+    /// Same-spin contraction-determinant dimension L for which the full workspace is prepared.
     same_rank: Option<usize>,
+    /// Different-spin dimensions (L_\alpha,L_\beta) for which the workspace is prepared.
     diff_rank: Option<(usize, usize)>,
 
+    /// Endpoint contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
     pub det0: Vec2<T>,
+    /// Endpoint contraction determinant \mathbf D_{\mathrm{ov}}(1,\ldots,1).
     pub det1: Vec2<T>,
+    /// Mixed contraction determinant \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).
     pub det_mix: Vec2<T>,
 
+    // Retained work vectors that are not read by the current evaluator and helper implementations.
+    // They remain part of the workspace layout and are still resized by `ensure_same`.
     pub fcol: Vec1<T>,
     pub dv: Vec1<T>,
     pub v1: Vec1<T>,
     pub dv1: Vec1<T>,
     pub dv1m: Vec1<T>,
 
+    // Retained matrix buffers that are not read by the current evaluator and helper implementations.
+    // `det_mix2` remains active as the minor \mathbf D_{\mathrm{ov}}[\eta|z].
     pub jslice_full: Vec2<T>,
     pub jslice2: Vec2<T>,
+    /// Minor contraction determinant \mathbf D_{\mathrm{ov}}[\eta|z] used in the
+    /// two-column same-spin \mathcal J contribution.
     pub det_mix2: Vec2<T>,
 
+    // Retained endpoint buffers that are not read by the current different-spin evaluator.
     pub deta0: Vec2<T>,
     pub deta1: Vec2<T>,
+    /// Mixed alpha-spin contraction determinant
+    /// \mathbf D_{\alpha,\mathrm{ov}}(m_{\alpha1},\ldots,m_{\alpha L_\alpha}).
     pub deta_mix: Vec2<T>,
     pub detb0: Vec2<T>,
     pub detb1: Vec2<T>,
+    /// Mixed beta-spin contraction determinant
+    /// \mathbf D_{\beta,\mathrm{ov}}(m_{\beta1},\ldots,m_{\beta L_\beta}).
     pub detb_mix: Vec2<T>,
 
+    // Retained vectors that are not read by the current different-spin evaluator.
     pub v1a: Vec1<T>,
     pub v1b: Vec1<T>,
     pub dv1a: Vec1<T>,
     pub dv1b: Vec1<T>,
 
+    // Retained matrices that are not read by the current different-spin evaluator.
     pub iislicea: Vec2<T>,
     pub iisliceb: Vec2<T>,
     pub deta_mix_minor: Vec2<T>,
     pub detb_mix_minor: Vec2<T>,
 
+    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\mathrm{ov}}].
     pub adjt_det: Vec2<T>,
+    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}].
     pub adjt_deta: Vec2<T>,
+    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}].
     pub adjt_detb: Vec2<T>,
+    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]].
     pub adjt_det2: Vec2<T>,
+    // Retained cofactor buffers for the unused spin-resolved minor determinants.
     pub adjt_deta_mix_minor: Vec2<T>,
     pub adjt_detb_mix_minor: Vec2<T>,
 
+    /// Inverse-singular-value workspace used by the SVD fallback for
+    /// \mathbf D_{\mathrm{ov}}.
     pub invs: Vec1<f64>,
+    /// Inverse-singular-value workspace used by the SVD fallback for
+    /// \mathbf D_{\alpha,\mathrm{ov}}.
     pub invsla: Vec1<f64>,
+    /// Inverse-singular-value workspace used by the SVD fallback for
+    /// \mathbf D_{\beta,\mathrm{ov}}.
     pub invslb: Vec1<f64>,
+    // Retained inverse-singular-value workspaces for the unused minor kernels.
     pub invslm1: Vec1<f64>,
     pub invslam1: Vec1<f64>,
     pub invslbm1: Vec1<f64>,
 
+    /// LU-factorisation workspace used for \mathbf D_{\mathrm{ov}}.
     pub lu: Vec2<T>,
+    /// LU-factorisation workspace used for \mathbf D_{\alpha,\mathrm{ov}}.
     pub lua: Vec2<T>,
+    /// LU-factorisation workspace used for \mathbf D_{\beta,\mathrm{ov}}.
     pub lub: Vec2<T>,
 }
 
@@ -349,14 +402,14 @@ impl<T: NOCIScalar> Default for WickScratch<T> {
 }
 
 impl<T: NOCIScalar> WickScratch<T> {
-    /// Pre-allocate the Wick' scratch buffers to the largest sizes needed for the
-    /// current calculation in order to reduce repeated allocations.
+    /// Preallocate the reusable workspace to the largest contraction-determinant dimensions
+    /// required by the current calculation.
     /// # Arguments:
-    /// - `maxsame`: Maximum total excitation rank required for same-spin terms.
-    /// - `maxla`: Maximum total alpha-spin excitation rank required for different-spin terms.
-    /// - `maxlb`: Maximum total beta-spin excitation rank required for different-spin terms.
+    /// - `maxsame`: Maximum same-spin contraction-determinant dimension L.
+    /// - `maxla`: Maximum alpha-spin dimension L_\alpha for different-spin terms.
+    /// - `maxlb`: Maximum beta-spin dimension L_\beta for different-spin terms.
     /// # Returns
-    /// - `WickScratch<T>`: Scratch storage with the requested capacities reserved.
+    /// - `WickScratch<T>`: Workspace with the requested capacities retained.
     #[inline]
     pub fn with_sizes(
         maxsame: usize,
@@ -369,13 +422,14 @@ impl<T: NOCIScalar> WickScratch<T> {
         s
     }
 
-    /// If the previously allocated size of the scratch space is the not the same in
-    /// the same spin case resize all the scratch space quantities to be correct.
+    /// Resize the same-spin workspace for a contraction determinant of dimension L. This
+    /// prepares both endpoint determinants, a mixed determinant, its cofactor matrix and the
+    /// (L-1) \times (L-1) minor required by the two-column \mathcal J contribution.
     /// # Arguments:
-    /// - `self`: Scratch space for Wick's quantities.
-    /// - `l`: Excitation rank.
+    /// - `self`: Reusable Wick workspace.
+    /// - `l`: Same-spin contraction-determinant dimension L.
     /// # Returns
-    /// - `()`: Resizes same-spin scratch storage in place.
+    /// - `()`: Resizes the active and retained same-spin buffers in place.
     #[inline(always)]
     pub fn ensure_same(
         &mut self,
@@ -408,12 +462,13 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.adjt_det2.ensure(lm1, lm1);
     }
 
-    /// Ensure minimal same-spin scratch storage for specialised zero-overlap low-rank evaluators.
+    /// Ensure the minimal determinant storage required by the specialised m = 0 evaluators for
+    /// L \leq 2. Only \mathbf D_{\mathrm{ov}}(0,\ldots,0) is required by these kernels.
     /// # Arguments:
-    /// - `self`: Scratch space for Wick's quantities.
-    /// - `l`: Same-spin excitation rank, restricted to `l <= 2`.
+    /// - `self`: Reusable Wick workspace.
+    /// - `l`: Same-spin contraction-determinant dimension L, restricted to L \leq 2.
     /// # Returns
-    /// - `()`: Ensures `det0` has the required shape and invalidates incompatible full readiness.
+    /// - `()`: Resizes `det0` and invalidates incompatible full-workspace readiness.
     #[inline(always)]
     pub fn ensure_same_m0(
         &mut self,
@@ -426,14 +481,16 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.det0.ensure(l, l);
     }
 
-    /// If the previously allocated size of the scratch space is the not the same in
-    /// the different spin case resize all the scratch space quantities to be correct.
+    /// Resize the different-spin workspace for independent alpha- and beta-spin contraction
+    /// determinants of dimensions L_\alpha and L_\beta. This prepares the mixed determinants,
+    /// cofactor matrices and determinant-factorisation workspaces used by the factorised
+    /// different-spin two-body evaluator.
     /// # Arguments:
-    /// - `self`: Scratch space for Wick's quantities.
-    /// - `la`: Excitation rank spin alpha.
-    /// - `lb`: Excitation rank spin beta.
+    /// - `self`: Reusable Wick workspace.
+    /// - `la`: Alpha-spin contraction-determinant dimension L_\alpha.
+    /// - `lb`: Beta-spin contraction-determinant dimension L_\beta.
     /// # Returns
-    /// - `()`: Resizes different-spin scratch storage in place.
+    /// - `()`: Resizes the active and retained different-spin buffers in place.
     #[inline(always)]
     pub fn ensure_diff(
         &mut self,
