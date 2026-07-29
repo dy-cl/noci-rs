@@ -6,11 +6,19 @@ mod cumulants2;
 mod cumulants3;
 mod cumulants4;
 
-pub(crate) use self::cumulants1::{Cumulant1, cumulants1};
-pub(crate) use self::cumulants2::{Cumulant2, cumulants2};
-pub(crate) use self::cumulants3::{Cumulant3, cumulants3};
-pub(crate) use self::cumulants4::{Cumulant4, cumulants4};
+// Crate-visible type re-exports.
+pub(crate) use self::cumulants1::Cumulant1;
+pub(crate) use self::cumulants2::Cumulant2;
+pub(crate) use self::cumulants3::Cumulant3;
+pub(crate) use self::cumulants4::Cumulant4;
 
+// Crate-visible function re-exports.
+pub(crate) use self::cumulants1::cumulants1;
+pub(crate) use self::cumulants2::cumulants2;
+pub(crate) use self::cumulants3::cumulants3;
+pub(crate) use self::cumulants4::cumulants4;
+
+// Private imports.
 use crate::nocc::rdm::{RDM1, RDM2, RDM3, RDM4};
 use crate::noci::NOCIScalar;
 

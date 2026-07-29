@@ -1,4 +1,24 @@
 // lib.rs
+//! Nonorthogonal electronic-structure methods in Rust.
+//!
+//! `noci-rs` implements electronic-structure calculations in determinant bases whose states
+//! may be constructed from independently optimised and therefore mutually nonorthogonal
+//! orbital sets. The crate provides real and holomorphic self-consistent field calculations,
+//! reference nonorthogonal configuration interaction, deterministic and stochastic propagation
+//! in extended NOCI spaces, NOCI-PT2, selected NOCI and feature-gated experimental NOCCMC
+//! support.
+//!
+//! A calculation proceeds from user-defined Lua input and PySCF atomic-orbital data through
+//! SCF-state generation, reference-basis selection, molecular-orbital and nonorthogonal Wick
+//! preparation, and the requested post-SCF method. The common [`PostSCFData`] structure
+//! provides the atomic-orbital data, converged states, selected reference basis, molecular-
+//! orbital caches and numerical tolerance shared by these post-SCF calculations.
+//!
+//! Hamiltonian, overlap, generalised-Fock and transition-density quantities are evaluated
+//! using orthogonal Slater-Condon shortcuts, the generalised Slater-Condon rules, or the
+//! extended nonorthogonal Wick theorem. MPI provides distributed-memory parallelism and
+//! Rayon provides shared-memory parallelism where supported by the selected method.
+
 pub mod basis;
 pub mod deterministic;
 pub mod driver;

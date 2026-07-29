@@ -1,4 +1,18 @@
 // timers/mod.rs
+//! Timing instrumentation for the principal calculation stages.
+//!
+//! Timing counters are grouped by the scientific subsystem whose work they measure:
+//! general driver operations, deterministic propagation, stochastic propagation,
+//! NOCI-PT2/SNOCI, NOCI matrix elements and extended nonorthogonal Wick evaluation.
+//!
+//! Each counter stores its total elapsed time and number of calls. When the `timings` feature
+//! is enabled, [`time_call!`] records a timed region without changing its returned value.
+//! Without the feature, the same macro evaluates the region without timing overhead.
+//!
+//! Counters are accumulated independently on each thread to avoid synchronisation within
+//! timed numerical kernels. Thread-local values may be summed across the calling thread and
+//! all Rayon workers. MPI utilities then either take the maximum counter values across ranks
+//! or gather complete per-rank timing structures for load-balance and scaling analysis.
 
 pub mod deterministic;
 pub mod general;
@@ -7,6 +21,7 @@ pub mod nonorthogonalwicks;
 pub mod snoci;
 pub mod stochastic;
 
+// Private imports.
 use std::cell::RefCell;
 use std::time::Duration;
 

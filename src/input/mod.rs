@@ -1,4 +1,20 @@
 // input/mod.rs
+//! Strongly typed representation and parsing of the Lua input file.
+//!
+//! The input submodules define the user options associated with molecular geometry, SCF
+//! convergence, reference-state generation, excitation spaces, deterministic and stochastic
+//! propagation, NOCI-PT2 and SNOCI, experimental NOCCMC, nonorthogonal Wick intermediates,
+//! output and restart handling.
+//!
+//! [`Input`] contains the complete calculation specification after parsing. Propagation
+//! options shared by deterministic and stochastic NOCIQMC calculations are represented by
+//! [`PropagationOptions`], while method-specific settings remain in their corresponding
+//! option structures.
+//!
+//! Required and optional combinations are validated during parsing. In particular,
+//! deterministic and stochastic propagation require a common propagation specification,
+//! while method-specific tables may otherwise be omitted when the corresponding calculation
+//! is not requested.
 
 mod det;
 mod excit;
@@ -12,10 +28,10 @@ mod state;
 mod wicks;
 mod write;
 
+// Public type re-exports.
 pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use mol::MolOptions;
-pub use parse::load_input;
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, NOCCMCOptions, QMCOptions};
 pub use scf::{DiisOptions, HSCFOptions, SCFInfo};
@@ -23,6 +39,9 @@ pub use snoci::{GMRESOptions, SNOCIFullM, SNOCIOptions, SNOCIPreconditioner};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
 pub use wicks::{WicksOptions, WicksStorage};
 pub use write::WriteOptions;
+
+// Public function re-exports.
+pub use parse::load_input;
 
 pub struct Input {
     /// Molecular geometry and basis options.

@@ -12,8 +12,11 @@ mod step;
 mod tangent;
 mod types;
 
+// Public type re-exports.
+pub use types::{HSCFGenerationLookups, StateLookups};
+
+// Public function re-exports.
 pub use build::build_hscf_state;
 pub use canonical::normalise_hermitian;
 pub use optimise::hscf_cycle;
 pub use seed::h_seed_orbitals;
-pub use types::{HSCFGenerationLookups, StateLookups};

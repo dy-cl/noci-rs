@@ -13,12 +13,15 @@ mod rdm2same;
 #[cfg(feature = "nocc")]
 mod rdmksame;
 
+// Public function re-exports.
+pub use overlap::xw_overlap;
+pub use prepare::prepare_same;
+
+// Crate-visible function re-exports.
 pub(crate) use h2diff::xw_h2_diff;
 pub(crate) use h2same::xw_h2_same;
 pub(crate) use onebody::{xw_f, xw_h1};
-pub use overlap::xw_overlap;
 pub(crate) use overlap::xw_overlap_same_f64;
-pub use prepare::prepare_same;
 #[cfg(feature = "nocc")]
 pub(crate) use rdm1::xw_rdm1;
 #[cfg(feature = "nocc")]
