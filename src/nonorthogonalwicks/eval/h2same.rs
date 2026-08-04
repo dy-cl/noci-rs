@@ -12,7 +12,7 @@ use super::helpers::{
     bit, column_replacement_correction, column_replacement_det, get_det_adjt_same, j_replacement,
     jslot, minor_adjt,
 };
-use crate::maths::adjugate_transpose;
+use crate::maths::{adjugate_transpose, minor_adjugate_transpose};
 
 /// Evaluate the same-spin two-body matrix element between excited determinants generated from the
 /// reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:
@@ -347,22 +347,24 @@ fn xw_h2_same_m0_l4<T: NOCIScalar>(
             // \mathcal J_{\eta z,\xi y} with its cofactors to evaluate C_3.
             let jsl = w.j_slice(0);
             let mut jterm = <T as From<f64>>::from(0.0);
+            let mut invs = [];
+            let mut lu = [];
 
             for i in 0..4 {
-                let (ri, rr0, rr1, rr2) = match i {
-                    0 => (r0, r1, r2, r3),
-                    1 => (r1, r0, r2, r3),
-                    2 => (r2, r0, r1, r3),
-                    3 => (r3, r0, r1, r2),
+                let (ri, rr) = match i {
+                    0 => (r0, [r1, r2, r3]),
+                    1 => (r1, [r0, r2, r3]),
+                    2 => (r2, [r0, r1, r3]),
+                    3 => (r3, [r0, r1, r2]),
                     _ => unreachable!(),
                 };
 
                 for j in 0..4 {
-                    let (cj, cc0, cc1, cc2) = match j {
-                        0 => (c0, c1, c2, c3),
-                        1 => (c1, c0, c2, c3),
-                        2 => (c2, c0, c1, c3),
-                        3 => (c3, c0, c1, c2),
+                    let (cj, cc) = match j {
+                        0 => (c0, [c1, c2, c3]),
+                        1 => (c1, [c0, c2, c3]),
+                        2 => (c2, [c0, c1, c3]),
+                        3 => (c3, [c0, c1, c2]),
                         _ => unreachable!(),
                     };
                     let phase = if ((i + j) & 1) == 0 {
@@ -373,36 +375,37 @@ fn xw_h2_same_m0_l4<T: NOCIScalar>(
 
                     // Remove row \eta = i and column z = j, then replace each remaining
                     // column y by \mathcal J_{\eta z,\xi y}; the outer phase is (-1)^{\eta+z}.
-                    minor_adjt(
+                    if let Some(det_minor) = minor_adjugate_transpose(
+                        scratch.adjt_det2.as_mut_slice(),
+                        scratch.det_mix2.as_mut_slice(),
+                        &mut invs,
+                        &mut lu,
                         det0,
-                        Minor {
-                            l: 4,
-                            row: i,
-                            col: j,
-                        },
-                        &mut scratch.det_mix2,
-                        &mut scratch.adjt_det2,
+                        4,
+                        i,
+                        j,
                         tol,
-                        |_, _, cof_minor, _| {
-                            // (-1)^{\eta+z}\sum_{\xi,y}
-                            // \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]]_{\xi y}\mathcal J_{\eta z,\xi y}.
-                            let fixed = (ri * n + cj) * n;
-                            let base0 = (fixed + rr0) * n;
-                            let base1 = (fixed + rr1) * n;
-                            let base2 = (fixed + rr2) * n;
+                    ) && det_minor.abs() > tol
+                    {
+                        // (-1)^{\eta+z}\sum_{\xi,y}
+                        // \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]]_{\xi y}\mathcal J_{\eta z,\xi y}.
+                        let cof_minor = scratch.adjt_det2.as_slice();
+                        let fixed = (ri * n + cj) * n;
+                        let base0 = (fixed + rr[0]) * n;
+                        let base1 = (fixed + rr[1]) * n;
+                        let base2 = (fixed + rr[2]) * n;
 
-                            jterm += phase
-                                * (cof_minor[0] * jsl[base0 + cc0]
-                                    + cof_minor[3] * jsl[base1 + cc0]
-                                    + cof_minor[6] * jsl[base2 + cc0]
-                                    + cof_minor[1] * jsl[base0 + cc1]
-                                    + cof_minor[4] * jsl[base1 + cc1]
-                                    + cof_minor[7] * jsl[base2 + cc1]
-                                    + cof_minor[2] * jsl[base0 + cc2]
-                                    + cof_minor[5] * jsl[base1 + cc2]
-                                    + cof_minor[8] * jsl[base2 + cc2]);
-                        },
-                    );
+                        jterm += phase
+                            * (cof_minor[0] * jsl[base0 + cc[0]]
+                                + cof_minor[3] * jsl[base1 + cc[0]]
+                                + cof_minor[6] * jsl[base2 + cc[0]]
+                                + cof_minor[1] * jsl[base0 + cc[1]]
+                                + cof_minor[4] * jsl[base1 + cc[1]]
+                                + cof_minor[7] * jsl[base2 + cc[1]]
+                                + cof_minor[2] * jsl[base0 + cc[2]]
+                                + cof_minor[5] * jsl[base1 + cc[2]]
+                                + cof_minor[8] * jsl[base2 + cc[2]]);
+                    }
                 }
             }
 

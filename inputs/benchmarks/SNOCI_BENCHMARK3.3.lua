@@ -1,0 +1,35 @@
+mol = {
+    basis = 'cc-pVDZ',
+    r = {1.5},
+    unit = 'Ang',
+    atoms = function(r)
+        return {string.format("F 0 0 %g", -r / 2), string.format("F 0 0 %g",  r / 2),}
+        end,
+}
+
+excit = {orders = {1, 2}}
+
+snoci = {
+    max_iter = 1,
+    gmres = {
+        max_iter = 6,
+        restart = 6,
+        res_tol = 1e-6,
+        full_m = "disk",
+    },
+}
+
+states = {
+    mom = {
+        {label = "RHF (0, 0)", noci = true},
+        {label = "UHF (1, -1)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
+        {label = "UHF (-1, 1)", spin_bias = {pattern = {-1, 1}, pol = 0.75}, noci = true},
+    }
+}
+
+wicks = {
+    enabled = true,
+    compare = false,
+    storage = "ram",
+    cachedir = "outputs",
+}

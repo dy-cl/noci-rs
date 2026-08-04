@@ -5,7 +5,9 @@ use ndarray::{Array2, ArrayView2, s};
 
 #[cfg(feature = "nocc")]
 use crate::maths::adjoint;
-use crate::maths::{adjugate_transpose, det, minor as build_minor, mix_columns};
+use crate::maths::{
+    adjugate_transpose, det, minor as build_minor, minor_adjugate_transpose, mix_columns,
+};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -550,14 +552,31 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
     tol: f64,
     mut f: impl FnMut(usize, &[T], &[T], T),
 ) {
-    // Construct the (L-1)\times(L-1) minor \mathbf D[\eta|z].
     let lm1 = minor.l.saturating_sub(1);
-    build_minor(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
-    // Evaluate its determinant and cofactor matrix for the subsequent \mathcal J column replacement.
-    if let Some(det_minor) =
-        adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
-    {
-        f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
+    if minor.l <= 4 {
+        let mut invs = [];
+        let mut lu = [];
+        if let Some(det_minor) = minor_adjugate_transpose(
+            adjtb.as_mut_slice(),
+            minorb.as_mut_slice(),
+            &mut invs,
+            &mut lu,
+            full,
+            minor.l,
+            minor.row,
+            minor.col,
+            tol,
+        ) && det_minor.abs() > tol
+        {
+            f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
+        }
+    } else {
+        build_minor(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
+        if let Some(det_minor) =
+            adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
+        {
+            f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
+        }
     }
 }
 

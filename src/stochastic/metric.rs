@@ -541,7 +541,7 @@ pub(in crate::stochastic) fn sample_populations(
         if populations.len() < 8192 {
             sampled.clear();
 
-            for (k, &population) in populations.iter().enumerate() {
+            for (&det, &population) in run.owned.iter().zip(populations.iter()) {
                 if population == 0.0 {
                     continue;
                 }
@@ -549,9 +549,9 @@ pub(in crate::stochastic) fn sample_populations(
                 let abs_population = population.abs();
 
                 if abs_population >= cutoff {
-                    sampled.insert_nonzero(run.owned[k], population);
-                } else if rng.gen_range(0.0..1.0) < abs_population / cutoff {
-                    sampled.insert_nonzero(run.owned[k], population.signum() * cutoff);
+                    sampled.insert_nonzero(det, population);
+                } else if rng.r#gen::<f64>() < abs_population / cutoff {
+                    sampled.insert_nonzero(det, cutoff.copysign(population));
                 }
             }
 
@@ -573,10 +573,12 @@ pub(in crate::stochastic) fn sample_populations(
                     SmallRng::seed_from_u64(seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15));
                 let start = chunk * chunk_size;
                 let end = (start + chunk_size).min(populations.len());
+                let populations = &populations[start..end];
+                let owned = &run.owned[start..end];
 
                 entries.clear();
 
-                for (k, &population) in populations.iter().enumerate().take(end).skip(start) {
+                for (&det, &population) in owned.iter().zip(populations.iter()) {
                     if population == 0.0 {
                         continue;
                     }
@@ -584,9 +586,9 @@ pub(in crate::stochastic) fn sample_populations(
                     let abs_population = population.abs();
 
                     if abs_population >= cutoff {
-                        entries.push((run.owned[k], population));
-                    } else if rng.gen_range(0.0..1.0) < abs_population / cutoff {
-                        entries.push((run.owned[k], population.signum() * cutoff));
+                        entries.push((det, population));
+                    } else if rng.r#gen::<f64>() < abs_population / cutoff {
+                        entries.push((det, cutoff.copysign(population)));
                     }
                 }
             });
@@ -621,8 +623,8 @@ pub(in crate::stochastic) fn fri(
         return value;
     }
 
-    if rng.gen_range(0.0..1.0) < value.abs() / cutoff {
-        value.signum() * cutoff
+    if rng.r#gen::<f64>() < value.abs() / cutoff {
+        cutoff.copysign(value)
     } else {
         0.0
     }

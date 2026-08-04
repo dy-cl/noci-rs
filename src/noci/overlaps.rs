@@ -459,18 +459,16 @@ impl OverlapFactor {
         let contraction = self.select_contraction(target, source);
         match contraction {
             OverlapContraction::FactorizedRows => {
-                self.apply_factorized_parent_pair(output, target, source, data, wicks, scratch)
+                self.apply_factorized_parent_pair(output, target, source, data, wicks, scratch);
             }
-            OverlapContraction::AFirst | OverlapContraction::BFirst => match contraction {
-                OverlapContraction::AFirst => {
-                    self.apply_a_first(output, target, source, data, wicks, scratch)
-                }
-                OverlapContraction::BFirst => {
-                    self.build_factor_tables(target, source, data, wicks, scratch);
-                    self.apply_b_first(output, target, source, scratch);
-                }
-                OverlapContraction::FactorizedRows => {}
-            },
+            OverlapContraction::AFirst => {
+                self.build_factor_tables(target, source, data, wicks, scratch);
+                self.apply_a_first(output, target, source, scratch);
+            }
+            OverlapContraction::BFirst => {
+                self.build_factor_tables(target, source, data, wicks, scratch);
+                self.apply_b_first(output, target, source, scratch);
+            }
         }
     }
 
@@ -806,17 +804,13 @@ impl OverlapFactor {
             });
     }
 
-    /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab} without storing A.
-    /// This is the A-first contraction
-    /// \delta N_w^{QP} = \sum_b T_{\bar a_w b}B^{QP}_{\bar b_w b},
-    /// with A factors consumed immediately while forming T. The direct determinant-pair Wick loop
-    /// is avoided because same-spin factors are still reused over target rows and sparse entries.
+    /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
+    /// The final target rows multiply T by B^{QP}_{\bar b_w b}.
     /// # Arguments:
+    /// - `output`: Rank-local persistent population increment.
     /// - `target`: Target parent block defining \bar a_w and \bar b_w rows.
     /// - `source`: Sparse source-parent D^P entries and active positions.
-    /// - `data`: Shared NOCI determinant data.
-    /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
-    /// - `scratch`: Reusable intermediate, beta-factor, value, and increment storage.
+    /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
     /// - `()`: Adds the A-first blocked contribution to `output`.
     fn apply_a_first(
@@ -824,65 +818,25 @@ impl OverlapFactor {
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
-        data: &NOCIData<'_, f64>,
-        wicks: &WicksView<f64>,
         scratch: &mut OverlapFactorScratch,
     ) {
         let nta = target.aids.len();
-        let ntb = target.bids.len();
+        let nsa = source.aids.len();
         let nsb = source.bids.len();
 
         scratch.intermediate.clear();
-        scratch.bfac.clear();
         scratch.intermediate.resize(nta * nsb, 0.0);
-        scratch.bfac.resize(ntb * nsb, 0.0);
 
-        let (lp, gp, target_left) =
-            if self.parents[target.parent].first_det <= self.parents[source.parent].first_det {
-                (target.parent, source.parent, true)
-            } else {
-                (source.parent, target.parent, false)
-            };
-
-        // Form T_{\bar a b} directly, consuming A^{QP}_{\bar a a} factors as they are built.
+        // Form T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
         scratch
             .intermediate
             .par_chunks_mut(nsb)
-            .zip(target.aids.par_iter())
-            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &ta)| {
-                let pair = wicks.pair(lp, gp);
-                let tdet = self.parents[target.parent].areps[ta];
+            .enumerate()
+            .for_each(|(ta_pos, row)| {
+                let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
 
                 for entry in &source.entries {
-                    let sa = source.aids[entry.apos];
-                    let sdet = self.parents[source.parent].areps[sa];
-                    let (ldet, gdet) = if target_left {
-                        (&data.basis[tdet], &data.basis[sdet])
-                    } else {
-                        (&data.basis[sdet], &data.basis[tdet])
-                    };
-                    let a = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
-
-                    row[entry.bpos] += a * entry.dn;
-                }
-            });
-
-        // Build B^{QP}_{\bar b b} rows independently for the final target pass.
-        scratch
-            .bfac
-            .par_chunks_mut(nsb)
-            .zip(target.bids.par_iter())
-            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &tb)| {
-                let pair = wicks.pair(lp, gp);
-                let tdet = self.parents[target.parent].breps[tb];
-                for (col, &sb) in source.bids.iter().enumerate() {
-                    let sdet = self.parents[source.parent].breps[sb];
-                    let (ldet, gdet) = if target_left {
-                        (&data.basis[tdet], &data.basis[sdet])
-                    } else {
-                        (&data.basis[sdet], &data.basis[tdet])
-                    };
-                    row[col] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
+                    row[entry.bpos] += arow[entry.apos] * entry.dn;
                 }
             });
 
@@ -892,15 +846,18 @@ impl OverlapFactor {
             let first = target.first_local;
             let increments = &mut output[first..first + target.targets.len()];
 
-            // Finish \delta N_w^{QP} directly into contiguous target rows.
+            // Finish \delta N_w^{QP} = \sum_b T_{\bar a_w b}B^{QP}_{\bar b_w b}.
             increments
                 .par_iter_mut()
                 .zip(target.targets.par_iter())
                 .for_each(|(increment, t)| {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
-                    let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+
+                    let trow =
+                        &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                    let brow =
+                        &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
 
                     *increment += trow
                         .iter()
@@ -911,7 +868,6 @@ impl OverlapFactor {
         } else {
             scratch.values.resize(target.targets.len(), 0.0);
 
-            // Finish \delta N_w^{QP} through a temporary for non-contiguous target rows.
             scratch
                 .values
                 .par_iter_mut()
@@ -919,9 +875,17 @@ impl OverlapFactor {
                 .for_each(|(value, t)| {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
-                    let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
-                    *value = trow.iter().zip(brow.iter()).map(|(x, y)| x * y).sum();
+
+                    let trow =
+                        &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                    let brow =
+                        &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+
+                    *value = trow
+                        .iter()
+                        .zip(brow.iter())
+                        .map(|(x, y)| x * y)
+                        .sum();
                 });
 
             for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
@@ -935,6 +899,7 @@ impl OverlapFactor {
     /// Apply U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.
     /// The final target rows multiply U by A^{QP}_{\bar a_w a}.
     /// # Arguments:
+    /// - `output`: Rank-local persistent population increment.
     /// - `target`: Target parent block defining \bar a_w and \bar b_w rows.
     /// - `source`: Sparse source-parent D^P entries and active positions.
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
@@ -963,32 +928,62 @@ impl OverlapFactor {
                 let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
 
                 for entry in &source.entries {
-                    let sa_pos = entry.apos;
-                    let sb_pos = entry.bpos;
-
-                    row[sa_pos] += entry.dn * brow[sb_pos];
+                    row[entry.apos] += entry.dn * brow[entry.bpos];
                 }
             });
 
         scratch.values.clear();
-        scratch.values.resize(target.targets.len(), 0.0);
 
-        // Finish \delta N_w^{QP} = \sum_a A^{QP}_{\bar a_w a}U_{a\bar b_w}.
-        scratch
-            .values
-            .par_iter_mut()
-            .zip(target.targets.par_iter())
-            .for_each(|(value, t)| {
-                let ta_pos = target.apos[t.a];
-                let tb_pos = target.bpos[t.b];
-                let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
-                let urow = &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
-                *value = arow.iter().zip(urow.iter()).map(|(x, y)| x * y).sum();
-            });
+        if target.contiguous_locals {
+            let first = target.first_local;
+            let increments = &mut output[first..first + target.targets.len()];
 
-        for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
-            if *value != 0.0 {
-                output[target.local] += value;
+            // Finish \delta N_w^{QP} = \sum_a A^{QP}_{\bar a_w a}U_{a\bar b_w}.
+            increments
+                .par_iter_mut()
+                .zip(target.targets.par_iter())
+                .for_each(|(increment, t)| {
+                    let ta_pos = target.apos[t.a];
+                    let tb_pos = target.bpos[t.b];
+
+                    let arow =
+                        &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+                    let urow =
+                        &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
+
+                    *increment += arow
+                        .iter()
+                        .zip(urow.iter())
+                        .map(|(x, y)| x * y)
+                        .sum::<f64>();
+                });
+        } else {
+            scratch.values.resize(target.targets.len(), 0.0);
+
+            scratch
+                .values
+                .par_iter_mut()
+                .zip(target.targets.par_iter())
+                .for_each(|(value, t)| {
+                    let ta_pos = target.apos[t.a];
+                    let tb_pos = target.bpos[t.b];
+
+                    let arow =
+                        &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+                    let urow =
+                        &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
+
+                    *value = arow
+                        .iter()
+                        .zip(urow.iter())
+                        .map(|(x, y)| x * y)
+                        .sum();
+                });
+
+            for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
+                if *value != 0.0 {
+                    output[target.local] += value;
+                }
             }
         }
     }
