@@ -7,7 +7,7 @@ use crate::noci::NOCIScalar;
 use crate::time_call;
 
 use super::super::layout::{idx, idx4};
-use super::helpers::{bit, column_replacement_correction, get_det_adjt_diff, ii_replacement};
+use super::helpers::{bit, column_replacement_det, get_det_adjt_diff, ii_replacement};
 use crate::maths::adjugate_transpose;
 
 /// Evaluate the different-spin two-body matrix element between excited determinants generated from
@@ -703,11 +703,10 @@ fn xw_h2_diff_m0_gen<T: NOCIScalar>(
             let vab = w.ab.vab_t_slice(0, 0, 0);
             for (k, &ck) in cols_a.iter().enumerate().take(la) {
                 let base = ck * n;
-                let corr =
-                    column_replacement_correction(la, deta0, diff.adjt_deta.as_slice(), k, |r| {
-                        vab[base + rows_a[r]]
-                    });
-                contrib -= (det_deta + corr) * det_detb;
+                let det_repl = column_replacement_det(la, diff.adjt_deta.as_slice(), k, |r| {
+                    vab[base + rows_a[r]]
+                });
+                contrib -= det_repl * det_detb;
             }
 
             // C_\beta = -\det\mathbf D_{\alpha,\mathrm{ov}}
@@ -715,11 +714,10 @@ fn xw_h2_diff_m0_gen<T: NOCIScalar>(
             let vba = w.ab.vba_t_slice(0, 0, 0);
             for (k, &ck) in cols_b.iter().enumerate().take(lb) {
                 let base = ck * n;
-                let corr =
-                    column_replacement_correction(lb, detb0, diff.adjt_detb.as_slice(), k, |r| {
-                        vba[base + rows_b[r]]
-                    });
-                contrib -= (det_detb + corr) * det_deta;
+                let det_repl = column_replacement_det(lb, diff.adjt_detb.as_slice(), k, |r| {
+                    vba[base + rows_b[r]]
+                });
+                contrib -= det_repl * det_deta;
             }
 
             // C_{\alpha\beta} = \sum_{z,y,\eta,\xi}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}
@@ -739,9 +737,8 @@ fn xw_h2_diff_m0_gen<T: NOCIScalar>(
                     let cofa = diff.adjt_deta.as_slice()[idx(la, i, j)];
 
                     for k in 0..lb {
-                        let corr = column_replacement_correction(
+                        let det_repl = column_replacement_det(
                             lb,
-                            detb0,
                             diff.adjt_detb.as_slice(),
                             k,
                             |r| {
@@ -754,7 +751,7 @@ fn xw_h2_diff_m0_gen<T: NOCIScalar>(
                                 )
                             },
                         );
-                        contrib += cofa * (det_detb + corr);
+                        contrib += cofa * det_repl;
                     }
                 }
             }
@@ -859,14 +856,13 @@ fn xw_h2_diff_gen<T: NOCIScalar>(
                     let vsl = if mak == 0 { vab0 } else { vab1 };
                     let base = ck * na;
 
-                    let corr = column_replacement_correction(
+                    let det_repl = column_replacement_det(
                         la,
-                        scratch.deta_mix.as_slice(),
                         scratch.adjt_deta.as_slice(),
                         k,
                         |r| vsl[base + rows_a[r]],
                     );
-                    contrib -= (det_deta + corr) * det_detb;
+                    contrib -= det_repl * det_detb;
                 }
 
                 // C_\beta = -\det\mathbf D_{\alpha,\mathrm{ov}}\sum_y
@@ -881,14 +877,13 @@ fn xw_h2_diff_gen<T: NOCIScalar>(
                     let vsl = if mbk == 0 { vba0 } else { vba1 };
                     let base = ck * nb;
 
-                    let corr = column_replacement_correction(
+                    let det_repl = column_replacement_det(
                         lb,
-                        scratch.detb_mix.as_slice(),
                         scratch.adjt_detb.as_slice(),
                         k,
                         |r| vsl[base + rows_b[r]],
                     );
-                    contrib -= (det_detb + corr) * det_deta;
+                    contrib -= det_repl * det_deta;
                 }
 
                 // C_{\alpha\beta} = \sum_{z,y,\eta,\xi}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}
@@ -911,9 +906,8 @@ fn xw_h2_diff_gen<T: NOCIScalar>(
                             let mbk = bit(bits_b, k + 1);
                             let iisl = w.ab.iiab_slice(ma0, ma1, mb0, mbk);
 
-                            let corr = column_replacement_correction(
+                            let det_repl = column_replacement_det(
                                 lb,
-                                scratch.detb_mix.as_slice(),
                                 scratch.adjt_detb.as_slice(),
                                 k,
                                 |r| {
@@ -926,7 +920,7 @@ fn xw_h2_diff_gen<T: NOCIScalar>(
                                     )
                                 },
                             );
-                            contrib += cofa * (det_detb + corr);
+                            contrib += cofa * det_repl;
                         }
                     }
                 }

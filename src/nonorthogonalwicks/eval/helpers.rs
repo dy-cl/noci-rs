@@ -308,6 +308,57 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
     mut new_at: impl FnMut(usize) -> T,
 ) -> T {
     // Contract the difference between the new and original columns with the cofactors of column c.
+    match (n, col) {
+        (0, _) => return <T as From<f64>>::from(0.0),
+        (1, 0) => return (new_at(0) - old[0]) * cof[0],
+        (2, 0) => {
+            return (new_at(0) - old[0]) * cof[0] + (new_at(1) - old[2]) * cof[2];
+        }
+        (2, 1) => {
+            return (new_at(0) - old[1]) * cof[1] + (new_at(1) - old[3]) * cof[3];
+        }
+        (3, 0) => {
+            return (new_at(0) - old[0]) * cof[0]
+                + (new_at(1) - old[3]) * cof[3]
+                + (new_at(2) - old[6]) * cof[6];
+        }
+        (3, 1) => {
+            return (new_at(0) - old[1]) * cof[1]
+                + (new_at(1) - old[4]) * cof[4]
+                + (new_at(2) - old[7]) * cof[7];
+        }
+        (3, 2) => {
+            return (new_at(0) - old[2]) * cof[2]
+                + (new_at(1) - old[5]) * cof[5]
+                + (new_at(2) - old[8]) * cof[8];
+        }
+        (4, 0) => {
+            return (new_at(0) - old[0]) * cof[0]
+                + (new_at(1) - old[4]) * cof[4]
+                + (new_at(2) - old[8]) * cof[8]
+                + (new_at(3) - old[12]) * cof[12];
+        }
+        (4, 1) => {
+            return (new_at(0) - old[1]) * cof[1]
+                + (new_at(1) - old[5]) * cof[5]
+                + (new_at(2) - old[9]) * cof[9]
+                + (new_at(3) - old[13]) * cof[13];
+        }
+        (4, 2) => {
+            return (new_at(0) - old[2]) * cof[2]
+                + (new_at(1) - old[6]) * cof[6]
+                + (new_at(2) - old[10]) * cof[10]
+                + (new_at(3) - old[14]) * cof[14];
+        }
+        (4, 3) => {
+            return (new_at(0) - old[3]) * cof[3]
+                + (new_at(1) - old[7]) * cof[7]
+                + (new_at(2) - old[11]) * cof[11]
+                + (new_at(3) - old[15]) * cof[15];
+        }
+        _ => {}
+    }
+
     let mut correction = <T as From<f64>>::from(0.0);
     for r in 0..n {
         let i = idx(n, r, col);
@@ -336,6 +387,41 @@ pub(super) fn column_replacement_det<T: NOCIScalar>(
     mut new_at: impl FnMut(usize) -> T,
 ) -> T {
     // Apply the Laplace expansion of the replacement determinant along column c.
+    match (n, col) {
+        (0, _) => return <T as From<f64>>::from(0.0),
+        (1, 0) => return new_at(0) * cof[0],
+        (2, 0) => return new_at(0) * cof[0] + new_at(1) * cof[2],
+        (2, 1) => return new_at(0) * cof[1] + new_at(1) * cof[3],
+        (3, 0) => return new_at(0) * cof[0] + new_at(1) * cof[3] + new_at(2) * cof[6],
+        (3, 1) => return new_at(0) * cof[1] + new_at(1) * cof[4] + new_at(2) * cof[7],
+        (3, 2) => return new_at(0) * cof[2] + new_at(1) * cof[5] + new_at(2) * cof[8],
+        (4, 0) => {
+            return new_at(0) * cof[0]
+                + new_at(1) * cof[4]
+                + new_at(2) * cof[8]
+                + new_at(3) * cof[12];
+        }
+        (4, 1) => {
+            return new_at(0) * cof[1]
+                + new_at(1) * cof[5]
+                + new_at(2) * cof[9]
+                + new_at(3) * cof[13];
+        }
+        (4, 2) => {
+            return new_at(0) * cof[2]
+                + new_at(1) * cof[6]
+                + new_at(2) * cof[10]
+                + new_at(3) * cof[14];
+        }
+        (4, 3) => {
+            return new_at(0) * cof[3]
+                + new_at(1) * cof[7]
+                + new_at(2) * cof[11]
+                + new_at(3) * cof[15];
+        }
+        _ => {}
+    }
+
     let mut value = <T as From<f64>>::from(0.0);
     for r in 0..n {
         let i = idx(n, r, col);

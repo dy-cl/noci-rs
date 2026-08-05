@@ -366,6 +366,7 @@ pub(in crate::stochastic) fn propagate_iteration(
 
             if !occ.is_empty() {
                 let next = AtomicUsize::new(0);
+                let chunk_size = 8usize;
                 let workers_shared: &[Mutex<ThreadPropagation>] = workers;
 
                 rayon::broadcast(|context| {
@@ -378,28 +379,30 @@ pub(in crate::stochastic) fn propagate_iteration(
                     );
 
                     loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let start = next.fetch_add(chunk_size, Ordering::Relaxed);
 
-                        if i >= occ.len() {
+                        if start >= occ.len() {
                             break;
                         }
 
-                        let gamma = occ[i];
-                        let population = sampled.get(gamma);
+                        let end = (start + chunk_size).min(occ.len());
+                        for &gamma in &occ[start..end] {
+                            let population = sampled.get(gamma);
 
-                        if population == 0.0 {
-                            continue;
+                            if population == 0.0 {
+                                continue;
+                            }
+
+                            worker.diagonal_population_change(
+                                gamma,
+                                population,
+                                shift,
+                                data,
+                                &run.diagonal_hs,
+                            );
+
+                            worker.spawning(gamma, population, shift, data, run);
                         }
-
-                        worker.diagonal_population_change(
-                            gamma,
-                            population,
-                            shift,
-                            data,
-                            &run.diagonal_hs,
-                        );
-
-                        worker.spawning(gamma, population, shift, data, run);
                     }
                 });
             }

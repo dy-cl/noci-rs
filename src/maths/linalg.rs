@@ -6,6 +6,141 @@ use ndarray_linalg::{Eig, Eigh, Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+/// Compute the dot product of two real contiguous vectors.
+/// This kernel uses multiple accumulators so LLVM can more easily vectorise
+/// the reduction in hot loops over short-to-medium rows.
+/// # Arguments:
+/// - `x`: First real vector.
+/// - `y`: Second real vector.
+/// # Returns
+/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+#[inline(always)]
+pub fn dot_f64(
+    x: &[f64],
+    y: &[f64],
+) -> f64 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if std::is_x86_feature_detected!("avx") {
+            // SAFETY: Runtime feature detection above guarantees that AVX instructions are available.
+            return unsafe { dot_f64_avx(x, y) };
+        }
+    }
+
+    dot_f64_scalar(x, y)
+}
+
+/// Compute a scalar dot product of two real contiguous vectors.
+/// # Arguments:
+/// - `x`: First real vector.
+/// - `y`: Second real vector.
+/// # Returns
+/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+#[inline(always)]
+fn dot_f64_scalar(
+    x: &[f64],
+    y: &[f64],
+) -> f64 {
+    let n = x.len().min(y.len());
+    let mut s0 = 0.0;
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+
+    let mut i = 0usize;
+    while i + 4 <= n {
+        s0 += x[i] * y[i];
+        s1 += x[i + 1] * y[i + 1];
+        s2 += x[i + 2] * y[i + 2];
+        s3 += x[i + 3] * y[i + 3];
+        i += 4;
+    }
+
+    let mut tail = 0.0;
+    while i < n {
+        tail += x[i] * y[i];
+        i += 1;
+    }
+
+    (s0 + s1) + (s2 + s3) + tail
+}
+
+/// Compute the dot product of two real contiguous vectors using AVX vector lanes.
+/// # Arguments:
+/// - `x`: First real vector.
+/// - `y`: Second real vector.
+/// # Returns
+/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+#[cfg(target_arch = "x86")]
+#[target_feature(enable = "avx")]
+unsafe fn dot_f64_avx(
+    x: &[f64],
+    y: &[f64],
+) -> f64 {
+    use std::arch::x86::*;
+
+    let n = x.len().min(y.len());
+    let mut acc = _mm256_setzero_pd();
+    let mut i = 0usize;
+
+    while i + 4 <= n {
+        let xv = unsafe { _mm256_loadu_pd(x.as_ptr().add(i)) };
+        let yv = unsafe { _mm256_loadu_pd(y.as_ptr().add(i)) };
+        let prod = _mm256_mul_pd(xv, yv);
+        acc = _mm256_add_pd(acc, prod);
+        i += 4;
+    }
+
+    let mut lanes = [0.0; 4];
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
+    let mut total = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
+
+    while i < n {
+        total += x[i] * y[i];
+        i += 1;
+    }
+
+    total
+}
+
+/// Compute the dot product of two real contiguous vectors using AVX vector lanes.
+/// # Arguments:
+/// - `x`: First real vector.
+/// - `y`: Second real vector.
+/// # Returns
+/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn dot_f64_avx(
+    x: &[f64],
+    y: &[f64],
+) -> f64 {
+    use std::arch::x86_64::*;
+
+    let n = x.len().min(y.len());
+    let mut acc = _mm256_setzero_pd();
+    let mut i = 0usize;
+
+    while i + 4 <= n {
+        let xv = unsafe { _mm256_loadu_pd(x.as_ptr().add(i)) };
+        let yv = unsafe { _mm256_loadu_pd(y.as_ptr().add(i)) };
+        let prod = _mm256_mul_pd(xv, yv);
+        acc = _mm256_add_pd(acc, prod);
+        i += 4;
+    }
+
+    let mut lanes = [0.0; 4];
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
+    let mut total = (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]);
+
+    while i < n {
+        total += x[i] * y[i];
+        i += 1;
+    }
+
+    total
+}
+
 /// Hermitian adjoint of a matrix.
 /// # Arguments:
 /// - `a`: Matrix to conjugate transpose.

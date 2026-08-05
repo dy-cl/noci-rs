@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::maths::dot_f64;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use rayon::prelude::*;
 
@@ -854,16 +855,10 @@ impl OverlapFactor {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
 
-                    let trow =
-                        &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                    let brow =
-                        &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+                    let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
 
-                    *increment += trow
-                        .iter()
-                        .zip(brow.iter())
-                        .map(|(x, y)| x * y)
-                        .sum::<f64>();
+                    *increment += dot_f64(trow, brow);
                 });
         } else {
             scratch.values.resize(target.targets.len(), 0.0);
@@ -876,16 +871,10 @@ impl OverlapFactor {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
 
-                    let trow =
-                        &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                    let brow =
-                        &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
+                    let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
+                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
 
-                    *value = trow
-                        .iter()
-                        .zip(brow.iter())
-                        .map(|(x, y)| x * y)
-                        .sum();
+                    *value = dot_f64(trow, brow);
                 });
 
             for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
@@ -946,16 +935,10 @@ impl OverlapFactor {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
 
-                    let arow =
-                        &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
-                    let urow =
-                        &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
+                    let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+                    let urow = &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
 
-                    *increment += arow
-                        .iter()
-                        .zip(urow.iter())
-                        .map(|(x, y)| x * y)
-                        .sum::<f64>();
+                    *increment += dot_f64(arow, urow);
                 });
         } else {
             scratch.values.resize(target.targets.len(), 0.0);
@@ -968,16 +951,10 @@ impl OverlapFactor {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
 
-                    let arow =
-                        &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
-                    let urow =
-                        &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
+                    let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
+                    let urow = &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
 
-                    *value = arow
-                        .iter()
-                        .zip(urow.iter())
-                        .map(|(x, y)| x * y)
-                        .sum();
+                    *value = dot_f64(arow, urow);
                 });
 
             for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
