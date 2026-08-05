@@ -106,14 +106,34 @@ pub struct Totals {
     pub xw_h2_same_m0_l2: Counter,
     /// Total time spent in `xw_h2_diff_m0_gen`.
     pub xw_h2_diff_m0_gen: Counter,
+    /// Total time spent in `xw_h2_diff_m0_01`.
+    pub xw_h2_diff_m0_01: Counter,
+    /// Total time spent in `xw_h2_diff_m0_02`.
+    pub xw_h2_diff_m0_02: Counter,
+    /// Total time spent in `xw_h2_diff_m0_03`.
+    pub xw_h2_diff_m0_03: Counter,
+    /// Total time spent in `xw_h2_diff_m0_04`.
+    pub xw_h2_diff_m0_04: Counter,
+    /// Total time spent in `xw_h2_diff_m0_10`.
+    pub xw_h2_diff_m0_10: Counter,
     /// Total time spent in `xw_h2_diff_m0_11`.
     pub xw_h2_diff_m0_11: Counter,
     /// Total time spent in `xw_h2_diff_m0_12`.
     pub xw_h2_diff_m0_12: Counter,
+    /// Total time spent in `xw_h2_diff_m0_14`.
+    pub xw_h2_diff_m0_14: Counter,
+    /// Total time spent in `xw_h2_diff_m0_20`.
+    pub xw_h2_diff_m0_20: Counter,
     /// Total time spent in `xw_h2_diff_m0_21`.
     pub xw_h2_diff_m0_21: Counter,
     /// Total time spent in `xw_h2_diff_m0_22`.
     pub xw_h2_diff_m0_22: Counter,
+    /// Total time spent in `xw_h2_diff_m0_23`.
+    pub xw_h2_diff_m0_23: Counter,
+    /// Total time spent in `xw_h2_diff_m0_24`.
+    pub xw_h2_diff_m0_24: Counter,
+    /// Total time spent in `xw_h2_diff_m0_30`.
+    pub xw_h2_diff_m0_30: Counter,
     /// Total time spent in `xw_h2_same_m0_l3`.
     pub xw_h2_same_m0_l3: Counter,
     /// Total time spent in `xw_h2_same_m0_l4`.
@@ -122,6 +142,22 @@ pub struct Totals {
     pub xw_h2_diff_m0_13: Counter,
     /// Total time spent in `xw_h2_diff_m0_31`.
     pub xw_h2_diff_m0_31: Counter,
+    /// Total time spent in `xw_h2_diff_m0_32`.
+    pub xw_h2_diff_m0_32: Counter,
+    /// Total time spent in `xw_h2_diff_m0_33`.
+    pub xw_h2_diff_m0_33: Counter,
+    /// Total time spent in `xw_h2_diff_m0_34`.
+    pub xw_h2_diff_m0_34: Counter,
+    /// Total time spent in `xw_h2_diff_m0_40`.
+    pub xw_h2_diff_m0_40: Counter,
+    /// Total time spent in `xw_h2_diff_m0_41`.
+    pub xw_h2_diff_m0_41: Counter,
+    /// Total time spent in `xw_h2_diff_m0_42`.
+    pub xw_h2_diff_m0_42: Counter,
+    /// Total time spent in `xw_h2_diff_m0_43`.
+    pub xw_h2_diff_m0_43: Counter,
+    /// Total time spent in `xw_h2_diff_m0_44`.
+    pub xw_h2_diff_m0_44: Counter,
 }
 
 impl Totals {
@@ -193,14 +229,32 @@ impl Totals {
         self.xw_h2_same_m0_l1.merge_from(&other.xw_h2_same_m0_l1);
         self.xw_h2_same_m0_l2.merge_from(&other.xw_h2_same_m0_l2);
         self.xw_h2_diff_m0_gen.merge_from(&other.xw_h2_diff_m0_gen);
+        self.xw_h2_diff_m0_01.merge_from(&other.xw_h2_diff_m0_01);
+        self.xw_h2_diff_m0_02.merge_from(&other.xw_h2_diff_m0_02);
+        self.xw_h2_diff_m0_03.merge_from(&other.xw_h2_diff_m0_03);
+        self.xw_h2_diff_m0_04.merge_from(&other.xw_h2_diff_m0_04);
+        self.xw_h2_diff_m0_10.merge_from(&other.xw_h2_diff_m0_10);
         self.xw_h2_diff_m0_11.merge_from(&other.xw_h2_diff_m0_11);
         self.xw_h2_diff_m0_12.merge_from(&other.xw_h2_diff_m0_12);
+        self.xw_h2_diff_m0_14.merge_from(&other.xw_h2_diff_m0_14);
+        self.xw_h2_diff_m0_20.merge_from(&other.xw_h2_diff_m0_20);
         self.xw_h2_diff_m0_21.merge_from(&other.xw_h2_diff_m0_21);
         self.xw_h2_diff_m0_22.merge_from(&other.xw_h2_diff_m0_22);
+        self.xw_h2_diff_m0_23.merge_from(&other.xw_h2_diff_m0_23);
+        self.xw_h2_diff_m0_24.merge_from(&other.xw_h2_diff_m0_24);
+        self.xw_h2_diff_m0_30.merge_from(&other.xw_h2_diff_m0_30);
         self.xw_h2_same_m0_l3.merge_from(&other.xw_h2_same_m0_l3);
         self.xw_h2_same_m0_l4.merge_from(&other.xw_h2_same_m0_l4);
         self.xw_h2_diff_m0_13.merge_from(&other.xw_h2_diff_m0_13);
         self.xw_h2_diff_m0_31.merge_from(&other.xw_h2_diff_m0_31);
+        self.xw_h2_diff_m0_32.merge_from(&other.xw_h2_diff_m0_32);
+        self.xw_h2_diff_m0_33.merge_from(&other.xw_h2_diff_m0_33);
+        self.xw_h2_diff_m0_34.merge_from(&other.xw_h2_diff_m0_34);
+        self.xw_h2_diff_m0_40.merge_from(&other.xw_h2_diff_m0_40);
+        self.xw_h2_diff_m0_41.merge_from(&other.xw_h2_diff_m0_41);
+        self.xw_h2_diff_m0_42.merge_from(&other.xw_h2_diff_m0_42);
+        self.xw_h2_diff_m0_43.merge_from(&other.xw_h2_diff_m0_43);
+        self.xw_h2_diff_m0_44.merge_from(&other.xw_h2_diff_m0_44);
     }
 }
 
@@ -738,6 +792,56 @@ pub fn add_xw_h2_diff_m0_gen(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_gen.add_ns(ns));
 }
 
+/// Add one timed call to the `xw_h2_diff_m0_01` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_01`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_01` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_01(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_01.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_02` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_02`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_02` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_02(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_02.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_03` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_03`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_03` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_03(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_03.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_04` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_04`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_04` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_04(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_04.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_10` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_10`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_10` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_10(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_10.add_ns(ns));
+}
+
 /// Add one timed call to the `xw_h2_diff_m0_11` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_11`.
@@ -758,6 +862,26 @@ pub fn add_xw_h2_diff_m0_12(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_12.add_ns(ns));
 }
 
+/// Add one timed call to the `xw_h2_diff_m0_14` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_14`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_14` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_14(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_14.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_20` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_20`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_20` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_20(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_20.add_ns(ns));
+}
+
 /// Add one timed call to the `xw_h2_diff_m0_21` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_21`.
@@ -776,6 +900,36 @@ pub fn add_xw_h2_diff_m0_21(ns: u64) {
 #[inline(always)]
 pub fn add_xw_h2_diff_m0_22(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_22.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_23` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_23`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_23` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_23(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_23.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_24` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_24`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_24` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_24(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_24.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_30` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_30`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_30` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_30(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_30.add_ns(ns));
 }
 
 /// Add one timed call to the `xw_h2_same_m0_l3` counter.
@@ -816,4 +970,84 @@ pub fn add_xw_h2_diff_m0_13(ns: u64) {
 #[inline(always)]
 pub fn add_xw_h2_diff_m0_31(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_31.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_32` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_32`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_32` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_32(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_32.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_33` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_33`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_33` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_33(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_33.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_34` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_34`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_34` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_34(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_34.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_40` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_40`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_40` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_40(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_40.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_41` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_41`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_41` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_41(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_41.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_42` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_42`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_42` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_42(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_42.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_43` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_43`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_43` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_43(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_43.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_h2_diff_m0_44` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_44`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_h2_diff_m0_44` counter.
+#[inline(always)]
+pub fn add_xw_h2_diff_m0_44(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_44.add_ns(ns));
 }
