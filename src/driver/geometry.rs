@@ -34,7 +34,7 @@ pub fn should_run_holomorphic(input: &Input) -> bool {
 /// - `atoms`: Atom types.
 /// - `input`: User input specifications.
 /// - `prev_states`: Converged SCF states at previous r, used for seeding.
-/// - `prev_hstates`: Converged h-SCF states at previous r, used for complex branch tracking.
+/// - `prev_htracks`: Converged h-SCF states at previous r, used for complex branch tracking.
 /// - `world`: MPI communicator object.
 /// # Returns:
 /// - `GeometryResults`: Calculated energies, timings, and SCF states for the current geometry.
@@ -43,7 +43,7 @@ pub fn run_geometry(
     atoms: &Atoms,
     input: &mut Input,
     prev_states: &[SCFState],
-    prev_hstates: &[HSCFState],
+    prev_htracks: &[HSCFState],
     world: &impl Communicator,
 ) -> GeometryResults {
     let tol = 1e-8;
@@ -58,11 +58,12 @@ pub fn run_geometry(
 
     if should_run_holomorphic(input) {
         let mut prep = if world.rank() == 0 {
-            generate_holomorphic_references(&ao, input, prev_states, prev_hstates)
+            generate_holomorphic_references(&ao, input, prev_states, prev_htracks)
         } else {
             HolomorphicReferencePrep {
                 states: Vec::new(),
                 hstates: Vec::new(),
+                htracks: Vec::new(),
                 basis: Vec::new(),
             }
         };
@@ -87,7 +88,7 @@ pub fn run_geometry(
         let timings = timers::snapshot_all_mpi(world);
         GeometryResults::from_holomorphic(
             r,
-            (prep.states, prep.hstates),
+            (prep.states, prep.hstates, prep.htracks),
             reference,
             post,
             ao.e_fci,

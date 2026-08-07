@@ -247,7 +247,7 @@ pub fn scf_cycle(
         } else {
             (fa_curr.clone(), fb_curr.clone())
         };
-        
+
         let ((ea, ca), (eb, cb)) = rayon::join(
             || general_evp_x(&fa_use, &ao.x),
             || general_evp_x(&fb_use, &ao.x),

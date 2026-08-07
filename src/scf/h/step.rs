@@ -5,12 +5,17 @@ use ndarray_linalg::Solve;
 use num_complex::Complex64;
 
 use crate::AoData;
-use crate::input::HSCFOptions;
 use crate::scf::DensityMode;
 
 use super::tangent::{geodesic_step, pack, unpack};
 use super::types::SecantPair;
-use crate::scf::{density, fock, orbital_gradient};
+use crate::scf::{density, fock_lambda, orbital_gradient};
+
+const SR1_TOL: f64 = 1e-12;
+const DENOM_TOL: f64 = 1e-10;
+const MAX_STEP: f64 = 0.5;
+const LINE_STEPS: usize = 12;
+const LINE_SHRINK: f64 = 0.5;
 
 /// Solve the complex-symmetric SR1 quasi-Newton equation in energy-weighted coordinates.
 /// # Arguments:
@@ -26,7 +31,6 @@ pub(crate) fn sr1_step(
     g: (&Array2<Complex64>, &Array2<Complex64>),
     eps: (&Array1<Complex64>, &Array1<Complex64>),
     nocc: (usize, usize),
-    opts: &HSCFOptions,
 ) -> (Array2<Complex64>, Array2<Complex64>) {
     let (ga, gb) = g;
     let (epsa, epsb) = eps;
@@ -35,8 +39,8 @@ pub(crate) fn sr1_step(
     // Convert current gradient into energy-weighted coordinates as
     // \bar g_{ai} = g_{ai} / \sqrt{\Delta{ai}} such that the true Hessian is
     // closer to the identity.
-    let gpa = weight_by_gap(ga, epsa, na, opts.denom_tol, false);
-    let gpb = weight_by_gap(gb, epsb, nb, opts.denom_tol, false);
+    let gpa = weight_by_gap(ga, epsa, na, DENOM_TOL, false);
+    let gpb = weight_by_gap(gb, epsb, nb, DENOM_TOL, false);
 
     let n = gpa.len() + gpb.len();
 
@@ -49,12 +53,12 @@ pub(crate) fn sr1_step(
     // For every secant pair stored update the approximated Hessian.
     for pair in hist {
         // Convert previous step into energy-weighted coordinates as \bar s_{ai} = s_{ai} \sqrt{\Delta_{ai}}.
-        let sa = weight_by_gap(&pair.sa, epsa, na, opts.denom_tol, true);
-        let sb = weight_by_gap(&pair.sb, epsb, nb, opts.denom_tol, true);
+        let sa = weight_by_gap(&pair.sa, epsa, na, DENOM_TOL, true);
+        let sb = weight_by_gap(&pair.sb, epsb, nb, DENOM_TOL, true);
 
         // Convert previous gradient change into energy-weighted coordinates as \bar y_{ai} = y_{ai} / \sqrt{\Delta_{ai}}.
-        let ya = weight_by_gap(&pair.ya, epsa, na, opts.denom_tol, false);
-        let yb = weight_by_gap(&pair.yb, epsb, nb, opts.denom_tol, false);
+        let ya = weight_by_gap(&pair.ya, epsa, na, DENOM_TOL, false);
+        let yb = weight_by_gap(&pair.yb, epsb, nb, DENOM_TOL, false);
 
         let s = pack(&sa, &sb);
         let y = pack(&ya, &yb);
@@ -64,7 +68,7 @@ pub(crate) fn sr1_step(
 
         // Update Hessian approximation as B_{k + 1} = B_k + (r_k r_k^T) / r_k^T s_k.
         let denom = r.dot(&s);
-        if denom.norm() > opts.sr1_tol {
+        if denom.norm() > SR1_TOL {
             let col = r.view().insert_axis(Axis(1));
             let row = r.view().insert_axis(Axis(0));
             b = b + col.dot(&row).mapv(|z| z / denom);
@@ -78,8 +82,8 @@ pub(crate) fn sr1_step(
 
     // Convert the solution back to unweighted occupied-virtual rotation coordinates.
     (
-        weight_by_gap(&pa_bar, epsa, na, opts.denom_tol, false),
-        weight_by_gap(&pb_bar, epsb, nb, opts.denom_tol, false),
+        weight_by_gap(&pa_bar, epsa, na, DENOM_TOL, false),
+        weight_by_gap(&pb_bar, epsb, nb, DENOM_TOL, false),
     )
 }
 
@@ -99,7 +103,7 @@ pub(crate) fn line_search(
     nocc: (usize, usize),
     p: (&Array2<Complex64>, &Array2<Complex64>),
     g0: f64,
-    opts: &HSCFOptions,
+    lambda: Complex64,
 ) -> (f64, Array2<Complex64>, Array2<Complex64>) {
     let (ca, cb) = c;
     let (na, nb) = nocc;
@@ -110,7 +114,7 @@ pub(crate) fn line_search(
     let mut best = (0.0, ca.clone(), cb.clone(), g0);
 
     // Try a sequence of increasingly smaller step lengths.
-    for _ in 0..opts.line_steps {
+    for _ in 0..LINE_STEPS {
         // Try both directions along the geodesic.
         for sign in [1.0, -1.0] {
             let cat = geodesic_step(ca, pa, na, alpha * sign);
@@ -119,7 +123,7 @@ pub(crate) fn line_search(
             let da = density(&cat, na, DensityMode::Holomorphic);
             let db = density(&cbt, nb, DensityMode::Holomorphic);
 
-            let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+            let (fa, fb) = fock_lambda(&ao.h, &ao.eri_coul, &da, &db, lambda);
 
             // Calculate orbital gradient g_{ai} = 2 \sum_{\mu\nu} C_a^\mu F_{\mu\nu} C_i^\nu.
             let ga = orbital_gradient(&cat, &fa, na, DensityMode::Holomorphic);
@@ -137,7 +141,7 @@ pub(crate) fn line_search(
                 return (alpha * sign, cat, cbt);
             }
         }
-        alpha *= opts.line_shrink;
+        alpha *= LINE_SHRINK;
     }
 
     (best.0, best.1, best.2)
@@ -155,18 +159,19 @@ pub(crate) fn line_search(
 /// # Returns:
 /// - `Option<(Array2<Complex64>, Array2<Complex64>)>`: Newton step if the linear solve succeeds.
 pub(crate) fn finite_difference_newton_step(
-    ca: &Array2<Complex64>,
-    cb: &Array2<Complex64>,
+    c: (&Array2<Complex64>, &Array2<Complex64>),
     ao: &AoData,
-    na: usize,
-    nb: usize,
-    ga: &Array2<Complex64>,
-    gb: &Array2<Complex64>,
+    nocc: (usize, usize),
+    g: (&Array2<Complex64>, &Array2<Complex64>),
+    lambda: Complex64,
 ) -> Option<(Array2<Complex64>, Array2<Complex64>)> {
+    let (ga, gb) = g;
+
     let g0 = pack(ga, gb);
-    let h = finite_difference_hessian(ca, cb, ao, na, nb, ga, gb);
+    let h = finite_difference_hessian(c, ao, nocc, g, lambda);
     let rhs = g0.mapv(|z| -z);
     let p = h.solve_into(rhs).ok()?;
+
     Some(unpack(
         &p,
         (ga.nrows(), ga.ncols()),
@@ -186,14 +191,16 @@ pub(crate) fn finite_difference_newton_step(
 /// # Returns:
 /// - `Array2<Complex64>`: Finite-difference Jacobian of the h-SCF gradient.
 pub(crate) fn finite_difference_hessian(
-    ca: &Array2<Complex64>,
-    cb: &Array2<Complex64>,
+    c: (&Array2<Complex64>, &Array2<Complex64>),
     ao: &AoData,
-    na: usize,
-    nb: usize,
-    ga: &Array2<Complex64>,
-    gb: &Array2<Complex64>,
+    nocc: (usize, usize),
+    g: (&Array2<Complex64>, &Array2<Complex64>),
+    lambda: Complex64,
 ) -> Array2<Complex64> {
+    let (ca, cb) = c;
+    let (na, nb) = nocc;
+    let (ga, gb) = g;
+
     let g0 = pack(ga, gb);
     let n = g0.len();
     let eps = 1.0e-4;
@@ -226,7 +233,8 @@ pub(crate) fn finite_difference_hessian(
         let da = density(&cat, na, DensityMode::Holomorphic);
         let db = density(&cbt, nb, DensityMode::Holomorphic);
 
-        let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+        let (fa, fb) = fock_lambda(&ao.h, &ao.eri_coul, &da, &db, lambda);
+
         let gt_a = orbital_gradient(&cat, &fa, na, DensityMode::Holomorphic);
         let gt_b = orbital_gradient(&cbt, &fb, nb, DensityMode::Holomorphic);
 
@@ -287,14 +295,13 @@ fn weight_by_gap(
 pub(crate) fn limit_step(
     pa: &mut Array2<Complex64>,
     pb: &mut Array2<Complex64>,
-    max_step: f64,
 ) {
     // ||p|| = \sqrt{\sum_{ai} |p_{ai}^\alpha|^2 + \sum_{ai} |p_{ai}^\beta|^2}.
     let n = step_norm(pa, pb);
 
     // If the proposed step size found by the SR1 solve is too big scale it down.
-    if n > max_step && n > 0.0 {
-        let scale = max_step / n;
+    if n > MAX_STEP {
+        let scale = MAX_STEP / n;
         pa.mapv_inplace(|z| z * scale);
         pb.mapv_inplace(|z| z * scale);
     }

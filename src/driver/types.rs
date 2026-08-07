@@ -18,6 +18,8 @@ pub struct GeometryResults {
     pub states: Vec<SCFState>,
     /// Complex h-SCF states generated for this geometry.
     pub hstates: Vec<HSCFState>,
+    /// Off-axis h-SCF states retained only for geometry continuation.
+    pub htracks: Vec<HSCFState>,
     /// RHF energy at this geometry.
     pub e_rhf: f64,
     /// Reference-space NOCI energy at this geometry.
@@ -64,6 +66,7 @@ impl GeometryResults {
             r,
             states,
             hstates: Vec::new(),
+            htracks: Vec::new(),
             e_rhf,
             e_noci_ref: reference.e_noci,
             e_noci_qmc_det: post.e_noci_qmc_det,
@@ -89,19 +92,20 @@ impl GeometryResults {
     /// - `GeometryResults`: Printable geometry results.
     pub fn from_holomorphic(
         r: f64,
-        state_sets: (Vec<SCFState>, Vec<HSCFState>),
+        state_sets: (Vec<SCFState>, Vec<HSCFState>, Vec<HSCFState>),
         reference: ReferenceRun<Complex64>,
         post: PostReferenceResults,
         e_fci: Option<f64>,
         nranks: usize,
         timings: timers::Totals,
     ) -> Self {
-        let (states, hstates) = state_sets;
+        let (states, hstates, htracks) = state_sets;
         let e_rhf = states.first().map(|st| st.e).unwrap_or(0.0);
         Self {
             r,
             states,
             hstates,
+            htracks,
             e_rhf,
             e_noci_ref: reference.e_noci,
             e_noci_qmc_det: post.e_noci_qmc_det,

@@ -384,5 +384,6 @@ pub(crate) fn generate_reference_basis_metadynamics(
     ReferenceBasis {
         states: generate_states_metadynamics(ao, input, prev_map, meta),
         hstates: Vec::new(),
+        htracks: Vec::new(),
     }
 }

@@ -34,7 +34,7 @@ pub use excit::ExcitationOptions;
 pub use mol::MolOptions;
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, NOCCMCOptions, QMCOptions};
-pub use scf::{DiisOptions, HSCFOptions, SCFInfo};
+pub use scf::{DiisOptions, SCFInfo};
 pub use snoci::{GMRESOptions, SNOCIFullM, SNOCIOptions, SNOCIPreconditioner};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
 pub use wicks::{WicksOptions, WicksStorage};
@@ -46,7 +46,7 @@ pub use parse::load_input;
 pub struct Input {
     /// Molecular geometry and basis options.
     pub mol: MolOptions,
-    /// SCF convergence and h-SCF options.
+    /// SCF convergence and options.
     pub scf: SCFInfo,
     /// Output and restart options.
     pub write: WriteOptions,

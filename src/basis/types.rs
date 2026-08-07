@@ -8,4 +8,6 @@ pub struct ReferenceBasis {
     pub states: Vec<SCFState>,
     /// Complex h-SCF states plus promoted real states when holomorphic recipes are present.
     pub hstates: Vec<HSCFState>,
+    /// Off-axis h-SCF states used only for geometry continuation.
+    pub htracks: Vec<HSCFState>,
 }

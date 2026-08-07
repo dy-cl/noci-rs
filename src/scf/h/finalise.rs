@@ -6,12 +6,11 @@ use ndarray::Array2;
 use num_complex::Complex64;
 
 use crate::input::Input;
-use crate::scf::DensityMode;
+use crate::scf::{DensityMode, density, energy, fock_lambda};
 use crate::utils::print_array2_indexed;
 use crate::{AoData, Excitation, HSCFState};
 
 use super::types::HSCFRunData;
-use crate::scf::{density, energy, fock};
 
 /// Construct final h-SCF state from optimised complex orbitals.
 /// # Arguments:
@@ -31,11 +30,14 @@ pub(crate) fn finalise(
 ) -> HSCFState {
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
-
+    
+    // Construct Holomorphic densities in complex orthogonal convention.
     let da = density(&ca, na, DensityMode::Holomorphic);
     let db = density(&cb, nb, DensityMode::Holomorphic);
-
-    let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
+    
+    // Construct fock matrices at the same two electron integral scaling 
+    // parameter that was used for finding this state, and evaluate its energy.
+    let (fa, fb) = fock_lambda(&ao.h, &ao.eri_coul, &da, &db, run.lambda);
     let e = energy(&ao.h, ao.enuc, &da, &db, &fa, &fb);
 
     if input.write.verbose {

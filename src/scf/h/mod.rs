@@ -1,22 +1,16 @@
 // scf/h/mod.rs
 
-mod build;
 mod canonical;
-mod distance;
 mod finalise;
 mod optimise;
-mod perturb;
 mod seed;
-mod select;
 mod step;
 mod tangent;
+mod track;
 mod types;
 
-// Public type re-exports.
-pub use types::{HSCFGenerationLookups, StateLookups};
+// Restricted function re-exports.
+pub(crate) use track::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};
 
 // Public function re-exports.
-pub use build::build_hscf_state;
 pub use canonical::normalise_hermitian;
-pub use optimise::hscf_cycle;
-pub use seed::h_seed_orbitals;

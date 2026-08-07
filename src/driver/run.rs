@@ -26,7 +26,7 @@ pub fn run(mut input: Input) {
 
     let t_total = Instant::now();
     let mut prev_states: Vec<SCFState> = Vec::new();
-    let mut prev_hstates: Vec<HSCFState> = Vec::new();
+    let mut prev_htracks: Vec<HSCFState> = Vec::new();
 
     let universe = mpi::initialize().unwrap();
     let world = universe.world();
@@ -42,13 +42,16 @@ pub fn run(mut input: Input) {
 
     for (i, r) in rlist.iter().copied().enumerate() {
         println!("\n");
+
         let atoms: &Atoms = &geoms[i];
-        let res = run_geometry(r, atoms, &mut input, &prev_states, &prev_hstates, &world);
+        let res = run_geometry(r, atoms, &mut input, &prev_states, &prev_htracks, &world);
+
         if irank == 0 {
             print_report(&res, &input);
         }
+
         prev_states = res.states.clone();
-        prev_hstates = res.hstates.clone();
+        prev_htracks = res.htracks.clone();
     }
     if irank == 0 {
         println!("\n Total wall time: {:?}", t_total.elapsed());

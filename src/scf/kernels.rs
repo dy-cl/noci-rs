@@ -97,6 +97,73 @@ pub fn fock<T: StateScalar>(
     (fa, fb)
 }
 
+/// Build spin-resolved unrestricted Fock matrices with scaled electron-electron interaction.
+/// # Arguments:
+/// - `h`: One-electron Hamiltonian.
+/// - `eri`: Coulomb ERIs `(pq|rs)`.
+/// - `da`: Alpha-spin density matrix.
+/// - `db`: Beta-spin density matrix.
+/// - `lambda`: Electron-electron interaction scaling.
+/// # Returns:
+/// - `(Array2<T>, Array2<T>)`: Alpha- and beta-spin Fock matrices.
+pub fn fock_lambda<T: StateScalar>(
+    h: &Array2<f64>,
+    eri: &Array4<f64>,
+    da: &Array2<T>,
+    db: &Array2<T>,
+    lambda: T,
+) -> (Array2<T>, Array2<T>) {
+    let n = h.nrows();
+    let d = da + db;
+
+    let rows: Vec<(Vec<T>, Vec<T>)> = (0..n)
+        .into_par_iter()
+        .map(|p| {
+            let mut fa_row: Vec<T> = (0..n).map(|_| T::from_real(0.0)).collect();
+            let mut fb_row: Vec<T> = (0..n).map(|_| T::from_real(0.0)).collect();
+
+            for q in 0..=p {
+                let mut j = T::from_real(0.0);
+                let mut ka = T::from_real(0.0);
+                let mut kb = T::from_real(0.0);
+
+                for r in 0..n {
+                    for s in 0..n {
+                        j += d[(r, s)] * T::from_real(eri[(p, q, r, s)]);
+                        ka += da[(r, s)] * T::from_real(eri[(p, r, q, s)]);
+                        kb += db[(r, s)] * T::from_real(eri[(p, r, q, s)]);
+                    }
+                }
+
+                let hpq = T::from_real(h[(p, q)]);
+                fa_row[q] = hpq + lambda * (j - ka);
+                fb_row[q] = hpq + lambda * (j - kb);
+            }
+
+            (fa_row, fb_row)
+        })
+        .collect();
+
+    let mut fa = Array2::<T>::zeros((n, n));
+    let mut fb = Array2::<T>::zeros((n, n));
+
+    for p in 0..n {
+        for q in 0..=p {
+            fa[(p, q)] = rows[p].0[q];
+            fb[(p, q)] = rows[p].1[q];
+        }
+    }
+
+    for p in 0..n {
+        for q in 0..p {
+            fa[(q, p)] = fa[(p, q)];
+            fb[(q, p)] = fb[(p, q)];
+        }
+    }
+
+    (fa, fb)
+}
+
 /// Calculate unrestricted SCF energy from spin densities and Fock matrices.
 /// # Arguments:
 /// - `h`: One-electron Hamiltonian.

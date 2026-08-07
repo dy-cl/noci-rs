@@ -23,14 +23,14 @@ fn state_map(states: &[SCFState]) -> HashMap<&str, &SCFState> {
 /// - `ao`: Contains AO integrals and other system data.
 /// - `input`: Contains user inputted options.
 /// - `prev`: Previous real states, if available for continuation.
-/// - `prev_h`: Previous h-SCF states, if available for holomorphic continuation.
+/// - `prev_htracks`: Previous h-SCF states, if available for holomorphic continuation.
 /// # Returns
 /// - `ReferenceBasis`: Real SCF states and any complex h-SCF states generated from the same recipes.
 pub fn generate_reference_noci_basis(
     ao: &AoData,
     input: &mut Input,
     prev: Option<&[SCFState]>,
-    prev_h: Option<&[HSCFState]>,
+    prev_htracks: Option<&[HSCFState]>,
 ) -> ReferenceBasis {
     // Construct lookup table from state label to previous SCF states. Allows for seeding of SCF
     // states at a subsequent geometry to be done by label rather than via index which breaks
@@ -41,10 +41,10 @@ pub fn generate_reference_noci_basis(
     let mut states = std::mem::replace(&mut input.states, StateType::Mom(Vec::new()));
     let basis = match &mut states {
         StateType::Mom(recipes) => {
-            generate_reference_basis_mom(ao, &*input, prev, prev_h, &prev_map, recipes)
+            generate_reference_basis_mom(ao, &*input, prev, prev_htracks, &prev_map, recipes)
         }
         StateType::Metadynamics(meta) => {
-            generate_reference_basis_metadynamics(ao, &*input, prev_h, &prev_map, meta)
+            generate_reference_basis_metadynamics(ao, &*input, prev_htracks, &prev_map, meta)
         }
     };
 

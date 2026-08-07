@@ -5,14 +5,17 @@ use num_complex::Complex64;
 
 use crate::input::Input;
 use crate::scf::DensityMode;
+use crate::scf::print::print_header_h;
+use crate::scf::{density, energy, fock_lambda, orbital_gradient};
 use crate::{AoData, HSCFState};
 
 use super::canonical::pseudo_canonicalise;
 use super::finalise::finalise;
 use super::step::{finite_difference_newton_step, limit_step, line_search, sr1_step, step_norm};
 use super::types::{HSCFRunData, SecantPair, SpinBlock};
-use crate::scf::print::print_header_h;
-use crate::scf::{density, energy, fock, orbital_gradient};
+
+const G_TOL: f64 = 1e-10;
+const HISTORY: usize = 20;
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.
 /// # Arguments:
@@ -20,44 +23,49 @@ use crate::scf::{density, energy, fock, orbital_gradient};
 /// - `cb0`: Initial beta-spin MO coefficients ordered as occupied then virtual.
 /// - `ao`: Contains AO integrals and metadata.
 /// - `input`: User input specifications.
-/// - `label`: Label for the h-SCF state.
-/// - `noci_basis`: Whether this state is intended for a later NOCI basis.
-/// - `i`: State index.
+/// - `run`: Immutable data for this h-SCF optimisation, including the state label,
+///   NOCI status, parent index, and electron-electron scaling.
 /// # Returns:
 /// - `Option<HSCFState>`: Converged h-SCF state if optimisation succeeds.
-pub fn hscf_cycle(
+pub(crate) fn hscf_cycle(
     ca0: &Array2<Complex64>,
     cb0: &Array2<Complex64>,
     ao: &AoData,
     input: &Input,
-    label: &str,
-    noci_basis: bool,
-    i: usize,
+    run: HSCFRunData<'_>,
 ) -> Option<HSCFState> {
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
-    let opts = &input.scf.h;
+    
+    // Use local copies of orbital coefficients.
     let mut ca = ca0.clone();
     let mut cb = cb0.clone();
+    
+    // History of the SR1 orbital displacements and gradient differences 
+    // to improve approximation of Hessian quantities.
     let mut hist: Vec<SecantPair> = Vec::new();
-    let run = HSCFRunData {
-        label,
-        noci_basis,
-        parent: i,
-    };
 
-    print_header_h(input, label);
+    print_header_h(input, run.label);
 
+    // Retain previous gradient and orbital displacement to construct 
+    // secant pairs which are stored in `hist`.
     let mut g_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
     let mut step_prev: Option<(Array2<Complex64>, Array2<Complex64>)> = None;
+    
+    // Quantities used to monitor whether the orbital gradient descent 
+    // has stagnated, at which point a finite-difference step is used to 
+    // escape.
     let mut best_gnorm = f64::INFINITY;
     let mut stagnant = 0usize;
 
-    for iter in 0..opts.max_cycle {
+    for iter in 0..input.scf.max_cycle {
         let da = density(&ca, na, DensityMode::Holomorphic);
         let db = density(&cb, nb, DensityMode::Holomorphic);
-        let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
 
+        let (fa, fb) = fock_lambda(&ao.h, &ao.eri_coul, &da, &db, run.lambda);
+        
+        // Pseudo canonicalise alpha occupied and virtual subspaces seperately. 
+        // The stored secant tangent-space quantities must undergo the same transform.
         let mut extra_a: Vec<&mut Array2<Complex64>> = Vec::new();
         if let Some((sa, _)) = step_prev.as_mut() {
             extra_a.push(sa);
@@ -66,7 +74,9 @@ pub fn hscf_cycle(
             extra_a.push(ga);
         }
         let epsa = pseudo_canonicalise(&mut ca, &fa, na, &mut hist, SpinBlock::Alpha, &mut extra_a);
-
+        
+        // Pseudo canonicalise beta occupied and virtual subspaces seperately. 
+        // The stored secant tangent-space quantities must undergo the same transform.
         let mut extra_b: Vec<&mut Array2<Complex64>> = Vec::new();
         if let Some((_, sb)) = step_prev.as_mut() {
             extra_b.push(sb);
@@ -89,7 +99,7 @@ pub fn hscf_cycle(
             + gb.iter().map(|z| z.norm_sqr()).sum::<f64>())
         .sqrt();
 
-        if gnorm < opts.g_tol {
+        if gnorm < G_TOL {
             if input.write.verbose {
                 println!(
                     "{:4} {:16.10} {:+16.10}i {:12.4e} {:>12} {:>12}",
@@ -98,17 +108,23 @@ pub fn hscf_cycle(
             }
             return Some(finalise(ca, cb, ao, input, run));
         }
-
+        
+        // Store the new secant pair:
+        // `s_k = \alpha_k p_k`,
+        // `y_k` = g_{k + 1} - g_k.
         if let (Some((sa, sb)), Some((gpa, gpb))) = (step_prev.take(), g_prev.take()) {
             let ya = &ga - &gpa;
             let yb = &gb - &gpb;
 
             hist.push(SecantPair { sa, sb, ya, yb });
-            if hist.len() > opts.history {
+            // Only keep the desired number of historical steps.
+            if hist.len() > HISTORY {
                 hist.remove(0);
             }
         }
-
+        
+        // Iteration is not going in a useful direction if norm falls by 
+        // less than some amount, currently set very arbitrarily.
         if gnorm < best_gnorm * 0.95 {
             best_gnorm = gnorm;
             stagnant = 0;
@@ -117,6 +133,8 @@ pub fn hscf_cycle(
         }
 
         let use_fd_newton = stagnant >= 8;
+
+        // After an unacceptable amount of useless steps deploy finite-difference.
         if use_fd_newton && !hist.is_empty() {
             hist.clear();
             stagnant = 0;
@@ -124,19 +142,22 @@ pub fn hscf_cycle(
                 println!("h-SCF progress stalled; using finite-difference Newton rescue step.");
             }
         }
-
         let (mut pa, mut pb) = if use_fd_newton {
-            finite_difference_newton_step(&ca, &cb, ao, na, nb, &ga, &gb)
-                .unwrap_or_else(|| sr1_step(&hist, (&ga, &gb), (&epsa, &epsb), (na, nb), opts))
+            finite_difference_newton_step((&ca, &cb), ao, (na, nb), (&ga, &gb), run.lambda)
+                .unwrap_or_else(|| sr1_step(&hist, (&ga, &gb), (&epsa, &epsb), (na, nb)))
         } else {
-            sr1_step(&hist, (&ga, &gb), (&epsa, &epsb), (na, nb), opts)
+            sr1_step(&hist, (&ga, &gb), (&epsa, &epsb), (na, nb))
         };
-
-        limit_step(&mut pa, &mut pb, opts.max_step);
+        
+        // Limit the total occupied-virtual rotation before the line search so 
+        // that a poor approximation to the Hessian cannot produce a huge orbital step.
+        limit_step(&mut pa, &mut pb);
         let pnorm = step_norm(&pa, &pb);
-
+        
+        // Backtrack along proposed direction and accept a step only when reducing the 
+        // orbital gradient.
         let (alpha, ca_new, cb_new) =
-            line_search((&ca, &cb), ao, (na, nb), (&pa, &pb), gnorm, opts);
+            line_search((&ca, &cb), ao, (na, nb), (&pa, &pb), gnorm, run.lambda);
 
         if input.write.verbose {
             println!(

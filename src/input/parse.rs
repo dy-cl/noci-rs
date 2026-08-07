@@ -5,8 +5,8 @@ use std::fs;
 use rlua::{Lua, Table, Value};
 
 use super::{
-    DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, HSCFOptions,
-    Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
+    DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, Input,
+    Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
     SCFExcitation, SCFInfo, SNOCIFullM, SNOCIOptions, SNOCIPreconditioner, SpatialBias, Spin,
     SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
@@ -178,29 +178,13 @@ fn read_scf(scf_tbl: Option<Table>) -> SCFInfo {
     if let Some(scf_tbl) = scf_tbl {
         let defaults = SCFInfo::default();
         let diis_defaults = DiisOptions::default();
-        let h_defaults = HSCFOptions::default();
         let diis_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("diis").unwrap_or(None);
-        let h_tbl: Option<Table> = scf_tbl.get::<_, Option<Table>>("h").unwrap_or(None);
         let diis = if let Some(diis_tbl) = diis_tbl {
             DiisOptions {
                 space: diis_tbl.get("space").unwrap_or(diis_defaults.space),
             }
         } else {
             diis_defaults
-        };
-        let h = if let Some(h_tbl) = h_tbl {
-            HSCFOptions {
-                max_cycle: h_tbl.get("max_cycle").unwrap_or(h_defaults.max_cycle),
-                g_tol: h_tbl.get("g_tol").unwrap_or(h_defaults.g_tol),
-                sr1_tol: h_tbl.get("sr1_tol").unwrap_or(h_defaults.sr1_tol),
-                denom_tol: h_tbl.get("denom_tol").unwrap_or(h_defaults.denom_tol),
-                max_step: h_tbl.get("max_step").unwrap_or(h_defaults.max_step),
-                line_steps: h_tbl.get("line_steps").unwrap_or(h_defaults.line_steps),
-                line_shrink: h_tbl.get("line_shrink").unwrap_or(h_defaults.line_shrink),
-                history: h_tbl.get("history").unwrap_or(h_defaults.history),
-            }
-        } else {
-            h_defaults
         };
         SCFInfo {
             max_cycle: scf_tbl.get("max_cycle").unwrap_or(defaults.max_cycle),
@@ -209,7 +193,6 @@ fn read_scf(scf_tbl: Option<Table>) -> SCFInfo {
             d_tol: scf_tbl.get("d_tol").unwrap_or(defaults.d_tol),
             diis,
             do_fci: scf_tbl.get("do_fci").unwrap_or(defaults.do_fci),
-            h,
         }
     } else {
         SCFInfo::default()
