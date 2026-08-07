@@ -703,6 +703,36 @@ pub fn print_report(
         8,
     );
     print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 0, lb = 1)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_01,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 0, lb = 2)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_02,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 0, lb = 3)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_03,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 0, lb = 4)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_04,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 1, lb = 0)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_10,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 1, lb = 1)",
         res.timings.nonorthogonalwicks.xw_h2_diff_m0_11,
         res.timings.nonorthogonalwicks.xw_h2_diff_m0,
@@ -721,6 +751,18 @@ pub fn print_report(
         8,
     );
     print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 1, lb = 4)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_14,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 2, lb = 0)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_20,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 2, lb = 1)",
         res.timings.nonorthogonalwicks.xw_h2_diff_m0_21,
         res.timings.nonorthogonalwicks.xw_h2_diff_m0,
@@ -733,8 +775,74 @@ pub fn print_report(
         8,
     );
     print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 2, lb = 3)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_23,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 2, lb = 4)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_24,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 3, lb = 0)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_30,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
         "Different-spin two-electron matrix elements (m = 0, la = 3, lb = 1)",
         res.timings.nonorthogonalwicks.xw_h2_diff_m0_31,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 3, lb = 2)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_32,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 3, lb = 3)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_33,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 3, lb = 4)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_34,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 4, lb = 0)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_40,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 4, lb = 1)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_41,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 4, lb = 2)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_42,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 4, lb = 3)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_43,
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0,
+        8,
+    );
+    print_relative_counter(
+        "Different-spin two-electron matrix elements (m = 0, la = 4, lb = 4)",
+        res.timings.nonorthogonalwicks.xw_h2_diff_m0_44,
         res.timings.nonorthogonalwicks.xw_h2_diff_m0,
         8,
     );

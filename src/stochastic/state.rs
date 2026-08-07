@@ -1,4 +1,6 @@
 // stochastic/state.rs
+use std::collections::HashMap;
+
 use mpi::traits::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -418,6 +420,11 @@ pub(in crate::stochastic) struct ThreadPropagation {
     pub(in crate::stochastic) samples: Vec<f64>,
     /// Thread local RNG.
     pub(in crate::stochastic) rng: SmallRng,
+    /// Thread-local Hamiltonian and overlap values reused only within one propagation iteration.
+    /// The cache is cleared before each worker starts an iteration, so memory is bounded by the
+    /// number of distinct determinant pairs requested by that worker during one iteration rather
+    /// than by the full determinant basis.
+    hs_cache: HashMap<(usize, usize), (f64, f64)>,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
     pub(in crate::stochastic) wick_scratch: Box<WickScratchSpin<f64>>,
 }
@@ -442,6 +449,7 @@ impl ThreadPropagation {
             remote: Vec::new(),
             samples: Vec::new(),
             rng: SmallRng::seed_from_u64(seed),
+            hs_cache: HashMap::new(),
             wick_scratch: Box::new(WickScratchSpin::with_sizes(maxsame, maxla, maxlb)),
         }
     }
@@ -455,6 +463,36 @@ impl ThreadPropagation {
         self.local.clear();
         self.remote.clear();
         self.samples.clear();
+        self.hs_cache.clear();
+    }
+
+    /// Find Hamiltonian and overlap matrix elements using the thread-local iteration cache.
+    /// The cache is intentionally short-lived: it is cleared by `ThreadPropagation::clear`
+    /// before each propagation iteration, so it avoids repeated HS work without retaining
+    /// report- or run-length storage. It stores only pairs actually requested by one worker during
+    /// the current iteration, so memory remains small compared with any dense HS matrix.
+    /// # Arguments:
+    /// - `data`: Immutable stochastic propagation data.
+    /// - `i`: First determinant index.
+    /// - `j`: Second determinant index.
+    /// # Returns:
+    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements \(H_{ij}\) and \(S_{ij}\).
+    #[inline(always)]
+    fn cached_hs(
+        &mut self,
+        data: &NOCIData<'_, f64>,
+        i: usize,
+        j: usize,
+    ) -> (f64, f64) {
+        let key = if i <= j { (i, j) } else { (j, i) };
+
+        if let Some(&hs) = self.hs_cache.get(&key) {
+            return hs;
+        }
+
+        let hs = find_hs(data, key.0, key.1, self.wick_scratch.as_mut());
+        self.hs_cache.insert(key, hs);
+        hs
     }
 
     /// Generate the diagonal real population change for one sampled determinant.
@@ -529,16 +567,23 @@ impl ThreadPropagation {
 
             for iattempt in 0..nattempts {
                 let next = if iattempt + 1 < nattempts {
-                    let next = sample_uniform(&mut self.rng);
-
-                    Some(next)
+                    Some(sample_uniform(&mut self.rng))
                 } else {
                     None
                 };
 
-                let (hxw, sxw) = find_hs(data, lambda, gamma, self.wick_scratch.as_mut());
-
-                let k = shift.coupling(hxw, sxw);
+                let lambda_det = &data.basis[lambda];
+                let gamma_det = &data.basis[gamma];
+                let k = if lambda_det.parent == gamma_det.parent
+                    && (lambda_det.oa ^ gamma_det.oa).count_ones()
+                        + (lambda_det.ob ^ gamma_det.ob).count_ones()
+                        > 4
+                {
+                    0.0
+                } else {
+                    let (hxw, sxw) = self.cached_hs(data, lambda, gamma);
+                    shift.coupling(hxw, sxw)
+                };
                 let raw = -dt * k * parent_population / pgen;
 
                 if write_excitation_hist {

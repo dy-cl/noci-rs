@@ -505,138 +505,225 @@ pub fn minor<T: Copy>(
     r_rm: usize,
     c_rm: usize,
 ) {
-    match n {
-        0 | 1 => {}
-        2 => minor::minor2(out, m, r_rm, c_rm),
-        3 => minor::minor3(out, m, r_rm, c_rm),
-        4 => minor::minor4(out, m, r_rm, c_rm),
-        _ => minor::minor_gen(out, m, n, r_rm, c_rm),
+    if n == 0 {
+        return;
+    }
+
+    let mut ii = 0usize;
+    for i in 0..n {
+        if i == r_rm {
+            continue;
+        }
+        let mut jj = 0usize;
+        for j in 0..n {
+            if j == c_rm {
+                continue;
+            }
+            out[ii * (n - 1) + jj] = m[i * n + j];
+            jj += 1;
+        }
+        ii += 1;
     }
 }
 
-mod minor {
-    /// Calculate minor of a square matrix for excitation rank 2.
+/// Construct a matrix minor and compute its adjugate transpose. Fixed kernels fuse the minor
+/// extraction with the adjugate calculation for small matrices.
+/// # Arguments:
+/// - `adjt`: Cofactor matrix of the minor, in row-major order.
+/// - `minor_out`: Scratch matrix receiving the explicit minor for generic callers.
+/// - `invs`: Scratch inverse singular values used by the generic adjugate fallback.
+/// - `lu`: Scratch LU storage used by the generic adjugate fallback.
+/// - `m`: Base matrix.
+/// - `n`: Dimension of the square matrix `m`.
+/// - `r_rm`: Row index to remove.
+/// - `c_rm`: Column index to remove.
+/// - `thresh`: Numerical threshold used by the adjugate fallback.
+/// # Returns
+/// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
+#[inline(always)]
+pub fn minor_adjugate_transpose<T: StateScalar>(
+    adjt: &mut [T],
+    minor_out: &mut [T],
+    invs: &mut [f64],
+    lu: &mut [T],
+    m: &[T],
+    n: usize,
+    r_rm: usize,
+    c_rm: usize,
+    thresh: f64,
+) -> Option<T> {
+    match n {
+        0 => None,
+        1 => Some(T::from_real(1.0)),
+        2 => minor_adjt::minor2_adjt1(adjt, minor_out, m, r_rm, c_rm),
+        3 => minor_adjt::minor3_adjt2(adjt, minor_out, m, r_rm, c_rm),
+        4 => minor_adjt::minor4_adjt3(adjt, minor_out, m, r_rm, c_rm),
+        _ => {
+            minor(minor_out, m, n, r_rm, c_rm);
+            adjugate_transpose(adjt, invs, lu, minor_out, n - 1, thresh)
+        }
+    }
+}
+
+mod minor_adjt {
+    use super::det_mod::det2scalar;
+    use crate::StateScalar;
+
+    /// Compute the adjugate transpose of a `1 x 1` minor cut from a `2 x 2` matrix.
     /// # Arguments:
-    /// - `out`: Matrix to be written into.
-    /// - `m`: Base matrix.
+    /// - `adjt`: Output row-major cofactor matrix of the minor.
+    /// - `minor_out`: Output row-major minor matrix.
+    /// - `m`: Base row-major `2 x 2` matrix.
     /// - `r_rm`: Row index to remove.
     /// - `c_rm`: Column index to remove.
-    /// # Returns
-    /// - `()`: Writes the minor into `out`.
+    /// # Returns:
+    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn minor2<T: Copy>(
-        out: &mut [T],
+    pub(super) fn minor2_adjt1<T: StateScalar>(
+        adjt: &mut [T],
+        minor_out: &mut [T],
         m: &[T],
         r_rm: usize,
         c_rm: usize,
-    ) {
+    ) -> Option<T> {
         let r = 1 ^ r_rm;
         let c = 1 ^ c_rm;
-        out[0] = m[r * 2 + c];
+        minor_out[0] = m[r * 2 + c];
+        adjt[0] = T::from_real(1.0);
+        Some(minor_out[0])
     }
 
-    /// Calculate minor of a square matrix for excitation rank 3.
+    /// Compute the adjugate transpose of a `2 x 2` minor cut from a `3 x 3` matrix.
     /// # Arguments:
-    /// - `out`: Matrix to be written into.
-    /// - `m`: Base matrix.
+    /// - `adjt`: Output row-major cofactor matrix of the minor.
+    /// - `minor_out`: Output row-major minor matrix.
+    /// - `m`: Base row-major `3 x 3` matrix.
     /// - `r_rm`: Row index to remove.
     /// - `c_rm`: Column index to remove.
-    /// # Returns
-    /// - `()`: Writes the minor into `out`.
+    /// # Returns:
+    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn minor3<T: Copy>(
-        out: &mut [T],
+    pub(super) fn minor3_adjt2<T: StateScalar>(
+        adjt: &mut [T],
+        minor_out: &mut [T],
         m: &[T],
         r_rm: usize,
         c_rm: usize,
-    ) {
-        let mut ii = 0usize;
-        for i in 0..3 {
-            if i == r_rm {
-                continue;
-            }
-            let base_i = i * 3;
-            let base_o = ii * 2;
-            let mut jj = 0usize;
-            for j in 0..3 {
-                if j == c_rm {
-                    continue;
-                }
-                out[base_o + jj] = m[base_i + j];
-                jj += 1;
-            }
-            ii += 1;
+    ) -> Option<T> {
+        let rows = match r_rm {
+            0 => [1, 2],
+            1 => [0, 2],
+            2 => [0, 1],
+            _ => unreachable!(),
+        };
+        let cols = match c_rm {
+            0 => [1, 2],
+            1 => [0, 2],
+            2 => [0, 1],
+            _ => unreachable!(),
+        };
+
+        let a00 = m[rows[0] * 3 + cols[0]];
+        let a01 = m[rows[0] * 3 + cols[1]];
+        let a10 = m[rows[1] * 3 + cols[0]];
+        let a11 = m[rows[1] * 3 + cols[1]];
+
+        minor_out[0] = a00;
+        minor_out[1] = a01;
+        minor_out[2] = a10;
+        minor_out[3] = a11;
+
+        let det = det2scalar(a00, a01, a10, a11);
+        if !det.abs().is_finite() {
+            return None;
         }
+
+        adjt[0] = a11;
+        adjt[1] = T::from_real(-1.0) * a10;
+        adjt[2] = T::from_real(-1.0) * a01;
+        adjt[3] = a00;
+
+        Some(det)
     }
 
-    /// Calculate minor of a square matrix for excitation rank 4.
+    /// Compute the adjugate transpose of a `3 x 3` minor cut from a `4 x 4` matrix.
     /// # Arguments:
-    /// - `out`: Matrix to be written into.
-    /// - `m`: Base matrix.
+    /// - `adjt`: Output row-major cofactor matrix of the minor.
+    /// - `minor_out`: Output row-major minor matrix.
+    /// - `m`: Base row-major `4 x 4` matrix.
     /// - `r_rm`: Row index to remove.
     /// - `c_rm`: Column index to remove.
-    /// # Returns
-    /// - `()`: Writes the minor into `out`.
+    /// # Returns:
+    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn minor4<T: Copy>(
-        out: &mut [T],
+    pub(super) fn minor4_adjt3<T: StateScalar>(
+        adjt: &mut [T],
+        minor_out: &mut [T],
         m: &[T],
         r_rm: usize,
         c_rm: usize,
-    ) {
-        let mut ii = 0usize;
-        for i in 0..4 {
-            if i == r_rm {
-                continue;
-            }
-            let base_i = i * 4;
-            let base_o = ii * 3;
-            let mut jj = 0usize;
-            for j in 0..4 {
-                if j == c_rm {
-                    continue;
-                }
-                out[base_o + jj] = m[base_i + j];
-                jj += 1;
-            }
-            ii += 1;
-        }
-    }
+    ) -> Option<T> {
+        let rows = match r_rm {
+            0 => [1, 2, 3],
+            1 => [0, 2, 3],
+            2 => [0, 1, 3],
+            3 => [0, 1, 2],
+            _ => unreachable!(),
+        };
+        let cols = match c_rm {
+            0 => [1, 2, 3],
+            1 => [0, 2, 3],
+            2 => [0, 1, 3],
+            3 => [0, 1, 2],
+            _ => unreachable!(),
+        };
 
-    /// Calculate minor of a square matrix for arbitrary excitation rank.
-    /// # Arguments:
-    /// - `out`: Matrix to be written into.
-    /// - `m`: Base matrix.
-    /// - `r_rm`: Row index to remove.
-    /// - `c_rm`: Column index to remove.
-    /// # Returns
-    /// - `()`: Writes the minor into `out`.
-    #[inline(always)]
-    pub(super) fn minor_gen<T: Copy>(
-        out: &mut [T],
-        m: &[T],
-        n: usize,
-        r_rm: usize,
-        c_rm: usize,
-    ) {
-        if n == 0 {
-            return;
+        let a00 = m[rows[0] * 4 + cols[0]];
+        let a01 = m[rows[0] * 4 + cols[1]];
+        let a02 = m[rows[0] * 4 + cols[2]];
+        let a10 = m[rows[1] * 4 + cols[0]];
+        let a11 = m[rows[1] * 4 + cols[1]];
+        let a12 = m[rows[1] * 4 + cols[2]];
+        let a20 = m[rows[2] * 4 + cols[0]];
+        let a21 = m[rows[2] * 4 + cols[1]];
+        let a22 = m[rows[2] * 4 + cols[2]];
+
+        minor_out[0] = a00;
+        minor_out[1] = a01;
+        minor_out[2] = a02;
+        minor_out[3] = a10;
+        minor_out[4] = a11;
+        minor_out[5] = a12;
+        minor_out[6] = a20;
+        minor_out[7] = a21;
+        minor_out[8] = a22;
+
+        let c00 = a11 * a22 - a12 * a21;
+        let c01 = a12 * a20 - a10 * a22;
+        let c02 = a10 * a21 - a11 * a20;
+        let c10 = a02 * a21 - a01 * a22;
+        let c11 = a00 * a22 - a02 * a20;
+        let c12 = a01 * a20 - a00 * a21;
+        let c20 = a01 * a12 - a02 * a11;
+        let c21 = a02 * a10 - a00 * a12;
+        let c22 = a00 * a11 - a01 * a10;
+
+        let det = a00 * c00 + a01 * c01 + a02 * c02;
+        if !det.abs().is_finite() {
+            return None;
         }
-        let mut ii = 0usize;
-        for i in 0..n {
-            if i == r_rm {
-                continue;
-            }
-            let mut jj = 0usize;
-            for j in 0..n {
-                if j == c_rm {
-                    continue;
-                }
-                out[ii * (n - 1) + jj] = m[i * n + j];
-                jj += 1;
-            }
-            ii += 1;
-        }
+
+        adjt[0] = c00;
+        adjt[1] = c01;
+        adjt[2] = c02;
+        adjt[3] = c10;
+        adjt[4] = c11;
+        adjt[5] = c12;
+        adjt[6] = c20;
+        adjt[7] = c21;
+        adjt[8] = c22;
+
+        Some(det)
     }
 }
 
