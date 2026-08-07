@@ -4,6 +4,7 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2, Array4};
 
 use crate::AoData;
+use crate::maths::loewdin_x;
 
 /// Antisymmetrise the ERIs as:
 ///     t[a, b, c, d] = (ab|cd) --> (ab||cd) = (ab|cd) - (ac|bd).
@@ -28,6 +29,7 @@ pub fn read_integrals(path: &str) -> AoData {
     let eri_coul: Array4<f64> = f.dataset("eri").unwrap().read().unwrap();
     let eri_asym = antisymmetrise(&eri_coul);
     let s: Array2<f64> = f.dataset("S").unwrap().read().unwrap();
+    let x = loewdin_x(&s, false, 1e-12);
     let h: Array2<f64> = f.dataset("h").unwrap().read().unwrap();
     let enuc: f64 = f.dataset("Enuc").unwrap().read_scalar().unwrap();
     let nelec: Array1<i64> = f.dataset("nelec").unwrap().read().unwrap();
@@ -43,6 +45,7 @@ pub fn read_integrals(path: &str) -> AoData {
 
     AoData {
         s,
+        x,
         h,
         eri_coul,
         eri_asym,

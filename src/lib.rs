@@ -50,6 +50,8 @@ pub use scalar::{DetState, HSCFState, SCFState, StateScalar};
 pub struct AoData {
     /// AO overlap matrix, (nao, nao).
     pub s: Array2<f64>,
+    /// Löwdin symmetric orthogonaliser X = S^{-1/2}.
+    pub x: Array2<f64>,
     /// Core Hamiltonian matrix, (nao, nao).
     pub h: Array2<f64>,
     /// Initial RHF ground state density matrix, (nao, nao). We can build spin biased and

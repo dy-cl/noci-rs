@@ -53,7 +53,7 @@ pub(crate) use fock::calculate_f_pair;
 pub(crate) use hs::calculate_hs_pair;
 pub(crate) use m::calculate_m_pair;
 pub(crate) use matrix::build_noci_fock;
+pub(crate) use naive::occ_coeffs;
 #[cfg(feature = "nocc")]
 pub(crate) use naive::{build_s_pair, pair_density};
-pub(crate) use naive::occ_coeffs;
 pub(crate) use overlap::calculate_s_pair;

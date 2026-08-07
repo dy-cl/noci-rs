@@ -1,6 +1,7 @@
 // scf/kernels.rs
 
 use ndarray::{Array1, Array2, Array4, s};
+use rayon::prelude::*;
 
 use crate::StateScalar;
 
@@ -48,24 +49,51 @@ pub fn fock<T: StateScalar>(
 ) -> (Array2<T>, Array2<T>) {
     let n = h.nrows();
     let d = da + db;
-    let mut fa = h.mapv(T::from_real);
-    let mut fb = h.mapv(T::from_real);
-    for p in 0..n {
-        for q in 0..n {
-            let mut j = T::from_real(0.0);
-            let mut ka = T::from_real(0.0);
-            let mut kb = T::from_real(0.0);
-            for r in 0..n {
-                for s in 0..n {
-                    j += d[(r, s)] * T::from_real(eri[(p, q, r, s)]);
-                    ka += da[(r, s)] * T::from_real(eri[(p, r, q, s)]);
-                    kb += db[(r, s)] * T::from_real(eri[(p, r, q, s)]);
+
+    let rows: Vec<(Vec<T>, Vec<T>)> = (0..n)
+        .into_par_iter()
+        .map(|p| {
+            let mut fa_row: Vec<T> = (0..n).map(|_| T::from_real(0.0)).collect();
+            let mut fb_row: Vec<T> = (0..n).map(|_| T::from_real(0.0)).collect();
+
+            for q in 0..=p {
+                let mut j = T::from_real(0.0);
+                let mut ka = T::from_real(0.0);
+                let mut kb = T::from_real(0.0);
+
+                for r in 0..n {
+                    for s in 0..n {
+                        j += d[(r, s)] * T::from_real(eri[(p, q, r, s)]);
+                        ka += da[(r, s)] * T::from_real(eri[(p, r, q, s)]);
+                        kb += db[(r, s)] * T::from_real(eri[(p, r, q, s)]);
+                    }
                 }
+
+                fa_row[q] = T::from_real(h[(p, q)]) + j - ka;
+                fb_row[q] = T::from_real(h[(p, q)]) + j - kb;
             }
-            fa[(p, q)] += j - ka;
-            fb[(p, q)] += j - kb;
+
+            (fa_row, fb_row)
+        })
+        .collect();
+
+    let mut fa = Array2::<T>::zeros((n, n));
+    let mut fb = Array2::<T>::zeros((n, n));
+
+    for p in 0..n {
+        for q in 0..=p {
+            fa[(p, q)] = rows[p].0[q];
+            fb[(p, q)] = rows[p].1[q];
         }
     }
+
+    for p in 0..n {
+        for q in 0..p {
+            fa[(q, p)] = fa[(p, q)];
+            fb[(q, p)] = fb[(p, q)];
+        }
+    }
+
     (fa, fb)
 }
 

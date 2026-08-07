@@ -12,7 +12,7 @@ use super::finalise::finalise;
 use super::step::{finite_difference_newton_step, limit_step, line_search, sr1_step, step_norm};
 use super::types::{HSCFRunData, SecantPair, SpinBlock};
 use crate::scf::print::print_header_h;
-use crate::scf::{density, energy, fock, orbital_energies, orbital_gradient};
+use crate::scf::{density, energy, fock, orbital_gradient};
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.
 /// # Arguments:
@@ -65,7 +65,7 @@ pub fn hscf_cycle(
         if let Some((ga, _)) = g_prev.as_mut() {
             extra_a.push(ga);
         }
-        pseudo_canonicalise(&mut ca, &fa, na, &mut hist, SpinBlock::Alpha, &mut extra_a);
+        let epsa = pseudo_canonicalise(&mut ca, &fa, na, &mut hist, SpinBlock::Alpha, &mut extra_a);
 
         let mut extra_b: Vec<&mut Array2<Complex64>> = Vec::new();
         if let Some((_, sb)) = step_prev.as_mut() {
@@ -74,18 +74,15 @@ pub fn hscf_cycle(
         if let Some((_, gb)) = g_prev.as_mut() {
             extra_b.push(gb);
         }
-        pseudo_canonicalise(&mut cb, &fb, nb, &mut hist, SpinBlock::Beta, &mut extra_b);
+        let epsb = pseudo_canonicalise(&mut cb, &fb, nb, &mut hist, SpinBlock::Beta, &mut extra_b);
 
-        let da = density(&ca, na, DensityMode::Holomorphic);
-        let db = density(&cb, nb, DensityMode::Holomorphic);
-        let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
         let e = energy(&ao.h, ao.enuc, &da, &db, &fa, &fb);
-        let epsa = orbital_energies(&ca, &fa, DensityMode::Holomorphic);
-        let epsb = orbital_energies(&cb, &fb, DensityMode::Holomorphic);
 
         // Calculate g_{ai} = 2 \sum_{\mu\nu} C_a^\mu F_{\mu\nu} C_i^\nu.
-        let ga = orbital_gradient(&ca, &fa, na, DensityMode::Holomorphic);
-        let gb = orbital_gradient(&cb, &fb, nb, DensityMode::Holomorphic);
+        let (ga, gb) = rayon::join(
+            || orbital_gradient(&ca, &fa, na, DensityMode::Holomorphic),
+            || orbital_gradient(&cb, &fb, nb, DensityMode::Holomorphic),
+        );
 
         // Use the Euclidean Frobenius norm only as a real convergence diagnostic.
         let gnorm = (ga.iter().map(|z| z.norm_sqr()).sum::<f64>()

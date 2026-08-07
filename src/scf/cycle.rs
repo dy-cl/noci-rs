@@ -16,7 +16,7 @@ use super::kernels::{density, energy, fock, orbital_gradient};
 use super::occupation::{mo_occupancies, occvec_to_bits};
 use super::print::{print_header, print_mos};
 use super::select::{aufbau_indices, mom_select};
-use crate::maths::general_evp;
+use crate::maths::general_evp_x;
 use crate::utils::print_array2_indexed;
 use crate::write::write_orbitals;
 
@@ -203,11 +203,6 @@ pub fn scf_cycle(
     let (da0, db0) = d0;
     let (scfexcitation, biases) = controls;
 
-    let h = &ao.h;
-    let eri = &ao.eri_coul;
-    let s = &ao.s;
-    let enuc = ao.enuc;
-
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
 
@@ -228,9 +223,12 @@ pub fn scf_cycle(
     };
     let (mom_a, mom_b) = mom_flags(scfexcitation);
 
+    let (mut fa_phys, mut fb_phys) = fock(&ao.h, &ao.eri_coul, &da, &db);
+
     let mut iter = 0;
     while iter < input.scf.max_cycle {
-        let (mut fa_curr, mut fb_curr) = fock(h, eri, &da, &db);
+        let mut fa_curr = fa_phys.clone();
+        let mut fb_curr = fb_phys.clone();
 
         if let (Some(bias_states), Some(lambda)) = (biases, lambda)
             && !bias_states.is_empty()
@@ -241,7 +239,7 @@ pub fn scf_cycle(
         }
 
         if use_diis {
-            diis.push(&fa_curr, &fb_curr, &da, &db, s);
+            diis.push(&fa_curr, &fb_curr, &da, &db, &ao.s, &ao.x);
         }
         let (fa_use, fb_use) = if use_diis {
             diis.extrapolate_fock()
@@ -249,19 +247,41 @@ pub fn scf_cycle(
         } else {
             (fa_curr.clone(), fb_curr.clone())
         };
+        
+        let ((ea, ca), (eb, cb)) = rayon::join(
+            || general_evp_x(&fa_use, &ao.x),
+            || general_evp_x(&fb_use, &ao.x),
+        );
 
-        let (ea, ca) = general_evp(&fa_use, s, false, 1e-8);
-        let (eb, cb) = general_evp(&fb_use, s, false, 1e-8);
-
-        let (idx_a, ca_occ) = occupy(&ea, &ca, s, na, mom_a, ca_occ_old.as_ref(), scfexcitation);
-        let (idx_b, cb_occ) = occupy(&eb, &cb, s, nb, mom_b, cb_occ_old.as_ref(), scfexcitation);
+        let (idx_a, ca_occ) = occupy(
+            &ea,
+            &ca,
+            &ao.s,
+            na,
+            mom_a,
+            ca_occ_old.as_ref(),
+            scfexcitation,
+        );
+        let (idx_b, cb_occ) = occupy(
+            &eb,
+            &cb,
+            &ao.s,
+            nb,
+            mom_b,
+            cb_occ_old.as_ref(),
+            scfexcitation,
+        );
         ca_occ_old = Some(ca_occ.clone());
         cb_occ_old = Some(cb_occ.clone());
 
-        let da_new = density(&ca_occ, na, DensityMode::Hermitian);
-        let db_new = density(&cb_occ, nb, DensityMode::Hermitian);
-        let (fa_new, fb_new) = fock(h, eri, &da_new, &db_new);
-        let e_new = energy(h, enuc, &da_new, &db_new, &fa_new, &fb_new);
+        let (da_new, db_new) = rayon::join(
+            || density(&ca_occ, na, DensityMode::Hermitian),
+            || density(&cb_occ, nb, DensityMode::Hermitian),
+        );
+
+        let (fa_new, fb_new) = fock(&ao.h, &ao.eri_coul, &da_new, &db_new);
+
+        let e_new = energy(&ao.h, ao.enuc, &da_new, &db_new, &fa_new, &fb_new);
 
         let err = if use_diis {
             diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt()
@@ -303,6 +323,8 @@ pub fn scf_cycle(
 
         da = da_new;
         db = db_new;
+        fa_phys = fa_new;
+        fb_phys = fb_new;
         e = e_new;
         iter += 1;
     }

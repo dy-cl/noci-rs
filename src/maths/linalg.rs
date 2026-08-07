@@ -1,8 +1,8 @@
 // maths/linalg.rs
 
 use crate::StateScalar;
-use ndarray::{Array1, Array2, Axis};
-use ndarray_linalg::{Eig, Eigh, Inverse, UPLO};
+use ndarray::{Array1, Array2, Axis, ShapeBuilder};
+use ndarray_linalg::{Eig, Eigh, EighInto, Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -43,7 +43,7 @@ pub fn positive_subspace<T: StateScalar>(
     s: &Array2<T>,
     tol: f64,
 ) -> (Array1<f64>, Array2<T>) {
-    let (lambdas, evecs) = s.eigh(UPLO::Lower).unwrap();
+    let (lambdas, evecs) = hermitian_eigh(s, UPLO::Lower);
 
     let pos: Vec<usize> = lambdas
         .iter()
@@ -82,8 +82,7 @@ pub fn loewdin_x<T: StateScalar>(
         ));
         vecs.dot(&d)
     } else {
-        let (vals, vecs) = s.eigh(UPLO::Lower).unwrap();
-        let vecs = vecs.mapv(|z| z.conj());
+        let (vals, vecs) = hermitian_eigh(s, UPLO::Lower);
         let d = Array2::from_diag(&Array1::from_iter(
             vals.iter().map(|&x| T::from_real(1.0 / x.sqrt())),
         ));
@@ -107,9 +106,42 @@ pub fn general_evp<T: StateScalar>(
 ) -> (Array1<f64>, Array2<T>) {
     let x = loewdin_x(s, project, tol);
     let ht = adjoint(&x).dot(h).dot(&x);
-    let (epsilon, u) = ht.eigh(UPLO::Lower).unwrap();
+    let (epsilon, u) = hermitian_eigh(&ht, UPLO::Lower);
     let c = x.dot(&u);
     (epsilon, c)
+}
+
+/// Solve the Hermitian generalized eigenproblem `H C = S C e` with pre-computed `x`.
+/// # Arguments:
+/// - `h`: Hermitian Hamiltonian matrix, uses only the lower triangle.
+/// - `x`: Precomputed symmetric orthogonaliser `s^{-1/2}`.
+/// # Returns
+/// - `(Array1<f64>, Array2<T>)`: Eigenvalues and generalized eigenvectors.
+pub fn general_evp_x(
+    h: &Array2<f64>,
+    x: &Array2<f64>,
+) -> (Array1<f64>, Array2<f64>) {
+    let ht = adjoint(x).dot(h).dot(x);
+    let (epsilon, u) = hermitian_eigh(&ht, UPLO::Lower);
+    let c = x.dot(&u);
+    (epsilon, c)
+}
+
+/// Diagonalise a Hermitian matrix using explicit column-major storage.
+/// This avoids transposing complex C-order matrices before the LAPACK call.
+/// # Arguments:
+/// - `a`: Hermitian matrix.
+/// - `uplo`: Triangle of the matrix used for diagonalisation.
+/// # Returns:
+/// - `(Array1<f64>, Array2<T>)`: Eigenvalues and eigenvectors.
+fn hermitian_eigh<T: StateScalar>(
+    a: &Array2<T>,
+    uplo: UPLO,
+) -> (Array1<f64>, Array2<T>) {
+    let mut af = Array2::<T>::zeros((a.nrows(), a.ncols()).f());
+    af.assign(a);
+
+    af.eigh_into(uplo).unwrap()
 }
 
 /// Solve a symmetric positive-semidefinite linear system by eigenvalue projection.

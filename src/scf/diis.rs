@@ -2,8 +2,6 @@
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{EighInto, UPLO};
 
-use crate::maths::loewdin_x;
-
 /// DIIS storage for SCF states. Stores Fock and error matrices for each spin.
 pub struct Diis {
     /// Size of the DIIS subspace, i.e. the number of past SCF iterations retained.
@@ -41,16 +39,17 @@ impl Diis {
     /// - `f`: Spin specific Fock matrix.
     /// - `d`: Spin specific density matrix.
     /// - `s`: AO overlap matrix.
+    /// - `x`: Precomputed Loewdin orthgonaliser.
     /// # Returns
     /// - `Array2<f64>`: Orthonormalised DIIS error matrix.
     fn build_error(
         f: &Array2<f64>,
         d: &Array2<f64>,
         s: &Array2<f64>,
+        x: &Array2<f64>,
     ) -> Array2<f64> {
         let r = f.dot(d).dot(s) - s.dot(d).dot(f);
-        let x = loewdin_x(s, false, 1e-12);
-        x.t().dot(&r).dot(&x)
+        x.t().dot(&r).dot(x)
     }
 
     /// Add Fock matrices and DIIS error matrices from current SCF cycle to history.
@@ -60,6 +59,7 @@ impl Diis {
     /// - `da`: Spin a density matrix.
     /// - `db`: Spin b density matrix.
     /// - `s`: AO overlap matrix.
+    /// - `x`: Precomputed Loewdin orthgonaliser.
     /// # Returns
     /// - `()`: Updates the stored Fock and error history in place.
     pub fn push(
@@ -69,9 +69,12 @@ impl Diis {
         da: &Array2<f64>,
         db: &Array2<f64>,
         s: &Array2<f64>,
+        x: &Array2<f64>,
     ) {
-        let r_prime_a = Self::build_error(fa, da, s); // R'^a = X^T R^a X. 
-        let r_prime_b = Self::build_error(fb, db, s); // R'^b = X^T R^b X.
+        let (r_prime_a, r_prime_b) = rayon::join(
+            || Self::build_error(fa, da, s, x),
+            || Self::build_error(fb, db, s, x),
+        );
 
         self.f_hist_a.push(fa.clone());
         self.e_hist_a.push(r_prime_a);
