@@ -6,7 +6,7 @@ use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 
 use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
-use super::prepare::construct_determinant_indices_gen;
+use super::prepare::construct_determinant_indices;
 
 use crate::ExcitationSpin;
 use crate::noci::NOCIScalar;
@@ -87,7 +87,7 @@ fn xw_rdm2_same_m0<T: NOCIScalar>(
         // The external RDM basis has dimension n, while the augmented contraction determinant has
         // dimension L + 2 for L = L_x + L_w.
         let n = l_c.nrows();
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         let dim = l + 2;
         // Recover the full reduced-overlap prefactor from the separately stored orbital-pairing
         // phase and product of non-zero singular values.
@@ -114,7 +114,15 @@ fn xw_rdm2_same_m0<T: NOCIScalar>(
 
         // Construct the L excitation labels in the same V_x \cup O_w row ordering and
         // O_x \cup V_w column ordering used by \mathbf D_{\mathrm{ov}}.
-        construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
+        rows_base.resize(l, 0);
+        cols_base.resize(l, 0);
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            rows_base.as_mut_slice(),
+            cols_base.as_mut_slice(),
+        );
 
         for p in 0..n {
             for q in 0..n {
@@ -191,7 +199,7 @@ fn xw_rdm2_same_gen<T: NOCIScalar>(
         // The external RDM basis has dimension n, while the augmented contraction determinant has
         // dimension L + 2 for L = L_x + L_w.
         let n = l_c.nrows();
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         let dim = l + 2;
         // Recover the full reduced-overlap prefactor from the separately stored orbital-pairing
         // phase and product of non-zero singular values.
@@ -227,7 +235,15 @@ fn xw_rdm2_same_gen<T: NOCIScalar>(
         let mut detm = vec![zero; dim * dim];
 
         // Construct the L excitation labels in the ordering used by \mathbf D_{\mathrm{ov}}.
-        construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
+        rows_base.resize(l, 0);
+        cols_base.resize(l, 0);
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            rows_base.as_mut_slice(),
+            cols_base.as_mut_slice(),
+        );
 
         for p in 0..n {
             for q in 0..n {

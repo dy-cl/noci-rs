@@ -16,16 +16,6 @@ pub struct Totals {
     pub get_det_adjt_diff: Counter,
     /// Total time spent in `construct_determinant_indices`.
     pub construct_determinant_indices: Counter,
-    /// Total time spent in `construct_determinant_indices_l1`.
-    pub construct_determinant_indices_l1: Counter,
-    /// Total time spent in `construct_determinant_indices_l2`.
-    pub construct_determinant_indices_l2: Counter,
-    /// Total time spent in `construct_determinant_indices_l3`.
-    pub construct_determinant_indices_l3: Counter,
-    /// Total time spent in `construct_determinant_indices_l4`.
-    pub construct_determinant_indices_l4: Counter,
-    /// Total time spent in `construct_determinant_indices_gen`.
-    pub construct_determinant_indices_gen: Counter,
     /// Total time spent in `xw_overlap`.
     pub xw_overlap: Counter,
     /// Total time spent in `xw_overlap_m0`.
@@ -178,14 +168,6 @@ impl Totals {
         self.get_det_adjt_diff.merge_from(&other.get_det_adjt_diff);
         self.construct_determinant_indices
             .merge_from(&other.construct_determinant_indices);
-        self.construct_determinant_indices_l1
-            .merge_from(&other.construct_determinant_indices_l1);
-        self.construct_determinant_indices_l2
-            .merge_from(&other.construct_determinant_indices_l2);
-        self.construct_determinant_indices_l3
-            .merge_from(&other.construct_determinant_indices_l3);
-        self.construct_determinant_indices_gen
-            .merge_from(&other.construct_determinant_indices_gen);
         self.xw_overlap.merge_from(&other.xw_overlap);
         self.xw_overlap_m0.merge_from(&other.xw_overlap_m0);
         self.xw_overlap_m0_l1.merge_from(&other.xw_overlap_m0_l1);
@@ -318,76 +300,6 @@ pub fn add_construct_determinant_indices(ns: u64) {
     with_totals(|t| {
         t.nonorthogonalwicks
             .construct_determinant_indices
-            .add_ns(ns)
-    });
-}
-
-/// Add one timed call to the `construct_determinant_indices_l1` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l1`.
-/// # Returns:
-/// - `()`: Updates the current thread local `construct_determinant_indices_l1` counter.
-#[inline(always)]
-pub fn add_construct_determinant_indices_l1(ns: u64) {
-    with_totals(|t| {
-        t.nonorthogonalwicks
-            .construct_determinant_indices_l1
-            .add_ns(ns)
-    });
-}
-
-/// Add one timed call to the `construct_determinant_indices_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `construct_determinant_indices_l2` counter.
-#[inline(always)]
-pub fn add_construct_determinant_indices_l2(ns: u64) {
-    with_totals(|t| {
-        t.nonorthogonalwicks
-            .construct_determinant_indices_l2
-            .add_ns(ns)
-    });
-}
-
-/// Add one timed call to the `construct_determinant_indices_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `construct_determinant_indices_l3` counter.
-#[inline(always)]
-pub fn add_construct_determinant_indices_l3(ns: u64) {
-    with_totals(|t| {
-        t.nonorthogonalwicks
-            .construct_determinant_indices_l3
-            .add_ns(ns)
-    });
-}
-
-/// Add one timed call to the `construct_determinant_indices_l4` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_l4`.
-/// # Returns:
-/// - `()`: Updates the current thread local `construct_determinant_indices_l4` counter.
-#[inline(always)]
-pub fn add_construct_determinant_indices_l4(ns: u64) {
-    with_totals(|t| {
-        t.nonorthogonalwicks
-            .construct_determinant_indices_l4
-            .add_ns(ns)
-    });
-}
-
-/// Add one timed call to the `construct_determinant_indices_gen` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `construct_determinant_indices_gen`.
-/// # Returns:
-/// - `()`: Updates the current thread local `construct_determinant_indices_gen` counter.
-#[inline(always)]
-pub fn add_construct_determinant_indices_gen(ns: u64) {
-    with_totals(|t| {
-        t.nonorthogonalwicks
-            .construct_determinant_indices_gen
             .add_ns(ns)
     });
 }

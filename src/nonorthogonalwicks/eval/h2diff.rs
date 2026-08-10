@@ -86,8 +86,8 @@ fn xw_h2_diff_m0<T: NOCIScalar>(
         let l_ex_b = &l_ex.beta;
         let g_ex_b = &g_ex.beta;
 
-        let la = l_ex_a.holes.len() + g_ex_a.holes.len();
-        let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
+        let la = l_ex_a.holes.count_ones() as usize + g_ex_a.holes.count_ones() as usize;
+        let lb = l_ex_b.holes.count_ones() as usize + g_ex_b.holes.count_ones() as usize;
 
         // Dispatch to direct fixed-rank forms of C_0 + C_\alpha + C_\beta + C_{\alpha\beta}.
         match (la, lb) {
@@ -2149,8 +2149,8 @@ fn xw_h2_diff_m0_gen<T: NOCIScalar>(
         let l_ex_b = &l_ex.beta;
         let g_ex_b = &g_ex.beta;
 
-        let la = l_ex_a.holes.len() + g_ex_a.holes.len();
-        let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
+        let la = l_ex_a.holes.count_ones() as usize + g_ex_a.holes.count_ones() as usize;
+        let lb = l_ex_b.holes.count_ones() as usize + g_ex_b.holes.count_ones() as usize;
 
         diff.ensure_diff(la, lb);
 
@@ -2283,8 +2283,8 @@ fn xw_h2_diff_gen<T: NOCIScalar>(
         let l_ex_b = &l_ex.beta;
         let g_ex_b = &g_ex.beta;
 
-        let la = l_ex_a.holes.len() + g_ex_a.holes.len();
-        let lb = l_ex_b.holes.len() + g_ex_b.holes.len();
+        let la = l_ex_a.holes.count_ones() as usize + g_ex_a.holes.count_ones() as usize;
+        let lb = l_ex_b.holes.count_ones() as usize + g_ex_b.holes.count_ones() as usize;
 
         diff.ensure_diff(la, lb);
 

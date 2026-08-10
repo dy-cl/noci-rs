@@ -449,46 +449,6 @@ pub fn print_report(
         wick_total,
         2,
     );
-    print_relative_counter(
-        "Construct determinant indices (generic)",
-        res.timings
-            .nonorthogonalwicks
-            .construct_determinant_indices_gen,
-        res.timings.nonorthogonalwicks.construct_determinant_indices,
-        5,
-    );
-    print_relative_counter(
-        "Construct determinant indices (l = 1)",
-        res.timings
-            .nonorthogonalwicks
-            .construct_determinant_indices_l1,
-        res.timings.nonorthogonalwicks.construct_determinant_indices,
-        5,
-    );
-    print_relative_counter(
-        "Construct determinant indices (l = 2)",
-        res.timings
-            .nonorthogonalwicks
-            .construct_determinant_indices_l2,
-        res.timings.nonorthogonalwicks.construct_determinant_indices,
-        5,
-    );
-    print_relative_counter(
-        "Construct determinant indices (l = 3)",
-        res.timings
-            .nonorthogonalwicks
-            .construct_determinant_indices_l3,
-        res.timings.nonorthogonalwicks.construct_determinant_indices,
-        5,
-    );
-    print_relative_counter(
-        "Construct determinant indices (l = 4)",
-        res.timings
-            .nonorthogonalwicks
-            .construct_determinant_indices_l4,
-        res.timings.nonorthogonalwicks.construct_determinant_indices,
-        5,
-    );
 
     println!("{}", "-".repeat(100));
 

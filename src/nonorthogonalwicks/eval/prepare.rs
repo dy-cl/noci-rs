@@ -1,5 +1,5 @@
 // nonorthogonalwicks/eval/prepare.rs
-use super::super::scratch::{IndexVec, WickScratch};
+use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 
 use crate::ExcitationSpin;
@@ -58,7 +58,7 @@ fn prepare_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
         match l {
             0 => {}
@@ -71,12 +71,12 @@ fn prepare_same_m0<T: NOCIScalar>(
             _ => {
                 scratch.ensure_same(l);
 
-                construct_determinant_indices_gen(
+                construct_determinant_indices(
                     l_ex,
                     g_ex,
                     w,
-                    &mut scratch.rows,
-                    &mut scratch.cols,
+                    scratch.rows.as_mut_slice(),
+                    scratch.cols.as_mut_slice(),
                 );
 
                 let x0 = w.x(0);
@@ -116,20 +116,18 @@ fn prepare_same_m0_l1<T: NOCIScalar>(
         scratch.rows.ensure(1);
         scratch.cols.ensure(1);
 
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-        let rows = scratch.rows.as_mut_slice();
-        let cols = scratch.cols.as_mut_slice();
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            scratch.rows.as_mut_slice(),
+            scratch.cols.as_mut_slice(),
+        );
+
+        let rows = scratch.rows.as_slice();
+        let cols = scratch.cols.as_slice();
 
         unsafe {
-            if l_ex.holes.len() == 1 {
-                *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0) - nocc;
-                *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-            } else {
-                *rows.get_unchecked_mut(0) = nvirt + *g_ex.holes.get_unchecked(0);
-                *cols.get_unchecked_mut(0) = *g_ex.parts.get_unchecked(0);
-            }
-
             let r0 = *rows.get_unchecked(0) * w.n();
             let c0 = *cols.get_unchecked(0);
 
@@ -160,32 +158,13 @@ fn prepare_same_m0_l2<T: NOCIScalar>(
         scratch.rows.ensure(2);
         scratch.cols.ensure(2);
 
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        {
-            let rows = scratch.rows.as_mut_slice();
-            let cols = scratch.cols.as_mut_slice();
-
-            unsafe {
-                let mut k = 0usize;
-                while k < nl {
-                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                    k += 1;
-                }
-
-                let mut k = 0usize;
-                while k < ng {
-                    let i = nl + k;
-                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                    k += 1;
-                }
-            }
-        }
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            scratch.rows.as_mut_slice(),
+            scratch.cols.as_mut_slice(),
+        );
 
         let rows = scratch.rows.as_slice();
         let cols = scratch.cols.as_slice();
@@ -229,32 +208,13 @@ fn prepare_same_m0_l3<T: NOCIScalar>(
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l3, {
         scratch.ensure_same(3);
 
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        {
-            let rows = scratch.rows.as_mut_slice();
-            let cols = scratch.cols.as_mut_slice();
-
-            unsafe {
-                let mut k = 0usize;
-                while k < nl {
-                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                    k += 1;
-                }
-
-                let mut k = 0usize;
-                while k < ng {
-                    let i = nl + k;
-                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                    k += 1;
-                }
-            }
-        }
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            scratch.rows.as_mut_slice(),
+            scratch.cols.as_mut_slice(),
+        );
 
         let rows = scratch.rows.as_slice();
         let cols = scratch.cols.as_slice();
@@ -306,32 +266,13 @@ fn prepare_same_m0_l4<T: NOCIScalar>(
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l4, {
         scratch.ensure_same(4);
 
-        let nl = l_ex.holes.len();
-        let ng = g_ex.holes.len();
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        {
-            let rows = scratch.rows.as_mut_slice();
-            let cols = scratch.cols.as_mut_slice();
-
-            unsafe {
-                let mut k = 0usize;
-                while k < nl {
-                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                    k += 1;
-                }
-
-                let mut k = 0usize;
-                while k < ng {
-                    let i = nl + k;
-                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                    k += 1;
-                }
-            }
-        }
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            scratch.rows.as_mut_slice(),
+            scratch.cols.as_mut_slice(),
+        );
 
         let rows = scratch.rows.as_slice();
         let cols = scratch.cols.as_slice();
@@ -392,32 +333,13 @@ fn prepare_same_m0_l5<T: NOCIScalar>(
 ) {
     scratch.ensure_same(5);
 
-    let nl = l_ex.holes.len();
-    let ng = g_ex.holes.len();
-    let nocc = w.nocc;
-    let nvirt = w.nmo - nocc;
-
-    {
-        let rows = scratch.rows.as_mut_slice();
-        let cols = scratch.cols.as_mut_slice();
-
-        unsafe {
-            let mut k = 0usize;
-            while k < nl {
-                *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                k += 1;
-            }
-
-            let mut k = 0usize;
-            while k < ng {
-                let i = nl + k;
-                *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                k += 1;
-            }
-        }
-    }
+    construct_determinant_indices(
+        l_ex,
+        g_ex,
+        w,
+        scratch.rows.as_mut_slice(),
+        scratch.cols.as_mut_slice(),
+    );
 
     let rows = scratch.rows.as_slice();
     let cols = scratch.cols.as_slice();
@@ -489,32 +411,13 @@ fn prepare_same_m0_l6<T: NOCIScalar>(
 ) {
     scratch.ensure_same(6);
 
-    let nl = l_ex.holes.len();
-    let ng = g_ex.holes.len();
-    let nocc = w.nocc;
-    let nvirt = w.nmo - nocc;
-
-    {
-        let rows = scratch.rows.as_mut_slice();
-        let cols = scratch.cols.as_mut_slice();
-
-        unsafe {
-            let mut k = 0usize;
-            while k < nl {
-                *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                k += 1;
-            }
-
-            let mut k = 0usize;
-            while k < ng {
-                let i = nl + k;
-                *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                k += 1;
-            }
-        }
-    }
+    construct_determinant_indices(
+        l_ex,
+        g_ex,
+        w,
+        scratch.rows.as_mut_slice(),
+        scratch.cols.as_mut_slice(),
+    );
 
     let rows = scratch.rows.as_slice();
     let cols = scratch.cols.as_slice();
@@ -599,10 +502,16 @@ pub fn prepare_same_gen<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         scratch.ensure_same(l);
 
-        construct_determinant_indices_gen(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
+        construct_determinant_indices(
+            l_ex,
+            g_ex,
+            w,
+            scratch.rows.as_mut_slice(),
+            scratch.cols.as_mut_slice(),
+        );
 
         let x0 = w.x(0);
         let y0 = w.y(0);
@@ -642,40 +551,51 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 /// # Returns
 /// - `()`: Writes the ordered contraction-determinant labels into `rows` and `cols`.
 #[inline(always)]
-pub(super) fn construct_determinant_indices_gen<T: NOCIScalar>(
+pub(super) fn construct_determinant_indices<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
     w: &SameSpinView<'_, T>,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
+    rows: &mut [usize],
+    cols: &mut [usize],
 ) {
     time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_gen,
+        crate::timers::nonorthogonalwicks::add_construct_determinant_indices,
         {
             // L_x and L_w determine the two ordered blocks of the determinant labels.
-            let nl = l_ex.holes.len();
-            let ng = g_ex.holes.len();
-            let need = nl + ng;
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
 
-            rows.ensure(need);
-            cols.ensure(need);
+            let mut lh = l_ex.holes;
+            let mut lp = l_ex.parts;
+            let mut gh = g_ex.holes;
+            let mut gp = g_ex.parts;
 
-            let rows = rows.as_mut_slice();
-            let cols = cols.as_mut_slice();
+            let mut i = 0usize;
 
             // Map the x-reference pairs to the V_x row block and O_x column block.
-            for k in 0..nl {
-                rows[k] = l_ex.parts[k] - nocc;
-                cols[k] = l_ex.holes[k];
+            while lh != 0 {
+                let hole = lh.trailing_zeros() as usize;
+                let part = lp.trailing_zeros() as usize;
+
+                lh &= lh - 1;
+                lp &= lp - 1;
+
+                rows[i] = part - nocc;
+                cols[i] = hole;
+                i += 1;
             }
 
             // Append the w-reference pairs in the O_w row block and V_w column block.
-            for k in 0..ng {
-                let i = nl + k;
-                rows[i] = nvirt + g_ex.holes[k];
-                cols[i] = g_ex.parts[k];
+            while gh != 0 {
+                let hole = gh.trailing_zeros() as usize;
+                let part = gp.trailing_zeros() as usize;
+
+                gh &= gh - 1;
+                gp &= gp - 1;
+
+                rows[i] = nvirt + hole;
+                cols[i] = part;
+                i += 1;
             }
         }
     )

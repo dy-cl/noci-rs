@@ -112,11 +112,6 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.get_det_adjt_same);
         $f!($tot.nonorthogonalwicks.get_det_adjt_diff);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices);
-        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l1);
-        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l2);
-        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l3);
-        $f!($tot.nonorthogonalwicks.construct_determinant_indices_l4);
-        $f!($tot.nonorthogonalwicks.construct_determinant_indices_gen);
         $f!($tot.nonorthogonalwicks.xw_overlap);
         $f!($tot.nonorthogonalwicks.xw_overlap);
         $f!($tot.nonorthogonalwicks.xw_overlap_m0);

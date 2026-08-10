@@ -1,7 +1,7 @@
 // scf/bias.rs
 
 use crate::basis::electron_distance;
-use crate::{AoData, Excitation, ExcitationSpin, SCFState};
+use crate::{AoData, Excitation, SCFState};
 use ndarray::Array2;
 use std::sync::Arc;
 
@@ -38,16 +38,7 @@ pub(crate) fn metadynamics_bias(
         label: String::new(),
         noci_basis: false,
         parent: 0,
-        excitation: Excitation {
-            alpha: ExcitationSpin {
-                holes: vec![],
-                parts: vec![],
-            },
-            beta: ExcitationSpin {
-                holes: vec![],
-                parts: vec![],
-            },
-        },
+        excitation: Excitation::empty(),
     };
 
     for bias in biases {

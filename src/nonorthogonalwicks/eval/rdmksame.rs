@@ -7,7 +7,7 @@ use super::super::view::SameSpinView;
 
 use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap;
-use super::prepare::construct_determinant_indices_gen;
+use super::prepare::construct_determinant_indices;
 use super::rdm1::xw_rdm1;
 
 use crate::ExcitationSpin;
@@ -132,7 +132,7 @@ fn xw_rdm_same_element_m0<T: NOCIScalar>(
     let (l_c, g_c) = coeff;
     let (ps, qs) = indices;
     let k = ps.len();
-    let l = l_ex.holes.len() + g_ex.holes.len();
+    let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
     let dim = l + k;
     // Recover the full reduced-overlap prefactor from the separately stored orbital-pairing
     // phase and product of non-zero singular values.
@@ -160,7 +160,15 @@ fn xw_rdm_same_element_m0<T: NOCIScalar>(
 
     // Construct the L excitation labels in the same V_x \cup O_w row ordering and
     // O_x \cup V_w column ordering used by \mathbf D_{\mathrm{ov}}.
-    construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
+    rows_base.resize(l, 0);
+    cols_base.resize(l, 0);
+    construct_determinant_indices(
+        l_ex,
+        g_ex,
+        w,
+        rows_base.as_mut_slice(),
+        cols_base.as_mut_slice(),
+    );
 
     // Prepend the external creation labels p_1,\ldots,p_k to the augmented determinant rows.
     for &p in ps {
@@ -226,7 +234,7 @@ fn xw_rdm_same_element_gen<T: NOCIScalar>(
     let (l_c, g_c) = coeff;
     let (ps, qs) = indices;
     let k = ps.len();
-    let l = l_ex.holes.len() + g_ex.holes.len();
+    let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
     let dim = l + k;
     // Recover the full reduced-overlap prefactor from the separately stored orbital-pairing
     // phase and product of non-zero singular values.
@@ -265,7 +273,15 @@ fn xw_rdm_same_element_gen<T: NOCIScalar>(
     let mut detm = vec![zero; dim * dim];
 
     // Construct the L excitation labels in the ordering used by \mathbf D_{\mathrm{ov}}.
-    construct_determinant_indices_gen(l_ex, g_ex, w, &mut rows_base, &mut cols_base);
+    rows_base.resize(l, 0);
+    cols_base.resize(l, 0);
+    construct_determinant_indices(
+        l_ex,
+        g_ex,
+        w,
+        rows_base.as_mut_slice(),
+        cols_base.as_mut_slice(),
+    );
 
     // Prepend the external creation labels so determinant columns 0,\ldots,k-1 carry
     // m_1,\ldots,m_k; the appended excitation columns carry m_{k+1},\ldots,m_{L+k}.

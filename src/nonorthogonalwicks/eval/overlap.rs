@@ -2,7 +2,7 @@
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::helpers::mix_dets_same;
-use super::prepare::prepare_same;
+use super::prepare::{construct_determinant_indices, prepare_same};
 use crate::ExcitationSpin;
 use crate::maths::{det, det_lu_l5, det_lu_l6};
 use crate::noci::NOCIScalar;
@@ -33,7 +33,7 @@ pub fn xw_overlap<T: NOCIScalar>(
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap, {
         // The contraction determinant has dimension L = L_x + L_w.
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
         // A nonzero term requires one contraction for every zero-overlap orbital pair. The
         // constrained sum contains only the all-zero distribution for m = 0, only the all-one
@@ -72,7 +72,7 @@ pub(crate) fn xw_overlap_same_f64(
     scratch: &mut WickScratch<f64>,
 ) -> f64 {
     // Determine the contraction-determinant dimension L = L_x + L_w.
-    let l = l_ex.holes.len() + g_ex.holes.len();
+    let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
     // No distribution satisfying \sum_i m_i = m exists when m > L.
     if w.m > l {
@@ -111,9 +111,7 @@ pub(crate) fn xw_overlap_m0_direct_f64(
 ) -> f64 {
     // Split L into the bra- and ket-reference excitation ranks and form {}^{xw}\tilde S
     // from the separately stored orbital-pairing phase and non-zero singular-value product.
-    let nl = l_ex.holes.len();
-    let ng = g_ex.holes.len();
-    let l = nl + ng;
+    let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
     let pref = w.phase * w.tilde_s_prod;
 
     // With no excitation pairs, the determinant is the empty determinant with value one.
@@ -124,25 +122,12 @@ pub(crate) fn xw_overlap_m0_direct_f64(
     // Read the m_i = 0 fundamental contractions and allocate the row and column labels of
     // \mathbf D_{\mathrm{ov}}(0,\ldots,0).
     let n = w.n();
-    let nocc = w.nocc;
-    let nvirt = w.nmo - nocc;
     let x0 = w.x_slice(0);
     let y0 = w.y_slice(0);
     let mut rows = [0usize; 6];
     let mut cols = [0usize; 6];
 
-    // The x-reference excitation pairs contribute particle rows a and hole columns i.
-    for k in 0..nl {
-        rows[k] = l_ex.parts[k] - nocc;
-        cols[k] = l_ex.holes[k];
-    }
-
-    // The w-reference excitation pairs follow with hole rows j and particle columns b.
-    for k in 0..ng {
-        let i = nl + k;
-        rows[i] = nvirt + g_ex.holes[k];
-        cols[i] = g_ex.parts[k];
-    }
+    construct_determinant_indices(l_ex, g_ex, w, &mut rows[..l], &mut cols[..l]);
 
     // Evaluate {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0) using a
     // fixed-rank determinant expression.

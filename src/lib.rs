@@ -89,24 +89,18 @@ impl Excitation {
     /// - `Excitation`: Excitation with no holes or particles in either spin sector.
     pub fn empty() -> Self {
         Self {
-            alpha: ExcitationSpin {
-                holes: vec![],
-                parts: vec![],
-            },
-            beta: ExcitationSpin {
-                holes: vec![],
-                parts: vec![],
-            },
+            alpha: ExcitationSpin { holes: 0, parts: 0 },
+            beta: ExcitationSpin { holes: 0, parts: 0 },
         }
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct ExcitationSpin {
-    /// List of previously occupied now unoccupied orbitals.
-    pub holes: Vec<usize>,
-    /// List of previously unoccupied now occupied orbitals.
-    pub parts: Vec<usize>,
+    /// Bit mask of previously occupied now unoccupied orbitals.
+    pub holes: u128,
+    /// Bit mask of previously unoccupied now occupied orbitals.
+    pub parts: u128,
 }
 
 /// Data shared by post-SCF NOCI, NOCI-QMC, and SNOCI methods.

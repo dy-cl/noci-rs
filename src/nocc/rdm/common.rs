@@ -71,8 +71,10 @@ pub(super) fn spin_assignment_rdm_element<T: NOCIScalar>(
         return zero;
     }
 
-    let la = ldet.excitation.alpha.holes.len() + gdet.excitation.alpha.holes.len();
-    let lb = ldet.excitation.beta.holes.len() + gdet.excitation.beta.holes.len();
+    let la = ldet.excitation.alpha.holes.count_ones() as usize
+        + gdet.excitation.alpha.holes.count_ones() as usize;
+    let lb = ldet.excitation.beta.holes.count_ones() as usize
+        + gdet.excitation.beta.holes.count_ones() as usize;
 
     let va = if w.aa.m <= la + pa.len() {
         xw_rdm_same_element(

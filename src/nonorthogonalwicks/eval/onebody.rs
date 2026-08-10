@@ -145,7 +145,7 @@ fn xw_one_body_m0<T: NOCIScalar>(
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0, {
         // Determine the total excitation rank L = L_x + L_w.
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         // Dispatch to direct fixed-rank forms of
         // {}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}} - \sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}.
         match l {
@@ -359,7 +359,7 @@ fn xw_one_body_m0_gen<T: NOCIScalar>(
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_gen, {
         // Determine L = L_x + L_w and select \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         let mut acc = <T as From<f64>>::from(0.0);
         let n = w.n();
         let det0 = &scratch.det0.as_slice()[..l * l];
@@ -425,7 +425,7 @@ fn xw_one_body_gen<T: NOCIScalar>(
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_gen, {
         // Determine L = L_x + L_w.
-        let l = l_ex.holes.len() + g_ex.holes.len();
+        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
         let mut acc = <T as From<f64>>::from(0.0);
         let n = w.n();

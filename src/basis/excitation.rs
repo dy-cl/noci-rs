@@ -27,12 +27,8 @@ fn make_excited_state<T: NOCIScalar>(
     excitation: Excitation,
     parent_occ: (u128, u128),
 ) -> DetState<T> {
-    let pha = excitation_phase(
-        parent_occ.0,
-        &excitation.alpha.holes,
-        &excitation.alpha.parts,
-    );
-    let phb = excitation_phase(parent_occ.1, &excitation.beta.holes, &excitation.beta.parts);
+    let pha = excitation_phase_bits(parent_occ.0, excitation.alpha.holes, excitation.alpha.parts);
+    let phb = excitation_phase_bits(parent_occ.1, excitation.beta.holes, excitation.beta.parts);
 
     DetState {
         e: T::from_real(0.0),
@@ -98,6 +94,52 @@ pub fn excitation_phase(
     if odd { -1.0 } else { 1.0 }
 }
 
+/// Calculate fermionic sign associated with applying stored excitation bit masks to a determinant.
+/// # Arguments:
+/// - `occ`: Occupancy bitstring.
+/// - `holes`: Annihilation operator bit mask.
+/// - `parts`: Creation operator bit mask.
+/// # Returns
+/// - `f64`: Fermionic phase factor.
+#[inline(always)]
+fn excitation_phase_bits(
+    mut occ: u128,
+    mut holes: u128,
+    mut parts: u128,
+) -> f64 {
+    #[inline(always)]
+    fn below(
+        bits: u128,
+        p: usize,
+    ) -> bool {
+        if p == 0 {
+            false
+        } else {
+            ((bits & ((1u128 << p) - 1)).count_ones() & 1) != 0
+        }
+    }
+
+    let mut odd = false;
+
+    while holes != 0 {
+        let i = 127 - holes.leading_zeros() as usize;
+        odd ^= below(occ, i);
+        occ &= !(1u128 << i);
+        holes &= !(1u128 << i);
+    }
+
+    while parts != 0 {
+        let a = parts.trailing_zeros() as usize;
+        odd ^= below(occ, a);
+        parts &= parts - 1;
+        if parts != 0 {
+            occ |= 1u128 << a;
+        }
+    }
+
+    if odd { -1.0 } else { 1.0 }
+}
+
 /// Construct a label describing an excitation in alpha and/or beta spin.
 /// # Arguments
 /// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
@@ -107,46 +149,42 @@ pub fn excitation_phase(
 /// # Returns
 /// - `String`: Label describing the excitation pattern.
 fn excitation_label(
-    alpha_holes: &[usize],
-    alpha_parts: &[usize],
-    beta_holes: &[usize],
-    beta_parts: &[usize],
+    alpha_holes: u128,
+    alpha_parts: u128,
+    beta_holes: u128,
+    beta_parts: u128,
 ) -> String {
+    let format_mask = |mut bits: u128| {
+        let mut orbitals = Vec::with_capacity(bits.count_ones() as usize);
+
+        while bits != 0 {
+            let p = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            orbitals.push(p.to_string());
+        }
+
+        orbitals.join(" ")
+    };
+
     let mut label = Vec::new();
-    if !alpha_holes.is_empty() {
+    if alpha_holes != 0 {
         label.push(format!(
             "alpha {} -> {}",
-            alpha_holes
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(" "),
-            alpha_parts
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(" "),
+            format_mask(alpha_holes),
+            format_mask(alpha_parts),
         ))
     }
-    if !beta_holes.is_empty() {
+    if beta_holes != 0 {
         label.push(format!(
             "beta {} -> {}",
-            beta_holes
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(" "),
-            beta_parts
-                .iter()
-                .map(|i| i.to_string())
-                .collect::<Vec<_>>()
-                .join(" "),
+            format_mask(beta_holes),
+            format_mask(beta_parts),
         ))
     }
     format!("({})", label.join("; "))
 }
 
-/// Construct an excitation object from alpha and beta hole/particle lists.
+/// Construct an excitation object from alpha and beta hole/particle masks.
 /// # Arguments
 /// - `alpha_holes`: Occupied alpha orbital indices from which electrons are removed.
 /// - `alpha_parts`: Virtual alpha orbital indices into which electrons are placed.
@@ -155,19 +193,19 @@ fn excitation_label(
 /// # Returns
 /// - `Excitation`: Excitation object containing the specified alpha and beta spin excitations.
 fn build_excitation(
-    alpha_holes: &[usize],
-    alpha_parts: &[usize],
-    beta_holes: &[usize],
-    beta_parts: &[usize],
+    alpha_holes: u128,
+    alpha_parts: u128,
+    beta_holes: u128,
+    beta_parts: u128,
 ) -> Excitation {
     Excitation {
         alpha: ExcitationSpin {
-            holes: alpha_holes.to_vec(),
-            parts: alpha_parts.to_vec(),
+            holes: alpha_holes,
+            parts: alpha_parts,
         },
         beta: ExcitationSpin {
-            holes: beta_holes.to_vec(),
-            parts: beta_parts.to_vec(),
+            holes: beta_holes,
+            parts: beta_parts,
         },
     }
 }
@@ -203,17 +241,10 @@ fn apply_excitation(
 /// - `u128`: Reconstructed parent occupation bitstring.
 fn undo_excitation(
     occ: u128,
-    holes: &[usize],
-    parts: &[usize],
+    holes: u128,
+    parts: u128,
 ) -> u128 {
-    let mut out = occ;
-    for &a in parts {
-        out &= !(1u128 << a);
-    }
-    for &i in holes {
-        out |= 1u128 << i;
-    }
-    out
+    (occ & !parts) | holes
 }
 
 /// Construct the excitation mapping one occupation bitstring to another.
@@ -221,20 +252,13 @@ fn undo_excitation(
 /// - `parent`: Parent occupation bitstring.
 /// - `child`: Child occupation bitstring.
 /// # Returns
-/// - `(Vec<usize>, Vec<usize>)`: Hole and particle orbital indices.
+/// - `(u128, u128)`: Hole and particle orbital masks.
+#[inline(always)]
 fn excitation_between(
     parent: u128,
     child: u128,
-) -> (Vec<usize>, Vec<usize>) {
-    let holes_bits = parent & !child;
-    let parts_bits = child & !parent;
-    let holes = (0..128)
-        .filter(|&i| ((holes_bits >> i) & 1u128) == 1)
-        .collect();
-    let parts = (0..128)
-        .filter(|&i| ((parts_bits >> i) & 1u128) == 1)
-        .collect();
-    (holes, parts)
+) -> (u128, u128) {
+    (parent & !child, child & !parent)
 }
 
 /// Generate a requested amount of all possible excitations on top of the given reference NOCI basis.
@@ -295,13 +319,13 @@ pub fn generate_excited_basis<T: NOCIScalar>(
                                 // of `r` to the new state.
                                 let parent_oa = undo_excitation(
                                     r.oa,
-                                    &r.excitation.alpha.holes,
-                                    &r.excitation.alpha.parts,
+                                    r.excitation.alpha.holes,
+                                    r.excitation.alpha.parts,
                                 );
                                 let parent_ob = undo_excitation(
                                     r.ob,
-                                    &r.excitation.beta.holes,
-                                    &r.excitation.beta.parts,
+                                    r.excitation.beta.holes,
+                                    r.excitation.beta.parts,
                                 );
 
                                 let (alpha_holes_total, alpha_parts_total) =
@@ -310,16 +334,16 @@ pub fn generate_excited_basis<T: NOCIScalar>(
                                     excitation_between(parent_ob, ob_ex);
 
                                 let label = excitation_label(
-                                    &alpha_holes_total,
-                                    &alpha_parts_total,
-                                    &beta_holes_total,
-                                    &beta_parts_total,
+                                    alpha_holes_total,
+                                    alpha_parts_total,
+                                    beta_holes_total,
+                                    beta_parts_total,
                                 );
                                 let excitation = build_excitation(
-                                    &alpha_holes_total,
-                                    &alpha_parts_total,
-                                    &beta_holes_total,
-                                    &beta_parts_total,
+                                    alpha_holes_total,
+                                    alpha_parts_total,
+                                    beta_holes_total,
+                                    beta_parts_total,
                                 );
 
                                 let exstate = make_excited_state(

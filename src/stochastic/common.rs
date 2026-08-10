@@ -78,12 +78,12 @@ pub(in crate::stochastic) fn find_hs(
 pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
     let maxexa = basis
         .iter()
-        .map(|st| st.excitation.alpha.holes.len())
+        .map(|st| st.excitation.alpha.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxexb = basis
         .iter()
-        .map(|st| st.excitation.beta.holes.len())
+        .map(|st| st.excitation.beta.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxsame = 2 * maxexa.max(maxexb);

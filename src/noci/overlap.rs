@@ -115,8 +115,8 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
         let ex_lb = &ldet.excitation.beta;
         let ex_gb = &gdet.excitation.beta;
 
-        let la = ex_la.holes.len() + ex_ga.holes.len();
-        let lb = ex_lb.holes.len() + ex_gb.holes.len();
+        let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
+        let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
 
         if w.aa.m > la || w.bb.m > lb {
             return <T as From<f64>>::from(0.0);
