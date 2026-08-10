@@ -168,8 +168,49 @@ pub(crate) fn hscf_cycle(
 
         if alpha == 0.0 {
             if input.write.verbose {
-                println!("h-SCF line search found no improving step.");
+                println!("h-SCF line search stalled; trying finite-difference Newton rescue.");
             }
+
+            hist.clear();
+            stagnant = 0;
+
+            if let Some((mut pa_fd, mut pb_fd)) =
+                finite_difference_newton_step((&ca, &cb), ao, (na, nb), (&ga, &gb), run.lambda)
+            {
+                limit_step(&mut pa_fd, &mut pb_fd);
+
+                let (alpha_fd, ca_fd, cb_fd) = line_search(
+                    (&ca, &cb),
+                    ao,
+                    (na, nb),
+                    (&pa_fd, &pb_fd),
+                    gnorm,
+                    run.lambda,
+                );
+
+                if alpha_fd != 0.0 {
+                    if input.write.verbose {
+                        println!(
+                            "h-SCF finite-difference Newton rescue accepted: alpha = {:.4e}",
+                            alpha_fd
+                        );
+                    }
+
+                    step_prev = Some((pa_fd.mapv(|z| z * alpha_fd), pb_fd.mapv(|z| z * alpha_fd)));
+
+                    g_prev = Some((ga, gb));
+
+                    ca = ca_fd;
+                    cb = cb_fd;
+
+                    continue;
+                }
+            }
+
+            if input.write.verbose {
+                println!("h-SCF finite-difference Newton rescue also failed.");
+            }
+
             finalise(ca_new, cb_new, ao, input, run);
             return None;
         }
