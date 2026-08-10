@@ -67,7 +67,7 @@ pub trait ERIScalar: LinalgScalar + From<f64> {
     /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
     /// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
     /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
-    /// - `out`: Output ERIs in [p, q, r, s] order.
+    /// - `out`: Output ERIs in `[p, q, r, s]` order.
     /// - `scratch`: Reusable transformation scratch storage.
     fn eri_ao2mo_hermitian_into(
         eri: &Array4<f64>,
@@ -123,7 +123,7 @@ impl ERIScalar for f64 {
     /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
     /// - `c_lam_r`: `MO coefficients C_{\lambda,r}.`
     /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
-    /// - `out`: Output ERIs in [p, q, r, s] order.
+    /// - `out`: Output ERIs in `[p, q, r, s]` order.
     /// - `scratch`: Reusable transformation scratch storage.
     fn eri_ao2mo_hermitian_into(
         eri: &Array4<f64>,
@@ -194,7 +194,7 @@ impl ERIScalar for Complex64 {
     /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
     /// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
     /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
-    /// - `out`: Output ERIs in [p, q, r, s] order.
+    /// - `out`: Output ERIs in `[p, q, r, s]` order.
     /// - `scratch`: Reusable transformation scratch storage.
     fn eri_ao2mo_hermitian_into(
         _eri: &Array4<f64>,
@@ -249,11 +249,11 @@ impl ERIScalar for Complex64 {
 
 /// Transform typed AO ERIs using preselected coefficient matrices and reusable buffers.
 /// `The contraction order is \sigma then \lambda then \nu then \mu.`
-/// The final assignment writes [p, q, r, s] into `out`.
+/// The final assignment writes `[p, q, r, s]` into `out`.
 /// # Arguments:
 /// - `eri`: Typed AO ERIs.
 /// - `coefficients`: AO-to-MO coefficient matrices.
-/// - `out`: Output ERIs in [p, q, r, s] order.
+/// - `out`: Output ERIs in `[p, q, r, s]` order.
 /// - `scratch`: Reusable contraction and permutation buffers.
 fn eri_ao2mo_into<T: ERIScalar>(
     eri: ArrayView4<'_, T>,

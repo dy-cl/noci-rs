@@ -275,7 +275,7 @@ pub fn write2<T: NOCIScalar>(
     slab[off..off + src.len()].copy_from_slice(src);
 }
 
-/// Store a matrix constructed in [r,z] order in transposed [z,r] order. The entries of a
+/// Store a matrix constructed in `[r,z]` order in transposed `[z,r]` order. The entries of a
 /// replacement column with fixed z are then contiguous and may be read as `slice[z * n + r]`.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
@@ -300,7 +300,7 @@ pub fn write2t<T: NOCIScalar>(
     }
 }
 
-/// Copy a rank-four tensor already constructed in [r,c,i,j] order into the slab without
+/// Copy a rank-four tensor already constructed in `[r,c,i,j]` order into the slab without
 /// `permuting its axes. This is the ordering used by the different-spin \mathcal{II} evaluator.`
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
@@ -317,7 +317,7 @@ fn write4rcij<T: NOCIScalar>(
     slab[off..off + src.len()].copy_from_slice(src);
 }
 
-/// Permute a rank-four tensor from constructed [r,c,i,j] order to stored [i,j,r,c] order.
+/// Permute a rank-four tensor from constructed `[r,c,i,j]` order to stored `[i,j,r,c]` order.
 /// `This places the fixed \mathcal J replacement pair before the varying minor entry.`
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.

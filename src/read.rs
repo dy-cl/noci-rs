@@ -9,7 +9,7 @@ use crate::AoData;
 use crate::maths::loewdin_x;
 
 /// Antisymmetrise the ERIs as:
-///     t[a, b, c, d] = (ab|cd) --> (ab||cd) = (ab|cd) - (ac|bd).
+///     `t[a, b, c, d] = (ab|cd) --> (ab||cd) = (ab|cd) - (ac|bd)`.
 /// # Arguments
 /// - `eri_coul`: Coulomb ERIs.
 /// # Returns

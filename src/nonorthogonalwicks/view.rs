@@ -267,10 +267,10 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
 
     /// Return the transposed one-column intermediate
     /// `\mathcal F^{(m_i,m_j)} constructed from the one-electron Hamiltonian. The stored`
-    /// [z,r] ordering makes the replacement column with fixed z contiguous.
+    /// `[z,r]` ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// `- mi, mj: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.`
+    /// - `mi, mj`: Fundamental-contraction assignments `m_i,m_j \in \{0,1\}`.
     /// # Returns
     /// - `&[T]`: `Flat transposed \mathcal F^{(m_i,m_j)} matrix.`
     #[inline(always)]
@@ -284,10 +284,10 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
 
     /// Return the transposed one-column intermediate
     /// `\mathcal F^{(m_i,m_j)} constructed from the current generalised-Fock operator. The`
-    /// stored [z,r] ordering makes the replacement column with fixed z contiguous.
+    /// stored `[z,r]` ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// `- mi, mj: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.`
+    /// - `mi, mj`: Fundamental-contraction assignments `m_i,m_j \in \{0,1\}`.
     /// # Returns
     /// - `&[T]`: `Flat transposed \mathcal F^{(m_i,m_j)} matrix.`
     #[inline(always)]
@@ -301,7 +301,7 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
 
     /// Return the transposed same-spin one-column intermediate
     /// `\mathcal V^{(m_1,m_2,m_3)}. Rust storage is ordered as v[m_1][m_3][m_2], and the`
-    /// stored [z,r] matrix ordering makes the replacement column with fixed z contiguous.
+    /// stored `[z,r]` matrix ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
     /// - `mi`: `First assignment m_1.`
@@ -409,7 +409,7 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
 
     /// Return the different-spin two-column intermediate
     /// `\mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})} in stored`
-    /// [r,c,i,j] order.
+    /// `[r,c,i,j]` order.
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
     /// - `ma0`: `Assignment m_{\alpha0}.`
