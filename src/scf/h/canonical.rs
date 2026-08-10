@@ -32,7 +32,7 @@ fn hermitian_orthonormalise_spin_basis(
     let smat = real2_as::<Complex64>(s);
 
     let mut out = Array2::<Complex64>::zeros(c.raw_dim());
-    
+
     // Find occupied orbital subspace and extract overlap:
     // 'S_{oo} = C_o^\dagger S C_o', followed by Loewdin orthogonalisation
     // to yield 'C_o = C_o S_{oo}^{-1/2}'.
@@ -43,15 +43,15 @@ fn hermitian_orthonormalise_spin_basis(
         let soo = adjoint(&c_occ).dot(&smat).dot(&c_occ);
         c_occ.dot(&loewdin_x(&soo, false, tol))
     };
-    
+
     // Restore the orthonormalised occupied orbitals to their original MO column indices.
     if !occ.is_empty() {
         for (k, &p) in occ.iter().enumerate() {
             out.column_mut(p).assign(&c_occ.column(k));
         }
     }
-    
-    // Find virtual orbital subspace and extract overlap followed by Loewdin orthogonalisation 
+
+    // Find virtual orbital subspace and extract overlap followed by Loewdin orthogonalisation
     // whilst maintaining Hermitian-orthogonality to the occupied orbitals.
     let c_vir = c.select(Axis(1), virt);
     let c_vir = if virt.is_empty() {
@@ -61,26 +61,26 @@ fn hermitian_orthonormalise_spin_basis(
             c_vir
         } else {
             // Project virtual orbitals out of the occupied space as:
-            // 'C_v^\perp = C_v - C_o' (C_o'^\dagger S C_v)', such that 
+            // 'C_v^\perp = C_v - C_o' (C_o'^\dagger S C_v)', such that
             // 'C_o^\dagger S C_v^\perp = 0'.
             let sov = adjoint(&c_occ).dot(&smat).dot(&c_vir);
             c_vir - c_occ.dot(&sov)
         };
-        
+
         // Orthnormalise within the projected virtual space as:
-        // 'S_vv = C_v^{\perp\dagger} S C_v^\perp', 
+        // 'S_vv = C_v^{\perp\dagger} S C_v^\perp',
         // 'C_v' = C_v^\perp S_vv^{-1/2}'.
         let svv = adjoint(&c_vir_perp).dot(&smat).dot(&c_vir_perp);
         c_vir_perp.dot(&loewdin_x(&svv, false, tol))
     };
-    
+
     // Restore the orthonormalised virtual orbitals to their original MO column indices.
     if !virt.is_empty() {
         for (k, &p) in virt.iter().enumerate() {
             out.column_mut(p).assign(&c_vir.column(k));
         }
     }
-    
+
     // The resulting occupied and virtual orbitals hence satisfy Hermitian orthonormality.
     out
 }
@@ -101,11 +101,11 @@ pub fn normalise_hermitian(
 ) {
     // Occupied and virtual orbital indices for each spin.
     let occ = spin_occupation(st);
-    // Eigenvalues of occupied or virtual metrics may be null, hence any 
+    // Eigenvalues of occupied or virtual metrics may be null, hence any
     // below this value are considered to be zero.
     let tol = 1.0e-12;
-    
-    // Convert a spin orbital basis from the holomorphic constraint to the ordinary 
+
+    // Convert a spin orbital basis from the holomorphic constraint to the ordinary
     // Hermitian constraint.
     let ca = hermitian_orthonormalise_spin_basis(&st.ca, &occ.occ_alpha, &occ.virt_alpha, s, tol);
     let cb = hermitian_orthonormalise_spin_basis(&st.cb, &occ.occ_beta, &occ.virt_beta, s, tol);

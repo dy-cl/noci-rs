@@ -17,7 +17,7 @@ const STEPS: usize = 5;
 
 /// Initialise an off-axis h-SCF tracking state from a converged real HF solution.
 /// The electron-electron interaction is rotated from the physical Hamiltonian at
-/// `\lambda = 1` to the complex tracking Hamiltonian at `\lambda = \exp(i \theta_\mathrm{track})` 
+/// `\lambda = 1` to the complex tracking Hamiltonian at `\lambda = \exp(i \theta_\mathrm{track})`
 /// using a sequence of small phase steps.
 /// # Arguments:
 /// - `seed`: Converged real HF state used to initialise the holomorphic branch.
@@ -34,21 +34,21 @@ pub(crate) fn initialise_hscf_track(
     label: &str,
     i: usize,
 ) -> Option<HSCFState> {
-    // Promote orbitals from a converged real HF calculation to complex. 
+    // Promote orbitals from a converged real HF calculation to complex.
     // This corresponds to `lambda = 1` scaling of the two electron integrals.
     let (mut ca, mut cb) = complex_orbitals_from_real(seed, ao);
 
     let mut out = None;
-    
-    // Move the HF solution into the complex plane in incremenents of 
-    // `\lambda_k = exp(i \theta_k)`, which is given by the total phase 
+
+    // Move the HF solution into the complex plane in incremenents of
+    // `\lambda_k = exp(i \theta_k)`, which is given by the total phase
     // change divided by the number of steps in which to apply it.
     for step in 1..=STEPS {
         let theta = PHASE * step as f64 / STEPS as f64;
         // '\lambda = e^{i \theta}'.
         let lambda = Complex64::from_polar(1.0, theta);
 
-        // Run holomorphic HF procedure and use the solution from 
+        // Run holomorphic HF procedure and use the solution from
         // run '\lambda_{k - 1}' as initial coefficients.
         let state = hscf_cycle(
             &ca,
@@ -62,7 +62,7 @@ pub(crate) fn initialise_hscf_track(
                 lambda,
             },
         )?;
-        
+
         // Update coefficients.
         ca = (*state.ca).clone();
         cb = (*state.cb).clone();
@@ -90,7 +90,7 @@ pub(crate) fn continue_hscf_track(
     label: &str,
     i: usize,
 ) -> Option<HSCFState> {
-    // AO overlap changes between geometries so previous orbitals 
+    // AO overlap changes between geometries so previous orbitals
     // must be re-orthonormalised with the new metric.
     let ca = complex_metric_orthonormalize(&previous.ca, &ao.s);
     let cb = complex_metric_orthonormalize(&previous.cb, &ao.s);
@@ -138,10 +138,10 @@ pub(crate) fn physical_hscf_state(
     let mut cb = (*track.cb).clone();
 
     let mut out = None;
-    
-    // Return to the physical Hamiltonian by reducing the '\lambda' phase 
+
+    // Return to the physical Hamiltonian by reducing the '\lambda' phase
     // in incremenents of `\lambda_k = exp(i \theta_k)`, that is, the reverse
-    // of the initialisation. Increment is again given by total phase to unapply 
+    // of the initialisation. Increment is again given by total phase to unapply
     // divided by number of steps in which to do so.
     for step in 1..=STEPS {
         let x = step as f64 / STEPS as f64;
@@ -150,7 +150,7 @@ pub(crate) fn physical_hscf_state(
         // '\lambda = e^{i \theta}'.
         let lambda = Complex64::from_polar(1.0, theta);
 
-        // Run holomorphic HF procedure and use the solution from 
+        // Run holomorphic HF procedure and use the solution from
         // run '\lambda_{k - 1}' as initial coefficients.
         let state = hscf_cycle(
             &ca,

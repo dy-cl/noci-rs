@@ -12,7 +12,7 @@ use super::helpers::{
     bit, column_replacement_correction, column_replacement_det, get_det_adjt_same, j_replacement,
     jslot, minor_adjt,
 };
-use crate::maths::{adjugate_transpose, minor_adjugate_transpose};
+use crate::maths::adjugate_transpose;
 
 /// Evaluate the same-spin two-body matrix element between excited determinants generated from the
 /// reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:
@@ -175,7 +175,7 @@ fn xw_h2_same_m0_l2<T: NOCIScalar>(
 
 /// Evaluate the fixed-rank L = 3 same-spin two-body matrix element for m = 0.
 /// The \mathcal V term is contracted with the cofactor matrix of \mathbf D_{\mathrm{ov}}, while
-/// each \mathcal J term is contracted with the cofactors of a rank-two minor.
+/// each \mathcal J term is contracted directly with the corresponding second minor.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-three contraction determinant and scratch storage for its cofactors.
@@ -227,47 +227,45 @@ fn xw_h2_same_m0_l3<T: NOCIScalar>(
                 + cof[idx(3, 1, 2)] * vsl[c2 * n + r1]
                 + cof[idx(3, 2, 2)] * vsl[c2 * n + r2];
 
-            // C_3 = \sum_{\eta,z}(-1)^{\eta+z}\sum_{\xi,y}
-            // \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]]_{\xi y}\mathcal J_{\eta z,\xi y}.
+            // C_3 = 2\sum_{\eta<\xi}\sum_{z<y}
+            // (-1)^{\eta+\xi+z+y}
+            // \det\mathbf D_{\mathrm{ov}}[\eta,\xi|z,y]
+            // (\mathcal J_{\eta z,\xi y}-\mathcal J_{\eta y,\xi z}).
+            // For L = 3 each second minor is 1 x 1, so all nine distinct
+            // row-pair/column-pair contributions can be evaluated directly.
             let jsl = w.j_slice(0);
+            let n2 = n * n;
+
+            // Precompute the fixed first-pair offsets in the flattened rank-four
+            // \mathcal J tensor so each contraction requires only additions.
+            let base00 = (r0 * n + c0) * n2;
+            let base01 = (r0 * n + c1) * n2;
+            let base02 = (r0 * n + c2) * n2;
+            let base10 = (r1 * n + c0) * n2;
+            let base11 = (r1 * n + c1) * n2;
+            let base12 = (r1 * n + c2) * n2;
+
+            let r1n = r1 * n;
+            let r2n = r2 * n;
+
             let mut jterm = <T as From<f64>>::from(0.0);
 
-            for i in 0..3 {
-                let (ra0, ra1) = match i {
-                    0 => (1, 2),
-                    1 => (0, 2),
-                    2 => (0, 1),
-                    _ => unreachable!(),
-                };
-                let ri = rows[i];
+            // (\eta,\xi) = (0,1).
+            jterm += det0[8] * (jsl[base00 + r1n + c1] - jsl[base01 + r1n + c0]);
+            jterm -= det0[7] * (jsl[base00 + r1n + c2] - jsl[base02 + r1n + c0]);
+            jterm += det0[6] * (jsl[base01 + r1n + c2] - jsl[base02 + r1n + c1]);
 
-                for j in 0..3 {
-                    let (cb0, cb1) = match j {
-                        0 => (1, 2),
-                        1 => (0, 2),
-                        2 => (0, 1),
-                        _ => unreachable!(),
-                    };
-                    let cj = cols[j];
-                    let phase = if ((i + j) & 1) == 0 {
-                        <T as From<f64>>::from(1.0)
-                    } else {
-                        <T as From<f64>>::from(-1.0)
-                    };
+            // (\eta,\xi) = (0,2).
+            jterm -= det0[5] * (jsl[base00 + r2n + c1] - jsl[base01 + r2n + c0]);
+            jterm += det0[4] * (jsl[base00 + r2n + c2] - jsl[base02 + r2n + c0]);
+            jterm -= det0[3] * (jsl[base01 + r2n + c2] - jsl[base02 + r2n + c1]);
 
-                    let m00 = det0[idx(3, ra0, cb0)];
-                    let m01 = det0[idx(3, ra0, cb1)];
-                    let m10 = det0[idx(3, ra1, cb0)];
-                    let m11 = det0[idx(3, ra1, cb1)];
+            // (\eta,\xi) = (1,2).
+            jterm += det0[2] * (jsl[base10 + r2n + c1] - jsl[base11 + r2n + c0]);
+            jterm -= det0[1] * (jsl[base10 + r2n + c2] - jsl[base12 + r2n + c0]);
+            jterm += det0[0] * (jsl[base11 + r2n + c2] - jsl[base12 + r2n + c1]);
 
-                    let j00 = jsl[idx4(n, ri, cj, rows[ra0], cols[cb0])];
-                    let j01 = jsl[idx4(n, ri, cj, rows[ra0], cols[cb1])];
-                    let j10 = jsl[idx4(n, ri, cj, rows[ra1], cols[cb0])];
-                    let j11 = jsl[idx4(n, ri, cj, rows[ra1], cols[cb1])];
-
-                    jterm += phase * (m11 * j00 - m10 * j01 - m01 * j10 + m00 * j11);
-                }
-            }
+            let jterm = <T as From<f64>>::from(2.0) * jterm;
 
             // H = {}^{xw}\tilde S[{}^xV_0^{(0,0)}\det\mathbf D_{\mathrm{ov}}
             // - 2\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal V_z} + C_3].
@@ -282,7 +280,7 @@ fn xw_h2_same_m0_l3<T: NOCIScalar>(
 
 /// Evaluate the fixed-rank L = 4 same-spin two-body matrix element for m = 0.
 /// The \mathcal V term is contracted with the cofactor matrix of \mathbf D_{\mathrm{ov}}, while
-/// each \mathcal J term is contracted with the cofactors of a rank-three minor.
+/// each \mathcal J term is contracted directly with the corresponding second minor.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-four contraction determinant and scratch storage for its cofactors and minors.
@@ -343,71 +341,124 @@ fn xw_h2_same_m0_l4<T: NOCIScalar>(
                 + cof[idx(4, 2, 3)] * vsl[c3 * n + r2]
                 + cof[idx(4, 3, 3)] * vsl[c3 * n + r3];
 
-            // For each fixed (\eta,z), form \mathbf D_{\mathrm{ov}}[\eta|z] and contract
-            // \mathcal J_{\eta z,\xi y} with its cofactors to evaluate C_3.
+            // C_3 = 2\sum_{\eta<\xi}\sum_{z<y}
+            // (-1)^{\eta+\xi+z+y}
+            // \det\mathbf D_{\mathrm{ov}}[\eta,\xi|z,y]
+            // (\mathcal J_{\eta z,\xi y}-\mathcal J_{\eta y,\xi z}).
+            // For L = 4 each second minor is 2 x 2. Evaluating the 36 distinct
+            // row-pair/column-pair combinations directly avoids constructing sixteen
+            // rank-three first minors and their nine-element cofactor matrices.
             let jsl = w.j_slice(0);
+            let n2 = n * n;
+
+            // Precompute the fixed first-pair offsets in the flattened rank-four
+            // \mathcal J tensor so each contraction requires only additions.
+            let base00 = (r0 * n + c0) * n2;
+            let base01 = (r0 * n + c1) * n2;
+            let base02 = (r0 * n + c2) * n2;
+            let base03 = (r0 * n + c3) * n2;
+
+            let base10 = (r1 * n + c0) * n2;
+            let base11 = (r1 * n + c1) * n2;
+            let base12 = (r1 * n + c2) * n2;
+            let base13 = (r1 * n + c3) * n2;
+
+            let base20 = (r2 * n + c0) * n2;
+            let base21 = (r2 * n + c1) * n2;
+            let base22 = (r2 * n + c2) * n2;
+            let base23 = (r2 * n + c3) * n2;
+
+            let r1n = r1 * n;
+            let r2n = r2 * n;
+            let r3n = r3 * n;
+
             let mut jterm = <T as From<f64>>::from(0.0);
-            let mut invs = [];
-            let mut lu = [];
 
-            for i in 0..4 {
-                let (ri, rr) = match i {
-                    0 => (r0, [r1, r2, r3]),
-                    1 => (r1, [r0, r2, r3]),
-                    2 => (r2, [r0, r1, r3]),
-                    3 => (r3, [r0, r1, r2]),
-                    _ => unreachable!(),
-                };
+            // (\eta,\xi) = (0,1).
+            jterm += (det0[10] * det0[15] - det0[11] * det0[14])
+                * (jsl[base00 + r1n + c1] - jsl[base01 + r1n + c0]);
+            jterm -= (det0[9] * det0[15] - det0[11] * det0[13])
+                * (jsl[base00 + r1n + c2] - jsl[base02 + r1n + c0]);
+            jterm += (det0[9] * det0[14] - det0[10] * det0[13])
+                * (jsl[base00 + r1n + c3] - jsl[base03 + r1n + c0]);
+            jterm += (det0[8] * det0[15] - det0[11] * det0[12])
+                * (jsl[base01 + r1n + c2] - jsl[base02 + r1n + c1]);
+            jterm -= (det0[8] * det0[14] - det0[10] * det0[12])
+                * (jsl[base01 + r1n + c3] - jsl[base03 + r1n + c1]);
+            jterm += (det0[8] * det0[13] - det0[9] * det0[12])
+                * (jsl[base02 + r1n + c3] - jsl[base03 + r1n + c2]);
 
-                for j in 0..4 {
-                    let (cj, cc) = match j {
-                        0 => (c0, [c1, c2, c3]),
-                        1 => (c1, [c0, c2, c3]),
-                        2 => (c2, [c0, c1, c3]),
-                        3 => (c3, [c0, c1, c2]),
-                        _ => unreachable!(),
-                    };
-                    let phase = if ((i + j) & 1) == 0 {
-                        <T as From<f64>>::from(1.0)
-                    } else {
-                        <T as From<f64>>::from(-1.0)
-                    };
+            // (\eta,\xi) = (0,2).
+            jterm -= (det0[6] * det0[15] - det0[7] * det0[14])
+                * (jsl[base00 + r2n + c1] - jsl[base01 + r2n + c0]);
+            jterm += (det0[5] * det0[15] - det0[7] * det0[13])
+                * (jsl[base00 + r2n + c2] - jsl[base02 + r2n + c0]);
+            jterm -= (det0[5] * det0[14] - det0[6] * det0[13])
+                * (jsl[base00 + r2n + c3] - jsl[base03 + r2n + c0]);
+            jterm -= (det0[4] * det0[15] - det0[7] * det0[12])
+                * (jsl[base01 + r2n + c2] - jsl[base02 + r2n + c1]);
+            jterm += (det0[4] * det0[14] - det0[6] * det0[12])
+                * (jsl[base01 + r2n + c3] - jsl[base03 + r2n + c1]);
+            jterm -= (det0[4] * det0[13] - det0[5] * det0[12])
+                * (jsl[base02 + r2n + c3] - jsl[base03 + r2n + c2]);
 
-                    // Remove row \eta = i and column z = j, then replace each remaining
-                    // column y by \mathcal J_{\eta z,\xi y}; the outer phase is (-1)^{\eta+z}.
-                    if let Some(det_minor) = minor_adjugate_transpose(
-                        scratch.adjt_det2.as_mut_slice(),
-                        scratch.det_mix2.as_mut_slice(),
-                        &mut invs,
-                        &mut lu,
-                        det0,
-                        4,
-                        i,
-                        j,
-                        tol,
-                    ) && det_minor.abs() > tol
-                    {
-                        // (-1)^{\eta+z}\sum_{\xi,y}
-                        // \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]]_{\xi y}\mathcal J_{\eta z,\xi y}.
-                        let cof_minor = scratch.adjt_det2.as_slice();
-                        let fixed = (ri * n + cj) * n;
-                        let base0 = (fixed + rr[0]) * n;
-                        let base1 = (fixed + rr[1]) * n;
-                        let base2 = (fixed + rr[2]) * n;
+            // (\eta,\xi) = (0,3).
+            jterm += (det0[6] * det0[11] - det0[7] * det0[10])
+                * (jsl[base00 + r3n + c1] - jsl[base01 + r3n + c0]);
+            jterm -= (det0[5] * det0[11] - det0[7] * det0[9])
+                * (jsl[base00 + r3n + c2] - jsl[base02 + r3n + c0]);
+            jterm += (det0[5] * det0[10] - det0[6] * det0[9])
+                * (jsl[base00 + r3n + c3] - jsl[base03 + r3n + c0]);
+            jterm += (det0[4] * det0[11] - det0[7] * det0[8])
+                * (jsl[base01 + r3n + c2] - jsl[base02 + r3n + c1]);
+            jterm -= (det0[4] * det0[10] - det0[6] * det0[8])
+                * (jsl[base01 + r3n + c3] - jsl[base03 + r3n + c1]);
+            jterm += (det0[4] * det0[9] - det0[5] * det0[8])
+                * (jsl[base02 + r3n + c3] - jsl[base03 + r3n + c2]);
 
-                        jterm += phase
-                            * (cof_minor[0] * jsl[base0 + cc[0]]
-                                + cof_minor[3] * jsl[base1 + cc[0]]
-                                + cof_minor[6] * jsl[base2 + cc[0]]
-                                + cof_minor[1] * jsl[base0 + cc[1]]
-                                + cof_minor[4] * jsl[base1 + cc[1]]
-                                + cof_minor[7] * jsl[base2 + cc[1]]
-                                + cof_minor[2] * jsl[base0 + cc[2]]
-                                + cof_minor[5] * jsl[base1 + cc[2]]
-                                + cof_minor[8] * jsl[base2 + cc[2]]);
-                    }
-                }
-            }
+            // (\eta,\xi) = (1,2).
+            jterm += (det0[2] * det0[15] - det0[3] * det0[14])
+                * (jsl[base10 + r2n + c1] - jsl[base11 + r2n + c0]);
+            jterm -= (det0[1] * det0[15] - det0[3] * det0[13])
+                * (jsl[base10 + r2n + c2] - jsl[base12 + r2n + c0]);
+            jterm += (det0[1] * det0[14] - det0[2] * det0[13])
+                * (jsl[base10 + r2n + c3] - jsl[base13 + r2n + c0]);
+            jterm += (det0[0] * det0[15] - det0[3] * det0[12])
+                * (jsl[base11 + r2n + c2] - jsl[base12 + r2n + c1]);
+            jterm -= (det0[0] * det0[14] - det0[2] * det0[12])
+                * (jsl[base11 + r2n + c3] - jsl[base13 + r2n + c1]);
+            jterm += (det0[0] * det0[13] - det0[1] * det0[12])
+                * (jsl[base12 + r2n + c3] - jsl[base13 + r2n + c2]);
+
+            // (\eta,\xi) = (1,3).
+            jterm -= (det0[2] * det0[11] - det0[3] * det0[10])
+                * (jsl[base10 + r3n + c1] - jsl[base11 + r3n + c0]);
+            jterm += (det0[1] * det0[11] - det0[3] * det0[9])
+                * (jsl[base10 + r3n + c2] - jsl[base12 + r3n + c0]);
+            jterm -= (det0[1] * det0[10] - det0[2] * det0[9])
+                * (jsl[base10 + r3n + c3] - jsl[base13 + r3n + c0]);
+            jterm -= (det0[0] * det0[11] - det0[3] * det0[8])
+                * (jsl[base11 + r3n + c2] - jsl[base12 + r3n + c1]);
+            jterm += (det0[0] * det0[10] - det0[2] * det0[8])
+                * (jsl[base11 + r3n + c3] - jsl[base13 + r3n + c1]);
+            jterm -= (det0[0] * det0[9] - det0[1] * det0[8])
+                * (jsl[base12 + r3n + c3] - jsl[base13 + r3n + c2]);
+
+            // (\eta,\xi) = (2,3).
+            jterm += (det0[2] * det0[7] - det0[3] * det0[6])
+                * (jsl[base20 + r3n + c1] - jsl[base21 + r3n + c0]);
+            jterm -= (det0[1] * det0[7] - det0[3] * det0[5])
+                * (jsl[base20 + r3n + c2] - jsl[base22 + r3n + c0]);
+            jterm += (det0[1] * det0[6] - det0[2] * det0[5])
+                * (jsl[base20 + r3n + c3] - jsl[base23 + r3n + c0]);
+            jterm += (det0[0] * det0[7] - det0[3] * det0[4])
+                * (jsl[base21 + r3n + c2] - jsl[base22 + r3n + c1]);
+            jterm -= (det0[0] * det0[6] - det0[2] * det0[4])
+                * (jsl[base21 + r3n + c3] - jsl[base23 + r3n + c1]);
+            jterm += (det0[0] * det0[5] - det0[1] * det0[4])
+                * (jsl[base22 + r3n + c3] - jsl[base23 + r3n + c2]);
+
+            let jterm = <T as From<f64>>::from(2.0) * jterm;
 
             // H = {}^{xw}\tilde S[{}^xV_0^{(0,0)}\det\mathbf D_{\mathrm{ov}}
             // - 2\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal V_z} + C_3].
