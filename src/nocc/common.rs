@@ -1,7 +1,9 @@
 // nocc/common.rs
 
+// External crate imports.
 use ndarray::{Array2, Array4};
 
+// Crate-root imports.
 use crate::AoData;
 use crate::nocc::space::{Excitation, ExcitationClass, Spaces};
 use crate::nocc::terms::{GeneratedTerm, TensorFactor};
@@ -160,9 +162,9 @@ fn fill(
 /// Evaluate one generated term at fixed index values. Each term is essentially
 /// a combination of a coefficient, sum over dummy indices, product of deltas,
 /// product of tensors. So here we calculate symbolically:
-/// T_a(i) = c_a \prod_{r, s \in D_a} \delta_{i_r, i_s} \prod_{F \in \mathcal{F}_a} F(i).
-/// Where a labels the current Wick term, i is index assignment vector, c_a is a coefficient,
-/// D_a is the list of Kronecker delta constraints and \mathcal{F}_a is the list of tensors.
+/// `T_a(i) = c_a \prod_{r, s \in D_a} \delta_{i_r, i_s} \prod_{F \in \mathcal{F}_a} F(i).`
+/// `Where a labels the current Wick term, i is index assignment vector, c_a is a coefficient,`
+/// `D_a is the list of Kronecker delta constraints and \mathcal{F}_a is the list of tensors.`
 /// # Arguments:
 /// - `item`: Generated overlap term.
 /// - `idx`: Block-local orbital index values.
@@ -199,9 +201,9 @@ fn term(
 }
 
 /// Sum one generated term over its dummy indices. This is a sum over all the
-/// terms T_a(i) generated in the above function:
-/// \sum_{i_d_0 \in \Omega_d_0} \sum_{i_d_1 \in \Omega_d_1} \cdots \sum_{i_d_k \in \Omega_d_k} T_a(i)
-/// where each \Omega_d_k is an allowed orbital space for the given dummy index.
+/// `terms T_a(i) generated in the above function:`
+/// `\sum_{i_d_0 \in \Omega_d_0} \sum_{i_d_1 \in \Omega_d_1} \cdots \sum_{i_d_k \in \Omega_d_k} T_a(i)`
+/// `where each \Omega_d_k is an allowed orbital space for the given dummy index.`
 /// # Arguments:
 /// - `item`: Generated overlap term.
 /// - `block`: Generated terms for the overlap block.
@@ -310,9 +312,9 @@ pub(super) fn factor(
 }
 
 /// Evaluate one generated element from a term table:
-/// X^B = \sum_{\alpha \in B} \sum_{\mathbf{d}_\alpha} T_\alpha(\mathbf{i}, \mathbf{d}_\alpha)
-/// where B is the generated block/class, \alpha runs over terms,
-/// \mathbf{d}_\alpha is a vector of dummy indices, and \mathbf{i} is a vector of free indices.
+/// `X^B = \sum_{\alpha \in B} \sum_{\mathbf{d}_\alpha} T_\alpha(\mathbf{i}, \mathbf{d}_\alpha)`
+/// `where B is the generated block/class, \alpha runs over terms,`
+/// `\mathbf{d}_\alpha is a vector of dummy indices, and \mathbf{i} is a vector of free indices.`
 /// # Arguments:
 /// - `nidx`: Number of block/class-local symbolic indices.
 /// - `terms`: Generated terms for the block/class.

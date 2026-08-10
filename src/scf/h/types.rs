@@ -1,5 +1,6 @@
 // scf/h/types.rs
 
+// External crate imports.
 use ndarray::Array2;
 use num_complex::Complex64;
 

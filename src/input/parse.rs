@@ -1,9 +1,12 @@
 // input/parse.rs
 
+// Standard library imports.
 use std::fs;
 
+// External crate imports.
 use rlua::{Lua, Table, Value};
 
+// Parent/sibling imports.
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, Input,
     Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,

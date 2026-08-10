@@ -1,14 +1,15 @@
 // mod.rs
+// Standard library imports.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use serde::de::DeserializeOwned;
-
+// External crate imports.
 use noci_rs::AoData;
 use noci_rs::input::{Input, load_input};
 use noci_rs::read::read_integrals;
+use serde::de::DeserializeOwned;
 
 /// Return name of a directory containing a test fixture.
 /// # Arguments:

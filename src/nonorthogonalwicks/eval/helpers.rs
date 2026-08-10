@@ -1,8 +1,10 @@
 // nonorthogonalwicks/eval/helpers.rs
 
+// External crate imports.
 #[cfg(feature = "nocc")]
 use ndarray::{Array2, ArrayView2, s};
 
+// Crate-root imports.
 #[cfg(feature = "nocc")]
 use crate::maths::adjoint;
 use crate::maths::{
@@ -11,11 +13,12 @@ use crate::maths::{
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
+// Parent/sibling imports.
 use super::super::layout::{idx, idx4};
 use super::super::scratch::{Vec2, WickScratch};
 use super::super::view::{SameSpinView, WicksPairView};
 
-/// Orbital-index layout used to construct \mathcal J and \mathcal{II} replacement columns.
+/// `Orbital-index layout used to construct \mathcal J and \mathcal{II} replacement columns.`
 /// The determinant row and column positions are mapped through `rows` and `cols` to the
 /// corresponding orbital labels carried by the stored intermediates.
 #[derive(Clone, Copy)]
@@ -38,35 +41,35 @@ pub(super) struct DetIndex {
     pub col: usize,
 }
 
-/// All-m_i = 0 and all-m_i = 1 endpoint contraction determinants. A mixed
-/// \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L) is formed by selecting column i from the endpoint
-/// corresponding to m_i \in \{0,1\}.
+/// `All-m_i = 0 and all-m_i = 1 endpoint contraction determinants. A mixed`
+/// `\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L) is formed by selecting column i from the endpoint`
+/// `corresponding to m_i \in \{0,1\}.`
 #[derive(Clone, Copy)]
 pub(super) struct DetBranches<'a, T> {
-    /// \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+    /// `\mathbf D_{\mathrm{ov}}(0,\ldots,0).`
     pub zero: &'a [T],
-    /// \mathbf D_{\mathrm{ov}}(1,\ldots,1).
+    /// `\mathbf D_{\mathrm{ov}}(1,\ldots,1).`
     pub one: &'a [T],
 }
 
-/// Specification of the minor \mathbf D[\eta|z] obtained by deleting one row and one column
+/// `Specification of the minor \mathbf D[\eta|z] obtained by deleting one row and one column`
 /// from a full contraction determinant.
 #[derive(Clone, Copy)]
 pub(super) struct Minor {
     /// Dimension L of the full contraction determinant.
     pub l: usize,
-    /// Row \eta removed from the full determinant.
+    /// `Row \eta removed from the full determinant.`
     pub row: usize,
     /// Column z removed from the full determinant.
     pub col: usize,
 }
 
-/// Evaluate \det\mathbf A for a row-major square matrix.
+/// `Evaluate \det\mathbf A for a row-major square matrix.`
 /// # Arguments:
-/// - `a`: Row-major entries of \mathbf A.
-/// - `n`: Dimension of \mathbf A.
+/// - `a`: `Row-major entries of \mathbf A.`
+/// - `n`: `Dimension of \mathbf A.`
 /// # Returns
-/// - `Option<T>`: \det\mathbf A when the determinant routine succeeds.
+/// - `Option<T>`: `\det\mathbf A when the determinant routine succeeds.`
 #[inline(always)]
 pub(super) fn det_slice<T: NOCIScalar>(
     a: &[T],
@@ -75,13 +78,13 @@ pub(super) fn det_slice<T: NOCIScalar>(
     det(a, n)
 }
 
-/// Evaluate \det\mathbf A for a row-major square matrix, returning zero when the determinant
+/// `Evaluate \det\mathbf A for a row-major square matrix, returning zero when the determinant`
 /// routine does not produce a value.
 /// # Arguments:
-/// - `a`: Row-major entries of \mathbf A.
-/// - `n`: Dimension of \mathbf A.
+/// - `a`: `Row-major entries of \mathbf A.`
+/// - `n`: `Dimension of \mathbf A.`
 /// # Returns
-/// - `T`: \det\mathbf A, or zero when evaluation fails.
+/// - `T`: `\det\mathbf A, or zero when evaluation fails.`
 #[inline(always)]
 pub(super) fn det_or_zero<T: NOCIScalar>(
     a: &[T],
@@ -91,17 +94,17 @@ pub(super) fn det_or_zero<T: NOCIScalar>(
 }
 
 /// Extend one fundamental-contraction matrix to include the external RDM basis:
-/// \mathbf D_{\mathrm{ext}}^{(m)}
-/// = \begin{pmatrix}\mathbf D^{(m)} & \mathbf C_{\mathrm{row}}^\dagger
-/// \mathbf D_{\mathrm{RDM}}^{(m)}\\\mathbf D_{\mathrm{RDM}}^{(m)}
-/// \mathbf C_{\mathrm{col}} & \mathbf D_{\mathrm{RDM}}^{(m)}\end{pmatrix}.
+/// `\mathbf D_{\mathrm{ext}}^{(m)}`
+/// `= \begin{pmatrix}\mathbf D^{(m)} & \mathbf C_{\mathrm{row}}^\dagger`
+/// `\mathbf D_{\mathrm{RDM}}^{(m)}\\\mathbf D_{\mathrm{RDM}}^{(m)}`
+/// `\mathbf C_{\mathrm{col}} & \mathbf D_{\mathrm{RDM}}^{(m)}\end{pmatrix}.`
 /// The upper-left block acts in the compact excitation row and column spaces, the lower-right
 /// block contracts two external RDM indices, and the off-diagonal blocks contract one external
 /// index with one excitation-space index.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `d`: Fundamental-contraction matrix \mathbf D^{(m)} in the compact excitation spaces.
-/// - `d_rdm`: Fundamental-contraction matrix \mathbf D_{\mathrm{RDM}}^{(m)} in the external RDM basis.
+/// - `d`: `Fundamental-contraction matrix \mathbf D^{(m)} in the compact excitation spaces.`
+/// - `d_rdm`: `Fundamental-contraction matrix \mathbf D_{\mathrm{RDM}}^{(m)} in the external RDM basis.`
 /// - `l_c`: Bra-reference molecular-orbital coefficients in the external RDM basis.
 /// - `g_c`: Ket-reference molecular-orbital coefficients in the external RDM basis.
 /// # Returns
@@ -147,18 +150,18 @@ pub(super) fn extend_rdm_d<T: NOCIScalar>(
 }
 
 /// Map the four fundamental-contraction assignments of
-/// \mathcal J_{\eta z,\xi y}^{(m_i,m_j,m_k,m_l)} to one of the ten stored tensors. Pair-exchange
+/// `\mathcal J_{\eta z,\xi y}^{(m_i,m_j,m_k,m_l)} to one of the ten stored tensors. Pair-exchange`
 /// symmetry identifies
-/// \mathcal J_{\eta z,\xi y}^{(m_i,m_j,m_k,m_l)}
-/// = \mathcal J_{\xi y,\eta z}^{(m_k,m_l,m_i,m_j)};
+/// `\mathcal J_{\eta z,\xi y}^{(m_i,m_j,m_k,m_l)}`
+/// `= \mathcal J_{\xi y,\eta z}^{(m_k,m_l,m_i,m_j)};`
 /// the returned flag records whether this exchanged access is required.
 /// # Arguments:
-/// - `mi`: First assignment associated with the pair (\eta,z).
-/// - `mj`: Second assignment associated with the pair (\eta,z).
-/// - `mk`: First assignment associated with the pair (\xi,y).
-/// - `ml`: Second assignment associated with the pair (\xi,y).
+/// - `mi`: `First assignment associated with the pair (\eta,z).`
+/// - `mj`: `Second assignment associated with the pair (\eta,z).`
+/// - `mk`: `First assignment associated with the pair (\xi,y).`
+/// - `ml`: `Second assignment associated with the pair (\xi,y).`
 /// # Returns
-/// - `(usize, bool)`: Stored \mathcal J slot and whether the two index pairs must be exchanged.
+/// - `(usize, bool)`: `Stored \mathcal J slot and whether the two index pairs must be exchanged.`
 pub(super) fn jslot(
     mi: usize,
     mj: usize,
@@ -187,18 +190,18 @@ pub(super) fn jslot(
     }
 }
 
-/// Read one entry of the \mathcal J replacement column used in the same-spin two-body term.
-/// For fixed (\eta,z), the minor indices are mapped back to the full determinant to obtain
-/// (\xi,y), giving either \mathcal J_{\eta z,\xi y} or its pair-exchanged stored form.
+/// `Read one entry of the \mathcal J replacement column used in the same-spin two-body term.`
+/// `For fixed (\eta,z), the minor indices are mapped back to the full determinant to obtain`
+/// `(\xi,y), giving either \mathcal J_{\eta z,\xi y} or its pair-exchanged stored form.`
 /// # Arguments:
-/// - `jsl`: Flattened storage of the selected \mathcal J tensor.
+/// - `jsl`: `Flattened storage of the selected \mathcal J tensor.`
 /// - `layout`: Orbital dimension and full determinant row and column labels.
-/// - `removed`: Row \eta and column z removed to form \mathbf D_{\mathrm{ov}}[\eta|z].
-/// - `minor`: Row and column indices (\xi,y) within the resulting minor.
-/// - `fixed`: Orbital labels of the fixed pair (\eta,z).
-/// - `swap`: Whether the stored tensor is accessed as \mathcal J_{\xi y,\eta z}.
+/// - `removed`: `Row \eta and column z removed to form \mathbf D_{\mathrm{ov}}[\eta|z].`
+/// - `minor`: `Row and column indices (\xi,y) within the resulting minor.`
+/// - `fixed`: `Orbital labels of the fixed pair (\eta,z).`
+/// - `swap`: `Whether the stored tensor is accessed as \mathcal J_{\xi y,\eta z}.`
 /// # Returns
-/// - `T`: Required \mathcal J entry for the replacement column.
+/// - `T`: `Required \mathcal J entry for the replacement column.`
 #[inline(always)]
 pub(super) fn j_replacement<T: NOCIScalar>(
     jsl: &[T],
@@ -224,18 +227,18 @@ pub(super) fn j_replacement<T: NOCIScalar>(
     }
 }
 
-/// Read one entry of the \mathcal{II} replacement column used in the different-spin two-body term.
+/// `Read one entry of the \mathcal{II} replacement column used in the different-spin two-body term.`
 /// The helper combines one fixed spin-sector pair with one row and column from the other spin-sector
 /// contraction determinant.
 /// # Arguments:
-/// - `iisl`: Flattened storage of the selected \mathcal{II} tensor.
+/// - `iisl`: `Flattened storage of the selected \mathcal{II} tensor.`
 /// - `layout`: Orbital dimension and determinant row and column labels for the varying spin sector.
 /// - `entry`: Row and column positions of the varying determinant entry.
 /// - `fixed`: Orbital labels of the fixed pair from the other spin sector.
-/// - `ijrc`: Selects \mathcal{II}_{\mathrm{fixed},\mathrm{entry}} when true and
-///   \mathcal{II}_{\mathrm{entry},\mathrm{fixed}} when false.
+/// - `ijrc`: `Selects \mathcal{II}_{\mathrm{fixed},\mathrm{entry}} when true and`
+///   `\mathcal{II}_{\mathrm{entry},\mathrm{fixed}} when false.`
 /// # Returns
-/// - `T`: Required \mathcal{II} entry for the replacement column.
+/// - `T`: `Required \mathcal{II} entry for the replacement column.`
 #[inline(always)]
 pub(super) fn ii_replacement<T: NOCIScalar>(
     iisl: &[T],
@@ -256,8 +259,8 @@ pub(super) fn ii_replacement<T: NOCIScalar>(
     }
 }
 
-/// Map a row or column index of \mathbf D[\eta|z] back to the corresponding index of the full
-/// contraction determinant \mathbf D.
+/// `Map a row or column index of \mathbf D[\eta|z] back to the corresponding index of the full`
+/// `contraction determinant \mathbf D.`
 /// # Arguments:
 /// - `midx`: Index in the minor.
 /// - `removed`: Index removed from the full matrix.
@@ -273,12 +276,12 @@ pub(super) fn minor_to_full(
 }
 
 /// Extract one fundamental-contraction assignment from a packed distribution. Bit k represents
-/// m_k, with an unset bit selecting m_k = 0 and a set bit selecting m_k = 1.
+/// `m_k, with an unset bit selecting m_k = 0 and a set bit selecting m_k = 1.`
 /// # Arguments:
-/// - `bits`: Packed assignments (m_0,m_1,\ldots).
+/// - `bits`: `Packed assignments (m_0,m_1,\ldots).`
 /// - `k`: Assignment index.
 /// # Returns
-/// - `usize`: m_k \in \{0,1\}.
+/// - `usize`: `m_k \in \{0,1\}.`
 #[inline(always)]
 pub(super) fn bit(
     bits: u64,
@@ -287,18 +290,18 @@ pub(super) fn bit(
     ((bits >> k) & 1) as usize
 }
 
-/// Evaluate the change in a determinant after replacing column c of \mathbf D by \mathbf N:
-/// \Delta_c = \det\mathbf D[c\rightarrow\mathbf N]-\det\mathbf D
-/// = \sum_r(N_r-D_{rc})\operatorname{cof}[\mathbf D]_{rc}.
-/// Callers therefore obtain the replacement determinant as \det\mathbf D+\Delta_c.
+/// `Evaluate the change in a determinant after replacing column c of \mathbf D by \mathbf N:`
+/// `\Delta_c = \det\mathbf D[c\rightarrow\mathbf N]-\det\mathbf D`
+/// `= \sum_r(N_r-D_{rc})\operatorname{cof}[\mathbf D]_{rc}.`
+/// `Callers therefore obtain the replacement determinant as \det\mathbf D+\Delta_c.`
 /// # Arguments:
-/// - `n`: Dimension of \mathbf D.
-/// - `old`: Row-major entries of \mathbf D.
-/// - `cof`: Row-major cofactor matrix \operatorname{cof}[\mathbf D].
+/// - `n`: `Dimension of \mathbf D.`
+/// - `old`: `Row-major entries of \mathbf D.`
+/// - `cof`: `Row-major cofactor matrix \operatorname{cof}[\mathbf D].`
 /// - `col`: Replaced column c.
-/// - `new_at`: Returns N_r for row r.
+/// - `new_at`: `Returns N_r for row r.`
 /// # Returns
-/// - `T`: Determinant correction \Delta_c.
+/// - `T`: `Determinant correction \Delta_c.`
 #[inline(always)]
 pub(super) fn column_replacement_correction<T: NOCIScalar>(
     n: usize,
@@ -367,18 +370,18 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
     correction
 }
 
-/// Evaluate the determinant obtained by replacing column c of \mathbf D by \mathbf N:
-/// \det\mathbf D[c\rightarrow\mathbf N]
-/// = \sum_rN_r\operatorname{cof}[\mathbf D]_{rc}.
-/// This is equivalent to \det\mathbf D+\sum_r(N_r-D_{rc})\operatorname{cof}[\mathbf D]_{rc},
+/// `Evaluate the determinant obtained by replacing column c of \mathbf D by \mathbf N:`
+/// `\det\mathbf D[c\rightarrow\mathbf N]`
+/// `= \sum_rN_r\operatorname{cof}[\mathbf D]_{rc}.`
+/// `This is equivalent to \det\mathbf D+\sum_r(N_r-D_{rc})\operatorname{cof}[\mathbf D]_{rc},`
 /// but does not require the original column entries.
 /// # Arguments:
-/// - `n`: Dimension of \mathbf D.
-/// - `cof`: Row-major cofactor matrix \operatorname{cof}[\mathbf D].
+/// - `n`: `Dimension of \mathbf D.`
+/// - `cof`: `Row-major cofactor matrix \operatorname{cof}[\mathbf D].`
 /// - `col`: Replaced column c.
-/// - `new_at`: Returns N_r for row r.
+/// - `new_at`: `Returns N_r for row r.`
 /// # Returns
-/// - `T`: \det\mathbf D[c\rightarrow\mathbf N].
+/// - `T`: `\det\mathbf D[c\rightarrow\mathbf N].`
 #[inline(always)]
 pub(super) fn column_replacement_det<T: NOCIScalar>(
     n: usize,
@@ -431,11 +434,11 @@ pub(super) fn column_replacement_det<T: NOCIScalar>(
 }
 
 /// Form every mixed same-spin contraction determinant required by
-/// \sum_{\substack{m_1,\ldots,m_{L+p}\\m_1+\cdots+m_{L+p}=m}}
-/// \det\mathbf D_{\mathrm{ov}}(m_{p+1},\ldots,m_{p+L}).
+/// `\sum_{\substack{m_1,\ldots,m_{L+p}\\m_1+\cdots+m_{L+p}=m}}`
+/// `\det\mathbf D_{\mathrm{ov}}(m_{p+1},\ldots,m_{p+L}).`
 /// The first p assignments are operator-specific; the remaining L assignments select each
-/// determinant column from \mathbf D_{\mathrm{ov}}(0,\ldots,0) or
-/// \mathbf D_{\mathrm{ov}}(1,\ldots,1).
+/// `determinant column from \mathbf D_{\mathrm{ov}}(0,\ldots,0) or`
+/// `\mathbf D_{\mathrm{ov}}(1,\ldots,1).`
 /// # Arguments:
 /// - `w`: Same-spin view containing the number m of zero-overlap orbital pairs.
 /// - `l`: Contraction-determinant dimension L.
@@ -503,14 +506,14 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
 }
 
 /// Form each allowed same-spin mixed contraction determinant, evaluate
-/// \det\mathbf D_{\mathrm{ov}} and \operatorname{cof}[\mathbf D_{\mathrm{ov}}], and pass these
+/// `\det\mathbf D_{\mathrm{ov}} and \operatorname{cof}[\mathbf D_{\mathrm{ov}}], and pass these`
 /// quantities to the operator-specific evaluator.
 /// # Arguments:
 /// - `w`: Same-spin view containing m.
 /// - `l`: Contraction-determinant dimension L.
 /// - `pbits`: Number of leading operator-specific assignments.
 /// - `scratch`: Mixed determinant, cofactor and work storage.
-/// - `tol`: Numerical threshold applied to \det\mathbf D_{\mathrm{ov}}.
+/// - `tol`: `Numerical threshold applied to \det\mathbf D_{\mathrm{ov}}.`
 /// - `f`: Receives the complete assignment, scratch storage and determinant value.
 /// # Returns
 /// - `()`: Calls `f` for each mixed determinant whose absolute determinant exceeds `tol`.
@@ -542,17 +545,17 @@ pub(super) fn get_det_adjt_same<T: NOCIScalar>(
 
 /// Independently enumerate the alpha- and beta-spin distributions required by the different-spin
 /// two-body matrix element:
-/// m_{\alpha0}+\sum_{z=1}^{L_\alpha}m_{\alpha z}=m_\alpha,\qquad
-/// m_{\beta0}+\sum_{y=1}^{L_\beta}m_{\beta y}=m_\beta.
+/// `m_{\alpha0}+\sum_{z=1}^{L_\alpha}m_{\alpha z}=m_\alpha,\qquad`
+/// `m_{\beta0}+\sum_{y=1}^{L_\beta}m_{\beta y}=m_\beta.`
 /// The leading assignment in each spin space belongs to the operator contraction; the remaining
-/// assignments select the columns of \mathbf D_{\alpha,\mathrm{ov}} and
-/// \mathbf D_{\beta,\mathrm{ov}}.
+/// `assignments select the columns of \mathbf D_{\alpha,\mathrm{ov}} and`
+/// `\mathbf D_{\beta,\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Different-spin reference-pair Wick intermediates.
-/// - `rank`: Contraction-determinant dimensions (L_\alpha,L_\beta).
+/// - `rank`: `Contraction-determinant dimensions (L_\alpha,L_\beta).`
 /// - `scratch`: Mixed determinant, cofactor and work storage for both spin spaces.
-/// - `deta`: Alpha-spin all-m_i = 0 and all-m_i = 1 endpoint determinants.
-/// - `detb`: Beta-spin all-m_i = 0 and all-m_i = 1 endpoint determinants.
+/// - `deta`: `Alpha-spin all-m_i = 0 and all-m_i = 1 endpoint determinants.`
+/// - `detb`: `Beta-spin all-m_i = 0 and all-m_i = 1 endpoint determinants.`
 /// - `tol`: Numerical threshold applied independently to both determinant values.
 /// - `f`: Receives both complete assignments, scratch storage and the two determinant values.
 /// # Returns
@@ -615,17 +618,17 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
     })
 }
 
-/// Form \mathbf D[\eta|z] by deleting row \eta and column z from a full contraction determinant,
-/// then evaluate \det\mathbf D[\eta|z] and its cofactor matrix. These quantities generate the
+/// `Form \mathbf D[\eta|z] by deleting row \eta and column z from a full contraction determinant,`
+/// `then evaluate \det\mathbf D[\eta|z] and its cofactor matrix. These quantities generate the`
 /// two-column same-spin contribution:
-/// \sum_{\xi,y}\mathcal J_{\eta z,\xi y}
-/// \operatorname{cof}[\mathbf D[\eta|z]]_{\xi y}.
+/// `\sum_{\xi,y}\mathcal J_{\eta z,\xi y}`
+/// `\operatorname{cof}[\mathbf D[\eta|z]]_{\xi y}.`
 /// # Arguments:
-/// - `full`: Row-major entries of the full contraction determinant \mathbf D.
-/// - `minor`: Full dimension and removed row \eta and column z.
-/// - `minorb`: Scratch storage for \mathbf D[\eta|z].
-/// - `adjtb`: Scratch storage for \operatorname{cof}[\mathbf D[\eta|z]].
-/// - `tol`: Numerical threshold applied to \det\mathbf D[\eta|z].
+/// - `full`: `Row-major entries of the full contraction determinant \mathbf D.`
+/// - `minor`: `Full dimension and removed row \eta and column z.`
+/// - `minorb`: `Scratch storage for \mathbf D[\eta|z].`
+/// - `adjtb`: `Scratch storage for \operatorname{cof}[\mathbf D[\eta|z]].`
+/// - `tol`: `Numerical threshold applied to \det\mathbf D[\eta|z].`
 /// - `f`: Receives the minor dimension, entries, cofactor matrix and determinant.
 /// # Returns
 /// - `()`: Calls `f` when the minor determinant magnitude exceeds `tol`.
@@ -666,15 +669,15 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
     }
 }
 
-/// Enumerate every binary distribution (m_1,\ldots,m_L) satisfying
-/// \sum_{i=1}^{L}m_i=m, with m_i\in\{0,1\}. Each distribution is represented by an L-bit mask
+/// `Enumerate every binary distribution (m_1,\ldots,m_L) satisfying`
+/// `\sum_{i=1}^{L}m_i=m, with m_i\in\{0,1\}. Each distribution is represented by an L-bit mask`
 /// containing exactly m set bits.
 /// # Arguments:
 /// - `l`: Number L of fundamental contractions.
 /// - `m`: Number of zero-overlap orbital pairs that must be assigned.
 /// - `f`: Called once for each valid distribution.
 /// # Returns
-/// - `()`: Calls `f` exactly \binom{L}{m} times when 0\leq m\leq L.
+/// - `()`: `Calls f exactly \binom{L}{m} times when 0\leq m\leq L.`
 #[inline(always)]
 pub(super) fn for_each_m_combination(
     l: usize,
@@ -708,17 +711,17 @@ pub(super) fn for_each_m_combination(
     }
 }
 
-/// Evaluate \det\mathbf D and its cofactor matrix:
-/// \operatorname{cof}[\mathbf D]_{rc}=(-1)^{r+c}\det\mathbf D[r|c].
-/// Fixed-rank determinant and cofactor kernels are used for n\leq4; larger matrices evaluate the
-/// determinant first and then construct every cofactor explicitly from an (n-1)\times(n-1) minor.
+/// `Evaluate \det\mathbf D and its cofactor matrix:`
+/// `\operatorname{cof}[\mathbf D]_{rc}=(-1)^{r+c}\det\mathbf D[r|c].`
+/// `Fixed-rank determinant and cofactor kernels are used for n\leq4; larger matrices evaluate the`
+/// `determinant first and then construct every cofactor explicitly from an (n-1)\times(n-1) minor.`
 /// # Arguments:
-/// - `adjt`: Output row-major cofactor matrix \operatorname{cof}[\mathbf D].
-/// - `full`: Row-major entries of \mathbf D.
-/// - `n`: Dimension of \mathbf D.
-/// - `tol`: Numerical threshold applied to |\det\mathbf D|.
+/// - `adjt`: `Output row-major cofactor matrix \operatorname{cof}[\mathbf D].`
+/// - `full`: `Row-major entries of \mathbf D.`
+/// - `n`: `Dimension of \mathbf D.`
+/// - `tol`: `Numerical threshold applied to |\det\mathbf D|.`
 /// # Returns
-/// - `Option<T>`: \det\mathbf D when its magnitude exceeds `tol`.
+/// - `Option<T>`: `\det\mathbf D when its magnitude exceeds tol.`
 #[inline(always)]
 fn adjugate_transpose_generic<T: NOCIScalar>(
     adjt: &mut [T],

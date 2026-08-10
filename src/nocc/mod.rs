@@ -4,25 +4,25 @@
 //! This feature-gated module develops coupled-cluster theory using a correlated NOCI reference
 //! state
 //!
-//! |\Phi\rangle = |\Psi_{\mathrm{NOCI}}\rangle = \sum_x c_x|{}^x\Psi\rangle.
+//! `|\Phi\rangle = |\Psi_{\mathrm{NOCI}}\rangle = \sum_x c_x|{}^x\Psi\rangle.`
 //!
-//! Generalised normal ordering treats |\Phi\rangle as the vacuum and defines contractions
+//! `Generalised normal ordering treats |\Phi\rangle as the vacuum and defines contractions`
 //! through its reduced density matrices and cumulants. The current formulation uses the
 //! generalised-normal-ordered ansatz
 //!
-//! |\Psi_{\mathrm{NOCC}}\rangle = \{e^{\hat T}\}|\Phi\rangle,
+//! `|\Psi_{\mathrm{NOCC}}\rangle = \{e^{\hat T}\}|\Phi\rangle,`
 //!
 //! where
 //!
-//! \hat T = \sum_\mu t_\mu\hat\tau_\mu
+//! `\hat T = \sum_\mu t_\mu\hat\tau_\mu`
 //!
 //! contains spin-free excitation operators. The energy and connected amplitude residuals are
 //!
-//! E = \langle\Phi|\hat H\{e^{\hat T}\}|\Phi\rangle,
+//! `E = \langle\Phi|\hat H\{e^{\hat T}\}|\Phi\rangle,`
 //!
-//! R_\mu = \langle\Phi|\hat\tau_\mu^\dagger\hat H\{e^{\hat T}\}|\Phi\rangle_{\mathrm c},
+//! `R_\mu = \langle\Phi|\hat\tau_\mu^\dagger\hat H\{e^{\hat T}\}|\Phi\rangle_{\mathrm c},`
 //!
-//! with the coupled-cluster solution satisfying R_\mu = 0 for every retained excitation.
+//! `with the coupled-cluster solution satisfying R_\mu = 0 for every retained excitation.`
 //!
 //! The module provides the generated overlap and residual expressions, excitation spaces,
 //! one- through four-body reduced density matrices and their associated cumulants required by

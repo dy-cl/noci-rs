@@ -1,23 +1,26 @@
 // stochastic/excit.rs
+// External crate imports.
 use rand::Rng;
 use rand::rngs::SmallRng;
 
-use super::state::HeatBath;
+// Crate-root imports.
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
+// Parent/sibling imports.
 use super::common::find_hs;
+use super::state::HeatBath;
 
 /// Evaluate the shifted off-diagonal coupling
-/// T_{xw}(\Delta\tau) = H_{xw} - E_s(\Delta \tau) S_{xw}.
+/// `T_{xw}(\Delta\tau) = H_{xw} - E_s(\Delta \tau) S_{xw}.`
 /// # Arguments:
-/// - `lambda`: Child determinant index \(x\).
-/// - `gamma`: Source determinant index \(w\).
-/// - `shift`: Current population-control shift \(E_s\).
+/// - `lambda`: Child determinant index `x`.
+/// - `gamma`: Source determinant index `w`.
+/// - `shift`: Current population-control shift `E_s`.
 /// - `data`: Immutable stochastic propagation data.
 /// - `scratch`: Scratch space for nonorthogonal Wick quantities.
 /// # Returns:
-/// - `f64`: Shifted coupling \(T_{xw}\).
+/// - `f64`: Shifted coupling `T_{xw}`.
 pub(in crate::stochastic) fn coupling(
     lambda: usize,
     gamma: usize,
@@ -41,12 +44,12 @@ pub(in crate::stochastic) fn coupling(
 }
 
 /// Construct exact heat-bath excitation-generation data for determinant
-/// \(w\). For every x \neq w, the heat-bath weight is
-/// w_{xw} = |T_{xw}(\Delta \tau)|. The total weight is
-/// W_w = \sum_{x \neq w}w_{xw}.
+/// `w. For every x \neq w, the heat-bath weight is`
+/// `w_{xw} = |T_{xw}(\Delta \tau)|. The total weight is`
+/// `W_w = \sum_{x \neq w}w_{xw}.`
 /// # Arguments:
 /// - `gamma`: Parent determinant index w.
-/// - `shift`: Current population-control shift E_s(\Delta \tau).
+/// - `shift`: `Current population-control shift E_s(\Delta \tau).`
 /// - `data`: Immutable stochastic propagation data.
 /// - `scratch`: Scratch space for nonorthogonal Wick quantities.
 /// # Returns:
@@ -91,16 +94,16 @@ pub(in crate::stochastic) fn init_heat_bath(
 }
 
 /// Sample an off-diagonal child determinant uniformly. The generation probability is
-/// P_{\mathrm{Gen}}(x|w) = 1/(N_{\mathrm{det}}-1)\) for every x \neq w.
+/// `P_{\mathrm{Gen}}(x|w) = 1/(N_{\mathrm{det}}-1)\) for every x \neq w.`
 /// # Arguments:
 /// - `gamma`: Parent determinant index w.
-/// - `shift`: Current population-control shift E_s(\Delta \tau).
+/// - `shift`: `Current population-control shift E_s(\Delta \tau).`
 /// - `data`: Immutable stochastic propagation data.
 /// - `rng`: Random-number generator.
 /// - `scratch`: Scratch space for nonorthogonal Wick quantities.
 /// # Returns:
-/// - `(f64, f64, usize)`: Generation probability P_{\mathrm{Gen}}(x|w),
-///   shifted coupling T_{xw}(\Delta \tau), and sampled child index x.
+/// - `(f64, f64, usize)`: `Generation probability P_{\mathrm{Gen}}(x|w),`
+///   `shifted coupling T_{xw}(\Delta \tau), and sampled child index x.`
 pub(in crate::stochastic) fn pgen_uniform(
     gamma: usize,
     shift: f64,
@@ -123,12 +126,12 @@ pub(in crate::stochastic) fn pgen_uniform(
 }
 
 /// Sample an off-diagonal child determinant from the exact heat-bath
-/// distribution. For nonzero total weight, P_{\mathrm{gen}}(xw)
-/// = |T_{xw}(\Delta \tau)| / W_w, if W_w = 0,
+/// `distribution. For nonzero total weight, P_{\mathrm{gen}}(xw)`
+/// `= |T_{xw}(\Delta \tau)| / W_w, if W_w = 0,`
 /// the function falls back to uniform sampling.
 /// # Arguments:
-/// - `gamma`: Parent determinant index \(w\).
-/// - `shift`: Current population-control shift \(E_s\), used by the
+/// - `gamma`: Parent determinant index `w`.
+/// - `shift`: Current population-control shift `E_s`, used by the
 ///   uniform fallback.
 /// - `data`: Immutable stochastic propagation data.
 /// - `rng`: Random-number generator.
@@ -136,8 +139,8 @@ pub(in crate::stochastic) fn pgen_uniform(
 ///   and shift.
 /// - `scratch`: Scratch space used for nonorthogonal Wick's quantities.
 /// # Returns:
-/// - `(f64, f64, usize)`: Generation probability P_{\mathrm{Gen}}(x|w),
-///   shifted coupling T_{xw}(\Delta \tau), and sampled child index x.
+/// - `(f64, f64, usize)`: `Generation probability P_{\mathrm{Gen}}(x|w),`
+///   `shifted coupling T_{xw}(\Delta \tau), and sampled child index x.`
 pub(in crate::stochastic) fn pgen_heat_bath(
     gamma: usize,
     shift: f64,

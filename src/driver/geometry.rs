@@ -1,8 +1,10 @@
 // driver/geometry.rs
 
+// External crate imports.
 use mpi::collective::CommunicatorCollectives;
 use mpi::topology::Communicator;
 
+// Crate-root imports.
 use crate::driver::post::{run_holomorphic_post_reference, run_real_post_reference};
 use crate::driver::pyscf::run_pyscf;
 use crate::driver::reference::{ReferenceKind, run_reference_space};

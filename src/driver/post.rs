@@ -1,10 +1,12 @@
 // driver/post.rs
 
+// External crate imports.
 use mpi::topology::Communicator;
 #[cfg(feature = "nocc")]
 use ndarray::Array1;
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::driver::deterministic::run_qmc_deterministic_noci;
 use crate::driver::reference::ReferenceRun;
 use crate::driver::snoci::run_snoci;

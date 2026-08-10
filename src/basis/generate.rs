@@ -1,10 +1,13 @@
 // basis/generate.rs
 
+// Standard library imports.
 use std::collections::HashMap;
 
+// Crate-root imports.
 use crate::input::{Input, StateType};
 use crate::{AoData, HSCFState, SCFState};
 
+// Parent/sibling imports.
 use super::metadynamics::generate_reference_basis_metadynamics;
 use super::mom::generate_reference_basis_mom;
 use super::types::ReferenceBasis;

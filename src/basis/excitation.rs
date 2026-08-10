@@ -1,9 +1,12 @@
 // basis/excitation.rs
 
+// Standard library imports.
 use std::sync::Arc;
 
+// External crate imports.
 use itertools::Itertools;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::noci::NOCIScalar;
 use crate::scf::spin_occupation;

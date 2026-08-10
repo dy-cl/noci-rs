@@ -1,5 +1,6 @@
 // maths/eri.rs
 
+// External crate imports.
 use ndarray::linalg::general_mat_mul;
 use ndarray::{
     Array2, Array4, ArrayView2, ArrayView4, ArrayViewMut2, ArrayViewMut4, LinalgScalar, Zip,
@@ -12,9 +13,9 @@ pub struct ERIAO2MOScratch<T: ERIScalar> {
     worka: Vec<T>,
     /// Alternating contraction and permutation buffer.
     workb: Vec<T>,
-    /// Conjugated C_{\mu,p} buffer populated only by the complex implementation.
+    /// `Conjugated C_{\mu,p} buffer populated only by the complex implementation.`
     c_mu_p_conj: Vec<T>,
-    /// Conjugated C_{\lambda,r} buffer populated only by the complex implementation.
+    /// `Conjugated C_{\lambda,r} buffer populated only by the complex implementation.`
     c_lam_r_conj: Vec<T>,
     /// Empty for `f64`; for `Complex64`, a single complex conversion of the real AO ERIs.
     eri_as: Option<Array4<T>>,
@@ -22,13 +23,13 @@ pub struct ERIAO2MOScratch<T: ERIScalar> {
 
 /// Coefficient matrices for an AO-to-MO ERI transformation.
 struct AO2MOCoefficients<'a, T: ERIScalar> {
-    /// C_{\mu,p} coefficients.
+    /// `C_{\mu,p} coefficients.`
     c_mu_p: ArrayView2<'a, T>,
-    /// C_{\nu,q} coefficients.
+    /// `C_{\nu,q} coefficients.`
     c_nu_q: ArrayView2<'a, T>,
-    /// C_{\lambda,r} coefficients.
+    /// `C_{\lambda,r} coefficients.`
     c_lam_r: ArrayView2<'a, T>,
-    /// C_{\sigma,s} coefficients.
+    /// `C_{\sigma,s} coefficients.`
     c_sig_s: ArrayView2<'a, T>,
 }
 
@@ -62,10 +63,10 @@ pub trait ERIScalar: LinalgScalar + From<f64> {
     /// Transform ERIs from AO to MO basis with Hermitian bra-side conjugation into caller storage.
     /// # Arguments:
     /// - `eri`: AO basis ERIs.
-    /// - `c_mu_p`: MO coefficients C_{\mu,p}, conjugated in the transform.
-    /// - `c_nu_q`: MO coefficients C_{\nu,q}.
-    /// - `c_lam_r`: MO coefficients C_{\lambda,r}, conjugated in the transform.
-    /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
+    /// - `c_mu_p`: `MO coefficients C_{\mu,p}, conjugated in the transform.`
+    /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
+    /// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
+    /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
     /// - `out`: Output ERIs in [p, q, r, s] order.
     /// - `scratch`: Reusable transformation scratch storage.
     fn eri_ao2mo_hermitian_into(
@@ -118,10 +119,10 @@ impl ERIScalar for f64 {
     /// For real coefficients this is equivalent to the ordinary AO-to-MO transform.
     /// # Arguments:
     /// - `eri`: AO basis ERIs.
-    /// - `c_mu_p`: MO coefficients C_{\mu,p}.
-    /// - `c_nu_q`: MO coefficients C_{\nu,q}.
-    /// - `c_lam_r`: MO coefficients C_{\lambda,r}.
-    /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
+    /// - `c_mu_p`: `MO coefficients C_{\mu,p}.`
+    /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
+    /// - `c_lam_r`: `MO coefficients C_{\lambda,r}.`
+    /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
     /// - `out`: Output ERIs in [p, q, r, s] order.
     /// - `scratch`: Reusable transformation scratch storage.
     fn eri_ao2mo_hermitian_into(
@@ -189,10 +190,10 @@ impl ERIScalar for Complex64 {
     /// This is the ordinary complex MO integral transform for Hermitian matrix elements.
     /// # Arguments:
     /// - `_eri`: AO basis ERIs, already converted and stored in `scratch`.
-    /// - `c_mu_p`: MO coefficients C_{\mu,p}, conjugated in the transform.
-    /// - `c_nu_q`: MO coefficients C_{\nu,q}.
-    /// - `c_lam_r`: MO coefficients C_{\lambda,r}, conjugated in the transform.
-    /// - `c_sig_s`: MO coefficients C_{\sigma,s}.
+    /// - `c_mu_p`: `MO coefficients C_{\mu,p}, conjugated in the transform.`
+    /// - `c_nu_q`: `MO coefficients C_{\nu,q}.`
+    /// - `c_lam_r`: `MO coefficients C_{\lambda,r}, conjugated in the transform.`
+    /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
     /// - `out`: Output ERIs in [p, q, r, s] order.
     /// - `scratch`: Reusable transformation scratch storage.
     fn eri_ao2mo_hermitian_into(
@@ -247,7 +248,7 @@ impl ERIScalar for Complex64 {
 }
 
 /// Transform typed AO ERIs using preselected coefficient matrices and reusable buffers.
-/// The contraction order is \sigma then \lambda then \nu then \mu.
+/// `The contraction order is \sigma then \lambda then \nu then \mu.`
 /// The final assignment writes [p, q, r, s] into `out`.
 /// # Arguments:
 /// - `eri`: Typed AO ERIs.

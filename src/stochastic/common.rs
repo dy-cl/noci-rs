@@ -1,15 +1,19 @@
 // stochastic/common.rs
+// External crate imports.
 use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
-use super::state::{MPIScratch, PopulationUpdate};
+// Crate-root imports.
 use crate::SCFState;
 use crate::noci::{DetPair, NOCIData, calculate_hs_pair, calculate_s_pair};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
-/// Find overlap matrix element S_{ij}.
+// Parent/sibling imports.
+use super::state::{MPIScratch, PopulationUpdate};
+
+/// `Find overlap matrix element S_{ij}.`
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `i`: Index of state `i`.
@@ -43,7 +47,7 @@ pub(in crate::stochastic) fn find_s(
     calculate_s_pair(data, DetPair::new(ldet, gdet), Some(scratch))
 }
 
-/// Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.
+/// `Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.`
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `i`: Index of state `i`.
@@ -98,7 +102,7 @@ pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, us
 /// number of updates each rank will send/receive, then performs one `MPI_Alltoallv`-style exchange
 /// of the packed payloads.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// - `scratch`: Reusable MPI scratch space for counts, displacements, and contiguous send/recv buffers.
 /// # Returns
 /// - `&[PopulationUpdate]`: Flat buffer containing all spawned population updates received from other ranks.
@@ -162,7 +166,7 @@ pub(crate) fn exchange_population_changes<'a>(
 
 /// Gather variable-length population updates from all ranks into a reusable receive buffer.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// - `send`: Local population updates to gather.
 /// - `scratch`: Reusable MPI scratch space.
 /// # Returns

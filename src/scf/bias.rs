@@ -1,9 +1,14 @@
 // scf/bias.rs
 
+// Standard library imports.
+use std::sync::Arc;
+
+// External crate imports.
+use ndarray::Array2;
+
+// Crate-root imports.
 use crate::basis::electron_distance;
 use crate::{AoData, Excitation, SCFState};
-use ndarray::Array2;
-use std::sync::Arc;
 
 /// Construct the SCF metadynamics bias term.
 /// # Arguments

@@ -1,15 +1,19 @@
 // scf/h/finalise.rs
 
+// Standard library imports.
 use std::sync::Arc;
 
+// External crate imports.
 use ndarray::Array2;
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::scf::{DensityMode, density, energy, fock_lambda};
 use crate::utils::print_array2_indexed;
 use crate::{AoData, Excitation, HSCFState};
 
+// Parent/sibling imports.
 use super::types::HSCFRunData;
 
 /// Construct final h-SCF state from optimised complex orbitals.

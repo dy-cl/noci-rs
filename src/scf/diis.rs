@@ -1,4 +1,5 @@
 // diis.rs
+// External crate imports.
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{EighInto, UPLO};
 
@@ -33,8 +34,8 @@ impl Diis {
         }
     }
 
-    /// Calculate the orthonormalised DIIS error. R = F^s D^s S - S D^s F^s, then
-    /// R' = X^T R X where X = S^{-1/2}.
+    /// `Calculate the orthonormalised DIIS error. R = F^s D^s S - S D^s F^s, then`
+    /// `R' = X^T R X where X = S^{-1/2}.`
     /// # Arguments:
     /// - `f`: Spin specific Fock matrix.
     /// - `d`: Spin specific density matrix.
@@ -90,7 +91,7 @@ impl Diis {
         }
     }
 
-    /// Calculate squared norm of most recent error pair. ||E^a|| + ||E^b||.
+    /// `Calculate squared norm of most recent error pair. ||E^a|| + ||E^b||.`
     /// # Arguments:
     /// - `self`: Contains DIIS data.
     /// # Returns
@@ -108,7 +109,7 @@ impl Diis {
     }
 
     /// Use past Fock matrices and solutions to augmented linear system to extrapolate.
-    /// Calculates the extrapolated DIIS Fock matrix F_{DIIS}^s = \sum_i^m c_i F_i^s.
+    /// `Calculates the extrapolated DIIS Fock matrix F_{DIIS}^s = \sum_i^m c_i F_i^s.`
     /// # Arguments
     /// - `self`: Contains DIIS data.
     /// # Returns

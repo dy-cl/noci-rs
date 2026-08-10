@@ -1,14 +1,17 @@
 // scf/h/optimise.rs
 
+// External crate imports.
 use ndarray::Array2;
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::scf::DensityMode;
 use crate::scf::print::print_header_h;
 use crate::scf::{density, energy, fock_lambda, orbital_gradient};
 use crate::{AoData, HSCFState};
 
+// Parent/sibling imports.
 use super::canonical::pseudo_canonicalise;
 use super::finalise::finalise;
 use super::step::{finite_difference_newton_step, limit_step, line_search, sr1_step, step_norm};

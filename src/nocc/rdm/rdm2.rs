@@ -1,14 +1,15 @@
 // nocc/rdm/rdm2.rs
 
+// External crate imports.
 use ndarray::Array1;
 
+// Crate-root imports.
+use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
 use crate::nonorthogonalwicks::{
     WickScratchSpin, prepare_same, xw_overlap, xw_rdm1, xw_rdm2_diff, xw_rdm2_same,
 };
 
-use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
-
-/// Spin-free two-body RDM stored as \Gamma[p, q, r, s].
+/// `Spin-free two-body RDM stored as \Gamma[p, q, r, s].`
 pub(crate) struct RDM2<T> {
     pub n: usize,
     pub data: Vec<T>,

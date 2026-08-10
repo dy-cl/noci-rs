@@ -1,11 +1,15 @@
 // stochastic/report.rs
+// Standard library imports.
 use std::path::Path;
 
+// External crate imports.
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
+// Crate-root imports.
 use crate::input::Propagator;
 
+// Parent/sibling imports.
 use super::restart::{RestartState, write_restart_hdf5};
 use super::state::{ExcitationHist, PopulationStats, PropagationState, QMCRunInfo};
 

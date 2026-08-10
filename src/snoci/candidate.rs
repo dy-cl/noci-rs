@@ -1,7 +1,9 @@
 // snoci/candidate.rs
 
+// Standard library imports.
 use std::collections::HashSet;
 
+// Crate-root imports.
 use crate::basis::generate_excited_basis;
 use crate::noci::NOCIScalar;
 use crate::time_call;

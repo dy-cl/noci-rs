@@ -1,14 +1,17 @@
 // snoci/solve.rs
 
+// Standard library imports.
 use std::fs::OpenOptions;
 use std::path::Path;
 
+// External crate imports.
 use memmap2::{MmapMut, MmapOptions};
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+// Crate-root imports.
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
 use crate::noci::{DetPair, FockData, MOCache, NOCIData, NOCIScalar};
@@ -19,6 +22,7 @@ use crate::nonorthogonalwicks::{WickScratchSpin, WicksShared};
 use crate::time_call;
 use crate::{AoData, DetState, input::Input};
 
+// Parent/sibling imports.
 use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps};
 
 pub(in crate::snoci) enum CandidateM<T: NOCIScalar> {

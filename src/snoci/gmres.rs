@@ -1,13 +1,18 @@
 // snoci/gmres.rs
 
+// Standard library imports.
 use std::time::Instant;
 
+// External crate imports.
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 
-use super::{ArnoldiCycle, ArnoldiParams, GMRESResult};
+// Crate-root imports.
 use crate::noci::NOCIScalar;
 use crate::{input::GMRESOptions, time_call};
+
+// Parent/sibling imports.
+use super::{ArnoldiCycle, ArnoldiParams, GMRESResult};
 
 const SMALL: f64 = 1e-14_f64;
 const PRINT_STRIDE: usize = 1usize;

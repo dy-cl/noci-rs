@@ -1,11 +1,14 @@
 // nocc/driver.rs
 
+// Standard library imports.
 use std::collections::BTreeMap;
 
+// External crate imports.
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
+// Crate-root imports.
 use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;

@@ -1,20 +1,21 @@
 // nonorthogonalwicks/build.rs
+// External crate imports.
 use ndarray::{Array1, Array2, Array4, Axis, s};
 use ndarray_linalg::{Determinant, SVD};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+// Crate-root imports.
 use crate::input::Spin;
-use crate::{AoData, DetState};
-
 use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
 use crate::noci::{NOCIScalar, occ_coeffs};
+use crate::{AoData, DetState};
 
 /// Symmetry-unique distributions of zero-overlap orbital pairs over the four contractions
-/// in the same-spin \mathcal J intermediate. The symmetry
-/// {}^{\chi_\eta\chi_z,\chi_\xi\chi_y}\mathcal J_{\eta z,\xi y}^{(m_1,m_2,m_3,m_4)}
-/// = {}^{\chi_\xi\chi_y,\chi_\eta\chi_z}\mathcal J_{\xi y,\eta z}^{(m_3,m_4,m_1,m_2)}
-/// reduces the 16 possible combinations with m_i \in \{0,1\} to the ten combinations stored here.
+/// `in the same-spin \mathcal J intermediate. The symmetry`
+/// `{}^{\chi_\eta\chi_z,\chi_\xi\chi_y}\mathcal J_{\eta z,\xi y}^{(m_1,m_2,m_3,m_4)}`
+/// `= {}^{\chi_\xi\chi_y,\chi_\eta\chi_z}\mathcal J_{\xi y,\eta z}^{(m_3,m_4,m_1,m_2)}`
+/// `reduces the 16 possible combinations with m_i \in \{0,1\} to the ten combinations stored here.`
 pub(crate) const SAME_SPIN_J_BRANCHES: [(usize, usize, usize, usize); 10] = [
     (0, 0, 0, 0),
     (0, 0, 0, 1),
@@ -32,24 +33,24 @@ pub(crate) const SAME_SPIN_J_BRANCHES: [(usize, usize, usize, usize); 10] = [
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub struct SameSpinBuild<T: NOCIScalar> {
-    /// Fundamental contraction matrices X^{(m_i)} for m_i = 0 and m_i = 1.
+    /// `Fundamental contraction matrices X^{(m_i)} for m_i = 0 and m_i = 1.`
     pub x: [Array2<T>; 2],
-    /// Fundamental contraction matrices Y^{(m_i)} for m_i = 0 and m_i = 1.
+    /// `Fundamental contraction matrices Y^{(m_i)} for m_i = 0 and m_i = 1.`
     pub y: [Array2<T>; 2],
-    /// Scalar Fock one-body intermediates {}^x F_0^{(m_i)}.
+    /// `Scalar Fock one-body intermediates {}^x F_0^{(m_i)}.`
     pub f0f: [T; 2],
-    /// Scalar Hamiltonian one-body intermediates {}^x F_0^{(m_i)}.
+    /// `Scalar Hamiltonian one-body intermediates {}^x F_0^{(m_i)}.`
     pub f0h: [T; 2],
-    /// Hamiltonian one-body intermediates {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)}.
+    /// `Hamiltonian one-body intermediates {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)}.`
     pub fh: [[Array2<T>; 2]; 2],
-    /// Fock one-body intermediates {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)}.
+    /// `Fock one-body intermediates {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)}.`
     pub ff: [[Array2<T>; 2]; 2],
-    /// Scalar same-spin two-body intermediates {}^x V_0^{(m_i,m_j)}.
+    /// `Scalar same-spin two-body intermediates {}^x V_0^{(m_i,m_j)}.`
     pub v0: [T; 3],
-    /// Same-spin one-column intermediates {}^{\chi_\eta\chi_z}\mathcal V_{\eta z}^{(m_i,m_j,m_k)}.
+    /// `Same-spin one-column intermediates {}^{\chi_\eta\chi_z}\mathcal V_{\eta z}^{(m_i,m_j,m_k)}.`
     pub v: [[[Array2<T>; 2]; 2]; 2],
-    /// Sparse symmetry-reduced same-spin two-column intermediates. Each entry contains the SAME_SPIN_J_BRANCHES
-    /// slot and the corresponding {}^{\chi_\eta\chi_z,\chi_\xi\chi_y}\mathcal J tensor, with unreachable branches omitted.
+    /// `Sparse symmetry-reduced same-spin two-column intermediates. Each entry contains the SAME_SPIN_J_BRANCHES`
+    /// `slot and the corresponding {}^{\chi_\eta\chi_z,\chi_\xi\chi_y}\mathcal J tensor, with unreachable branches omitted.`
     pub j: Vec<(usize, Array4<T>)>,
     /// Product of the non-zero singular values forming the magnitude of the reduced overlap.
     pub tilde_s_prod: f64,
@@ -63,23 +64,23 @@ pub struct SameSpinBuild<T: NOCIScalar> {
 
 impl<T: NOCIScalar> SameSpinBuild<T> {
     /// Construct the same-spin intermediates required to evaluate matrix elements between arbitrary excited determinants.
-    /// For the reference determinant pair \langle{}^x\Psi| and |{}^w\Psi\rangle, the occupied orbital overlap matrix is
+    /// `For the reference determinant pair \langle{}^x\Psi| and |{}^w\Psi\rangle, the occupied orbital overlap matrix is`
     /// singular-value decomposed as:
-    /// {}^{xw}\mathbf S_{\mathrm{occ}} = \mathbf U{}^{xw}\tilde{\mathbf S}_{\mathrm{occ}}\mathbf V^\dagger.
+    /// `{}^{xw}\mathbf S_{\mathrm{occ}} = \mathbf U{}^{xw}\tilde{\mathbf S}_{\mathrm{occ}}\mathbf V^\dagger.`
     /// The occupied orbitals are rotated into the Löwdin paired basis, allowing the number m of zero-overlap orbital pairs
     /// and the reduced overlap to be identified. The reduced overlap is:
-    /// {}^{xw}\tilde S = \phi^{xw}\prod_{\{i\mid{}^{xw}\tilde S_i \neq 0\}}{}^{xw}\tilde S_i.
-    /// The fundamental contractions X^{(m_i)} and Y^{(m_i)} are then constructed for m_i = 0 and m_i = 1. These are used to
-    /// form the one-body intermediates F, the same-spin one-column intermediates \mathcal V, and the same-spin two-column
-    /// intermediates \mathcal J. Once these intermediates have been constructed, matrix elements are independent of the number of
+    /// `{}^{xw}\tilde S = \phi^{xw}\prod_{\{i\mid{}^{xw}\tilde S_i \neq 0\}}{}^{xw}\tilde S_i.`
+    /// `The fundamental contractions X^{(m_i)} and Y^{(m_i)} are then constructed for m_i = 0 and m_i = 1. These are used to`
+    /// `form the one-body intermediates F, the same-spin one-column intermediates \mathcal V, and the same-spin two-column`
+    /// `intermediates \mathcal J. Once these intermediates have been constructed, matrix elements are independent of the number of`
     /// electrons and basis functions, although their cost continues to depend on the excitation rank and the number of distributions
-    /// satisfying \sum_i m_i = m.
+    /// `satisfying \sum_i m_i = m.`
     /// # Arguments:
     /// - `ao`: AO overlap matrix and one- and two-electron integrals.
-    /// - `g`: Ket reference determinant |{}^w\Psi\rangle.
-    /// - `l`: Reference determinant forming the bra \langle{}^x\Psi|.
+    /// - `g`: `Ket reference determinant |{}^w\Psi\rangle.`
+    /// - `l`: `Reference determinant forming the bra \langle{}^x\Psi|.`
     /// - `spin`: Spin block for which the intermediates are constructed.
-    /// - `tol`: Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.
+    /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
     /// # Returns
     /// - `SameSpinBuild<T>`: Same-spin intermediates for the reference determinant pair.
     pub fn new(
@@ -333,17 +334,17 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     }
 
     /// Count the zero-overlap occupied orbital pairs without constructing the Löwdin paired orbitals.
-    /// The singular values of {}^{xw}\mathbf S_{\mathrm{occ}} = ({}^x\mathbf C_{\mathrm{occ}})^\dagger
-    /// \mathbf S {}^w\mathbf C_{\mathrm{occ}} are sufficient to determine m. The singular vectors and rotated
+    /// `The singular values of {}^{xw}\mathbf S_{\mathrm{occ}} = ({}^x\mathbf C_{\mathrm{occ}})^\dagger`
+    /// `\mathbf S {}^w\mathbf C_{\mathrm{occ}} are sufficient to determine m. The singular vectors and rotated`
     /// occupied coefficients are therefore not constructed. This is used before allocating the intermediate
-    /// slab so that storage is reserved only for reachable \mathcal J and \mathcal{II} branches.
+    /// `slab so that storage is reserved only for reachable \mathcal J and \mathcal{II} branches.`
     /// # Arguments:
     /// - `s_munu`: AO overlap matrix.
-    /// - `g_c`: Ket-reference MO coefficient matrix {}^w\mathbf C.
+    /// - `g_c`: `Ket-reference MO coefficient matrix {}^w\mathbf C.`
     /// - `go`: Ket-reference occupation bitstring.
-    /// - `l_c`: Bra-reference MO coefficient matrix {}^x\mathbf C.
+    /// - `l_c`: `Bra-reference MO coefficient matrix {}^x\mathbf C.`
     /// - `lo`: Bra-reference occupation bitstring.
-    /// - `tol`: Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.
+    /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
     /// # Returns
     /// - `usize`: Number m of zero-overlap orbital pairs.
     pub(crate) fn count_zero_overlap_pairs(
@@ -362,14 +363,14 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     }
 
     /// Construct the occupied orbital overlap matrix between the reference determinants.
-    /// The matrix is: {}^{xw}\mathbf S_{\mathrm{occ}} = ({}^x\mathbf C_{\mathrm{occ}})^\dagger
-    /// \mathbf S {}^w\mathbf C_{\mathrm{occ}}.
+    /// `The matrix is: {}^{xw}\mathbf S_{\mathrm{occ}} = ({}^x\mathbf C_{\mathrm{occ}})^\dagger`
+    /// `\mathbf S {}^w\mathbf C_{\mathrm{occ}}.`
     /// # Arguments:
-    /// - `s_munu`: AO overlap matrix \mathbf S.
-    /// - `l_c_occ`: Occupied coefficient matrix {}^x\mathbf C_{\mathrm{occ}} of the bra reference.
-    /// - `g_c_occ`: Occupied coefficient matrix {}^w\mathbf C_{\mathrm{occ}} of the ket reference.
+    /// - `s_munu`: `AO overlap matrix \mathbf S.`
+    /// - `l_c_occ`: `Occupied coefficient matrix {}^x\mathbf C_{\mathrm{occ}} of the bra reference.`
+    /// - `g_c_occ`: `Occupied coefficient matrix {}^w\mathbf C_{\mathrm{occ}} of the ket reference.`
     /// # Returns
-    /// - `Array2<T>`: Occupied orbital overlap matrix {}^{xw}\mathbf S_{\mathrm{occ}}.
+    /// - `Array2<T>`: `Occupied orbital overlap matrix {}^{xw}\mathbf S_{\mathrm{occ}}.`
     fn occupied_overlap(
         s_munu: &Array2<f64>,
         l_c_occ: &Array2<T>,
@@ -381,22 +382,22 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 
     /// Singular-value decompose the occupied orbital overlap matrix and construct the Löwdin paired occupied orbitals.
     /// The occupied orbital overlap matrix is decomposed as:
-    /// {}^{xw}\mathbf S_{\mathrm{occ}} = \mathbf U {}^{xw}\tilde{\mathbf S}_{\mathrm{occ}} \mathbf V^\dagger.
+    /// `{}^{xw}\mathbf S_{\mathrm{occ}} = \mathbf U {}^{xw}\tilde{\mathbf S}_{\mathrm{occ}} \mathbf V^\dagger.`
     /// The paired occupied coefficient matrices are:
-    /// {}^x\tilde{\mathbf C}_{\mathrm{occ}} = {}^x\mathbf C_{\mathrm{occ}}\mathbf U,
-    /// {}^w\tilde{\mathbf C}_{\mathrm{occ}} = {}^w\mathbf C_{\mathrm{occ}}\mathbf V.
+    /// `{}^x\tilde{\mathbf C}_{\mathrm{occ}} = {}^x\mathbf C_{\mathrm{occ}}\mathbf U,`
+    /// `{}^w\tilde{\mathbf C}_{\mathrm{occ}} = {}^w\mathbf C_{\mathrm{occ}}\mathbf V.`
     /// These satisfy:
-    /// ({}^x\tilde{\mathbf C}_{\mathrm{occ}})^\dagger \mathbf S {}^w\tilde{\mathbf C}_{\mathrm{occ}}
-    /// = {}^{xw}\tilde{\mathbf S}_{\mathrm{occ}}.
+    /// `({}^x\tilde{\mathbf C}_{\mathrm{occ}})^\dagger \mathbf S {}^w\tilde{\mathbf C}_{\mathrm{occ}}`
+    /// `= {}^{xw}\tilde{\mathbf S}_{\mathrm{occ}}.`
     /// The phase introduced into the determinant overlap by the occupied orbital rotations is:
-    /// \phi^{xw} = \det(\mathbf U)\det(\mathbf V)^*.
+    /// `\phi^{xw} = \det(\mathbf U)\det(\mathbf V)^*.`
     /// # Arguments:
-    /// - `s_munu`: AO overlap matrix \mathbf S.
-    /// - `l_c_occ`: Occupied coefficient matrix {}^x\mathbf C_{\mathrm{occ}} of the bra reference.
-    /// - `g_c_occ`: Occupied coefficient matrix {}^w\mathbf C_{\mathrm{occ}} of the ket reference.
+    /// - `s_munu`: `AO overlap matrix \mathbf S.`
+    /// - `l_c_occ`: `Occupied coefficient matrix {}^x\mathbf C_{\mathrm{occ}} of the bra reference.`
+    /// - `g_c_occ`: `Occupied coefficient matrix {}^w\mathbf C_{\mathrm{occ}} of the ket reference.`
     /// # Returns
     /// - `(Array1<f64>, Array2<T>, Array2<T>, T)`: Singular values, paired occupied coefficients for w, paired occupied
-    ///   coefficients for x, and the phase \phi^{xw}.
+    ///   `coefficients for x, and the phase \phi^{xw}.`
     pub fn perform_ortho_and_svd_and_rotate(
         s_munu: &Array2<f64>,
         l_c_occ: &Array2<T>,
@@ -422,27 +423,27 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         (xw_tilde_s, g_tilde_c, l_tilde_c, ph)
     }
 
-    /// Construct the AO fundamental contractions {}^{xw}M^{(0)} and {}^{xw}M^{(1)}.
+    /// `Construct the AO fundamental contractions {}^{xw}M^{(0)} and {}^{xw}M^{(1)}.`
     /// The contribution from the non-zero singular values is:
-    /// {}^{xw}W^{\mu\nu} = \sum_{\{i\mid{}^{xw}\tilde S_i \neq 0\}} {}^w\tilde c_{\cdot i}^{\mu\cdot}
-    /// \frac{1}{{}^{xw}\tilde S_i} {}^x\tilde c_{\cdot i}^{*\,\nu\cdot}.
+    /// `{}^{xw}W^{\mu\nu} = \sum_{\{i\mid{}^{xw}\tilde S_i \neq 0\}} {}^w\tilde c_{\cdot i}^{\mu\cdot}`
+    /// `\frac{1}{{}^{xw}\tilde S_i} {}^x\tilde c_{\cdot i}^{*\,\nu\cdot}.`
     /// The contribution from the zero-overlap orbital pairs is:
-    /// {}^{xw}P^{\mu\nu} = \sum_{\{k\mid{}^{xw}\tilde S_k = 0\}} {}^w\tilde c_{\cdot k}^{\mu\cdot} {}^x\tilde c_{\cdot k}^{*\,\nu\cdot}.
+    /// `{}^{xw}P^{\mu\nu} = \sum_{\{k\mid{}^{xw}\tilde S_k = 0\}} {}^w\tilde c_{\cdot k}^{\mu\cdot} {}^x\tilde c_{\cdot k}^{*\,\nu\cdot}.`
     /// The corresponding same-reference contribution formed from the ket orbitals is:
-    /// {}^{ww}P^{\mu\nu} = \sum_{\{k\mid{}^{xw}\tilde S_k = 0\}} {}^w\tilde c_{\cdot k}^{\mu\cdot} {}^w\tilde c_{\cdot k}^{*\,\nu\cdot}.
+    /// `{}^{ww}P^{\mu\nu} = \sum_{\{k\mid{}^{xw}\tilde S_k = 0\}} {}^w\tilde c_{\cdot k}^{\mu\cdot} {}^w\tilde c_{\cdot k}^{*\,\nu\cdot}.`
     /// The two stored fundamental contraction matrices are:
-    /// {}^{xw}M^{\mu\nu,(0)} = {}^{xw}W^{\mu\nu} + {}^{xw}P^{\mu\nu} + {}^{ww}P^{\mu\nu},
-    /// {}^{xw}M^{\mu\nu,(1)} = {}^{xw}P^{\mu\nu}.
+    /// `{}^{xw}M^{\mu\nu,(0)} = {}^{xw}W^{\mu\nu} + {}^{xw}P^{\mu\nu} + {}^{ww}P^{\mu\nu},`
+    /// `{}^{xw}M^{\mu\nu,(1)} = {}^{xw}P^{\mu\nu}.`
     /// A fundamental contraction containing more than one zero-overlap orbital pair vanishes, and therefore
-    /// no M^{(m_i)} with m_i > 1 is required.
+    /// `no M^{(m_i)} with m_i > 1 is required.`
     /// # Arguments:
-    /// - `xw_tilde_s`: Singular values {}^{xw}\tilde S_i of the occupied orbital overlap matrix.
-    /// - `l_tilde_c_occ`: Paired occupied coefficients {}^x\tilde{\mathbf C}_{\mathrm{occ}}.
-    /// - `g_tilde_c_occ`: Paired occupied coefficients {}^w\tilde{\mathbf C}_{\mathrm{occ}}.
-    /// - `zeros`: Indices k for which |{}^{xw}\tilde S_k| \leq \mathtt{tol}.
+    /// - `xw_tilde_s`: `Singular values {}^{xw}\tilde S_i of the occupied orbital overlap matrix.`
+    /// - `l_tilde_c_occ`: `Paired occupied coefficients {}^x\tilde{\mathbf C}_{\mathrm{occ}}.`
+    /// - `g_tilde_c_occ`: `Paired occupied coefficients {}^w\tilde{\mathbf C}_{\mathrm{occ}}.`
+    /// - `zeros`: `Indices k for which |{}^{xw}\tilde S_k| \leq \mathtt{tol}.`
     /// - `tol`: Singular-value tolerance.
     /// # Returns
-    /// - `(Array2<T>, Array2<T>)`: AO fundamental contraction matrices {}^{xw}M^{(0)} and {}^{xw}M^{(1)}.
+    /// - `(Array2<T>, Array2<T>)`: `AO fundamental contraction matrices {}^{xw}M^{(0)} and {}^{xw}M^{(1)}.`
     pub fn construct_m(
         xw_tilde_s: &Array1<f64>,
         l_tilde_c_occ: &Array2<T>,
@@ -501,27 +502,27 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
         (xw_m0, xw_m1)
     }
 
-    /// Construct the MO fundamental contractions X^{(m_i)} and Y^{(m_i)} from the AO fundamental contraction M^{(m_i)}.
+    /// `Construct the MO fundamental contractions X^{(m_i)} and Y^{(m_i)} from the AO fundamental contraction M^{(m_i)}.`
     /// The AO fundamental contractions are:
-    /// X_{\mathrm{AO}}^{(m_i)} = \mathbf S M^{(m_i)}\mathbf S,
-    /// Y_{\mathrm{AO}}^{(0)} = X_{\mathrm{AO}}^{(0)} - \mathbf S,
-    /// Y_{\mathrm{AO}}^{(1)} = X_{\mathrm{AO}}^{(1)}.
+    /// `X_{\mathrm{AO}}^{(m_i)} = \mathbf S M^{(m_i)}\mathbf S,`
+    /// `Y_{\mathrm{AO}}^{(0)} = X_{\mathrm{AO}}^{(0)} - \mathbf S,`
+    /// `Y_{\mathrm{AO}}^{(1)} = X_{\mathrm{AO}}^{(1)}.`
     /// These are transformed into the orbital spaces required by the contraction determinant as:
-    /// X^{(m_i)} = \mathbf C_{\mathrm{row}}^\dagger X_{\mathrm{AO}}^{(m_i)}\mathbf C_{\mathrm{col}},
-    /// Y^{(m_i)} = \mathbf C_{\mathrm{row}}^\dagger Y_{\mathrm{AO}}^{(m_i)}\mathbf C_{\mathrm{col}}.
+    /// `X^{(m_i)} = \mathbf C_{\mathrm{row}}^\dagger X_{\mathrm{AO}}^{(m_i)}\mathbf C_{\mathrm{col}},`
+    /// `Y^{(m_i)} = \mathbf C_{\mathrm{row}}^\dagger Y_{\mathrm{AO}}^{(m_i)}\mathbf C_{\mathrm{col}}.`
     /// The row orbitals are drawn from the x-reference virtual orbitals and w-reference occupied orbitals, while the
     /// column orbitals are drawn from the x-reference occupied orbitals and w-reference virtual orbitals. The returned
-    /// matrices therefore contain the {}^{xx}X, {}^{xx}Y, {}^{xw}Y, {}^{wx}X and {}^{ww}X contractions required by
+    /// `matrices therefore contain the {}^{xx}X, {}^{xx}Y, {}^{xw}Y, {}^{wx}X and {}^{ww}X contractions required by`
     /// the overlap contraction determinant.
     /// # Arguments:
     /// - `rowc`: Coefficients of the orbitals associated with the contraction determinant rows.
     /// - `colc`: Coefficients of the orbitals associated with the contraction determinant columns.
-    /// - `s_munu`: AO overlap matrix \mathbf S.
-    /// - `gl_m`: AO fundamental contraction {}^{xw}M^{(m_i)}.
-    /// - `subtract`: Whether to construct Y^{(0)} by subtracting the AO overlap matrix.
+    /// - `s_munu`: `AO overlap matrix \mathbf S.`
+    /// - `gl_m`: `AO fundamental contraction {}^{xw}M^{(m_i)}.`
+    /// - `subtract`: `Whether to construct Y^{(0)} by subtracting the AO overlap matrix.`
     /// # Returns
-    /// - `(Array2<T>, Array2<T>, Array2<T>, Array2<T>)`: MO fundamental contractions X^{(m_i)} and Y^{(m_i)},
-    ///   followed by their AO forms X_{\mathrm{AO}}^{(m_i)} and Y_{\mathrm{AO}}^{(m_i)}.
+    /// - `(Array2<T>, Array2<T>, Array2<T>, Array2<T>)`: `MO fundamental contractions X^{(m_i)} and Y^{(m_i)},`
+    ///   `followed by their AO forms X_{\mathrm{AO}}^{(m_i)} and Y_{\mathrm{AO}}^{(m_i)}.`
     fn construct_xy(
         rowc: &Array2<T>,
         colc: &Array2<T>,
@@ -542,24 +543,24 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 
     /// Construct the scalar and column intermediates for a one-body operator.
     /// The scalar intermediate is:
-    /// {}^x F_0^{(m_1)} = \sum_{pq} {}^x f_{pq}{}^{xx}X_{qp}^{(m_1)}.
+    /// `{}^x F_0^{(m_1)} = \sum_{pq} {}^x f_{pq}{}^{xx}X_{qp}^{(m_1)}.`
     /// The column intermediates are:
-    /// {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_1)}[\mathcal A,\mathcal B]
-    /// = \sum_{pq}{}^{\chi_r x}\mathcal A_{rp}^{(m_i)}{}^x f_{pq}
-    /// {}^{x\chi_z}\mathcal B_{qz}^{(m_1)},
-    /// where \mathcal A,\mathcal B \in \{X,Y\} and \chi_r,\chi_z \in \{x,w\}.
+    /// `{}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_1)}[\mathcal A,\mathcal B]`
+    /// `= \sum_{pq}{}^{\chi_r x}\mathcal A_{rp}^{(m_i)}{}^x f_{pq}`
+    /// `{}^{x\chi_z}\mathcal B_{qz}^{(m_1)},`
+    /// `where \mathcal A,\mathcal B \in \{X,Y\} and \chi_r,\chi_z \in \{x,w\}.`
     /// The appropriate X or Y contraction is selected by the reference determinant associated with the corresponding
     /// excitation operator.
     /// # Arguments:
-    /// - `s_munu`: AO overlap matrix \mathbf S.
+    /// - `s_munu`: `AO overlap matrix \mathbf S.`
     /// - `f_munu`: AO representation of the one-body operator.
-    /// - `g`: Ket reference determinant |{}^w\Psi\rangle.
-    /// - `l`: Bra reference determinant \langle{}^x\Psi|.
+    /// - `g`: `Ket reference determinant |{}^w\Psi\rangle.`
+    /// - `l`: `Bra reference determinant \langle{}^x\Psi|.`
     /// - `spin`: Spin block for which the intermediates are constructed.
-    /// - `tol`: Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.
+    /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
     /// # Returns
-    /// - `([T; 2], [[Array2<T>; 2]; 2])`: Scalar intermediates F_0^{(m_i)} and column intermediates
-    ///   \mathcal F^{(m_i,m_j)} for m_i,m_j \in \{0,1\}.
+    /// - `([T; 2], [[Array2<T>; 2]; 2])`: `Scalar intermediates F_0^{(m_i)} and column intermediates`
+    ///   `\mathcal F^{(m_i,m_j)} for m_i,m_j \in \{0,1\}.`
     pub fn construct_f_scalar(
         s_munu: &Array2<f64>,
         f_munu: &Array2<T>,
@@ -617,12 +618,12 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 
     /// Construct the Coulomb contraction required by the same-spin and different-spin two-body intermediates.
     /// The AO contraction is:
-    /// J_{st}^{(m_i)} = \sum_{\mu\nu}(st|\mu\nu){}^{xw}M_{\mu\nu}^{(m_i)}.
+    /// `J_{st}^{(m_i)} = \sum_{\mu\nu}(st|\mu\nu){}^{xw}M_{\mu\nu}^{(m_i)}.`
     /// # Arguments:
     /// - `eri`: Non-antisymmetrised AO two-electron integrals.
-    /// - `m`: AO fundamental contraction {}^{xw}M^{(m_i)}.
+    /// - `m`: `AO fundamental contraction {}^{xw}M^{(m_i)}.`
     /// # Returns
-    /// - `Array2<T>`: Coulomb contraction J^{(m_i)}.
+    /// - `Array2<T>`: `Coulomb contraction J^{(m_i)}.`
     fn build_j_coulomb(
         eri: &Array4<f64>,
         m: &Array2<T>,
@@ -650,12 +651,12 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
 
     /// Construct the exchange contraction required by the same-spin two-body intermediates.
     /// The AO contraction is:
-    /// K_{st}^{(m_i)} = \sum_{\mu\nu}(s\mu|\nu t){}^{xw}M_{\mu\nu}^{(m_i)}.
+    /// `K_{st}^{(m_i)} = \sum_{\mu\nu}(s\mu|\nu t){}^{xw}M_{\mu\nu}^{(m_i)}.`
     /// # Arguments:
     /// - `eri`: Non-antisymmetrised AO two-electron integrals.
-    /// - `m`: AO fundamental contraction {}^{xw}M^{(m_i)}.
+    /// - `m`: `AO fundamental contraction {}^{xw}M^{(m_i)}.`
     /// # Returns
-    /// - `Array2<T>`: Exchange contraction K^{(m_i)}.
+    /// - `Array2<T>`: `Exchange contraction K^{(m_i)}.`
     fn build_k_exchange(
         eri: &Array4<f64>,
         m: &Array2<T>,
@@ -682,46 +683,46 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     }
 }
 
-/// Distribution (m_{\alpha 0},m_{\alpha z},m_{\beta 0},m_{\beta y}) associated with a stored
-/// different-spin \mathcal{II} intermediate.
+/// `Distribution (m_{\alpha 0},m_{\alpha z},m_{\beta 0},m_{\beta y}) associated with a stored`
+/// `different-spin \mathcal{II} intermediate.`
 type IIMask = (usize, usize, usize, usize);
-/// Different-spin \mathcal{II} intermediate stored together with its distribution of zero-overlap orbital pairs.
+/// `Different-spin \mathcal{II} intermediate stored together with its distribution of zero-overlap orbital pairs.`
 type IIABBlock<T> = (IIMask, Array4<T>);
 
 /// Precomputed different-spin two-body intermediates for a pair of non-orthogonal reference determinants.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(bound = "T: NOCIScalar")]
 pub struct DiffSpinBuild<T: NOCIScalar> {
-    /// Scalar different-spin intermediates {}^x V_{\alpha\beta,0}^{(m_{\alpha 0},m_{\beta 0})}.
+    /// `Scalar different-spin intermediates {}^x V_{\alpha\beta,0}^{(m_{\alpha 0},m_{\beta 0})}.`
     pub vab0: [[T; 2]; 2],
-    /// Alpha-spin column intermediates \mathcal V^\alpha stored as
-    /// vab[m_{\alpha 0}][m_{\beta 0}][m_{\alpha z}].
+    /// `Alpha-spin column intermediates \mathcal V^\alpha stored as`
+    /// `vab[m_{\alpha 0}][m_{\beta 0}][m_{\alpha z}].`
     pub vab: [[[Array2<T>; 2]; 2]; 2],
-    /// Scalar different-spin intermediates {}^x V_{\alpha\beta,0}^{(m_{\alpha 0},m_{\beta 0})} stored with the beta-spin assignment first.
+    /// `Scalar different-spin intermediates {}^x V_{\alpha\beta,0}^{(m_{\alpha 0},m_{\beta 0})} stored with the beta-spin assignment first.`
     pub vba0: [[T; 2]; 2],
-    /// Beta-spin column intermediates \mathcal V^\beta stored as
-    /// vba[m_{\beta 0}][m_{\alpha 0}][m_{\beta y}].
+    /// `Beta-spin column intermediates \mathcal V^\beta stored as`
+    /// `vba[m_{\beta 0}][m_{\alpha 0}][m_{\beta y}].`
     pub vba: [[[Array2<T>; 2]; 2]; 2],
-    /// Different-spin \mathcal{II} intermediates indexed by
-    /// (m_{\alpha 0},m_{\alpha z},m_{\beta 0},m_{\beta y}).
+    /// `Different-spin \mathcal{II} intermediates indexed by`
+    /// `(m_{\alpha 0},m_{\alpha z},m_{\beta 0},m_{\beta y}).`
     pub iiab: Vec<IIABBlock<T>>,
 }
 
 impl<T: NOCIScalar> DiffSpinBuild<T> {
     /// Construct the different-spin two-body intermediates required to evaluate matrix elements between arbitrary excited determinants.
     /// For a different-spin two-body operator, the contraction determinant factorises into separate alpha- and beta-spin
-    /// determinants. Multiplying the two Laplace expansions gives the scalar contribution V_{\alpha\beta,0}, the two
-    /// column contributions \mathcal V^\alpha and \mathcal V^\beta, and the contribution containing one replaced column
-    /// in each spin space, \mathcal{II}.
+    /// `determinants. Multiplying the two Laplace expansions gives the scalar contribution V_{\alpha\beta,0}, the two`
+    /// `column contributions \mathcal V^\alpha and \mathcal V^\beta, and the contribution containing one replaced column`
+    /// `in each spin space, \mathcal{II}.`
     /// The zero-overlap orbital pairs are distributed independently within each spin space according to:
-    /// m_{\alpha 0} + \sum_z m_{\alpha z} = m_\alpha,
-    /// m_{\beta 0} + \sum_y m_{\beta y} = m_\beta.
+    /// `m_{\alpha 0} + \sum_z m_{\alpha z} = m_\alpha,`
+    /// `m_{\beta 0} + \sum_y m_{\beta y} = m_\beta.`
     /// No exchange term occurs between the alpha- and beta-spin operator pairs.
     /// # Arguments:
     /// - `ao`: AO overlap matrix and two-electron integrals.
-    /// - `g`: Ket reference determinant |{}^w\Psi\rangle.
-    /// - `l`: Bra reference determinant \langle{}^x\Psi|.
-    /// - `tol`: Singular values satisfying |{}^{xw}\tilde S_{\sigma i}| \leq \mathtt{tol} are treated as zero.
+    /// - `g`: `Ket reference determinant |{}^w\Psi\rangle.`
+    /// - `l`: `Bra reference determinant \langle{}^x\Psi|.`
+    /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_{\sigma i}| \leq \mathtt{tol} are treated as zero.`
     /// # Returns
     /// - `DiffSpinBuild<T>`: Different-spin two-body intermediates for the reference determinant pair.
     pub fn new(
@@ -924,19 +925,19 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
         }
     }
 
-    /// Construct the matrices containing the X^{(m_i)} or Y^{(m_i)} contractions required by the stored intermediates.
-    /// For m_i = 0, the direct orbital contribution is subtracted from the left x-reference block and the right
-    /// w-reference block, giving the required Y^{(0)} contractions. For m_i = 1, no subtraction is required because
-    /// Y^{(1)} = X^{(1)}. The first returned matrix is restricted to the x-reference virtual and w-reference
+    /// `Construct the matrices containing the X^{(m_i)} or Y^{(m_i)} contractions required by the stored intermediates.`
+    /// `For m_i = 0, the direct orbital contribution is subtracted from the left x-reference block and the right`
+    /// `w-reference block, giving the required Y^{(0)} contractions. For m_i = 1, no subtraction is required because`
+    /// `Y^{(1)} = X^{(1)}. The first returned matrix is restricted to the x-reference virtual and w-reference`
     /// occupied orbitals associated with the rows of the contraction determinant. The second is restricted to the x-reference
     /// occupied and w-reference virtual orbitals associated with its columns.
     /// # Arguments:
-    /// - `m`: AO fundamental contraction {}^{xw}M^{(m_i)}.
-    /// - `s`: AO overlap matrix \mathbf S.
-    /// - `l_c`: Bra-reference MO coefficient matrix {}^x\mathbf C.
-    /// - `g_c`: Ket-reference MO coefficient matrix {}^w\mathbf C.
+    /// - `m`: `AO fundamental contraction {}^{xw}M^{(m_i)}.`
+    /// - `s`: `AO overlap matrix \mathbf S.`
+    /// - `l_c`: `Bra-reference MO coefficient matrix {}^x\mathbf C.`
+    /// - `g_c`: `Ket-reference MO coefficient matrix {}^w\mathbf C.`
     /// - `lo`: Bra-reference occupation bitstring.
-    /// - `i`: Zero-overlap assignment m_i, equal to zero or one.
+    /// - `i`: `Zero-overlap assignment m_i, equal to zero or one.`
     /// # Returns
     /// - `(Array2<T>, Array2<T>)`: Matrices containing the contractions associated with the rows and columns of the
     ///   contraction determinant.
@@ -992,15 +993,15 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
 
 /// Construct the orbital coefficient matrices associated with the rows and columns of the contraction determinant.
 /// For a matrix element
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat O|{}^w\Psi_{j\cdots}^{b\cdots}\rangle,
-/// the rows correspond to the annihilation operators {}^x\hat b_a,\ldots and {}^w\hat b_j,\ldots, while the columns
-/// correspond to the creation operators {}^x\hat b_i^\dagger,\ldots and {}^w\hat b_b^\dagger,\ldots. The coefficient
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat O|{}^w\Psi_{j\cdots}^{b\cdots}\rangle,`
+/// `the rows correspond to the annihilation operators {}^x\hat b_a,\ldots and {}^w\hat b_j,\ldots, while the columns`
+/// `correspond to the creation operators {}^x\hat b_i^\dagger,\ldots and {}^w\hat b_b^\dagger,\ldots. The coefficient`
 /// matrices are therefore ordered as:
-/// \mathbf C_{\mathrm{row}} = \begin{pmatrix}{}^x\mathbf C_{\mathrm{vir}} & {}^w\mathbf C_{\mathrm{occ}}\end{pmatrix},
-/// \mathbf C_{\mathrm{col}} = \begin{pmatrix}{}^x\mathbf C_{\mathrm{occ}} & {}^w\mathbf C_{\mathrm{vir}}\end{pmatrix}.
+/// `\mathbf C_{\mathrm{row}} = \begin{pmatrix}{}^x\mathbf C_{\mathrm{vir}} & {}^w\mathbf C_{\mathrm{occ}}\end{pmatrix},`
+/// `\mathbf C_{\mathrm{col}} = \begin{pmatrix}{}^x\mathbf C_{\mathrm{occ}} & {}^w\mathbf C_{\mathrm{vir}}\end{pmatrix}.`
 /// # Arguments:
-/// - `l_c`: Bra-reference molecular-orbital coefficients {}^x\mathbf C.
-/// - `g_c`: Ket-reference molecular-orbital coefficients {}^w\mathbf C.
+/// - `l_c`: `Bra-reference molecular-orbital coefficients {}^x\mathbf C.`
+/// - `g_c`: `Ket-reference molecular-orbital coefficients {}^w\mathbf C.`
 /// - `nocc`: Number of occupied orbitals in this spin space.
 /// # Returns
 /// - `(Array2<T>, Array2<T>)`: Orbital coefficient matrices associated with the contraction determinant rows and columns.

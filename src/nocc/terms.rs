@@ -1,7 +1,9 @@
 // nocc/terms.rs
 
+// Standard library imports.
 use std::collections::BTreeMap;
 
+// External crate imports.
 use serde::{Deserialize, Serialize};
 
 /// Rational coefficient stored as `[numerator, denominator]`.

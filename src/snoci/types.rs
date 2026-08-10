@@ -1,9 +1,12 @@
 // snoci/types.rs
 
+// Standard library imports.
 use std::time::Instant;
 
+// External crate imports.
 use ndarray::{Array1, Array2};
 
+// Crate-root imports.
 use crate::DetState;
 use crate::input::SNOCIPreconditioner;
 use crate::noci::{FockData, NOCIData, NOCIScalar};
@@ -62,19 +65,19 @@ pub(in crate::snoci) struct GMRESResult<T: NOCIScalar> {
 
 /// Candidate-space overlap blocks required for projection out of the current selected space.
 pub(in crate::snoci) struct SNOCIOverlaps<T: NOCIScalar> {
-    /// Candidate-current overlap, S_ai.
+    /// `Candidate-current overlap, S_ai.`
     pub(in crate::snoci) s_ai: Array2<T>,
-    /// Current-candidate overlap, S_ia.
+    /// `Current-candidate overlap, S_ia.`
     pub(in crate::snoci) s_ia: Array2<T>,
 }
 
 /// Fock matrix blocks required to build the SNOCI response problem.
 pub(in crate::snoci) struct SNOCIFocks<T: NOCIScalar> {
-    /// Current-current Fock matrix, F_ij.
+    /// `Current-current Fock matrix, F_ij.`
     pub(in crate::snoci) f_ii: Array2<T>,
-    /// Candidate-current Fock matrix, F_ai.
+    /// `Candidate-current Fock matrix, F_ai.`
     pub(in crate::snoci) f_ai: Array2<T>,
-    /// Current-candidate Fock matrix, F_ia.
+    /// `Current-candidate Fock matrix, F_ia.`
     pub(in crate::snoci) f_ia: Array2<T>,
 }
 
@@ -83,13 +86,13 @@ pub(in crate::snoci) struct SNOCIFocks<T: NOCIScalar> {
 pub(in crate::snoci) struct PT2Projection<T: NOCIScalar> {
     /// Zeroth-order NOCI generalised-Fock energy.
     pub(in crate::snoci) e0: f64,
-    /// Candidate-reference overlap, S_a0.
+    /// `Candidate-reference overlap, S_a0.`
     pub(in crate::snoci) s_a0: Array1<T>,
-    /// Reference-candidate overlap, S_0a.
+    /// `Reference-candidate overlap, S_0a.`
     pub(in crate::snoci) s_0a: Array1<T>,
-    /// Candidate-reference Fock contraction, F_a0.
+    /// `Candidate-reference Fock contraction, F_a0.`
     pub(in crate::snoci) f_a0: Array1<T>,
-    /// Reference-candidate Fock contraction, F_0a.
+    /// `Reference-candidate Fock contraction, F_0a.`
     pub(in crate::snoci) f_0a: Array1<T>,
 }
 

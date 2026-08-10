@@ -1,8 +1,10 @@
 // scf/h/seed.rs
 
+// External crate imports.
 use ndarray::{Array2, Axis};
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::maths::{complex_metric_orthonormalize, real2_as};
 use crate::scf::spin_occupation;
 use crate::{AoData, SCFState};

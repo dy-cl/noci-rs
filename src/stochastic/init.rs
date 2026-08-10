@@ -1,8 +1,15 @@
 // stochastic/init.rs
+// External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
+// Crate-root imports.
+use crate::noci::NOCIData;
+use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::time_call;
+
+// Parent/sibling imports.
 use super::common::{find_s, gather_all_populations};
 use super::metric::projected_energy;
 use super::restart::read_restart_hdf5;
@@ -10,9 +17,6 @@ use super::state::{
     ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, PropagationState,
     QMCRunInfo, SparsePopulations,
 };
-use crate::noci::NOCIData;
-use crate::nonorthogonalwicks::WickScratchSpin;
-use crate::time_call;
 
 /// Initialise the persistent range-safe population vector as `S c0`.
 /// # Arguments:

@@ -1,8 +1,10 @@
 // scf/h/tangent.rs
 
+// External crate imports.
 use ndarray::{Array1, Array2, s};
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::maths::matrix_exp_complex;
 
 /// Apply a complex-orthogonal occupied-virtual geodesic step.

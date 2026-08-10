@@ -1,12 +1,15 @@
 // noci/naive.rs
+// External crate imports.
 use ndarray::{Array1, Array2, Array4, Axis};
 use ndarray_linalg::{Determinant, SVD};
 use rayon::prelude::*;
 
-use super::types::{NOCIScalar, Pair};
+// Crate-root imports.
+use crate::maths::{adjoint, real2_as};
 use crate::{AoData, DetState};
 
-use crate::maths::{adjoint, real2_as};
+// Parent/sibling imports.
+use super::types::{NOCIScalar, Pair};
 
 /// Given an MO coefficient matrix and occupancy vector, return the occupied-only coefficient matrix.
 /// # Arguments:
@@ -28,10 +31,10 @@ pub fn occ_coeffs<T: NOCIScalar>(
     c_occ
 }
 
-/// Calculate the reduced occupied MO overlap scalar of {}^{xw} \tilde{S} as the product of
-/// all non-zero singular values of the SVD'd {}^{xw} \tilde{S}.
+/// `Calculate the reduced occupied MO overlap scalar of {}^{xw} \tilde{S} as the product of`
+/// `all non-zero singular values of the SVD'd {}^{xw} \tilde{S}.`
 /// # Arguments
-/// - `tilde_s`: Vector of singular values, the diagonal of {}^{xw} \tilde{S}.
+/// - `tilde_s`: `Vector of singular values, the diagonal of {}^{xw} \tilde{S}.`
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
 /// - `(f64, Vec<usize>)`: Product of non-zero singular values and indices
@@ -55,13 +58,13 @@ fn calculate_s_red(
 
 /// Build overlap-related intermediates for a pair of determinants.
 /// An SVD is performed on the occupied MO overlap matrix
-/// {}^{xw} S_{ij} = U {}^{xw}\tilde{S}_{ij} V^{\dagger},
-/// each set of occupied MOs is rotated to form {}^x \tilde{C} and
-/// {}^w \tilde{C}, and the quantities required for the generalised
+/// `{}^{xw} S_{ij} = U {}^{xw}\tilde{S}_{ij} V^{\dagger},`
+/// `each set of occupied MOs is rotated to form {}^x \tilde{C} and`
+/// `{}^w \tilde{C}, and the quantities required for the generalised`
 /// Slater-Condon rules are constructed.
 /// # Arguments:
-/// - `l_c_occ`: Occupied MO coefficient matrix {}^x C.
-/// - `g_c_occ`: Occupied MO coefficient matrix {}^w C.
+/// - `l_c_occ`: `Occupied MO coefficient matrix {}^x C.`
+/// - `g_c_occ`: `Occupied MO coefficient matrix {}^w C.`
 /// - `s_munu`: AO overlap matrix.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
@@ -144,8 +147,8 @@ pub(crate) fn build_s_pair<T: NOCIScalar>(
     }
 }
 
-/// Calculate {}^{xw}P_i^{\mu\nu} = {}^{w} \tilde{C}_i^\mu {}^{x}\tilde{C}_i^{\nu *}
-/// co-density matrix where {}^{x} \tilde{C}_i^\nu and {}^{w}\tilde{C}_i^\mu are the
+/// `Calculate {}^{xw}P_i^{\mu\nu} = {}^{w} \tilde{C}_i^\mu {}^{x}\tilde{C}_i^{\nu *}`
+/// `co-density matrix where {}^{x} \tilde{C}_i^\nu and {}^{w}\tilde{C}_i^\mu are the`
 /// rotated MO coefficients of determinants x and w respectively.
 /// # Arguments
 /// - `l_tilde_c_occ`: U rotated occupied MO coefficients for determinant x.
@@ -168,14 +171,14 @@ fn calculate_codensity_p_pair<T: NOCIScalar>(
     munu_p_i
 }
 
-/// Calculate {}^{xw}W^{\mu\nu} = \sum_{i} 1 / s_i * {}^{w}\tilde{C}_i^\mu {}^{x}\tilde{C}_i^{\nu *}
-/// weighted co-density matrix where s_i are the singular values of the SVD decomposed MO overlap matrix,
-/// and {}^{x}\tilde{C}_i^\nu and {}^{w}\tilde{C}_i^\mu are the occupied rotated MO coefficients of
+/// `Calculate {}^{xw}W^{\mu\nu} = \sum_{i} 1 / s_i * {}^{w}\tilde{C}_i^\mu {}^{x}\tilde{C}_i^{\nu *}`
+/// `weighted co-density matrix where s_i are the singular values of the SVD decomposed MO overlap matrix,`
+/// `and {}^{x}\tilde{C}_i^\nu and {}^{w}\tilde{C}_i^\mu are the occupied rotated MO coefficients of`
 /// determinants x and w respectively.
 /// # Arguments:
 /// - `l_tilde_c_occ`: U rotated occupied MO coefficients for determinant x.
 /// - `g_tilde_c_occ`: V rotated occupied MO coefficients for determinant w.
-/// - `tilde_s`: Singular values of SVD'd {}^{xw} \tilde{S}_{ij}.
+/// - `tilde_s`: `Singular values of SVD'd {}^{xw} \tilde{S}_{ij}.`
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
 /// - `Array2<T>`: Weighted co-density matrix.
@@ -199,7 +202,7 @@ fn calculate_codensity_w_pair<T: NOCIScalar>(
     g_tilde_c_occ_scaled.dot(&adjoint(l_tilde_c_occ))
 }
 
-/// Calculate pair density {}^{xw} \rho_{ij} using the generalised Slater-Condon rules.
+/// `Calculate pair density {}^{xw} \rho_{ij} using the generalised Slater-Condon rules.`
 /// # Arguments:
 /// - `pair`: Contains data concerning a pair of determinants.
 /// - `nao`: Number of AOs.

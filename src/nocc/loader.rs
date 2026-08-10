@@ -1,10 +1,13 @@
 // nocc/loader.rs
 
+// Standard library imports.
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+// External crate imports.
 use bincode::Options;
 
+// Parent/sibling imports.
 use super::terms::{OverlapTermSet, ResidualClassTerms, ResidualTermSet};
 
 static OVERLAP_TERMS: OnceLock<OverlapTermSet> = OnceLock::new();

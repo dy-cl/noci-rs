@@ -1,10 +1,12 @@
 // driver/reference.rs
 
+// External crate imports.
 use mpi::collective::CommunicatorCollectives;
 use mpi::topology::Communicator;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::mpiutils::broadcast;
 use crate::noci::{MOCache, NOCIScalar, build_mo_cache, build_wicks_shared, calculate_noci_energy};

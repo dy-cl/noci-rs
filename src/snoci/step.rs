@@ -1,24 +1,27 @@
 // snoci/step.rs
 
+// External crate imports.
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
-use super::{CandidatePool, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
+// Crate-root imports.
+use crate::input::SNOCIFullM;
 use crate::noci::{FockData, NOCIData, NOCIScalar};
+use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::nonorthogonalwicks::WicksShared;
+use crate::scf::fock;
 use crate::time_call;
 use crate::{DetState, PostSCFData, input::Input};
 
+// Parent/sibling imports.
+use super::{CandidatePool, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
 use super::{
     apply_shifted_omega_m, apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
     build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
     build_omega_v, build_preconditioner, build_snoci_focks, build_snoci_overlaps,
     build_snoci_projection, gmres, select_candidates, solve_current_space,
 };
-use crate::input::SNOCIFullM;
-use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
-use crate::scf::fock;
 
 /// Return the real component of a scalar used for printed and stored energies.
 /// # Arguments:

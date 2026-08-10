@@ -1,11 +1,16 @@
 // noci/overlaps.rs
 
+// Standard library imports.
 use std::collections::HashMap;
 
-use crate::maths::dot_f64;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
+// External crate imports.
 use rayon::prelude::*;
 
+// Crate-root imports.
+use crate::maths::dot_f64;
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
+
+// Parent/sibling imports.
 use super::overlap::{
     calculate_s_alpha_pair_wicks, calculate_s_beta_pair_wicks, calculate_s_pair,
     calculate_s_pair_naive,
@@ -14,20 +19,20 @@ use super::types::{DetPair, NOCIData};
 
 #[derive(Clone, Copy)]
 struct SpinUpdate {
-    /// Global determinant index \Omega receiving the pre-overlap update.
+    /// `Global determinant index \Omega receiving the pre-overlap update.`
     det: usize,
     /// Active source a position for this sparse entry.
     apos: usize,
     /// Active source b position for this sparse entry.
     bpos: usize,
-    /// Sparse pre-overlap update value \Delta_\Omega.
+    /// `Sparse pre-overlap update value \Delta_\Omega.`
     dn: f64,
 }
 
 struct ParentUpdates {
-    /// Source parent P for all sparse D^P_{ab} entries.
+    /// `Source parent P for all sparse D^P_{ab} entries.`
     parent: usize,
-    /// Sparse non-zero entries of D^P_{ab}.
+    /// `Sparse non-zero entries of D^P_{ab}.`
     entries: Vec<SpinUpdate>,
     /// Active source a component IDs for this application.
     aids: Vec<usize>,
@@ -57,13 +62,13 @@ struct ParentSpinSpace {
 
 #[derive(Clone, Copy)]
 struct LocalTarget {
-    /// Rank-local population row receiving \delta N_w.
+    /// `Rank-local population row receiving \delta N_w.`
     local: usize,
     /// Global determinant index w.
     det: usize,
-    /// Target-parent local a component ID a_w.
+    /// `Target-parent local a component ID a_w.`
     a: usize,
-    /// Target-parent local b component ID b_w.
+    /// `Target-parent local b component ID b_w.`
     b: usize,
 }
 
@@ -107,21 +112,21 @@ struct LocalParentBlock {
 enum OverlapContraction {
     /// Factorise each target row before looping over sparse source updates.
     FactorizedRows,
-    /// Form T_{\bar a b} before applying B^{QP}_{\bar b_w b}.
+    /// `Form T_{\bar a b} before applying B^{QP}_{\bar b_w b}.`
     AFirst,
-    /// Form U_{a\bar b} before applying A^{QP}_{\bar a_w a}.
+    /// `Form U_{a\bar b} before applying A^{QP}_{\bar a_w a}.`
     BFirst,
 }
 
-/// Reusable storage for one application of S\Delta.
+/// `Reusable storage for one application of S\Delta.`
 pub(crate) struct OverlapFactorScratch {
     /// Sparse updates grouped by source parent.
     updates: Vec<ParentUpdates>,
     /// Source parents touched by the current update list.
     active_parents: Vec<usize>,
-    /// Temporary A^{QP}_{\bar a a} factor table.
+    /// `Temporary A^{QP}_{\bar a a} factor table.`
     afac: Vec<f64>,
-    /// Temporary B^{QP}_{\bar b b} factor table.
+    /// `Temporary B^{QP}_{\bar b b} factor table.`
     bfac: Vec<f64>,
     /// Temporary blocked contraction table T or U.
     intermediate: Vec<f64>,
@@ -175,7 +180,7 @@ impl OverlapFactor {
         }
     }
 
-    /// Construct reusable storage for one full application of S\Delta.
+    /// `Construct reusable storage for one full application of S\Delta.`
     /// Temporary factor tables and contraction buffers are allocated once, but their numerical
     /// values are cleared or overwritten on every application and are never reused as overlap data.
     /// # Arguments:
@@ -201,18 +206,18 @@ impl OverlapFactor {
         }
     }
 
-    /// Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.
+    /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
     /// Orthogonal same-parent blocks are applied directly, while cross-parent blocks use
-    /// S_{w\Omega} = A^{QP}_{\bar a_w a_\Omega}B^{QP}_{\bar b_w b_\Omega}.
+    /// `S_{w\Omega} = A^{QP}_{\bar a_w a_\Omega}B^{QP}_{\bar b_w b_\Omega}.`
     /// Temporary factor tables are rebuilt for each overlap application and are not cached across iterations.
     /// # Arguments:
-    /// - `populations`: Rank-local persistent populations N_w.
+    /// - `populations`: `Rank-local persistent populations N_w.`
     /// - `targets`: Global determinant index for each rank-local row in `populations`.
-    /// - `updates`: Sparse pre-overlap changes \Omega, \Delta_\Omega.
+    /// - `updates`: `Sparse pre-overlap changes \Omega, \Delta_\Omega.`
     /// - `data`: Shared NOCI data.
-    /// - `scratch`: Reusable allocation storage for one application of S\Delta.
+    /// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
     /// # Returns:
-    /// - `()`: Applies N_w \leftarrow N_w + \delta N_w.
+    /// - `()`: `Applies N_w \leftarrow N_w + \delta N_w.`
     pub(crate) fn apply<I>(
         &self,
         populations: &mut [f64],
@@ -288,9 +293,9 @@ impl OverlapFactor {
     }
 
     /// Group sparse updates by source parent and active spin components.
-    /// This constructs D^P_{ab} in sparse form for the current S\Delta application.
+    /// `This constructs D^P_{ab} in sparse form for the current S\Delta application.`
     /// # Arguments:
-    /// - `updates`: Sparse determinant changes \Omega, \Delta_\Omega.
+    /// - `updates`: `Sparse determinant changes \Omega, \Delta_\Omega.`
     /// - `data`: Shared NOCI data used to map determinants to parents.
     /// - `scratch`: Reusable grouped-update storage cleared and refilled for this application.
     /// # Returns:
@@ -321,7 +326,7 @@ impl OverlapFactor {
         }
     }
 
-    /// Build target parent blocks for the rank-local rows receiving S\Delta.
+    /// `Build target parent blocks for the rank-local rows receiving S\Delta.`
     /// Each block records active target spin components and same-parent occupation groups.
     /// # Arguments:
     /// - `targets`: Global determinant index for each rank-local population row.
@@ -383,7 +388,7 @@ impl OverlapFactor {
     }
 
     /// Group same-parent orthogonal targets by occupation bitstrings.
-    /// Direct same-parent overlap then matches D^P entries by (o_a,o_b) and determinant phases.
+    /// `Direct same-parent overlap then matches D^P entries by (o_a,o_b) and determinant phases.`
     /// # Arguments:
     /// - `block`: Target parent block whose orthogonal groups are rebuilt.
     /// - `data`: Shared NOCI data used to read occupation bitstrings and phases.
@@ -422,7 +427,7 @@ impl OverlapFactor {
     /// The method chooses direct orthogonal matching, sparse rows, or a blocked spin factorisation.
     /// # Arguments:
     /// - `target`: Rank-local target block for parent Q.
-    /// - `source`: Source parent P grouped D^P updates.
+    /// - `source`: `Source parent P grouped D^P updates.`
     /// - `data`: Shared NOCI data and Wick intermediates.
     /// - `scratch`: Reusable storage for factors, contractions, and output increments.
     /// # Returns:
@@ -475,17 +480,17 @@ impl OverlapFactor {
 
     /// Apply one cross-parent block with target-local sparse-row factor reuse.
     /// For each target determinant, this builds A and B factor vectors once and contracts
-    /// \delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.
+    /// `\delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.`
     /// The direct determinant-pair Wick loop is avoided because it would recompute the same
     /// same-spin factors for every sparse entry sharing a source a or b component.
     /// # Arguments:
-    /// - `target`: Rank-local target parent block Q defining w = (\bar a,\bar b).
-    /// - `source`: Source parent P sparse D^P_{ab} entries and active positions.
+    /// - `target`: `Rank-local target parent block Q defining w = (\bar a,\bar b).`
+    /// - `source`: `Source parent P sparse D^P_{ab} entries and active positions.`
     /// - `data`: Shared NOCI determinant data.
     /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
     /// - `scratch`: Reusable value storage receiving one output per target row.
     /// # Returns:
-    /// - `()`: Adds factorized sparse-row S\Delta values to `output`.
+    /// - `()`: `Adds factorized sparse-row S\Delta values to output.`
     fn apply_factorized_parent_pair(
         &self,
         output: &mut [f64],
@@ -566,17 +571,17 @@ impl OverlapFactor {
         }
     }
 
-    /// Select how to apply one cross-parent block of S\Delta.
+    /// `Select how to apply one cross-parent block of S\Delta.`
     /// The row path factorises each target as
-    /// \delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.
+    /// `\delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.`
     /// The direct determinant-pair Wick loop is avoided because the weighted model accounts for
     /// same-spin factor reuse instead of charging every sparse product as a full overlap.
-    /// Scores are C = 32\,F + M, where F is the number of same-spin Wick factors and M is the
+    /// `Scores are C = 32\,F + M, where F is the number of same-spin Wick factors and M is the`
     /// number of scalar sparse products; the factor weight reflects that one same-spin Wick
     /// evaluation is substantially more expensive than one multiply-add.
     /// # Arguments:
     /// - `target`: Rank-local target parent block.
-    /// - `source`: Sparse source-parent D^P entries and active spin IDs.
+    /// - `source`: `Sparse source-parent D^P entries and active spin IDs.`
     /// # Returns:
     /// - `OverlapContraction`: `FactorizedRows`, `AFirst`, or `BFirst` selected by weighted score.
     fn select_contraction(
@@ -628,7 +633,7 @@ impl OverlapFactor {
     /// This avoids Wick evaluation and reproduces the determinant phase product.
     /// # Arguments:
     /// - `target`: Rank-local target block with occupation groups.
-    /// - `source`: Same-parent source updates D^P_{ab}.
+    /// - `source`: `Same-parent source updates D^P_{ab}.`
     /// - `data`: Shared NOCI data used to read source occupations and phases.
     /// - `scratch`: Reusable values and increment storage.
     /// # Returns:
@@ -684,11 +689,11 @@ impl OverlapFactor {
     /// This fallback is selected for sparse updates and non-Wick overlap evaluation.
     /// # Arguments:
     /// - `target`: Rank-local target parent block.
-    /// - `source`: Sparse source-parent D^P entries.
+    /// - `source`: `Sparse source-parent D^P entries.`
     /// - `data`: Shared NOCI data used by the general overlap evaluator.
     /// - `scratch`: Reusable per-target value and increment storage.
     /// # Returns:
-    /// - `()`: Adds sparse-row S\Delta values to `output`.
+    /// - `()`: `Adds sparse-row S\Delta values to output.`
     fn apply_sparse_parent_pair(
         &self,
         output: &mut [f64],
@@ -731,10 +736,10 @@ impl OverlapFactor {
         }
     }
 
-    /// Build A^{QP}_{\bar a a} and B^{QP}_{\bar b b} for active spin components.
-    /// Each factor value is recomputed for this S\Delta application using representative determinants.
+    /// `Build A^{QP}_{\bar a a} and B^{QP}_{\bar b b} for active spin components.`
+    /// `Each factor value is recomputed for this S\Delta application using representative determinants.`
     /// # Arguments:
-    /// - `target`: Target parent block defining active \bar a and \bar b rows.
+    /// - `target`: `Target parent block defining active \bar a and \bar b rows.`
     /// - `source`: Source parent updates defining active a and b columns.
     /// - `data`: Shared NOCI determinant data.
     /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
@@ -805,12 +810,12 @@ impl OverlapFactor {
             });
     }
 
-    /// Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
-    /// The final target rows multiply T by B^{QP}_{\bar b_w b}.
+    /// `Apply T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.`
+    /// `The final target rows multiply T by B^{QP}_{\bar b_w b}.`
     /// # Arguments:
     /// - `output`: Rank-local persistent population increment.
-    /// - `target`: Target parent block defining \bar a_w and \bar b_w rows.
-    /// - `source`: Sparse source-parent D^P entries and active positions.
+    /// - `target`: `Target parent block defining \bar a_w and \bar b_w rows.`
+    /// - `source`: `Sparse source-parent D^P entries and active positions.`
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
     /// - `()`: Adds the A-first blocked contribution to `output`.
@@ -885,12 +890,12 @@ impl OverlapFactor {
         }
     }
 
-    /// Apply U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.
-    /// The final target rows multiply U by A^{QP}_{\bar a_w a}.
+    /// `Apply U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.`
+    /// `The final target rows multiply U by A^{QP}_{\bar a_w a}.`
     /// # Arguments:
     /// - `output`: Rank-local persistent population increment.
-    /// - `target`: Target parent block defining \bar a_w and \bar b_w rows.
-    /// - `source`: Sparse source-parent D^P entries and active positions.
+    /// - `target`: `Target parent block defining \bar a_w and \bar b_w rows.`
+    /// - `source`: `Sparse source-parent D^P entries and active positions.`
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
     /// - `()`: Adds the B-first blocked contribution to `output`.
@@ -989,7 +994,7 @@ impl ParentUpdates {
     /// - `na`: Maximum number of parent-local a components.
     /// - `nb`: Maximum number of parent-local b components.
     /// # Returns:
-    /// - `ParentUpdates`: Empty D^P storage with inactive position maps.
+    /// - `ParentUpdates`: `Empty D^P storage with inactive position maps.`
     fn new(
         parent: usize,
         na: usize,
@@ -1005,12 +1010,12 @@ impl ParentUpdates {
         }
     }
 
-    /// Add one sparse D^P_{ab} entry and record active spin IDs on first occurrence.
+    /// `Add one sparse D^P_{ab} entry and record active spin IDs on first occurrence.`
     /// # Arguments:
-    /// - `det`: Source determinant \Omega.
-    /// - `a`: Source-parent local a component ID a_\Omega.
-    /// - `b`: Source-parent local b component ID b_\Omega.
-    /// - `dn`: Sparse pre-overlap update \Delta_\Omega.
+    /// - `det`: `Source determinant \Omega.`
+    /// - `a`: `Source-parent local a component ID a_\Omega.`
+    /// - `b`: `Source-parent local b component ID b_\Omega.`
+    /// - `dn`: `Sparse pre-overlap update \Delta_\Omega.`
     /// # Returns:
     /// - `()`: Appends one sparse entry and updates active ID maps.
     fn push(
@@ -1038,7 +1043,7 @@ impl ParentUpdates {
         });
     }
 
-    /// Clear D^P_{ab} while invalidating only IDs active in the last application.
+    /// `Clear D^P_{ab} while invalidating only IDs active in the last application.`
     /// # Arguments:
     /// - `self`: Grouped source-parent updates to clear.
     /// # Returns:
@@ -1208,8 +1213,8 @@ fn assign_bids(
 }
 
 /// Build parent-local spin and occupation representative tables.
-/// The a and b representatives provide determinant rows for A^{QP}_{\bar a a} and
-/// B^{QP}_{\bar b b}; occupation IDs provide direct same-parent orthogonal matching by existing
+/// `The a and b representatives provide determinant rows for A^{QP}_{\bar a a} and`
+/// `B^{QP}_{\bar b b}; occupation IDs provide direct same-parent orthogonal matching by existing`
 /// determinant `oa` and `ob` bitstrings. These tables contain only determinant IDs and parent-local
 /// IDs, not overlap factors, so no numerical S values persist across QMC iterations.
 /// # Arguments:

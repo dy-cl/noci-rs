@@ -1,8 +1,10 @@
 // scf/kernels.rs
 
+// External crate imports.
 use ndarray::{Array1, Array2, Array4, s};
 use rayon::prelude::*;
 
+// Crate-root imports.
 use crate::StateScalar;
 
 /// Density and bra-contraction mode for SCF kernels.
@@ -195,7 +197,7 @@ pub fn energy<T: StateScalar>(
     e
 }
 
-/// Compute occupied-virtual orbital gradient g_{ai} = 2 \sum_{\mu\nu} C_a^\mu F_{\mu\nu} C_i^\nu.
+/// `Compute occupied-virtual orbital gradient g_{ai} = 2 \sum_{\mu\nu} C_a^\mu F_{\mu\nu} C_i^\nu.`
 /// # Arguments:
 /// - `c`: Full MO coefficient matrix ordered as occupied then virtual.
 /// - `f`: Spin Fock matrix.

@@ -1,24 +1,28 @@
 // scf/cycle.rs
 
+// Standard library imports.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+// External crate imports.
 use ndarray::{Array1, Array2, Axis};
 
-use super::diis::Diis;
-use super::kernels::DensityMode;
+// Crate-root imports.
 use crate::input::{Input, SCFExcitation, Spin, StateType};
+use crate::maths::general_evp_x;
+use crate::utils::print_array2_indexed;
+use crate::write::write_orbitals;
 use crate::{AoData, Excitation, SCFState};
 
+// Parent/sibling imports.
 use super::bias::metadynamics_bias;
+use super::diis::Diis;
+use super::kernels::DensityMode;
 use super::kernels::{density, energy, fock, orbital_gradient};
 use super::occupation::{mo_occupancies, occvec_to_bits};
 use super::print::{print_header, print_mos};
 use super::select::{aufbau_indices, mom_select};
-use crate::maths::general_evp_x;
-use crate::utils::print_array2_indexed;
-use crate::write::write_orbitals;
 
 /// Convert spin enum to printable label.
 /// # Arguments
@@ -109,7 +113,7 @@ fn occupy(
 /// - `db`: Beta-spin density matrix.
 /// - `s`: AO overlap matrix.
 /// # Returns
-/// - `f64`: Expectation value of S^2.
+/// - `f64`: `Expectation value of S^2.`
 fn spin_square(
     da: &Array2<f64>,
     db: &Array2<f64>,

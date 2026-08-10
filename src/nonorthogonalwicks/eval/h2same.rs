@@ -1,35 +1,37 @@
 // nonorthogonalwicks/eval/h2same.rs
 
-use super::super::scratch::WickScratch;
-use super::super::view::SameSpinView;
-use super::helpers::{DetIndex, Minor, ReplacementLayout};
+// Crate-root imports.
 use crate::ExcitationSpin;
+use crate::maths::adjugate_transpose;
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
+// Parent/sibling imports.
 use super::super::layout::{idx, idx4};
+use super::super::scratch::WickScratch;
+use super::super::view::SameSpinView;
+use super::helpers::{DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
     bit, column_replacement_correction, column_replacement_det, get_det_adjt_same, j_replacement,
     jslot, minor_adjt,
 };
-use crate::maths::adjugate_transpose;
 
 /// Evaluate the same-spin two-body matrix element between excited determinants generated from the
-/// reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat v|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}
-/// [{}^xV_0^{(m_1,m_2)}\det\mathbf D_{\mathrm{ov}}
-/// - 2\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal V_z}
-/// + \sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}\mathcal J_{\eta z,\xi y}
-///   \det\mathbf D_{\mathrm{ov}}[\eta,\xi|z,y]].
+/// `reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat v|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}`
+/// `[{}^xV_0^{(m_1,m_2)}\det\mathbf D_{\mathrm{ov}}`
+/// `- 2\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal V_z}`
+/// `+ \sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}\mathcal J_{\eta z,\xi y}`
+///   `\det\mathbf D_{\mathrm{ov}}[\eta,\xi|z,y]].`
 ///   The first two assignments belong to the operator contractions and the remaining L assignments
-///   belong to the columns of \mathbf D_{\mathrm{ov}}. Each m_i is zero or one, and the assignments
-///   carried by \mathcal V and \mathcal J are selected from the same distribution. The implementation
+///   `belong to the columns of \mathbf D_{\mathrm{ov}}. Each m_i is zero or one, and the assignments`
+///   `carried by \mathcal V and \mathcal J are selected from the same distribution. The implementation`
 ///   stores the orbital-pairing phase separately from the product of non-zero singular values.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Scratch storage for contraction determinants, cofactors, minors and work buffers.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
@@ -53,14 +55,14 @@ pub(crate) fn xw_h2_same<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the same-spin two-body matrix element when m = 0, so every contraction uses m_i = 0.
-/// Fixed-rank kernels are used for L = 1,\ldots,4, while all other excitation ranks use the
-/// general cofactor form. For L = 0 only the scalar intermediate {}^xV_0^{(0,0)} contributes.
+/// `Evaluate the same-spin two-body matrix element when m = 0, so every contraction uses m_i = 0.`
+/// `Fixed-rank kernels are used for L = 1,\ldots,4, while all other excitation ranks use the`
+/// `general cofactor form. For L = 0 only the scalar intermediate {}^xV_0^{(0,0)} contributes.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
 /// - `g_ex`: Excitation defining the ket determinant.
-/// - `scratch`: Prepared m_i = 0 contraction determinant and scratch work arrays.
+/// - `scratch`: `Prepared m_i = 0 contraction determinant and scratch work arrays.`
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
 /// - `T`: Same-spin two-body matrix element for m = 0.
@@ -88,13 +90,13 @@ fn xw_h2_same_m0<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 1 same-spin two-body matrix element for m = 0.
-/// The scalar and one-column terms contribute, while the two-column \mathcal J term is absent.
+/// `Evaluate the fixed-rank L = 1 same-spin two-body matrix element for m = 0.`
+/// `The scalar and one-column terms contribute, while the two-column \mathcal J term is absent.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-one contraction determinant and its row and column labels.
 /// # Returns
-/// - `T`: Same-spin two-body matrix element for L = 1 and m = 0.
+/// - `T`: `Same-spin two-body matrix element for L = 1 and m = 0.`
 #[inline(always)]
 fn xw_h2_same_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -120,13 +122,13 @@ fn xw_h2_same_m0_l1<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 2 same-spin two-body matrix element for m = 0.
-/// The scalar, two one-column replacements and rank-two \mathcal J contribution are evaluated directly.
+/// `Evaluate the fixed-rank L = 2 same-spin two-body matrix element for m = 0.`
+/// `The scalar, two one-column replacements and rank-two \mathcal J contribution are evaluated directly.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-two contraction determinant and its row and column labels.
 /// # Returns
-/// - `T`: Same-spin two-body matrix element for L = 2 and m = 0.
+/// - `T`: `Same-spin two-body matrix element for L = 2 and m = 0.`
 #[inline(always)]
 fn xw_h2_same_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -173,15 +175,15 @@ fn xw_h2_same_m0_l2<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 3 same-spin two-body matrix element for m = 0.
-/// The \mathcal V term is contracted with the cofactor matrix of \mathbf D_{\mathrm{ov}}, while
-/// each \mathcal J term is contracted directly with the corresponding second minor.
+/// `Evaluate the fixed-rank L = 3 same-spin two-body matrix element for m = 0.`
+/// `The \mathcal V term is contracted with the cofactor matrix of \mathbf D_{\mathrm{ov}}, while`
+/// `each \mathcal J term is contracted directly with the corresponding second minor.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-three contraction determinant and scratch storage for its cofactors.
 /// - `tol`: Numerical tolerance used when evaluating the determinant and its cofactors.
 /// # Returns
-/// - `T`: Same-spin two-body matrix element for L = 3 and m = 0.
+/// - `T`: `Same-spin two-body matrix element for L = 3 and m = 0.`
 #[inline(always)]
 fn xw_h2_same_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -278,15 +280,15 @@ fn xw_h2_same_m0_l3<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 4 same-spin two-body matrix element for m = 0.
-/// The \mathcal V term is contracted with the cofactor matrix of \mathbf D_{\mathrm{ov}}, while
-/// each \mathcal J term is contracted directly with the corresponding second minor.
+/// `Evaluate the fixed-rank L = 4 same-spin two-body matrix element for m = 0.`
+/// `The \mathcal V term is contracted with the cofactor matrix of \mathbf D_{\mathrm{ov}}, while`
+/// `each \mathcal J term is contracted directly with the corresponding second minor.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-four contraction determinant and scratch storage for its cofactors and minors.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
-/// - `T`: Same-spin two-body matrix element for L = 4 and m = 0.
+/// - `T`: `Same-spin two-body matrix element for L = 4 and m = 0.`
 #[inline(always)]
 fn xw_h2_same_m0_l4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -472,8 +474,8 @@ fn xw_h2_same_m0_l4<T: NOCIScalar>(
 }
 
 /// Evaluate the same-spin two-body matrix element for arbitrary L when m = 0.
-/// The scalar term uses \det\mathbf D_{\mathrm{ov}}, each \mathcal V term replaces one column,
-/// and each \mathcal J term is evaluated from a minor with one further column replacement.
+/// `The scalar term uses \det\mathbf D_{\mathrm{ov}}, each \mathcal V term replaces one column,`
+/// `and each \mathcal J term is evaluated from a minor with one further column replacement.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
@@ -581,9 +583,9 @@ fn xw_h2_same_m0_gen<T: NOCIScalar>(
 }
 
 /// Evaluate the same-spin two-body matrix element when m > 0 by summing every allowed distribution:
-/// m_1 + \cdots + m_{L+2} = m, \qquad m_i \in \{0,1\}.
-/// The first two assignments select the two operator contractions in V_0, \mathcal V and \mathcal J,
-/// while the remaining assignments select the columns of \mathbf D_{\mathrm{ov}}.
+/// `m_1 + \cdots + m_{L+2} = m, \qquad m_i \in \{0,1\}.`
+/// `The first two assignments select the two operator contractions in V_0, \mathcal V and \mathcal J,`
+/// `while the remaining assignments select the columns of \mathbf D_{\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `l_ex`: Excitation defining the bra determinant.

@@ -1,11 +1,14 @@
 // noci/m.rs
+// External crate imports.
 use ndarray::Array2;
 
+// Crate-root imports.
 use crate::basis::excitation_phase;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
 use crate::{AoData, DetState};
 
+// Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs, one_electron_scalar};
 use super::types::{DetPair, FockData, FockMOCache, NOCIData, NOCIScalar};
 

@@ -1,7 +1,9 @@
 // driver/scf.rs
 
+// External crate imports.
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
 use crate::input::Input;
 use crate::time_call;

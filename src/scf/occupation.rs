@@ -1,9 +1,12 @@
 // scf/occupation.rs
 
+// Standard library imports.
 use std::sync::Arc;
 
+// External crate imports.
 use ndarray::{Array1, Array2, Axis, s};
 
+// Crate-root imports.
 use crate::maths::adjoint;
 use crate::{DetState, StateScalar};
 

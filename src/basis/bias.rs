@@ -1,10 +1,13 @@
 // basis/bias.rs
 
+// External crate imports.
 use ndarray::Array2;
 
+// Crate-root imports.
 use crate::input::StateRecipe;
 use crate::{AoData, SCFState};
 
+// Parent/sibling imports.
 use super::atoms::atomao_for_labels;
 
 /// Multiply a square sub-block of a matrix by a scalar in place.

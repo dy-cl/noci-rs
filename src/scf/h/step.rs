@@ -1,15 +1,18 @@
 // scf/h/step.rs
 
+// External crate imports.
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::Solve;
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::AoData;
 use crate::scf::DensityMode;
+use crate::scf::{density, fock_lambda, orbital_gradient};
 
+// Parent/sibling imports.
 use super::tangent::{geodesic_step, pack, unpack};
 use super::types::SecantPair;
-use crate::scf::{density, fock_lambda, orbital_gradient};
 
 const SR1_TOL: f64 = 1e-8;
 const DENOM_TOL: f64 = 1e-8;
@@ -246,7 +249,7 @@ pub(crate) fn finite_difference_hessian(
 }
 
 /// Apply or remove pseudo-canonical orbital-gap weighting:
-///     \sqrt{\Delta_{ai}} = \sqrt{\tilde{F}_{aa} - \tilde{F}_{ii}}.
+///     `\sqrt{\Delta_{ai}} = \sqrt{\tilde{F}_{aa} - \tilde{F}_{ii}}.`
 /// # Arguments:
 /// - `x`: Occupied-virtual block.
 /// - `eps`: Pseudo-canonical orbital energies.

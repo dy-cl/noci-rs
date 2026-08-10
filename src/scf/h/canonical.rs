@@ -1,14 +1,18 @@
 // scf/h/canonical.rs
 
+// Standard library imports.
 use std::sync::Arc;
 
+// External crate imports.
 use ndarray::{Array1, Array2, Axis, s};
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::HSCFState;
 use crate::maths::{adjoint, loewdin_x, real2_as, symmetric_evp_complex};
 use crate::scf::spin_occupation;
 
+// Parent/sibling imports.
 use super::types::{SecantPair, SpinBlock};
 
 /// Hermitian-orthonormalise one spin orbital basis while preserving occupied and virtual subspaces.

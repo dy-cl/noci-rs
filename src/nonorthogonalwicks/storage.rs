@@ -1,14 +1,19 @@
 // nonorthogonalwicks/storage.rs
+// Standard library imports.
 use std::fs::{File, OpenOptions};
 use std::ptr::NonNull;
 
+// External crate imports.
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use serde::{Deserialize, Serialize};
 
-use super::types::{PairMeta, PairOffset};
-use super::view::WicksView;
+// Crate-root imports.
 use crate::mpiutils::Sharedffi;
 use crate::noci::NOCIScalar;
+
+// Parent/sibling imports.
+use super::types::{PairMeta, PairOffset};
+use super::view::WicksView;
 
 /// Backing allocation used by the contiguous slab of precomputed nonorthogonal Wick intermediates.
 #[allow(dead_code)]

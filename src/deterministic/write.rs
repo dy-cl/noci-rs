@@ -1,8 +1,10 @@
 // deterministic/write.rs
 
+// External crate imports.
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
+// Crate-root imports.
 use crate::DetState;
 use crate::deterministic::{ProjPropagator, Projectors};
 use crate::noci::NOCIScalar;

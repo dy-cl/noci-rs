@@ -1,10 +1,13 @@
+// Standard library imports.
 use std::{ops::AddAssign, sync::Arc};
 
+// External crate imports.
 use ndarray::{Array2, LinalgScalar};
 use ndarray_linalg::{Lapack, Scalar};
 use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 
+// Crate-root imports.
 use crate::Excitation;
 
 // Scalar generic marker trait for SCF states.

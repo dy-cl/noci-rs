@@ -1,8 +1,10 @@
 // read.rs
+// External crate imports.
 use hdf5::File;
 use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2, Array4};
 
+// Crate-root imports.
 use crate::AoData;
 use crate::maths::loewdin_x;
 

@@ -1,7 +1,9 @@
 // nocc/rdm/common.rs
 
+// External crate imports.
 use ndarray::Array2;
 
+// Crate-root imports.
 use crate::maths::det_occupied_minor;
 use crate::noci::{DetPair, NOCIData, NOCIScalar, occ_coeffs};
 use crate::nonorthogonalwicks::{WickScratchSpin, xw_rdm_same_element};

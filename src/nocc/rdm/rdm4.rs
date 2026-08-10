@@ -1,13 +1,16 @@
 // nocc/rdm/rdm4.rs
 
+// External crate imports.
 use ndarray::Array1;
 
+// Crate-root imports.
+use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs};
 use crate::nonorthogonalwicks::{WickScratchSpin, prepare_same, xw_overlap};
 
+// Parent/sibling imports.
 use super::common::{spin_assignment_rdm_element, spin_assignment_rdm_element_naive};
-use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs};
 
-/// Active-space spin-free four-body RDM stored as \Gamma[p, q, r, s, t, u, v, w].
+/// `Active-space spin-free four-body RDM stored as \Gamma[p, q, r, s, t, u, v, w].`
 pub(crate) struct RDM4<T> {
     pub n: usize,
     pub data: Vec<T>,

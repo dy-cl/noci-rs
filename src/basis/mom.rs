@@ -1,11 +1,14 @@
 // basis/mom.rs
 
+// Standard library imports.
 use std::collections::HashMap;
 
+// Crate-root imports.
 use crate::input::{Input, StateRecipe};
 use crate::scf::{continue_hscf_track, initialise_hscf_track, physical_hscf_state, scf_cycle};
 use crate::{AoData, HSCFState, SCFState};
 
+// Parent/sibling imports.
 use super::bias::biased_density_guess;
 use super::duplicate::mark_duplicate_noci_states;
 use super::types::ReferenceBasis;

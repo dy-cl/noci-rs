@@ -1,35 +1,36 @@
 // nonorthogonalwicks/eval/rdm2same.rs
 
+// External crate imports.
 use ndarray::{Array2, Array4};
 
+// Crate-root imports.
+use crate::ExcitationSpin;
+use crate::maths::{build_d, mix_columns};
+use crate::noci::NOCIScalar;
+use crate::time_call;
+
+// Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-
 use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
 use super::prepare::construct_determinant_indices;
 
-use crate::ExcitationSpin;
-use crate::noci::NOCIScalar;
-
-use crate::maths::{build_d, mix_columns};
-use crate::time_call;
-
 /// Evaluate the unnormalised same-spin two-body transition density matrix between excited
-/// determinants generated from the reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:
-/// {}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}
-/// = \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p\sigma}\hat a^\dagger_{q\sigma}
-/// \hat a_{s\sigma}\hat a_{r\sigma}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}
-/// \det\mathbf D_{\mathrm{RDM}}^{pqrs}(m_1,\ldots,m_{L+2}).
+/// `determinants generated from the reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:`
+/// `{}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}`
+/// `= \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p\sigma}\hat a^\dagger_{q\sigma}`
+/// `\hat a_{s\sigma}\hat a_{r\sigma}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}`
+/// `\det\mathbf D_{\mathrm{RDM}}^{pqrs}(m_1,\ldots,m_{L+2}).`
 /// The two external creation-annihilation pairs augment the overlap contraction determinant from
 /// dimension L to L + 2. The first two assignments belong to the external RDM columns and the
-/// remaining L assignments belong to the excitation columns. Each m_i is zero or one, and the
+/// `remaining L assignments belong to the excitation columns. Each m_i is zero or one, and the`
 /// matrix element vanishes when m > L + 2. Expansion of the determinant generates the direct and
 /// exchange contraction patterns with their fermionic signs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `l_c`: Bra-reference molecular-orbital coefficients in the external RDM basis.
 /// - `g_c`: Ket-reference molecular-orbital coefficients in the external RDM basis.
 /// - `scratch`: Scratch storage retained for the common Wick evaluator interface.
@@ -58,11 +59,11 @@ pub(crate) fn xw_rdm2_same<T: NOCIScalar>(
 }
 
 /// Evaluate the same-spin two-body transition density matrix when m = 0, so every contraction
-/// uses m_i = 0:
-/// {}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}
-/// = {}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{pqrs}(0,\ldots,0).
+/// `uses m_i = 0:`
+/// `{}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}`
+/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{pqrs}(0,\ldots,0).`
 /// The augmented determinant has dimension L + 2 and contains the two external RDM pairs followed
-/// by the L excitation pairs used in \mathbf D_{\mathrm{ov}}.
+/// `by the L excitation pairs used in \mathbf D_{\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
@@ -168,11 +169,11 @@ fn xw_rdm2_same_m0<T: NOCIScalar>(
 
 /// Evaluate the same-spin two-body transition density matrix when m > 0 by summing every allowed
 /// distribution:
-/// {}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}
-/// \det\mathbf D_{\mathrm{RDM}}^{pqrs}(m_1,\ldots,m_{L+2}), \qquad m_i \in \{0,1\}.
+/// `{}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}`
+/// `\det\mathbf D_{\mathrm{RDM}}^{pqrs}(m_1,\ldots,m_{L+2}), \qquad m_i \in \{0,1\}.`
 /// The first two assignments belong to the external RDM columns, while each remaining assignment
-/// selects the corresponding excitation column from the m_i = 0 or m_i = 1 fundamental contractions.
+/// `selects the corresponding excitation column from the m_i = 0 or m_i = 1 fundamental contractions.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates containing one or more zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.

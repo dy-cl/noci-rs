@@ -1,11 +1,14 @@
 // noci/cache.rs
+// External crate imports.
 use ndarray::{Array2, Array4};
 
+// Crate-root imports.
+use crate::maths::{adjoint, real2_as};
 use crate::time_call;
 use crate::{AoData, DetState};
 
+// Parent/sibling imports.
 use super::types::{FockMOCache, MOCache, NOCIScalar};
-use crate::maths::{adjoint, real2_as};
 
 /// Calculate maximum deviation from Hermitian orthonormality, `C^\dagger S C = I`.
 /// # Arguments:

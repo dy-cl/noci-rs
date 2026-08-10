@@ -1,5 +1,6 @@
 // driver/config.rs
 
+// Crate-root imports.
 use crate::input::{Input, load_input};
 
 /// Load user configuration from the command line.

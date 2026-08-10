@@ -1,15 +1,19 @@
 // nonorthogonalwicks/layout.rs
+// External crate imports.
 use ndarray::{Array2, Array4};
 
+// Crate-root imports.
+use crate::noci::NOCIScalar;
+
+// Parent/sibling imports.
 use super::build::{DiffSpinBuild, SAME_SPIN_J_BRANCHES, SameSpinBuild};
 use super::types::{DiffSpinOffset, PairOffset, PairZeroCounts, SameSpinOffset};
-use crate::noci::NOCIScalar;
 
 /// Assign offsets into the contiguous tensor slab for every ordered reference pair (x,w).
 /// Rank-four tensors are allocated only when their fundamental-contraction assignments can
-/// satisfy the corresponding m_\alpha or m_\beta constraint.
+/// `satisfy the corresponding m_\alpha or m_\beta constraint.`
 /// # Arguments:
-/// - `plans`: Pair-specific values of m_\alpha and m_\beta.
+/// - `plans`: `Pair-specific values of m_\alpha and m_\beta.`
 /// - `nmo`: Number of molecular orbitals in one reference orbital set.
 /// - `nbas`: Dimension of the external RDM basis.
 /// # Returns
@@ -173,7 +177,7 @@ pub fn assign_offsets(
     (off, i)
 }
 
-/// Write the same-spin fundamental contractions and \mathcal F, \mathcal V and \mathcal J
+/// `Write the same-spin fundamental contractions and \mathcal F, \mathcal V and \mathcal J`
 /// intermediates into the contiguous tensor slab using their assigned offsets.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
@@ -222,7 +226,7 @@ pub fn write_same_spin<T: NOCIScalar>(
     }
 }
 
-/// Write the different-spin \mathcal V^\alpha, \mathcal V^\beta and \mathcal{II}
+/// `Write the different-spin \mathcal V^\alpha, \mathcal V^\beta and \mathcal{II}`
 /// intermediates into the contiguous tensor slab using their assigned offsets.
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
@@ -297,7 +301,7 @@ pub fn write2t<T: NOCIScalar>(
 }
 
 /// Copy a rank-four tensor already constructed in [r,c,i,j] order into the slab without
-/// permuting its axes. This is the ordering used by the different-spin \mathcal{II} evaluator.
+/// `permuting its axes. This is the ordering used by the different-spin \mathcal{II} evaluator.`
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
 /// - `off`: Offset of the first tensor entry in units of `T`.
@@ -314,7 +318,7 @@ fn write4rcij<T: NOCIScalar>(
 }
 
 /// Permute a rank-four tensor from constructed [r,c,i,j] order to stored [i,j,r,c] order.
-/// This places the fixed \mathcal J replacement pair before the varying minor entry.
+/// `This places the fixed \mathcal J replacement pair before the varying minor entry.`
 /// # Arguments:
 /// - `slab`: Contiguous tensor storage.
 /// - `off`: Offset of the first stored tensor entry in units of `T`.
@@ -364,7 +368,7 @@ pub(in crate::nonorthogonalwicks) fn idx(
     r * ncols + c
 }
 
-/// Convert four tensor indices into the row-major flat index of an n \times n \times n \times n tensor.
+/// `Convert four tensor indices into the row-major flat index of an n \times n \times n \times n tensor.`
 /// # Arguments:
 /// - `n`: Dimension of each tensor axis.
 /// - `a`, `b`, `c`, `d`: Tensor indices.

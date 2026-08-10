@@ -1,6 +1,8 @@
 // stochastic/walkers.rs
+// Standard library imports.
 use std::sync::Mutex;
 
+// External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
@@ -8,6 +10,11 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
+// Crate-root imports.
+use crate::noci::NOCIData;
+use crate::nonorthogonalwicks::WickScratchSpin;
+
+// Parent/sibling imports.
 use super::common::{coalesce_population_updates, find_hs, max_scratch_sizes};
 use super::metric::{
     accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
@@ -20,8 +27,6 @@ use super::state::{
     PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations, ThreadPropagation,
     owner,
 };
-use crate::noci::NOCIData;
-use crate::nonorthogonalwicks::WickScratchSpin;
 
 /// Initialise rank-local walker populations from the initial coefficient vector.
 /// # Arguments:
@@ -30,7 +35,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 /// - `run`: Rank-local propagation metadata.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `Vec<f64>`: Rank-local walker populations proportional to \(c_0\).
+/// - `Vec<f64>`: Rank-local walker populations proportional to `c_0`.
 fn initialise_populations(
     c0: &[f64],
     initial_population: f64,

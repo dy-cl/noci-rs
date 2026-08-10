@@ -1,11 +1,14 @@
 // stochastic/restart.rs
+// Standard library imports.
 use std::fs;
 use std::path::Path;
 
+// External crate imports.
 use hdf5::File;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
+// Parent/sibling imports.
 use super::state::ExcitationHist;
 
 /// Storage required to resume stochastic propagation.

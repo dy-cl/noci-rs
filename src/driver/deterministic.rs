@@ -1,10 +1,13 @@
 // driver/deterministic.rs
 
+// Standard library imports.
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+// External crate imports.
 use ndarray::Array1;
 
+// Crate-root imports.
 use crate::PostSCFData;
 use crate::basis::generate_excited_basis;
 use crate::deterministic::{projected_energy, propagate};

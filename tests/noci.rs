@@ -1,20 +1,23 @@
 mod common;
 
+// Standard library imports.
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use common::{assert_close, fixture_dir, load_test, mpi_universe};
-use num_complex::Complex64;
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
-use serial_test::serial;
-
+// External crate imports.
 use noci_rs::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
 use noci_rs::input::{Input, load_input};
 use noci_rs::noci::{build_mo_cache, build_wicks_shared, calculate_noci_energy};
 use noci_rs::read::read_integrals;
 use noci_rs::{AoData, HSCFState, SCFState};
+use num_complex::Complex64;
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serial_test::serial;
+
+// Parent/sibling imports.
+use self::common::{assert_close, fixture_dir, load_test, mpi_universe};
 
 /// Expected exact energies for a reference NOCI fixture.
 #[derive(Deserialize)]

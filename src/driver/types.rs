@@ -1,7 +1,9 @@
 // driver/types.rs
 
+// External crate imports.
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::driver::post::PostReferenceResults;
 use crate::driver::reference::ReferenceRun;
 use crate::timers;

@@ -1,13 +1,15 @@
 // write.rs
+// Standard library imports.
 use std::fmt::Display;
 use std::fs::{File as StdFile, create_dir_all};
 use std::io::{BufWriter, Write};
 
+// External crate imports.
 use hdf5::File;
 use hdf5::types::VarLenUnicode;
-
 use ndarray::{Array1, Array2};
 
+// Crate-root imports.
 use crate::AoData;
 use crate::input::{ExcitationGen, Input, Spin, StateType, WicksStorage};
 

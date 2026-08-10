@@ -1,13 +1,17 @@
 // mpiutils.rs
+// Standard library imports.
 use std::{ffi::c_void, ptr};
 
-use crate::noci::NOCIScalar;
+// External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 use ndarray::Array1;
 use num_complex::Complex64;
 use serde::{Serialize, de::DeserializeOwned};
+
+// Crate-root imports.
+use crate::noci::NOCIScalar;
 
 pub struct Sharedffi {
     // Communicator for ranks on the same node.
@@ -131,7 +135,7 @@ impl Drop for Sharedffi {
 /// Broadcast a serialisable value of arbitrary (provided it is serialisable) type T from rank 0 to
 /// all MPI ranks.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// - `value`: If rank 0 this is the value to broadcast. Any other rank recieves value from 0.
 /// # Returns
 /// - `()`: Updates `value` in place on non-root ranks.

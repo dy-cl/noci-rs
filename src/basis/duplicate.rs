@@ -1,13 +1,15 @@
 // basis/duplicate.rs
 
+// External crate imports.
 use ndarray::Array2;
 
+// Crate-root imports.
 use crate::DetState;
 use crate::maths::real2_as;
 use crate::noci::NOCIScalar;
 
 /// Calculate the distance between determinant states from Phys. Rev. Lett. 101, 193001 as
-/// d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).
+/// `d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).`
 /// # Arguments
 /// - `w`: Reference state from which distance is computed.
 /// - `x`: State to which distance is computed.
@@ -35,7 +37,7 @@ pub fn electron_distance<T: NOCIScalar>(
 }
 
 /// Calculate a squared overlap-weighted density distance between determinant states as
-/// d_D^2 = ||(D_a^w - D_a^x)S||_F^2 + ||(D_b^w - D_b^x)S||_F^2.
+/// `d_D^2 = ||(D_a^w - D_a^x)S||_F^2 + ||(D_b^w - D_b^x)S||_F^2.`
 /// This remains a real positive duplicate-detection metric for holomorphic states.
 /// # Arguments
 /// - `w`: Reference state from which distance is computed.

@@ -40,17 +40,19 @@ pub mod timers;
 pub mod utils;
 pub mod write;
 
+// External crate imports.
+use ndarray::{Array1, Array2, Array4};
 use serde::{Deserialize, Serialize};
 
-use ndarray::{Array1, Array2, Array4};
-
+// Crate-root imports.
 use crate::noci::{MOCache, NOCIScalar};
+
 pub use scalar::{DetState, HSCFState, SCFState, StateScalar};
 
 pub struct AoData {
     /// AO overlap matrix, (nao, nao).
     pub s: Array2<f64>,
-    /// Löwdin symmetric orthogonaliser X = S^{-1/2}.
+    /// `Löwdin symmetric orthogonaliser X = S^{-1/2}.`
     pub x: Array2<f64>,
     /// Core Hamiltonian matrix, (nao, nao).
     pub h: Array2<f64>,

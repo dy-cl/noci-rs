@@ -1,6 +1,8 @@
 // nonorthogonalwicks/scratch.rs
+// Standard library imports.
 use std::ops::{Deref, DerefMut};
 
+// Crate-root imports.
 use crate::noci::NOCIScalar;
 
 /// Reusable index storage with a logical length independent of the retained allocation.
@@ -145,7 +147,7 @@ pub struct Vec2<T> {
 impl<T> Default for Vec2<T> {
     /// Construct empty reusable matrix work storage.
     /// # Returns
-    /// - `Self`: Empty storage with shape 0 \times 0.
+    /// - `Self`: `Empty storage with shape 0 \times 0.`
     fn default() -> Self {
         Self {
             data: Vec::new(),
@@ -236,8 +238,8 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
     /// dimensions required by the current calculation.
     /// # Arguments:
     /// - `maxsame`: Maximum same-spin contraction-determinant dimension L.
-    /// - `maxla`: Maximum alpha-spin dimension L_\alpha for different-spin terms.
-    /// - `maxlb`: Maximum beta-spin dimension L_\beta for different-spin terms.
+    /// - `maxla`: `Maximum alpha-spin dimension L_\alpha for different-spin terms.`
+    /// - `maxlb`: `Maximum beta-spin dimension L_\beta for different-spin terms.`
     /// # Returns
     /// - `WickScratchSpin<T>`: Split work storage with the requested capacities retained.
     #[inline]
@@ -258,22 +260,22 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
 /// nonorthogonal Wick matrix elements. The same object can be resized and reused across
 /// determinant pairs and excitation ranks without repeated allocation.
 pub struct WickScratch<T: NOCIScalar> {
-    /// Compact row indices in V_x \cup O_w, ordered as the bra excitation particles
+    /// `Compact row indices in V_x \cup O_w, ordered as the bra excitation particles`
     /// followed by the ket excitation holes.
     pub rows: IndexVec,
-    /// Compact column indices in O_x \cup V_w, ordered as the bra excitation holes
+    /// `Compact column indices in O_x \cup V_w, ordered as the bra excitation holes`
     /// followed by the ket excitation particles.
     pub cols: IndexVec,
     /// Same-spin contraction-determinant dimension L for which the full workspace is prepared.
     same_rank: Option<usize>,
-    /// Different-spin dimensions (L_\alpha,L_\beta) for which the workspace is prepared.
+    /// `Different-spin dimensions (L_\alpha,L_\beta) for which the workspace is prepared.`
     diff_rank: Option<(usize, usize)>,
 
-    /// Endpoint contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+    /// `Endpoint contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
     pub det0: Vec2<T>,
-    /// Endpoint contraction determinant \mathbf D_{\mathrm{ov}}(1,\ldots,1).
+    /// `Endpoint contraction determinant \mathbf D_{\mathrm{ov}}(1,\ldots,1).`
     pub det1: Vec2<T>,
-    /// Mixed contraction determinant \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).
+    /// `Mixed contraction determinant \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
     pub det_mix: Vec2<T>,
 
     // Retained work vectors that are not read by the current evaluator and helper implementations.
@@ -288,20 +290,20 @@ pub struct WickScratch<T: NOCIScalar> {
     // `det_mix2` remains active as the minor \mathbf D_{\mathrm{ov}}[\eta|z].
     pub jslice_full: Vec2<T>,
     pub jslice2: Vec2<T>,
-    /// Minor contraction determinant \mathbf D_{\mathrm{ov}}[\eta|z] used in the
-    /// two-column same-spin \mathcal J contribution.
+    /// `Minor contraction determinant \mathbf D_{\mathrm{ov}}[\eta|z] used in the`
+    /// `two-column same-spin \mathcal J contribution.`
     pub det_mix2: Vec2<T>,
 
     // Retained endpoint buffers that are not read by the current different-spin evaluator.
     pub deta0: Vec2<T>,
     pub deta1: Vec2<T>,
     /// Mixed alpha-spin contraction determinant
-    /// \mathbf D_{\alpha,\mathrm{ov}}(m_{\alpha1},\ldots,m_{\alpha L_\alpha}).
+    /// `\mathbf D_{\alpha,\mathrm{ov}}(m_{\alpha1},\ldots,m_{\alpha L_\alpha}).`
     pub deta_mix: Vec2<T>,
     pub detb0: Vec2<T>,
     pub detb1: Vec2<T>,
     /// Mixed beta-spin contraction determinant
-    /// \mathbf D_{\beta,\mathrm{ov}}(m_{\beta1},\ldots,m_{\beta L_\beta}).
+    /// `\mathbf D_{\beta,\mathrm{ov}}(m_{\beta1},\ldots,m_{\beta L_\beta}).`
     pub detb_mix: Vec2<T>,
 
     // Retained vectors that are not read by the current different-spin evaluator.
@@ -316,37 +318,37 @@ pub struct WickScratch<T: NOCIScalar> {
     pub deta_mix_minor: Vec2<T>,
     pub detb_mix_minor: Vec2<T>,
 
-    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\mathrm{ov}}].
+    /// `Cofactor matrix \operatorname{cof}[\mathbf D_{\mathrm{ov}}].`
     pub adjt_det: Vec2<T>,
-    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}].
+    /// `Cofactor matrix \operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}].`
     pub adjt_deta: Vec2<T>,
-    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}].
+    /// `Cofactor matrix \operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}].`
     pub adjt_detb: Vec2<T>,
-    /// Cofactor matrix \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]].
+    /// `Cofactor matrix \operatorname{cof}[\mathbf D_{\mathrm{ov}}[\eta|z]].`
     pub adjt_det2: Vec2<T>,
     // Retained cofactor buffers for the unused spin-resolved minor determinants.
     pub adjt_deta_mix_minor: Vec2<T>,
     pub adjt_detb_mix_minor: Vec2<T>,
 
     /// Inverse-singular-value workspace used by the SVD fallback for
-    /// \mathbf D_{\mathrm{ov}}.
+    /// `\mathbf D_{\mathrm{ov}}.`
     pub invs: Vec1<f64>,
     /// Inverse-singular-value workspace used by the SVD fallback for
-    /// \mathbf D_{\alpha,\mathrm{ov}}.
+    /// `\mathbf D_{\alpha,\mathrm{ov}}.`
     pub invsla: Vec1<f64>,
     /// Inverse-singular-value workspace used by the SVD fallback for
-    /// \mathbf D_{\beta,\mathrm{ov}}.
+    /// `\mathbf D_{\beta,\mathrm{ov}}.`
     pub invslb: Vec1<f64>,
     // Retained inverse-singular-value workspaces for the unused minor kernels.
     pub invslm1: Vec1<f64>,
     pub invslam1: Vec1<f64>,
     pub invslbm1: Vec1<f64>,
 
-    /// LU-factorisation workspace used for \mathbf D_{\mathrm{ov}}.
+    /// `LU-factorisation workspace used for \mathbf D_{\mathrm{ov}}.`
     pub lu: Vec2<T>,
-    /// LU-factorisation workspace used for \mathbf D_{\alpha,\mathrm{ov}}.
+    /// `LU-factorisation workspace used for \mathbf D_{\alpha,\mathrm{ov}}.`
     pub lua: Vec2<T>,
-    /// LU-factorisation workspace used for \mathbf D_{\beta,\mathrm{ov}}.
+    /// `LU-factorisation workspace used for \mathbf D_{\beta,\mathrm{ov}}.`
     pub lub: Vec2<T>,
 }
 
@@ -406,8 +408,8 @@ impl<T: NOCIScalar> WickScratch<T> {
     /// required by the current calculation.
     /// # Arguments:
     /// - `maxsame`: Maximum same-spin contraction-determinant dimension L.
-    /// - `maxla`: Maximum alpha-spin dimension L_\alpha for different-spin terms.
-    /// - `maxlb`: Maximum beta-spin dimension L_\beta for different-spin terms.
+    /// - `maxla`: `Maximum alpha-spin dimension L_\alpha for different-spin terms.`
+    /// - `maxlb`: `Maximum beta-spin dimension L_\beta for different-spin terms.`
     /// # Returns
     /// - `WickScratch<T>`: Workspace with the requested capacities retained.
     #[inline]
@@ -424,7 +426,7 @@ impl<T: NOCIScalar> WickScratch<T> {
 
     /// Resize the same-spin workspace for a contraction determinant of dimension L. This
     /// prepares both endpoint determinants, a mixed determinant, its cofactor matrix and the
-    /// (L-1) \times (L-1) minor required by the two-column \mathcal J contribution.
+    /// `(L-1) \times (L-1) minor required by the two-column \mathcal J contribution.`
     /// # Arguments:
     /// - `self`: Reusable Wick workspace.
     /// - `l`: Same-spin contraction-determinant dimension L.
@@ -463,10 +465,10 @@ impl<T: NOCIScalar> WickScratch<T> {
     }
 
     /// Ensure the minimal determinant storage required by the specialised m = 0 evaluators for
-    /// L \leq 2. Only \mathbf D_{\mathrm{ov}}(0,\ldots,0) is required by these kernels.
+    /// `L \leq 2. Only \mathbf D_{\mathrm{ov}}(0,\ldots,0) is required by these kernels.`
     /// # Arguments:
     /// - `self`: Reusable Wick workspace.
-    /// - `l`: Same-spin contraction-determinant dimension L, restricted to L \leq 2.
+    /// - `l`: `Same-spin contraction-determinant dimension L, restricted to L \leq 2.`
     /// # Returns
     /// - `()`: Resizes `det0` and invalidates incompatible full-workspace readiness.
     #[inline(always)]
@@ -482,13 +484,13 @@ impl<T: NOCIScalar> WickScratch<T> {
     }
 
     /// Resize the different-spin workspace for independent alpha- and beta-spin contraction
-    /// determinants of dimensions L_\alpha and L_\beta. This prepares the mixed determinants,
+    /// `determinants of dimensions L_\alpha and L_\beta. This prepares the mixed determinants,`
     /// cofactor matrices and determinant-factorisation workspaces used by the factorised
     /// different-spin two-body evaluator.
     /// # Arguments:
     /// - `self`: Reusable Wick workspace.
-    /// - `la`: Alpha-spin contraction-determinant dimension L_\alpha.
-    /// - `lb`: Beta-spin contraction-determinant dimension L_\beta.
+    /// - `la`: `Alpha-spin contraction-determinant dimension L_\alpha.`
+    /// - `lb`: `Beta-spin contraction-determinant dimension L_\beta.`
     /// # Returns
     /// - `()`: Resizes the active and retained different-spin buffers in place.
     #[inline(always)]

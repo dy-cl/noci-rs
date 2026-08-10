@@ -1,13 +1,15 @@
 mod common;
 
-use common::{assert_close, load_test, mpi_universe};
-use serde::Deserialize;
-use serial_test::serial;
-
+// External crate imports.
 use noci_rs::PostSCFData;
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::noci::{build_mo_cache, build_wicks_shared, calculate_noci_energy};
 use noci_rs::snoci::snoci_step;
+use serde::Deserialize;
+use serial_test::serial;
+
+// Parent/sibling imports.
+use self::common::{assert_close, load_test, mpi_universe};
 
 /// Expected exact energies for a NOCI-PT2 fixture.
 #[derive(Deserialize)]

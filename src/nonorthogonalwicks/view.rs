@@ -1,13 +1,18 @@
 // nonorthogonalwicks/view.rs
+// Standard library imports.
 use std::ops::Deref;
 use std::ptr::NonNull;
 
+// External crate imports.
 use ndarray::ArrayView2;
 
+// Crate-root imports.
+use crate::noci::NOCIScalar;
+
+// Parent/sibling imports.
 use super::types::{
     DiffSpinMeta, DiffSpinOffset, PairMeta, PairOffset, SameSpinMeta, SameSpinOffset,
 };
-use crate::noci::NOCIScalar;
 
 /// Read-only address, offset and metadata view over the contiguous slab of precomputed
 /// nonorthogonal Wick intermediates.
@@ -54,7 +59,7 @@ impl<T: NOCIScalar> WicksView<T> {
         self.slab.as_ptr() as *const T
     }
 
-    /// Interpret n \times n contiguous slab entries beginning at `off` as a row-major matrix.
+    /// `Interpret n \times n contiguous slab entries beginning at off as a row-major matrix.`
     /// The returned view cannot outlive the borrow of `self`, whose lifetime is tied to the
     /// backing shared-memory or memory-mapped allocation.
     /// # Arguments:
@@ -71,7 +76,7 @@ impl<T: NOCIScalar> WicksView<T> {
         unsafe { ArrayView2::from_shape_ptr((n, n), self.slab_ptr().add(off)) }
     }
 
-    /// Interpret n \times n contiguous slab entries beginning at `off` as a flat row-major
+    /// `Interpret n \times n contiguous slab entries beginning at off as a flat row-major`
     /// matrix slice without constructing an ndarray view.
     /// # Arguments:
     /// - `self`: View over the stored Wick intermediates.
@@ -88,7 +93,7 @@ impl<T: NOCIScalar> WicksView<T> {
         unsafe { std::slice::from_raw_parts(self.slab_ptr().add(off), n * n) }
     }
 
-    /// Interpret n^4 contiguous slab entries beginning at `off` as a flat row-major rank-four
+    /// `Interpret n^4 contiguous slab entries beginning at off as a flat row-major rank-four`
     /// tensor slice without constructing an ndarray view.
     /// # Arguments:
     /// - `self`: View over the stored Wick intermediates.
@@ -176,12 +181,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.nmo
     }
 
-    /// Return the X^{(m_i)} fundamental-contraction matrix.
+    /// `Return the X^{(m_i)} fundamental-contraction matrix.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `mi`: `Fundamental-contraction assignment m_i \in \{0,1\}.`
     /// # Returns
-    /// - `ArrayView2<'_, T>`: View of X^{(m_i)}.
+    /// - `ArrayView2<'_, T>`: `View of X^{(m_i)}.`
     pub(crate) fn x(
         &self,
         mi: usize,
@@ -189,12 +194,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.x[mi], self.n())
     }
 
-    /// Return the Y^{(m_i)} fundamental-contraction matrix.
+    /// `Return the Y^{(m_i)} fundamental-contraction matrix.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `mi`: `Fundamental-contraction assignment m_i \in \{0,1\}.`
     /// # Returns
-    /// - `ArrayView2<'_, T>`: View of Y^{(m_i)}.
+    /// - `ArrayView2<'_, T>`: `View of Y^{(m_i)}.`
     pub(crate) fn y(
         &self,
         mi: usize,
@@ -202,12 +207,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.y[mi], self.n())
     }
 
-    /// Return X^{(m_i)} as a flat row-major slice for specialised scalar kernels.
+    /// `Return X^{(m_i)} as a flat row-major slice for specialised scalar kernels.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `mi`: `Fundamental-contraction assignment m_i \in \{0,1\}.`
     /// # Returns
-    /// - `&[T]`: Flat row-major X^{(m_i)} matrix.
+    /// - `&[T]`: `Flat row-major X^{(m_i)} matrix.`
     pub(crate) fn x_slice(
         &self,
         mi: usize,
@@ -215,12 +220,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.x[mi], self.n())
     }
 
-    /// Return Y^{(m_i)} as a flat row-major slice for specialised scalar kernels.
+    /// `Return Y^{(m_i)} as a flat row-major slice for specialised scalar kernels.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `mi`: `Fundamental-contraction assignment m_i \in \{0,1\}.`
     /// # Returns
-    /// - `&[T]`: Flat row-major Y^{(m_i)} matrix.
+    /// - `&[T]`: `Flat row-major Y^{(m_i)} matrix.`
     pub(crate) fn y_slice(
         &self,
         mi: usize,
@@ -228,13 +233,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.y[mi], self.n())
     }
 
-    /// Return X^{(m_i)} represented in the external RDM basis.
+    /// `Return X^{(m_i)} represented in the external RDM basis.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `mi`: `Fundamental-contraction assignment m_i \in \{0,1\}.`
     /// - `nbas`: Dimension of the external RDM basis.
     /// # Returns
-    /// - `ArrayView2<'_, T>`: External-basis X^{(m_i)} matrix.
+    /// - `ArrayView2<'_, T>`: `External-basis X^{(m_i)} matrix.`
     #[cfg(feature = "nocc")]
     pub(crate) fn xrdm(
         &self,
@@ -244,13 +249,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.view2(self.off.xrdm[mi], nbas)
     }
 
-    /// Return Y^{(m_i)} represented in the external RDM basis.
+    /// `Return Y^{(m_i)} represented in the external RDM basis.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: Fundamental-contraction assignment m_i \in \{0,1\}.
+    /// - `mi`: `Fundamental-contraction assignment m_i \in \{0,1\}.`
     /// - `nbas`: Dimension of the external RDM basis.
     /// # Returns
-    /// - `ArrayView2<'_, T>`: External-basis Y^{(m_i)} matrix.
+    /// - `ArrayView2<'_, T>`: `External-basis Y^{(m_i)} matrix.`
     #[cfg(feature = "nocc")]
     pub(crate) fn yrdm(
         &self,
@@ -261,13 +266,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     }
 
     /// Return the transposed one-column intermediate
-    /// \mathcal F^{(m_i,m_j)} constructed from the one-electron Hamiltonian. The stored
+    /// `\mathcal F^{(m_i,m_j)} constructed from the one-electron Hamiltonian. The stored`
     /// [z,r] ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`, `mj`: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.
+    /// `- mi, mj: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.`
     /// # Returns
-    /// - `&[T]`: Flat transposed \mathcal F^{(m_i,m_j)} matrix.
+    /// - `&[T]`: `Flat transposed \mathcal F^{(m_i,m_j)} matrix.`
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn fh_t_slice(
         &self,
@@ -278,13 +283,13 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     }
 
     /// Return the transposed one-column intermediate
-    /// \mathcal F^{(m_i,m_j)} constructed from the current generalised-Fock operator. The
+    /// `\mathcal F^{(m_i,m_j)} constructed from the current generalised-Fock operator. The`
     /// stored [z,r] ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`, `mj`: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.
+    /// `- mi, mj: Fundamental-contraction assignments m_i,m_j \in \{0,1\}.`
     /// # Returns
-    /// - `&[T]`: Flat transposed \mathcal F^{(m_i,m_j)} matrix.
+    /// - `&[T]`: `Flat transposed \mathcal F^{(m_i,m_j)} matrix.`
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn ff_t_slice(
         &self,
@@ -295,15 +300,15 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     }
 
     /// Return the transposed same-spin one-column intermediate
-    /// \mathcal V^{(m_1,m_2,m_3)}. Rust storage is ordered as `v[m_1][m_3][m_2]`, and the
+    /// `\mathcal V^{(m_1,m_2,m_3)}. Rust storage is ordered as v[m_1][m_3][m_2], and the`
     /// stored [z,r] matrix ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi`: First assignment m_1.
-    /// - `mj`: Third assignment m_3 in the mathematical ordering.
-    /// - `mk`: Second assignment m_2 in the mathematical ordering.
+    /// - `mi`: `First assignment m_1.`
+    /// - `mj`: `Third assignment m_3 in the mathematical ordering.`
+    /// - `mk`: `Second assignment m_2 in the mathematical ordering.`
     /// # Returns
-    /// - `&[T]`: Flat transposed \mathcal V^{(m_1,m_2,m_3)} matrix.
+    /// - `&[T]`: `Flat transposed \mathcal V^{(m_1,m_2,m_3)} matrix.`
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn v_t_slice(
         &self,
@@ -315,12 +320,12 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     }
 
     /// Return one symmetry-unique same-spin
-    /// \mathcal J^{(m_1,m_2,m_3,m_4)} tensor in stored [i,j,r,c] evaluator order.
+    /// `\mathcal J^{(m_1,m_2,m_3,m_4)} tensor in stored [i,j,r,c] evaluator order.`
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `slot`: Symmetry-compressed \mathcal J storage slot.
+    /// - `slot`: `Symmetry-compressed \mathcal J storage slot.`
     /// # Returns
-    /// - `&[T]`: Flat rank-four \mathcal J tensor.
+    /// - `&[T]`: `Flat rank-four \mathcal J tensor.`
     #[inline(always)]
     pub(in crate::nonorthogonalwicks) fn j_slice(
         &self,
@@ -365,14 +370,14 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 
     /// Return the transposed alpha-spin one-column intermediate
-    /// \mathcal V^\alpha{}^{(m_{\alpha0},m_{\beta0},m_{\alpha z})} in stored [z,r] order.
+    /// `\mathcal V^\alpha{}^{(m_{\alpha0},m_{\beta0},m_{\alpha z})} in stored [z,r] order.`
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
-    /// - `ma0`: Assignment m_{\alpha0} of the alpha-spin operator contraction.
-    /// - `mb0`: Assignment m_{\beta0} of the beta-spin scalar contraction.
-    /// - `mak`: Assignment m_{\alpha z} of the replaced alpha-spin determinant column.
+    /// - `ma0`: `Assignment m_{\alpha0} of the alpha-spin operator contraction.`
+    /// - `mb0`: `Assignment m_{\beta0} of the beta-spin scalar contraction.`
+    /// - `mak`: `Assignment m_{\alpha z} of the replaced alpha-spin determinant column.`
     /// # Returns
-    /// - `&[T]`: Flat transposed \mathcal V^\alpha matrix.
+    /// - `&[T]`: `Flat transposed \mathcal V^\alpha matrix.`
     #[inline(always)]
     pub fn vab_t_slice(
         &self,
@@ -384,14 +389,14 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 
     /// Return the transposed beta-spin one-column intermediate
-    /// \mathcal V^\beta{}^{(m_{\beta0},m_{\alpha0},m_{\beta y})} in stored [y,r] order.
+    /// `\mathcal V^\beta{}^{(m_{\beta0},m_{\alpha0},m_{\beta y})} in stored [y,r] order.`
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
-    /// - `mb0`: Assignment m_{\beta0} of the beta-spin operator contraction.
-    /// - `ma0`: Assignment m_{\alpha0} of the alpha-spin scalar contraction.
-    /// - `mbk`: Assignment m_{\beta y} of the replaced beta-spin determinant column.
+    /// - `mb0`: `Assignment m_{\beta0} of the beta-spin operator contraction.`
+    /// - `ma0`: `Assignment m_{\alpha0} of the alpha-spin scalar contraction.`
+    /// - `mbk`: `Assignment m_{\beta y} of the replaced beta-spin determinant column.`
     /// # Returns
-    /// - `&[T]`: Flat transposed \mathcal V^\beta matrix.
+    /// - `&[T]`: `Flat transposed \mathcal V^\beta matrix.`
     #[inline(always)]
     pub fn vba_t_slice(
         &self,
@@ -403,16 +408,16 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 
     /// Return the different-spin two-column intermediate
-    /// \mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})} in stored
+    /// `\mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})} in stored`
     /// [r,c,i,j] order.
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
-    /// - `ma0`: Assignment m_{\alpha0}.
-    /// - `maj`: Assignment m_{\alpha z}.
-    /// - `mb0`: Assignment m_{\beta0}.
-    /// - `mbj`: Assignment m_{\beta y}.
+    /// - `ma0`: `Assignment m_{\alpha0}.`
+    /// - `maj`: `Assignment m_{\alpha z}.`
+    /// - `mb0`: `Assignment m_{\beta0}.`
+    /// - `mbj`: `Assignment m_{\beta y}.`
     /// # Returns
-    /// - `&[T]`: Flat rank-four \mathcal{II} tensor.
+    /// - `&[T]`: `Flat rank-four \mathcal{II} tensor.`
     #[inline(always)]
     pub fn iiab_slice(
         &self,

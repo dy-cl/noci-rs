@@ -1,5 +1,6 @@
 // timers/deterministic.rs
 
+// Parent/sibling imports.
 use super::{Counter, with_totals};
 
 /// Timing counters for deterministic NOCI-QMC stages.

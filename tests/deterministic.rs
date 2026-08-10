@@ -1,16 +1,18 @@
 mod common;
 
-use common::{assert_close, load_test, mpi_universe};
+// External crate imports.
 use ndarray::Array1;
-use serde::Deserialize;
-use serial_test::serial;
-
 use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
 use noci_rs::deterministic::{projected_energy, propagate};
 use noci_rs::noci::{
     NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
 };
 use noci_rs::scf::occ_first;
+use serde::Deserialize;
+use serial_test::serial;
+
+// Parent/sibling imports.
+use self::common::{assert_close, load_test, mpi_universe};
 
 /// Expected exact energies for a deterministic NOCI-QMC fixture.
 #[derive(Deserialize)]

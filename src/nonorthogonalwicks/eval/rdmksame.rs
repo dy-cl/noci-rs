@@ -1,41 +1,42 @@
 // nonorthogonalwicks/eval/rdmksame.rs
 
+// External crate imports.
 use ndarray::Array2;
 
+// Crate-root imports.
+use crate::ExcitationSpin;
+use crate::maths::{build_d, det, mix_columns};
+use crate::noci::NOCIScalar;
+
+// Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-
 use super::helpers::{det_slice, extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap;
 use super::prepare::construct_determinant_indices;
 use super::rdm1::xw_rdm1;
 
-use crate::ExcitationSpin;
-use crate::noci::NOCIScalar;
-
-use crate::maths::{build_d, det, mix_columns};
-
 /// Evaluate an unnormalised arbitrary-rank same-spin transition density-matrix element between
-/// excited determinants generated from the reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:
-/// {}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}
-/// = \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p_1\sigma}\cdots
-/// \hat a^\dagger_{p_k\sigma}\hat a_{q_k\sigma}\cdots\hat a_{q_1\sigma}
-/// |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// `excited determinants generated from the reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle:`
+/// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}`
+/// `= \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p_1\sigma}\cdots`
+/// `\hat a^\dagger_{p_k\sigma}\hat a_{q_k\sigma}\cdots\hat a_{q_1\sigma}`
+/// `|{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// For nonzero excited-determinant overlap S, the generalised Wick theorem gives:
-/// {}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}
-/// = \det[{}^{xw}\gamma_\sigma{}^{p_i}_{q_j}]_{ij}/S^{k-1}.
+/// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}`
+/// `= \det[{}^{xw}\gamma_\sigma{}^{p_i}_{q_j}]_{ij}/S^{k-1}.`
 /// When S is numerically zero, the element is evaluated directly from the augmented contraction
 /// determinant of dimension L + k:
-/// {}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+k}\\m_1+\cdots+m_{L+k}=m}}
-/// \det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+k}).
-/// The first k assignments belong to the external pairs (p_i,q_i), while the remaining L assignments
-/// belong to the excitation columns. Each m_i is zero or one, and the element vanishes when m > L + k.
+/// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+k}\\m_1+\cdots+m_{L+k}=m}}`
+/// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+k}).`
+/// `The first k assignments belong to the external pairs (p_i,q_i), while the remaining L assignments`
+/// `belong to the excitation columns. Each m_i is zero or one, and the element vanishes when m > L + k.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `ex`: Excitations defining the bra and ket determinants respectively.
 /// - `coeff`: Bra- and ket-reference molecular-orbital coefficients in the external RDM basis.
-/// - `indices`: Creation indices \mathbf p and annihilation indices \mathbf q in the external RDM basis;
+/// - `indices`: `Creation indices \mathbf p and annihilation indices \mathbf q in the external RDM basis;`
 ///   both slices must have the same length k.
 /// - `scratch`: Scratch storage used by the overlap and one-body evaluators.
 /// - `tol`: Numerical threshold used to select the factorised or direct evaluation and to discard
@@ -104,16 +105,16 @@ pub(crate) fn xw_rdm_same_element<T: NOCIScalar>(
 
 /// Evaluate an arbitrary-rank same-spin transition density-matrix element directly when the
 /// reference pair has no zero-overlap orbital pairs:
-/// {}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}
-/// = {}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0).
+/// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}`
+/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0).`
 /// This path is used when the excited-determinant overlap is numerically zero even though m = 0.
 /// The augmented determinant has dimension L + k and contains the k external pairs followed by
-/// the L excitation pairs used in \mathbf D_{\mathrm{ov}}.
+/// `the L excitation pairs used in \mathbf D_{\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `ex`: Excitations defining the bra and ket determinants respectively.
 /// - `coeff`: Bra- and ket-reference molecular-orbital coefficients in the external RDM basis.
-/// - `indices`: Creation indices \mathbf p and annihilation indices \mathbf q, each of length k.
+/// - `indices`: `Creation indices \mathbf p and annihilation indices \mathbf q, each of length k.`
 /// - `scratch`: Scratch storage retained for the common Wick evaluator interface.
 /// - `tol`: Numerical threshold applied to the augmented determinant contribution.
 /// # Returns:
@@ -205,17 +206,17 @@ fn xw_rdm_same_element_m0<T: NOCIScalar>(
 
 /// Evaluate an arbitrary-rank same-spin transition density-matrix element directly when the
 /// reference pair contains one or more zero-overlap orbital pairs:
-/// {}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+k}\\m_1+\cdots+m_{L+k}=m}}
-/// \det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+k}),
-/// \qquad m_i \in \{0,1\}.
-/// The first k assignments belong to the external pairs (p_i,q_i), while the remaining L
-/// assignments select the excitation columns from the m_i = 0 or m_i = 1 fundamental contractions.
+/// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_k}_{q_1\cdots q_k}`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+k}\\m_1+\cdots+m_{L+k}=m}}`
+/// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+k}),`
+/// `\qquad m_i \in \{0,1\}.`
+/// `The first k assignments belong to the external pairs (p_i,q_i), while the remaining L`
+/// `assignments select the excitation columns from the m_i = 0 or m_i = 1 fundamental contractions.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates containing one or more zero-overlap orbital pairs.
 /// - `ex`: Excitations defining the bra and ket determinants respectively.
 /// - `coeff`: Bra- and ket-reference molecular-orbital coefficients in the external RDM basis.
-/// - `indices`: Creation indices \mathbf p and annihilation indices \mathbf q, each of length k.
+/// - `indices`: `Creation indices \mathbf p and annihilation indices \mathbf q, each of length k.`
 /// - `scratch`: Scratch storage retained for the common Wick evaluator interface.
 /// - `tol`: Numerical threshold applied to determinant contributions.
 /// # Returns:

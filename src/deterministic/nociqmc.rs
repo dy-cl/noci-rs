@@ -1,17 +1,21 @@
 // deterministic.rs
+// External crate imports.
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
+// Crate-root imports.
+use crate::DetState;
+use crate::input::{Input, Propagator};
+use crate::maths::{adjoint, parallel_matvec};
+use crate::noci::NOCIScalar;
+
+// Parent/sibling imports.
 use super::write::{
     print_canonical_wavefunction, print_initial_null_diagnostics, print_overlap_spectrum_gaps,
     print_projected_matrix_norms, print_projected_propagator_diagnostics,
     print_projector_spectrum_diagnostics, print_propagation_table_header,
     print_propagation_table_row, print_retained_subspace_diagnostics,
 };
-use crate::DetState;
-use crate::input::{Input, Propagator};
-use crate::maths::{adjoint, parallel_matvec};
-use crate::noci::NOCIScalar;
 
 pub struct ProjPropagator<T: NOCIScalar> {
     /// Propagator block coupling the relevant subspace to itself.
@@ -96,11 +100,11 @@ fn diagonalise_retained_hamiltonian<T: NOCIScalar>(
 
 impl<T: NOCIScalar> Projectors<T> {
     /// Calculate projectors onto the relevant and null subsapces of the overlap matrix S by
-    /// diagonalising S as S = U x U^\dagger and paritioning the eigenvectors by an
-    /// eigenvalue threshold. The null subspace is spanned by eigenvectors with \lambda < eps and
-    /// the relevant subsapces by eigenvectors with \lambda > eps. The partioned eigenvector
-    /// matrices U_r (relevant) and U_n (null) are used to form the projectors as:
-    ///     P_r = U_r U_r^\dagger, P_n = U_n U_n^\dagger.
+    /// `diagonalising S as S = U x U^\dagger and paritioning the eigenvectors by an`
+    /// `eigenvalue threshold. The null subspace is spanned by eigenvectors with \lambda < eps and`
+    /// `the relevant subsapces by eigenvectors with \lambda > eps. The partioned eigenvector`
+    /// `matrices U_r (relevant) and U_n (null) are used to form the projectors as:`
+    ///     `P_r = U_r U_r^\dagger, P_n = U_n U_n^\dagger.`
     /// # Arguments
     /// `s`: Array2, overlap matrix in full NOCI-QMC basis.
     /// `eps`: f64, tolerance for an eigenvalue being null or relevant.
@@ -183,7 +187,7 @@ impl<T: NOCIScalar> Projectors<T> {
 
     /// Project a full NOCI-QMC coefficient vector c into the relevant and null subsapces of the
     /// overlap matrix S as:
-    ///     c_r = P_r c = U_r U_r^\dagger c, c_n = P_n c = U_n U_n^\dagger c.
+    ///     `c_r = P_r c = U_r U_r^\dagger c, c_n = P_n c = U_n U_n^\dagger c.`
     /// # Arguments
     /// `c`: Array1, coefficient vector in the full NOCI-QMC basis.
     /// # Returns
@@ -204,9 +208,9 @@ impl<T: NOCIScalar> Projectors<T> {
 }
 
 impl<T: NOCIScalar> ProjPropagator<T> {
-    /// Express a propjector in the null and relevant subspace basis by forming the matrix (U_{rr},
-    /// U_{nr} \\ U_{rn} U_{nn}). All elements of the propragator can be projected by doing for
-    /// example: H_{rn} = U_r^\dagger H U_n.
+    /// `Express a propjector in the null and relevant subspace basis by forming the matrix (U_{rr},`
+    /// `U_{nr} \\ U_{rn} U_{nn}). All elements of the propragator can be projected by doing for`
+    /// `example: H_{rn} = U_r^\dagger H U_n.`
     /// # Arguments
     /// `h`: Array2, NOCI Hamiltonian in the full NOCI-QMC basis.
     /// `s`: Array2, overlap matrix in the full NOCI-QMC basis.
@@ -617,10 +621,10 @@ pub fn propagate<T: NOCIScalar>(
     Some(c_norm)
 }
 
-/// E(\tau) = \frac{C^x\langle\Psi_x|\hat H|\Psi_w\rangle C^w}{C^x\langle\Psi_x|\Psi_w\rangle C^w}
-/// = \frac{C^x H_{xw}C^{w} }{C^x S_{xw}C^w}.
+/// `E(\tau) = \frac{C^x\langle\Psi_x|\hat H|\Psi_w\rangle C^w}{C^x\langle\Psi_x|\Psi_w\rangle C^w}`
+/// `= \frac{C^x H_{xw}C^{w} }{C^x S_{xw}C^w}.`
 /// # Arguments
-/// - `h`: NOCI Hamiltonian in full NOCI-QMC basis. Shifted by E_s * S.
+/// - `h`: `NOCI Hamiltonian in full NOCI-QMC basis. Shifted by E_s * S.`
 /// - `s`: Overlap matrix in full NOCI-QMC basis.
 /// - `c`: NOCI-QMC coefficient vector.
 /// # Returns

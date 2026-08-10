@@ -13,10 +13,10 @@
 //!
 //! In the projected candidate space, the amplitudes satisfy
 //!
-//! \mathbf M^{(k)}(\epsilon)\mathbf a^{(k)}(\epsilon) = -\mathbf V^{(k)},
+//! `\mathbf M^{(k)}(\epsilon)\mathbf a^{(k)}(\epsilon) = -\mathbf V^{(k)},`
 //!
-//! where \mathbf M^{(k)} contains the projected shifted generalised-Fock operator and metric,
-//! \mathbf V^{(k)} couples the current NOCI state to the candidate space, and \epsilon is an
+//! `where \mathbf M^{(k)} contains the projected shifted generalised-Fock operator and metric,`
+//! `\mathbf V^{(k)} couples the current NOCI state to the candidate space, and \epsilon is an`
 //! optional imaginary shift.
 //!
 //! The projected linear system is solved using restarted GMRES. Diagonal and low-rank

@@ -1,16 +1,19 @@
 mod common;
 
+// Standard library imports.
 use std::process::Command;
 use std::sync::OnceLock;
 
-use common::{assert_close, fixture_dir, load_test, mpi_universe};
+// External crate imports.
+use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
+use noci_rs::noci::{NOCIData, build_mo_cache, build_wicks_shared, calculate_noci_energy};
+use noci_rs::stochastic::qmc_step;
 use rayon::ThreadPoolBuilder;
 use serde::Deserialize;
 use serial_test::serial;
 
-use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
-use noci_rs::noci::{NOCIData, build_mo_cache, build_wicks_shared, calculate_noci_energy};
-use noci_rs::stochastic::qmc_step;
+// Parent/sibling imports.
+use self::common::{assert_close, fixture_dir, load_test, mpi_universe};
 
 /// Expected exact energies for a QMC fixture.
 #[derive(Deserialize)]

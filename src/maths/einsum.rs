@@ -1,7 +1,9 @@
 // maths/einsum.rs
 
+// Standard library imports.
 use std::cell::RefCell;
 
+// External crate imports.
 use ndarray::{Array2, Array4};
 use num_complex::Complex64;
 
@@ -13,7 +15,7 @@ thread_local! {
     static CGT_SCRATCH: RefCell<Vec<Complex64>> = const {RefCell::new(Vec::new())};
 }
 
-/// Calculate Einstein summation of matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{ab}.
+/// `Calculate Einstein summation of matrices g and h as \sum_{a,b} g_{b,a} h_{ab}.`
 /// Assumes `g` and `h` are of identical shape.
 /// # Arguments
 /// - `g`: Matrix 1.
@@ -47,7 +49,7 @@ pub fn einsum_ba_ab_real(
     acc
 }
 
-/// Calculate Einstein summation of matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{ab}.
+/// `Calculate Einstein summation of matrices g and h as \sum_{a,b} g_{b,a} h_{ab}.`
 /// Assumes `g` and `h` are of identical shape.
 /// # Arguments
 /// - `g`: Matrix 1.
@@ -76,7 +78,7 @@ pub fn einsum_ba_ab_complex(
     acc
 }
 
-/// Calculate Einstein summation of complex matrix `g` and real matrix `h` as \sum_{a,b} g_{b,a} h_{ab}.
+/// `Calculate Einstein summation of complex matrix g and real matrix h as \sum_{a,b} g_{b,a} h_{ab}.`
 /// Assumes `g` and `h` are of identical shape.
 /// # Arguments
 /// - `g`: Complex matrix.
@@ -305,7 +307,7 @@ fn dot_product_unroll8_real_complex(
 }
 
 /// Calculate Einstein summation of matrices `g` and `h` and 4D tensor `t` as
-/// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c, d}. Assumes `g`, `h` and `t` all
+/// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c, d}. Assumes g, h and t all`
 /// have axes of equal length.
 /// # Arguments
 /// - `g`: Matrix 1.
@@ -399,7 +401,7 @@ pub fn einsum_ba_abcd_cd_real(
 }
 
 /// Calculate Einstein summation of complex matrices `g` and `h` and complex 4D tensor `t` as
-/// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+/// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
 /// Assumes `g`, `h` and `t` all have axes of equal length.
 /// # Arguments
 /// - `g`: Matrix 1.
@@ -478,7 +480,7 @@ pub fn einsum_ba_abcd_cd_complex(
 }
 
 /// Calculate Einstein summation of complex matrices `g` and `h` and real 4D tensor `t` as
-/// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+/// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
 /// Assumes `g`, `h` and `t` all have axes of equal length.
 /// # Arguments
 /// - `g`: Matrix 1.
@@ -557,7 +559,7 @@ pub fn einsum_ba_abcd_cd_complex_real(
 }
 
 /// Calculate Einstein summation of 4D tensors `g` and `t` as
-/// \sum_{a,b,c,d} g_{a,b,c,d} t_{b,c,a,d}.
+/// `\sum_{a,b,c,d} g_{a,b,c,d} t_{b,c,a,d}.`
 /// Assumes `g` and `t` both have axes of equal length.
 /// # Arguments:
 /// - `g`: 4D tensor 1.

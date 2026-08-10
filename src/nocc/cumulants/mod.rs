@@ -19,6 +19,7 @@ pub(crate) use self::cumulants3::cumulants3;
 pub(crate) use self::cumulants4::cumulants4;
 
 // Private imports.
+// Crate-root imports.
 use crate::nocc::rdm::{RDM1, RDM2, RDM3, RDM4};
 use crate::noci::NOCIScalar;
 

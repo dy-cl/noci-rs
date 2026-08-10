@@ -1,8 +1,10 @@
 // driver/snoci.rs
 
+// External crate imports.
 use mpi::topology::Communicator;
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::noci::NOCIScalar;
 use crate::nonorthogonalwicks::WicksShared;
 use crate::snoci::snoci_step;

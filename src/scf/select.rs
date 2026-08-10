@@ -1,5 +1,6 @@
 // scf/select.rs
 
+// External crate imports.
 use ndarray::{Array1, Array2, Axis};
 
 /// Select occupied MO indices using Aufbau ordering.

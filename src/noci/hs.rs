@@ -1,13 +1,15 @@
 // noci/hs.rs
-use super::types::{DetPair, MOCache, NOCIData, NOCIScalar};
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::{AoData, DetState};
-
-use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
-use super::overlap::calculate_s_pair_orthogonal;
+// Crate-root imports.
 use crate::basis::excitation_phase;
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::nonorthogonalwicks::{prepare_same, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap};
 use crate::time_call;
+use crate::{AoData, DetState};
+
+// Parent/sibling imports.
+use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
+use super::overlap::calculate_s_pair_orthogonal;
+use super::types::{DetPair, MOCache, NOCIData, NOCIScalar};
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
 /// depending on user input and properties of the determinant pair involved. If the determinant

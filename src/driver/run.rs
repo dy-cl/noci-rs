@@ -1,11 +1,14 @@
 // driver/run.rs
 
+// Standard library imports.
 use std::time::Instant;
 
+// External crate imports.
 use mpi::collective::CommunicatorCollectives;
 use mpi::topology::Communicator;
 use rayon::ThreadPoolBuilder;
 
+// Crate-root imports.
 use crate::driver::geometry::run_geometry;
 use crate::driver::report::print_report;
 use crate::driver::types::Atoms;

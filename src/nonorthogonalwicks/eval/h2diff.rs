@@ -1,32 +1,34 @@
 // nonorthogonalwicks/eval/h2diff.rs
-use super::super::scratch::WickScratch;
-use super::super::view::WicksPairView;
-use super::helpers::{DetBranches, DetIndex, ReplacementLayout};
+// Crate-root imports.
 use crate::Excitation;
+use crate::maths::adjugate_transpose;
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
+// Parent/sibling imports.
 use super::super::layout::{idx, idx4};
+use super::super::scratch::WickScratch;
+use super::super::view::WicksPairView;
+use super::helpers::{DetBranches, DetIndex, ReplacementLayout};
 use super::helpers::{bit, column_replacement_det, get_det_adjt_diff, ii_replacement};
-use crate::maths::adjugate_transpose;
 
 /// Evaluate the different-spin two-body matrix element between excited determinants generated from
-/// the reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle. The alpha- and beta-spin contraction determinants factorise:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat v_{\alpha\beta}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S_\alpha{}^{xw}\tilde S_\beta
-/// \sum_{\substack{m_{\alpha0}+\sum_zm_{\alpha z}=m_\alpha\\m_{\beta0}+\sum_ym_{\beta y}=m_\beta}}
-/// [{}^xV_{\alpha\beta,0}^{(m_{\alpha0},m_{\beta0})}\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}
-/// - \sum_z\det\mathbf D_{\alpha,\mathrm{ov}}^{z\rightarrow\mathcal V^\alpha_z}\det\mathbf D_{\beta,\mathrm{ov}}
-/// - \sum_y\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}^{y\rightarrow\mathcal V^\beta_y}
-/// + \sum_{z,y,\eta,\xi}\operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}]_{\eta z}
-///   \mathcal{II}_{\eta z,\xi y}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})}
-///   \operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}]_{\xi y}].
-///   Each m_{\sigma0} and m_{\sigma z} is zero or one. The implementation applies the orbital-pairing
+/// `the reference pair \langle{}^x\Psi| and |{}^w\Psi\rangle. The alpha- and beta-spin contraction determinants factorise:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat v_{\alpha\beta}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S_\alpha{}^{xw}\tilde S_\beta`
+/// `\sum_{\substack{m_{\alpha0}+\sum_zm_{\alpha z}=m_\alpha\\m_{\beta0}+\sum_ym_{\beta y}=m_\beta}}`
+/// `[{}^xV_{\alpha\beta,0}^{(m_{\alpha0},m_{\beta0})}\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`
+/// `- \sum_z\det\mathbf D_{\alpha,\mathrm{ov}}^{z\rightarrow\mathcal V^\alpha_z}\det\mathbf D_{\beta,\mathrm{ov}}`
+/// `- \sum_y\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}^{y\rightarrow\mathcal V^\beta_y}`
+/// `+ \sum_{z,y,\eta,\xi}\operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}]_{\eta z}`
+///   `\mathcal{II}_{\eta z,\xi y}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})}`
+///   `\operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}]_{\xi y}].`
+///   `Each m_{\sigma0} and m_{\sigma z} is zero or one. The implementation applies the orbital-pairing`
 ///   phases separately from the reduced overlap products. No exchange term occurs between the spin spaces.
 /// # Arguments:
 /// - `w`: Same-spin and different-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `diff`: Scratch storage for mixed contraction determinants, cofactors and work buffers.
 /// - `a`: Prepared alpha-spin contraction determinants and their row and column labels.
 /// - `b`: Prepared beta-spin contraction determinants and their row and column labels.
@@ -55,9 +57,9 @@ pub(crate) fn xw_h2_diff<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the different-spin two-body matrix element when m_\alpha = m_\beta = 0. Both spin spaces
-/// use only \mathbf D_{\sigma,\mathrm{ov}}(0,\ldots,0) and the m_i = 0 intermediates. Fixed-rank kernels
-/// are used for (L_\alpha,L_\beta) = (1,1), (1,2), (1,3), (2,1), (2,2) and (3,1); all other
+/// `Evaluate the different-spin two-body matrix element when m_\alpha = m_\beta = 0. Both spin spaces`
+/// `use only \mathbf D_{\sigma,\mathrm{ov}}(0,\ldots,0) and the m_i = 0 intermediates. Fixed-rank kernels`
+/// `are used for (L_\alpha,L_\beta) = (1,1), (1,2), (1,3), (2,1), (2,2) and (3,1); all other`
 /// excitation ranks use the general cofactor form.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs in either spin space.
@@ -68,7 +70,7 @@ pub(crate) fn xw_h2_diff<T: NOCIScalar>(
 /// - `b`: Prepared beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for m_\alpha = m_\beta = 0.
+/// - `T`: `Different-spin two-body matrix element for m_\alpha = m_\beta = 0.`
 #[inline(always)]
 fn xw_h2_diff_m0<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -127,13 +129,13 @@ fn xw_h2_diff_m0<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,1) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,1) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and the beta-spin one-column replacement contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `b`: Prepared rank-one beta-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,1).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,1).`
 #[inline(always)]
 fn xw_h2_diff_m0_01<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -155,13 +157,13 @@ fn xw_h2_diff_m0_01<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,2) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,2) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and beta-spin one-column replacements contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `b`: Prepared rank-two beta-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,2).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,2).`
 #[inline(always)]
 fn xw_h2_diff_m0_02<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -199,7 +201,7 @@ fn xw_h2_diff_m0_02<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,3) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,3) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and beta-spin one-column replacements contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -207,7 +209,7 @@ fn xw_h2_diff_m0_02<T: NOCIScalar>(
 /// - `b`: Prepared rank-three beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the beta-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,3).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,3).`
 #[inline(always)]
 fn xw_h2_diff_m0_03<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -256,7 +258,7 @@ fn xw_h2_diff_m0_03<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,4) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (0,4) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and beta-spin one-column replacements contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -264,7 +266,7 @@ fn xw_h2_diff_m0_03<T: NOCIScalar>(
 /// - `b`: Prepared rank-four beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the beta-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,4).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (0,4).`
 #[inline(always)]
 fn xw_h2_diff_m0_04<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -311,13 +313,13 @@ fn xw_h2_diff_m0_04<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,0) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,0) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and the alpha-spin one-column replacement contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `a`: Prepared rank-one alpha-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,0).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,0).`
 #[inline(always)]
 fn xw_h2_diff_m0_10<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -341,14 +343,14 @@ fn xw_h2_diff_m0_10<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,1) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,1) matrix element for m_\alpha = m_\beta = 0.`
 /// All four terms of the different-spin expansion reduce to individual determinant entries.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `a`: Prepared rank-one alpha-spin contraction determinant.
 /// - `b`: Prepared rank-one beta-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,1).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,1).`
 #[inline(always)]
 fn xw_h2_diff_m0_11<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -388,15 +390,15 @@ fn xw_h2_diff_m0_11<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,2) matrix element for m_\alpha = m_\beta = 0.
-/// The alpha-spin determinant is scalar, while the beta-spin \mathcal V^\beta and \mathcal{II}
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,2) matrix element for m_\alpha = m_\beta = 0.`
+/// `The alpha-spin determinant is scalar, while the beta-spin \mathcal V^\beta and \mathcal{II}`
 /// contributions are evaluated using the explicit cofactors of its rank-two contraction determinant.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `a`: Prepared rank-one alpha-spin contraction determinant.
 /// - `b`: Prepared rank-two beta-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,2).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,2).`
 #[inline(always)]
 fn xw_h2_diff_m0_12<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -470,9 +472,9 @@ fn xw_h2_diff_m0_12<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,3) matrix element for m_\alpha = m_\beta = 0.
-/// The beta-spin \mathcal V^\beta and \mathcal{II} terms are contracted with the cofactor matrix of
-/// \mathbf D_{\beta,\mathrm{ov}}.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,3) matrix element for m_\alpha = m_\beta = 0.`
+/// `The beta-spin \mathcal V^\beta and \mathcal{II} terms are contracted with the cofactor matrix of`
+/// `\mathbf D_{\beta,\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `diff`: Scratch storage for the beta-spin adjugate-transpose and factorisation work arrays.
@@ -480,7 +482,7 @@ fn xw_h2_diff_m0_12<T: NOCIScalar>(
 /// - `b`: Prepared rank-three beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the beta-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,3).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,3).`
 #[inline(always)]
 fn xw_h2_diff_m0_13<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -568,9 +570,9 @@ fn xw_h2_diff_m0_13<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,4) matrix element for m_\alpha = m_\beta = 0.
-/// The alpha-spin determinant is scalar, while the beta-spin \mathcal V^\beta and \mathcal{II}
-/// terms are contracted with the cofactor matrix of \mathbf D_{\beta,\mathrm{ov}}.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (1,4) matrix element for m_\alpha = m_\beta = 0.`
+/// `The alpha-spin determinant is scalar, while the beta-spin \mathcal V^\beta and \mathcal{II}`
+/// `terms are contracted with the cofactor matrix of \mathbf D_{\beta,\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `diff`: Scratch storage for the beta-spin adjugate-transpose and factorisation work arrays.
@@ -578,7 +580,7 @@ fn xw_h2_diff_m0_13<T: NOCIScalar>(
 /// - `b`: Prepared rank-four beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the beta-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,4).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (1,4).`
 #[inline(always)]
 fn xw_h2_diff_m0_14<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -642,13 +644,13 @@ fn xw_h2_diff_m0_14<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,0) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,0) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and alpha-spin one-column replacements contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `a`: Prepared rank-two alpha-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,0).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,0).`
 #[inline(always)]
 fn xw_h2_diff_m0_20<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -688,15 +690,15 @@ fn xw_h2_diff_m0_20<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,1) matrix element for m_\alpha = m_\beta = 0.
-/// The beta-spin determinant is scalar, while the alpha-spin \mathcal V^\alpha and \mathcal{II}
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,1) matrix element for m_\alpha = m_\beta = 0.`
+/// `The beta-spin determinant is scalar, while the alpha-spin \mathcal V^\alpha and \mathcal{II}`
 /// contributions are evaluated using the explicit cofactors of its rank-two contraction determinant.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `a`: Prepared rank-two alpha-spin contraction determinant.
 /// - `b`: Prepared rank-one beta-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,1).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,1).`
 #[inline(always)]
 fn xw_h2_diff_m0_21<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -772,15 +774,15 @@ fn xw_h2_diff_m0_21<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,2) matrix element for m_\alpha = m_\beta = 0.
-/// The one-column terms use the explicit rank-two cofactors, while the \mathcal{II} term contracts
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,2) matrix element for m_\alpha = m_\beta = 0.`
+/// `The one-column terms use the explicit rank-two cofactors, while the \mathcal{II} term contracts`
 /// the cofactor matrices from both spin spaces.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `a`: Prepared rank-two alpha-spin contraction determinant.
 /// - `b`: Prepared rank-two beta-spin contraction determinant.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,2).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,2).`
 #[inline(always)]
 fn xw_h2_diff_m0_22<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -893,10 +895,10 @@ fn xw_h2_diff_m0_22<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,3) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,3) matrix element for m_\alpha = m_\beta = 0.`
 /// The alpha-spin determinant uses explicit rank-two cofactors, while the beta-spin
-/// \mathcal V^\beta and \mathcal{II} terms are contracted with the cofactor matrix of
-/// \mathbf D_{\beta,\mathrm{ov}}.
+/// `\mathcal V^\beta and \mathcal{II} terms are contracted with the cofactor matrix of`
+/// `\mathbf D_{\beta,\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `diff`: Scratch storage for the beta-spin adjugate-transpose and factorisation work arrays.
@@ -904,7 +906,7 @@ fn xw_h2_diff_m0_22<T: NOCIScalar>(
 /// - `b`: Prepared rank-three beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the beta-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,3).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,3).`
 #[inline(always)]
 fn xw_h2_diff_m0_23<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1047,8 +1049,8 @@ fn xw_h2_diff_m0_23<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,4) matrix element for m_\alpha = m_\beta = 0.
-/// Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (2,4) matrix element for m_\alpha = m_\beta = 0.`
+/// `Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted`
 /// directly with fixed-rank cofactor matrices.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1057,7 +1059,7 @@ fn xw_h2_diff_m0_23<T: NOCIScalar>(
 /// - `b`: Prepared rank-four beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinant and cofactor matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,4).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (2,4).`
 #[inline(always)]
 fn xw_h2_diff_m0_24<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1150,7 +1152,7 @@ fn xw_h2_diff_m0_24<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,0) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,0) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and alpha-spin one-column replacements contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1158,7 +1160,7 @@ fn xw_h2_diff_m0_24<T: NOCIScalar>(
 /// - `a`: Prepared rank-three alpha-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the alpha-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,0).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,0).`
 #[inline(always)]
 fn xw_h2_diff_m0_30<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1205,9 +1207,9 @@ fn xw_h2_diff_m0_30<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,1) matrix element for m_\alpha = m_\beta = 0.
-/// The alpha-spin \mathcal V^\alpha and \mathcal{II} terms are contracted with the cofactor matrix of
-/// \mathbf D_{\alpha,\mathrm{ov}}.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,1) matrix element for m_\alpha = m_\beta = 0.`
+/// `The alpha-spin \mathcal V^\alpha and \mathcal{II} terms are contracted with the cofactor matrix of`
+/// `\mathbf D_{\alpha,\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `diff`: Scratch storage for the alpha-spin adjugate-transpose and factorisation work arrays.
@@ -1215,7 +1217,7 @@ fn xw_h2_diff_m0_30<T: NOCIScalar>(
 /// - `b`: Prepared rank-one beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the alpha-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,1).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,1).`
 #[inline(always)]
 fn xw_h2_diff_m0_31<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1297,9 +1299,9 @@ fn xw_h2_diff_m0_31<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,2) matrix element for m_\alpha = m_\beta = 0.
-/// The alpha-spin \mathcal V^\alpha and \mathcal{II} terms are contracted with the cofactor matrix
-/// of \mathbf D_{\alpha,\mathrm{ov}}, while the beta-spin determinant uses explicit rank-two cofactors.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,2) matrix element for m_\alpha = m_\beta = 0.`
+/// `The alpha-spin \mathcal V^\alpha and \mathcal{II} terms are contracted with the cofactor matrix`
+/// `of \mathbf D_{\alpha,\mathrm{ov}}, while the beta-spin determinant uses explicit rank-two cofactors.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `diff`: Scratch storage for the alpha-spin adjugate-transpose and factorisation work arrays.
@@ -1307,7 +1309,7 @@ fn xw_h2_diff_m0_31<T: NOCIScalar>(
 /// - `b`: Prepared rank-two beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the alpha-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,2).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,2).`
 #[inline(always)]
 fn xw_h2_diff_m0_32<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1445,8 +1447,8 @@ fn xw_h2_diff_m0_32<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,3) matrix element for m_\alpha = m_\beta = 0.
-/// Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,3) matrix element for m_\alpha = m_\beta = 0.`
+/// `Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted`
 /// directly with rank-three cofactor matrices.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1455,7 +1457,7 @@ fn xw_h2_diff_m0_32<T: NOCIScalar>(
 /// - `b`: Prepared rank-three beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinant and cofactor matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,3).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,3).`
 #[inline(always)]
 fn xw_h2_diff_m0_33<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1575,8 +1577,8 @@ fn xw_h2_diff_m0_33<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,4) matrix element for m_\alpha = m_\beta = 0.
-/// Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (3,4) matrix element for m_\alpha = m_\beta = 0.`
+/// `Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted`
 /// directly with fixed-rank cofactor matrices.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1585,7 +1587,7 @@ fn xw_h2_diff_m0_33<T: NOCIScalar>(
 /// - `b`: Prepared rank-four beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinant and cofactor matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,4).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (3,4).`
 #[inline(always)]
 fn xw_h2_diff_m0_34<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1678,7 +1680,7 @@ fn xw_h2_diff_m0_34<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,0) matrix element for m_\alpha = m_\beta = 0.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,0) matrix element for m_\alpha = m_\beta = 0.`
 /// Only the scalar term and alpha-spin one-column replacements contribute.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1686,7 +1688,7 @@ fn xw_h2_diff_m0_34<T: NOCIScalar>(
 /// - `a`: Prepared rank-four alpha-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the alpha-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,0).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,0).`
 #[inline(always)]
 fn xw_h2_diff_m0_40<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1734,9 +1736,9 @@ fn xw_h2_diff_m0_40<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,1) matrix element for m_\alpha = m_\beta = 0.
-/// The alpha-spin \mathcal V^\alpha and \mathcal{II} terms are contracted with the cofactor matrix
-/// of \mathbf D_{\alpha,\mathrm{ov}}, while the beta-spin determinant is scalar.
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,1) matrix element for m_\alpha = m_\beta = 0.`
+/// `The alpha-spin \mathcal V^\alpha and \mathcal{II} terms are contracted with the cofactor matrix`
+/// `of \mathbf D_{\alpha,\mathrm{ov}}, while the beta-spin determinant is scalar.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `diff`: Scratch storage for the alpha-spin adjugate-transpose and factorisation work arrays.
@@ -1744,7 +1746,7 @@ fn xw_h2_diff_m0_40<T: NOCIScalar>(
 /// - `b`: Prepared rank-one beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating the alpha-spin determinant and cofactors.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,1).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,1).`
 #[inline(always)]
 fn xw_h2_diff_m0_41<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1808,8 +1810,8 @@ fn xw_h2_diff_m0_41<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,2) matrix element for m_\alpha = m_\beta = 0.
-/// Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,2) matrix element for m_\alpha = m_\beta = 0.`
+/// `Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted`
 /// directly with fixed-rank cofactor matrices.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1818,7 +1820,7 @@ fn xw_h2_diff_m0_41<T: NOCIScalar>(
 /// - `b`: Prepared rank-two beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinant and cofactor matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,2).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,2).`
 #[inline(always)]
 fn xw_h2_diff_m0_42<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -1911,8 +1913,8 @@ fn xw_h2_diff_m0_42<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,3) matrix element for m_\alpha = m_\beta = 0.
-/// Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,3) matrix element for m_\alpha = m_\beta = 0.`
+/// `Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted`
 /// directly with fixed-rank cofactor matrices.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -1921,7 +1923,7 @@ fn xw_h2_diff_m0_42<T: NOCIScalar>(
 /// - `b`: Prepared rank-three beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinant and cofactor matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,3).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,3).`
 #[inline(always)]
 fn xw_h2_diff_m0_43<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -2014,8 +2016,8 @@ fn xw_h2_diff_m0_43<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,4) matrix element for m_\alpha = m_\beta = 0.
-/// Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted
+/// `Evaluate the fixed-rank (L_\alpha,L_\beta) = (4,4) matrix element for m_\alpha = m_\beta = 0.`
+/// `Both spin-sector \mathcal V terms and the opposite-spin \mathcal{II} term are contracted`
 /// directly with rank-four cofactor matrices.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -2024,7 +2026,7 @@ fn xw_h2_diff_m0_43<T: NOCIScalar>(
 /// - `b`: Prepared rank-four beta-spin contraction determinant.
 /// - `tol`: Numerical tolerance used when evaluating determinant and cofactor matrices.
 /// # Returns
-/// - `T`: Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,4).
+/// - `T`: `Different-spin two-body matrix element for (L_\alpha,L_\beta) = (4,4).`
 #[inline(always)]
 fn xw_h2_diff_m0_44<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -2117,9 +2119,9 @@ fn xw_h2_diff_m0_44<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the different-spin two-body matrix element for arbitrary L_\alpha and L_\beta when
-/// m_\alpha = m_\beta = 0. The scalar term uses both contraction determinants, each \mathcal V term
-/// replaces one column of the corresponding determinant, and the \mathcal{II} term contracts the
+/// `Evaluate the different-spin two-body matrix element for arbitrary L_\alpha and L_\beta when`
+/// `m_\alpha = m_\beta = 0. The scalar term uses both contraction determinants, each \mathcal V term`
+/// `replaces one column of the corresponding determinant, and the \mathcal{II} term contracts the`
 /// cofactor matrices from the two spin spaces.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -2251,17 +2253,17 @@ fn xw_h2_diff_m0_gen<T: NOCIScalar>(
 
 /// Evaluate the different-spin two-body matrix element when either spin space contains one or more
 /// zero-overlap orbital pairs. The alpha- and beta-spin assignments are enumerated independently:
-/// m_{\alpha0} + \sum_zm_{\alpha z} = m_\alpha,
-/// m_{\beta0} + \sum_ym_{\beta y} = m_\beta.
+/// `m_{\alpha0} + \sum_zm_{\alpha z} = m_\alpha,`
+/// `m_{\beta0} + \sum_ym_{\beta y} = m_\beta.`
 /// The first assignment in each spin space selects the scalar/operator contraction, while each remaining
-/// assignment selects the m_i = 0 or m_i = 1 column of the corresponding contraction determinant.
+/// `assignment selects the m_i = 0 or m_i = 1 column of the corresponding contraction determinant.`
 /// # Arguments:
 /// - `w`: Same-spin and different-spin reference-pair Wick intermediates.
 /// - `l_ex`: Excitation defining the bra determinant.
 /// - `g_ex`: Excitation defining the ket determinant.
 /// - `diff`: Scratch storage for mixed contraction determinants, cofactors and work buffers.
-/// - `a`: Prepared alpha-spin m_i = 0 and m_i = 1 contraction determinants.
-/// - `b`: Prepared beta-spin m_i = 0 and m_i = 1 contraction determinants.
+/// - `a`: `Prepared alpha-spin m_i = 0 and m_i = 1 contraction determinants.`
+/// - `b`: `Prepared beta-spin m_i = 0 and m_i = 1 contraction determinants.`
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
 /// - `T`: Different-spin two-body matrix element summed over all allowed spin-resolved distributions.

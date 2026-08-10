@@ -1,26 +1,29 @@
 // nonorthogonalwicks/eval/overlap.rs
-use super::super::scratch::WickScratch;
-use super::super::view::SameSpinView;
-use super::helpers::mix_dets_same;
-use super::prepare::{construct_determinant_indices, prepare_same};
+// Crate-root imports.
 use crate::ExcitationSpin;
 use crate::maths::{det, det_lu_l5, det_lu_l6};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
+// Parent/sibling imports.
+use super::super::scratch::WickScratch;
+use super::super::view::SameSpinView;
+use super::helpers::mix_dets_same;
+use super::prepare::{construct_determinant_indices, prepare_same};
+
 /// Evaluate the same-spin overlap between excited determinants generated from the reference pair
-/// \langle{}^x\Psi| and |{}^w\Psi\rangle:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}
-/// \det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).
-/// Each m_i is zero or one. The lower triangle of \mathbf D_{\mathrm{ov}}, including its diagonal,
-/// contains X^{(m_i)} contractions, while its upper triangle contains Y^{(m_i)} contractions.
+/// `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
+/// `Each m_i is zero or one. The lower triangle of \mathbf D_{\mathrm{ov}}, including its diagonal,`
+/// `contains X^{(m_i)} contractions, while its upper triangle contains Y^{(m_i)} contractions.`
 /// The implementation stores the orbital-pairing phase separately from the product of non-zero
-/// singular values forming {}^{xw}\tilde S.
+/// `singular values forming {}^{xw}\tilde S.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Prepared contraction determinants and work storage.
 /// # Returns
 /// - `T`: Same-spin overlap matrix element.
@@ -51,10 +54,10 @@ pub fn xw_overlap<T: NOCIScalar>(
 }
 
 /// Evaluate a same-spin overlap for factor-table construction, using the direct overlap-only path
-/// when m = 0 and L \leq 6:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}
-/// \det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).
+/// `when m = 0 and L \leq 6:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
 /// The direct path avoids preparing reusable Hamiltonian scratch data. Other cases use `prepare_same`
 /// followed by the general overlap evaluator.
 /// # Arguments:
@@ -91,12 +94,12 @@ pub(crate) fn xw_overlap_same_f64(
     xw_overlap(w, l_ex, g_ex, scratch)
 }
 
-/// Evaluate the same-spin overlap directly when m = 0 and L \leq 6:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// `Evaluate the same-spin overlap directly when m = 0 and L \leq 6:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The row labels are the x-reference particles followed by the w-reference holes, while the column
 /// labels are the x-reference holes followed by the w-reference particles. The determinant contains
-/// X^{(0)} on and below the diagonal and Y^{(0)} above the diagonal.
+/// `X^{(0)} on and below the diagonal and Y^{(0)} above the diagonal.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
@@ -235,14 +238,14 @@ pub(crate) fn xw_overlap_m0_direct_f64(
 }
 
 /// Evaluate the same-spin overlap when m = 0:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Fixed-rank determinant kernels are used for L = 1,\ldots,6; arbitrary ranks use the general
-/// determinant routine. For L = 0, the overlap is the reduced reference overlap {}^{xw}\tilde S.
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0).`
+/// `Fixed-rank determinant kernels are used for L = 1,\ldots,6; arbitrary ranks use the general`
+/// `determinant routine. For L = 0, the overlap is the reduced reference overlap {}^{xw}\tilde S.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l`: Total excitation rank L = L_x + L_w.
-/// - `scratch`: Prepared \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// - `l`: `Total excitation rank L = L_x + L_w.`
+/// - `scratch`: `Prepared \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// # Returns
 /// - `T`: Same-spin overlap matrix element for m = 0.
 #[inline(always)]
@@ -273,13 +276,13 @@ fn xw_overlap_m0<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 1 overlap when m = 0:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0) = {}^{xw}\tilde S D_{00}^{(0)}.
+/// `Evaluate the fixed-rank L = 1 overlap when m = 0:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0) = {}^{xw}\tilde S D_{00}^{(0)}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-one contraction determinant.
 /// # Returns
-/// - `T`: Same-spin overlap for L = 1 and m = 0.
+/// - `T`: `Same-spin overlap for L = 1 and m = 0.`
 #[inline(always)]
 fn xw_overlap_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -292,13 +295,13 @@ fn xw_overlap_m0_l1<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 2 overlap when m = 0:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0).
+/// `Evaluate the fixed-rank L = 2 overlap when m = 0:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0).`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-two contraction determinant.
 /// # Returns
-/// - `T`: Same-spin overlap for L = 2 and m = 0.
+/// - `T`: `Same-spin overlap for L = 2 and m = 0.`
 #[inline(always)]
 fn xw_overlap_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -311,13 +314,13 @@ fn xw_overlap_m0_l2<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 3 overlap when m = 0:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0).
+/// `Evaluate the fixed-rank L = 3 overlap when m = 0:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0).`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-three contraction determinant.
 /// # Returns
-/// - `T`: Same-spin overlap for L = 3 and m = 0.
+/// - `T`: `Same-spin overlap for L = 3 and m = 0.`
 #[inline(always)]
 fn xw_overlap_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -333,13 +336,13 @@ fn xw_overlap_m0_l3<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 4 overlap when m = 0:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0).
+/// `Evaluate the fixed-rank L = 4 overlap when m = 0:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0).`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-four contraction determinant.
 /// # Returns
-/// - `T`: Same-spin overlap for L = 4 and m = 0.
+/// - `T`: `Same-spin overlap for L = 4 and m = 0.`
 #[inline(always)]
 fn xw_overlap_m0_l4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -352,13 +355,13 @@ fn xw_overlap_m0_l4<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 5 overlap when m = 0:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0,0).
+/// `Evaluate the fixed-rank L = 5 overlap when m = 0:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0,0).`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-five contraction determinant.
 /// # Returns
-/// - `T`: Same-spin overlap for L = 5 and m = 0.
+/// - `T`: `Same-spin overlap for L = 5 and m = 0.`
 #[inline(always)]
 fn xw_overlap_m0_l5<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -371,13 +374,13 @@ fn xw_overlap_m0_l5<T: NOCIScalar>(
     w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
 }
 
-/// Evaluate the fixed-rank L = 6 overlap when m = 0:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0,0,0).
+/// `Evaluate the fixed-rank L = 6 overlap when m = 0:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0,0,0).`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-six contraction determinant.
 /// # Returns
-/// - `T`: Same-spin overlap for L = 6 and m = 0.
+/// - `T`: `Same-spin overlap for L = 6 and m = 0.`
 #[inline(always)]
 fn xw_overlap_m0_l6<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -391,14 +394,14 @@ fn xw_overlap_m0_l6<T: NOCIScalar>(
 }
 
 /// Evaluate the same-spin overlap when m = L. The only allowed distribution is
-/// (m_1,\ldots,m_L) = (1,\ldots,1), so:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1).
-/// Fixed-rank determinant kernels are used for L = 1,2,3.
+/// `(m_1,\ldots,m_L) = (1,\ldots,1), so:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1).`
+/// `Fixed-rank determinant kernels are used for L = 1,2,3.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l`: Total excitation rank L = L_x + L_w, equal to m in this path.
-/// - `scratch`: Prepared \mathbf D_{\mathrm{ov}}(1,\ldots,1).
+/// - `l`: `Total excitation rank L = L_x + L_w, equal to m in this path.`
+/// - `scratch`: `Prepared \mathbf D_{\mathrm{ov}}(1,\ldots,1).`
 /// # Returns
 /// - `T`: Same-spin overlap matrix element for m = L.
 #[inline(always)]
@@ -426,13 +429,13 @@ fn xw_overlap_ml<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = m = 1 overlap:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1) = {}^{xw}\tilde S D_{00}^{(1)}.
+/// `Evaluate the fixed-rank L = m = 1 overlap:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1) = {}^{xw}\tilde S D_{00}^{(1)}.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `scratch`: Prepared rank-one m_1 = 1 contraction determinant.
+/// - `scratch`: `Prepared rank-one m_1 = 1 contraction determinant.`
 /// # Returns
-/// - `T`: Same-spin overlap for L = m = 1.
+/// - `T`: `Same-spin overlap for L = m = 1.`
 #[inline(always)]
 fn xw_overlap_ml_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -445,13 +448,13 @@ fn xw_overlap_ml_l1<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = m = 2 overlap:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,1).
+/// `Evaluate the fixed-rank L = m = 2 overlap:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,1).`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `scratch`: Prepared rank-two all-m_i = 1 contraction determinant.
+/// - `scratch`: `Prepared rank-two all-m_i = 1 contraction determinant.`
 /// # Returns
-/// - `T`: Same-spin overlap for L = m = 2.
+/// - `T`: `Same-spin overlap for L = m = 2.`
 #[inline(always)]
 fn xw_overlap_ml_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -464,13 +467,13 @@ fn xw_overlap_ml_l2<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = m = 3 overlap:
-/// {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,1,1).
+/// `Evaluate the fixed-rank L = m = 3 overlap:`
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,1,1).`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `scratch`: Prepared rank-three all-m_i = 1 contraction determinant.
+/// - `scratch`: `Prepared rank-three all-m_i = 1 contraction determinant.`
 /// # Returns
-/// - `T`: Same-spin overlap for L = m = 3.
+/// - `T`: `Same-spin overlap for L = m = 3.`
 #[inline(always)]
 fn xw_overlap_ml_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -487,17 +490,17 @@ fn xw_overlap_ml_l3<T: NOCIScalar>(
 }
 
 /// Evaluate the same-spin overlap for 0 < m < L by summing every allowed distribution:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}
-/// \det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L), \qquad m_i \in \{0,1\}.
-/// Each distribution selects every column of \mathbf D_{\mathrm{ov}} from the corresponding
-/// all-m_i = 0 or all-m_i = 1 contraction determinant.
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L), \qquad m_i \in \{0,1\}.`
+/// `Each distribution selects every column of \mathbf D_{\mathrm{ov}} from the corresponding`
+/// `all-m_i = 0 or all-m_i = 1 contraction determinant.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l`: Total excitation rank L = L_x + L_w.
-/// - `scratch`: Prepared all-m_i = 0 and all-m_i = 1 determinants and mixed-determinant storage.
+/// - `l`: `Total excitation rank L = L_x + L_w.`
+/// - `scratch`: `Prepared all-m_i = 0 and all-m_i = 1 determinants and mixed-determinant storage.`
 /// # Returns
-/// - `T`: Same-spin overlap summed over all \binom{L}{m} allowed distributions.
+/// - `T`: `Same-spin overlap summed over all \binom{L}{m} allowed distributions.`
 #[inline(always)]
 fn xw_overlap_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,

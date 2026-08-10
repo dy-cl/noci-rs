@@ -1,21 +1,25 @@
 // noci/matrix.rs
+// Standard library imports.
 use std::time::{Duration, Instant};
 
+// External crate imports.
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
-use super::types::{DetPair, FockData, MOCache, NOCIData, NOCIScalar, ScatterValue};
+// Crate-root imports.
 use crate::input::Input;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::time_call;
-use crate::{AoData, DetState};
-
-use super::fock::compare_f_pair_wicks_naive;
-use super::hs::compare_hs_pair_wicks_naive;
 use crate::maths::general_evp;
 use crate::noci::{calculate_f_pair, calculate_hs_pair, calculate_s_pair};
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
+use crate::time_call;
 use crate::utils::print_array2_indexed;
 use crate::write::write_hs_matrices;
+use crate::{AoData, DetState};
+
+// Parent/sibling imports.
+use super::fock::compare_f_pair_wicks_naive;
+use super::hs::compare_hs_pair_wicks_naive;
+use super::types::{DetPair, FockData, MOCache, NOCIData, NOCIScalar, ScatterValue};
 
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
 /// which computes `U` for the pair. The closure may evaluate, for example,

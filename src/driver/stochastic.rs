@@ -1,10 +1,13 @@
 // driver/stochastic.rs
 
+// Standard library imports.
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+// External crate imports.
 use mpi::topology::Communicator;
 
+// Crate-root imports.
 use crate::PostSCFData;
 use crate::basis::generate_excited_basis;
 use crate::input::Input;

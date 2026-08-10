@@ -1,25 +1,29 @@
 // noci/wicks.rs
+// Standard library imports.
 use std::fs::{self};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 
+// External crate imports.
 use mpi::topology::Communicator;
 use ndarray::Array2;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::input::Spin;
 use crate::mpiutils::Sharedffi;
+use crate::mpiutils::broadcast;
 use crate::nonorthogonalwicks::{
     DiffSpinBuild, DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinBuild, SameSpinMeta,
     WicksDiskMeta, WicksRma, WicksShared, WicksView,
 };
-use crate::{AoData, DetState};
-
-use super::types::NOCIScalar;
-use crate::mpiutils::broadcast;
 use crate::nonorthogonalwicks::{
     assign_offsets, create_wicks_mmap, load_wicks_mmap, write_diff_spin, write_same_spin, write2t,
 };
+use crate::{AoData, DetState};
+
+// Parent/sibling imports.
+use super::types::NOCIScalar;
 
 /// Build all Wick's intermediates and metadata for one reference pair.
 /// # Arguments:

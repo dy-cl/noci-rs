@@ -1,10 +1,13 @@
 // maths/linalg.rs
 
-use crate::StateScalar;
+// External crate imports.
 use ndarray::{Array1, Array2, Axis, ShapeBuilder};
 use ndarray_linalg::{Eig, Eigh, EighInto, Inverse, UPLO};
 use num_complex::Complex64;
 use rayon::prelude::*;
+
+// Crate-root imports.
+use crate::StateScalar;
 
 /// Compute the dot product of two real contiguous vectors.
 /// This kernel uses multiple accumulators so LLVM can more easily vectorise
@@ -13,7 +16,7 @@ use rayon::prelude::*;
 /// - `x`: First real vector.
 /// - `y`: Second real vector.
 /// # Returns
-/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+/// - `f64`: Dot product `\sum_i x_i y_i`, truncated to the shorter input length.
 #[inline(always)]
 pub fn dot_f64(
     x: &[f64],
@@ -35,7 +38,7 @@ pub fn dot_f64(
 /// - `x`: First real vector.
 /// - `y`: Second real vector.
 /// # Returns
-/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+/// - `f64`: Dot product `\sum_i x_i y_i`, truncated to the shorter input length.
 #[inline(always)]
 fn dot_f64_scalar(
     x: &[f64],
@@ -70,7 +73,7 @@ fn dot_f64_scalar(
 /// - `x`: First real vector.
 /// - `y`: Second real vector.
 /// # Returns
-/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+/// - `f64`: Dot product `\sum_i x_i y_i`, truncated to the shorter input length.
 #[cfg(target_arch = "x86")]
 #[target_feature(enable = "avx")]
 unsafe fn dot_f64_avx(
@@ -108,7 +111,7 @@ unsafe fn dot_f64_avx(
 /// - `x`: First real vector.
 /// - `y`: Second real vector.
 /// # Returns
-/// - `f64`: Dot product \(\sum_i x_i y_i\), truncated to the shorter input length.
+/// - `f64`: Dot product `\sum_i x_i y_i`, truncated to the shorter input length.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn dot_f64_avx(

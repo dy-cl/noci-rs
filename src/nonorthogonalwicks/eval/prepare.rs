@@ -1,24 +1,25 @@
 // nonorthogonalwicks/eval/prepare.rs
+// Crate-root imports.
+use crate::ExcitationSpin;
+use crate::maths::build_d;
+use crate::noci::NOCIScalar;
+use crate::time_call;
+
+// Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 
-use crate::ExcitationSpin;
-use crate::noci::NOCIScalar;
-
-use crate::maths::build_d;
-use crate::time_call;
-
 /// Prepare the contraction-determinant quantities shared by the same-spin overlap and Hamiltonian evaluators.
-/// For total excitation rank L = L_x + L_w, the contraction determinant has elements:
-/// (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(m_j)} for i \geq j,
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(m_j)} for i < j.
-/// `scratch.det0` stores \mathbf D_{\mathrm{ov}}(0,\ldots,0); when m > 0, `scratch.det1` also stores
-/// \mathbf D_{\mathrm{ov}}(1,\ldots,1). Mixed distributions are formed later by selecting each
-/// column j according to m_j \in \{0,1\}.
+/// `For total excitation rank L = L_x + L_w, the contraction determinant has elements:`
+/// `(\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(m_j)} for i \geq j,`
+/// `(\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(m_j)} for i < j.`
+/// `scratch.det0 stores \mathbf D_{\mathrm{ov}}(0,\ldots,0); when m > 0, scratch.det1 also stores`
+/// `\mathbf D_{\mathrm{ov}}(1,\ldots,1). Mixed distributions are formed later by selecting each`
+/// `column j according to m_j \in \{0,1\}.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Scratch storage receiving the determinant labels and required contraction determinants.
 /// # Returns
 /// - `()`: Writes the required contraction-determinant quantities into `scratch`.
@@ -40,16 +41,16 @@ pub fn prepare_same<T: NOCIScalar>(
     })
 }
 
-/// Prepare \mathbf D_{\mathrm{ov}}(0,\ldots,0) when m = 0, so the reference pair contains
-/// no zero-overlap orbital pairs and every column assignment is m_j = 0. Fixed-rank kernels are
-/// used for L = 1,\ldots,6; arbitrary ranks use the general determinant builder.
+/// `Prepare \mathbf D_{\mathrm{ov}}(0,\ldots,0) when m = 0, so the reference pair contains`
+/// `no zero-overlap orbital pairs and every column assignment is m_j = 0. Fixed-rank kernels are`
+/// `used for L = 1,\ldots,6; arbitrary ranks use the general determinant builder.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
 /// - `g_ex`: Excitation defining the ket determinant.
-/// - `scratch`: Scratch storage receiving the determinant labels and \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// - `scratch`: `Scratch storage receiving the determinant labels and \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// # Returns
-/// - `()`: Writes the determinant labels and m_j = 0 contraction determinant.
+/// - `()`: `Writes the determinant labels and m_j = 0 contraction determinant.`
 #[inline(always)]
 fn prepare_same_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -95,7 +96,7 @@ fn prepare_same_m0<T: NOCIScalar>(
     })
 }
 
-/// Prepare the fixed-rank L = 1 contraction determinant \mathbf D_{\mathrm{ov}}(0).
+/// `Prepare the fixed-rank L = 1 contraction determinant \mathbf D_{\mathrm{ov}}(0).`
 /// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -137,7 +138,7 @@ fn prepare_same_m0_l1<T: NOCIScalar>(
     })
 }
 
-/// Prepare the fixed-rank L = 2 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// `Prepare the fixed-rank L = 2 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -189,7 +190,7 @@ fn prepare_same_m0_l2<T: NOCIScalar>(
     })
 }
 
-/// Prepare the fixed-rank L = 3 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// `Prepare the fixed-rank L = 3 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -247,7 +248,7 @@ fn prepare_same_m0_l3<T: NOCIScalar>(
     })
 }
 
-/// Prepare the fixed-rank L = 4 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// `Prepare the fixed-rank L = 4 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -315,7 +316,7 @@ fn prepare_same_m0_l4<T: NOCIScalar>(
     })
 }
 
-/// Prepare the fixed-rank L = 5 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// `Prepare the fixed-rank L = 5 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -393,7 +394,7 @@ fn prepare_same_m0_l5<T: NOCIScalar>(
     }
 }
 
-/// Prepare the fixed-rank L = 6 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
+/// `Prepare the fixed-rank L = 6 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
@@ -486,8 +487,8 @@ fn prepare_same_m0_l6<T: NOCIScalar>(
 }
 
 /// Prepare the two contraction determinants required when m > 0:
-/// \mathbf D_{\mathrm{ov}}(0,\ldots,0) and \mathbf D_{\mathrm{ov}}(1,\ldots,1).
-/// Mixed distributions are formed later by selecting each column according to m_j \in \{0,1\}.
+/// `\mathbf D_{\mathrm{ov}}(0,\ldots,0) and \mathbf D_{\mathrm{ov}}(1,\ldots,1).`
+/// `Mixed distributions are formed later by selecting each column according to m_j \in \{0,1\}.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `l_ex`: Excitation defining the bra determinant.
@@ -538,16 +539,16 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 }
 
 /// Construct the row and column labels for an arbitrary-rank contraction determinant.
-/// For L_x bra-reference and L_w ket-reference excitation pairs:
-/// (r_k,c_k) = (a_k,i_k) for 0 \leq k < L_x,
-/// (r_{L_x+k},c_{L_x+k}) = (j_k,b_k) for 0 \leq k < L_w.
-/// Hence the row space is V_x \cup O_w and the column space is O_x \cup V_w.
+/// `For L_x bra-reference and L_w ket-reference excitation pairs:`
+/// `(r_k,c_k) = (a_k,i_k) for 0 \leq k < L_x,`
+/// `(r_{L_x+k},c_{L_x+k}) = (j_k,b_k) for 0 \leq k < L_w.`
+/// `Hence the row space is V_x \cup O_w and the column space is O_x \cup V_w.`
 /// # Arguments:
-/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
-/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant generated from \langle{}^x\Psi|.`
+/// - `g_ex`: `Excitation defining the ket determinant generated from |{}^w\Psi\rangle.`
 /// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
-/// - `rows`: Output labels in V_x \cup O_w.
-/// - `cols`: Output labels in O_x \cup V_w.
+/// - `rows`: `Output labels in V_x \cup O_w.`
+/// - `cols`: `Output labels in O_x \cup V_w.`
 /// # Returns
 /// - `()`: Writes the ordered contraction-determinant labels into `rows` and `cols`.
 #[inline(always)]

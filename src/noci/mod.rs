@@ -20,7 +20,7 @@
 //! Full Hamiltonian, overlap and generalised-Fock matrices may be constructed for
 //! deterministic calculations. The resulting generalised eigenvalue problem
 //!
-//! \mathbf H\mathbf c = E\mathbf S\mathbf c
+//! `\mathbf H\mathbf c = E\mathbf S\mathbf c`
 //!
 //! is then solved.
 

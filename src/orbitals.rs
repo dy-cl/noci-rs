@@ -1,10 +1,13 @@
 // orbitals.rs
 
+// Standard library imports.
 use std::sync::Arc;
 
+// External crate imports.
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
+// Crate-root imports.
 use crate::AoData;
 use crate::DetState;
 use crate::maths::{ERIScalar, adjoint, loewdin_x, real2_as};

@@ -1,11 +1,14 @@
 // scf/h/track.rs
 
+// External crate imports.
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::maths::complex_metric_orthonormalize;
 use crate::{AoData, HSCFState, SCFState};
 
+// Parent/sibling imports.
 use super::optimise::hscf_cycle;
 use super::seed::complex_orbitals_from_real;
 use super::types::HSCFRunData;

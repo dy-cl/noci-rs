@@ -1,14 +1,18 @@
 // stochastic/state.rs
+// Standard library imports.
 use std::collections::HashMap;
 
+// External crate imports.
 use mpi::traits::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+// Crate-root imports.
 use crate::input::{ExcitationGen, Propagator};
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
+// Parent/sibling imports.
 use super::common::find_hs;
 use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
 use super::metric::fri;
@@ -30,7 +34,7 @@ pub struct QMCTimings {
     pub unpack_population_changes: f64,
     /// Time spent draining the change accumulator into a sparse list.
     pub drain_population_changes: f64,
-    /// Time spent applying the overlap-transformed change N \leftarrow N + S\Delta.
+    /// `Time spent applying the overlap-transformed change N \leftarrow N + S\Delta.`
     pub apply_overlap_changes: f64,
     /// Time spent computing persistent and sampled population statistics.
     pub compute_population_stats: f64,
@@ -84,9 +88,9 @@ pub(in crate::stochastic) struct ShiftSpec {
 impl ShiftSpec {
     /// Construct the direct-overlap shift specification.
     /// # Arguments:
-    /// - `es`: Population-control shift \(E_s\).
+    /// - `es`: Population-control shift `E_s`.
     /// # Returns:
-    /// - `ShiftSpec`: Shift specification for \(H - E_s S\).
+    /// - `ShiftSpec`: Shift specification for `H - E_s S`.
     pub(in crate::stochastic) fn direct_overlap(es: f64) -> Self {
         Self {
             es,
@@ -99,7 +103,7 @@ impl ShiftSpec {
     /// # Arguments:
     /// - `self`: Shift specification.
     /// # Returns:
-    /// - `f64`: Shift \(E_s^S\) in \(H - E_s^S S\).
+    /// - `f64`: Shift `E_s^S` in `H - E_s^S S`.
     pub(in crate::stochastic) fn overlap_shift(&self) -> f64 {
         match self.propagator {
             Propagator::Unshifted => self.es_s,
@@ -115,7 +119,7 @@ impl ShiftSpec {
     /// # Arguments:
     /// - `self`: Shift specification.
     /// # Returns:
-    /// - `f64`: Shift \(E_s^I\) in \(H - E_s^S S - E_s^I I\).
+    /// - `f64`: Shift `E_s^I` in `H - E_s^S S - E_s^I I`.
     pub(in crate::stochastic) fn identity_shift(&self) -> f64 {
         match self.propagator {
             Propagator::Unshifted => 0.0,
@@ -129,10 +133,10 @@ impl ShiftSpec {
 
     /// Evaluate the off-diagonal shifted coupling.
     /// # Arguments:
-    /// - `h`: Hamiltonian matrix element \(H_{xw}\).
-    /// - `s`: Overlap matrix element \(S_{xw}\).
+    /// - `h`: Hamiltonian matrix element `H_{xw}`.
+    /// - `s`: Overlap matrix element `S_{xw}`.
     /// # Returns:
-    /// - `f64`: \(H_{xw} - E_s^S S_{xw}\).
+    /// - `f64`: `H_{xw} - E_s^S S_{xw}`.
     pub(in crate::stochastic) fn coupling(
         &self,
         h: f64,
@@ -143,10 +147,10 @@ impl ShiftSpec {
 
     /// Evaluate the diagonal residual.
     /// # Arguments:
-    /// - `h`: Hamiltonian matrix element \(H_{ww}\).
-    /// - `s`: Overlap matrix element \(S_{ww}\).
+    /// - `h`: Hamiltonian matrix element `H_{ww}`.
+    /// - `s`: Overlap matrix element `S_{ww}`.
     /// # Returns:
-    /// - `f64`: \(H_{ww} - E_s^S S_{ww} - E_s^I\).
+    /// - `f64`: `H_{ww} - E_s^S S_{ww} - E_s^I`.
     pub(in crate::stochastic) fn diagonal_residual(
         &self,
         h: f64,
@@ -292,13 +296,13 @@ pub(in crate::stochastic) struct ProjectedEnergyUpdate {
 /// Storage for current persistent and sampled population statistics.
 #[derive(Clone, Copy)]
 pub(in crate::stochastic) struct PopulationStats {
-    /// Persistent population 1-norm |N|_1.
+    /// `Persistent population 1-norm |N|_1.`
     pub(in crate::stochastic) nw: f64,
     /// Persistent population 1-norm on the reference determinants.
     pub(in crate::stochastic) nref: f64,
-    /// Sampled-population 1-norm |\tilde N|_1.
+    /// `Sampled-population 1-norm |\tilde N|_1.`
     pub(in crate::stochastic) nsampled: f64,
-    /// Number of nonzero sampled populations | \tilde N|_0.
+    /// `Number of nonzero sampled populations | \tilde N|_0.`
     pub(in crate::stochastic) nsampledo: i64,
 }
 
@@ -476,7 +480,7 @@ impl ThreadPropagation {
     /// - `i`: First determinant index.
     /// - `j`: Second determinant index.
     /// # Returns:
-    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements \(H_{ij}\) and \(S_{ij}\).
+    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements `H_{ij}` and `S_{ij}`.
     #[inline(always)]
     fn cached_hs(
         &mut self,

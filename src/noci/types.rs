@@ -1,25 +1,26 @@
 // noci/types.rs
 
+// External crate imports.
 use ndarray::{Array2, Array4};
 use ndarray_linalg::Scalar;
 use num_complex::Complex64;
 
+// Crate-root imports.
 use crate::input::Input;
 use crate::maths::ERIScalar;
-use crate::nonorthogonalwicks::WicksView;
-use crate::{AoData, DetState, StateScalar};
-
 use crate::maths::{
     einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_ab_real, einsum_ba_abcd_cd_complex,
     einsum_ba_abcd_cd_complex_real, einsum_ba_abcd_cd_real,
 };
+use crate::nonorthogonalwicks::WicksView;
+use crate::{AoData, DetState, StateScalar};
 
 /// Scalar type accepted by generic NOCI matrix-element code.
 pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
     /// Construct a purely imaginary scalar.
     fn from_imag(x: f64) -> Self;
 
-    /// Calculate Einstein summation of scalar matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
+    /// `Calculate Einstein summation of scalar matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
     /// - `g`: Scalar matrix 1.
@@ -31,7 +32,7 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
         h: &Array2<Self>,
     ) -> Self;
 
-    /// Calculate Einstein summation of scalar matrix `g` and real matrix `h` as \sum_{a,b} g_{b,a} h_{a,b}.
+    /// `Calculate Einstein summation of scalar matrix g and real matrix h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
     /// - `g`: Scalar matrix 1.
@@ -44,7 +45,7 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
     ) -> Self;
 
     /// Calculate Einstein summation of scalar matrices `g` and `h` and scalar 4D tensor `t` as
-    /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
     /// Assumes `g`, `h` and `t` all have axes of equal length.
     /// # Arguments
     /// - `g`: Scalar matrix 1.
@@ -59,7 +60,7 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
     ) -> Self;
 
     /// Calculate Einstein summation of scalar matrices `g` and `h` and real 4D tensor `t` as
-    /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
     /// Assumes `g`, `h` and `t` all have axes of equal length.
     /// # Arguments
     /// - `g`: Scalar matrix 1.
@@ -83,7 +84,7 @@ impl NOCIScalar for f64 {
         }
     }
 
-    /// Calculate Einstein summation of real matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
+    /// `Calculate Einstein summation of real matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
     /// - `g`: Real matrix 1.
@@ -97,7 +98,7 @@ impl NOCIScalar for f64 {
         einsum_ba_ab_real(g, h)
     }
 
-    /// Calculate Einstein summation of real matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
+    /// `Calculate Einstein summation of real matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
     /// - `g`: Real matrix 1.
@@ -112,7 +113,7 @@ impl NOCIScalar for f64 {
     }
 
     /// Calculate Einstein summation of real matrices `g` and `h` and real 4D tensor `t` as
-    /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
     /// Assumes `g`, `h` and `t` all have axes of equal length.
     /// # Arguments
     /// - `g`: Real matrix 1.
@@ -129,7 +130,7 @@ impl NOCIScalar for f64 {
     }
 
     /// Calculate Einstein summation of real matrices `g` and `h` and real 4D tensor `t` as
-    /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
     /// Assumes `g`, `h` and `t` all have axes of equal length.
     /// # Arguments
     /// - `g`: Real matrix 1.
@@ -151,7 +152,7 @@ impl NOCIScalar for Complex64 {
         Complex64::new(0.0, x)
     }
 
-    /// Calculate Einstein summation of complex matrices `g` and `h` as \sum_{a,b} g_{b,a} h_{a,b}.
+    /// `Calculate Einstein summation of complex matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
     /// - `g`: Complex matrix 1.
@@ -165,7 +166,7 @@ impl NOCIScalar for Complex64 {
         einsum_ba_ab_complex(g, h)
     }
 
-    /// Calculate Einstein summation of complex matrix `g` and real matrix `h` as \sum_{a,b} g_{b,a} h_{a,b}.
+    /// `Calculate Einstein summation of complex matrix g and real matrix h as \sum_{a,b} g_{b,a} h_{a,b}.`
     /// Assumes `g` and `h` are of identical shape.
     /// # Arguments
     /// - `g`: Complex matrix.
@@ -180,7 +181,7 @@ impl NOCIScalar for Complex64 {
     }
 
     /// Calculate Einstein summation of complex matrices `g` and `h` and complex 4D tensor `t` as
-    /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
     /// Assumes `g`, `h` and `t` all have axes of equal length.
     /// # Arguments
     /// - `g`: Complex matrix 1.
@@ -197,7 +198,7 @@ impl NOCIScalar for Complex64 {
     }
 
     /// Calculate Einstein summation of complex matrices `g` and `h` and real 4D tensor `t` as
-    /// \sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
     /// Assumes `g`, `h` and `t` all have axes of equal length.
     /// # Arguments
     /// - `g`: Complex matrix 1.

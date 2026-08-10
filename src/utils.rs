@@ -1,10 +1,13 @@
 // utils.rs
+// Standard library imports.
 use std::fmt::Display;
 
+// External crate imports.
 use ndarray::{Array2, Array4};
 use rand::Rng;
 use rand::rngs::StdRng;
 
+// Crate-root imports.
 use crate::noci::NOCIScalar;
 
 /// Print a matrix.

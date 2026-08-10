@@ -11,23 +11,23 @@
 //! # Signed-integer walker propagation
 //!
 //! The signed-integer formulation represents the determinant coefficient vector by populations
-//! n_x \in \mathbb Z and maintains the corresponding overlap-transformed population
+//! `n_x \in \mathbb Z and maintains the corresponding overlap-transformed population`
 //!
-//! \tilde n_x = \sum_w S_{xw}n_w.
+//! `\tilde n_x = \sum_w S_{xw}n_w.`
 //!
 //! Spawning samples the off-diagonal propagator, death or cloning samples its diagonal
 //! contribution, and annihilation combines changes of opposite sign on the same determinant.
 //! The unshifted, shifted, doubly shifted and difference-doubly-shifted propagators are defined
 //! by the residual
 //!
-//! (\mathbf H - E_s^S\mathbf S)\mathbf n
+//! `(\mathbf H - E_s^S\mathbf S)\mathbf n`
 //!
-//! together with an identity shift controlled by E_s, E_s^S, or their difference. The
+//! `together with an identity shift controlled by E_s, E_s^S, or their difference. The`
 //! coefficient and overlap-transformed populations therefore have separate population-control
 //! shifts and population statistics.
 //!
 //! Because an extended NOCI basis may be overcomplete, stochastic noise can generate
-//! coefficient population in \operatorname{null}(\mathbf S). Such population represents the
+//! `coefficient population in \operatorname{null}(\mathbf S). Such population represents the`
 //! zero state of the Hilbert space and does not affect physical observables, but it can increase
 //! the total walker population and computational cost.
 //!
@@ -35,29 +35,29 @@
 //!
 //! The direct-overlap formulation instead stores the real metric population
 //!
-//! \mathbf N = \mathbf S\mathbf c,
+//! `\mathbf N = \mathbf S\mathbf c,`
 //!
 //! which lies in the physical range of the overlap matrix. A conditionally unbiased sparse
 //! sample
 //!
-//! \tilde{\mathbf N} = \Phi_c(\mathbf N), \mathbb E[\tilde{\mathbf N}\mid\mathbf N] = \mathbf N,
+//! `\tilde{\mathbf N} = \Phi_c(\mathbf N), \mathbb E[\tilde{\mathbf N}\mid\mathbf N] = \mathbf N,`
 //!
 //! generates the pre-overlap change
 //!
-//! \mathbf\Delta = -\Delta\tau(\mathbf H - E_s^S\mathbf S)\tilde{\mathbf N}.
+//! `\mathbf\Delta = -\Delta\tau(\mathbf H - E_s^S\mathbf S)\tilde{\mathbf N}.`
 //!
 //! The persistent population is changed only through the explicit overlap action
 //!
-//! \mathbf N' = \mathbf N + \mathbf S\mathbf\Delta.
+//! `\mathbf N' = \mathbf N + \mathbf S\mathbf\Delta.`
 //!
 //! Therefore
 //!
-//! \mathbf N' - \mathbf N \in \operatorname{range}(\mathbf S).
+//! `\mathbf N' - \mathbf N \in \operatorname{range}(\mathbf S).`
 //!
-//! Since the initial population is constructed as \mathbf N_0 = \mathbf S\mathbf c_0, induction
-//! gives \mathbf N_k \in \operatorname{range}(\mathbf S) after every persistent update. The
+//! `Since the initial population is constructed as \mathbf N_0 = \mathbf S\mathbf c_0, induction`
+//! `gives \mathbf N_k \in \operatorname{range}(\mathbf S) after every persistent update. The`
 //! propagation consequently prevents stochastic population from accumulating in
-//! \operatorname{null}(\mathbf S) without diagonalising or inverting the overlap matrix.
+//! `\operatorname{null}(\mathbf S) without diagonalising or inverting the overlap matrix.`
 //!
 //! Fast Randomised Iteration-style stochastic compression may be applied to the persistent
 //! metric population and to individual generated population changes. Both compression maps

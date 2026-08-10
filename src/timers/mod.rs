@@ -22,9 +22,11 @@ pub mod snoci;
 pub mod stochastic;
 
 // Private imports.
+// Standard library imports.
 use std::cell::RefCell;
 use std::time::Duration;
 
+// External crate imports.
 use mpi::traits::*;
 
 /// Apply a helper macro to every timing counter field in `Totals`.
@@ -335,7 +337,7 @@ thread_local! {
 /// Take a copy of the timing totals accumulated on the current thread and all Rayon worker
 /// threads on this rank, then reduce across MPI ranks using a max reduction.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// # Returns:
 /// - `Totals`: Max timing counters across all MPI ranks after summing all Rayon threads on each rank.
 pub fn snapshot_all_mpi(world: &impl CommunicatorCollectives) -> Totals {
@@ -356,7 +358,7 @@ pub fn snapshot_all_mpi(world: &impl CommunicatorCollectives) -> Totals {
 /// Take a copy of the timing totals accumulated on the current thread and all Rayon worker
 /// threads on this rank, then gather the packed timing buffers from all MPI ranks.
 /// # Arguments:
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// # Returns:
 /// - `Vec<Totals>`: Per-rank timing totals, one entry per MPI rank, after summing all Rayon
 ///   threads within each rank.

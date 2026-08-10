@@ -1,8 +1,10 @@
 // nocc/residual.rs
 //
+// External crate imports.
 use ndarray::{Array1, Array2, Array4};
 use rayon::prelude::*;
 
+// Crate-root imports.
 use crate::AoData;
 use crate::nocc::common::{Tensors, class_name, eval};
 use crate::nocc::loader::{r0_terms, r1_terms, r2_terms};

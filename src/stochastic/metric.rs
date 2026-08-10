@@ -1,7 +1,9 @@
 // stochastic/metric.rs
+// Standard library imports.
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+// External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::datatype::PartitionMut;
 use mpi::topology::Communicator;
@@ -11,22 +13,25 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
-use super::common::{
-    coalesce_population_updates, exchange_population_changes, find_hs, max_scratch_sizes,
-};
-use super::state::{
-    ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, ProjectedEnergyUpdate,
-    PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations,
-    ThreadPropagation,
-};
+// Crate-root imports.
 use crate::input::Input;
 use crate::noci::{NOCIData, OverlapFactor, OverlapFactorScratch};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
+// Parent/sibling imports.
+use super::common::{
+    coalesce_population_updates, exchange_population_changes, find_hs, max_scratch_sizes,
+};
 use super::init::initialise_qmc_state;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::state::owner;
+use super::state::{
+    ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, ProjectedEnergyUpdate,
+    PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations,
+    ThreadPropagation,
+};
+
 /// Accumulate a real population change on determinant `i`.
 /// # Arguments:
 /// - `mc`: Current Monte Carlo state.
@@ -84,16 +89,16 @@ pub(in crate::stochastic) fn take_population_changes(
     })
 }
 
-/// Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.
+/// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
 /// # Arguments:
-/// - `populations`: Rank-local persistent populations N_w.
-/// - `updates`: Sparse pre-overlap changes \Omega, \Delta_\Omega.
+/// - `populations`: `Rank-local persistent populations N_w.`
+/// - `updates`: `Sparse pre-overlap changes \Omega, \Delta_\Omega.`
 /// - `data`: Immutable NOCI data.
 /// - `overlap_factor`: Precomputed determinant and spin-component mappings.
 /// - `targets`: Global determinant indices for rank-local rows.
-/// - `scratch`: Reusable allocation storage for one application of S\Delta.
+/// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
 /// # Returns:
-/// - `()`: Applies N_w \leftarrow N_w + \delta N_w.
+/// - `()`: `Applies N_w \leftarrow N_w + \delta N_w.`
 fn apply_population_changes_local<I>(
     populations: &mut [f64],
     updates: I,
@@ -109,12 +114,12 @@ fn apply_population_changes_local<I>(
 
 /// Apply the global overlap-transformed population change.
 /// Each rank initially owns a subset of the accumulated changes
-/// \(\Delta_\Omega\). The changes are gathered across MPI ranks and each
+/// `\Delta_\Omega`. The changes are gathered across MPI ranks and each
 /// rank updates its locally owned persistent populations according to
-/// \(N_w \leftarrow N_w + \sum_\Omega S_{w\Omega}\Delta_\Omega\).
-/// Since every change has the form \(S\Delta\), the population vector remains in
-/// \(\operatorname{range}(S)\) provided the initial vector is in
-/// \(\operatorname{range}(S)\), therefore avoiding population growth in the null space.
+/// `N_w \leftarrow N_w + \sum_\Omega S_{w\Omega}\Delta_\Omega`.
+/// Since every change has the form `S\Delta`, the population vector remains in
+/// `\operatorname{range}(S)` provided the initial vector is in
+/// `\operatorname{range}(S)`, therefore avoiding population growth in the null space.
 /// # Arguments:
 /// - `populations`: Rank-local persistent populations.
 /// - `dlocal`: Local determinant population changes.
@@ -122,7 +127,7 @@ fn apply_population_changes_local<I>(
 /// - `overlap_factor`: Reusable spin overlap factors.
 /// - `run`: Rank-local run metadata.
 /// - `mpi`: MPI communicator and reusable MPI scratch storage.
-/// - `scratch`: Reusable overlap allocation storage for grouped S\Delta application.
+/// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`
 /// # Returns
 /// - `()`: Applies the global overlap-transformed population change.
 fn apply_overlap_population_changes(
@@ -305,7 +310,7 @@ fn prepare_spawn_update_exchange(
 /// # Arguments:
 /// - `mc`: Contains the current Monte Carlo state.
 /// - `mpi`: Reusable MPI communication scratch.
-/// - `world`: MPI communicator object (MPI_COMM_WORLD).
+/// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// - `ndets`: Total number of determinants.
 /// - `nranks`: Total number of MPI ranks.
 /// # Returns
@@ -336,18 +341,18 @@ pub(in crate::stochastic) fn exchange_accumulated_updates(
 }
 
 /// Generate one stochastic estimate of the pre-overlap population change.
-/// Given the sampled populations \tilde N, this function
-/// estimates \Delta = -\Delta\tau(H - E_s S)\tilde N.
+/// `Given the sampled populations \tilde N, this function`
+/// `estimates \Delta = -\Delta\tau(H - E_s S)\tilde N.`
 /// # Arguments:
 /// - `it`: Global stochastic-cycle index.
-/// - `sampled`: Sparse sampled populations \tilde N.
+/// - `sampled`: `Sparse sampled populations \tilde N.`
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local propagation metadata.
-/// - `shift`: Current population-control shift E_s(\Delta \tau).
+/// - `shift`: `Current population-control shift E_s(\Delta \tau).`
 /// - `workers`: Persistent thread-local propagation storage.
 /// - `result`: Reusable storage for generated population changes.
 /// # Returns:
-/// - `()`: Fills `result` with an estimate of -\Delta\tau(H - E_s S)\tilde N.
+/// - `()`: `Fills result with an estimate of -\Delta\tau(H - E_s S)\tilde N.`
 pub(in crate::stochastic) fn propagate_iteration(
     it: usize,
     sampled: &SparsePopulations,
@@ -510,12 +515,12 @@ pub(in crate::stochastic) fn population_stats_projected_energy(
 }
 
 /// Construct an FRI-style sparse unbiased stochastic sample of the populations.
-/// For a population x and some cutoff c > 0, \Phi_c(x) = x if |x| \geq c. Otherwise,
-/// Phi_c(x) = \text{sign}(x)c with probability |x| / c, \Phi_c(x) = 0 with probability
-/// 1 - |x| / c. Therefore, \mathbb E[\Phi_c(x)] = x, and hence \mathbb E[\tilde N \mid N] = N.
+/// `For a population x and some cutoff c > 0, \Phi_c(x) = x if |x| \geq c. Otherwise,`
+/// `Phi_c(x) = \text{sign}(x)c with probability |x| / c, \Phi_c(x) = 0 with probability`
+/// `1 - |x| / c. Therefore, \mathbb E[\Phi_c(x)] = x, and hence \mathbb E[\tilde N \mid N] = N.`
 /// # Arguments:
 /// - `populations`: Persistent rank-local population vector N.
-/// - `sampled`: Temporary sparse sampled vector \tilde N.
+/// - `sampled`: `Temporary sparse sampled vector \tilde N.`
 /// - `cutoff`: Stochastic sampling cutoff c.
 /// - `run`: Rank-local determinant ownership information.
 /// - `rng`: Random-number generator.
@@ -607,10 +612,10 @@ pub(in crate::stochastic) fn sample_populations(
 }
 
 /// Apply unbiased FRI stochastic rounding to a signed real value.
-/// For some cutoff c > 0, \mathcal \Phi_c(x) = x when x = 0,
-/// c \leq 0, or |x| \geq c. For 0 < |x| < c, \Phi_c(x) = \text{sign}(x)c
+/// `For some cutoff c > 0, \mathcal \Phi_c(x) = x when x = 0,`
+/// `c \leq 0, or |x| \geq c. For 0 < |x| < c, \Phi_c(x) = \text{sign}(x)c`
 /// with probability |x| / c, and zero otherwise. The rounding is conditionally unbiased
-/// as \mathbb E[\Phi_c(x) \mid x] = x.
+/// `as \mathbb E[\Phi_c(x) \mid x] = x.`
 /// # Arguments:
 /// - `value`: Signed real value x.
 /// - `cutoff`: Minimum nonzero retained magnitude c.
@@ -634,9 +639,9 @@ pub(in crate::stochastic) fn fri(
 }
 
 /// Apply FRI compression to sparse population updates in place.
-/// Each update \Delta b_x is replaced by \Phi_c(\Delta b_x), so the compressed
+/// `Each update \Delta b_x is replaced by \Phi_c(\Delta b_x), so the compressed`
 /// pre-overlap vector remains conditionally unbiased:
-/// \mathbb E[\Phi_c(\Delta b_x) \mid \Delta b_x] = \Delta b_x.
+/// `\mathbb E[\Phi_c(\Delta b_x) \mid \Delta b_x] = \Delta b_x.`
 /// # Arguments:
 /// - `updates`: Sparse population changes.
 /// - `cutoff`: Minimum nonzero retained magnitude c.
@@ -692,17 +697,17 @@ pub(in crate::stochastic) fn update_shift(
 }
 
 /// Perform range-preserving null-space avoidant stochastic NOCI propagation.
-/// The initial population is N_0 = S c_0, rescaled to the requested  population 1-norm.
+/// `The initial population is N_0 = S c_0, rescaled to the requested  population 1-norm.`
 /// Within each report block, the population vector is held fixed while `ncycles` independent
-/// samples \tilde N^{(a)} = \Phi_c(N) generate pre-overlap changes
-/// \Delta^{(a)} \approx -\Delta\tau(H - E_s S)\tilde N^{(a)}.
+/// `samples \tilde N^{(a)} = \Phi_c(N) generate pre-overlap changes`
+/// `\Delta^{(a)} \approx -\Delta\tau(H - E_s S)\tilde N^{(a)}.`
 /// At the end of the report block, the accumulated change is applied as
-/// N'= N + S\sum_{a = 1}^{n_{\text{cycles}}}\Delta^{(a)}.
-/// This update preserves N \in \range(S) and removes null-space components.
+/// `N'= N + S\sum_{a = 1}^{n_{\text{cycles}}}\Delta^{(a)}.`
+/// `This update preserves N \in \range(S) and removes null-space components.`
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
-/// - `c0`: Initial determinant coefficient vector c_0.
-/// - `es`: Population-control shift E_s.
+/// - `c0`: `Initial determinant coefficient vector c_0.`
+/// - `es`: `Population-control shift E_s.`
 /// - `ref_indices`: Determinants included in the reference-population norm.
 /// - `world`: MPI communicator.
 /// # Returns:

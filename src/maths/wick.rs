@@ -2,12 +2,15 @@
 
 // maths/wick.rs
 
-use crate::StateScalar;
-#[cfg(feature = "nocc")]
-use crate::noci::NOCIScalar;
+// External crate imports.
 #[cfg(feature = "nocc")]
 use ndarray::Array2;
 use ndarray::ArrayView2;
+
+// Crate-root imports.
+use crate::StateScalar;
+#[cfg(feature = "nocc")]
+use crate::noci::NOCIScalar;
 
 /// Calculate a determinant coefficient for an occupation bitstring.
 /// # Arguments:

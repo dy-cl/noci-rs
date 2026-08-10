@@ -1,13 +1,17 @@
 // nocc/space.rs
 
+// External crate imports.
 use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
-use super::overlap;
+// Crate-root imports.
 use crate::AoData;
 use crate::maths::linalg::loewdin_x;
 use crate::nocc::{Cumulants, RDM1};
 use crate::scf::fock;
+
+// Parent/sibling imports.
+use super::overlap;
 
 /// NOCC orbital class in the NOCI natural-orbital basis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -54,9 +58,9 @@ pub(crate) enum ExcitationClass {
 /// Spin-free GNOCC excitation operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Excitation {
-    /// Spin-free single excitation E^p_q.
+    /// `Spin-free single excitation E^p_q.`
     Single { p: usize, q: usize },
-    /// Spin-free double excitation E^{pq}_{rs}.
+    /// `Spin-free double excitation E^{pq}_{rs}.`
     Double {
         p: usize,
         q: usize,
@@ -94,7 +98,7 @@ pub(crate) struct FoisBasis {
     pub h: Array1<f64>,
     /// Weighted metric h S h.
     pub weighted_metric: Array2<f64>,
-    /// Canonical FOIS transformation Y = h X.
+    /// `Canonical FOIS transformation Y = h X.`
     pub y: Array2<f64>,
 }
 

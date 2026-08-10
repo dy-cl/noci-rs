@@ -1,5 +1,6 @@
 // nocc/overlap.rs
 
+// Crate-root imports.
 use crate::nocc::common::{Tensors, eval};
 use crate::nocc::loader::overlap_terms;
 use crate::nocc::space::{Excitation, ExcitationClass, Spaces, excitation_class};
@@ -48,7 +49,7 @@ fn block(
 }
 
 /// Evaluate one generated FOIS overlap metric element
-/// S_{\mu\nu} = \langle \Phi | \hat t_\mu^\dagger \hat \tau_\nu | \Phi \rangle.
+/// `S_{\mu\nu} = \langle \Phi | \hat t_\mu^\dagger \hat \tau_\nu | \Phi \rangle.`
 /// # Arguments:
 /// - `left`: Left excitation operator.
 /// - `right`: Right excitation operator.

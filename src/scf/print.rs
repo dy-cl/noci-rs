@@ -1,9 +1,12 @@
 // scf/print.rs
 
+// External crate imports.
 use ndarray::Array1;
 
+// Crate-root imports.
 use crate::input::{Input, SCFExcitation};
 
+// Parent/sibling imports.
 use super::cycle::spin_label;
 
 /// Print SCF header information.

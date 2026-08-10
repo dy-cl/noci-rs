@@ -1,29 +1,32 @@
 // nonorthogonalwicks/eval/onebody.rs
-use super::super::scratch::WickScratch;
-use super::super::view::SameSpinView;
-use super::helpers::{bit, column_replacement_correction, get_det_adjt_same};
+// Crate-root imports.
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
+// Parent/sibling imports.
+use super::super::scratch::WickScratch;
+use super::super::view::SameSpinView;
+use super::helpers::{bit, column_replacement_correction, get_det_adjt_same};
+
 #[derive(Clone, Copy)]
 enum OneBody {
-    /// Use the {}^x F_0^{(m_i)} and {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)}
-    /// intermediates constructed from the one-electron Hamiltonian \hat h.
+    /// `Use the {}^x F_0^{(m_i)} and {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)}`
+    /// `intermediates constructed from the one-electron Hamiltonian \hat h.`
     H1,
-    /// Use the corresponding intermediates constructed from the current generalised-Fock operator \hat F.
+    /// `Use the corresponding intermediates constructed from the current generalised-Fock operator \hat F.`
     Fock,
 }
 
-/// Read the scalar one-body intermediate {}^x F_0^{(m_i)} for the selected operator and
-/// zero-overlap assignment m_i of the operator contraction.
+/// `Read the scalar one-body intermediate {}^x F_0^{(m_i)} for the selected operator and`
+/// `zero-overlap assignment m_i of the operator contraction.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `ob`: Selects intermediates constructed from the one-electron Hamiltonian or generalised Fock operator.
-/// - `mi`: Operator-contraction assignment m_i \in \{0,1\}.
+/// - `mi`: `Operator-contraction assignment m_i \in \{0,1\}.`
 /// # Returns
-/// - `T`: Scalar intermediate {}^x F_0^{(m_i)}.
+/// - `T`: `Scalar intermediate {}^x F_0^{(m_i)}.`
 #[inline(always)]
 fn one_body_scalar<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -38,12 +41,12 @@ fn one_body_scalar<T: NOCIScalar>(
 }
 
 /// Evaluate the one-electron Hamiltonian matrix element between excited determinants generated from
-/// \langle{}^x\Psi| and |{}^w\Psi\rangle. The {}^x F_0^{(m_i)} and
-/// {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)} intermediates are those constructed from \hat h.
+/// `\langle{}^x\Psi| and |{}^w\Psi\rangle. The {}^x F_0^{(m_i)} and`
+/// `{}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)} intermediates are those constructed from \hat h.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Scratch storage for contraction determinants, cofactors and work buffers.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
@@ -62,12 +65,12 @@ pub(crate) fn xw_h1<T: NOCIScalar>(
 }
 
 /// Evaluate the generalised-Fock matrix element between excited determinants generated from
-/// \langle{}^x\Psi| and |{}^w\Psi\rangle. The {}^x F_0^{(m_i)} and
-/// {}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)} intermediates are those constructed from \hat F.
+/// `\langle{}^x\Psi| and |{}^w\Psi\rangle. The {}^x F_0^{(m_i)} and`
+/// `{}^{\chi_r\chi_z}\mathcal F_{rz}^{(m_i,m_j)} intermediates are those constructed from \hat F.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Scratch storage for contraction determinants, cofactors and work buffers.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
@@ -86,19 +89,19 @@ pub(crate) fn xw_f<T: NOCIScalar>(
 }
 
 /// Evaluate a one-body matrix element between excited determinants generated from the reference pair
-/// \langle{}^x\Psi| and |{}^w\Psi\rangle:
-/// \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-/// = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+1}\\m_1+\cdots+m_{L+1}=m}}
-/// [{}^x F_0^{(m_1)}\det\mathbf D_{\mathrm{ov}}(m_2,\ldots,m_{L+1})
-/// - \sum_{z=1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}
-///   (m_1,\ldots,m_{L+1})].
-///   Each m_i is zero or one. The first assignment belongs to the operator contraction and the
-///   remaining L assignments belong to the columns of \mathbf D_{\mathrm{ov}}. The implementation
+/// `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
+/// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
+/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+1}\\m_1+\cdots+m_{L+1}=m}}`
+/// `[{}^x F_0^{(m_1)}\det\mathbf D_{\mathrm{ov}}(m_2,\ldots,m_{L+1})`
+/// `- \sum_{z=1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}`
+///   `(m_1,\ldots,m_{L+1})].`
+///   `Each m_i is zero or one. The first assignment belongs to the operator contraction and the`
+///   `remaining L assignments belong to the columns of \mathbf D_{\mathrm{ov}}. The implementation`
 ///   stores the orbital-pairing phase separately from the product of non-zero singular values.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
-/// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
+/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Scratch storage for contraction determinants, cofactors and work buffers.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// - `ob`: Selects the one-electron Hamiltonian or generalised-Fock intermediates.
@@ -122,14 +125,14 @@ fn xw_one_body<T: NOCIScalar>(
     }
 }
 
-/// Evaluate the one-body matrix element when m = 0, so every contraction uses m_i = 0.
-/// Specialised kernels are used for L = 1,2,3, while all other excitation ranks use the general
-/// cofactor form. For L = 0 only the scalar intermediate {}^x F_0^{(0)} contributes.
+/// `Evaluate the one-body matrix element when m = 0, so every contraction uses m_i = 0.`
+/// `Specialised kernels are used for L = 1,2,3, while all other excitation ranks use the general`
+/// `cofactor form. For L = 0 only the scalar intermediate {}^x F_0^{(0)} contributes.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
 /// - `g_ex`: Excitation defining the ket determinant.
-/// - `scratch`: Prepared m_i = 0 contraction determinant and scratch work arrays.
+/// - `scratch`: `Prepared m_i = 0 contraction determinant and scratch work arrays.`
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// - `ob`: Selects the one-electron Hamiltonian or generalised-Fock intermediates.
 /// # Returns
@@ -159,14 +162,14 @@ fn xw_one_body_m0<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 1 one-body matrix element for m = 0.
+/// `Evaluate the fixed-rank L = 1 one-body matrix element for m = 0.`
 /// The scalar term and the sole one-column replacement are evaluated directly.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-one contraction determinant and its row and column labels.
 /// - `ob`: Selects the one-electron Hamiltonian or generalised-Fock intermediates.
 /// # Returns
-/// - `T`: One-body matrix element for L = 1 and m = 0.
+/// - `T`: `One-body matrix element for L = 1 and m = 0.`
 #[inline(always)]
 fn xw_one_body_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -195,14 +198,14 @@ fn xw_one_body_m0_l1<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 2 one-body matrix element for m = 0.
+/// `Evaluate the fixed-rank L = 2 one-body matrix element for m = 0.`
 /// The scalar term and both one-column replacements are evaluated directly.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-two contraction determinant and its row and column labels.
 /// - `ob`: Selects the one-electron Hamiltonian or generalised-Fock intermediates.
 /// # Returns
-/// - `T`: One-body matrix element for L = 2 and m = 0.
+/// - `T`: `One-body matrix element for L = 2 and m = 0.`
 #[inline(always)]
 fn xw_one_body_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -252,16 +255,16 @@ fn xw_one_body_m0_l2<T: NOCIScalar>(
     })
 }
 
-/// Evaluate the fixed-rank L = 3 one-body matrix element for m = 0.
-/// The sum of column-replacement determinants is evaluated by contracting the \mathcal F entries
-/// with \operatorname{cof}[\mathbf D_{\mathrm{ov}}].
+/// `Evaluate the fixed-rank L = 3 one-body matrix element for m = 0.`
+/// `The sum of column-replacement determinants is evaluated by contracting the \mathcal F entries`
+/// `with \operatorname{cof}[\mathbf D_{\mathrm{ov}}].`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-three contraction determinant and scratch storage for its cofactors.
 /// - `tol`: Numerical tolerance used when evaluating the determinant and adjugate-transpose matrix.
 /// - `ob`: Selects the one-electron Hamiltonian or generalised-Fock intermediates.
 /// # Returns
-/// - `T`: One-body matrix element for L = 3 and m = 0.
+/// - `T`: `One-body matrix element for L = 3 and m = 0.`
 #[inline(always)]
 fn xw_one_body_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -337,8 +340,8 @@ fn xw_one_body_m0_l3<T: NOCIScalar>(
 }
 
 /// Evaluate the one-body matrix element for arbitrary L when m = 0:
-/// {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}
-/// - \sum_{z=1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}].
+/// `{}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}`
+/// `- \sum_{z=1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}].`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
@@ -401,10 +404,10 @@ fn xw_one_body_m0_gen<T: NOCIScalar>(
 }
 
 /// Evaluate the one-body matrix element when m > 0 by summing every allowed distribution:
-/// m_1 + \cdots + m_{L+1} = m, \qquad m_i \in \{0,1\}.
-/// The first assignment selects {}^x F_0^{(m_1)} and the operator side of each
-/// \mathcal F^{(m_1,m_j)} column; the remaining assignments select the columns of
-/// \mathbf D_{\mathrm{ov}}.
+/// `m_1 + \cdots + m_{L+1} = m, \qquad m_i \in \{0,1\}.`
+/// `The first assignment selects {}^x F_0^{(m_1)} and the operator side of each`
+/// `\mathcal F^{(m_1,m_j)} column; the remaining assignments select the columns of`
+/// `\mathbf D_{\mathrm{ov}}.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `l_ex`: Excitation defining the bra determinant.

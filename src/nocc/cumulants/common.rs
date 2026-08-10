@@ -1,5 +1,6 @@
 // nocc/cumulants/common.rs
 
+// Crate-root imports.
 use crate::noci::NOCIScalar;
 
 /// Active-space spin-free cumulant tensor stored in upper-then-lower index order.

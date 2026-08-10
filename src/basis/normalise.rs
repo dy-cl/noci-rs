@@ -1,7 +1,9 @@
 // basis/normalise.rs
 
+// External crate imports.
 use ndarray::Array2;
 
+// Crate-root imports.
 use crate::HSCFState;
 use crate::scf::normalise_hermitian;
 

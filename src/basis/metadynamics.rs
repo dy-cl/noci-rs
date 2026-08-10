@@ -1,16 +1,20 @@
 // basis/metadynamics.rs
 
+// Standard library imports.
 use std::collections::HashMap;
 
+// External crate imports.
 use ndarray::Array2;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+// Crate-root imports.
 use crate::input::{Input, Metadynamics};
 use crate::scf::scf_cycle;
 use crate::utils::random_pattern;
 use crate::{AoData, HSCFState, SCFState};
 
+// Parent/sibling imports.
 use super::atoms::{atom_count, atomao_for_labels};
 use super::bias::{bias_spatial, bias_spin};
 use super::duplicate::electron_distance;

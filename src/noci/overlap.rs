@@ -1,10 +1,12 @@
 // noci/overlap.rs
 
+// Crate-root imports.
 use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
 use crate::nonorthogonalwicks::{prepare_same, xw_overlap, xw_overlap_same_f64};
 use crate::time_call;
 
+// Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs};
 use super::types::{DetPair, NOCIData, NOCIScalar};
 

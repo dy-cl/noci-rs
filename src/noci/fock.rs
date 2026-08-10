@@ -1,14 +1,17 @@
 // noci/fock.rs
+// External crate imports.
 use ndarray::Array2;
 
-use super::types::{DetPair, FockData, FockMOCache, NOCIData, NOCIScalar};
+// Crate-root imports.
+use crate::basis::excitation_phase;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
+use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
 use crate::time_call;
 use crate::{AoData, DetState};
 
+// Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs, one_electron_scalar};
-use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
+use super::types::{DetPair, FockData, FockMOCache, NOCIData, NOCIScalar};
 
 /// Wrapper function which dispatches to Fock matrix-element evaluation routines depending on
 /// user input and properties of the determinant pair involved. If the determinant pair have the
