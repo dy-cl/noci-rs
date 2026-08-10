@@ -487,7 +487,7 @@ The `write` table controls optional output files, restart files, and the amount 
 
 ```lua
 write = {
-    verbose = true,
+    verbose = 1,
     write_dir = "outputs/",
     write_orbitals = false,
     write_matrices = false,
@@ -500,6 +500,8 @@ write = {
 ```
 
 Orbital data are written in HDF5 format. Hamiltonian and overlap matrices are written as plain text. Stochastic calculations can read and write restart files. If `write_restart_interval` is set, a restart file is written every `write_restart_interval` stochastic iterations, and `write_restart_interval` must be divisible by `qmc.ncycles`.
+
+`verbose` controls stdout detail: `0` prints minimal/results output, `1` prints normal progress and diagnostics, and `2` adds full raw numerical arrays and matrices.
 
 ### Wick's Intermediates
 

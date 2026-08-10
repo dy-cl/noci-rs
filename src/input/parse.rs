@@ -207,8 +207,16 @@ fn read_scf(scf_tbl: Option<Table>) -> SCFInfo {
 fn read_write(write_tbl: Option<Table>) -> WriteOptions {
     if let Some(write_tbl) = write_tbl {
         let defaults = WriteOptions::default();
+        let verbose = match write_tbl.get::<_, Value>("verbose").unwrap_or(Value::Nil) {
+            Value::Nil => defaults.verbose,
+            Value::Integer(v) if (0..=2).contains(&v) => v as u8,
+            _ => {
+                eprintln!("write.verbose must be 0, 1, or 2");
+                std::process::exit(1);
+            }
+        };
         WriteOptions {
-            verbose: write_tbl.get("verbose").unwrap_or(defaults.verbose),
+            verbose,
             write_deterministic_coeffs: write_tbl
                 .get("write_deterministic_coeffs")
                 .unwrap_or(defaults.write_deterministic_coeffs),

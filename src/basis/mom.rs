@@ -45,7 +45,7 @@ pub(crate) fn run_mom_scf_state(
     prev_map: &HashMap<&str, &SCFState>,
     i: usize,
 ) -> SCFState {
-    if input.write.verbose {
+    if input.write.verbose >= 1 {
         let left = "=".repeat(45);
         let right = "=".repeat(46);
         println!("{}Begin SCF{}", left, right);
@@ -101,7 +101,7 @@ pub(crate) fn generate_states_mom(
         let state = run_mom_scf_state(ao, input, recipe, prev, prev_map, i);
         out.push(state);
     }
-    mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol);
+    mark_duplicate_noci_states(&mut out, &ao.s, input.scf.d_tol, input.write.verbose);
     out
 }
 
@@ -172,7 +172,7 @@ fn generate_hscf_states_mom(
         physical.push(state);
     }
 
-    mark_duplicate_noci_states(&mut physical, &ao.s, input.scf.d_tol);
+    mark_duplicate_noci_states(&mut physical, &ao.s, input.scf.d_tol, input.write.verbose);
 
     (physical, tracks)
 }

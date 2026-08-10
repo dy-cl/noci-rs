@@ -141,17 +141,22 @@ fn finalise(
     let oaprint = mo_occupancies(state.ca.as_ref(), state.da.as_ref(), &ao.s);
     let obprint = mo_occupancies(state.cb.as_ref(), state.db.as_ref(), &ao.s);
 
-    print_mos("Alpha MOs", ea, &oaprint);
-    print_mos("Beta MOs", eb, &obprint);
-    println!("{}", "-".repeat(100));
-    println!("Coefficients ca:");
-    print_array2_indexed(state.ca.as_ref());
-    println!("Coefficients cb:");
-    print_array2_indexed(state.cb.as_ref());
-    println!(
-        "<S^2>: {}",
-        spin_square(state.da.as_ref(), state.db.as_ref(), &ao.s)
-    );
+    if input.write.verbose >= 1 {
+        print_mos("Alpha MOs", ea, &oaprint);
+        print_mos("Beta MOs", eb, &obprint);
+        println!(
+            "<S^2>: {}",
+            spin_square(state.da.as_ref(), state.db.as_ref(), &ao.s)
+        );
+    }
+
+    if input.write.verbose >= 2 {
+        println!("{}", "-".repeat(100));
+        println!("Coefficients ca:");
+        print_array2_indexed(state.ca.as_ref());
+        println!("Coefficients cb:");
+        print_array2_indexed(state.cb.as_ref());
+    }
 
     if input.write.write_orbitals {
         let orbitalsdir: PathBuf = Path::new(&input.write.write_dir).join("orbitals");
@@ -295,7 +300,7 @@ pub fn scf_cycle(
         let gnorm =
             (ga.iter().map(|z| z * z).sum::<f64>() + gb.iter().map(|z| z * z).sum::<f64>()).sqrt();
 
-        if input.write.verbose {
+        if input.write.verbose >= 1 {
             println!(
                 "{:4} {:12.6} {:12.4e} {:12.4e} {:12.4e}",
                 iter, e_new, d_e, err, gnorm

@@ -14,7 +14,7 @@ pub(in crate::scf) fn print_header(
     input: &Input,
     scfexcitation: Option<&SCFExcitation>,
 ) {
-    if !input.write.verbose {
+    if input.write.verbose < 1 {
         return;
     }
     match scfexcitation {
@@ -43,7 +43,7 @@ pub(in crate::scf) fn print_header_h(
     input: &Input,
     label: &str,
 ) {
-    if !input.write.verbose {
+    if input.write.verbose < 1 {
         return;
     }
     println!("{}Begin h-SCF{}", "=".repeat(45), "=".repeat(46));

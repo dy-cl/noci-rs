@@ -1,8 +1,8 @@
 // input/write.rs
 
 pub struct WriteOptions {
-    /// Whether to print verbose progress.
-    pub verbose: bool,
+    /// Output verbosity: 0 = minimal/results, 1 = normal progress/debug, 2 = raw numerical diagnostics.
+    pub verbose: u8,
     /// Whether to write deterministic coefficients.
     pub write_deterministic_coeffs: bool,
     /// Whether to write orbital coefficients.
@@ -27,7 +27,7 @@ impl Default for WriteOptions {
     /// - `Self`: Output options with all optional writes disabled.
     fn default() -> Self {
         Self {
-            verbose: true,
+            verbose: 1,
             write_deterministic_coeffs: false,
             write_orbitals: false,
             write_excitation_hist: false,

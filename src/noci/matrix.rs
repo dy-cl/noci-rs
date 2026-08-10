@@ -281,17 +281,21 @@ pub fn calculate_noci_energy<T: NOCIScalar>(
     let data = NOCIData::new(ao, scfstates, input, tol, wicks).withmocache(mocache);
     let (h, s, d_hs) = build_noci_hs(&data, scfstates, scfstates, true);
 
-    println!("{}", "=".repeat(100));
-    println!("NOCI-reference Hamiltonian:");
-    print_array2_indexed(&h);
-    println!("NOCI-reference Overlap:");
-    print_array2_indexed(&s);
-    println!("Shifted NOCI-reference Hamiltonian");
     let h_shift = &h - &s.mapv(|x| scfstates[0].e * x);
-    print_array2_indexed(&h_shift);
+    if input.write.verbose >= 2 {
+        println!("{}", "=".repeat(100));
+        println!("NOCI-reference Hamiltonian:");
+        print_array2_indexed(&h);
+        println!("NOCI-reference Overlap:");
+        print_array2_indexed(&s);
+        println!("Shifted NOCI-reference Hamiltonian");
+        print_array2_indexed(&h_shift);
+    }
 
     let (evals, c) = general_evp(&h, &s, true, tol);
-    println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
+    if input.write.verbose >= 1 {
+        println!("GEVP eigenvalues in NOCI-reference basis: {}", evals);
+    }
 
     let c0 = c.column(0).to_owned();
     (evals[0], c0, d_hs)

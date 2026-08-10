@@ -109,7 +109,7 @@ pub(crate) fn generate_states_metadynamics(
                     std::mem::swap(&mut daj, &mut dbj);
                 }
 
-                if input.write.verbose {
+                if input.write.verbose >= 1 {
                     let left = "=".repeat(45);
                     let right = "=".repeat(46);
                     println!("{}Begin UHF Metadynamics Biased SCF{}", left, right);
@@ -138,7 +138,7 @@ pub(crate) fn generate_states_metadynamics(
                     .expect("SCF did not converge")
                 };
 
-                if input.write.verbose {
+                if input.write.verbose >= 1 {
                     let left = "=".repeat(45);
                     let right = "=".repeat(46);
                     println!("{}Begin UHF Metadynamics Relaxed SCF{}", left, right);
@@ -278,7 +278,7 @@ pub(crate) fn generate_states_metadynamics(
             // Bias the densities as prescribed by the pattern.
             bias_spatial(&mut da, &mut db, &atomao, meta.spatialpol, &pattern);
 
-            if input.write.verbose {
+            if input.write.verbose >= 1 {
                 let left = "=".repeat(45);
                 let right = "=".repeat(46);
                 println!("{}Begin RHF Metadynamics Biased SCF{}", left, right);
@@ -304,7 +304,7 @@ pub(crate) fn generate_states_metadynamics(
                 .expect("SCF did not converge")
             };
 
-            if input.write.verbose {
+            if input.write.verbose >= 1 {
                 let left = "=".repeat(45);
                 let right = "=".repeat(46);
                 println!("{}Begin RHF Metadynamics Relaxed SCF{}", left, right);

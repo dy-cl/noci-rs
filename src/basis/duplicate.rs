@@ -68,8 +68,11 @@ pub(crate) fn mark_duplicate_noci_states<T: NOCIScalar>(
     states: &mut [DetState<T>],
     s: &Array2<f64>,
     d_tol: f64,
+    verbose: u8,
 ) {
-    println!("{}", "=".repeat(100));
+    if verbose >= 1 {
+        println!("{}", "=".repeat(100));
+    }
     for i in 0..states.len() {
         if !states[i].noci_basis {
             continue;
