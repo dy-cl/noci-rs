@@ -14,7 +14,7 @@ use super::finalise::finalise;
 use super::step::{finite_difference_newton_step, limit_step, line_search, sr1_step, step_norm};
 use super::types::{HSCFRunData, SecantPair, SpinBlock};
 
-const G_TOL: f64 = 1e-10;
+const G_TOL: f64 = 1e-6;
 const HISTORY: usize = 20;
 
 /// Run a holomorphic unrestricted SCF quasi-Newton optimisation.

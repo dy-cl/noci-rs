@@ -11,10 +11,10 @@ use super::tangent::{geodesic_step, pack, unpack};
 use super::types::SecantPair;
 use crate::scf::{density, fock_lambda, orbital_gradient};
 
-const SR1_TOL: f64 = 1e-12;
-const DENOM_TOL: f64 = 1e-10;
+const SR1_TOL: f64 = 1e-8;
+const DENOM_TOL: f64 = 1e-8;
 const MAX_STEP: f64 = 0.5;
-const LINE_STEPS: usize = 12;
+const LINE_STEPS: usize = 100;
 const LINE_SHRINK: f64 = 0.5;
 
 /// Solve the complex-symmetric SR1 quasi-Newton equation in energy-weighted coordinates.

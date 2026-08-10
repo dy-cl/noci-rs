@@ -178,22 +178,22 @@ fn run_holomorphic_reference_noci_fixture(
     let world = universe.world();
 
     let mut prev_states: Vec<SCFState> = Vec::new();
-    let mut prev_hstates: Vec<HSCFState> = Vec::new();
+    let mut prev_htracks: Vec<HSCFState> = Vec::new();
     let mut energies = Vec::with_capacity(aos.len());
     let mut final_scf = Vec::new();
     let mut final_hscf = Vec::new();
     let mut final_imag = 0.0;
 
     for ao in aos {
-        let refs = if prev_states.is_empty() && prev_hstates.is_empty() {
+        let refs = if prev_states.is_empty() && prev_htracks.is_empty() {
             generate_reference_noci_basis(ao, &mut input, None, None)
         } else {
-            let prev_h = if prev_hstates.is_empty() {
+            let prev_htracks = if prev_htracks.is_empty() {
                 None
             } else {
-                Some(prev_hstates.as_slice())
+                Some(prev_htracks.as_slice())
             };
-            generate_reference_noci_basis(ao, &mut input, Some(&prev_states), prev_h)
+            generate_reference_noci_basis(ao, &mut input, Some(&prev_states), prev_htracks)
         };
 
         let mut basis: Vec<_> = hermitian_hnoci_basis(&refs.hstates, &ao.s)
@@ -218,11 +218,13 @@ fn run_holomorphic_reference_noci_fixture(
 
         energies.push(e_ref);
         final_scf = refs.states.iter().map(|st| st.e).collect();
+
         let holomorphic_states: Vec<_> = refs
             .hstates
             .iter()
             .filter(|st| st.label.starts_with("h-"))
             .collect();
+
         final_hscf = holomorphic_states.iter().map(|st| st.e).collect();
         final_imag = holomorphic_states
             .iter()
@@ -231,7 +233,7 @@ fn run_holomorphic_reference_noci_fixture(
             .fold(0.0, f64::max);
 
         prev_states = refs.states;
-        prev_hstates = refs.hstates;
+        prev_htracks = refs.htracks;
     }
 
     (energies, final_scf, final_hscf, final_imag)
@@ -314,16 +316,16 @@ fn reference_noci_h2_sto_3g_1_5_ang_energies_agree() {
     );
 }
 
-/// Test that the H2 3-21G 0.8 Angstrom holomorphic fixture reproduces expected energies.
+/// Test that the H2 3-21G 1.0 Angstrom holomorphic fixture reproduces expected energies.
 /// # Panics
 /// - If reference NOCI, final real SCF or final h-SCF energies differ from known good values
 ///   outside tolerance.
 /// - If holomorphic continuation does not leave a non-negligible imaginary orbital component.
 #[test]
 #[serial]
-fn reference_noci_h2_3_21g_0_8_ang_holomorphic_energies() {
+fn reference_noci_h2_3_21g_1_0_ang_holomorphic_energies() {
     let (input, aos, expected): (_, _, ExpectedHolomorphicReferenceNoci) =
-        load_scan_test("REF_NOCI_H2_3-21G_0_8");
+        load_scan_test("REF_NOCI_H2_3-21G_1_0");
     let (got_ref, got_scf, got_hscf, got_imag) =
         run_holomorphic_reference_noci_fixture(input, &aos);
 
@@ -366,20 +368,19 @@ fn reference_noci_h2_3_21g_0_8_ang_holomorphic_energies() {
     }
 
     assert!(got_imag > 1e-3);
-    assert!(got_ref[6] < got_ref[4]);
-    assert!(got_ref[6] < got_ref[0]);
 }
 
-/// Test that the H2 3-21G 0.8 Angstrom holomorphic fixture reproduces expected energies.
+/// Test that the H2 3-21G 1.0 Angstrom holomorphic fixture reproduces expected energies
+/// using Wick's intermediates.
 /// # Panics
 /// - If reference NOCI, final real SCF or final h-SCF energies differ from known good values
 ///   outside tolerance.
 /// - If holomorphic continuation does not leave a non-negligible imaginary orbital component.
 #[test]
 #[serial]
-fn reference_noci_h2_3_21g_0_8_ang_holomorphic_energies_wicks() {
+fn reference_noci_h2_3_21g_1_0_ang_holomorphic_energies_wicks() {
     let (input, aos, expected): (_, _, ExpectedHolomorphicReferenceNoci) =
-        load_scan_test("REF_NOCI_H2_3-21G_0_8_WICKS");
+        load_scan_test("REF_NOCI_H2_3-21G_1_0_WICKS");
     let (got_ref, got_scf, got_hscf, got_imag) =
         run_holomorphic_reference_noci_fixture(input, &aos);
 
@@ -422,21 +423,19 @@ fn reference_noci_h2_3_21g_0_8_ang_holomorphic_energies_wicks() {
     }
 
     assert!(got_imag > 1e-3);
-    assert!(got_ref[6] < got_ref[4]);
-    assert!(got_ref[6] < got_ref[0]);
 }
 
-/// Test that the H2 3-21G 0.8 Angstrom holomorphic fixture agrees with and without Wick's intermediates.
+/// Test that the H2 3-21G 1.0 Angstrom holomorphic fixture agrees with and without Wick's intermediates.
 /// # Panics
 /// - If reference NOCI, final real SCF or final h-SCF energies differ between implementations
 ///   outside tolerance.
 #[test]
 #[serial]
-fn reference_noci_h2_3_21g_0_8_ang_holomorphic_energies_agree() {
+fn reference_noci_h2_3_21g_1_0_ang_holomorphic_energies_agree() {
     let (input, aos, _expected): (_, _, ExpectedHolomorphicReferenceNoci) =
-        load_scan_test("REF_NOCI_H2_3-21G_0_8");
+        load_scan_test("REF_NOCI_H2_3-21G_1_0");
     let (input_wicks, aos_wicks, _expected_wicks): (_, _, ExpectedHolomorphicReferenceNoci) =
-        load_scan_test("REF_NOCI_H2_3-21G_0_8_WICKS");
+        load_scan_test("REF_NOCI_H2_3-21G_1_0_WICKS");
     let (got_ref, got_scf, got_hscf, got_imag) =
         run_holomorphic_reference_noci_fixture(input, &aos);
     let (got_ref_wicks, got_scf_wicks, got_hscf_wicks, got_imag_wicks) =

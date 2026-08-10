@@ -11,7 +11,7 @@ use super::seed::complex_orbitals_from_real;
 use super::types::HSCFRunData;
 
 /// Phase used to move two electron integrals into the complex plane.
-const PHASE: f64 = 0.05;
+const PHASE: f64 = std::f64::consts::PI / 20.0;
 /// Number of steps used moving integrals to or from the complex plane.
 const STEPS: usize = 5;
 
