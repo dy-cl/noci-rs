@@ -7,7 +7,7 @@ use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::input::SNOCIFullM;
-use crate::noci::{FockData, NOCIData, NOCIScalar};
+use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyFactorisation};
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::scf::fock;
@@ -17,10 +17,11 @@ use crate::{DetState, PostSCFData, input::Input};
 // Parent/sibling imports.
 use super::{CandidatePool, PT2ProjectedOperator, SNOCIPT2Result, SNOCIState};
 use super::{
-    apply_shifted_omega_m, apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
+    apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
+    apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
     build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
-    build_omega_v, build_preconditioner, build_snoci_focks, build_snoci_overlaps,
-    build_snoci_projection, gmres, select_candidates, solve_current_space,
+    build_factorised_candidate_diags, build_omega_v, build_preconditioner, build_snoci_focks,
+    build_snoci_overlaps, build_snoci_projection, gmres, select_candidates, solve_current_space,
 };
 
 /// Return the real component of a scalar used for printed and stored energies.
@@ -250,6 +251,14 @@ where
                 candidates: &pool.candidates,
                 projection: &projection,
             };
+            let one_body = if matches!(opts.gmres.full_m, SNOCIFullM::MatrixFree)
+                && input.wicks.enabled
+                && candidate_data.wicks.is_some()
+            {
+                Some(OneBodyFactorisation::new(&candidate_data, &fock))
+            } else {
+                None
+            };
 
             if it > 0 && world.rank() == 0 {
                 println!("{}", "=".repeat(100));
@@ -282,17 +291,30 @@ where
             };
 
             let m_slice = m.as_ref().map(|m| m.as_slice());
-            let m_diag = build_candidate_m_diag(&op, m_slice);
+            let (m_diag, factorised_s_diag) = if let Some(one_body) = one_body.as_ref() {
+                let (m_diag, s_diag) = build_factorised_candidate_diags(
+                    &op,
+                    one_body,
+                    T::from_real(-op.projection.e0),
+                );
+                (m_diag, Some(s_diag))
+            } else {
+                (build_candidate_m_diag(&op, m_slice), None)
+            };
             let shifts = if opts.imag_shifts.is_empty() {
                 vec![0.0]
             } else {
                 opts.imag_shifts.clone()
             };
-            let s_diag = shifts
-                .iter()
-                .any(|&imag_shift| imag_shift != 0.0)
-                .then(|| build_candidate_s_diag(&op));
+            let s_diag = if shifts.iter().any(|&imag_shift| imag_shift != 0.0) {
+                factorised_s_diag.or_else(|| Some(build_candidate_s_diag(&op)))
+            } else {
+                None
+            };
             let rhs = v_omega.mapv(|x| -x);
+            let mut one_body_scratch = one_body
+                .as_ref()
+                .map(|factorisation| factorisation.scratch());
 
             // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
             let mut pt2 = Vec::new();
@@ -307,7 +329,19 @@ where
 
                 let a = gmres(
                     |x| {
-                        if world.size() > 1 {
+                        if let (Some(one_body), Some(scratch)) =
+                            (one_body.as_ref(), one_body_scratch.as_mut())
+                        {
+                            if world.size() > 1 {
+                                apply_factorised_shifted_omega_m_mpi(
+                                    &op, one_body, scratch, x, world, imag_shift,
+                                )
+                            } else {
+                                apply_factorised_shifted_omega_m(
+                                    &op, one_body, scratch, x, imag_shift,
+                                )
+                            }
+                        } else if world.size() > 1 {
                             apply_shifted_omega_m_mpi(&op, x, m_slice, world, imag_shift)
                         } else {
                             apply_shifted_omega_m(&op, x, m_slice, imag_shift)
@@ -319,7 +353,17 @@ where
                     world,
                 );
 
-                let ma = if world.size() > 1 {
+                let ma = if let (Some(one_body), Some(scratch)) =
+                    (one_body.as_ref(), one_body_scratch.as_mut())
+                {
+                    if world.size() > 1 {
+                        apply_factorised_shifted_omega_m_mpi(
+                            &op, one_body, scratch, &a.x, world, imag_shift,
+                        )
+                    } else {
+                        apply_factorised_shifted_omega_m(&op, one_body, scratch, &a.x, imag_shift)
+                    }
+                } else if world.size() > 1 {
                     apply_shifted_omega_m_mpi(&op, &a.x, m_slice, world, imag_shift)
                 } else {
                     apply_shifted_omega_m(&op, &a.x, m_slice, imag_shift)

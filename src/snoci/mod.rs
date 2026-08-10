@@ -50,8 +50,9 @@ pub(in crate::snoci) use types::{
 // Restricted function re-exports.
 pub(in crate::snoci) use gmres::gmres;
 pub(in crate::snoci) use operators::{
-    apply_shifted_omega_m, apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
+    apply_factorised_shifted_omega_m, apply_factorised_shifted_omega_m_mpi, apply_shifted_omega_m,
+    apply_shifted_omega_m_mpi, build_candidate_current_h, build_candidate_m,
     build_candidate_m_diag, build_candidate_m_disk, build_candidate_s_diag, build_candidate_v,
-    build_omega_v, build_preconditioner, build_snoci_focks, build_snoci_overlaps,
-    build_snoci_projection, select_candidates, solve_current_space,
+    build_factorised_candidate_diags, build_omega_v, build_preconditioner, build_snoci_focks,
+    build_snoci_overlaps, build_snoci_projection, select_candidates, solve_current_space,
 };

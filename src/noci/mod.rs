@@ -25,13 +25,13 @@
 //! is then solved.
 
 mod cache;
+mod factorise;
 mod fock;
 mod hs;
 mod m;
 mod matrix;
 mod naive;
 mod overlap;
-mod overlaps;
 mod types;
 mod wicks;
 
@@ -45,7 +45,9 @@ pub use naive::noci_density;
 pub use wicks::{build_wicks_shared, update_wicks_fock};
 
 // Crate-visible type re-exports.
-pub(crate) use overlaps::{OverlapFactor, OverlapFactorScratch};
+pub(crate) use factorise::{
+    OneBodyFactorisation, OneBodyScratch, OverlapScratch, SpinFactorisation,
+};
 pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.

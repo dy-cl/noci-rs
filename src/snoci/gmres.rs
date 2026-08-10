@@ -82,12 +82,12 @@ fn print_gmres_restart_summary(
 /// # Returns:
 /// - `Array1<T>`: True residual vector.
 fn true_residual<F, T>(
-    apply: &F,
+    apply: &mut F,
     b: &Array1<T>,
     x: &Array1<T>,
 ) -> Array1<T>
 where
-    F: Fn(&Array1<T>) -> Array1<T>,
+    F: FnMut(&Array1<T>) -> Array1<T>,
     T: NOCIScalar,
 {
     let ax = apply(x);
@@ -266,7 +266,7 @@ fn apply_current_givens<T: NOCIScalar>(
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
 fn run_arnoldi_cycle<F, P, T>(
-    apply: &F,
+    apply: &mut F,
     precondition: &P,
     rtrue: &Array1<T>,
     params: &ArnoldiParams<'_>,
@@ -274,7 +274,7 @@ fn run_arnoldi_cycle<F, P, T>(
     world: &impl Communicator,
 ) -> ArnoldiCycle<T>
 where
-    F: Fn(&Array1<T>) -> Array1<T>,
+    F: FnMut(&Array1<T>) -> Array1<T>,
     P: Fn(&Array1<T>) -> Array1<T>,
     T: NOCIScalar,
 {
@@ -404,14 +404,14 @@ fn back_solve<T: NOCIScalar>(
 /// - `GMRES`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.
 pub(in crate::snoci) fn gmres<F, P, T>(
-    apply: F,
+    mut apply: F,
     precondition: P,
     b: &Array1<T>,
     opts: &GMRESOptions,
     world: &impl Communicator,
 ) -> GMRESResult<T>
 where
-    F: Fn(&Array1<T>) -> Array1<T>,
+    F: FnMut(&Array1<T>) -> Array1<T>,
     P: Fn(&Array1<T>) -> Array1<T>,
     T: NOCIScalar,
 {
@@ -437,7 +437,7 @@ where
         let rms = (n as f64).sqrt();
 
         // Start from the zero vector and compute the true residual.
-        let mut rtrue = true_residual(&apply, b, &x);
+        let mut rtrue = true_residual(&mut apply, b, &x);
         let mut residual_rms = calculate_residual_rms(&rtrue, rms);
 
         if world.rank() == 0 {
@@ -491,8 +491,14 @@ where
                 gmres_start: &gmres_start,
             };
 
-            let cycle =
-                run_arnoldi_cycle(&apply, &precondition, &rtrue, &arnoldi_params, opts, world);
+            let cycle = run_arnoldi_cycle(
+                &mut apply,
+                &precondition,
+                &rtrue,
+                &arnoldi_params,
+                opts,
+                world,
+            );
 
             // Solve the small least-squares problem in the Krylov basis.
             let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
@@ -503,7 +509,7 @@ where
             total_iter += cycle.kfinal;
 
             // Recompute the true residual after each restart as the Arnoldi residual is only an estimate.
-            rtrue = true_residual(&apply, b, &x);
+            rtrue = true_residual(&mut apply, b, &x);
             residual_rms = calculate_residual_rms(&rtrue, rms);
 
             if world.rank() == 0 {

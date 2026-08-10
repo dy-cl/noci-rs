@@ -14,7 +14,9 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
-use crate::noci::{DetPair, FockData, MOCache, NOCIData, NOCIScalar};
+use crate::noci::{
+    DetPair, FockData, MOCache, NOCIData, NOCIScalar, OneBodyFactorisation, OneBodyScratch,
+};
 use crate::noci::{
     build_noci_fock, build_noci_hs, build_noci_s, calculate_m_pair, calculate_s_pair,
 };
@@ -346,6 +348,20 @@ pub(in crate::snoci) fn build_candidate_s_diag<T: NOCIScalar>(
         .collect();
 
     Array1::from_vec(diag)
+}
+
+/// Build unprojected candidate-candidate diagonals from factorised `F + \lambda S` and `S`.
+/// # Arguments:
+/// - `one_body`: Cached spin-factorised one-body operator.
+/// - `lambda`: Scalar overlap shift in `F + \lambda S`.
+/// # Returns:
+/// - `(Array1<T>, Array1<T>)`: Diagonal of `F + \lambda S` and diagonal of `S`.
+pub(in crate::snoci) fn build_factorised_candidate_diags<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    one_body: &OneBodyFactorisation<T>,
+    lambda: T,
+) -> (Array1<T>, Array1<T>) {
+    one_body.one_body_diagonals(op.data, op.fock, lambda)
 }
 
 /// Apply the unprojected candidate-candidate shifted Fock matrix `M`.
@@ -696,11 +712,7 @@ pub(in crate::snoci) fn apply_omega_m<T: NOCIScalar>(
 
         // Get the action of unprojected M_{ab} = F_{ab} - E^{(0)} S_{ab} on a vector `x`.
         let mut y = apply_candidate_m(op, x, m);
-        let two_e0 = T::from_real(2.0 * p.e0);
-
-        for a in 0..y.len() {
-            y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + two_e0 * p.s_a0[a] * sx;
-        }
+        apply_projection_correction(&mut y, p, sx, fx, T::from_real(0.0));
 
         y
     })
@@ -730,14 +742,79 @@ where
         let fx = p.f_0a.dot(x);
 
         let mut y = apply_candidate_m_mpi(op, x, m, world);
-        let two_e0 = T::from_real(2.0 * p.e0);
-
-        for a in 0..y.len() {
-            y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + two_e0 * p.s_a0[a] * sx;
-        }
+        apply_projection_correction(&mut y, p, sx, fx, T::from_real(0.0));
 
         y
     })
+}
+
+/// Apply factorised projected `(F - E0 S + i epsilon Q)x`.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `one_body`: Cached spin-factorised one-body operator.
+/// - `scratch`: Reusable one-body contraction buffers.
+/// - `x`: Vector to apply shifted operator to.
+/// - `imag_shift`: Imaginary shift strength `epsilon`.
+/// # Returns:
+/// - `Array1<T>`: Matrix-vector product `(M^Omega + i epsilon Q)x`.
+pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    one_body: &OneBodyFactorisation<T>,
+    scratch: &mut OneBodyScratch<T>,
+    x: &Array1<T>,
+    imag_shift: f64,
+) -> Array1<T> {
+    if x.iter().all(|&xi| xi == T::from_real(0.0)) {
+        return Array1::from_elem(x.len(), T::from_real(0.0));
+    }
+    let p = op.projection;
+    let sx = p.s_0a.dot(x);
+    let fx = p.f_0a.dot(x);
+    let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
+    let mut y = one_body.apply_one_body(x, op.data, op.fock, lambda, scratch, (0, 1));
+    apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
+    y
+}
+
+/// Apply factorised projected `(F - E0 S + i epsilon Q)x` across MPI ranks.
+/// # Arguments:
+/// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `one_body`: Cached spin-factorised one-body operator.
+/// - `scratch`: Reusable one-body contraction buffers.
+/// - `x`: Replicated vector to apply shifted operator to.
+/// - `world`: MPI communicator.
+/// - `imag_shift`: Imaginary shift strength `epsilon`.
+/// # Returns:
+/// - `Array1<T>`: Globally reduced matrix-vector product `(M^Omega + i epsilon Q)x`.
+pub(in crate::snoci) fn apply_factorised_shifted_omega_m_mpi<T>(
+    op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    one_body: &OneBodyFactorisation<T>,
+    scratch: &mut OneBodyScratch<T>,
+    x: &Array1<T>,
+    world: &impl Communicator,
+    imag_shift: f64,
+) -> Array1<T>
+where
+    T: NOCIScalar + Into<Complex64>,
+{
+    if x.iter().all(|&xi| xi == T::from_real(0.0)) {
+        return Array1::from_elem(x.len(), T::from_real(0.0));
+    }
+    let p = op.projection;
+    let sx = p.s_0a.dot(x);
+    let fx = p.f_0a.dot(x);
+    let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
+    let partial = one_body.apply_one_body(
+        x,
+        op.data,
+        op.fock,
+        lambda,
+        scratch,
+        (world.rank() as usize, world.size() as usize),
+    );
+    let mut y = all_reduce_array1(world, partial);
+    apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
+    y
 }
 
 /// Apply the projected first-order-space overlap matrix `Q`.
@@ -844,6 +921,28 @@ where
     }
 
     y
+}
+
+/// Apply shared NOCI-PT2 projection correction to an unprojected one-body action.
+/// # Arguments:
+/// - `y`: Unprojected candidate-space action to correct in place.
+/// - `p`: Projection contractions used to form `M^Omega`.
+/// - `sx`: Contraction `s_x = \sum_b S_{0b}x_b`.
+/// - `fx`: Contraction `f_x = \sum_b F_{0b}x_b`.
+/// - `imag_shift`: Imaginary scalar `i epsilon`.
+/// # Returns:
+/// - `()`: Applies projection terms in place.
+fn apply_projection_correction<T: NOCIScalar>(
+    y: &mut Array1<T>,
+    p: &PT2Projection<T>,
+    sx: T,
+    fx: T,
+    imag_shift: T,
+) {
+    let scalar = T::from_real(2.0 * p.e0) - imag_shift;
+    for a in 0..y.len() {
+        y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + scalar * p.s_a0[a] * sx;
+    }
 }
 
 /// Build a preconditioner for the projected NOCI-PT2 shifted Fock matrix.

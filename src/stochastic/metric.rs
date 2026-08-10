@@ -15,7 +15,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::input::Input;
-use crate::noci::{NOCIData, OverlapFactor, OverlapFactorScratch};
+use crate::noci::{NOCIData, OverlapScratch, SpinFactorisation};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
@@ -103,13 +103,13 @@ fn apply_population_changes_local<I>(
     populations: &mut [f64],
     updates: I,
     data: &NOCIData<'_, f64>,
-    overlap_factor: &OverlapFactor,
+    overlap_factor: &SpinFactorisation,
     targets: &[usize],
-    scratch: &mut OverlapFactorScratch,
+    scratch: &mut OverlapScratch,
 ) where
     I: IntoIterator<Item = (usize, f64)>,
 {
-    overlap_factor.apply(populations, targets, updates, data, scratch);
+    overlap_factor.apply_overlap_sparse(populations, targets, updates, data, scratch);
 }
 
 /// Apply the global overlap-transformed population change.
@@ -134,10 +134,10 @@ fn apply_overlap_population_changes(
     populations: &mut [f64],
     dlocal: &[PopulationUpdate],
     data: &NOCIData<'_, f64>,
-    overlap_factor: &OverlapFactor,
+    overlap_factor: &SpinFactorisation,
     run: &QMCRunInfo,
     mpi: (&impl CommunicatorCollectives, &mut MPIScratch),
-    scratch: &mut OverlapFactorScratch,
+    scratch: &mut OverlapScratch,
 ) {
     let (world, mpi) = mpi;
 
@@ -828,7 +828,7 @@ pub fn qmc_step(
         )
         .collect::<Vec<_>>();
 
-    let overlap_factor = OverlapFactor::new(data);
+    let overlap_factor = SpinFactorisation::new(data);
     let run = QMCRunInfo {
         irank,
         nranks,

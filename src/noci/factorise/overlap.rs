@@ -1,7 +1,4 @@
-// noci/overlaps.rs
-
-// Standard library imports.
-use std::collections::HashMap;
+// noci/factorise/overlap.rs
 
 // External crate imports.
 use rayon::prelude::*;
@@ -10,12 +7,15 @@ use rayon::prelude::*;
 use crate::maths::dot_f64;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 
-// Parent/sibling imports.
-use super::overlap::{
+// Crate-root imports.
+use crate::noci::overlap::{
     calculate_s_alpha_pair_wicks, calculate_s_beta_pair_wicks, calculate_s_pair,
     calculate_s_pair_naive,
 };
-use super::types::{DetPair, NOCIData};
+use crate::noci::types::{DetPair, NOCIData};
+
+// Parent/sibling imports.
+use super::{SpinFactorisation, ordered_parent_pair};
 
 #[derive(Clone, Copy)]
 struct SpinUpdate {
@@ -42,22 +42,6 @@ struct ParentUpdates {
     apos: Vec<usize>,
     /// Source-parent b ID to active position map.
     bpos: Vec<usize>,
-}
-
-#[derive(Default)]
-struct ParentSpinSpace {
-    /// Representative determinant for each parent-local a component.
-    areps: Vec<usize>,
-    /// Representative determinant for each parent-local b component.
-    breps: Vec<usize>,
-    /// Representative determinant for each parent-local occupation pair.
-    oreps: Vec<usize>,
-    /// Occupation-pair ID keyed by determinant offset from `first_det`.
-    oids: Vec<usize>,
-    /// First determinant index belonging to this parent.
-    first_det: usize,
-    /// One-past-last determinant index belonging to this parent when parent blocks are contiguous.
-    last_det: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +95,7 @@ struct LocalParentBlock {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OverlapContraction {
     /// Factorise each target row before looping over sparse source updates.
-    FactorizedRows,
+    FactorisedRows,
     /// `Form T_{\bar a b} before applying B^{QP}_{\bar b_w b}.`
     AFirst,
     /// `Form U_{a\bar b} before applying A^{QP}_{\bar a_w a}.`
@@ -119,7 +103,7 @@ enum OverlapContraction {
 }
 
 /// `Reusable storage for one application of S\Delta.`
-pub(crate) struct OverlapFactorScratch {
+pub(crate) struct OverlapScratch {
     /// Sparse updates grouped by source parent.
     updates: Vec<ParentUpdates>,
     /// Source parents touched by the current update list.
@@ -142,57 +126,20 @@ pub(crate) struct OverlapFactorScratch {
     target_blocks: Vec<LocalParentBlock>,
 }
 
-/// Precomputed determinant to spin mappings for reusing alpha and beta overlap factors.
-pub(crate) struct OverlapFactor {
-    /// Alpha compact IDs keyed by determinant index and local to the determinant parent.
-    aids: Vec<usize>,
-    /// Beta compact IDs keyed by determinant index and local to the determinant parent.
-    bids: Vec<usize>,
-    /// Largest number of unique alpha spin components in one parent reference.
-    ma: usize,
-    /// Largest number of unique beta spin components in one parent reference.
-    mb: usize,
-    /// Parent-local determinant ranges and spin representatives.
-    parents: Vec<ParentSpinSpace>,
-}
-
-impl OverlapFactor {
-    /// Construct parent-local alpha and beta component IDs for every determinant.
-    /// # Arguments:
-    /// - `data`: Shared NOCI data defining the determinant basis and parent references.
-    /// # Returns:
-    /// - `OverlapAction`: Immutable sparse overlap action plan.
-    pub(crate) fn new(data: &NOCIData<'_, f64>) -> Self {
-        // Allocate determinant to ID mappings.
-        let mut aids = vec![0usize; data.basis.len()];
-        let mut bids = vec![0usize; data.basis.len()];
-        // Generate determinant IDs.
-        let ma = assign_aids(data, &mut aids);
-        let mb = assign_bids(data, &mut bids);
-        let parents = build_parent_spin_spaces(data, &aids, &bids);
-
-        Self {
-            aids,
-            bids,
-            ma,
-            mb,
-            parents,
-        }
-    }
-
+impl SpinFactorisation {
     /// `Construct reusable storage for one full application of S\Delta.`
     /// Temporary factor tables and contraction buffers are allocated once, but their numerical
     /// values are cleared or overwritten on every application and are never reused as overlap data.
     /// # Arguments:
     /// - `self`: Immutable sparse overlap action plan.
     /// # Returns:
-    /// - `OverlapFactorScratch`: Empty allocation storage for grouped updates and factor tables.
-    pub(crate) fn scratch(&self) -> OverlapFactorScratch {
+    /// - `OverlapScratch`: Empty allocation storage for grouped updates and factor tables.
+    pub(crate) fn scratch(&self) -> OverlapScratch {
         let mut updates = Vec::with_capacity(self.parents.len());
         for parent in 0..self.parents.len() {
             updates.push(ParentUpdates::new(parent, self.ma, self.mb));
         }
-        OverlapFactorScratch {
+        OverlapScratch {
             updates,
             active_parents: Vec::new(),
             afac: Vec::new(),
@@ -218,13 +165,13 @@ impl OverlapFactor {
     /// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
     /// # Returns:
     /// - `()`: `Applies N_w \leftarrow N_w + \delta N_w.`
-    pub(crate) fn apply<I>(
+    pub(crate) fn apply_overlap_sparse<I>(
         &self,
         populations: &mut [f64],
         targets: &[usize],
         updates: I,
         data: &NOCIData<'_, f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) where
         I: IntoIterator<Item = (usize, f64)>,
     {
@@ -232,12 +179,12 @@ impl OverlapFactor {
             return;
         }
 
-        self.group_updates(updates, data, scratch);
+        self.group_overlap_updates(updates, data, scratch);
         if scratch.active_parents.is_empty() {
             return;
         }
 
-        let target_blocks = self.take_target_blocks(targets, data, scratch);
+        let target_blocks = self.take_overlap_target_blocks(targets, data, scratch);
 
         for source_parent in scratch.active_parents.clone() {
             let mut source = std::mem::replace(
@@ -249,7 +196,7 @@ impl OverlapFactor {
                 continue;
             }
             for target in &target_blocks {
-                self.apply_parent_pair(populations, target, &source, data, scratch);
+                self.apply_overlap_parent_pair(populations, target, &source, data, scratch);
             }
             source.clear();
             scratch.updates[source_parent] = source;
@@ -274,11 +221,11 @@ impl OverlapFactor {
     /// - `scratch`: Reusable overlap storage owning the cached blocks.
     /// # Returns:
     /// - `Vec<LocalParentBlock>`: Target blocks moved out of scratch for this application.
-    fn take_target_blocks(
+    fn take_overlap_target_blocks(
         &self,
         targets: &[usize],
         data: &NOCIData<'_, f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) -> Vec<LocalParentBlock> {
         if scratch.target_blocks.is_empty()
             || scratch.cached_targets_ptr != targets.as_ptr()
@@ -286,7 +233,7 @@ impl OverlapFactor {
         {
             scratch.cached_targets_ptr = targets.as_ptr();
             scratch.cached_targets_len = targets.len();
-            self.build_target_blocks(targets, data)
+            self.build_overlap_target_blocks(targets, data)
         } else {
             std::mem::take(&mut scratch.target_blocks)
         }
@@ -300,11 +247,11 @@ impl OverlapFactor {
     /// - `scratch`: Reusable grouped-update storage cleared and refilled for this application.
     /// # Returns:
     /// - `()`: Fills `scratch.updates` and `scratch.active_parents`.
-    fn group_updates<I>(
+    fn group_overlap_updates<I>(
         &self,
         updates: I,
         data: &NOCIData<'_, f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) where
         I: IntoIterator<Item = (usize, f64)>,
     {
@@ -333,7 +280,7 @@ impl OverlapFactor {
     /// - `data`: Shared NOCI data used to read determinant parents and occupations.
     /// # Returns:
     /// - `Vec<LocalParentBlock>`: Non-empty target blocks grouped by parent Q.
-    fn build_target_blocks(
+    fn build_overlap_target_blocks(
         &self,
         targets: &[usize],
         data: &NOCIData<'_, f64>,
@@ -380,7 +327,7 @@ impl OverlapFactor {
         }
 
         for block in &mut blocks {
-            self.build_orthogonal_groups(block, data);
+            self.build_overlap_orthogonal_groups(block, data);
         }
 
         blocks.retain(|block| !block.targets.is_empty());
@@ -394,7 +341,7 @@ impl OverlapFactor {
     /// - `data`: Shared NOCI data used to read occupation bitstrings and phases.
     /// # Returns:
     /// - `()`: Fills `block.orthogonal` without storing numerical overlap factors.
-    fn build_orthogonal_groups(
+    fn build_overlap_orthogonal_groups(
         &self,
         block: &mut LocalParentBlock,
         data: &NOCIData<'_, f64>,
@@ -432,48 +379,48 @@ impl OverlapFactor {
     /// - `scratch`: Reusable storage for factors, contractions, and output increments.
     /// # Returns:
     /// - `()`: Adds the QP contribution to `scratch.increments`.
-    fn apply_parent_pair(
+    fn apply_overlap_parent_pair(
         &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         if target.parent == source.parent
             && let Some(mocache) = data.mocache
             && mocache[target.parent].orthogonal_slater_condon
         {
-            self.apply_orthogonal_parent_pair(output, target, source, data, scratch);
+            self.apply_overlap_orthogonal(output, target, source, data, scratch);
             return;
         }
         if target.parent == source.parent {
-            self.apply_sparse_parent_pair(output, target, source, data, scratch);
+            self.apply_overlap_direct(output, target, source, data, scratch);
             return;
         }
 
         if !data.input.wicks.enabled {
-            self.apply_sparse_parent_pair(output, target, source, data, scratch);
+            self.apply_overlap_direct(output, target, source, data, scratch);
             return;
         }
 
         let Some(wicks) = data.wicks else {
-            self.apply_sparse_parent_pair(output, target, source, data, scratch);
+            self.apply_overlap_direct(output, target, source, data, scratch);
             return;
         };
 
-        let contraction = self.select_contraction(target, source);
+        let contraction = self.select_overlap_contraction(target, source);
         match contraction {
-            OverlapContraction::FactorizedRows => {
-                self.apply_factorized_parent_pair(output, target, source, data, wicks, scratch);
+            OverlapContraction::FactorisedRows => {
+                self.apply_overlap_factorised_rows(output, target, source, data, wicks, scratch);
             }
             OverlapContraction::AFirst => {
-                self.build_factor_tables(target, source, data, wicks, scratch);
-                self.apply_a_first(output, target, source, scratch);
+                self.build_overlap_factor_tables(target, source, data, wicks, scratch);
+                self.apply_overlap_a_first(output, target, source, scratch);
             }
             OverlapContraction::BFirst => {
-                self.build_factor_tables(target, source, data, wicks, scratch);
-                self.apply_b_first(output, target, source, scratch);
+                self.build_overlap_factor_tables(target, source, data, wicks, scratch);
+                self.apply_overlap_b_first(output, target, source, scratch);
             }
         }
     }
@@ -491,14 +438,14 @@ impl OverlapFactor {
     /// - `scratch`: Reusable value storage receiving one output per target row.
     /// # Returns:
     /// - `()`: `Adds factorized sparse-row S\Delta values to output.`
-    fn apply_factorized_parent_pair(
+    fn apply_overlap_factorised_rows(
         &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
         wicks: &WicksView<f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         let nsa = source.aids.len();
         let nsb = source.bids.len();
@@ -506,12 +453,7 @@ impl OverlapFactor {
         scratch.values.clear();
         scratch.values.resize(target.targets.len(), 0.0);
 
-        let (lp, gp, target_left) =
-            if self.parents[target.parent].first_det <= self.parents[source.parent].first_det {
-                (target.parent, source.parent, true)
-            } else {
-                (source.parent, target.parent, false)
-            };
+        let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
 
         scratch
             .values
@@ -583,8 +525,8 @@ impl OverlapFactor {
     /// - `target`: Rank-local target parent block.
     /// - `source`: `Sparse source-parent D^P entries and active spin IDs.`
     /// # Returns:
-    /// - `OverlapContraction`: `FactorizedRows`, `AFirst`, or `BFirst` selected by weighted score.
-    fn select_contraction(
+    /// - `OverlapContraction`: `FactorisedRows`, `AFirst`, or `BFirst` selected by weighted score.
+    fn select_overlap_contraction(
         &self,
         target: &LocalParentBlock,
         source: &ParentUpdates,
@@ -621,7 +563,7 @@ impl OverlapFactor {
             .saturating_add(b_products);
 
         if row_score <= a_score && row_score <= b_score {
-            OverlapContraction::FactorizedRows
+            OverlapContraction::FactorisedRows
         } else if a_score <= b_score {
             OverlapContraction::AFirst
         } else {
@@ -638,13 +580,13 @@ impl OverlapFactor {
     /// - `scratch`: Reusable values and increment storage.
     /// # Returns:
     /// - `()`: Adds the same-parent orthogonal contribution to `output`.
-    fn apply_orthogonal_parent_pair(
+    fn apply_overlap_orthogonal(
         &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         scratch.values.clear();
         scratch
@@ -694,13 +636,13 @@ impl OverlapFactor {
     /// - `scratch`: Reusable per-target value and increment storage.
     /// # Returns:
     /// - `()`: `Adds sparse-row S\Delta values to output.`
-    fn apply_sparse_parent_pair(
+    fn apply_overlap_direct(
         &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         scratch.values.clear();
         scratch.values.resize(target.targets.len(), 0.0);
@@ -746,13 +688,13 @@ impl OverlapFactor {
     /// - `scratch`: Reusable `afac` and `bfac` storage overwritten for this parent pair.
     /// # Returns:
     /// - `()`: Fills `scratch.afac` and `scratch.bfac` for the current QP block.
-    fn build_factor_tables(
+    fn build_overlap_factor_tables(
         &self,
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
         wicks: &WicksView<f64>,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         let nta = target.aids.len();
         let ntb = target.bids.len();
@@ -764,12 +706,7 @@ impl OverlapFactor {
         scratch.afac.resize(nta * nsa, 0.0);
         scratch.bfac.resize(ntb * nsb, 0.0);
 
-        let (lp, gp, target_left) =
-            if self.parents[target.parent].first_det <= self.parents[source.parent].first_det {
-                (target.parent, source.parent, true)
-            } else {
-                (source.parent, target.parent, false)
-            };
+        let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
 
         // Build A rows independently; each task owns one output row.
         scratch
@@ -819,12 +756,12 @@ impl OverlapFactor {
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
     /// - `()`: Adds the A-first blocked contribution to `output`.
-    fn apply_a_first(
+    fn apply_overlap_a_first(
         &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         let nta = target.aids.len();
         let nsa = source.aids.len();
@@ -899,12 +836,12 @@ impl OverlapFactor {
     /// - `scratch`: Reusable factor, intermediate, value, and increment storage.
     /// # Returns:
     /// - `()`: Adds the B-first blocked contribution to `output`.
-    fn apply_b_first(
+    fn apply_overlap_b_first(
         &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
-        scratch: &mut OverlapFactorScratch,
+        scratch: &mut OverlapScratch,
     ) {
         let ntb = target.bids.len();
         let nsa = source.aids.len();
@@ -1061,237 +998,4 @@ impl ParentUpdates {
         self.aids.clear();
         self.bids.clear();
     }
-}
-
-/// Assign compact alpha IDs by sorting determinant indices and deduplicating consecutive identities.
-/// # Arguments:
-/// - `data`: Shared NOCI data defining the determinant basis.
-/// - `aids`: Output alpha compact IDs keyed by determinant index.
-/// # Returns:
-/// - `usize`: Largest number of unique alpha components in any parent.
-fn assign_aids(
-    data: &NOCIData<'_, f64>,
-    aids: &mut [usize],
-) -> usize {
-    let mut indices = (0..data.basis.len()).collect::<Vec<_>>();
-
-    // Sort by the alpha ID key such that equivalent determinants are consecutive.
-    indices.sort_unstable_by(|&i, &j| {
-        let id = &data.basis[i];
-        let jd = &data.basis[j];
-
-        // Sort by the ID key:
-        // Parent reference, alpha occupation bitstring,
-        // alpha holes, alpha particles, and alpha phase.
-        id.parent
-            .cmp(&jd.parent)
-            .then_with(|| id.oa.cmp(&jd.oa))
-            .then_with(|| id.excitation.alpha.holes.cmp(&jd.excitation.alpha.holes))
-            .then_with(|| id.excitation.alpha.parts.cmp(&jd.excitation.alpha.parts))
-            .then_with(|| id.pha.to_bits().cmp(&jd.pha.to_bits()))
-    });
-
-    // Previous determinant in sorted alpha key order.
-    let mut last = usize::MAX;
-    // Next unused alpha ID and number of unique components for a given parent.
-    let mut next = 0usize;
-    // Largest number of unique alpha components for any parent.
-    let mut maxu = 0usize;
-
-    // Enumerate sorted determinants.
-    for (pos, &det) in indices.iter().enumerate() {
-        let parent = data.basis[det].parent;
-        // Detect first determinant or a new parent.
-        if pos == 0 || parent != data.basis[last].parent {
-            // If not the first determinant check if a new maximum number
-            // of unique alpha components has been found for the previous parent.
-            if pos != 0 {
-                maxu = maxu.max(next);
-            }
-            // Reset IDs for the new parent.
-            next = 0;
-            aids[det] = next;
-            next += 1;
-        // Otherwise we have current determinant same parent as previous.
-        } else {
-            let prev = &data.basis[last];
-            let curr = &data.basis[det];
-
-            // If all keys match they get the same alpha ID.
-            if prev.oa == curr.oa
-                && prev.excitation.alpha.holes == curr.excitation.alpha.holes
-                && prev.excitation.alpha.parts == curr.excitation.alpha.parts
-                && prev.pha.to_bits() == curr.pha.to_bits()
-            {
-                aids[det] = aids[last];
-            // Assign a new ID otherwise.
-            } else {
-                aids[det] = next;
-                next += 1;
-            }
-        }
-        last = det;
-    }
-
-    maxu.max(next)
-}
-
-/// Assign compact beta IDs by sorting determinant indices and deduplicating consecutive identities.
-/// # Arguments:
-/// - `data`: Shared NOCI data defining the determinant basis.
-/// - `bids`: Output beta compact IDs keyed by determinant index.
-/// # Returns:
-/// - `usize`: Largest number of unique beta components in any parent.
-fn assign_bids(
-    data: &NOCIData<'_, f64>,
-    bids: &mut [usize],
-) -> usize {
-    let mut indices = (0..data.basis.len()).collect::<Vec<_>>();
-
-    // Sort by the beta ID key such that equivalent determinants are consecutive.
-    indices.sort_unstable_by(|&i, &j| {
-        let id = &data.basis[i];
-        let jd = &data.basis[j];
-
-        // Sort by the ID key:
-        // Parent reference, beta occupation bitstring,
-        // beta holes, beta particles, and beta phase.
-        id.parent
-            .cmp(&jd.parent)
-            .then_with(|| id.ob.cmp(&jd.ob))
-            .then_with(|| id.excitation.beta.holes.cmp(&jd.excitation.beta.holes))
-            .then_with(|| id.excitation.beta.parts.cmp(&jd.excitation.beta.parts))
-            .then_with(|| id.phb.to_bits().cmp(&jd.phb.to_bits()))
-    });
-
-    // Previous determinant in sorted beta key order.
-    let mut last = usize::MAX;
-    // Next unused beta ID and number of unique components for a given parent.
-    let mut next = 0usize;
-    // Largest number of unique beta components for any parent.
-    let mut maxu = 0usize;
-
-    // Enumerate sorted determinants.
-    for (pos, &det) in indices.iter().enumerate() {
-        let parent = data.basis[det].parent;
-
-        // Detect first determinant or a new parent.
-        if pos == 0 || parent != data.basis[last].parent {
-            // If not the first determinant check if a new maximum number
-            // of unique beta components has been found for the previous parent.
-            if pos != 0 {
-                maxu = maxu.max(next);
-            }
-
-            // Reset IDs for the new parent.
-            next = 0;
-            bids[det] = next;
-            next += 1;
-        // Otherwise we have current determinant same parent as previous.
-        } else {
-            let prev = &data.basis[last];
-            let curr = &data.basis[det];
-
-            // If all keys match they get the same beta ID.
-            if prev.ob == curr.ob
-                && prev.excitation.beta.holes == curr.excitation.beta.holes
-                && prev.excitation.beta.parts == curr.excitation.beta.parts
-                && prev.phb.to_bits() == curr.phb.to_bits()
-            {
-                bids[det] = bids[last];
-            // Assign a new ID otherwise.
-            } else {
-                bids[det] = next;
-                next += 1;
-            }
-        }
-
-        last = det;
-    }
-
-    maxu.max(next)
-}
-
-/// Build parent-local spin and occupation representative tables.
-/// `The a and b representatives provide determinant rows for A^{QP}_{\bar a a} and`
-/// `B^{QP}_{\bar b b}; occupation IDs provide direct same-parent orthogonal matching by existing`
-/// determinant `oa` and `ob` bitstrings. These tables contain only determinant IDs and parent-local
-/// IDs, not overlap factors, so no numerical S values persist across QMC iterations.
-/// # Arguments:
-/// - `data`: Shared NOCI data defining determinant parents.
-/// - `aids`: Parent-local a component IDs keyed by determinant.
-/// - `bids`: Parent-local b component IDs keyed by determinant.
-/// # Returns:
-/// - `Vec<ParentSpinSpace>`: Per-parent determinant ranges, spin representatives, occupation representatives, and occupation IDs.
-fn build_parent_spin_spaces(
-    data: &NOCIData<'_, f64>,
-    aids: &[usize],
-    bids: &[usize],
-) -> Vec<ParentSpinSpace> {
-    let nparents = data
-        .basis
-        .iter()
-        .map(|det| det.parent)
-        .max()
-        .map(|parent| parent + 1)
-        .unwrap_or(0);
-    let mut parents = (0..nparents)
-        .map(|_| ParentSpinSpace {
-            areps: Vec::new(),
-            breps: Vec::new(),
-            oreps: Vec::new(),
-            oids: Vec::new(),
-            first_det: usize::MAX,
-            last_det: 0,
-        })
-        .collect::<Vec<_>>();
-
-    for (det, state) in data.basis.iter().enumerate() {
-        let parent = &mut parents[state.parent];
-        parent.first_det = parent.first_det.min(det);
-        parent.last_det = parent.last_det.max(det + 1);
-
-        // Store the first determinant representative for this a component.
-        if parent.areps.len() <= aids[det] {
-            parent.areps.resize(aids[det] + 1, usize::MAX);
-        }
-        if parent.areps[aids[det]] == usize::MAX {
-            parent.areps[aids[det]] = det;
-        }
-
-        // Store the first determinant representative for this b component.
-        if parent.breps.len() <= bids[det] {
-            parent.breps.resize(bids[det] + 1, usize::MAX);
-        }
-        if parent.breps[bids[det]] == usize::MAX {
-            parent.breps[bids[det]] = det;
-        }
-    }
-
-    for parent in &mut parents {
-        if parent.first_det != usize::MAX {
-            parent
-                .oids
-                .resize(parent.last_det - parent.first_det, usize::MAX);
-        }
-    }
-
-    let mut occupation_ids = (0..nparents)
-        .map(|_| HashMap::new())
-        .collect::<Vec<HashMap<(u128, u128), usize>>>();
-
-    for (det, state) in data.basis.iter().enumerate() {
-        let parent = &mut parents[state.parent];
-        let oid = *occupation_ids[state.parent]
-            .entry((state.oa, state.ob))
-            .or_insert_with(|| {
-                parent.oreps.push(det);
-                parent.oreps.len() - 1
-            });
-
-        // Store the occupation ID in determinant order for direct same-parent matching.
-        parent.oids[det - parent.first_det] = oid;
-    }
-
-    parents
 }
