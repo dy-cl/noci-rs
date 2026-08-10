@@ -19,7 +19,7 @@ use crate::time_call;
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `l_ex`: Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.
 /// - `g_ex`: Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.
-/// - `scratch`: Scratch storage receiving the determinant labels and endpoint contraction determinants.
+/// - `scratch`: Scratch storage receiving the determinant labels and required contraction determinants.
 /// # Returns
 /// - `()`: Writes the required contraction-determinant quantities into `scratch`.
 #[inline(always)]
@@ -31,7 +31,7 @@ pub fn prepare_same<T: NOCIScalar>(
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same, {
         // With no zero-overlap orbital pairs, the constrained sum requires only
-        // \mathbf D_{\mathrm{ov}}(0,\ldots,0). Otherwise prepare both endpoint determinants.
+        // \mathbf D_{\mathrm{ov}}(0,\ldots,0). Otherwise prepare both required contraction determinants.
         if w.m == 0 {
             prepare_same_m0(w, l_ex, g_ex, scratch)
         } else {
@@ -49,7 +49,7 @@ pub fn prepare_same<T: NOCIScalar>(
 /// - `g_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage receiving the determinant labels and \mathbf D_{\mathrm{ov}}(0,\ldots,0).
 /// # Returns
-/// - `()`: Writes the m_j = 0 contraction determinant into `scratch.det0`.
+/// - `()`: Writes the determinant labels and m_j = 0 contraction determinant.
 #[inline(always)]
 fn prepare_same_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -58,364 +58,540 @@ fn prepare_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
-        // The contraction-determinant dimension is L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
 
-        // For L = 0 the empty determinant has value one, so no determinant storage is required.
-        if l > 0 {
-            // Allocate the determinant and auxiliary buffers required by the corresponding evaluators.
-            match l {
-                1 => scratch.ensure_same_m0(1),
-                2 => scratch.ensure_same_m0(2),
-                3 => scratch.ensure_same(3),
-                4 => scratch.ensure_same(4),
-                5 => scratch.ensure_same(5),
-                6 => scratch.ensure_same(6),
-                _ => scratch.ensure_same(l),
-            }
+        match l {
+            0 => {}
+            1 => prepare_same_m0_l1(w, l_ex, g_ex, scratch),
+            2 => prepare_same_m0_l2(w, l_ex, g_ex, scratch),
+            3 => prepare_same_m0_l3(w, l_ex, g_ex, scratch),
+            4 => prepare_same_m0_l4(w, l_ex, g_ex, scratch),
+            5 => prepare_same_m0_l5(w, l_ex, g_ex, scratch),
+            6 => prepare_same_m0_l6(w, l_ex, g_ex, scratch),
+            _ => {
+                scratch.ensure_same(l);
 
-            // Order the labels as V_x followed by O_w for rows and O_x followed by V_w for columns.
-            construct_determinant_indices(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
+                construct_determinant_indices_gen(
+                    l_ex,
+                    g_ex,
+                    w,
+                    &mut scratch.rows,
+                    &mut scratch.cols,
+                );
 
-            // Use direct fixed-rank construction where available.
-            match l {
-                1 => prepare_same_m0_l1(w, scratch),
-                2 => prepare_same_m0_l2(w, scratch),
-                3 => prepare_same_m0_l3(w, scratch),
-                4 => prepare_same_m0_l4(w, scratch),
-                5 => prepare_same_m0_l5(w, scratch),
-                6 => prepare_same_m0_l6(w, scratch),
-                _ => {
-                    // Select the m_j = 0 X and Y fundamental contractions.
-                    let x0 = w.x(0);
-                    let y0 = w.y(0);
+                let x0 = w.x(0);
+                let y0 = w.y(0);
 
-                    // Fill (\mathbf D_{\mathrm{ov}})_{ij} with X_{r_i c_j}^{(0)} for i \geq j
-                    // and Y_{r_i c_j}^{(0)} for i < j.
-                    build_d(
-                        scratch.det0.as_mut_slice(),
-                        l,
-                        &x0,
-                        &y0,
-                        scratch.rows.as_slice(),
-                        scratch.cols.as_slice(),
-                    );
-                }
+                build_d(
+                    scratch.det0.as_mut_slice(),
+                    l,
+                    &x0,
+                    &y0,
+                    scratch.rows.as_slice(),
+                    scratch.cols.as_slice(),
+                );
             }
         }
     })
 }
 
-/// Prepare the fixed-rank L = 1 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
+/// Prepare the fixed-rank L = 1 contraction determinant \mathbf D_{\mathrm{ov}}(0).
+/// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared row and column labels and storage for the rank-1 contraction determinant.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and contraction determinant.
 /// # Returns
-/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
+/// - `()`: Writes the rank-1 determinant labels and contraction determinant.
 #[inline(always)]
 fn prepare_same_m0_l1<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l1, {
-        // For L = 1, \mathbf D_{\mathrm{ov}}(0) = [X_{r_0c_0}^{(0)}].
-        let x0 = w.x(0);
-        let xstr = x0.strides();
-        let xptr = x0.as_ptr();
-        let r0 = scratch.rows[0] as isize;
-        let c0 = scratch.cols[0] as isize;
-        let det0 = scratch.det0.as_mut_slice();
+        scratch.ensure_same_m0(1);
+        scratch.rows.ensure(1);
+        scratch.cols.ensure(1);
 
-        // The prepared labels and rank-one buffer make the unchecked access valid.
+        let nocc = w.nocc;
+        let nvirt = w.nmo - nocc;
+        let rows = scratch.rows.as_mut_slice();
+        let cols = scratch.cols.as_mut_slice();
+
         unsafe {
-            det0[0] = *xptr.offset(r0 * xstr[0] + c0 * xstr[1]);
+            if l_ex.holes.len() == 1 {
+                *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0) - nocc;
+                *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
+            } else {
+                *rows.get_unchecked_mut(0) = nvirt + *g_ex.holes.get_unchecked(0);
+                *cols.get_unchecked_mut(0) = *g_ex.parts.get_unchecked(0);
+            }
+
+            let r0 = *rows.get_unchecked(0) * w.n();
+            let c0 = *cols.get_unchecked(0);
+
+            *scratch.det0.as_mut_slice().get_unchecked_mut(0) =
+                *w.x_slice(0).get_unchecked(r0 + c0);
         }
     })
 }
 
 /// Prepare the fixed-rank L = 2 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
+/// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared row and column labels and storage for the rank-2 contraction determinant.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and contraction determinant.
 /// # Returns
-/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
+/// - `()`: Writes the rank-2 determinant labels and contraction determinant.
 #[inline(always)]
 fn prepare_same_m0_l2<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l2, {
-        // Build \mathbf D_{\mathrm{ov}}(0,0) with X^{(0)} on and below the diagonal
-        // and Y^{(0)} above the diagonal.
-        let x0 = w.x(0);
-        let y0 = w.y(0);
-        let xstr = x0.strides();
-        let ystr = y0.strides();
-        let xptr = x0.as_ptr();
-        let yptr = y0.as_ptr();
+        scratch.ensure_same_m0(2);
+        scratch.rows.ensure(2);
+        scratch.cols.ensure(2);
 
-        let r0 = scratch.rows[0] as isize;
-        let r1 = scratch.rows[1] as isize;
-        let c0 = scratch.cols[0] as isize;
-        let c1 = scratch.cols[1] as isize;
+        let nl = l_ex.holes.len();
+        let ng = g_ex.holes.len();
+        let nocc = w.nocc;
+        let nvirt = w.nmo - nocc;
 
-        let xr0 = r0 * xstr[0];
-        let xr1 = r1 * xstr[0];
-        let yr0 = r0 * ystr[0];
+        {
+            let rows = scratch.rows.as_mut_slice();
+            let cols = scratch.cols.as_mut_slice();
 
+            unsafe {
+                let mut k = 0usize;
+                while k < nl {
+                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                    k += 1;
+                }
+
+                let mut k = 0usize;
+                while k < ng {
+                    let i = nl + k;
+                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
+                    k += 1;
+                }
+            }
+        }
+
+        let rows = scratch.rows.as_slice();
+        let cols = scratch.cols.as_slice();
+        let x0 = w.x_slice(0);
+        let y0 = w.y_slice(0);
+        let n = w.n();
         let det0 = scratch.det0.as_mut_slice();
 
-        // \mathbf D_{\mathrm{ov}}(0,0) =
-        // \begin{pmatrix}X_{r_0c_0}^{(0)} & Y_{r_0c_1}^{(0)}\\X_{r_1c_0}^{(0)} & X_{r_1c_1}^{(0)}\end{pmatrix}.
         unsafe {
-            det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
-            det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
-            det0[2] = *xptr.offset(xr1 + c0 * xstr[1]);
-            det0[3] = *xptr.offset(xr1 + c1 * xstr[1]);
+            let r0 = *rows.get_unchecked(0) * n;
+            let r1 = *rows.get_unchecked(1) * n;
+
+            let c0 = *cols.get_unchecked(0);
+            let c1 = *cols.get_unchecked(1);
+
+            *det0.get_unchecked_mut(0) = *x0.get_unchecked(r0 + c0);
+            *det0.get_unchecked_mut(1) = *y0.get_unchecked(r0 + c1);
+
+            *det0.get_unchecked_mut(2) = *x0.get_unchecked(r1 + c0);
+            *det0.get_unchecked_mut(3) = *x0.get_unchecked(r1 + c1);
         }
     })
 }
 
 /// Prepare the fixed-rank L = 3 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
+/// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared row and column labels and storage for the rank-3 contraction determinant.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and contraction determinant.
 /// # Returns
-/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
+/// - `()`: Writes the rank-3 determinant labels and contraction determinant.
 #[inline(always)]
 fn prepare_same_m0_l3<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l3, {
-        // Build the rank-three \mathbf D_{\mathrm{ov}}(0,0,0) from the m_j = 0
-        // X and Y fundamental contractions.
-        let x0 = w.x(0);
-        let y0 = w.y(0);
-        let xstr = x0.strides();
-        let ystr = y0.strides();
-        let xptr = x0.as_ptr();
-        let yptr = y0.as_ptr();
+        scratch.ensure_same(3);
 
-        let r0 = scratch.rows[0] as isize;
-        let r1 = scratch.rows[1] as isize;
-        let r2 = scratch.rows[2] as isize;
-        let c0 = scratch.cols[0] as isize;
-        let c1 = scratch.cols[1] as isize;
-        let c2 = scratch.cols[2] as isize;
+        let nl = l_ex.holes.len();
+        let ng = g_ex.holes.len();
+        let nocc = w.nocc;
+        let nvirt = w.nmo - nocc;
 
-        let xr0 = r0 * xstr[0];
-        let xr1 = r1 * xstr[0];
-        let xr2 = r2 * xstr[0];
-        let yr0 = r0 * ystr[0];
-        let yr1 = r1 * ystr[0];
+        {
+            let rows = scratch.rows.as_mut_slice();
+            let cols = scratch.cols.as_mut_slice();
 
+            unsafe {
+                let mut k = 0usize;
+                while k < nl {
+                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                    k += 1;
+                }
+
+                let mut k = 0usize;
+                while k < ng {
+                    let i = nl + k;
+                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
+                    k += 1;
+                }
+            }
+        }
+
+        let rows = scratch.rows.as_slice();
+        let cols = scratch.cols.as_slice();
+        let x0 = w.x_slice(0);
+        let y0 = w.y_slice(0);
+        let n = w.n();
         let det0 = scratch.det0.as_mut_slice();
 
-        // Row i = 0 contains X_{r_0c_0}^{(0)}, Y_{r_0c_1}^{(0)}, Y_{r_0c_2}^{(0)};
-        // row i = 1 contains X_{r_1c_0}^{(0)}, X_{r_1c_1}^{(0)}, Y_{r_1c_2}^{(0)};
-        // row i = 2 contains X_{r_2c_0}^{(0)}, X_{r_2c_1}^{(0)}, X_{r_2c_2}^{(0)}.
         unsafe {
-            det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
-            det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
-            det0[2] = *yptr.offset(yr0 + c2 * ystr[1]);
+            let r0 = *rows.get_unchecked(0) * n;
+            let r1 = *rows.get_unchecked(1) * n;
+            let r2 = *rows.get_unchecked(2) * n;
 
-            det0[3] = *xptr.offset(xr1 + c0 * xstr[1]);
-            det0[4] = *xptr.offset(xr1 + c1 * xstr[1]);
-            det0[5] = *yptr.offset(yr1 + c2 * ystr[1]);
+            let c0 = *cols.get_unchecked(0);
+            let c1 = *cols.get_unchecked(1);
+            let c2 = *cols.get_unchecked(2);
 
-            det0[6] = *xptr.offset(xr2 + c0 * xstr[1]);
-            det0[7] = *xptr.offset(xr2 + c1 * xstr[1]);
-            det0[8] = *xptr.offset(xr2 + c2 * xstr[1]);
+            *det0.get_unchecked_mut(0) = *x0.get_unchecked(r0 + c0);
+            *det0.get_unchecked_mut(1) = *y0.get_unchecked(r0 + c1);
+            *det0.get_unchecked_mut(2) = *y0.get_unchecked(r0 + c2);
+
+            *det0.get_unchecked_mut(3) = *x0.get_unchecked(r1 + c0);
+            *det0.get_unchecked_mut(4) = *x0.get_unchecked(r1 + c1);
+            *det0.get_unchecked_mut(5) = *y0.get_unchecked(r1 + c2);
+
+            *det0.get_unchecked_mut(6) = *x0.get_unchecked(r2 + c0);
+            *det0.get_unchecked_mut(7) = *x0.get_unchecked(r2 + c1);
+            *det0.get_unchecked_mut(8) = *x0.get_unchecked(r2 + c2);
         }
     })
 }
 
 /// Prepare the fixed-rank L = 4 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
+/// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared row and column labels and storage for the rank-4 contraction determinant.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and contraction determinant.
 /// # Returns
-/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
+/// - `()`: Writes the rank-4 determinant labels and contraction determinant.
 #[inline(always)]
 fn prepare_same_m0_l4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0_l4, {
-        // Build the rank-four \mathbf D_{\mathrm{ov}}(0,0,0,0) from the m_j = 0
-        // X and Y fundamental contractions.
-        let x0 = w.x(0);
-        let y0 = w.y(0);
-        let xstr = x0.strides();
-        let ystr = y0.strides();
-        let xptr = x0.as_ptr();
-        let yptr = y0.as_ptr();
+        scratch.ensure_same(4);
 
-        let r0 = scratch.rows[0] as isize;
-        let r1 = scratch.rows[1] as isize;
-        let r2 = scratch.rows[2] as isize;
-        let r3 = scratch.rows[3] as isize;
-        let c0 = scratch.cols[0] as isize;
-        let c1 = scratch.cols[1] as isize;
-        let c2 = scratch.cols[2] as isize;
-        let c3 = scratch.cols[3] as isize;
+        let nl = l_ex.holes.len();
+        let ng = g_ex.holes.len();
+        let nocc = w.nocc;
+        let nvirt = w.nmo - nocc;
 
-        let xr0 = r0 * xstr[0];
-        let xr1 = r1 * xstr[0];
-        let xr2 = r2 * xstr[0];
-        let xr3 = r3 * xstr[0];
-        let yr0 = r0 * ystr[0];
-        let yr1 = r1 * ystr[0];
-        let yr2 = r2 * ystr[0];
+        {
+            let rows = scratch.rows.as_mut_slice();
+            let cols = scratch.cols.as_mut_slice();
 
+            unsafe {
+                let mut k = 0usize;
+                while k < nl {
+                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                    k += 1;
+                }
+
+                let mut k = 0usize;
+                while k < ng {
+                    let i = nl + k;
+                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
+                    k += 1;
+                }
+            }
+        }
+
+        let rows = scratch.rows.as_slice();
+        let cols = scratch.cols.as_slice();
+        let x0 = w.x_slice(0);
+        let y0 = w.y_slice(0);
+        let n = w.n();
         let det0 = scratch.det0.as_mut_slice();
 
-        // Each row switches from X^{(0)} through the diagonal to Y^{(0)} above it:
-        // (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and Y_{r_i c_j}^{(0)} for i < j.
         unsafe {
-            det0[0] = *xptr.offset(xr0 + c0 * xstr[1]);
-            det0[1] = *yptr.offset(yr0 + c1 * ystr[1]);
-            det0[2] = *yptr.offset(yr0 + c2 * ystr[1]);
-            det0[3] = *yptr.offset(yr0 + c3 * ystr[1]);
+            let r0 = *rows.get_unchecked(0) * n;
+            let r1 = *rows.get_unchecked(1) * n;
+            let r2 = *rows.get_unchecked(2) * n;
+            let r3 = *rows.get_unchecked(3) * n;
 
-            det0[4] = *xptr.offset(xr1 + c0 * xstr[1]);
-            det0[5] = *xptr.offset(xr1 + c1 * xstr[1]);
-            det0[6] = *yptr.offset(yr1 + c2 * ystr[1]);
-            det0[7] = *yptr.offset(yr1 + c3 * ystr[1]);
+            let c0 = *cols.get_unchecked(0);
+            let c1 = *cols.get_unchecked(1);
+            let c2 = *cols.get_unchecked(2);
+            let c3 = *cols.get_unchecked(3);
 
-            det0[8] = *xptr.offset(xr2 + c0 * xstr[1]);
-            det0[9] = *xptr.offset(xr2 + c1 * xstr[1]);
-            det0[10] = *xptr.offset(xr2 + c2 * xstr[1]);
-            det0[11] = *yptr.offset(yr2 + c3 * ystr[1]);
+            *det0.get_unchecked_mut(0) = *x0.get_unchecked(r0 + c0);
+            *det0.get_unchecked_mut(1) = *y0.get_unchecked(r0 + c1);
+            *det0.get_unchecked_mut(2) = *y0.get_unchecked(r0 + c2);
+            *det0.get_unchecked_mut(3) = *y0.get_unchecked(r0 + c3);
 
-            det0[12] = *xptr.offset(xr3 + c0 * xstr[1]);
-            det0[13] = *xptr.offset(xr3 + c1 * xstr[1]);
-            det0[14] = *xptr.offset(xr3 + c2 * xstr[1]);
-            det0[15] = *xptr.offset(xr3 + c3 * xstr[1]);
+            *det0.get_unchecked_mut(4) = *x0.get_unchecked(r1 + c0);
+            *det0.get_unchecked_mut(5) = *x0.get_unchecked(r1 + c1);
+            *det0.get_unchecked_mut(6) = *y0.get_unchecked(r1 + c2);
+            *det0.get_unchecked_mut(7) = *y0.get_unchecked(r1 + c3);
+
+            *det0.get_unchecked_mut(8) = *x0.get_unchecked(r2 + c0);
+            *det0.get_unchecked_mut(9) = *x0.get_unchecked(r2 + c1);
+            *det0.get_unchecked_mut(10) = *x0.get_unchecked(r2 + c2);
+            *det0.get_unchecked_mut(11) = *y0.get_unchecked(r2 + c3);
+
+            *det0.get_unchecked_mut(12) = *x0.get_unchecked(r3 + c0);
+            *det0.get_unchecked_mut(13) = *x0.get_unchecked(r3 + c1);
+            *det0.get_unchecked_mut(14) = *x0.get_unchecked(r3 + c2);
+            *det0.get_unchecked_mut(15) = *x0.get_unchecked(r3 + c3);
         }
     })
 }
 
 /// Prepare the fixed-rank L = 5 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
+/// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared row and column labels and storage for the rank-5 contraction determinant.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and contraction determinant.
 /// # Returns
-/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
+/// - `()`: Writes the rank-5 determinant labels and contraction determinant.
 #[inline(always)]
 fn prepare_same_m0_l5<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) {
-    // Construct every element from the rule
-    // (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and Y_{r_i c_j}^{(0)} for i < j.
-    const N: usize = 5;
-    let x0 = w.x(0);
-    let y0 = w.y(0);
-    let xstr = x0.strides();
-    let ystr = y0.strides();
-    let xptr = x0.as_ptr();
-    let yptr = y0.as_ptr();
-    let rows = scratch.rows.as_slice();
-    let cols = scratch.cols.as_slice();
-    let det0 = scratch.det0.as_mut_slice();
+    scratch.ensure_same(5);
 
-    // The fixed rank and prepared buffers guarantee that all unchecked row, column and determinant accesses are valid.
-    unsafe {
-        let mut i = 0usize;
-        while i < N {
-            let r = *rows.get_unchecked(i) as isize;
-            let xr = r * xstr[0];
-            let yr = r * ystr[0];
+    let nl = l_ex.holes.len();
+    let ng = g_ex.holes.len();
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
 
-            let mut j = 0usize;
-            while j < N {
-                let c = *cols.get_unchecked(j) as isize;
-                *det0.get_unchecked_mut(i * N + j) = if i >= j {
-                    *xptr.offset(xr + c * xstr[1])
-                } else {
-                    *yptr.offset(yr + c * ystr[1])
-                };
-                j += 1;
+    {
+        let rows = scratch.rows.as_mut_slice();
+        let cols = scratch.cols.as_mut_slice();
+
+        unsafe {
+            let mut k = 0usize;
+            while k < nl {
+                *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                k += 1;
             }
 
-            i += 1;
+            let mut k = 0usize;
+            while k < ng {
+                let i = nl + k;
+                *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
+                k += 1;
+            }
         }
+    }
+
+    let rows = scratch.rows.as_slice();
+    let cols = scratch.cols.as_slice();
+    let x0 = w.x_slice(0);
+    let y0 = w.y_slice(0);
+    let n = w.n();
+    let det0 = scratch.det0.as_mut_slice();
+
+    unsafe {
+        let r0 = *rows.get_unchecked(0) * n;
+        let r1 = *rows.get_unchecked(1) * n;
+        let r2 = *rows.get_unchecked(2) * n;
+        let r3 = *rows.get_unchecked(3) * n;
+        let r4 = *rows.get_unchecked(4) * n;
+
+        let c0 = *cols.get_unchecked(0);
+        let c1 = *cols.get_unchecked(1);
+        let c2 = *cols.get_unchecked(2);
+        let c3 = *cols.get_unchecked(3);
+        let c4 = *cols.get_unchecked(4);
+
+        *det0.get_unchecked_mut(0) = *x0.get_unchecked(r0 + c0);
+        *det0.get_unchecked_mut(1) = *y0.get_unchecked(r0 + c1);
+        *det0.get_unchecked_mut(2) = *y0.get_unchecked(r0 + c2);
+        *det0.get_unchecked_mut(3) = *y0.get_unchecked(r0 + c3);
+        *det0.get_unchecked_mut(4) = *y0.get_unchecked(r0 + c4);
+
+        *det0.get_unchecked_mut(5) = *x0.get_unchecked(r1 + c0);
+        *det0.get_unchecked_mut(6) = *x0.get_unchecked(r1 + c1);
+        *det0.get_unchecked_mut(7) = *y0.get_unchecked(r1 + c2);
+        *det0.get_unchecked_mut(8) = *y0.get_unchecked(r1 + c3);
+        *det0.get_unchecked_mut(9) = *y0.get_unchecked(r1 + c4);
+
+        *det0.get_unchecked_mut(10) = *x0.get_unchecked(r2 + c0);
+        *det0.get_unchecked_mut(11) = *x0.get_unchecked(r2 + c1);
+        *det0.get_unchecked_mut(12) = *x0.get_unchecked(r2 + c2);
+        *det0.get_unchecked_mut(13) = *y0.get_unchecked(r2 + c3);
+        *det0.get_unchecked_mut(14) = *y0.get_unchecked(r2 + c4);
+
+        *det0.get_unchecked_mut(15) = *x0.get_unchecked(r3 + c0);
+        *det0.get_unchecked_mut(16) = *x0.get_unchecked(r3 + c1);
+        *det0.get_unchecked_mut(17) = *x0.get_unchecked(r3 + c2);
+        *det0.get_unchecked_mut(18) = *x0.get_unchecked(r3 + c3);
+        *det0.get_unchecked_mut(19) = *y0.get_unchecked(r3 + c4);
+
+        *det0.get_unchecked_mut(20) = *x0.get_unchecked(r4 + c0);
+        *det0.get_unchecked_mut(21) = *x0.get_unchecked(r4 + c1);
+        *det0.get_unchecked_mut(22) = *x0.get_unchecked(r4 + c2);
+        *det0.get_unchecked_mut(23) = *x0.get_unchecked(r4 + c3);
+        *det0.get_unchecked_mut(24) = *x0.get_unchecked(r4 + c4);
     }
 }
 
 /// Prepare the fixed-rank L = 6 contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).
-/// Its elements are (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and
-/// (\mathbf D_{\mathrm{ov}})_{ij} = Y_{r_i c_j}^{(0)} for i < j.
+/// The determinant labels are constructed directly from the bra and ket excitations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared row and column labels and storage for the rank-6 contraction determinant.
+/// - `l_ex`: Excitation defining the bra determinant.
+/// - `g_ex`: Excitation defining the ket determinant.
+/// - `scratch`: Scratch storage receiving the determinant labels and contraction determinant.
 /// # Returns
-/// - `()`: Writes \mathbf D_{\mathrm{ov}}(0,\ldots,0) into `scratch.det0`.
+/// - `()`: Writes the rank-6 determinant labels and contraction determinant.
 #[inline(always)]
 fn prepare_same_m0_l6<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
+    l_ex: &ExcitationSpin,
+    g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) {
-    // Construct every element from the rule
-    // (\mathbf D_{\mathrm{ov}})_{ij} = X_{r_i c_j}^{(0)} for i \geq j and Y_{r_i c_j}^{(0)} for i < j.
-    const N: usize = 6;
-    let x0 = w.x(0);
-    let y0 = w.y(0);
-    let xstr = x0.strides();
-    let ystr = y0.strides();
-    let xptr = x0.as_ptr();
-    let yptr = y0.as_ptr();
-    let rows = scratch.rows.as_slice();
-    let cols = scratch.cols.as_slice();
-    let det0 = scratch.det0.as_mut_slice();
+    scratch.ensure_same(6);
 
-    // The fixed rank and prepared buffers guarantee that all unchecked row, column and determinant accesses are valid.
-    unsafe {
-        let mut i = 0usize;
-        while i < N {
-            let r = *rows.get_unchecked(i) as isize;
-            let xr = r * xstr[0];
-            let yr = r * ystr[0];
+    let nl = l_ex.holes.len();
+    let ng = g_ex.holes.len();
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
 
-            let mut j = 0usize;
-            while j < N {
-                let c = *cols.get_unchecked(j) as isize;
-                *det0.get_unchecked_mut(i * N + j) = if i >= j {
-                    *xptr.offset(xr + c * xstr[1])
-                } else {
-                    *yptr.offset(yr + c * ystr[1])
-                };
-                j += 1;
+    {
+        let rows = scratch.rows.as_mut_slice();
+        let cols = scratch.cols.as_mut_slice();
+
+        unsafe {
+            let mut k = 0usize;
+            while k < nl {
+                *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
+                *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
+                k += 1;
             }
 
-            i += 1;
+            let mut k = 0usize;
+            while k < ng {
+                let i = nl + k;
+                *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
+                *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
+                k += 1;
+            }
         }
+    }
+
+    let rows = scratch.rows.as_slice();
+    let cols = scratch.cols.as_slice();
+    let x0 = w.x_slice(0);
+    let y0 = w.y_slice(0);
+    let n = w.n();
+    let det0 = scratch.det0.as_mut_slice();
+
+    unsafe {
+        let r0 = *rows.get_unchecked(0) * n;
+        let r1 = *rows.get_unchecked(1) * n;
+        let r2 = *rows.get_unchecked(2) * n;
+        let r3 = *rows.get_unchecked(3) * n;
+        let r4 = *rows.get_unchecked(4) * n;
+        let r5 = *rows.get_unchecked(5) * n;
+
+        let c0 = *cols.get_unchecked(0);
+        let c1 = *cols.get_unchecked(1);
+        let c2 = *cols.get_unchecked(2);
+        let c3 = *cols.get_unchecked(3);
+        let c4 = *cols.get_unchecked(4);
+        let c5 = *cols.get_unchecked(5);
+
+        *det0.get_unchecked_mut(0) = *x0.get_unchecked(r0 + c0);
+        *det0.get_unchecked_mut(1) = *y0.get_unchecked(r0 + c1);
+        *det0.get_unchecked_mut(2) = *y0.get_unchecked(r0 + c2);
+        *det0.get_unchecked_mut(3) = *y0.get_unchecked(r0 + c3);
+        *det0.get_unchecked_mut(4) = *y0.get_unchecked(r0 + c4);
+        *det0.get_unchecked_mut(5) = *y0.get_unchecked(r0 + c5);
+
+        *det0.get_unchecked_mut(6) = *x0.get_unchecked(r1 + c0);
+        *det0.get_unchecked_mut(7) = *x0.get_unchecked(r1 + c1);
+        *det0.get_unchecked_mut(8) = *y0.get_unchecked(r1 + c2);
+        *det0.get_unchecked_mut(9) = *y0.get_unchecked(r1 + c3);
+        *det0.get_unchecked_mut(10) = *y0.get_unchecked(r1 + c4);
+        *det0.get_unchecked_mut(11) = *y0.get_unchecked(r1 + c5);
+
+        *det0.get_unchecked_mut(12) = *x0.get_unchecked(r2 + c0);
+        *det0.get_unchecked_mut(13) = *x0.get_unchecked(r2 + c1);
+        *det0.get_unchecked_mut(14) = *x0.get_unchecked(r2 + c2);
+        *det0.get_unchecked_mut(15) = *y0.get_unchecked(r2 + c3);
+        *det0.get_unchecked_mut(16) = *y0.get_unchecked(r2 + c4);
+        *det0.get_unchecked_mut(17) = *y0.get_unchecked(r2 + c5);
+
+        *det0.get_unchecked_mut(18) = *x0.get_unchecked(r3 + c0);
+        *det0.get_unchecked_mut(19) = *x0.get_unchecked(r3 + c1);
+        *det0.get_unchecked_mut(20) = *x0.get_unchecked(r3 + c2);
+        *det0.get_unchecked_mut(21) = *x0.get_unchecked(r3 + c3);
+        *det0.get_unchecked_mut(22) = *y0.get_unchecked(r3 + c4);
+        *det0.get_unchecked_mut(23) = *y0.get_unchecked(r3 + c5);
+
+        *det0.get_unchecked_mut(24) = *x0.get_unchecked(r4 + c0);
+        *det0.get_unchecked_mut(25) = *x0.get_unchecked(r4 + c1);
+        *det0.get_unchecked_mut(26) = *x0.get_unchecked(r4 + c2);
+        *det0.get_unchecked_mut(27) = *x0.get_unchecked(r4 + c3);
+        *det0.get_unchecked_mut(28) = *x0.get_unchecked(r4 + c4);
+        *det0.get_unchecked_mut(29) = *y0.get_unchecked(r4 + c5);
+
+        *det0.get_unchecked_mut(30) = *x0.get_unchecked(r5 + c0);
+        *det0.get_unchecked_mut(31) = *x0.get_unchecked(r5 + c1);
+        *det0.get_unchecked_mut(32) = *x0.get_unchecked(r5 + c2);
+        *det0.get_unchecked_mut(33) = *x0.get_unchecked(r5 + c3);
+        *det0.get_unchecked_mut(34) = *x0.get_unchecked(r5 + c4);
+        *det0.get_unchecked_mut(35) = *x0.get_unchecked(r5 + c5);
     }
 }
 
-/// Prepare the two endpoint contraction determinants required when m > 0:
+/// Prepare the two contraction determinants required when m > 0:
 /// \mathbf D_{\mathrm{ov}}(0,\ldots,0) and \mathbf D_{\mathrm{ov}}(1,\ldots,1).
-/// The evaluators subsequently construct each mixed \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)
-/// by selecting column j from the endpoint determinant corresponding to m_j \in \{0,1\}.
+/// Mixed distributions are formed later by selecting each column according to m_j \in \{0,1\}.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `l_ex`: Excitation defining the bra determinant.
 /// - `g_ex`: Excitation defining the ket determinant.
-/// - `scratch`: Scratch storage receiving the determinant labels and both endpoint determinants.
+/// - `scratch`: Scratch storage receiving the determinant labels and both contraction determinants.
 /// # Returns
-/// - `()`: Writes the endpoint contraction determinants into `scratch.det0` and `scratch.det1`.
+/// - `()`: Writes both contraction determinants into `scratch.det0` and `scratch.det1`.
 pub fn prepare_same_gen<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     l_ex: &ExcitationSpin,
@@ -423,14 +599,11 @@ pub fn prepare_same_gen<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
-        // The contraction-determinant dimension is L = L_x + L_w.
         let l = l_ex.holes.len() + g_ex.holes.len();
         scratch.ensure_same(l);
 
-        // Use the same V_x \cup O_w row ordering and O_x \cup V_w column ordering for both endpoints.
-        construct_determinant_indices(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
+        construct_determinant_indices_gen(l_ex, g_ex, w, &mut scratch.rows, &mut scratch.cols);
 
-        // Build \mathbf D_{\mathrm{ov}}(0,\ldots,0) from X^{(0)} and Y^{(0)}.
         let x0 = w.x(0);
         let y0 = w.y(0);
         build_d(
@@ -442,8 +615,6 @@ pub fn prepare_same_gen<T: NOCIScalar>(
             scratch.cols.as_slice(),
         );
 
-        // Build \mathbf D_{\mathrm{ov}}(1,\ldots,1) from X^{(1)} and Y^{(1)}.
-        // Mixed distributions are assembled later by selecting each column from one of these endpoints.
         let x1 = w.x(1);
         let y1 = w.y(1);
         build_d(
@@ -455,245 +626,6 @@ pub fn prepare_same_gen<T: NOCIScalar>(
             scratch.cols.as_slice(),
         );
     })
-}
-
-/// Construct the row and column labels of the overlap contraction determinant.
-/// Each x-reference excitation pair contributes a particle row a \in V_x and a hole column i \in O_x.
-/// Each w-reference excitation pair then contributes a hole row j \in O_w and a particle column b \in V_w.
-/// The resulting row space is V_x \cup O_w and the column space is O_x \cup V_w.
-/// # Arguments:
-/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
-/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
-/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
-/// - `rows`: Output labels in V_x \cup O_w.
-/// - `cols`: Output labels in O_x \cup V_w.
-/// # Returns
-/// - `()`: Writes the ordered contraction-determinant labels into `rows` and `cols`.
-#[inline(always)]
-fn construct_determinant_indices<T: NOCIScalar>(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
-    w: &SameSpinView<'_, T>,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices,
-        {
-            // The number of row/column pairs is L = L_x + L_w.
-            let l = l_ex.holes.len() + g_ex.holes.len();
-
-            // Fixed-rank constructors retain the same x-reference-then-w-reference ordering.
-            match l {
-                1 => construct_determinant_indices_l1(l_ex, g_ex, w, rows, cols),
-                2 => construct_determinant_indices_l2(l_ex, g_ex, w, rows, cols),
-                3 => construct_determinant_indices_l3(l_ex, g_ex, w, rows, cols),
-                4 => construct_determinant_indices_l4(l_ex, g_ex, w, rows, cols),
-                _ => construct_determinant_indices_gen(l_ex, g_ex, w, rows, cols),
-            }
-        }
-    )
-}
-
-/// Construct the row and column labels for a rank-1 contraction determinant.
-/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
-/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
-/// V_x \cup O_w and O_x \cup V_w respectively.
-/// # Arguments:
-/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
-/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
-/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
-/// - `rows`: Output labels in V_x \cup O_w.
-/// - `cols`: Output labels in O_x \cup V_w.
-/// # Returns
-/// - `()`: Writes the ordered rank-1 labels into `rows` and `cols`.
-#[inline(always)]
-pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
-    w: &SameSpinView<'_, T>,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l1,
-        {
-            // Exactly one excitation pair is present: either L_x = 1 or L_w = 1.
-            let nl = l_ex.holes.len();
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-
-            rows.ensure(1);
-            cols.ensure(1);
-
-            let rows = rows.as_mut_slice();
-            let cols = cols.as_mut_slice();
-
-            // Compact row labels place V_x before O_w; compact column labels place O_x before V_w.
-            unsafe {
-                if nl == 1 {
-                    *rows.get_unchecked_mut(0) = *l_ex.parts.get_unchecked(0) - nocc;
-                    *cols.get_unchecked_mut(0) = *l_ex.holes.get_unchecked(0);
-                } else {
-                    *rows.get_unchecked_mut(0) = nvirt + *g_ex.holes.get_unchecked(0);
-                    *cols.get_unchecked_mut(0) = *g_ex.parts.get_unchecked(0);
-                }
-            }
-        }
-    )
-}
-
-/// Construct the row and column labels for a rank-2 contraction determinant.
-/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
-/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
-/// V_x \cup O_w and O_x \cup V_w respectively.
-/// # Arguments:
-/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
-/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
-/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
-/// - `rows`: Output labels in V_x \cup O_w.
-/// - `cols`: Output labels in O_x \cup V_w.
-/// # Returns
-/// - `()`: Writes the ordered rank-2 labels into `rows` and `cols`.
-#[inline(always)]
-pub(super) fn construct_determinant_indices_l2<T: NOCIScalar>(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
-    w: &SameSpinView<'_, T>,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l2,
-        {
-            let nl = l_ex.holes.len();
-            let ng = g_ex.holes.len();
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-
-            rows.ensure(2);
-            cols.ensure(2);
-
-            let rows = rows.as_mut_slice();
-            let cols = cols.as_mut_slice();
-
-            // Write (a_k,i_k) for all x-reference pairs, followed by (j_k,b_k) for all w-reference pairs.
-            // The fixed total rank and ensured buffers make the unchecked accesses valid.
-            unsafe {
-                for k in 0..nl {
-                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                }
-                for k in 0..ng {
-                    let i = nl + k;
-                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                }
-            }
-        }
-    )
-}
-
-/// Construct the row and column labels for a rank-3 contraction determinant.
-/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
-/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
-/// V_x \cup O_w and O_x \cup V_w respectively.
-/// # Arguments:
-/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
-/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
-/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
-/// - `rows`: Output labels in V_x \cup O_w.
-/// - `cols`: Output labels in O_x \cup V_w.
-/// # Returns
-/// - `()`: Writes the ordered rank-3 labels into `rows` and `cols`.
-#[inline(always)]
-pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
-    w: &SameSpinView<'_, T>,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l3,
-        {
-            let nl = l_ex.holes.len();
-            let ng = g_ex.holes.len();
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-
-            rows.ensure(3);
-            cols.ensure(3);
-
-            let rows = rows.as_mut_slice();
-            let cols = cols.as_mut_slice();
-
-            // Write (a_k,i_k) for all x-reference pairs, followed by (j_k,b_k) for all w-reference pairs.
-            // The fixed total rank and ensured buffers make the unchecked accesses valid.
-            unsafe {
-                for k in 0..nl {
-                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                }
-                for k in 0..ng {
-                    let i = nl + k;
-                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                }
-            }
-        }
-    )
-}
-
-/// Construct the row and column labels for a rank-4 contraction determinant.
-/// The x-reference pairs are written first as (r_k,c_k) = (a_k,i_k), followed by the
-/// w-reference pairs as (r_k,c_k) = (j_k,b_k). Thus the row and column spaces are
-/// V_x \cup O_w and O_x \cup V_w respectively.
-/// # Arguments:
-/// - `l_ex`: Excitation defining the bra determinant generated from \langle{}^x\Psi|.
-/// - `g_ex`: Excitation defining the ket determinant generated from |{}^w\Psi\rangle.
-/// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
-/// - `rows`: Output labels in V_x \cup O_w.
-/// - `cols`: Output labels in O_x \cup V_w.
-/// # Returns
-/// - `()`: Writes the ordered rank-4 labels into `rows` and `cols`.
-#[inline(always)]
-pub(super) fn construct_determinant_indices_l4<T: NOCIScalar>(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
-    w: &SameSpinView<'_, T>,
-    rows: &mut IndexVec,
-    cols: &mut IndexVec,
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_construct_determinant_indices_l4,
-        {
-            let nl = l_ex.holes.len();
-            let ng = g_ex.holes.len();
-            let nocc = w.nocc;
-            let nvirt = w.nmo - nocc;
-
-            rows.ensure(4);
-            cols.ensure(4);
-
-            let rows = rows.as_mut_slice();
-            let cols = cols.as_mut_slice();
-
-            // Write (a_k,i_k) for all x-reference pairs, followed by (j_k,b_k) for all w-reference pairs.
-            // The fixed total rank and ensured buffers make the unchecked accesses valid.
-            unsafe {
-                for k in 0..nl {
-                    *rows.get_unchecked_mut(k) = *l_ex.parts.get_unchecked(k) - nocc;
-                    *cols.get_unchecked_mut(k) = *l_ex.holes.get_unchecked(k);
-                }
-                for k in 0..ng {
-                    let i = nl + k;
-                    *rows.get_unchecked_mut(i) = nvirt + *g_ex.holes.get_unchecked(k);
-                    *cols.get_unchecked_mut(i) = *g_ex.parts.get_unchecked(k);
-                }
-            }
-        }
-    )
 }
 
 /// Construct the row and column labels for an arbitrary-rank contraction determinant.

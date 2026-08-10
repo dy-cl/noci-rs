@@ -51,7 +51,7 @@ states = {
 }
 
 write = {
-    read_restart = "outputs/restarts/QMC_BENCHMARK3.3_RESTART.H5",
+    read_restart = "restarts/QMC_BENCHMARK3.3_RESTART.H5",
 }
 
 wicks = {
