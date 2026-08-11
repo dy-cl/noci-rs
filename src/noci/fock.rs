@@ -87,7 +87,7 @@ pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(
 /// - `gdet`: Ket-reference state w.
 /// # Returns:
 /// - `T`: Fock matrix element between `ldet` and `gdet`.
-fn calculate_f_pair_orthogonal<T: NOCIScalar>(
+pub(in crate::noci) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
     cache: &FockMOCache<T>,
     ldet: &DetState<T>,
     gdet: &DetState<T>,
