@@ -13,7 +13,9 @@ pub struct GMRESOptions {
     /// GMRES restart dimension.
     pub restart: usize,
     /// Storage strategy for the full candidate-candidate shifted Fock matrix.
-    pub full_m: SNOCIFullM,
+    pub full_m: SNOCIStorage,
+    /// Storage strategy for spin-factorised one-body factor tables.
+    pub factor_tables: SNOCIStorage,
 }
 
 impl Default for GMRESOptions {
@@ -26,48 +28,49 @@ impl Default for GMRESOptions {
             res_tol: 1e-8,
             metric_tol: 1e-8,
             restart: 200,
-            full_m: SNOCIFullM::MatrixFree,
+            full_m: SNOCIStorage::None,
+            factor_tables: SNOCIStorage::RAM,
         }
     }
 }
 
 #[derive(Clone, Copy)]
-pub enum SNOCIFullM {
-    /// Do not build the full candidate-candidate matrix; evaluate matrix elements during GMRES applies.
-    MatrixFree,
-    /// Build the full packed candidate-candidate matrix in RAM.
+pub enum SNOCIStorage {
+    /// Do not store this object.
+    None,
+    /// Store this object in RAM.
     RAM,
-    /// Build the full packed candidate-candidate matrix in a disk-backed memory map.
+    /// Store this object in a disk-backed memory map.
     Disk,
 }
 
-impl SNOCIFullM {
-    /// Return full-M storage strategy as input string.
+impl SNOCIStorage {
+    /// Return SNOCI storage strategy as input string.
     /// # Returns:
     /// - `&'static str`: String representation used in input parsing and printing.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::MatrixFree => "false",
+            Self::None => "none",
             Self::RAM => "ram",
             Self::Disk => "disk",
         }
     }
 }
 
-impl FromStr for SNOCIFullM {
+impl FromStr for SNOCIStorage {
     type Err = String;
 
-    /// Parse full-M storage strategy from input string.
+    /// Parse SNOCI storage strategy from input string.
     /// # Arguments:
-    /// - `s`: String specifying full-M storage.
+    /// - `s`: String specifying SNOCI storage.
     /// # Returns:
     /// - `Result`: Parsed storage strategy if valid string, otherwise error message.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "false" | "matrix-free" | "matrix_free" | "none" => Ok(Self::MatrixFree),
-            "true" | "ram" => Ok(Self::RAM),
+        match s.to_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "ram" => Ok(Self::RAM),
             "disk" => Ok(Self::Disk),
-            _ => Err(format!("invalid SNOCI full_m storage: {s}")),
+            _ => Err(format!("invalid SNOCI storage: {s}")),
         }
     }
 }

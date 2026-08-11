@@ -182,6 +182,6 @@ snoci = {
     gmres = {
         max_iter = 1e6,
         res_tol = 1e-7,
-        full_m = true,
+        full_m = "ram",
     },
 }

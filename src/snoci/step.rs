@@ -6,7 +6,7 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::input::SNOCIFullM;
+use crate::input::SNOCIStorage;
 use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyFactorisation};
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::nonorthogonalwicks::WicksShared;
@@ -92,6 +92,38 @@ fn print_build_candidate_m<T: NOCIScalar>(n: usize) {
     println!(
         "  Building upper triangle shifted Fock matrix ({} elements, {:.3} MiB)...",
         nelem, mib
+    );
+}
+
+/// Print candidate full-M storage required for a packed upper-triangular matrix.
+/// # Arguments:
+/// - `n`: Number of candidates.
+/// # Returns:
+/// - `()`: Prints the packed full-M storage estimate to standard output.
+fn print_candidate_m_storage<T: NOCIScalar>(n: usize) {
+    let nelem = n
+        .checked_mul(n + 1)
+        .and_then(|x| x.checked_div(2))
+        .expect("packed candidate matrix length overflow");
+    let mib = nelem as f64 * std::mem::size_of::<T>() as f64 / 1024.0 / 1024.0;
+    println!("  Estimated storage required for full_m (MiB): {:.3}", mib);
+}
+
+/// Print spin-factorised one-body factor-table storage required for this candidate basis.
+/// # Arguments:
+/// - `data`: Shared candidate NOCI data defining spin-component topology.
+/// - `fock`: Current generalised-Fock data identifying orthogonal same-parent shortcuts.
+/// # Returns:
+/// - `()`: Prints the raw factor-table storage estimate to standard output.
+fn print_factor_table_storage<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    fock: &FockData<'_, T>,
+) {
+    let nbytes = OneBodyFactorisation::storage_bytes(data, fock);
+    let mib = nbytes as f64 / 1024.0 / 1024.0;
+    println!(
+        "  Estimated storage required for factor_tables (MiB): {:.3}",
+        mib
     );
 }
 
@@ -251,7 +283,12 @@ where
                 candidates: &pool.candidates,
                 projection: &projection,
             };
-            let one_body = if matches!(opts.gmres.full_m, SNOCIFullM::MatrixFree)
+            if world.rank() == 0 {
+                print_candidate_m_storage::<T>(op.candidates.len());
+                print_factor_table_storage(&candidate_data, &fock);
+            }
+
+            let one_body = if matches!(opts.gmres.full_m, SNOCIStorage::None)
                 && input.wicks.enabled
                 && candidate_data.wicks.is_some()
             {
@@ -262,6 +299,7 @@ where
                     std::path::Path::new(cache),
                     world.rank(),
                     it,
+                    opts.gmres.factor_tables,
                 ))
             } else {
                 None
@@ -276,14 +314,14 @@ where
             }
 
             let m = match opts.gmres.full_m {
-                SNOCIFullM::MatrixFree => None,
-                SNOCIFullM::RAM => {
+                SNOCIStorage::None => None,
+                SNOCIStorage::RAM => {
                     if world.rank() == 0 {
                         print_build_candidate_m::<T>(op.candidates.len());
                     }
                     Some(build_candidate_m(&op))
                 }
-                SNOCIFullM::Disk => {
+                SNOCIStorage::Disk => {
                     if world.rank() == 0 {
                         print_build_candidate_m::<T>(op.candidates.len());
                     }

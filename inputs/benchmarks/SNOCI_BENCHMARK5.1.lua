@@ -131,7 +131,8 @@ snoci = {
         restart = 128,
         res_tol = 1e-6,
         metric_tol = 1e-10,
-        full_m = false,
+        full_m = "none",
+        factor_tables = "disk",
     },
 }
 

@@ -10,7 +10,7 @@ use rlua::{Lua, Table, Value};
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, Input,
     Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
-    SCFExcitation, SCFInfo, SNOCIFullM, SNOCIOptions, SNOCIPreconditioner, SpatialBias, Spin,
+    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
     SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
@@ -49,6 +49,38 @@ fn read_pattern(pat_tbl: Table) -> Vec<i8> {
             }
         })
         .collect()
+}
+
+/// Read SNOCI storage option `x \in {none,ram,disk}` from a Lua value.
+/// # Arguments:
+/// - `name`: Fully qualified input option name used in error messages.
+/// - `value`: Lua value read from the input table.
+/// - `default`: Default storage strategy used for nil or missing values.
+/// # Returns:
+/// - `SNOCIStorage`: Parsed storage strategy.
+fn read_snoci_storage(
+    name: &str,
+    value: rlua::Result<Value>,
+    default: SNOCIStorage,
+) -> SNOCIStorage {
+    match value {
+        Ok(Value::String(s)) => s
+            .to_str()
+            .unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            })
+            .parse()
+            .unwrap_or_else(|msg| {
+                eprintln!("{name}: {msg}");
+                std::process::exit(1);
+            }),
+        Ok(Value::Nil) | Err(_) => default,
+        Ok(_) => {
+            eprintln!("{name} must be one of 'none', 'ram', or 'disk'");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Read basis state recipe from Lua table.
@@ -427,22 +459,16 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
         let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
 
         let gmres = if let Some(gmres_tbl) = gmres_tbl {
-            let full_m = match gmres_tbl.get::<_, Value>("full_m") {
-                Ok(Value::Boolean(true)) => SNOCIFullM::RAM,
-                Ok(Value::Boolean(false)) => SNOCIFullM::MatrixFree,
-                Ok(Value::String(s)) => s.to_str().unwrap_or_else(|msg| {
-                    eprintln!("{msg}");
-                    std::process::exit(1);
-                }).parse().unwrap_or_else(|msg| {
-                    eprintln!("{msg}");
-                    std::process::exit(1);
-                }),
-                Ok(Value::Nil) | Err(_) => gmres_defaults.full_m,
-                Ok(_) => {
-                    eprintln!("snoci.gmres.full_m must be a boolean or one of 'ram', 'disk', 'matrix-free'");
-                    std::process::exit(1);
-                }
-            };
+            let full_m = read_snoci_storage(
+                "snoci.gmres.full_m",
+                gmres_tbl.get::<_, Value>("full_m"),
+                gmres_defaults.full_m,
+            );
+            let factor_tables = read_snoci_storage(
+                "snoci.gmres.factor_tables",
+                gmres_tbl.get::<_, Value>("factor_tables"),
+                gmres_defaults.factor_tables,
+            );
 
             GMRESOptions {
                 max_iter: gmres_tbl.get("max_iter").unwrap_or(gmres_defaults.max_iter),
@@ -452,6 +478,7 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
                     .unwrap_or(gmres_defaults.metric_tol),
                 restart: gmres_tbl.get("restart").unwrap_or(gmres_defaults.restart),
                 full_m,
+                factor_tables,
             }
         } else {
             gmres_defaults

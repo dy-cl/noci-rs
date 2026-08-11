@@ -11,6 +11,7 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
@@ -27,6 +28,8 @@ enum OneBodyBlock<T: NOCIScalar> {
     Orthogonal(OrthogonalOneBodyBlock),
     /// Spin-factorised nonorthogonal one-body action.
     Factorised(FactorisedOneBodyBlock<T>),
+    /// Spin-factorised nonorthogonal one-body action with regenerated factor tables.
+    Transient(TransientOneBodyBlock),
 }
 
 /// Cached spin-factorised tables and dimensions for one ordered source-target parent pair `QP`.
@@ -47,6 +50,14 @@ struct FactorisedOneBodyBlock<T: NOCIScalar> {
     contraction: OneBodyContraction,
     /// Raw `S/F` alpha and beta factor backing.
     factors: OneBodyFactorStorage<T>,
+}
+
+/// Nonpersistent spin-factorised parent pair `QP`.
+struct TransientOneBodyBlock {
+    /// Target parent `Q`.
+    target_parent: usize,
+    /// Source parent `P`.
+    source_parent: usize,
 }
 
 /// Actual determinant target in one orthogonal occupation group.
@@ -121,6 +132,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `cache`: Directory for persistent file-backed factor blocks.
     /// - `rank`: MPI rank used in factor-cache filenames.
     /// - `iteration`: SNOCI iteration used in factor-cache filenames.
+    /// - `storage`: Requested persistent factor-table storage backend.
     /// # Returns
     /// - `OneBodyFactorisation<T>`: Cached spin-factorised one-body operator.
     pub(crate) fn new(
@@ -129,11 +141,12 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         cache: &Path,
         rank: i32,
         iteration: usize,
+        storage: SNOCIStorage,
     ) -> Self {
         let spin = SpinFactorisation::new(data);
         let nparent = spin.parents.len();
         let mut blocks = Vec::with_capacity(nparent * nparent);
-        let mut storage = OneBodyStoragePlan::new(cache, rank, iteration);
+        let mut storage_plan = OneBodyStoragePlan::new(cache, rank, iteration, storage);
 
         for target_parent in 0..nparent {
             for source_parent in 0..nparent {
@@ -145,11 +158,16 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         data,
                         target_parent,
                     )));
+                } else if matches!(storage, SNOCIStorage::None) {
+                    blocks.push(OneBodyBlock::Transient(build_transient_one_body_block(
+                        target_parent,
+                        source_parent,
+                    )));
                 } else {
                     blocks.push(OneBodyBlock::Factorised(build_one_body_factor_tables(
                         &spin,
                         data,
-                        &mut storage,
+                        &mut storage_plan,
                         target_parent,
                         source_parent,
                     )));
@@ -174,6 +192,56 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             first_f: Vec::new(),
             first_s: Vec::new(),
         }
+    }
+
+    /// Count raw factor storage bytes for `S^{alpha}`, `F^{alpha}`, `S^{beta}` and `F^{beta}`.
+    /// Same-parent orthogonal Slater-Condon blocks require no dense factor storage.
+    /// # Arguments:
+    /// - `data`: Shared NOCI data defining the candidate determinant basis.
+    /// - `fock`: Current generalised-Fock data used to identify orthogonal same-parent blocks.
+    /// # Returns
+    /// - `usize`: Number of bytes required to store all nonorthogonal raw factor tables.
+    pub(crate) fn storage_bytes(
+        data: &NOCIData<'_, T>,
+        fock: &FockData<'_, T>,
+    ) -> usize {
+        let spin = SpinFactorisation::new(data);
+        let nparent = spin.parents.len();
+        let mut nentries = 0usize;
+        for target_parent in 0..nparent {
+            let target = &spin.parents[target_parent];
+            for source_parent in 0..nparent {
+                if target_parent == source_parent
+                    && fock.fock_mocache[target_parent].orthogonal_slater_condon
+                {
+                    continue;
+                }
+                let source = &spin.parents[source_parent];
+                let alpha = target
+                    .areps
+                    .len()
+                    .checked_mul(source.areps.len())
+                    .expect("alpha one-body factor length overflow");
+                let beta = target
+                    .breps
+                    .len()
+                    .checked_mul(source.breps.len())
+                    .expect("beta one-body factor length overflow");
+                let block_entries = 2usize
+                    .checked_mul(
+                        alpha
+                            .checked_add(beta)
+                            .expect("one-body factor length overflow"),
+                    )
+                    .expect("one-body factor length overflow");
+                nentries = nentries
+                    .checked_add(block_entries)
+                    .expect("one-body factor total length overflow");
+            }
+        }
+        nentries
+            .checked_mul(std::mem::size_of::<T>())
+            .expect("one-body factor byte size overflow")
     }
 
     /// Apply `Y = (F + \lambda S)x` using cached spin factors.
@@ -221,6 +289,25 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     scratch,
                     (worker, nworker),
                 ),
+                OneBodyBlock::Transient(block) => {
+                    let mut storage_plan =
+                        OneBodyStoragePlan::new(Path::new("."), 0, 0, SNOCIStorage::RAM);
+                    let block = build_one_body_factor_tables(
+                        &self.spin,
+                        data,
+                        &mut storage_plan,
+                        block.target_parent,
+                        block.source_parent,
+                    );
+                    self.apply_one_body_factorised(
+                        &block,
+                        xs,
+                        &mut y,
+                        lambda,
+                        scratch,
+                        (worker, nworker),
+                    )
+                }
             }
         }
 
@@ -262,6 +349,18 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 }
                 OneBodyBlock::Factorised(block) => {
                     fill_one_body_diagonal_block(parent, block, lambda, &mut m_diag, &mut s_diag);
+                }
+                OneBodyBlock::Transient(block) => {
+                    let mut storage_plan =
+                        OneBodyStoragePlan::new(Path::new("."), 0, 0, SNOCIStorage::RAM);
+                    let block = build_one_body_factor_tables(
+                        &self.spin,
+                        data,
+                        &mut storage_plan,
+                        block.target_parent,
+                        block.source_parent,
+                    );
+                    fill_one_body_diagonal_block(parent, &block, lambda, &mut m_diag, &mut s_diag);
                 }
             }
         }
@@ -562,6 +661,22 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
         nsb,
         contraction,
         factors,
+    }
+}
+
+/// Build nonpersistent one-body factor metadata for parent pair `QP`.
+/// # Arguments:
+/// - `target_parent`: Target parent `Q`.
+/// - `source_parent`: Source parent `P`.
+/// # Returns
+/// - `TransientOneBodyBlock`: Parent-pair metadata for regenerated factor tables.
+fn build_transient_one_body_block(
+    target_parent: usize,
+    source_parent: usize,
+) -> TransientOneBodyBlock {
+    TransientOneBodyBlock {
+        target_parent,
+        source_parent,
     }
 }
 

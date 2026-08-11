@@ -43,6 +43,6 @@ snoci = {
         restart = 64,
         res_tol = 1e-10,
         metric_tol = 1e-10,
-        full_m = true,
+        full_m = "ram",
     },
 }

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use memmap2::{MmapMut, MmapOptions};
 
 // Crate-root imports.
+use crate::input::SNOCIStorage;
 use crate::noci::types::NOCIScalar;
 
 /// Mutable storage policy state for assigning factor blocks to RAM or disk.
@@ -20,8 +21,8 @@ pub(super) struct OneBodyStoragePlan {
     rank: i32,
     /// SNOCI iteration used to make factor filenames unique.
     iteration: usize,
-    /// Total RAM bytes already committed to retained factor tables.
-    retained_ram_bytes: usize,
+    /// Requested factor-table storage backend.
+    storage: SNOCIStorage,
 }
 
 impl OneBodyStoragePlan {
@@ -30,24 +31,26 @@ impl OneBodyStoragePlan {
     /// - `cache`: Directory for file-backed factor blocks.
     /// - `rank`: MPI rank used in filenames.
     /// - `iteration`: SNOCI iteration used in filenames.
+    /// - `storage`: Requested factor-table storage backend.
     /// # Returns
-    /// - `OneBodyStoragePlan`: Empty storage allocator with no retained RAM assigned.
+    /// - `OneBodyStoragePlan`: Storage allocator with the requested backend.
     pub(super) fn new(
         cache: &Path,
         rank: i32,
         iteration: usize,
+        storage: SNOCIStorage,
     ) -> Self {
         Self {
             cache: cache.to_path_buf(),
             rank,
             iteration,
-            retained_ram_bytes: 0,
+            storage,
         }
     }
 
     /// Allocate `S^{alpha}`, `F^{alpha}`, `S^{beta}` and `F^{beta}` storage for one block.
-    /// RAM is used while the total retained factor RAM remains within
-    /// `8 GiB`; otherwise a writable file-backed map is used.
+    /// The requested SNOCI storage backend determines whether the raw factor tables live in RAM
+    /// or in a writable file-backed map.
     /// # Arguments:
     /// - `target_parent`: Target parent `Q`.
     /// - `source_parent`: Source parent `P`.
@@ -62,30 +65,23 @@ impl OneBodyStoragePlan {
         na: usize,
         nb: usize,
     ) -> OneBodyFactorStorage<T> {
-        let nentries = 2usize
-            .checked_mul(na.checked_add(nb).expect("one-body factor length overflow"))
-            .expect("one-body factor length overflow");
-        let nbytes = nentries
-            .checked_mul(std::mem::size_of::<T>())
-            .expect("one-body factor byte size overflow");
-        if self
-            .retained_ram_bytes
-            .checked_add(nbytes)
-            .is_some_and(|total| total <= 8usize << 30)
-        {
-            self.retained_ram_bytes += nbytes;
-            OneBodyFactorStorage::Ram(OneBodyRamFactors {
+        match self.storage {
+            SNOCIStorage::RAM => OneBodyFactorStorage::Ram(OneBodyRamFactors {
                 sa: vec![T::from_real(0.0); na],
                 fa: vec![T::from_real(0.0); na],
                 sb: vec![T::from_real(0.0); nb],
                 fb: vec![T::from_real(0.0); nb],
-            })
-        } else {
-            let path = self.cache.join(format!(
-                "snoci_factors_rank{}_iter{}_q{}_p{}.bin",
-                self.rank, self.iteration, target_parent, source_parent
-            ));
-            OneBodyFactorStorage::Disk(OneBodyDiskFactors::create(&path, na, nb))
+            }),
+            SNOCIStorage::Disk => {
+                let path = self.cache.join(format!(
+                    "snoci_factors_rank{}_iter{}_q{}_p{}.bin",
+                    self.rank, self.iteration, target_parent, source_parent
+                ));
+                OneBodyFactorStorage::Disk(OneBodyDiskFactors::create(&path, na, nb))
+            }
+            SNOCIStorage::None => {
+                panic!("factor table storage must be 'ram' or 'disk' when factors are built")
+            }
         }
     }
 }
