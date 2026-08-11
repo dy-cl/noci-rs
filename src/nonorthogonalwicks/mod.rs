@@ -32,30 +32,27 @@
 //! `cost depends on the excitation ranks and the allowed m_i distributions rather than`
 //! directly on the number of electrons or basis functions.
 
-mod build;
-mod eval;
-mod layout;
-mod scratch;
-mod storage;
+pub(crate) mod cpu;
+#[cfg(feature = "gpu")]
+pub(crate) mod gpu;
+
+mod requirements;
 mod types;
-mod view;
 
 // Public type re-exports.
-pub use storage::WicksShared;
-pub use view::WicksView;
+pub use cpu::{WicksShared, WicksView};
 
 // Crate-visible type re-exports.
-pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
-pub(crate) use scratch::WickScratchSpin;
-pub(crate) use storage::{WicksDiskMeta, WicksRma};
+pub(crate) use cpu::{
+    DiffSpinBuild, SameSpinBuild, WickScratchSpin, WicksDiskMeta, WicksPairView, WicksRma,
+};
+pub(crate) use requirements::WicksRequirements;
 pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
-pub(crate) use view::WicksPairView;
 
 // Crate-visible function re-exports.
-pub(crate) use eval::{
-    prepare_same, xw_f, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap, xw_overlap_same_f64,
+pub(crate) use cpu::{
+    assign_offsets, create_wicks_mmap, load_wicks_mmap, prepare_same, write_diff_spin,
+    write_same_spin, write2t, xw_f, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap, xw_overlap_same_f64,
 };
 #[cfg(feature = "nocc")]
-pub(crate) use eval::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};
-pub(crate) use layout::{assign_offsets, write_diff_spin, write_same_spin, write2t};
-pub(crate) use storage::{create_wicks_mmap, load_wicks_mmap};
+pub(crate) use cpu::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};

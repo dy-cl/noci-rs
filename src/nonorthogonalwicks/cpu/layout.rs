@@ -1,4 +1,4 @@
-// nonorthogonalwicks/layout.rs
+// nonorthogonalwicks/cpu/layout.rs
 // External crate imports.
 use ndarray::{Array2, Array4};
 
@@ -6,8 +6,8 @@ use ndarray::{Array2, Array4};
 use crate::noci::NOCIScalar;
 
 // Parent/sibling imports.
+use super::super::types::{DiffSpinOffset, PairOffset, PairZeroCounts, SameSpinOffset};
 use super::build::{DiffSpinBuild, SAME_SPIN_J_BRANCHES, SameSpinBuild};
-use super::types::{DiffSpinOffset, PairOffset, PairZeroCounts, SameSpinOffset};
 
 /// Assign offsets into the contiguous tensor slab for every ordered reference pair (x,w).
 /// Rank-four tensors are allocated only when their fundamental-contraction assignments can

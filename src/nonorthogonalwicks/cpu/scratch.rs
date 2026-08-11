@@ -1,4 +1,4 @@
-// nonorthogonalwicks/scratch.rs
+// nonorthogonalwicks/cpu/scratch.rs
 // Standard library imports.
 use std::ops::{Deref, DerefMut};
 

@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/h2diff.rs
+// nonorthogonalwicks/cpu/eval/h2diff.rs
 // Crate-root imports.
 use crate::Excitation;
 use crate::maths::adjugate_transpose;

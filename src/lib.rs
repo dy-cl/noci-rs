@@ -55,6 +55,9 @@ pub mod timers;
 pub mod utils;
 pub mod write;
 
+#[cfg(feature = "gpu")]
+pub(crate) mod gpu;
+
 // External crate imports.
 use ndarray::{Array1, Array2, Array4};
 use serde::{Deserialize, Serialize};

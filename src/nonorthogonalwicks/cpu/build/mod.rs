@@ -1,4 +1,9 @@
-// nonorthogonalwicks/build.rs
+// nonorthogonalwicks/cpu/build/mod.rs
+//! CPU nonorthogonal Wick intermediate construction.
+
+mod diff;
+mod same;
+
 // External crate imports.
 use ndarray::{Array1, Array2, Array4, Axis, s};
 use ndarray_linalg::{Determinant, SVD};

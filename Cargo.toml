@@ -12,7 +12,7 @@ serde_json = { version = "1", features = ["std"], default-features = false }
 
 [dependencies]
 bincode = { version = "1" }
-cubecl = { version = "0.10.0", optional = true, default-features = false, features = ["std", "stdlib"] }
+cubecl = { version = "=0.10.0", optional = true, default-features = false, features = ["std", "stdlib"] }
 hdf5 = { version = "0.8.1", default-features = false }
 itertools = { version = "0.13" }
 memmap2 = { version = "0.9.10" }

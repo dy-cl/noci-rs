@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/rdm2same.rs
+// nonorthogonalwicks/cpu/eval/rdm2diff.rs
 
 // External crate imports.
 use ndarray::{Array2, Array4};
@@ -23,10 +23,10 @@ use super::prepare::construct_determinant_indices;
 /// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}`
 /// `\det\mathbf D_{\mathrm{RDM}}^{pqrs}(m_1,\ldots,m_{L+2}).`
 /// The two external creation-annihilation pairs augment the overlap contraction determinant from
-/// dimension L to L + 2. The first two assignments belong to the external contraction pairs (p,r)
-/// `and (q,s), while the remaining L assignments belong to the excitation columns. Each m_i is zero`
-/// or one, and the matrix element vanishes when m > L + 2. Expansion of the determinant generates
-/// the direct and exchange contraction patterns with their fermionic signs.
+/// dimension L to L + 2. The first two assignments belong to the external RDM columns and the
+/// `remaining L assignments belong to the excitation columns. Each m_i is zero or one, and the`
+/// matrix element vanishes when m > L + 2. Expansion of the determinant generates the direct and
+/// exchange contraction patterns with their fermionic signs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
@@ -144,8 +144,7 @@ fn xw_rdm2_same_m0<T: NOCIScalar>(
 
                         // Build \mathbf D_{\mathrm{RDM}}^{pqrs}(0,\ldots,0), with X^{(0)} on and
                         // below the diagonal and Y^{(0)} above it. Its leading 2 \times 2 block
-                        // encodes the two fully contracted external pairings and their relative
-                        // fermionic sign.
+                        // generates the direct-minus-exchange contraction of the external operators.
                         build_d(&mut det0, dim, &x0p, &y0p, rows.as_slice(), cols.as_slice());
 
                         // {}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}
@@ -173,9 +172,8 @@ fn xw_rdm2_same_m0<T: NOCIScalar>(
 /// `{}^{xw}\Gamma_{\sigma\sigma}{}^{pq}_{rs}`
 /// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+2}\\m_1+\cdots+m_{L+2}=m}}`
 /// `\det\mathbf D_{\mathrm{RDM}}^{pqrs}(m_1,\ldots,m_{L+2}), \qquad m_i \in \{0,1\}.`
-/// The first two assignments belong to the external contraction pairs (p,r) and (q,s), while each
-/// `remaining assignment selects the corresponding excitation column from the m_i = 0 or m_i = 1`
-/// fundamental contractions.
+/// The first two assignments belong to the external RDM columns, while each remaining assignment
+/// `selects the corresponding excitation column from the m_i = 0 or m_i = 1 fundamental contractions.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates containing one or more zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.

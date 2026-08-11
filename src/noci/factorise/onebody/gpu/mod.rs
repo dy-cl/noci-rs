@@ -7,8 +7,6 @@ mod data;
 mod diagonals;
 mod factors;
 mod orthogonal;
-mod runtime;
-mod scalar;
 
 // Crate-visible type re-exports.
 pub(crate) use backend::GpuOneBodyBackend;

@@ -19,4 +19,6 @@ pub(crate) fn build_spin_one_body_factors<T: NOCIScalar>(
     _data: &NOCIData<'_, T>,
     _x: &Array1<T>,
 ) {
+    eprintln!("GPU one-body same-spin factor generation is not implemented yet");
+    std::process::exit(1);
 }

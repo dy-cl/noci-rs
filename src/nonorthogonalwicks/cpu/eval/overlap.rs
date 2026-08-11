@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/overlap.rs
+// nonorthogonalwicks/cpu/eval/overlap.rs
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::maths::{det, det_lu_l5, det_lu_l6};

@@ -1,4 +1,4 @@
-// nonorthogonalwicks/view.rs
+// nonorthogonalwicks/cpu/view.rs
 // Standard library imports.
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -10,7 +10,7 @@ use ndarray::ArrayView2;
 use crate::noci::NOCIScalar;
 
 // Parent/sibling imports.
-use super::types::{
+use super::super::types::{
     DiffSpinMeta, DiffSpinOffset, PairMeta, PairOffset, SameSpinMeta, SameSpinOffset,
 };
 
@@ -35,6 +35,15 @@ unsafe impl<T: NOCIScalar> Sync for WicksView<T> {}
 unsafe impl<T: NOCIScalar> Send for WicksView<T> {}
 
 impl<T: NOCIScalar> WicksView<T> {
+    /// Return the number of reference determinants represented by this view.
+    /// # Arguments:
+    /// - `self`: View over the stored Wick intermediates.
+    /// # Returns
+    /// - `usize`: Number of reference determinants.
+    pub(crate) fn nref(&self) -> usize {
+        self.nref
+    }
+
     /// Map the ordered reference-pair indices (x,w) to the flattened pair index.
     /// # Arguments:
     /// - `self`: View over the stored Wick intermediates.

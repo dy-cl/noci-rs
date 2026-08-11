@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/rdmksame.rs
+// nonorthogonalwicks/cpu/eval/rdmksame.rs
 
 // External crate imports.
 use ndarray::Array2;

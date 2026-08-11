@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/h2same.rs
+// nonorthogonalwicks/cpu/eval/h2same.rs
 
 // Crate-root imports.
 use crate::ExcitationSpin;

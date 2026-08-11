@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/prepare.rs
+// nonorthogonalwicks/cpu/eval/prepare.rs
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::maths::build_d;

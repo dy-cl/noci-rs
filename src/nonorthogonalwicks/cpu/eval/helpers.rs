@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/helpers.rs
+// nonorthogonalwicks/cpu/eval/helpers.rs
 
 // External crate imports.
 #[cfg(feature = "nocc")]

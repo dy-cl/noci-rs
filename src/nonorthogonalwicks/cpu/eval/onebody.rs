@@ -1,4 +1,4 @@
-// nonorthogonalwicks/eval/onebody.rs
+// nonorthogonalwicks/cpu/eval/onebody.rs
 // Crate-root imports.
 use crate::ExcitationSpin;
 use crate::maths::adjugate_transpose;

@@ -16,10 +16,11 @@ use crate::noci::types::NOCIScalar;
 /// # Returns
 /// - `Array1<T>`: Device-computed contribution after final download.
 pub(crate) fn apply_one_body_a_first<T: NOCIScalar>(
-    x: &Array1<T>,
+    _x: &Array1<T>,
     _lambda: T,
 ) -> Array1<T> {
-    Array1::from_elem(x.len(), T::from_real(0.0))
+    eprintln!("GPU alpha-first one-body contraction is not implemented yet");
+    std::process::exit(1);
 }
 
 /// Apply beta-first contraction on the device.
@@ -31,8 +32,9 @@ pub(crate) fn apply_one_body_a_first<T: NOCIScalar>(
 /// # Returns
 /// - `Array1<T>`: Device-computed contribution after final download.
 pub(crate) fn apply_one_body_b_first<T: NOCIScalar>(
-    x: &Array1<T>,
+    _x: &Array1<T>,
     _lambda: T,
 ) -> Array1<T> {
-    Array1::from_elem(x.len(), T::from_real(0.0))
+    eprintln!("GPU beta-first one-body contraction is not implemented yet");
+    std::process::exit(1);
 }
