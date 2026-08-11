@@ -10,8 +10,8 @@ use rlua::{Lua, Table, Value};
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, Input,
     Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
-    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
-    SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    SCFExcitation, SCFInfo, SNOCIBackend, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage,
+    SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -78,6 +78,38 @@ fn read_snoci_storage(
         Ok(Value::Nil) | Err(_) => default,
         Ok(_) => {
             eprintln!("{name} must be one of 'none', 'ram', or 'disk'");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Read SNOCI backend option `x \in {cpu,gpu}` from a Lua value.
+/// # Arguments:
+/// - `name`: Fully qualified input option name used in error messages.
+/// - `value`: Lua value read from the input table.
+/// - `default`: Default backend used for nil or missing values.
+/// # Returns:
+/// - `SNOCIBackend`: Parsed backend.
+fn read_snoci_backend(
+    name: &str,
+    value: rlua::Result<Value>,
+    default: SNOCIBackend,
+) -> SNOCIBackend {
+    match value {
+        Ok(Value::String(s)) => s
+            .to_str()
+            .unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            })
+            .parse()
+            .unwrap_or_else(|msg| {
+                eprintln!("{name}: {msg}");
+                std::process::exit(1);
+            }),
+        Ok(Value::Nil) | Err(_) => default,
+        Ok(_) => {
+            eprintln!("{name} must be one of 'cpu' or 'gpu'");
             std::process::exit(1);
         }
     }
@@ -493,6 +525,11 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
                 eprintln!("{msg}");
                 std::process::exit(1);
             });
+        let backend = read_snoci_backend(
+            "snoci.backend",
+            snoci_tbl.get::<_, Value>("backend"),
+            defaults.backend,
+        );
 
         let imag_shifts: Vec<f64> = snoci_tbl
             .get::<_, Option<Table>>("imag_shift")
@@ -505,6 +542,7 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             .unwrap_or(defaults.imag_shifts.clone());
 
         SNOCIOptions {
+            backend,
             sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
             tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
             imag_shifts,

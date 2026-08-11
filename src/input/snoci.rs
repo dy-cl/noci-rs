@@ -34,6 +34,52 @@ impl Default for GMRESOptions {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SNOCIBackend {
+    /// Use the CPU factorised one-body backend.
+    CPU,
+    /// Use the feature-gated CubeCL GPU factorised one-body backend.
+    GPU,
+}
+
+impl SNOCIBackend {
+    /// Return SNOCI backend as input string.
+    /// # Returns:
+    /// - `&'static str`: String representation used in input parsing and printing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CPU => "cpu",
+            Self::GPU => "gpu",
+        }
+    }
+}
+
+impl FromStr for SNOCIBackend {
+    type Err = String;
+
+    /// Parse SNOCI backend from input string.
+    /// # Arguments:
+    /// - `s`: String specifying the SNOCI backend.
+    /// # Returns:
+    /// - `Result`: Parsed backend if valid string, otherwise error message.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "cpu" => Ok(Self::CPU),
+            "gpu" => Ok(Self::GPU),
+            _ => Err(format!("invalid SNOCI backend: {s}")),
+        }
+    }
+}
+
+impl Default for SNOCIBackend {
+    /// Return default SNOCI backend.
+    /// # Returns:
+    /// - `Self`: Default SNOCI backend.
+    fn default() -> Self {
+        Self::CPU
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum SNOCIStorage {
     /// Do not store this object.
@@ -120,6 +166,8 @@ impl Default for SNOCIPreconditioner {
 }
 
 pub struct SNOCIOptions {
+    /// Factorised one-body backend.
+    pub backend: SNOCIBackend,
     /// Selection denominator shift.
     pub sigma: f64,
     /// Candidate residual tolerance.
@@ -144,6 +192,7 @@ impl Default for SNOCIOptions {
     /// - `Self`: SNOCI options with default selection and GMRES parameters.
     fn default() -> Self {
         Self {
+            backend: SNOCIBackend::default(),
             sigma: 1e-6,
             tol: 1e-8,
             imag_shifts: vec![0.0],

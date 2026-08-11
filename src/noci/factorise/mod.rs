@@ -6,7 +6,7 @@ mod overlap;
 mod storage;
 
 // Crate-visible type re-exports.
-pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
+pub(crate) use onebody::{OneBodyBackend, OneBodyBlockPlan, OneBodyContraction, OneBodyPlan};
 pub(crate) use overlap::OverlapScratch;
 
 // Standard library imports.

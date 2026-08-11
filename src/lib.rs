@@ -19,6 +19,21 @@
 //! extended nonorthogonal Wick theorem. MPI provides distributed-memory parallelism and
 //! Rayon provides shared-memory parallelism where supported by the selected method.
 
+#[cfg(all(
+    feature = "gpu",
+    not(any(feature = "gpu-cuda", feature = "gpu-hip", feature = "gpu-vulkan"))
+))]
+compile_error!(
+    "feature \"gpu\" requires exactly one vendor runtime: gpu-cuda, gpu-hip, or gpu-vulkan"
+);
+
+#[cfg(any(
+    all(feature = "gpu-cuda", feature = "gpu-hip"),
+    all(feature = "gpu-cuda", feature = "gpu-vulkan"),
+    all(feature = "gpu-hip", feature = "gpu-vulkan")
+))]
+compile_error!("enable exactly one GPU vendor runtime: gpu-cuda, gpu-hip, or gpu-vulkan");
+
 pub mod basis;
 pub mod deterministic;
 pub mod driver;

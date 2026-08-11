@@ -6,8 +6,8 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::input::SNOCIStorage;
-use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyFactorisation};
+use crate::input::{SNOCIBackend, SNOCIStorage};
+use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyBackend};
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::scf::fock;
@@ -74,11 +74,47 @@ fn print_snoci_iteration_start(
     n_current: usize,
     npoolpre: usize,
     npoolpost: usize,
+    backend: SNOCIBackend,
 ) {
     println!("SNOCI iteration: {}", it);
+    println!("  BACKEND:   {}", backend.as_str());
     println!("  NCurr:     {}", n_current);
     println!("  NCand (R): {}", npoolpre);
     println!("  NCand:     {}", npoolpost);
+}
+
+/// Validate SNOCI backend options before constructing iteration data.
+/// # Arguments:
+/// - `input`: User-defined input options.
+/// # Returns:
+/// - `()`: Continues only when the requested backend is supported by this executable and input.
+fn validate_snoci_backend(input: &Input) {
+    let opts = input
+        .snoci
+        .as_ref()
+        .expect("validate_snoci_backend called without input.snoci.");
+    if opts.backend == SNOCIBackend::CPU {
+        return;
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        eprintln!(
+            "snoci.backend = \"gpu\" requires rebuilding with one of --features gpu-cuda, --features gpu-hip, or --features gpu-vulkan"
+        );
+        std::process::exit(1);
+    }
+    if !matches!(opts.gmres.full_m, SNOCIStorage::None) {
+        eprintln!("snoci.backend = \"gpu\" requires snoci.gmres.full_m = \"none\"");
+        std::process::exit(1);
+    }
+    if !matches!(opts.gmres.factor_tables, SNOCIStorage::None) {
+        eprintln!("snoci.backend = \"gpu\" requires snoci.gmres.factor_tables = \"none\"");
+        std::process::exit(1);
+    }
+    if !input.wicks.enabled {
+        eprintln!("snoci.backend = \"gpu\" requires wicks.enabled = true");
+        std::process::exit(1);
+    }
 }
 
 /// Print the status message for building the cached shifted Fock matrix.
@@ -119,7 +155,7 @@ fn print_factor_table_storage<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     fock: &FockData<'_, T>,
 ) {
-    let nbytes = OneBodyFactorisation::storage_bytes(data, fock);
+    let nbytes = OneBodyBackend::storage_bytes(data, fock);
     let mib = nbytes as f64 / 1024.0 / 1024.0;
     println!(
         "  Estimated storage required for factor_tables (MiB): {:.3}",
@@ -190,6 +226,7 @@ where
             .snoci
             .as_ref()
             .expect("snoci_step called without input.snoci.");
+        validate_snoci_backend(input);
 
         let mut selected_space = current_space.to_vec();
 
@@ -293,7 +330,8 @@ where
                 && candidate_data.wicks.is_some()
             {
                 let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
-                Some(OneBodyFactorisation::new(
+                Some(OneBodyBackend::new(
+                    opts.backend,
                     &candidate_data,
                     &fock,
                     std::path::Path::new(cache),
@@ -310,7 +348,13 @@ where
             }
 
             if world.rank() == 0 {
-                print_snoci_iteration_start(it, selected_space.len(), npoolpre, npoolpost);
+                print_snoci_iteration_start(
+                    it,
+                    selected_space.len(),
+                    npoolpre,
+                    npoolpost,
+                    opts.backend,
+                );
             }
 
             let m = match opts.gmres.full_m {
@@ -336,7 +380,8 @@ where
             };
 
             let m_slice = m.as_ref().map(|m| m.as_slice());
-            let (m_diag, factorised_s_diag) = if let Some(one_body) = one_body.as_ref() {
+            let mut one_body = one_body;
+            let (m_diag, factorised_s_diag) = if let Some(one_body) = one_body.as_mut() {
                 let (m_diag, s_diag) = build_factorised_candidate_diags(
                     &op,
                     one_body,
@@ -357,9 +402,6 @@ where
                 None
             };
             let rhs = v_omega.mapv(|x| -x);
-            let mut one_body_scratch = one_body
-                .as_ref()
-                .map(|factorisation| factorisation.scratch());
 
             // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
             let mut pt2 = Vec::new();
@@ -374,17 +416,13 @@ where
 
                 let a = gmres(
                     |x| {
-                        if let (Some(one_body), Some(scratch)) =
-                            (one_body.as_ref(), one_body_scratch.as_mut())
-                        {
+                        if let Some(one_body) = one_body.as_mut() {
                             if world.size() > 1 {
                                 apply_factorised_shifted_omega_m_mpi(
-                                    &op, one_body, scratch, x, world, imag_shift,
+                                    &op, one_body, x, world, imag_shift,
                                 )
                             } else {
-                                apply_factorised_shifted_omega_m(
-                                    &op, one_body, scratch, x, imag_shift,
-                                )
+                                apply_factorised_shifted_omega_m(&op, one_body, x, imag_shift)
                             }
                         } else if world.size() > 1 {
                             apply_shifted_omega_m_mpi(&op, x, m_slice, world, imag_shift)
@@ -398,15 +436,11 @@ where
                     world,
                 );
 
-                let ma = if let (Some(one_body), Some(scratch)) =
-                    (one_body.as_ref(), one_body_scratch.as_mut())
-                {
+                let ma = if let Some(one_body) = one_body.as_mut() {
                     if world.size() > 1 {
-                        apply_factorised_shifted_omega_m_mpi(
-                            &op, one_body, scratch, &a.x, world, imag_shift,
-                        )
+                        apply_factorised_shifted_omega_m_mpi(&op, one_body, &a.x, world, imag_shift)
                     } else {
-                        apply_factorised_shifted_omega_m(&op, one_body, scratch, &a.x, imag_shift)
+                        apply_factorised_shifted_omega_m(&op, one_body, &a.x, imag_shift)
                     }
                 } else if world.size() > 1 {
                     apply_shifted_omega_m_mpi(&op, &a.x, m_slice, world, imag_shift)

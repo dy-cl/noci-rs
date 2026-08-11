@@ -5,29 +5,30 @@ edition = "2024"
 build = "build/build.rs"
 
 [build-dependencies]
-wick-build = {path = "build/wick", optional = true}
-bincode = {version = "1"}
-serde = {version = "1", features = ["derive", "rc"]}
-serde_json = {version = "1", features = ["std"], default-features = false}
+wick-build = { path = "build/wick", optional = true }
+bincode = { version = "1" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["std"], default-features = false }
 
 [dependencies]
-rlua = {version = "0.20.1"}
-rand = {version = "0.8", features = ["small_rng"], default-features = false}
-mpi = {version = "0.7", features = ["derive"]}
-ndarray-linalg = {version = "0.15", features = ["openblas-system"], default-features = false}
-ndarray = {version = "0.15",   features = ["rayon", "serde"], default-features = false}
-serde = {version = "1", features = ["derive", "rc"]}
-serde_json = {version = "1", features = ["std"], default-features = false}
-rayon = {version = "1", default-features = false}
-num-complex = {version = "0.4", features = ["serde"]}
-hdf5 = {version = "0.8.1", default-features = false}
-bincode = {version = "1"}
-rand_distr = {version = "0.4"}
-memmap2 = {version = "0.9.10"} 
-itertools = {version = "0.13"}
+bincode = { version = "1" }
+cubecl = { version = "0.10.0", optional = true, default-features = false, features = ["std", "stdlib"] }
+hdf5 = { version = "0.8.1", default-features = false }
+itertools = { version = "0.13" }
+memmap2 = { version = "0.9.10" }
+mpi = { version = "0.7", features = ["derive"] }
+ndarray = { version = "0.15", features = ["rayon", "serde"], default-features = false }
+ndarray-linalg = { version = "0.15", features = ["openblas-system"], default-features = false }
+num-complex = { version = "0.4", features = ["serde"] }
+rand = { version = "0.8", features = ["small_rng"], default-features = false }
+rand_distr = { version = "0.4" }
+rayon = { version = "1", default-features = false }
+rlua = { version = "0.20.1" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["std"], default-features = false }
 
 [dev-dependencies]
-serial_test = {version = "3"}
+serial_test = { version = "3" }
 
 [workspace]
 members = [
@@ -39,6 +40,10 @@ members = [
 default = []
 timings = []
 nocc = ["dep:wick-build"]
+gpu = ["dep:cubecl"]
+gpu-cuda = ["gpu", "cubecl/cuda"]
+gpu-hip = ["gpu", "cubecl/hip"]
+gpu-vulkan = ["gpu", "cubecl/vulkan"]
 
 [profile.release]
 opt-level = 3
@@ -46,8 +51,8 @@ debug = false
 strip = false
 debug-assertions = false
 overflow-checks = false
-lto = 'fat'
-panic = 'abort'
+lto = "fat"
+panic = "abort"
 incremental = false
 codegen-units = 1
 rpath = false
@@ -58,13 +63,13 @@ debug = true
 strip = false
 debug-assertions = true
 overflow-checks = true
-lto = 'fat'
-panic = 'abort'
+lto = "fat"
+panic = "abort"
 incremental = false
 codegen-units = 1
 rpath = false
 
 [profile.profiling]
 inherits = "release"
-debug = 1    
-strip = "none"     
+debug = 1
+strip = "none"

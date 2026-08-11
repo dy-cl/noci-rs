@@ -122,7 +122,7 @@ excit = {
 
 snoci = {
     max_iter = 1,
-    preconditioner = "woodbury",
+    preconditioner = "diagonal",
     imag_shift = {
         0.0,
     },

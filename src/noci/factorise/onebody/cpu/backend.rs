@@ -1,5 +1,5 @@
-// noci/factorise/onebody.rs
-//! Spin-factorised one-body NOCI operator contractions.
+// noci/factorise/onebody/cpu/backend.rs
+//! CPU backend for spin-factorised one-body NOCI operator contractions.
 
 // Standard library imports.
 use std::collections::HashMap;
@@ -19,8 +19,9 @@ use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView};
 use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
 
 // Parent/sibling imports.
-use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
-use super::{ParentSpinSpace, SpinFactorisation, ordered_parent_pair};
+use super::super::super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
+use super::super::super::{ParentSpinSpace, SpinFactorisation};
+use super::super::plan::{OneBodyBlockPlan, OneBodyContraction, OneBodyPlan};
 
 /// Persistent one-body block for one ordered source-target parent pair `QP`.
 enum OneBodyBlock<T: NOCIScalar> {
@@ -58,6 +59,14 @@ struct TransientOneBodyBlock {
     target_parent: usize,
     /// Source parent `P`.
     source_parent: usize,
+    /// Left parent in the ordered Wick pair.
+    lp: usize,
+    /// Greater parent in the ordered Wick pair.
+    gp: usize,
+    /// Whether target parent `Q` is the left parent in the ordered Wick pair.
+    target_left: bool,
+    /// Selected dense contraction order for this parent pair.
+    contraction: OneBodyContraction,
 }
 
 /// Actual determinant target in one orthogonal occupation group.
@@ -98,33 +107,38 @@ struct OrthogonalApplyContext<'a, T: NOCIScalar> {
 }
 
 /// Reusable dense one-body contraction buffers.
-pub(crate) struct OneBodyScratch<T: NOCIScalar> {
+struct OneBodyScratch<T: NOCIScalar> {
     /// Temporary `T^F_{\bar a b}` or `U^F_{a\bar b}` table.
     first_f: Vec<T>,
     /// Temporary `T^S_{\bar a b}` or `U^S_{a\bar b}` table.
     first_s: Vec<T>,
 }
 
-/// Dense one-body contraction order for one parent pair.
-#[derive(Clone, Copy)]
-enum OneBodyContraction {
-    /// Form alpha-first intermediates `T^F_{\bar a b}` and `T^S_{\bar a b}`.
-    AFirst,
-    /// Form beta-first intermediates `U^F_{a\bar b}` and `U^S_{a\bar b}`.
-    BFirst,
+impl<T: NOCIScalar> Default for OneBodyScratch<T> {
+    /// Construct empty reusable storage for dense one-body applications.
+    /// # Returns
+    /// - `OneBodyScratch<T>`: Empty reusable contraction buffers.
+    fn default() -> Self {
+        Self {
+            first_f: Vec::new(),
+            first_s: Vec::new(),
+        }
+    }
 }
 
 /// Cached spin-factorised one-body operator for the current generalised Fock.
-pub(crate) struct OneBodyFactorisation<T: NOCIScalar> {
+pub(crate) struct CpuOneBodyBackend<T: NOCIScalar> {
     /// Shared determinant-space factorisation `I <-> (P,a_I,b_I)`.
     spin: SpinFactorisation,
     /// Cached parent-pair factor blocks indexed as `Q * nparent + P`.
     blocks: Vec<OneBodyBlock<T>>,
     /// Number of parent references.
     nparent: usize,
+    /// Reusable dense contraction scratch buffers.
+    scratch: OneBodyScratch<T>,
 }
 
-impl<T: NOCIScalar> OneBodyFactorisation<T> {
+impl<T: NOCIScalar> CpuOneBodyBackend<T> {
     /// Build `F^{QP}_{\bar a\bar b,ab}` spin factors for the current generalised Fock operator.
     /// # Arguments:
     /// - `data`: Shared NOCI data with Wick intermediates for the candidate determinant basis.
@@ -134,7 +148,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `iteration`: SNOCI iteration used in factor-cache filenames.
     /// - `storage`: Requested persistent factor-table storage backend.
     /// # Returns
-    /// - `OneBodyFactorisation<T>`: Cached spin-factorised one-body operator.
+    /// - `CpuOneBodyBackend<T>`: Cached CPU spin-factorised one-body operator.
     pub(crate) fn new(
         data: &NOCIData<'_, T>,
         fock: &FockData<'_, T>,
@@ -144,32 +158,65 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         storage: SNOCIStorage,
     ) -> Self {
         let spin = SpinFactorisation::new(data);
-        let nparent = spin.parents.len();
+        let plan = OneBodyPlan::new(&spin, fock);
+        let nparent = plan.nparent;
         let mut blocks = Vec::with_capacity(nparent * nparent);
         let mut storage_plan = OneBodyStoragePlan::new(cache, rank, iteration, storage);
 
-        for target_parent in 0..nparent {
-            for source_parent in 0..nparent {
-                if target_parent == source_parent
-                    && fock.fock_mocache[target_parent].orthogonal_slater_condon
-                {
+        for block_plan in &plan.blocks {
+            match *block_plan {
+                OneBodyBlockPlan::Orthogonal { parent } => {
                     blocks.push(OneBodyBlock::Orthogonal(build_orthogonal_one_body_block(
-                        &spin,
-                        data,
-                        target_parent,
+                        &spin, data, parent,
                     )));
-                } else if matches!(storage, SNOCIStorage::None) {
+                }
+                OneBodyBlockPlan::NonOrthogonal {
+                    target_parent,
+                    source_parent,
+                    lp,
+                    gp,
+                    target_left,
+                    nta: _,
+                    ntb: _,
+                    nsa: _,
+                    nsb: _,
+                    contraction,
+                } if matches!(storage, SNOCIStorage::None) => {
                     blocks.push(OneBodyBlock::Transient(build_transient_one_body_block(
                         target_parent,
                         source_parent,
-                    )));
-                } else {
+                        lp,
+                        gp,
+                        target_left,
+                        contraction,
+                    )))
+                }
+                OneBodyBlockPlan::NonOrthogonal {
+                    target_parent,
+                    source_parent,
+                    lp,
+                    gp,
+                    target_left,
+                    nta,
+                    ntb,
+                    nsa,
+                    nsb,
+                    contraction,
+                } => {
                     blocks.push(OneBodyBlock::Factorised(build_one_body_factor_tables(
                         &spin,
                         data,
                         &mut storage_plan,
                         target_parent,
                         source_parent,
+                        lp,
+                        gp,
+                        target_left,
+                        nta,
+                        ntb,
+                        nsa,
+                        nsb,
+                        contraction,
                     )));
                 }
             }
@@ -179,18 +226,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             spin,
             blocks,
             nparent,
-        }
-    }
-
-    /// Construct reusable storage for dense one-body applications.
-    /// # Arguments:
-    /// - `self`: Cached one-body factorisation.
-    /// # Returns
-    /// - `OneBodyScratch<T>`: Empty reusable contraction buffers.
-    pub(crate) fn scratch(&self) -> OneBodyScratch<T> {
-        OneBodyScratch {
-            first_f: Vec::new(),
-            first_s: Vec::new(),
+            scratch: OneBodyScratch::default(),
         }
     }
 
@@ -250,11 +286,34 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `data`: Shared NOCI data used by same-parent orthogonal blocks.
     /// - `fock`: Current generalised-Fock data used by same-parent orthogonal blocks.
     /// - `lambda`: Scalar shift multiplying the overlap operator.
-    /// - `scratch`: Reusable dense contraction buffers.
     /// - `partition`: Worker index and worker count for first-stage target rows.
     /// # Returns
     /// - `Array1<T>`: Partial or complete determinant-space result vector.
     pub(crate) fn apply_one_body(
+        &mut self,
+        x: &Array1<T>,
+        data: &NOCIData<'_, T>,
+        fock: &FockData<'_, T>,
+        lambda: T,
+        partition: (usize, usize),
+    ) -> Array1<T> {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let y = self.apply_one_body_with_scratch(x, data, fock, lambda, &mut scratch, partition);
+        self.scratch = scratch;
+        y
+    }
+
+    /// Apply `Y = (F + \lambda S)x` using cached spin factors and explicit scratch.
+    /// # Arguments:
+    /// - `x`: Source vector over actual candidate determinants.
+    /// - `data`: Shared NOCI data used by same-parent orthogonal blocks.
+    /// - `fock`: Current generalised-Fock data used by same-parent orthogonal blocks.
+    /// - `lambda`: Scalar shift multiplying the overlap operator.
+    /// - `scratch`: Reusable dense contraction buffers.
+    /// - `partition`: Worker index and worker count for first-stage target rows.
+    /// # Returns
+    /// - `Array1<T>`: Partial or complete determinant-space result vector.
+    fn apply_one_body_with_scratch(
         &self,
         x: &Array1<T>,
         data: &NOCIData<'_, T>,
@@ -298,6 +357,14 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &mut storage_plan,
                         block.target_parent,
                         block.source_parent,
+                        block.lp,
+                        block.gp,
+                        block.target_left,
+                        self.spin.parents[block.target_parent].areps.len(),
+                        self.spin.parents[block.target_parent].breps.len(),
+                        self.spin.parents[block.source_parent].areps.len(),
+                        self.spin.parents[block.source_parent].breps.len(),
+                        block.contraction,
                     );
                     self.apply_one_body_factorised(
                         &block,
@@ -359,6 +426,14 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &mut storage_plan,
                         block.target_parent,
                         block.source_parent,
+                        block.lp,
+                        block.gp,
+                        block.target_left,
+                        self.spin.parents[block.target_parent].areps.len(),
+                        self.spin.parents[block.target_parent].breps.len(),
+                        self.spin.parents[block.source_parent].areps.len(),
+                        self.spin.parents[block.source_parent].breps.len(),
+                        block.contraction,
                     );
                     fill_one_body_diagonal_block(parent, &block, lambda, &mut m_diag, &mut s_diag);
                 }
@@ -608,6 +683,14 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
 /// - `data`: Shared NOCI data containing Wick intermediates.
 /// - `target_parent`: Target parent `Q`.
 /// - `source_parent`: Source parent `P`.
+/// - `lp`: Left parent in the ordered Wick pair.
+/// - `gp`: Greater parent in the ordered Wick pair.
+/// - `target_left`: Whether target parent `Q` is left in the ordered Wick pair.
+/// - `nta`: Number of target alpha rows.
+/// - `ntb`: Number of target beta rows.
+/// - `nsa`: Number of source alpha columns.
+/// - `nsb`: Number of source beta columns.
+/// - `contraction`: Shared dense contraction order for this parent pair.
 /// # Returns
 /// - `FactorisedOneBodyBlock<T>`: Cached row-major factor tables for this parent pair.
 fn build_one_body_factor_tables<T: NOCIScalar>(
@@ -616,14 +699,17 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     storage_plan: &mut OneBodyStoragePlan,
     target_parent: usize,
     source_parent: usize,
+    lp: usize,
+    gp: usize,
+    target_left: bool,
+    nta: usize,
+    ntb: usize,
+    nsa: usize,
+    nsb: usize,
+    contraction: OneBodyContraction,
 ) -> FactorisedOneBodyBlock<T> {
     let target = &spin.parents[target_parent];
     let source = &spin.parents[source_parent];
-    let nta = target.areps.len();
-    let ntb = target.breps.len();
-    let nsa = source.areps.len();
-    let nsb = source.breps.len();
-    let (lp, gp, target_left) = ordered_parent_pair(spin, target_parent, source_parent);
     let pair = data
         .wicks
         .expect("factorised one-body requires Wick intermediates")
@@ -667,15 +753,6 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     }
     factors.flush();
 
-    let contraction = select_one_body_contraction(
-        nta,
-        ntb,
-        nsa,
-        nsb,
-        target.entries.len(),
-        source.entries.len(),
-    );
-
     FactorisedOneBodyBlock {
         target_parent,
         source_parent,
@@ -692,15 +769,27 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
 /// # Arguments:
 /// - `target_parent`: Target parent `Q`.
 /// - `source_parent`: Source parent `P`.
+/// - `lp`: Left parent in the ordered Wick pair.
+/// - `gp`: Greater parent in the ordered Wick pair.
+/// - `target_left`: Whether target parent `Q` is left in the ordered Wick pair.
+/// - `contraction`: Shared dense contraction order for this parent pair.
 /// # Returns
 /// - `TransientOneBodyBlock`: Parent-pair metadata for regenerated factor tables.
 fn build_transient_one_body_block(
     target_parent: usize,
     source_parent: usize,
+    lp: usize,
+    gp: usize,
+    target_left: bool,
+    contraction: OneBodyContraction,
 ) -> TransientOneBodyBlock {
     TransientOneBodyBlock {
         target_parent,
         source_parent,
+        lp,
+        gp,
+        target_left,
+        contraction,
     }
 }
 
@@ -970,37 +1059,4 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
                 }
             }
         });
-}
-
-/// Select alpha-first or beta-first contraction from dense structural costs.
-/// # Arguments:
-/// - `nta`: Number of target alpha components.
-/// - `ntb`: Number of target beta components.
-/// - `nsa`: Number of source alpha components.
-/// - `nsb`: Number of source beta components.
-/// - `nt`: Number of actual target determinants.
-/// - `ns`: Number of actual source determinants.
-/// # Returns
-/// - `OneBodyContraction`: Lower estimated-cost contraction.
-fn select_one_body_contraction(
-    nta: usize,
-    ntb: usize,
-    nsa: usize,
-    nsb: usize,
-    nt: usize,
-    ns: usize,
-) -> OneBodyContraction {
-    let ca = 2usize
-        .saturating_mul(nta)
-        .saturating_mul(ns)
-        .saturating_add(2usize.saturating_mul(nt).saturating_mul(nsb));
-    let cb = 2usize
-        .saturating_mul(ntb)
-        .saturating_mul(ns)
-        .saturating_add(2usize.saturating_mul(nt).saturating_mul(nsa));
-    if ca <= cb {
-        OneBodyContraction::AFirst
-    } else {
-        OneBodyContraction::BFirst
-    }
 }

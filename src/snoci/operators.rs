@@ -14,9 +14,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
-use crate::noci::{
-    DetPair, FockData, MOCache, NOCIData, NOCIScalar, OneBodyFactorisation, OneBodyScratch,
-};
+use crate::noci::{DetPair, FockData, MOCache, NOCIData, NOCIScalar, OneBodyBackend};
 use crate::noci::{
     build_noci_fock, build_noci_hs, build_noci_s, calculate_m_pair, calculate_s_pair,
 };
@@ -358,7 +356,7 @@ pub(in crate::snoci) fn build_candidate_s_diag<T: NOCIScalar>(
 /// - `(Array1<T>, Array1<T>)`: Diagonal of `F + \lambda S` and diagonal of `S`.
 pub(in crate::snoci) fn build_factorised_candidate_diags<T: NOCIScalar>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    one_body: &OneBodyFactorisation<T>,
+    one_body: &mut OneBodyBackend<T>,
     lambda: T,
 ) -> (Array1<T>, Array1<T>) {
     one_body.one_body_diagonals(op.data, op.fock, lambda)
@@ -751,16 +749,14 @@ where
 /// Apply factorised projected `(F - E0 S + i epsilon Q)x`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `one_body`: Cached spin-factorised one-body operator.
-/// - `scratch`: Reusable one-body contraction buffers.
+/// - `backend`: Cached factorised one-body backend.
 /// - `x`: Vector to apply shifted operator to.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
 /// # Returns:
 /// - `Array1<T>`: Matrix-vector product `(M^Omega + i epsilon Q)x`.
 pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    one_body: &OneBodyFactorisation<T>,
-    scratch: &mut OneBodyScratch<T>,
+    backend: &mut OneBodyBackend<T>,
     x: &Array1<T>,
     imag_shift: f64,
 ) -> Array1<T> {
@@ -771,7 +767,7 @@ pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
     let sx = p.s_0a.dot(x);
     let fx = p.f_0a.dot(x);
     let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
-    let mut y = one_body.apply_one_body(x, op.data, op.fock, lambda, scratch, (0, 1));
+    let mut y = backend.apply_one_body(x, op.data, op.fock, lambda, (0, 1));
     apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
     y
 }
@@ -779,8 +775,7 @@ pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
 /// Apply factorised projected `(F - E0 S + i epsilon Q)x` across MPI ranks.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `one_body`: Cached spin-factorised one-body operator.
-/// - `scratch`: Reusable one-body contraction buffers.
+/// - `backend`: Cached factorised one-body backend.
 /// - `x`: Replicated vector to apply shifted operator to.
 /// - `world`: MPI communicator.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
@@ -788,8 +783,7 @@ pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
 /// - `Array1<T>`: Globally reduced matrix-vector product `(M^Omega + i epsilon Q)x`.
 pub(in crate::snoci) fn apply_factorised_shifted_omega_m_mpi<T>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    one_body: &OneBodyFactorisation<T>,
-    scratch: &mut OneBodyScratch<T>,
+    backend: &mut OneBodyBackend<T>,
     x: &Array1<T>,
     world: &impl Communicator,
     imag_shift: f64,
@@ -804,12 +798,11 @@ where
     let sx = p.s_0a.dot(x);
     let fx = p.f_0a.dot(x);
     let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
-    let partial = one_body.apply_one_body(
+    let partial = backend.apply_one_body(
         x,
         op.data,
         op.fock,
         lambda,
-        scratch,
         (world.rank() as usize, world.size() as usize),
     );
     let mut y = all_reduce_array1(world, partial);
