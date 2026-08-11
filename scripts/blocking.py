@@ -8,20 +8,21 @@ import pandas as pd
 import numpy as np
 import math
 
+
 # Plateau picking quantities.
-MINN = 8 # At later levels if we have too few blocks the data can become noisy.
-NEXT = 1 # Require the next N levels to be consistent within given error bars.
-PLATEAUTOL = 0.25 # How much error can change between levels before it is not a plateau.
+
+MINN = 8  # At later levels if we have too few blocks the data can become noisy.
+NEXT = 1  # Require the next N levels to be consistent within given error bars.
+PLATEAUTOL = 0.25  # How much error can change between levels before it is not a plateau.
 
 def parse() -> argparse.Namespace:
-    """
-    Parse command-line arguments.
-    """
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "path",
+        "paths",
         type = Path,
-        help = "Path to the noci-rs output file.",
+        nargs = "+",
+        help = "Paths to consecutive noci-rs output files.",
     )
     parser.add_argument(
         "--start",
@@ -35,9 +36,7 @@ def parse() -> argparse.Namespace:
     return parser.parse_args()
 
 def extract(path: Path) -> pd.DataFrame:
-    """
-    Extract the stochastic QMC table.
-    """
+    """Extract the stochastic QMC table from an output file."""
     def isQMCHeader(line: str) -> bool:
         columns = line.split()
 
@@ -51,7 +50,7 @@ def extract(path: Path) -> pd.DataFrame:
 
     floatPattern = (
         r"[+-]?"
-        r"(?:\d+(?:\.\d*)?|\.\d+)"
+        r"(?:\d+(?:.\d*)?|.\d+)"
         r"(?:[eE][+-]?\d+)?"
     )
     optionalPattern = rf"(?:{floatPattern}|-)"
@@ -112,7 +111,7 @@ def extract(path: Path) -> pd.DataFrame:
             )
 
     if header is None:
-        raise ValueError("Stochastic QMC table header not found")
+        raise ValueError(f"Stochastic QMC table header not found in {path}")
 
     df = pd.DataFrame(
         rows,
@@ -127,9 +126,7 @@ def extract(path: Path) -> pd.DataFrame:
     return df.drop_duplicates(subset = ["Iter"], keep = "last")
 
 def prepareObservables(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add derived observables used in blocking analysis.
-    """
+    """Add derived observables used in blocking analysis."""
     df = df.copy()
 
     referenceEnergy = np.nanmedian(
@@ -150,6 +147,7 @@ def prepareObservables(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def blocking(xi) -> pd.DataFrame:
+    """Perform recursive Flyvbjerg-Petersen blocking analysis."""
     levels = []
 
     level = 0
@@ -208,6 +206,7 @@ def blocking(xi) -> pd.DataFrame:
     )
 
 def plateau(data) -> Optional[int]:
+    """Find the first statistically consistent blocking plateau."""
     n = data["N"].to_numpy()
     sigma = data["sigma"].to_numpy()
     dsigma = data["dsigma"].to_numpy()
@@ -245,12 +244,23 @@ def plateau(data) -> Optional[int]:
     return None
 
 def main() -> None:
-    """
-    Extract QMC observables and perform blocking analysis.
-    """
+    """Extract consecutive QMC outputs and perform blocking analysis."""
     args = parse()
 
-    df = extract(args.path)
+    # The files are consecutive sections of the same stochastic trajectory.
+    df = pd.concat(
+        [extract(path) for path in args.paths],
+        ignore_index = True,
+    )
+
+    # Restarted output files can contain overlapping iterations. Keep the last
+    # occurrence and restore chronological order before blocking.
+    df = (
+        df.drop_duplicates(subset = ["Iter"], keep = "last")
+        .sort_values("Iter")
+        .reset_index(drop = True)
+    )
+
     df = prepareObservables(df)
 
     if args.start is None:
