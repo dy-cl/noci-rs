@@ -3,6 +3,7 @@
 
 mod onebody;
 mod overlap;
+mod storage;
 
 // Crate-visible type re-exports.
 pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};

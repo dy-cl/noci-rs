@@ -255,7 +255,14 @@ where
                 && input.wicks.enabled
                 && candidate_data.wicks.is_some()
             {
-                Some(OneBodyFactorisation::new(&candidate_data, &fock))
+                let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
+                Some(OneBodyFactorisation::new(
+                    &candidate_data,
+                    &fock,
+                    std::path::Path::new(cache),
+                    world.rank(),
+                    it,
+                ))
             } else {
                 None
             };
@@ -280,8 +287,8 @@ where
                     if world.rank() == 0 {
                         print_build_candidate_m::<T>(op.candidates.len());
                     }
-                    let cachedir = input.wicks.cachedir.as_deref().unwrap_or(".");
-                    let path = std::path::Path::new(cachedir).join(format!(
+                    let cache = input.wicks.cachedir.as_deref().unwrap_or(".");
+                    let path = std::path::Path::new(cache).join(format!(
                         "snoci_m_rank{}_iter{}.bin",
                         world.rank(),
                         it
