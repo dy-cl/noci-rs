@@ -585,6 +585,12 @@ pub fn print_report(
         res.timings.nonorthogonalwicks.xw_one_body_m0,
         8,
     );
+    print_relative_counter(
+        "One-body matrix elements (m = 0, l = 4)",
+        res.timings.nonorthogonalwicks.xw_one_body_m0_l4,
+        res.timings.nonorthogonalwicks.xw_one_body_m0,
+        8,
+    );
 
     println!("{}", "-".repeat(100));
 

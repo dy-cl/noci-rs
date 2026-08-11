@@ -157,6 +157,7 @@ fn xw_one_body_m0<T: NOCIScalar>(
             1 => xw_one_body_m0_l1(w, scratch, ob),
             2 => xw_one_body_m0_l2(w, scratch, ob),
             3 => xw_one_body_m0_l3(w, scratch, tol, ob),
+            4 => xw_one_body_m0_l4(w, scratch, tol, ob),
             _ => xw_one_body_m0_gen(w, l_ex, g_ex, scratch, tol, ob),
         }
     })
@@ -326,6 +327,106 @@ fn xw_one_body_m0_l3<T: NOCIScalar>(
                 + cof[2] * f02
                 + cof[5] * f12
                 + cof[8] * f22;
+
+            // \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
+            // = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}
+            // - \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}].
+            w.phase
+                * <T as From<f64>>::from(w.tilde_s_prod)
+                * (det * one_body_scalar(w, ob, 0) - repl)
+        } else {
+            <T as From<f64>>::from(0.0)
+        }
+    })
+}
+
+/// `Evaluate the fixed-rank L = 4 one-body matrix element for m = 0.`
+/// `The sum of column-replacement determinants is evaluated by contracting the \mathcal F entries`
+/// `with \operatorname{cof}[\mathbf D_{\mathrm{ov}}].`
+/// # Arguments:
+/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
+/// - `scratch`: Prepared rank-four contraction determinant and scratch storage for its cofactors.
+/// - `tol`: Numerical tolerance used when evaluating the determinant and adjugate-transpose matrix.
+/// - `ob`: Selects the one-electron Hamiltonian or generalised-Fock intermediates.
+/// # Returns
+/// - `T`: `One-body matrix element for L = 4 and m = 0.`
+#[inline(always)]
+fn xw_one_body_m0_l4<T: NOCIScalar>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+    tol: f64,
+    ob: OneBody,
+) -> T {
+    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l4, {
+        // Select the rank-four contraction determinant \mathbf D_{\mathrm{ov}}(0,0,0,0).
+        let n = w.n();
+        let det0 = &scratch.det0.as_slice()[..16];
+
+        // Evaluate \det\mathbf D_{\mathrm{ov}} and
+        // \operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}.
+        if let Some(det) = adjugate_transpose(
+            scratch.adjt_det.as_mut_slice(),
+            scratch.invs.as_mut_slice(),
+            scratch.lu.as_mut_slice(),
+            det0,
+            4,
+            tol,
+        ) {
+            let cof = scratch.adjt_det.as_slice();
+            let rows = scratch.rows.as_slice();
+            let cols = scratch.cols.as_slice();
+
+            let r0 = rows[0];
+            let r1 = rows[1];
+            let r2 = rows[2];
+            let r3 = rows[3];
+            let c0 = cols[0];
+            let c1 = cols[1];
+            let c2 = cols[2];
+            let c3 = cols[3];
+
+            // Select the m_1 = m_z = 0 one-column intermediate.
+            let fsl = match ob {
+                OneBody::H1 => w.fh_t_slice(0, 0),
+                OneBody::Fock => w.ff_t_slice(0, 0),
+            };
+
+            // Read \mathcal F_{\eta z}^{(0,0)} for every row \eta and column z.
+            let f00 = fsl[c0 * n + r0];
+            let f10 = fsl[c0 * n + r1];
+            let f20 = fsl[c0 * n + r2];
+            let f30 = fsl[c0 * n + r3];
+            let f01 = fsl[c1 * n + r0];
+            let f11 = fsl[c1 * n + r1];
+            let f21 = fsl[c1 * n + r2];
+            let f31 = fsl[c1 * n + r3];
+            let f02 = fsl[c2 * n + r0];
+            let f12 = fsl[c2 * n + r1];
+            let f22 = fsl[c2 * n + r2];
+            let f32 = fsl[c2 * n + r3];
+            let f03 = fsl[c3 * n + r0];
+            let f13 = fsl[c3 * n + r1];
+            let f23 = fsl[c3 * n + r2];
+            let f33 = fsl[c3 * n + r3];
+
+            // \sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}
+            // = \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}.
+            let repl = cof[0] * f00
+                + cof[4] * f10
+                + cof[8] * f20
+                + cof[12] * f30
+                + cof[1] * f01
+                + cof[5] * f11
+                + cof[9] * f21
+                + cof[13] * f31
+                + cof[2] * f02
+                + cof[6] * f12
+                + cof[10] * f22
+                + cof[14] * f32
+                + cof[3] * f03
+                + cof[7] * f13
+                + cof[11] * f23
+                + cof[15] * f33;
 
             // \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
             // = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}

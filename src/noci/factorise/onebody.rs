@@ -477,35 +477,47 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             scratch.first_f.resize(nrow * block.nsb, zero);
             scratch.first_s.resize(nrow * block.nsb, zero);
 
-            for ta in (a0..a1).filter(|ta| ta % nworker == worker) {
-                let row = ta - a0;
-                let frow = &fa[ta * block.nsa..(ta + 1) * block.nsa];
-                let srow = &sa[ta * block.nsa..(ta + 1) * block.nsa];
-                let tf = &mut scratch.first_f[row * block.nsb..(row + 1) * block.nsb];
-                let ts = &mut scratch.first_s[row * block.nsb..(row + 1) * block.nsb];
-                for entry in &source.entries {
-                    let xe = x[entry.det];
-                    if xe != zero {
-                        tf[entry.b] += frow[entry.a] * xe;
-                        ts[entry.b] += srow[entry.a] * xe;
+            scratch
+                .first_f
+                .par_chunks_mut(block.nsb)
+                .zip(scratch.first_s.par_chunks_mut(block.nsb))
+                .enumerate()
+                .for_each(|(row, (tf, ts))| {
+                    let ta = a0 + row;
+                    if ta % nworker != worker {
+                        return;
                     }
-                }
-            }
+                    let frow = &fa[ta * block.nsa..(ta + 1) * block.nsa];
+                    let srow = &sa[ta * block.nsa..(ta + 1) * block.nsa];
+                    for entry in &source.entries {
+                        let xe = x[entry.det];
+                        if xe != zero {
+                            tf[entry.b] += frow[entry.a] * xe;
+                            ts[entry.b] += srow[entry.a] * xe;
+                        }
+                    }
+                });
 
-            for entry in &target.entries {
-                if entry.a < a0 || entry.a >= a1 || entry.a % nworker != worker {
-                    continue;
-                }
-                let row = entry.a - a0;
-                let tf = &scratch.first_f[row * block.nsb..(row + 1) * block.nsb];
-                let ts = &scratch.first_s[row * block.nsb..(row + 1) * block.nsb];
-                let sbrow = &sb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
-                let fbrow = &fb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
-                let mut value = zero;
-                for b in 0..block.nsb {
-                    value += tf[b] * sbrow[b] + ts[b] * (fbrow[b] + lambda * sbrow[b]);
-                }
-                y[entry.det] += value;
+            let updates: Vec<(usize, T)> = target
+                .entries
+                .par_iter()
+                .filter(|entry| entry.a >= a0 && entry.a < a1 && entry.a % nworker == worker)
+                .map(|entry| {
+                    let row = entry.a - a0;
+                    let tf = &scratch.first_f[row * block.nsb..(row + 1) * block.nsb];
+                    let ts = &scratch.first_s[row * block.nsb..(row + 1) * block.nsb];
+                    let sbrow = &sb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
+                    let fbrow = &fb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
+                    let mut value = zero;
+                    for b in 0..block.nsb {
+                        value += tf[b] * sbrow[b] + ts[b] * (fbrow[b] + lambda * sbrow[b]);
+                    }
+                    (entry.det, value)
+                })
+                .collect();
+
+            for (det, value) in updates {
+                y[det] += value;
             }
         }
     }
@@ -544,35 +556,47 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             scratch.first_f.resize(nrow * block.nsa, zero);
             scratch.first_s.resize(nrow * block.nsa, zero);
 
-            for tb in (b0..b1).filter(|tb| tb % nworker == worker) {
-                let row = tb - b0;
-                let frow = &fb[tb * block.nsb..(tb + 1) * block.nsb];
-                let srow = &sb[tb * block.nsb..(tb + 1) * block.nsb];
-                let uf = &mut scratch.first_f[row * block.nsa..(row + 1) * block.nsa];
-                let us = &mut scratch.first_s[row * block.nsa..(row + 1) * block.nsa];
-                for entry in &source.entries {
-                    let xe = x[entry.det];
-                    if xe != zero {
-                        uf[entry.a] += xe * frow[entry.b];
-                        us[entry.a] += xe * srow[entry.b];
+            scratch
+                .first_f
+                .par_chunks_mut(block.nsa)
+                .zip(scratch.first_s.par_chunks_mut(block.nsa))
+                .enumerate()
+                .for_each(|(row, (uf, us))| {
+                    let tb = b0 + row;
+                    if tb % nworker != worker {
+                        return;
                     }
-                }
-            }
+                    let frow = &fb[tb * block.nsb..(tb + 1) * block.nsb];
+                    let srow = &sb[tb * block.nsb..(tb + 1) * block.nsb];
+                    for entry in &source.entries {
+                        let xe = x[entry.det];
+                        if xe != zero {
+                            uf[entry.a] += xe * frow[entry.b];
+                            us[entry.a] += xe * srow[entry.b];
+                        }
+                    }
+                });
 
-            for entry in &target.entries {
-                if entry.b < b0 || entry.b >= b1 || entry.b % nworker != worker {
-                    continue;
-                }
-                let row = entry.b - b0;
-                let uf = &scratch.first_f[row * block.nsa..(row + 1) * block.nsa];
-                let us = &scratch.first_s[row * block.nsa..(row + 1) * block.nsa];
-                let sarow = &sa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
-                let farow = &fa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
-                let mut value = zero;
-                for a in 0..block.nsa {
-                    value += sarow[a] * uf[a] + (farow[a] + lambda * sarow[a]) * us[a];
-                }
-                y[entry.det] += value;
+            let updates: Vec<(usize, T)> = target
+                .entries
+                .par_iter()
+                .filter(|entry| entry.b >= b0 && entry.b < b1 && entry.b % nworker == worker)
+                .map(|entry| {
+                    let row = entry.b - b0;
+                    let uf = &scratch.first_f[row * block.nsa..(row + 1) * block.nsa];
+                    let us = &scratch.first_s[row * block.nsa..(row + 1) * block.nsa];
+                    let sarow = &sa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
+                    let farow = &fa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
+                    let mut value = zero;
+                    for a in 0..block.nsa {
+                        value += sarow[a] * uf[a] + (farow[a] + lambda * sarow[a]) * us[a];
+                    }
+                    (entry.det, value)
+                })
+                .collect();
+
+            for (det, value) in updates {
+                y[det] += value;
             }
         }
     }

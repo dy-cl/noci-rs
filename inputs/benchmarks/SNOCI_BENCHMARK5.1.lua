@@ -127,12 +127,9 @@ snoci = {
         0.0,
     },
     gmres = {
-        max_iter = 512,
-        restart = 128,
-        res_tol = 1e-6,
-        metric_tol = 1e-10,
+        max_iter = 2,
         full_m = "none",
-        factor_tables = "disk",
+        factor_tables = "none",
     },
 }
 
@@ -141,9 +138,4 @@ wicks = {
     compare = false,
     storage = "ram",
     cachedir = ".",
-}
-
-write = {
-    verbose = 1,
-    write_dir = "outputs/",
 }

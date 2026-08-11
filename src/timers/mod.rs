@@ -152,6 +152,7 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.xw_one_body_m0_l1);
         $f!($tot.nonorthogonalwicks.xw_one_body_m0_l2);
         $f!($tot.nonorthogonalwicks.xw_one_body_m0_l3);
+        $f!($tot.nonorthogonalwicks.xw_one_body_m0_l4);
         $f!($tot.nonorthogonalwicks.xw_h2_same_m0_gen);
         $f!($tot.nonorthogonalwicks.xw_h2_same_m0_l1);
         $f!($tot.nonorthogonalwicks.xw_h2_same_m0_l2);
