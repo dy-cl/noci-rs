@@ -29,6 +29,9 @@ use super::contract::{
 use super::data::{DeviceOneBodyData, GpuOneBodyData};
 use super::diagonals::{DiagonalBlockLaunch, launch_fill_one_body_diagonal_block};
 use super::factors::{FactorOutput, FactorRequest, build_spin_one_body_factors};
+use super::orthogonal::{
+    GpuOrthogonalBlocks, launch_apply_orthogonal_block, launch_fill_orthogonal_diagonal,
+};
 
 /// Target component panel width, matching the CPU transient contraction path initially.
 const PANEL_ROWS: usize = 512;
@@ -45,6 +48,8 @@ pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
     device_wicks: DeviceWicksShared,
     /// Factorised-operator GPU topology data.
     data: GpuOneBodyData,
+    /// Sparse same-parent orthogonal Slater-Condon blocks.
+    orthogonal: GpuOrthogonalBlocks,
     /// Device-resident determinant topology and decoded excitations.
     device_data: DeviceOneBodyData,
     /// Reusable device buffers for factor panels, intermediates and vectors.
@@ -90,6 +95,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         let wicks = gpu::pack_wicks(wicks, requirements);
         let gpu_data = GpuOneBodyData::new(&spin, data);
         let context = GpuContext::new();
+        let orthogonal = GpuOrthogonalBlocks::new(&context, &spin, data, fock);
         let device_wicks = upload_real_wicks(&wicks, &context);
         let device_data = gpu_data.upload(&context);
         Self {
@@ -99,6 +105,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             device_wicks,
             data: gpu_data,
             device_data,
+            orthogonal,
             scratch: GpuOneBodyScratch::default(),
             marker: PhantomData,
         }
@@ -135,8 +142,25 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         launch_zero_f64(&self.context, y, x.len());
 
         for index in 0..self.plan.blocks.len() {
-            let block = self.gpu_block(index);
-            self.apply_factorised_block(block, lambda, partition);
+            match &self.plan.blocks[index] {
+                OneBodyBlockPlan::Orthogonal { parent } => {
+                    let block = self.orthogonal.block(*parent);
+
+                    launch_apply_orthogonal_block(
+                        &self.context,
+                        block,
+                        self.scratch.x.as_ref().expect("GPU x buffer must exist"),
+                        self.scratch.y.as_ref().expect("GPU y buffer must exist"),
+                        lambda,
+                        partition,
+                    );
+                }
+
+                OneBodyBlockPlan::NonOrthogonal { .. } => {
+                    let block = self.gpu_nonorthogonal_block(index);
+                    self.apply_factorised_block(block, lambda, partition);
+                }
+            }
         }
 
         let values = self
@@ -179,7 +203,29 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         launch_zero_f64(&self.context, s_diag, ndet);
 
         for parent in 0..self.spin.parents.len() {
-            self.fill_parent_diagonal(parent, lambda);
+            let index = parent * self.plan.nparent + parent;
+
+            match &self.plan.blocks[index] {
+                OneBodyBlockPlan::Orthogonal { .. } => {
+                    launch_fill_orthogonal_diagonal(
+                        &self.context,
+                        self.orthogonal.block(parent),
+                        self.scratch
+                            .m_diag
+                            .as_ref()
+                            .expect("GPU diagonal buffer must exist"),
+                        self.scratch
+                            .s_diag
+                            .as_ref()
+                            .expect("GPU diagonal buffer must exist"),
+                        lambda,
+                    );
+                }
+
+                OneBodyBlockPlan::NonOrthogonal { .. } => {
+                    self.fill_parent_diagonal(parent, lambda);
+                }
+            }
         }
 
         let m = self
@@ -208,7 +254,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     /// - `index`: Plan index `Q * nparent + P`.
     /// # Returns
     /// - `GpuFactorisedBlock`: Parent-pair dimensions and contraction order.
-    fn gpu_block(
+    fn gpu_nonorthogonal_block(
         &self,
         index: usize,
     ) -> GpuFactorisedBlock {
@@ -236,30 +282,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                 nsb,
                 contraction,
             },
-            OneBodyBlockPlan::Orthogonal { parent } => {
-                let target = &self.spin.parents[parent];
-                let source = target;
-                let (lp, gp, target_left) = ordered_parent_pair(&self.spin, parent, parent);
-                let contraction = select_one_body_contraction(
-                    target.areps.len(),
-                    target.breps.len(),
-                    source.areps.len(),
-                    source.breps.len(),
-                    target.entries.len(),
-                    source.entries.len(),
-                );
-                GpuFactorisedBlock {
-                    target_parent: parent,
-                    source_parent: parent,
-                    lp,
-                    gp,
-                    target_left,
-                    nta: target.areps.len(),
-                    ntb: target.breps.len(),
-                    nsa: source.areps.len(),
-                    nsb: source.breps.len(),
-                    contraction,
-                }
+            OneBodyBlockPlan::Orthogonal { .. } => {
+                unreachable!("orthogonal GPU blocks must use Slater-Condon")
             }
         }
     }
