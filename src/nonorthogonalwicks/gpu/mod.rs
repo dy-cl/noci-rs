@@ -11,8 +11,13 @@ mod types;
 mod view;
 
 // Crate-visible type re-exports.
+pub(crate) use eval::prepare::GpuSameSpinView;
 pub(crate) use storage::WicksShared;
+pub(crate) use types::DeviceWicksShared;
 pub(crate) use view::{SameSpinView, WicksPairView, WicksView};
 
 // Crate-visible function re-exports.
+pub(crate) use eval::onebody::xw_f;
+pub(crate) use eval::overlap::xw_overlap;
+pub(crate) use eval::prepare::prepare_same;
 pub(crate) use pack::pack_wicks;

@@ -34,7 +34,7 @@ pub(crate) fn xw_f(
     work: &mut Array<f64>,
     cof: &mut Array<f64>,
     new_col: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
     if w.m == 0u32 {
         xw_one_body_m0(w, rows, cols, det0, cof, l)
@@ -60,17 +60,17 @@ pub(crate) fn xw_one_body_m0(
     cols: &Array<u32>,
     det0: &Array<f64>,
     cof: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
-    if comptime!(l == 0u32) {
+    if comptime!(l == 0usize) {
         prefactor(w) * w.f0f[0]
-    } else if comptime!(l == 1u32) {
+    } else if comptime!(l == 1usize) {
         xw_one_body_m0_l1(w, rows, cols, det0)
-    } else if comptime!(l == 2u32) {
+    } else if comptime!(l == 2usize) {
         xw_one_body_m0_l2(w, rows, cols, det0)
-    } else if comptime!(l == 3u32) {
+    } else if comptime!(l == 3usize) {
         xw_one_body_m0_l3(w, rows, cols, det0, cof)
-    } else if comptime!(l == 4u32) {
+    } else if comptime!(l == 4usize) {
         xw_one_body_m0_l4(w, rows, cols, det0, cof)
     } else {
         xw_one_body_m0_gen(w, rows, cols, det0, cof, l)
@@ -92,7 +92,7 @@ pub(crate) fn xw_one_body_m0_l1(
     cols: &Array<u32>,
     det0: &Array<f64>,
 ) -> f64 {
-    let repl = ff_t(w, 0u32, 0u32, cols[0], rows[0]);
+    let repl = ff_t(w, 0usize, 0usize, cols[0], rows[0]);
     prefactor(w) * (det0[0] * w.f0f[0] - repl)
 }
 
@@ -117,10 +117,10 @@ pub(crate) fn xw_one_body_m0_l2(
     let a11 = d[3];
     let det = det2(a00, a01, a10, a11);
 
-    let u0 = ff_t(w, 0u32, 0u32, cols[0], rows[0]);
-    let u1 = ff_t(w, 0u32, 0u32, cols[0], rows[1]);
-    let v0 = ff_t(w, 0u32, 0u32, cols[1], rows[0]);
-    let v1 = ff_t(w, 0u32, 0u32, cols[1], rows[1]);
+    let u0 = ff_t(w, 0usize, 0usize, cols[0], rows[0]);
+    let u1 = ff_t(w, 0usize, 0usize, cols[0], rows[1]);
+    let v0 = ff_t(w, 0usize, 0usize, cols[1], rows[0]);
+    let v1 = ff_t(w, 0usize, 0usize, cols[1], rows[1]);
     let det_c0 = u0 * a11 - a01 * u1;
     let det_c1 = a00 * v1 - v0 * a10;
 
@@ -146,9 +146,9 @@ pub(crate) fn xw_one_body_m0_l3(
 ) -> f64 {
     let det = adjugate_transpose3(d, cof);
     let mut repl = 0.0;
-    for z in 0u32..3u32 {
-        for eta in 0u32..3u32 {
-            repl += cof[eta * 3u32 + z] * ff_t(w, 0u32, 0u32, cols[z], rows[eta]);
+    for z in 0usize..3usize {
+        for eta in 0usize..3usize {
+            repl += cof[eta * 3usize + z] * ff_t(w, 0usize, 0usize, cols[z], rows[eta]);
         }
     }
     prefactor(w) * (det * w.f0f[0] - repl)
@@ -173,9 +173,9 @@ pub(crate) fn xw_one_body_m0_l4(
 ) -> f64 {
     let det = adjugate_transpose4(d, cof);
     let mut repl = 0.0;
-    for z in 0u32..4u32 {
-        for eta in 0u32..4u32 {
-            repl += cof[eta * 4u32 + z] * ff_t(w, 0u32, 0u32, cols[z], rows[eta]);
+    for z in 0usize..4usize {
+        for eta in 0usize..4usize {
+            repl += cof[eta * 4usize + z] * ff_t(w, 0usize, 0usize, cols[z], rows[eta]);
         }
     }
     prefactor(w) * (det * w.f0f[0] - repl)
@@ -198,14 +198,14 @@ pub(crate) fn xw_one_body_m0_gen(
     cols: &Array<u32>,
     d: &Array<f64>,
     cof: &mut Array<f64>,
-    l: u32,
+    l: usize,
 ) -> f64 {
     let det = fill_cofactors(d, cof, l);
     let mut contrib = det * w.f0f[0];
-    for z in 0u32..l {
+    for z in 0usize..l {
         let mut repl = 0.0;
-        for eta in 0u32..l {
-            repl += cof[eta * l + z] * ff_t(w, 0u32, 0u32, cols[z], rows[eta]);
+        for eta in 0usize..l {
+            repl += cof[eta * l + z] * ff_t(w, 0usize, 0usize, cols[z], rows[eta]);
         }
         contrib -= repl;
     }
@@ -235,20 +235,20 @@ pub(crate) fn xw_one_body_gen(
     work: &mut Array<f64>,
     cof: &mut Array<f64>,
     new_col: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
     let mut acc = 0.0;
-    let limit = 1u32 << (l + 1u32);
+    let limit = 1u32 << (l + 1usize);
     for bits in 0u32..limit {
         if bits.count_ones() == w.m {
-            let mi = bit(bits, 0u32);
+            let mi = bit(bits, 0usize);
             let cbits = bits >> 1u32;
             mix_dets_same(det0, det1, work, l, cbits);
             let det = fill_cofactors(work, cof, l);
             let mut contrib = det * w.f0f[mi];
-            for z in 0u32..l {
-                let mj = bit(bits, z + 1u32);
-                for eta in 0u32..l {
+            for z in 0usize..l {
+                let mj = bit(bits, z + 1usize);
+                for eta in 0usize..l {
                     new_col[eta] = ff_t(w, mi, mj, cols[z], rows[eta]);
                 }
                 let corr = column_replacement_correction(l, work, cof, z, new_col);
@@ -271,25 +271,25 @@ pub(crate) fn xw_one_body_gen(
 pub(crate) fn fill_cofactors(
     d: &Array<f64>,
     cof: &mut Array<f64>,
-    l: u32,
+    l: usize,
 ) -> f64 {
-    if l == 1u32 {
+    if l == 1usize {
         cof[0] = 1.0;
         d[0]
-    } else if l == 2u32 {
+    } else if l == 2usize {
         cof[0] = d[3];
         cof[1] = -d[2];
         cof[2] = -d[1];
         cof[3] = d[0];
         det2(d[0], d[1], d[2], d[3])
-    } else if l == 3u32 {
+    } else if l == 3usize {
         adjugate_transpose3(d, cof)
-    } else if l == 4u32 {
+    } else if l == 4usize {
         adjugate_transpose4(d, cof)
     } else {
         let det = det_or_zero(d, l);
-        for r in 0u32..l {
-            for c in 0u32..l {
+        for r in 0usize..l {
+            for c in 0usize..l {
                 cof[r * l + c] = cofactor_minor(d, l, r, c);
             }
         }
@@ -308,26 +308,26 @@ pub(crate) fn fill_cofactors(
 #[cube]
 pub(crate) fn cofactor_minor(
     d: &Array<f64>,
-    l: u32,
-    skip_r: u32,
-    skip_c: u32,
+    l: usize,
+    skip_r: usize,
+    skip_c: usize,
 ) -> f64 {
-    let mut minor = Array::<f64>::new(36u32);
-    let mut p = 0u32;
-    for r in 0u32..l {
+    let mut minor = Array::<f64>::new(36usize);
+    let mut p = 0usize;
+    for r in 0usize..l {
         if r != skip_r {
-            for c in 0u32..l {
+            for c in 0usize..l {
                 if c != skip_c {
                     minor[p] = d[r * l + c];
-                    p += 1u32;
+                    p += 1usize;
                 }
             }
         }
     }
-    let sign = if ((skip_r + skip_c) & 1u32) == 0u32 {
+    let sign = if ((skip_r + skip_c) & 1usize) == 0usize {
         1.0
     } else {
         -1.0
     };
-    sign * det_or_zero(&minor, l - 1u32)
+    sign * det_or_zero(&minor, l - 1usize)
 }

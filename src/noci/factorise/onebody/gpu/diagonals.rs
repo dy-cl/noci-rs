@@ -79,21 +79,21 @@ pub(crate) fn fill_one_body_diagonal_block_kernel(
     m_diag: &mut Array<f64>,
     s_diag: &mut Array<f64>,
     lambda: f64,
-    nentry: u32,
-    nsa: u32,
-    nsb: u32,
+    nentry: usize,
+    nsa: usize,
+    nsb: usize,
 ) {
     if ABSOLUTE_POS >= nentry {
-        return;
+        terminate!();
     }
-    let a = entry_a[ABSOLUTE_POS];
-    let b = entry_b[ABSOLUTE_POS];
+    let a = usize::cast_from(entry_a[ABSOLUTE_POS]);
+    let b = usize::cast_from(entry_b[ABSOLUTE_POS]);
     let saa = sa[a * nsa + a];
     let faa = fa[a * nsa + a];
     let sbb = sb[b * nsb + b];
     let fbb = fb[b * nsb + b];
     let s = saa * sbb;
-    let det = entry_det[ABSOLUTE_POS];
+    let det = usize::cast_from(entry_det[ABSOLUTE_POS]);
     s_diag[det] = s;
     m_diag[det] = faa * sbb + saa * fbb + lambda * s;
 }

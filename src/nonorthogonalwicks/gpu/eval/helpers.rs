@@ -9,13 +9,13 @@ use cubecl::prelude::*;
 /// - `bits`: Packed assignments.
 /// - `k`: Assignment index.
 /// # Returns
-/// - `u32`: `m_k \in \{0,1\}.`
+/// - `usize`: `m_k \in \{0,1\}.`
 #[cube]
 pub(crate) fn bit(
     bits: u32,
-    k: u32,
-) -> u32 {
-    (bits >> k) & 1u32
+    k: usize,
+) -> usize {
+    (usize::cast_from(bits) >> k) & 1usize
 }
 
 /// Evaluate the rank-one determinant.
@@ -64,10 +64,10 @@ pub(crate) fn det3(d: &Array<f64>) -> f64 {
 /// - `f64`: Determinant.
 #[cube]
 pub(crate) fn det4(d: &Array<f64>) -> f64 {
-    let m0 = det3_minor4(d, 0u32, 0u32);
-    let m1 = det3_minor4(d, 0u32, 1u32);
-    let m2 = det3_minor4(d, 0u32, 2u32);
-    let m3 = det3_minor4(d, 0u32, 3u32);
+    let m0 = det3_minor4(d, 0usize, 0usize);
+    let m1 = det3_minor4(d, 0usize, 1usize);
+    let m2 = det3_minor4(d, 0usize, 2usize);
+    let m3 = det3_minor4(d, 0usize, 3usize);
     d[0] * m0 - d[1] * m1 + d[2] * m2 - d[3] * m3
 }
 
@@ -81,17 +81,17 @@ pub(crate) fn det4(d: &Array<f64>) -> f64 {
 #[cube]
 pub(crate) fn det3_minor4(
     d: &Array<f64>,
-    skip_r: u32,
-    skip_c: u32,
+    skip_r: usize,
+    skip_c: usize,
 ) -> f64 {
-    let mut m = Array::<f64>::new(9u32);
-    let mut p = 0u32;
-    for r in 0u32..4u32 {
+    let mut m = Array::<f64>::new(9usize);
+    let mut p = 0usize;
+    for r in 0usize..4usize {
         if r != skip_r {
-            for c in 0u32..4u32 {
+            for c in 0usize..4usize {
                 if c != skip_c {
-                    m[p] = d[r * 4u32 + c];
-                    p += 1u32;
+                    m[p] = d[r * 4usize + c];
+                    p += 1usize;
                 }
             }
         }
@@ -144,10 +144,14 @@ pub(crate) fn adjugate_transpose4(
     d: &Array<f64>,
     cof: &mut Array<f64>,
 ) -> f64 {
-    for r in 0u32..4u32 {
-        for c in 0u32..4u32 {
-            let sign = if ((r + c) & 1u32) == 0u32 { 1.0 } else { -1.0 };
-            cof[r * 4u32 + c] = sign * det3_minor4(d, r, c);
+    for r in 0usize..4usize {
+        for c in 0usize..4usize {
+            let sign = if ((r + c) & 1usize) == 0usize {
+                1.0
+            } else {
+                -1.0
+            };
+            cof[r * 4usize + c] = sign * det3_minor4(d, r, c);
         }
     }
     det4(d)
@@ -162,21 +166,23 @@ pub(crate) fn adjugate_transpose4(
 #[cube]
 pub(crate) fn det_or_zero(
     d: &Array<f64>,
-    n: u32,
+    n: usize,
 ) -> f64 {
-    if n == 0u32 {
-        1.0
-    } else if n == 1u32 {
-        det1(d[0])
-    } else if n == 2u32 {
-        det2(d[0], d[1], d[2], d[3])
-    } else if n == 3u32 {
-        det3(d)
-    } else if n == 4u32 {
-        det4(d)
+    let mut value: f64 = 0.0;
+    if n == 0usize {
+        value = 1.0;
+    } else if n == 1usize {
+        value = det1(d[0]);
+    } else if n == 2usize {
+        value = det2(d[0], d[1], d[2], d[3]);
+    } else if n == 3usize {
+        value = det3(d);
+    } else if n == 4usize {
+        value = det4(d);
     } else {
-        det_elim(d, n)
+        value = det_elim(d, n);
     }
+    value
 }
 
 /// Evaluate a small determinant by local Gaussian elimination for fallback ranks.
@@ -188,27 +194,36 @@ pub(crate) fn det_or_zero(
 #[cube]
 pub(crate) fn det_elim(
     d: &Array<f64>,
-    n: u32,
+    n: usize,
 ) -> f64 {
-    let mut a = Array::<f64>::new(36u32);
-    for i in 0u32..(n * n) {
+    let mut a = Array::<f64>::new(36usize);
+    for i in 0usize..(n * n) {
         a[i] = d[i];
     }
-    let mut det = 1.0;
-    for k in 0u32..n {
+    let mut det: f64 = 1.0;
+    let mut singular = false;
+    for k in 0usize..n {
         let pivot = a[k * n + k];
         if pivot == 0.0 {
-            return 0.0;
+            singular = true;
         }
-        det *= pivot;
-        for i in (k + 1u32)..n {
-            let factor = a[i * n + k] / pivot;
-            for j in (k + 1u32)..n {
-                a[i * n + j] -= factor * a[k * n + j];
+        if !singular {
+            det *= pivot;
+            for i in (k + 1usize)..n {
+                let factor = a[i * n + k] / pivot;
+                for j in (k + 1usize)..n {
+                    a[i * n + j] -= factor * a[k * n + j];
+                }
             }
         }
     }
-    det
+    let mut value: f64 = 0.0;
+    if singular {
+        value = 0.0;
+    } else {
+        value = det;
+    }
+    value
 }
 
 /// Evaluate `\Delta_c = \det D[c\rightarrow N]-\det D` using the cofactor column.
@@ -222,14 +237,14 @@ pub(crate) fn det_elim(
 /// - `f64`: Determinant correction.
 #[cube]
 pub(crate) fn column_replacement_correction(
-    n: u32,
+    n: usize,
     old: &Array<f64>,
     cof: &Array<f64>,
-    col: u32,
+    col: usize,
     new_col: &Array<f64>,
 ) -> f64 {
     let mut correction = 0.0;
-    for r in 0u32..n {
+    for r in 0usize..n {
         let i = r * n + col;
         correction += (new_col[r] - old[i]) * cof[i];
     }

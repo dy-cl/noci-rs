@@ -6,21 +6,21 @@ use cubecl::prelude::*;
 
 /// Device-side same-spin Wick view over primitive flattened buffers.
 #[derive(CubeType)]
-pub(crate) struct GpuSameSpinView<'a> {
+pub(crate) struct GpuSameSpinView {
     /// Compact same-spin tensor slab.
-    pub(crate) slab: &'a Array<f64>,
+    pub(crate) slab: Slice<f64>,
     /// Offsets to `X^(0)` and `X^(1)`.
-    pub(crate) x_off: &'a Array<u32>,
+    pub(crate) x_off: Slice<u32>,
     /// Offsets to `Y^(0)` and `Y^(1)`.
-    pub(crate) y_off: &'a Array<u32>,
+    pub(crate) y_off: Slice<u32>,
     /// Offsets to transposed `ff^(mi,mj)`.
-    pub(crate) ff_off: &'a Array<u32>,
+    pub(crate) ff_off: Slice<u32>,
     /// Orbital-pairing phase.
     pub(crate) phase: f64,
     /// Product of non-zero occupied-orbital singular values.
     pub(crate) tilde_s_prod: f64,
     /// Scalar current-Fock intermediates.
-    pub(crate) f0f: &'a Array<f64>,
+    pub(crate) f0f: Slice<f64>,
     /// Number of zero-overlap occupied-orbital pairs.
     pub(crate) m: u32,
     /// Number of molecular orbitals.
@@ -40,11 +40,12 @@ pub(crate) struct GpuSameSpinView<'a> {
 #[cube]
 pub(crate) fn x(
     w: &GpuSameSpinView,
-    mi: u32,
+    mi: usize,
     r: u32,
     c: u32,
 ) -> f64 {
-    w.slab[w.x_off[mi] + r * w.nmo + c]
+    let offset = usize::cast_from(w.x_off[mi]);
+    w.slab[offset + usize::cast_from(r * w.nmo + c)]
 }
 
 /// Read `Y^{(m_i)}_{rc}` from compact same-spin storage.
@@ -58,11 +59,12 @@ pub(crate) fn x(
 #[cube]
 pub(crate) fn y(
     w: &GpuSameSpinView,
-    mi: u32,
+    mi: usize,
     r: u32,
     c: u32,
 ) -> f64 {
-    w.slab[w.y_off[mi] + r * w.nmo + c]
+    let offset = usize::cast_from(w.y_off[mi]);
+    w.slab[offset + usize::cast_from(r * w.nmo + c)]
 }
 
 /// Read transposed current-Fock one-column intermediate using CPU `ff_t_slice` `[z,r]` storage.
@@ -77,12 +79,13 @@ pub(crate) fn y(
 #[cube]
 pub(crate) fn ff_t(
     w: &GpuSameSpinView,
-    mi: u32,
-    mj: u32,
+    mi: usize,
+    mj: usize,
     z: u32,
     r: u32,
 ) -> f64 {
-    w.slab[w.ff_off[mi * 2u32 + mj] + z * w.nmo + r]
+    let offset = usize::cast_from(w.ff_off[mi * 2usize + mj]);
+    w.slab[offset + usize::cast_from(z * w.nmo + r)]
 }
 
 /// Return the reduced reference prefactor `phase * tilde_s_prod`.
@@ -114,8 +117,8 @@ pub(crate) fn prefactor(w: &GpuSameSpinView) -> f64 {
 #[cube]
 pub(crate) fn prepare_same(
     w: &GpuSameSpinView,
-    l_rank: u32,
-    g_rank: u32,
+    l_rank: usize,
+    g_rank: usize,
     l_holes: &Array<u32>,
     l_parts: &Array<u32>,
     g_holes: &Array<u32>,
@@ -124,7 +127,7 @@ pub(crate) fn prepare_same(
     cols: &mut Array<u32>,
     det0: &mut Array<f64>,
     det1: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) {
     if w.m == 0u32 {
         prepare_same_m0(
@@ -145,8 +148,8 @@ pub(crate) fn prepare_same(
 #[cube]
 pub(crate) fn prepare_same_m0(
     w: &GpuSameSpinView,
-    l_rank: u32,
-    g_rank: u32,
+    l_rank: usize,
+    g_rank: usize,
     l_holes: &Array<u32>,
     l_parts: &Array<u32>,
     g_holes: &Array<u32>,
@@ -154,7 +157,7 @@ pub(crate) fn prepare_same_m0(
     rows: &mut Array<u32>,
     cols: &mut Array<u32>,
     det0: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) {
     construct_determinant_indices(
         w, l_rank, g_rank, l_holes, l_parts, g_holes, g_parts, rows, cols,
@@ -174,7 +177,7 @@ pub(crate) fn prepare_same_m0_l1(
     cols: &Array<u32>,
     det0: &mut Array<f64>,
 ) {
-    det0[0] = x(w, 0u32, rows[0], cols[0]);
+    det0[0] = x(w, 0usize, rows[0], cols[0]);
 }
 
 /// `Prepare fixed-rank L = 2 D(0,0)`.
@@ -192,7 +195,7 @@ pub(crate) fn prepare_same_m0_l2(
     cols: &Array<u32>,
     det0: &mut Array<f64>,
 ) {
-    build_d2(w, 0u32, rows, cols, det0);
+    build_d2(w, 0usize, rows, cols, det0);
 }
 
 /// `Prepare fixed-rank L = 3 D(0,0,0)`.
@@ -210,7 +213,7 @@ pub(crate) fn prepare_same_m0_l3(
     cols: &Array<u32>,
     det0: &mut Array<f64>,
 ) {
-    build_d_gen(w, 0u32, rows, cols, det0, 3u32);
+    build_d_gen(w, 0usize, rows, cols, det0, 3usize);
 }
 
 /// `Prepare fixed-rank L = 4 D(0,0,0,0)`.
@@ -228,7 +231,7 @@ pub(crate) fn prepare_same_m0_l4(
     cols: &Array<u32>,
     det0: &mut Array<f64>,
 ) {
-    build_d_gen(w, 0u32, rows, cols, det0, 4u32);
+    build_d_gen(w, 0usize, rows, cols, det0, 4usize);
 }
 
 /// `Prepare fixed-rank L = 5 D(0,\ldots,0)`.
@@ -246,7 +249,7 @@ pub(crate) fn prepare_same_m0_l5(
     cols: &Array<u32>,
     det0: &mut Array<f64>,
 ) {
-    build_d_gen(w, 0u32, rows, cols, det0, 5u32);
+    build_d_gen(w, 0usize, rows, cols, det0, 5usize);
 }
 
 /// `Prepare fixed-rank L = 6 D(0,\ldots,0)`.
@@ -264,7 +267,7 @@ pub(crate) fn prepare_same_m0_l6(
     cols: &Array<u32>,
     det0: &mut Array<f64>,
 ) {
-    build_d_gen(w, 0u32, rows, cols, det0, 6u32);
+    build_d_gen(w, 0usize, rows, cols, det0, 6usize);
 }
 
 /// Prepare `D(0,\ldots,0)` and `D(1,\ldots,1)` when `m > 0`.
@@ -275,8 +278,8 @@ pub(crate) fn prepare_same_m0_l6(
 #[cube]
 pub(crate) fn prepare_same_gen(
     w: &GpuSameSpinView,
-    l_rank: u32,
-    g_rank: u32,
+    l_rank: usize,
+    g_rank: usize,
     l_holes: &Array<u32>,
     l_parts: &Array<u32>,
     g_holes: &Array<u32>,
@@ -285,13 +288,13 @@ pub(crate) fn prepare_same_gen(
     cols: &mut Array<u32>,
     det0: &mut Array<f64>,
     det1: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) {
     construct_determinant_indices(
         w, l_rank, g_rank, l_holes, l_parts, g_holes, g_parts, rows, cols,
     );
-    build_d_gen(w, 0u32, rows, cols, det0, l);
-    build_d_gen(w, 1u32, rows, cols, det1, l);
+    build_d_gen(w, 0usize, rows, cols, det0, l);
+    build_d_gen(w, 1usize, rows, cols, det1, l);
 }
 
 /// Construct row and column labels for a same-spin contraction determinant.
@@ -310,8 +313,8 @@ pub(crate) fn prepare_same_gen(
 #[cube]
 pub(crate) fn construct_determinant_indices(
     w: &GpuSameSpinView,
-    l_rank: u32,
-    g_rank: u32,
+    l_rank: usize,
+    g_rank: usize,
     l_holes: &Array<u32>,
     l_parts: &Array<u32>,
     g_holes: &Array<u32>,
@@ -320,11 +323,11 @@ pub(crate) fn construct_determinant_indices(
     cols: &mut Array<u32>,
 ) {
     let nvirt = w.nmo - w.nocc;
-    for k in 0u32..l_rank {
+    for k in 0usize..l_rank {
         rows[k] = l_parts[k] - w.nocc;
         cols[k] = l_holes[k];
     }
-    for k in 0u32..g_rank {
+    for k in 0usize..g_rank {
         rows[l_rank + k] = nvirt + g_holes[k];
         cols[l_rank + k] = g_parts[k];
     }
@@ -345,22 +348,22 @@ pub(crate) fn build_d_m0(
     rows: &Array<u32>,
     cols: &Array<u32>,
     det0: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) {
-    if comptime!(l == 1u32) {
+    if comptime!(l == 1usize) {
         prepare_same_m0_l1(w, rows, cols, det0);
-    } else if comptime!(l == 2u32) {
+    } else if comptime!(l == 2usize) {
         prepare_same_m0_l2(w, rows, cols, det0);
-    } else if comptime!(l == 3u32) {
+    } else if comptime!(l == 3usize) {
         prepare_same_m0_l3(w, rows, cols, det0);
-    } else if comptime!(l == 4u32) {
+    } else if comptime!(l == 4usize) {
         prepare_same_m0_l4(w, rows, cols, det0);
-    } else if comptime!(l == 5u32) {
+    } else if comptime!(l == 5usize) {
         prepare_same_m0_l5(w, rows, cols, det0);
-    } else if comptime!(l == 6u32) {
+    } else if comptime!(l == 6usize) {
         prepare_same_m0_l6(w, rows, cols, det0);
     } else {
-        build_d_gen(w, 0u32, rows, cols, det0, l);
+        build_d_gen(w, 0usize, rows, cols, det0, l);
     }
 }
 
@@ -376,7 +379,7 @@ pub(crate) fn build_d_m0(
 #[cube]
 pub(crate) fn build_d2(
     w: &GpuSameSpinView,
-    mi: u32,
+    mi: usize,
     rows: &Array<u32>,
     cols: &Array<u32>,
     d: &mut Array<f64>,
@@ -400,14 +403,14 @@ pub(crate) fn build_d2(
 #[cube]
 pub(crate) fn build_d_gen(
     w: &GpuSameSpinView,
-    mi: u32,
+    mi: usize,
     rows: &Array<u32>,
     cols: &Array<u32>,
     d: &mut Array<f64>,
-    l: u32,
+    l: usize,
 ) {
-    for i in 0u32..l {
-        for j in 0u32..l {
+    for i in 0usize..l {
+        for j in 0usize..l {
             d[i * l + j] = if i >= j {
                 x(w, mi, rows[i], cols[j])
             } else {

@@ -12,7 +12,7 @@ use ndarray::Array1;
 use crate::gpu::GpuContext;
 use crate::input::SNOCIStorage;
 use crate::noci::types::{FockData, NOCIData, NOCIScalar};
-use crate::nonorthogonalwicks::gpu::types::DeviceWicksShared;
+use crate::nonorthogonalwicks::gpu::DeviceWicksShared;
 use crate::nonorthogonalwicks::{WicksRequirements, gpu};
 
 // Parent/sibling imports.

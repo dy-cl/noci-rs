@@ -49,7 +49,7 @@ pub(crate) fn apply_one_body_b_first<T: NOCIScalar>(
 #[cube(launch_unchecked)]
 pub(crate) fn zero_f64_kernel(
     out: &mut Array<f64>,
-    len: u32,
+    len: usize,
 ) {
     if ABSOLUTE_POS < len {
         out[ABSOLUTE_POS] = 0.0;
@@ -85,25 +85,27 @@ pub(crate) fn a_first_stage_kernel(
     by_beta_alpha: &Array<u32>,
     tf: &mut Array<f64>,
     ts: &mut Array<f64>,
-    nta: u32,
-    nsb: u32,
-    nsa: u32,
-    worker: u32,
-    nworker: u32,
+    nta: usize,
+    nsb: usize,
+    nsa: usize,
+    worker: usize,
+    nworker: usize,
 ) {
     if ABSOLUTE_POS >= nta * nsb {
-        return;
+        terminate!();
     }
     let abar = ABSOLUTE_POS / nsb;
     let b = ABSOLUTE_POS - abar * nsb;
     if abar % nworker != worker {
-        return;
+        terminate!();
     }
     let mut vf = 0.0;
     let mut vs = 0.0;
-    for p in by_beta_offsets[b]..by_beta_offsets[b + 1u32] {
-        let det = by_beta_det[p];
-        let a = by_beta_alpha[p];
+    let start = usize::cast_from(by_beta_offsets[b]);
+    let end = usize::cast_from(by_beta_offsets[b + 1]);
+    for p in start..end {
+        let det = usize::cast_from(by_beta_det[p]);
+        let a = usize::cast_from(by_beta_alpha[p]);
         let xe = x[det];
         vf += fa[abar * nsa + a] * xe;
         vs += sa[abar * nsa + a] * xe;
@@ -142,25 +144,26 @@ pub(crate) fn a_first_final_kernel(
     ts: &Array<f64>,
     y: &mut Array<f64>,
     lambda: f64,
-    nentry: u32,
-    nsb: u32,
-    worker: u32,
-    nworker: u32,
+    nentry: usize,
+    nsb: usize,
+    worker: usize,
+    nworker: usize,
 ) {
     if ABSOLUTE_POS >= nentry {
-        return;
+        terminate!();
     }
-    let abar = target_entry_a[ABSOLUTE_POS];
+    let abar = usize::cast_from(target_entry_a[ABSOLUTE_POS]);
     if abar % nworker != worker {
-        return;
+        terminate!();
     }
-    let bbar = target_entry_b[ABSOLUTE_POS];
+    let bbar = usize::cast_from(target_entry_b[ABSOLUTE_POS]);
     let mut value = 0.0;
-    for b in 0u32..nsb {
+    for b in 0usize..nsb {
         value += tf[abar * nsb + b] * sb[bbar * nsb + b]
             + ts[abar * nsb + b] * (fb[bbar * nsb + b] + lambda * sb[bbar * nsb + b]);
     }
-    y[target_entry_det[ABSOLUTE_POS]] += value;
+    let det = usize::cast_from(target_entry_det[ABSOLUTE_POS]);
+    y[det] += value;
 }
 
 /// Beta-first stage kernel:
@@ -192,25 +195,27 @@ pub(crate) fn b_first_stage_kernel(
     by_alpha_beta: &Array<u32>,
     uf: &mut Array<f64>,
     us: &mut Array<f64>,
-    ntb: u32,
-    nsa: u32,
-    nsb: u32,
-    worker: u32,
-    nworker: u32,
+    ntb: usize,
+    nsa: usize,
+    nsb: usize,
+    worker: usize,
+    nworker: usize,
 ) {
     if ABSOLUTE_POS >= nsa * ntb {
-        return;
+        terminate!();
     }
     let a = ABSOLUTE_POS / ntb;
     let bbar = ABSOLUTE_POS - a * ntb;
     if bbar % nworker != worker {
-        return;
+        terminate!();
     }
     let mut vf = 0.0;
     let mut vs = 0.0;
-    for p in by_alpha_offsets[a]..by_alpha_offsets[a + 1u32] {
-        let det = by_alpha_det[p];
-        let b = by_alpha_beta[p];
+    let start = usize::cast_from(by_alpha_offsets[a]);
+    let end = usize::cast_from(by_alpha_offsets[a + 1]);
+    for p in start..end {
+        let det = usize::cast_from(by_alpha_det[p]);
+        let b = usize::cast_from(by_alpha_beta[p]);
         let xe = x[det];
         vf += xe * fb[bbar * nsb + b];
         vs += xe * sb[bbar * nsb + b];
@@ -250,24 +255,25 @@ pub(crate) fn b_first_final_kernel(
     us: &Array<f64>,
     y: &mut Array<f64>,
     lambda: f64,
-    nentry: u32,
-    nsa: u32,
-    ntb: u32,
-    worker: u32,
-    nworker: u32,
+    nentry: usize,
+    nsa: usize,
+    ntb: usize,
+    worker: usize,
+    nworker: usize,
 ) {
     if ABSOLUTE_POS >= nentry {
-        return;
+        terminate!();
     }
-    let bbar = target_entry_b[ABSOLUTE_POS];
+    let bbar = usize::cast_from(target_entry_b[ABSOLUTE_POS]);
     if bbar % nworker != worker {
-        return;
+        terminate!();
     }
-    let abar = target_entry_a[ABSOLUTE_POS];
+    let abar = usize::cast_from(target_entry_a[ABSOLUTE_POS]);
     let mut value = 0.0;
-    for a in 0u32..nsa {
+    for a in 0usize..nsa {
         value += sa[abar * nsa + a] * uf[a * ntb + bbar]
             + (fa[abar * nsa + a] + lambda * sa[abar * nsa + a]) * us[a * ntb + bbar];
     }
-    y[target_entry_det[ABSOLUTE_POS]] += value;
+    let det = usize::cast_from(target_entry_det[ABSOLUTE_POS]);
+    y[det] += value;
 }

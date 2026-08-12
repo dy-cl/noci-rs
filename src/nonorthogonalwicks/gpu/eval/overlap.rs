@@ -23,17 +23,20 @@ pub(crate) fn xw_overlap(
     det0: &Array<f64>,
     det1: &Array<f64>,
     work: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
-    if w.m > l {
-        0.0
+    let m = usize::cast_from(w.m);
+    let mut value: f64 = 0.0;
+    if m > l {
+        value = 0.0;
     } else if w.m == 0u32 {
-        xw_overlap_m0(w, det0, l)
-    } else if w.m == l {
-        xw_overlap_ml(w, det1, l)
+        value = xw_overlap_m0(w, det0, l);
+    } else if m == l {
+        value = xw_overlap_ml(w, det1, l);
     } else {
-        xw_overlap_gen(w, det0, det1, work, l)
+        value = xw_overlap_gen(w, det0, det1, work, l);
     }
+    value
 }
 
 /// Evaluate a same-spin overlap when `m = 0`.
@@ -47,21 +50,21 @@ pub(crate) fn xw_overlap(
 pub(crate) fn xw_overlap_m0(
     w: &GpuSameSpinView,
     det0: &Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
-    if comptime!(l == 0u32) {
+    if comptime!(l == 0usize) {
         prefactor(w)
-    } else if comptime!(l == 1u32) {
+    } else if comptime!(l == 1usize) {
         xw_overlap_m0_l1(w, det0)
-    } else if comptime!(l == 2u32) {
+    } else if comptime!(l == 2usize) {
         xw_overlap_m0_l2(w, det0)
-    } else if comptime!(l == 3u32) {
+    } else if comptime!(l == 3usize) {
         xw_overlap_m0_l3(w, det0)
-    } else if comptime!(l == 4u32) {
+    } else if comptime!(l == 4usize) {
         xw_overlap_m0_l4(w, det0)
-    } else if comptime!(l == 5u32) {
+    } else if comptime!(l == 5usize) {
         xw_overlap_m0_l5(w, det0)
-    } else if comptime!(l == 6u32) {
+    } else if comptime!(l == 6usize) {
         xw_overlap_m0_l6(w, det0)
     } else {
         prefactor(w) * det_or_zero(det0, l)
@@ -135,7 +138,7 @@ pub(crate) fn xw_overlap_m0_l5(
     w: &GpuSameSpinView,
     det0: &Array<f64>,
 ) -> f64 {
-    prefactor(w) * det_or_zero(det0, 5u32)
+    prefactor(w) * det_or_zero(det0, 5usize)
 }
 
 /// `Evaluate {}^{xw}\tilde S det D(0,\ldots,0)` for rank six.
@@ -149,7 +152,7 @@ pub(crate) fn xw_overlap_m0_l6(
     w: &GpuSameSpinView,
     det0: &Array<f64>,
 ) -> f64 {
-    prefactor(w) * det_or_zero(det0, 6u32)
+    prefactor(w) * det_or_zero(det0, 6usize)
 }
 
 /// Evaluate a same-spin overlap when `m = L`.
@@ -163,15 +166,15 @@ pub(crate) fn xw_overlap_m0_l6(
 pub(crate) fn xw_overlap_ml(
     w: &GpuSameSpinView,
     det1: &Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
-    if comptime!(l == 0u32) {
+    if comptime!(l == 0usize) {
         prefactor(w)
-    } else if comptime!(l == 1u32) {
+    } else if comptime!(l == 1usize) {
         xw_overlap_ml_l1(w, det1)
-    } else if comptime!(l == 2u32) {
+    } else if comptime!(l == 2usize) {
         xw_overlap_ml_l2(w, det1)
-    } else if comptime!(l == 3u32) {
+    } else if comptime!(l == 3usize) {
         xw_overlap_ml_l3(w, det1)
     } else {
         prefactor(w) * det_or_zero(det1, l)
@@ -235,7 +238,7 @@ pub(crate) fn xw_overlap_gen(
     det0: &Array<f64>,
     det1: &Array<f64>,
     work: &mut Array<f64>,
-    #[comptime] l: u32,
+    #[comptime] l: usize,
 ) -> f64 {
     let mut acc = 0.0;
     let limit = 1u32 << l;
@@ -262,12 +265,12 @@ pub(crate) fn mix_dets_same(
     det0: &Array<f64>,
     det1: &Array<f64>,
     out: &mut Array<f64>,
-    l: u32,
+    l: usize,
     bits: u32,
 ) {
-    for c in 0u32..l {
-        let source_one = bit(bits, c) == 1u32;
-        for r in 0u32..l {
+    for c in 0usize..l {
+        let source_one = bit(bits, c) == 1usize;
+        for r in 0usize..l {
             let i = r * l + c;
             out[i] = if source_one { det1[i] } else { det0[i] };
         }
