@@ -15,7 +15,7 @@ use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
 // Parent/sibling imports.
 use super::super::super::SpinFactorisation;
 use super::super::super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
-use super::super::plan::OneBodyContraction;
+use super::super::plan::{OneBodyContraction, PANEL_ROWS};
 
 /// Cached spin-factorised tables and dimensions for one ordered source-target parent pair `QP`.
 pub(super) struct FactorisedOneBodyBlock<T: NOCIScalar> {
@@ -100,8 +100,8 @@ pub(super) fn build_one_body_factor_tables<T: NOCIScalar>(
         .expect("beta one-body factor length overflow");
     let mut factors = storage_plan.allocate::<T>(target_parent, source_parent, na, nb);
 
-    for row0 in (0..nta).step_by(512) {
-        let row1 = (row0 + 512).min(nta);
+    for row0 in (0..nta).step_by(PANEL_ROWS) {
+        let row1 = (row0 + PANEL_ROWS).min(nta);
         let out = factors.alpha_mut();
         build_spin_one_body_factors(
             &pair,
@@ -115,8 +115,8 @@ pub(super) fn build_one_body_factor_tables<T: NOCIScalar>(
     }
     factors.flush();
 
-    for row0 in (0..ntb).step_by(512) {
-        let row1 = (row0 + 512).min(ntb);
+    for row0 in (0..ntb).step_by(PANEL_ROWS) {
+        let row1 = (row0 + PANEL_ROWS).min(ntb);
         let out = factors.beta_mut();
         build_spin_one_body_factors(
             &pair,

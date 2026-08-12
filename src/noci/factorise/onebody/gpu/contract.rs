@@ -135,8 +135,10 @@ pub(crate) fn launch_a_first_final(
             args.entry_base,
             args.nentry,
             args.nsb,
-            args.target_component_base,
-            args.target_component_end,
+            args.target_alpha_component_base,
+            args.target_alpha_component_end,
+            args.target_beta_component_base,
+            args.target_beta_component_end,
             args.worker,
             args.nworker,
         );
@@ -239,8 +241,10 @@ pub(crate) fn launch_b_first_final(
             args.nentry,
             args.nsa,
             args.nrow,
-            args.target_component_base,
-            args.target_component_end,
+            args.target_alpha_component_base,
+            args.target_alpha_component_end,
+            args.target_beta_component_base,
+            args.target_beta_component_end,
             args.worker,
             args.nworker,
         );
@@ -266,7 +270,7 @@ pub(crate) struct AFirstStageLaunch {
     pub(crate) nworker: usize,
 }
 
-/// Alpha-first final launch dimensions.
+/// Alpha-first final contraction dimensions.
 #[derive(Clone, Copy)]
 pub(crate) struct AFirstFinalLaunch {
     /// Target-parent entry base.
@@ -275,10 +279,14 @@ pub(crate) struct AFirstFinalLaunch {
     pub(crate) nentry: usize,
     /// Source beta component count.
     pub(crate) nsb: usize,
-    /// First target alpha component represented by panel row zero.
-    pub(crate) target_component_base: usize,
-    /// One-past-last target alpha component represented in the panel.
-    pub(crate) target_component_end: usize,
+    /// First target alpha component represented by the alpha panel.
+    pub(crate) target_alpha_component_base: usize,
+    /// One-past-last target alpha component represented by the alpha panel.
+    pub(crate) target_alpha_component_end: usize,
+    /// First target beta component represented by the beta panel.
+    pub(crate) target_beta_component_base: usize,
+    /// One-past-last target beta component represented by the beta panel.
+    pub(crate) target_beta_component_end: usize,
     /// Overlap shift.
     pub(crate) lambda: f64,
     /// MPI worker id.
@@ -306,7 +314,7 @@ pub(crate) struct BFirstStageLaunch {
     pub(crate) nworker: usize,
 }
 
-/// Beta-first final launch dimensions.
+/// Beta-first final contraction dimensions.
 #[derive(Clone, Copy)]
 pub(crate) struct BFirstFinalLaunch {
     /// Target-parent entry base.
@@ -315,12 +323,16 @@ pub(crate) struct BFirstFinalLaunch {
     pub(crate) nentry: usize,
     /// Source alpha component count.
     pub(crate) nsa: usize,
-    /// Beta panel row count.
+    /// Beta intermediate-panel row count.
     pub(crate) nrow: usize,
-    /// First target beta component represented by panel row zero.
-    pub(crate) target_component_base: usize,
-    /// One-past-last target beta component represented in the panel.
-    pub(crate) target_component_end: usize,
+    /// First target alpha component represented by the alpha panel.
+    pub(crate) target_alpha_component_base: usize,
+    /// One-past-last target alpha component represented by the alpha panel.
+    pub(crate) target_alpha_component_end: usize,
+    /// First target beta component represented by the beta panel.
+    pub(crate) target_beta_component_base: usize,
+    /// One-past-last target beta component represented by the beta panel.
+    pub(crate) target_beta_component_end: usize,
     /// Overlap shift.
     pub(crate) lambda: f64,
     /// MPI worker id.
@@ -426,28 +438,30 @@ pub(crate) fn a_first_stage_kernel(
     ts[ABSOLUTE_POS] = vs;
 }
 
-/// Alpha-first final kernel:
-/// `Y_{\bar a,\bar b}=\sum_b[T^F_{\bar a,b}S^\beta_{\bar b,b}
-/// +T^S_{\bar a,b}(F^\beta_{\bar b,b}+\lambda S^\beta_{\bar b,b})]`.
+/// Alpha-first final contraction for one alpha-beta target panel:
+/// `Y_{\bar a\bar b} += \sum_b [T^F_{\bar a b}S^\beta_{\bar b b}
+/// + T^S_{\bar a b}(F^\beta_{\bar b b}+\lambda S^\beta_{\bar b b})]`.
 /// # Arguments:
-/// - `sb`: Row-major beta overlap factors.
-/// - `fb`: Row-major beta Fock factors.
+/// - `sb`: Row-major beta overlap factor panel.
+/// - `fb`: Row-major beta Fock factor panel.
 /// - `target_entry_det`: Target determinant IDs.
 /// - `target_entry_a`: Target alpha components.
 /// - `target_entry_b`: Target beta components.
-/// - `tf`: First-stage Fock table.
-/// - `ts`: First-stage overlap table.
+/// - `tf`: Alpha-first Fock intermediate panel.
+/// - `ts`: Alpha-first overlap intermediate panel.
 /// - `y`: Output determinant vector.
 /// - `lambda`: Overlap shift.
 /// - `entry_base`: Target-parent entry base.
-/// - `nentry`: Number of target entries.
+/// - `nentry`: Number of target-parent entries.
 /// - `nsb`: Source beta component count.
-/// - `target_component_base`: First target alpha component in the panel.
-/// - `target_component_end`: One-past-last target alpha component in the panel.
+/// - `target_alpha_component_base`: First target alpha component in the alpha panel.
+/// - `target_alpha_component_end`: One-past-last target alpha component in the alpha panel.
+/// - `target_beta_component_base`: First target beta component in the beta panel.
+/// - `target_beta_component_end`: One-past-last target beta component in the beta panel.
 /// - `worker`: MPI worker id.
 /// - `nworker`: MPI worker count.
 /// # Returns
-/// - `()`: Accumulates final target determinant values.
+/// - `()`: Accumulates this two-dimensional target panel into `y`.
 #[cube(launch_unchecked)]
 pub(crate) fn a_first_final_kernel(
     sb: &Array<f64>,
@@ -462,31 +476,38 @@ pub(crate) fn a_first_final_kernel(
     entry_base: usize,
     nentry: usize,
     nsb: usize,
-    target_component_base: usize,
-    target_component_end: usize,
+    target_alpha_component_base: usize,
+    target_alpha_component_end: usize,
+    target_beta_component_base: usize,
+    target_beta_component_end: usize,
     worker: usize,
     nworker: usize,
 ) {
-    if ABSOLUTE_POS >= nentry {
-        terminate!();
+    if ABSOLUTE_POS < nentry {
+        let entry = entry_base + ABSOLUTE_POS;
+        let abar = usize::cast_from(target_entry_a[entry]);
+        let bbar = usize::cast_from(target_entry_b[entry]);
+
+        if abar >= target_alpha_component_base
+            && abar < target_alpha_component_end
+            && bbar >= target_beta_component_base
+            && bbar < target_beta_component_end
+            && abar % nworker == worker
+        {
+            let arow = abar - target_alpha_component_base;
+            let brow = bbar - target_beta_component_base;
+            let mut value = 0.0;
+
+            for b in 0usize..nsb {
+                let beta = brow * nsb + b;
+                value += tf[arow * nsb + b] * sb[beta]
+                    + ts[arow * nsb + b] * (fb[beta] + lambda * sb[beta]);
+            }
+
+            let det = usize::cast_from(target_entry_det[entry]);
+            y[det] = y[det] + value;
+        }
     }
-    let entry = entry_base + ABSOLUTE_POS;
-    let abar = usize::cast_from(target_entry_a[entry]);
-    if abar < target_component_base || abar >= target_component_end {
-        terminate!();
-    }
-    if abar % nworker != worker {
-        terminate!();
-    }
-    let row = abar - target_component_base;
-    let bbar = usize::cast_from(target_entry_b[entry]);
-    let mut value = 0.0;
-    for b in 0usize..nsb {
-        value += tf[row * nsb + b] * sb[bbar * nsb + b]
-            + ts[row * nsb + b] * (fb[bbar * nsb + b] + lambda * sb[bbar * nsb + b]);
-    }
-    let det = usize::cast_from(target_entry_det[entry]);
-    y[det] = y[det] + value;
 }
 
 /// Beta-first stage kernel:
@@ -552,29 +573,31 @@ pub(crate) fn b_first_stage_kernel(
     us[ABSOLUTE_POS] = vs;
 }
 
-/// Beta-first final kernel:
-/// `Y_{\bar a,\bar b}=\sum_a[S^\alpha_{\bar a,a}U^F_{a,\bar b}
-/// +(F^\alpha_{\bar a,a}+\lambda S^\alpha_{\bar a,a})U^S_{a,\bar b}]`.
+/// Beta-first final contraction for one alpha-beta target panel:
+/// `Y_{\bar a\bar b} += \sum_a [S^\alpha_{\bar a a}U^F_{a\bar b}
+/// + (F^\alpha_{\bar a a}+\lambda S^\alpha_{\bar a a})U^S_{a\bar b}]`.
 /// # Arguments:
-/// - `sa`: Row-major alpha overlap factors.
-/// - `fa`: Row-major alpha Fock factors.
+/// - `sa`: Row-major alpha overlap factor panel.
+/// - `fa`: Row-major alpha Fock factor panel.
 /// - `target_entry_det`: Target determinant IDs.
 /// - `target_entry_a`: Target alpha components.
 /// - `target_entry_b`: Target beta components.
-/// - `uf`: First-stage Fock table.
-/// - `us`: First-stage overlap table.
+/// - `uf`: Beta-first Fock intermediate panel.
+/// - `us`: Beta-first overlap intermediate panel.
 /// - `y`: Output determinant vector.
 /// - `lambda`: Overlap shift.
 /// - `entry_base`: Target-parent entry base.
-/// - `nentry`: Number of target entries.
+/// - `nentry`: Number of target-parent entries.
 /// - `nsa`: Source alpha component count.
 /// - `nrow`: Target beta panel row count.
-/// - `target_component_base`: First target beta component in the panel.
-/// - `target_component_end`: One-past-last target beta component in the panel.
+/// - `target_alpha_component_base`: First target alpha component in the alpha panel.
+/// - `target_alpha_component_end`: One-past-last target alpha component in the alpha panel.
+/// - `target_beta_component_base`: First target beta component in the beta panel.
+/// - `target_beta_component_end`: One-past-last target beta component in the beta panel.
 /// - `worker`: MPI worker id.
 /// - `nworker`: MPI worker count.
 /// # Returns
-/// - `()`: Accumulates final target determinant values.
+/// - `()`: Accumulates this two-dimensional target panel into `y`.
 #[cube(launch_unchecked)]
 pub(crate) fn b_first_final_kernel(
     sa: &Array<f64>,
@@ -590,29 +613,37 @@ pub(crate) fn b_first_final_kernel(
     nentry: usize,
     nsa: usize,
     nrow: usize,
-    target_component_base: usize,
-    target_component_end: usize,
+    target_alpha_component_base: usize,
+    target_alpha_component_end: usize,
+    target_beta_component_base: usize,
+    target_beta_component_end: usize,
     worker: usize,
     nworker: usize,
 ) {
-    if ABSOLUTE_POS >= nentry {
-        terminate!();
+    if ABSOLUTE_POS < nentry {
+        let entry = entry_base + ABSOLUTE_POS;
+        let abar = usize::cast_from(target_entry_a[entry]);
+        let bbar = usize::cast_from(target_entry_b[entry]);
+
+        if abar >= target_alpha_component_base
+            && abar < target_alpha_component_end
+            && bbar >= target_beta_component_base
+            && bbar < target_beta_component_end
+            && bbar % nworker == worker
+        {
+            let arow = abar - target_alpha_component_base;
+            let brow = bbar - target_beta_component_base;
+            let mut value = 0.0;
+
+            for a in 0usize..nsa {
+                let alpha = arow * nsa + a;
+                let intermediate = a * nrow + brow;
+                value += sa[alpha] * uf[intermediate]
+                    + (fa[alpha] + lambda * sa[alpha]) * us[intermediate];
+            }
+
+            let det = usize::cast_from(target_entry_det[entry]);
+            y[det] = y[det] + value;
+        }
     }
-    let entry = entry_base + ABSOLUTE_POS;
-    let bbar = usize::cast_from(target_entry_b[entry]);
-    if bbar < target_component_base || bbar >= target_component_end {
-        terminate!();
-    }
-    if bbar % nworker != worker {
-        terminate!();
-    }
-    let row = bbar - target_component_base;
-    let abar = usize::cast_from(target_entry_a[entry]);
-    let mut value = 0.0;
-    for a in 0usize..nsa {
-        value += sa[abar * nsa + a] * uf[a * nrow + row]
-            + (fa[abar * nsa + a] + lambda * sa[abar * nsa + a]) * us[a * nrow + row];
-    }
-    let det = usize::cast_from(target_entry_det[entry]);
-    y[det] = y[det] + value;
 }

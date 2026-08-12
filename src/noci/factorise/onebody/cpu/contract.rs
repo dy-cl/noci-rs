@@ -9,7 +9,7 @@ use crate::noci::types::NOCIScalar;
 
 // Parent/sibling imports.
 use super::super::super::SpinFactorisation;
-use super::super::plan::OneBodyContraction;
+use super::super::plan::{OneBodyContraction, PANEL_ROWS};
 use super::factors::FactorisedOneBodyBlock;
 
 /// Reusable dense one-body contraction buffers.
@@ -88,8 +88,8 @@ pub(super) fn apply_one_body_a_first<T: NOCIScalar>(
     let (worker, nworker) = partition;
     let (sa, fa, sb, fb) = block.factors.factors();
 
-    for a0 in (0..block.nta).step_by(512) {
-        let a1 = (a0 + 512).min(block.nta);
+    for a0 in (0..block.nta).step_by(PANEL_ROWS) {
+        let a1 = (a0 + PANEL_ROWS).min(block.nta);
         let nrow = a1 - a0;
 
         scratch.first_f.clear();
@@ -168,8 +168,8 @@ pub(super) fn apply_one_body_b_first<T: NOCIScalar>(
     let (worker, nworker) = partition;
     let (sa, fa, sb, fb) = block.factors.factors();
 
-    for b0 in (0..block.ntb).step_by(512) {
-        let b1 = (b0 + 512).min(block.ntb);
+    for b0 in (0..block.ntb).step_by(PANEL_ROWS) {
+        let b1 = (b0 + PANEL_ROWS).min(block.ntb);
         let nrow = b1 - b0;
 
         scratch.first_f.clear();

@@ -19,7 +19,7 @@ use crate::nonorthogonalwicks::{WicksRequirements, gpu};
 // Parent/sibling imports.
 use super::super::super::{SpinFactorisation, ordered_parent_pair};
 use super::super::plan::{
-    OneBodyBlockPlan, OneBodyContraction, OneBodyPlan, select_one_body_contraction,
+    OneBodyBlockPlan, OneBodyContraction, OneBodyPlan, PANEL_ROWS, select_one_body_contraction,
 };
 use super::contract::{
     AFirstFinalLaunch, AFirstStageLaunch, BFirstFinalLaunch, BFirstStageLaunch,
@@ -32,9 +32,6 @@ use super::factors::{FactorOutput, FactorRequest, build_spin_one_body_factors};
 use super::orthogonal::{
     GpuOrthogonalBlocks, launch_apply_orthogonal_block, launch_fill_orthogonal_diagonal,
 };
-
-/// Target component panel width, matching the CPU transient contraction path initially.
-const PANEL_ROWS: usize = 512;
 
 /// CubeCL factorised one-body backend for the current generalised Fock.
 pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
@@ -307,8 +304,11 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         }
     }
 
-    /// Apply one alpha-first GPU parent-pair block.
+    /// Apply alpha-first contraction
+    /// `Y^Q += F^alpha D (S^beta)^T + S^alpha D (F^beta + \lambda S^beta)^T`.
+    /// Both target-spin dimensions are panelled so no full dense factor table is materialised.
     /// # Arguments:
+    /// - `self`: GPU one-body backend.
     /// - `block`: Parent-pair block descriptor.
     /// - `lambda`: Overlap shift.
     /// - `partition`: Worker id and worker count.
@@ -320,27 +320,42 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         lambda: f64,
         partition: (usize, usize),
     ) {
-        let beta_len = checked_mul(block.ntb, block.nsb, "GPU beta factor length");
-        self.scratch.ensure_factor(&self.context, beta_len);
-        self.build_factors(&block, false, 0, block.ntb, block.nsb, FactorSlot::Full);
         for a0 in (0..block.nta).step_by(PANEL_ROWS) {
             let a1 = (a0 + PANEL_ROWS).min(block.nta);
-            let nrow = a1 - a0;
-            self.scratch.ensure_panel(
+            let na = a1 - a0;
+
+            self.scratch.ensure_alpha_factors(
                 &self.context,
-                checked_mul(nrow, block.nsa, "GPU alpha panel factor length"),
+                checked_mul(na, block.nsa, "GPU alpha panel factor length"),
             );
             self.scratch.ensure_first(
                 &self.context,
-                checked_mul(nrow, block.nsb, "GPU alpha-first intermediate length"),
+                checked_mul(na, block.nsb, "GPU alpha-first intermediate length"),
             );
-            self.build_factors(&block, true, a0, a1, block.nsa, FactorSlot::Panel);
-            self.launch_a_first_panel(&block, lambda, partition, a0, a1);
+
+            self.build_factors(&block, true, a0, a1, block.nsa);
+            self.launch_a_first_stage_panel(&block, partition, a0, a1);
+
+            for b0 in (0..block.ntb).step_by(PANEL_ROWS) {
+                let b1 = (b0 + PANEL_ROWS).min(block.ntb);
+                let nb = b1 - b0;
+
+                self.scratch.ensure_beta_factors(
+                    &self.context,
+                    checked_mul(nb, block.nsb, "GPU beta panel factor length"),
+                );
+
+                self.build_factors(&block, false, b0, b1, block.nsb);
+                self.launch_a_first_final_panel(&block, lambda, partition, a0, a1, b0, b1);
+            }
         }
     }
 
-    /// Apply one beta-first GPU parent-pair block.
+    /// Apply beta-first contraction
+    /// `Y^Q += S^alpha D (F^beta)^T + (F^alpha + \lambda S^alpha)D(S^beta)^T`.
+    /// Both target-spin dimensions are panelled so no full dense factor table is materialised.
     /// # Arguments:
+    /// - `self`: GPU one-body backend.
     /// - `block`: Parent-pair block descriptor.
     /// - `lambda`: Overlap shift.
     /// - `partition`: Worker id and worker count.
@@ -352,35 +367,47 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         lambda: f64,
         partition: (usize, usize),
     ) {
-        let alpha_len = checked_mul(block.nta, block.nsa, "GPU alpha factor length");
-        self.scratch.ensure_factor(&self.context, alpha_len);
-        self.build_factors(&block, true, 0, block.nta, block.nsa, FactorSlot::Full);
         for b0 in (0..block.ntb).step_by(PANEL_ROWS) {
             let b1 = (b0 + PANEL_ROWS).min(block.ntb);
-            let nrow = b1 - b0;
-            self.scratch.ensure_panel(
+            let nb = b1 - b0;
+
+            self.scratch.ensure_beta_factors(
                 &self.context,
-                checked_mul(nrow, block.nsb, "GPU beta panel factor length"),
+                checked_mul(nb, block.nsb, "GPU beta panel factor length"),
             );
             self.scratch.ensure_first(
                 &self.context,
-                checked_mul(nrow, block.nsa, "GPU beta-first intermediate length"),
+                checked_mul(nb, block.nsa, "GPU beta-first intermediate length"),
             );
-            self.build_factors(&block, false, b0, b1, block.nsb, FactorSlot::Panel);
-            self.launch_b_first_panel(&block, lambda, partition, b0, b1);
+
+            self.build_factors(&block, false, b0, b1, block.nsb);
+            self.launch_b_first_stage_panel(&block, partition, b0, b1);
+
+            for a0 in (0..block.nta).step_by(PANEL_ROWS) {
+                let a1 = (a0 + PANEL_ROWS).min(block.nta);
+                let na = a1 - a0;
+
+                self.scratch.ensure_alpha_factors(
+                    &self.context,
+                    checked_mul(na, block.nsa, "GPU alpha panel factor length"),
+                );
+
+                self.build_factors(&block, true, a0, a1, block.nsa);
+                self.launch_b_first_final_panel(&block, lambda, partition, a0, a1, b0, b1);
+            }
         }
     }
 
-    /// Build one spin factor table or panel into a selected scratch slot.
+    /// Build one same-spin target factor panel.
     /// # Arguments:
+    /// - `self`: GPU one-body backend.
     /// - `block`: Parent-pair block descriptor.
     /// - `alpha`: Whether to build alpha or beta factors.
-    /// - `row0`: First target component represented by row zero.
+    /// - `row0`: First target component represented by panel row zero.
     /// - `row1`: One-past-last target component.
     /// - `nsource`: Full source component count for this spin.
-    /// - `slot`: Scratch factor slot.
     /// # Returns
-    /// - `()`: Writes factors on device.
+    /// - `()`: Writes the selected spin factor panel on the device.
     fn build_factors(
         &self,
         block: &GpuFactorisedBlock,
@@ -388,9 +415,13 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         row0: usize,
         row1: usize,
         nsource: usize,
-        slot: FactorSlot,
     ) {
-        let (s, f) = self.scratch.factor_slot(slot);
+        let (s, f) = if alpha {
+            self.scratch.alpha_factors()
+        } else {
+            self.scratch.beta_factors()
+        };
+
         build_spin_one_body_factors(
             &self.context,
             &self.device_wicks,
@@ -417,29 +448,31 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         );
     }
 
-    /// Launch alpha-first stage and final kernels for one alpha panel.
+    /// Form one alpha-first intermediate panel
+    /// `T^F_{\bar a b} = \sum_a F^\alpha_{\bar a a}D_{ab}` and
+    /// `T^S_{\bar a b} = \sum_a S^\alpha_{\bar a a}D_{ab}`.
     /// # Arguments:
+    /// - `self`: GPU one-body backend.
     /// - `block`: Parent-pair block descriptor.
-    /// - `lambda`: Overlap shift.
     /// - `partition`: Worker id and worker count.
-    /// - `a0`: First target alpha component in the panel.
-    /// - `a1`: One-past-last target alpha component in the panel.
+    /// - `a0`: First target alpha component.
+    /// - `a1`: One-past-last target alpha component.
     /// # Returns
-    /// - `()`: Accumulates the panel into device `y`.
-    fn launch_a_first_panel(
+    /// - `()`: Writes the alpha-first intermediate panel.
+    fn launch_a_first_stage_panel(
         &self,
         block: &GpuFactorisedBlock,
-        lambda: f64,
         partition: (usize, usize),
         a0: usize,
         a1: usize,
     ) {
         let (worker, nworker) = partition;
-        let (sa, fa) = self.scratch.panel_factors();
-        let (sb, fb) = self.scratch.full_factors();
+        let (sa, fa) = self.scratch.alpha_factors();
         let (tf, ts) = self.scratch.first_buffers();
+
         launch_zero_f64(&self.context, tf, (a1 - a0) * block.nsb);
         launch_zero_f64(&self.context, ts, (a1 - a0) * block.nsb);
+
         launch_a_first_stage(
             &self.context,
             &self.device_data,
@@ -458,8 +491,36 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                 nworker,
             },
         );
+    }
+
+    /// Contract one alpha-first intermediate panel with one beta factor panel.
+    /// # Arguments:
+    /// - `self`: GPU one-body backend.
+    /// - `block`: Parent-pair block descriptor.
+    /// - `lambda`: Overlap shift.
+    /// - `partition`: Worker id and worker count.
+    /// - `a0`: First target alpha component.
+    /// - `a1`: One-past-last target alpha component.
+    /// - `b0`: First target beta component.
+    /// - `b1`: One-past-last target beta component.
+    /// # Returns
+    /// - `()`: Accumulates this two-dimensional target panel into device `y`.
+    fn launch_a_first_final_panel(
+        &self,
+        block: &GpuFactorisedBlock,
+        lambda: f64,
+        partition: (usize, usize),
+        a0: usize,
+        a1: usize,
+        b0: usize,
+        b1: usize,
+    ) {
+        let (worker, nworker) = partition;
+        let (sb, fb) = self.scratch.beta_factors();
+        let (tf, ts) = self.scratch.first_buffers();
         let entry_base = self.data.parent_entry_offsets[block.target_parent];
         let entry_end = self.data.parent_entry_offsets[block.target_parent + 1];
+
         launch_a_first_final(
             &self.context,
             &self.device_data,
@@ -472,8 +533,10 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                 entry_base,
                 nentry: entry_end - entry_base,
                 nsb: block.nsb,
-                target_component_base: a0,
-                target_component_end: a1,
+                target_alpha_component_base: a0,
+                target_alpha_component_end: a1,
+                target_beta_component_base: b0,
+                target_beta_component_end: b1,
                 lambda,
                 worker,
                 nworker,
@@ -481,29 +544,31 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         );
     }
 
-    /// Launch beta-first stage and final kernels for one beta panel.
+    /// Form one beta-first intermediate panel
+    /// `U^F_{a\bar b} = \sum_b D_{ab}F^\beta_{\bar b b}` and
+    /// `U^S_{a\bar b} = \sum_b D_{ab}S^\beta_{\bar b b}`.
     /// # Arguments:
+    /// - `self`: GPU one-body backend.
     /// - `block`: Parent-pair block descriptor.
-    /// - `lambda`: Overlap shift.
     /// - `partition`: Worker id and worker count.
-    /// - `b0`: First target beta component in the panel.
-    /// - `b1`: One-past-last target beta component in the panel.
+    /// - `b0`: First target beta component.
+    /// - `b1`: One-past-last target beta component.
     /// # Returns
-    /// - `()`: Accumulates the panel into device `y`.
-    fn launch_b_first_panel(
+    /// - `()`: Writes the beta-first intermediate panel.
+    fn launch_b_first_stage_panel(
         &self,
         block: &GpuFactorisedBlock,
-        lambda: f64,
         partition: (usize, usize),
         b0: usize,
         b1: usize,
     ) {
         let (worker, nworker) = partition;
-        let (sa, fa) = self.scratch.full_factors();
-        let (sb, fb) = self.scratch.panel_factors();
+        let (sb, fb) = self.scratch.beta_factors();
         let (uf, us) = self.scratch.first_buffers();
+
         launch_zero_f64(&self.context, uf, (b1 - b0) * block.nsa);
         launch_zero_f64(&self.context, us, (b1 - b0) * block.nsa);
+
         launch_b_first_stage(
             &self.context,
             &self.device_data,
@@ -522,8 +587,36 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                 nworker,
             },
         );
+    }
+
+    /// Contract one beta-first intermediate panel with one alpha factor panel.
+    /// # Arguments:
+    /// - `self`: GPU one-body backend.
+    /// - `block`: Parent-pair block descriptor.
+    /// - `lambda`: Overlap shift.
+    /// - `partition`: Worker id and worker count.
+    /// - `a0`: First target alpha component.
+    /// - `a1`: One-past-last target alpha component.
+    /// - `b0`: First target beta component.
+    /// - `b1`: One-past-last target beta component.
+    /// # Returns
+    /// - `()`: Accumulates this two-dimensional target panel into device `y`.
+    fn launch_b_first_final_panel(
+        &self,
+        block: &GpuFactorisedBlock,
+        lambda: f64,
+        partition: (usize, usize),
+        a0: usize,
+        a1: usize,
+        b0: usize,
+        b1: usize,
+    ) {
+        let (worker, nworker) = partition;
+        let (sa, fa) = self.scratch.alpha_factors();
+        let (uf, us) = self.scratch.first_buffers();
         let entry_base = self.data.parent_entry_offsets[block.target_parent];
         let entry_end = self.data.parent_entry_offsets[block.target_parent + 1];
+
         launch_b_first_final(
             &self.context,
             &self.device_data,
@@ -537,8 +630,10 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                 nentry: entry_end - entry_base,
                 nsa: block.nsa,
                 nrow: b1 - b0,
-                target_component_base: b0,
-                target_component_end: b1,
+                target_alpha_component_base: a0,
+                target_alpha_component_end: a1,
+                target_beta_component_base: b0,
+                target_beta_component_end: b1,
                 lambda,
                 worker,
                 nworker,
@@ -572,18 +667,22 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             nsb: ntb,
             contraction: OneBodyContraction::AFirst,
         };
-        self.scratch.ensure_factor(
+
+        self.scratch.ensure_alpha_factors(
             &self.context,
             checked_mul(nta, nta, "GPU alpha diagonal factors"),
         );
-        self.build_factors(&block, true, 0, nta, nta, FactorSlot::Full);
-        self.scratch.ensure_panel(
+        self.build_factors(&block, true, 0, nta, nta);
+
+        self.scratch.ensure_beta_factors(
             &self.context,
             checked_mul(ntb, ntb, "GPU beta diagonal factors"),
         );
-        self.build_factors(&block, false, 0, ntb, ntb, FactorSlot::Panel);
-        let (sa, fa) = self.scratch.full_factors();
-        let (sb, fb) = self.scratch.panel_factors();
+        self.build_factors(&block, false, 0, ntb, ntb);
+
+        let (sa, fa) = self.scratch.alpha_factors();
+        let (sb, fb) = self.scratch.beta_factors();
+
         let entry_base = self.data.parent_entry_offsets[parent];
         let entry_end = self.data.parent_entry_offsets[parent + 1];
         launch_fill_one_body_diagonal_block(
@@ -637,26 +736,17 @@ struct GpuFactorisedBlock {
     contraction: OneBodyContraction,
 }
 
-/// Scratch factor slot.
-#[derive(Clone, Copy)]
-enum FactorSlot {
-    /// Full opposite-spin factor table.
-    Full,
-    /// Target-spin panel factor table.
-    Panel,
-}
-
 /// Reusable GPU one-body buffers.
 #[derive(Default)]
 struct GpuOneBodyScratch {
-    /// Full same-spin overlap factor table.
-    factor_s: Option<GpuBuffer<f64>>,
-    /// Full same-spin Fock factor table.
-    factor_f: Option<GpuBuffer<f64>>,
-    /// Target panel overlap factor table.
-    panel_s: Option<GpuBuffer<f64>>,
-    /// Target panel Fock factor table.
-    panel_f: Option<GpuBuffer<f64>>,
+    /// Alpha target-panel overlap factors.
+    alpha_s: Option<GpuBuffer<f64>>,
+    /// Alpha target-panel Fock factors.
+    alpha_f: Option<GpuBuffer<f64>>,
+    /// Beta target-panel overlap factors.
+    beta_s: Option<GpuBuffer<f64>>,
+    /// Beta target-panel Fock factors.
+    beta_f: Option<GpuBuffer<f64>>,
     /// First-stage Fock intermediate.
     first_f: Option<GpuBuffer<f64>>,
     /// First-stage overlap intermediate.
@@ -672,38 +762,6 @@ struct GpuOneBodyScratch {
 }
 
 impl GpuOneBodyScratch {
-    /// Ensure full factor buffers can hold `len` entries.
-    /// # Arguments:
-    /// - `self`: Reusable scratch buffers.
-    /// - `context`: CubeCL context used for any allocation.
-    /// - `len`: Required logical factor length.
-    /// # Returns
-    /// - `()`: Allocates larger buffers only when current capacity is insufficient.
-    fn ensure_factor(
-        &mut self,
-        context: &GpuContext,
-        len: usize,
-    ) {
-        ensure_buffer(context, &mut self.factor_s, len);
-        ensure_buffer(context, &mut self.factor_f, len);
-    }
-
-    /// Ensure panel factor buffers can hold `len` entries.
-    /// # Arguments:
-    /// - `self`: Reusable scratch buffers.
-    /// - `context`: CubeCL context used for any allocation.
-    /// - `len`: Required logical panel factor length.
-    /// # Returns
-    /// - `()`: Allocates larger buffers only when current capacity is insufficient.
-    fn ensure_panel(
-        &mut self,
-        context: &GpuContext,
-        len: usize,
-    ) {
-        ensure_buffer(context, &mut self.panel_s, len);
-        ensure_buffer(context, &mut self.panel_f, len);
-    }
-
     /// Ensure first-stage buffers can hold `len` entries.
     /// # Arguments:
     /// - `self`: Reusable scratch buffers.
@@ -765,30 +823,6 @@ impl GpuOneBodyScratch {
         ensure_buffer(context, &mut self.s_diag, len);
     }
 
-    /// Borrow full factor buffers.
-    /// # Arguments:
-    /// - `self`: Reusable scratch buffers with full factor slots initialised.
-    /// # Returns
-    /// - `(&GpuBuffer<f64>, &GpuBuffer<f64>)`: Overlap and Fock factor buffers.
-    fn full_factors(&self) -> (&GpuBuffer<f64>, &GpuBuffer<f64>) {
-        (
-            self.factor_s.as_ref().expect("GPU factor S buffer missing"),
-            self.factor_f.as_ref().expect("GPU factor F buffer missing"),
-        )
-    }
-
-    /// Borrow panel factor buffers.
-    /// # Arguments:
-    /// - `self`: Reusable scratch buffers with panel factor slots initialised.
-    /// # Returns
-    /// - `(&GpuBuffer<f64>, &GpuBuffer<f64>)`: Overlap and Fock panel buffers.
-    fn panel_factors(&self) -> (&GpuBuffer<f64>, &GpuBuffer<f64>) {
-        (
-            self.panel_s.as_ref().expect("GPU panel S buffer missing"),
-            self.panel_f.as_ref().expect("GPU panel F buffer missing"),
-        )
-    }
-
     /// Borrow first-stage buffers.
     /// # Arguments:
     /// - `self`: Reusable scratch buffers with first-stage slots initialised.
@@ -801,20 +835,60 @@ impl GpuOneBodyScratch {
         )
     }
 
-    /// Borrow selected factor slot.
+    /// Ensure alpha factor-panel buffers can hold `len` entries.
     /// # Arguments:
     /// - `self`: Reusable scratch buffers.
-    /// - `slot`: Full-table or panel-table selector.
+    /// - `context`: CubeCL context used for any allocation.
+    /// - `len`: Required logical alpha-panel length.
     /// # Returns
-    /// - `(&GpuBuffer<f64>, &GpuBuffer<f64>)`: Overlap and Fock buffers for the selected slot.
-    fn factor_slot(
-        &self,
-        slot: FactorSlot,
-    ) -> (&GpuBuffer<f64>, &GpuBuffer<f64>) {
-        match slot {
-            FactorSlot::Full => self.full_factors(),
-            FactorSlot::Panel => self.panel_factors(),
-        }
+    /// - `()`: Allocates larger buffers only when current capacity is insufficient.
+    fn ensure_alpha_factors(
+        &mut self,
+        context: &GpuContext,
+        len: usize,
+    ) {
+        ensure_buffer(context, &mut self.alpha_s, len);
+        ensure_buffer(context, &mut self.alpha_f, len);
+    }
+
+    /// Ensure beta factor-panel buffers can hold `len` entries.
+    /// # Arguments:
+    /// - `self`: Reusable scratch buffers.
+    /// - `context`: CubeCL context used for any allocation.
+    /// - `len`: Required logical beta-panel length.
+    /// # Returns
+    /// - `()`: Allocates larger buffers only when current capacity is insufficient.
+    fn ensure_beta_factors(
+        &mut self,
+        context: &GpuContext,
+        len: usize,
+    ) {
+        ensure_buffer(context, &mut self.beta_s, len);
+        ensure_buffer(context, &mut self.beta_f, len);
+    }
+
+    /// Borrow alpha overlap and Fock factor panels.
+    /// # Arguments:
+    /// - `self`: Reusable scratch buffers with alpha factors initialised.
+    /// # Returns
+    /// - `(&GpuBuffer<f64>, &GpuBuffer<f64>)`: Alpha overlap and Fock panels.
+    fn alpha_factors(&self) -> (&GpuBuffer<f64>, &GpuBuffer<f64>) {
+        (
+            self.alpha_s.as_ref().expect("GPU alpha S buffer missing"),
+            self.alpha_f.as_ref().expect("GPU alpha F buffer missing"),
+        )
+    }
+
+    /// Borrow beta overlap and Fock factor panels.
+    /// # Arguments:
+    /// - `self`: Reusable scratch buffers with beta factors initialised.
+    /// # Returns
+    /// - `(&GpuBuffer<f64>, &GpuBuffer<f64>)`: Beta overlap and Fock panels.
+    fn beta_factors(&self) -> (&GpuBuffer<f64>, &GpuBuffer<f64>) {
+        (
+            self.beta_s.as_ref().expect("GPU beta S buffer missing"),
+            self.beta_f.as_ref().expect("GPU beta F buffer missing"),
+        )
     }
 }
 

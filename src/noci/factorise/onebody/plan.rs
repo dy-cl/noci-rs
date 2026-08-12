@@ -7,6 +7,9 @@ use crate::noci::types::{FockData, NOCIScalar};
 // Parent/sibling imports.
 use super::super::{SpinFactorisation, ordered_parent_pair};
 
+/// Target-component panel width for transient one-body factor construction and contraction.
+pub(super) const PANEL_ROWS: usize = 512;
+
 /// Dense one-body contraction order for one parent pair.
 #[derive(Clone, Copy)]
 pub(crate) enum OneBodyContraction {
