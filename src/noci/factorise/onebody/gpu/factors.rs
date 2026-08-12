@@ -380,121 +380,169 @@ fn one_body_factor_kernel(
     #[comptime] source_rank: usize,
     #[comptime] l: usize,
 ) {
-    if ABSOLUTE_POS >= target_len * source_len {
-        terminate!();
+    if ABSOLUTE_POS < target_len * source_len {
+        let tpos = ABSOLUTE_POS / source_len;
+        let spos = ABSOLUTE_POS - tpos * source_len;
+
+        let tdet = usize::cast_from(target_rep_det[target_offset + tpos]);
+        let sdet = usize::cast_from(source_rep_det[source_offset + spos]);
+        let tcomp = usize::cast_from(target_component[target_offset + tpos]);
+        let scomp = usize::cast_from(source_component[source_offset + spos]);
+
+        let ldet = if comptime!(target_left) { tdet } else { sdet };
+        let gdet = if comptime!(target_left) { sdet } else { tdet };
+
+        let wslot = (lp * nref + gp) * 2usize + if comptime!(alpha) { 0usize } else { 1usize };
+        let off2 = wslot * 2usize;
+        let off4 = wslot * 4usize;
+
+        let left_rank = if comptime!(target_left) {
+            target_rank
+        } else {
+            source_rank
+        };
+        let greater_rank = if comptime!(target_left) {
+            source_rank
+        } else {
+            target_rank
+        };
+
+        let phase_external = if comptime!(alpha) {
+            pha[ldet] * pha[gdet]
+        } else {
+            phb[ldet] * phb[gdet]
+        };
+
+        let view = GpuSameSpinView {
+            slab: slab.slice(0usize, slab.len()),
+            x_off: x_off.slice(off2, off2 + 2usize),
+            y_off: y_off.slice(off2, off2 + 2usize),
+            ff_off: ff_off.slice(off4, off4 + 4usize),
+            phase: phase[wslot],
+            tilde_s_prod: tilde_s_prod[wslot],
+            f0f: f0f.slice(off2, off2 + 2usize),
+            m: usize::cast_from(m[wslot]),
+            nmo: nmo[wslot],
+            nocc: nocc[wslot],
+        };
+
+        let out = (tcomp - target_component_base) * nsource + scomp;
+
+        // L = 0 must not instantiate any zero-length private CubeCL arrays.
+        if comptime!(l == 0usize) {
+            let pref = view.phase * view.tilde_s_prod;
+            let mut s = 0.0;
+            let mut f = 0.0;
+
+            // det(D_0x0) = 1.
+            if view.m == 0usize {
+                s = pref;
+                f = pref * view.f0f[0];
+            } else if view.m == 1usize {
+                // The overlap vanishes, but the one-body operator can absorb
+                // the single zero-overlap pair.
+                f = pref * view.f0f[1];
+            }
+
+            s_out[out] = phase_external * s;
+            f_out[out] = phase_external * f;
+        } else {
+            let (lr, loh, lop, gr, goh, gop) = if comptime!(alpha) {
+                (
+                    usize::cast_from(alpha_rank[ldet]),
+                    usize::cast_from(alpha_holes_offset[ldet]),
+                    usize::cast_from(alpha_parts_offset[ldet]),
+                    usize::cast_from(alpha_rank[gdet]),
+                    usize::cast_from(alpha_holes_offset[gdet]),
+                    usize::cast_from(alpha_parts_offset[gdet]),
+                )
+            } else {
+                (
+                    usize::cast_from(beta_rank[ldet]),
+                    usize::cast_from(beta_holes_offset[ldet]),
+                    usize::cast_from(beta_parts_offset[ldet]),
+                    usize::cast_from(beta_rank[gdet]),
+                    usize::cast_from(beta_holes_offset[gdet]),
+                    usize::cast_from(beta_parts_offset[gdet]),
+                )
+            };
+
+            // CubeCL/CUDA cannot generate C arrays of length zero. The loops
+            // below still execute zero times for a rank-zero side; only the
+            // physical private allocation is padded to one element.
+            let left_scratch_rank = if comptime!(left_rank == 0usize) {
+                1usize
+            } else {
+                left_rank
+            };
+            let greater_scratch_rank = if comptime!(greater_rank == 0usize) {
+                1usize
+            } else {
+                greater_rank
+            };
+
+            let mut rows = Array::<u32>::new(l);
+            let mut cols = Array::<u32>::new(l);
+            let mut det0 = Array::<f64>::new(l * l);
+            let mut det1 = Array::<f64>::new(l * l);
+            let mut work = Array::<f64>::new(l * l);
+            let mut cof = Array::<f64>::new(l * l);
+            let mut new_col = Array::<f64>::new(l);
+
+            let mut l_holes = Array::<u32>::new(left_scratch_rank);
+            let mut l_parts = Array::<u32>::new(left_scratch_rank);
+            let mut g_holes = Array::<u32>::new(greater_scratch_rank);
+            let mut g_parts = Array::<u32>::new(greater_scratch_rank);
+
+            for k in 0usize..left_rank {
+                l_holes[k] = if comptime!(alpha) {
+                    alpha_holes[loh + k]
+                } else {
+                    beta_holes[loh + k]
+                };
+
+                l_parts[k] = if comptime!(alpha) {
+                    alpha_parts[lop + k]
+                } else {
+                    beta_parts[lop + k]
+                };
+            }
+
+            for k in 0usize..greater_rank {
+                g_holes[k] = if comptime!(alpha) {
+                    alpha_holes[goh + k]
+                } else {
+                    beta_holes[goh + k]
+                };
+
+                g_parts[k] = if comptime!(alpha) {
+                    alpha_parts[gop + k]
+                } else {
+                    beta_parts[gop + k]
+                };
+            }
+
+            prepare_same(
+                &view, lr, gr, &l_holes, &l_parts, &g_holes, &g_parts, &mut rows, &mut cols,
+                &mut det0, &mut det1, l,
+            );
+
+            let s = xw_overlap(&view, &det0, &det1, &mut work, l);
+
+            let f = xw_f(
+                &view,
+                &rows,
+                &cols,
+                &det0,
+                &det1,
+                &mut work,
+                &mut cof,
+                &mut new_col,
+                l,
+            );
+
+            s_out[out] = phase_external * s;
+            f_out[out] = phase_external * f;
+        }
     }
-
-    let tpos = ABSOLUTE_POS / source_len;
-    let spos = ABSOLUTE_POS - tpos * source_len;
-    let tdet = usize::cast_from(target_rep_det[target_offset + tpos]);
-    let sdet = usize::cast_from(source_rep_det[source_offset + spos]);
-    let tcomp = usize::cast_from(target_component[target_offset + tpos]);
-    let scomp = usize::cast_from(source_component[source_offset + spos]);
-    let ldet = if comptime!(target_left) { tdet } else { sdet };
-    let gdet = if comptime!(target_left) { sdet } else { tdet };
-    let wslot = (lp * nref + gp) * 2usize + if comptime!(alpha) { 0usize } else { 1usize };
-    let off2 = wslot * 2usize;
-    let off4 = wslot * 4usize;
-    let left_rank = if comptime!(target_left) {
-        target_rank
-    } else {
-        source_rank
-    };
-    let greater_rank = if comptime!(target_left) {
-        source_rank
-    } else {
-        target_rank
-    };
-
-    let mut rows = Array::<u32>::new(l);
-    let mut cols = Array::<u32>::new(l);
-    let mut det0 = Array::<f64>::new(l * l);
-    let mut det1 = Array::<f64>::new(l * l);
-    let mut work = Array::<f64>::new(l * l);
-    let mut cof = Array::<f64>::new(l * l);
-    let mut new_col = Array::<f64>::new(l);
-    let mut l_holes = Array::<u32>::new(left_rank);
-    let mut l_parts = Array::<u32>::new(left_rank);
-    let mut g_holes = Array::<u32>::new(greater_rank);
-    let mut g_parts = Array::<u32>::new(greater_rank);
-
-    let (lr, loh, lop, gr, goh, gop, phase_external) = if comptime!(alpha) {
-        (
-            usize::cast_from(alpha_rank[ldet]),
-            usize::cast_from(alpha_holes_offset[ldet]),
-            usize::cast_from(alpha_parts_offset[ldet]),
-            usize::cast_from(alpha_rank[gdet]),
-            usize::cast_from(alpha_holes_offset[gdet]),
-            usize::cast_from(alpha_parts_offset[gdet]),
-            pha[ldet] * pha[gdet],
-        )
-    } else {
-        (
-            usize::cast_from(beta_rank[ldet]),
-            usize::cast_from(beta_holes_offset[ldet]),
-            usize::cast_from(beta_parts_offset[ldet]),
-            usize::cast_from(beta_rank[gdet]),
-            usize::cast_from(beta_holes_offset[gdet]),
-            usize::cast_from(beta_parts_offset[gdet]),
-            phb[ldet] * phb[gdet],
-        )
-    };
-
-    for k in 0usize..left_rank {
-        l_holes[k] = if comptime!(alpha) {
-            alpha_holes[loh + k]
-        } else {
-            beta_holes[loh + k]
-        };
-        l_parts[k] = if comptime!(alpha) {
-            alpha_parts[lop + k]
-        } else {
-            beta_parts[lop + k]
-        };
-    }
-    for k in 0usize..greater_rank {
-        g_holes[k] = if comptime!(alpha) {
-            alpha_holes[goh + k]
-        } else {
-            beta_holes[goh + k]
-        };
-        g_parts[k] = if comptime!(alpha) {
-            alpha_parts[gop + k]
-        } else {
-            beta_parts[gop + k]
-        };
-    }
-
-    let view = GpuSameSpinView {
-        slab: slab.slice(0usize, slab.len()),
-        x_off: x_off.slice(off2, off2 + 2usize),
-        y_off: y_off.slice(off2, off2 + 2usize),
-        ff_off: ff_off.slice(off4, off4 + 4usize),
-        phase: phase[wslot],
-        tilde_s_prod: tilde_s_prod[wslot],
-        f0f: f0f.slice(off2, off2 + 2usize),
-        m: usize::cast_from(m[wslot]),
-        nmo: nmo[wslot],
-        nocc: nocc[wslot],
-    };
-
-    prepare_same(
-        &view, lr, gr, &l_holes, &l_parts, &g_holes, &g_parts, &mut rows, &mut cols, &mut det0,
-        &mut det1, l,
-    );
-    let s = xw_overlap(&view, &det0, &det1, &mut work, l);
-    let f = xw_f(
-        &view,
-        &rows,
-        &cols,
-        &det0,
-        &det1,
-        &mut work,
-        &mut cof,
-        &mut new_col,
-        l,
-    );
-    let out = (tcomp - target_component_base) * nsource + scomp;
-    s_out[out] = phase_external * s;
-    f_out[out] = phase_external * f;
 }
