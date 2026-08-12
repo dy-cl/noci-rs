@@ -3,17 +3,15 @@
 
 // External crate imports.
 use cubecl::prelude::*;
-use ndarray::Array1;
 
 // Crate-root imports.
 use crate::gpu::{GpuBuffer, GpuContext, GpuRuntime};
-use crate::noci::types::{NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::gpu::{
     DeviceWicksShared, GpuSameSpinView, prepare_same, xw_f, xw_overlap,
 };
 
 // Parent/sibling imports.
-use super::data::DeviceOneBodyData;
+use super::data::{DeviceOneBodyData, GpuOneBodyData};
 
 /// Initial one-body factor kernel cube dimension.
 const FACTOR_CUBE_DIM: u32 = 128;
@@ -22,16 +20,77 @@ const FACTOR_CUBE_DIM: u32 = 128;
 /// This is the GPU mirror of the CPU `build_spin_one_body_factors` operation and must preserve
 /// ordered-parent-pair and `target_left` semantics without introducing conjugate shortcuts.
 /// # Arguments:
-/// - `data`: Shared NOCI determinant data used to derive GPU-resident Wick and excitation data.
-/// - `x`: Source vector, used only to bind the scalar type for kernel specialisation.
+/// - `context`: CubeCL context.
+/// - `wicks`: Device Wick buffers.
+/// - `topology`: Device determinant topology.
+/// - `host`: Host topology metadata retained for rank-group offsets.
+/// - `request`: Parent, spin and panel request.
+/// - `out`: Device factor outputs.
 /// # Returns
-/// - `()`: Factor panels are intended to remain resident on the device.
-pub(crate) fn build_spin_one_body_factors<T: NOCIScalar>(
-    _data: &NOCIData<'_, T>,
-    _x: &Array1<T>,
+/// - `()`: Factor panel values are written on the device.
+pub(crate) fn build_spin_one_body_factors(
+    context: &GpuContext,
+    wicks: &DeviceWicksShared,
+    topology: &DeviceOneBodyData,
+    host: &GpuOneBodyData,
+    request: FactorRequest,
+    out: FactorOutput<'_>,
 ) {
-    eprintln!("GPU one-body same-spin factor generation is not implemented yet");
-    std::process::exit(1);
+    if request.target_component_end <= request.target_component_base || request.nsource == 0 {
+        return;
+    }
+    let max_target_rank = max_rank(host, request.alpha);
+    let max_source_rank = max_target_rank;
+    let pair = FactorPair {
+        lp: request.lp,
+        gp: request.gp,
+        nref: request.nref,
+        target_left: request.target_left,
+        alpha: request.alpha,
+    };
+
+    for target_rank in 0..=max_target_rank {
+        let target = rank_group(
+            host,
+            topology,
+            request.target_parent,
+            request.alpha,
+            target_rank,
+            request.target_component_base,
+            request.target_component_end,
+        );
+        if target.len == 0 {
+            continue;
+        }
+        for source_rank in 0..=max_source_rank {
+            let source = rank_group(
+                host,
+                topology,
+                request.source_parent,
+                request.alpha,
+                source_rank,
+                0,
+                request.nsource,
+            );
+            if source.len == 0 {
+                continue;
+            }
+            launch_spin_rank_block(
+                context,
+                wicks,
+                topology,
+                pair,
+                target,
+                source,
+                out,
+                FactorRanks {
+                    target_rank,
+                    source_rank,
+                    l: target_rank + source_rank,
+                },
+            );
+        }
+    }
 }
 
 /// Launch one homogeneous rank block of same-spin factor generation.
@@ -70,61 +129,34 @@ pub(crate) fn launch_spin_rank_block(
             context.client(),
             CubeCount::Static(cubes, 1, 1),
             CubeDim::new_1d(FACTOR_CUBE_DIM),
-            ArrayArg::from_raw_parts(wicks.slab.handle.clone(), wicks.slab.len()),
-            ArrayArg::from_raw_parts(wicks.x_off.handle.clone(), wicks.x_off.len()),
-            ArrayArg::from_raw_parts(wicks.y_off.handle.clone(), wicks.y_off.len()),
-            ArrayArg::from_raw_parts(wicks.ff_off.handle.clone(), wicks.ff_off.len()),
-            ArrayArg::from_raw_parts(wicks.phase.handle.clone(), wicks.phase.len()),
-            ArrayArg::from_raw_parts(wicks.tilde_s_prod.handle.clone(), wicks.tilde_s_prod.len()),
-            ArrayArg::from_raw_parts(wicks.f0f.handle.clone(), wicks.f0f.len()),
-            ArrayArg::from_raw_parts(wicks.m.handle.clone(), wicks.m.len()),
-            ArrayArg::from_raw_parts(wicks.nmo.handle.clone(), wicks.nmo.len()),
-            ArrayArg::from_raw_parts(wicks.nocc.handle.clone(), wicks.nocc.len()),
-            ArrayArg::from_raw_parts(
-                topology.alpha_rank.handle.clone(),
-                topology.alpha_rank.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.alpha_holes_offset.handle.clone(),
-                topology.alpha_holes_offset.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.alpha_parts_offset.handle.clone(),
-                topology.alpha_parts_offset.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.alpha_holes.handle.clone(),
-                topology.alpha_holes.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.alpha_parts.handle.clone(),
-                topology.alpha_parts.len(),
-            ),
-            ArrayArg::from_raw_parts(topology.beta_rank.handle.clone(), topology.beta_rank.len()),
-            ArrayArg::from_raw_parts(
-                topology.beta_holes_offset.handle.clone(),
-                topology.beta_holes_offset.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.beta_parts_offset.handle.clone(),
-                topology.beta_parts_offset.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.beta_holes.handle.clone(),
-                topology.beta_holes.len(),
-            ),
-            ArrayArg::from_raw_parts(
-                topology.beta_parts.handle.clone(),
-                topology.beta_parts.len(),
-            ),
-            ArrayArg::from_raw_parts(topology.pha.handle.clone(), topology.pha.len()),
-            ArrayArg::from_raw_parts(topology.phb.handle.clone(), topology.phb.len()),
-            ArrayArg::from_raw_parts(target.rep_det.handle.clone(), target.rep_det.len()),
-            ArrayArg::from_raw_parts(target.component.handle.clone(), target.component.len()),
-            ArrayArg::from_raw_parts(source.rep_det.handle.clone(), source.rep_det.len()),
-            ArrayArg::from_raw_parts(source.component.handle.clone(), source.component.len()),
-            ArrayArg::from_raw_parts(out.s.handle.clone(), out.s.len()),
-            ArrayArg::from_raw_parts(out.f.handle.clone(), out.f.len()),
+            wicks.slab.array_arg(),
+            wicks.x_off.array_arg(),
+            wicks.y_off.array_arg(),
+            wicks.ff_off.array_arg(),
+            wicks.phase.array_arg(),
+            wicks.tilde_s_prod.array_arg(),
+            wicks.f0f.array_arg(),
+            wicks.m.array_arg(),
+            wicks.nmo.array_arg(),
+            wicks.nocc.array_arg(),
+            topology.alpha_rank.array_arg(),
+            topology.alpha_holes_offset.array_arg(),
+            topology.alpha_parts_offset.array_arg(),
+            topology.alpha_holes.array_arg(),
+            topology.alpha_parts.array_arg(),
+            topology.beta_rank.array_arg(),
+            topology.beta_holes_offset.array_arg(),
+            topology.beta_parts_offset.array_arg(),
+            topology.beta_holes.array_arg(),
+            topology.beta_parts.array_arg(),
+            topology.pha.array_arg(),
+            topology.phb.array_arg(),
+            target.rep_det.array_arg(),
+            target.component.array_arg(),
+            source.rep_det.array_arg(),
+            source.component.array_arg(),
+            out.s.array_arg(),
+            out.f.array_arg(),
             pair.lp,
             pair.gp,
             pair.nref,
@@ -132,6 +164,7 @@ pub(crate) fn launch_spin_rank_block(
             target.len,
             source.offset,
             source.len,
+            out.target_component_base,
             out.nsource,
             pair.target_left,
             pair.alpha,
@@ -140,6 +173,31 @@ pub(crate) fn launch_spin_rank_block(
             ranks.l,
         );
     }
+}
+
+/// Parent, spin and component-panel request for one same-spin factor table.
+#[derive(Clone, Copy)]
+pub(crate) struct FactorRequest {
+    /// Target parent `Q`.
+    pub(crate) target_parent: usize,
+    /// Source parent `P`.
+    pub(crate) source_parent: usize,
+    /// Left parent in the ordered Wick pair.
+    pub(crate) lp: usize,
+    /// Greater parent in the ordered Wick pair.
+    pub(crate) gp: usize,
+    /// Number of reference parents.
+    pub(crate) nref: usize,
+    /// Whether target representatives are left determinants.
+    pub(crate) target_left: bool,
+    /// Whether to build alpha or beta factors.
+    pub(crate) alpha: bool,
+    /// First target component represented by output row zero.
+    pub(crate) target_component_base: usize,
+    /// One-past-last target component represented in the output panel.
+    pub(crate) target_component_end: usize,
+    /// Full logical source component count.
+    pub(crate) nsource: usize,
 }
 
 /// Uniform ordered-pair metadata for one rank-homogeneous launch.
@@ -177,6 +235,8 @@ pub(crate) struct FactorOutput<'a> {
     pub(crate) s: &'a GpuBuffer<f64>,
     /// Row-major Fock factor table.
     pub(crate) f: &'a GpuBuffer<f64>,
+    /// First target component represented by output row zero.
+    pub(crate) target_component_base: usize,
     /// Full logical source component count.
     pub(crate) nsource: usize,
 }
@@ -190,6 +250,84 @@ pub(crate) struct FactorRanks {
     pub(crate) source_rank: usize,
     /// Total contraction determinant rank.
     pub(crate) l: usize,
+}
+
+/// Select one host-known rank group, optionally narrowed to a component panel.
+/// # Arguments:
+/// - `host`: Host topology metadata.
+/// - `device`: Device topology buffers.
+/// - `parent`: Parent reference index.
+/// - `alpha`: Whether to select alpha or beta components.
+/// - `rank`: Excitation rank.
+/// - `component_base`: First requested parent-local component.
+/// - `component_end`: One-past-last requested parent-local component.
+/// # Returns
+/// - `RankGroup`: Device buffers plus narrowed offset and length.
+fn rank_group<'a>(
+    host: &GpuOneBodyData,
+    device: &'a DeviceOneBodyData,
+    parent: usize,
+    alpha: bool,
+    rank: usize,
+    component_base: usize,
+    component_end: usize,
+) -> RankGroup<'a> {
+    let max_rank = max_rank(host, alpha);
+    let (offsets, components, rep_det, component) = if alpha {
+        (
+            &host.parent_alpha_rank_offsets,
+            &host.alpha_rank_component,
+            &device.alpha_rank_rep_det,
+            &device.alpha_rank_component,
+        )
+    } else {
+        (
+            &host.parent_beta_rank_offsets,
+            &host.beta_rank_component,
+            &device.beta_rank_rep_det,
+            &device.beta_rank_component,
+        )
+    };
+    if rank > max_rank {
+        return RankGroup {
+            rep_det,
+            component,
+            offset: 0,
+            len: 0,
+        };
+    }
+    let stride = max_rank + 2;
+    let base = parent
+        .checked_mul(stride)
+        .expect("GPU rank-group parent offset overflow");
+    let group_start = offsets[base + rank];
+    let group_end = offsets[base + rank + 1];
+    let group_components = &components[group_start..group_end];
+    let first = group_components.partition_point(|&comp| comp < component_base);
+    let last = group_components.partition_point(|&comp| comp < component_end);
+    RankGroup {
+        rep_det,
+        component,
+        offset: group_start + first,
+        len: last - first,
+    }
+}
+
+/// Maximum decoded excitation rank for a spin sector.
+/// # Arguments:
+/// - `host`: Host topology.
+/// - `alpha`: Whether to select alpha or beta rank.
+/// # Returns
+/// - `usize`: Maximum rank.
+fn max_rank(
+    host: &GpuOneBodyData,
+    alpha: bool,
+) -> usize {
+    if alpha {
+        host.max_alpha_rank
+    } else {
+        host.max_beta_rank
+    }
 }
 
 /// Generate one same-spin `S` and `F` factor entry per work item for a homogeneous rank block.
@@ -234,6 +372,7 @@ fn one_body_factor_kernel(
     target_len: usize,
     source_offset: usize,
     source_len: usize,
+    target_component_base: usize,
     nsource: usize,
     #[comptime] target_left: bool,
     #[comptime] alpha: bool,
@@ -253,9 +392,19 @@ fn one_body_factor_kernel(
     let scomp = usize::cast_from(source_component[source_offset + spos]);
     let ldet = if comptime!(target_left) { tdet } else { sdet };
     let gdet = if comptime!(target_left) { sdet } else { tdet };
-    let wslot = (lp * nref + gp) * 2 + if comptime!(alpha) { 0 } else { 1 };
-    let off2 = wslot * 2;
-    let off4 = wslot * 4;
+    let wslot = (lp * nref + gp) * 2usize + if comptime!(alpha) { 0usize } else { 1usize };
+    let off2 = wslot * 2usize;
+    let off4 = wslot * 4usize;
+    let left_rank = if comptime!(target_left) {
+        target_rank
+    } else {
+        source_rank
+    };
+    let greater_rank = if comptime!(target_left) {
+        source_rank
+    } else {
+        target_rank
+    };
 
     let mut rows = Array::<u32>::new(l);
     let mut cols = Array::<u32>::new(l);
@@ -264,38 +413,34 @@ fn one_body_factor_kernel(
     let mut work = Array::<f64>::new(l * l);
     let mut cof = Array::<f64>::new(l * l);
     let mut new_col = Array::<f64>::new(l);
-    let mut l_holes = Array::<u32>::new(target_rank);
-    let mut l_parts = Array::<u32>::new(target_rank);
-    let mut g_holes = Array::<u32>::new(source_rank);
-    let mut g_parts = Array::<u32>::new(source_rank);
+    let mut l_holes = Array::<u32>::new(left_rank);
+    let mut l_parts = Array::<u32>::new(left_rank);
+    let mut g_holes = Array::<u32>::new(greater_rank);
+    let mut g_parts = Array::<u32>::new(greater_rank);
 
     let (lr, loh, lop, gr, goh, gop, phase_external) = if comptime!(alpha) {
         (
-            alpha_rank[ldet],
-            alpha_holes_offset[ldet],
-            alpha_parts_offset[ldet],
-            alpha_rank[gdet],
-            alpha_holes_offset[gdet],
-            alpha_parts_offset[gdet],
+            usize::cast_from(alpha_rank[ldet]),
+            usize::cast_from(alpha_holes_offset[ldet]),
+            usize::cast_from(alpha_parts_offset[ldet]),
+            usize::cast_from(alpha_rank[gdet]),
+            usize::cast_from(alpha_holes_offset[gdet]),
+            usize::cast_from(alpha_parts_offset[gdet]),
             pha[ldet] * pha[gdet],
         )
     } else {
         (
-            beta_rank[ldet],
-            beta_holes_offset[ldet],
-            beta_parts_offset[ldet],
-            beta_rank[gdet],
-            beta_holes_offset[gdet],
-            beta_parts_offset[gdet],
+            usize::cast_from(beta_rank[ldet]),
+            usize::cast_from(beta_holes_offset[ldet]),
+            usize::cast_from(beta_parts_offset[ldet]),
+            usize::cast_from(beta_rank[gdet]),
+            usize::cast_from(beta_holes_offset[gdet]),
+            usize::cast_from(beta_parts_offset[gdet]),
             phb[ldet] * phb[gdet],
         )
     };
 
-    let loh = usize::cast_from(loh);
-    let lop = usize::cast_from(lop);
-    let goh = usize::cast_from(goh);
-    let gop = usize::cast_from(gop);
-    for k in 0usize..target_rank {
+    for k in 0usize..left_rank {
         l_holes[k] = if comptime!(alpha) {
             alpha_holes[loh + k]
         } else {
@@ -307,7 +452,7 @@ fn one_body_factor_kernel(
             beta_parts[lop + k]
         };
     }
-    for k in 0usize..source_rank {
+    for k in 0usize..greater_rank {
         g_holes[k] = if comptime!(alpha) {
             alpha_holes[goh + k]
         } else {
@@ -321,31 +466,21 @@ fn one_body_factor_kernel(
     }
 
     let view = GpuSameSpinView {
-        slab: slab.slice(0, slab.len()),
-        x_off: x_off.slice(off2, 2),
-        y_off: y_off.slice(off2, 2),
-        ff_off: ff_off.slice(off4, 4),
+        slab: slab.slice(0usize, slab.len()),
+        x_off: x_off.slice(off2, off2 + 2usize),
+        y_off: y_off.slice(off2, off2 + 2usize),
+        ff_off: ff_off.slice(off4, off4 + 4usize),
         phase: phase[wslot],
         tilde_s_prod: tilde_s_prod[wslot],
-        f0f: f0f.slice(off2, 2),
-        m: m[wslot],
+        f0f: f0f.slice(off2, off2 + 2usize),
+        m: usize::cast_from(m[wslot]),
         nmo: nmo[wslot],
         nocc: nocc[wslot],
     };
 
     prepare_same(
-        &view,
-        usize::cast_from(lr),
-        usize::cast_from(gr),
-        &l_holes,
-        &l_parts,
-        &g_holes,
-        &g_parts,
-        &mut rows,
-        &mut cols,
-        &mut det0,
-        &mut det1,
-        l,
+        &view, lr, gr, &l_holes, &l_parts, &g_holes, &g_parts, &mut rows, &mut cols, &mut det0,
+        &mut det1, l,
     );
     let s = xw_overlap(&view, &det0, &det1, &mut work, l);
     let f = xw_f(
@@ -359,7 +494,7 @@ fn one_body_factor_kernel(
         &mut new_col,
         l,
     );
-    let out = tcomp * nsource + scomp;
+    let out = (tcomp - target_component_base) * nsource + scomp;
     s_out[out] = phase_external * s;
     f_out[out] = phase_external * f;
 }

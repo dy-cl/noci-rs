@@ -200,30 +200,26 @@ pub(crate) fn det_elim(
     for i in 0usize..(n * n) {
         a[i] = d[i];
     }
-    let mut det: f64 = 1.0;
-    let mut singular = false;
+    let mut det = 1.0f64;
+    let mut active = true;
     for k in 0usize..n {
         let pivot = a[k * n + k];
-        if pivot == 0.0 {
-            singular = true;
-        }
-        if !singular {
-            det *= pivot;
-            for i in (k + 1usize)..n {
-                let factor = a[i * n + k] / pivot;
-                for j in (k + 1usize)..n {
-                    a[i * n + j] -= factor * a[k * n + j];
+        if active {
+            if pivot == 0.0 {
+                det = 0.0f64;
+                active = false;
+            } else {
+                det *= pivot;
+                for i in (k + 1usize)..n {
+                    let factor = a[i * n + k] / pivot;
+                    for j in (k + 1usize)..n {
+                        a[i * n + j] -= factor * a[k * n + j];
+                    }
                 }
             }
         }
     }
-    let mut value: f64 = 0.0;
-    if singular {
-        value = 0.0;
-    } else {
-        value = det;
-    }
-    value
+    det
 }
 
 /// Evaluate `\Delta_c = \det D[c\rightarrow N]-\det D` using the cofactor column.

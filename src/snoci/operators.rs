@@ -766,6 +766,7 @@ pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
     let p = op.projection;
     let sx = p.s_0a.dot(x);
     let fx = p.f_0a.dot(x);
+    validate_factorised_gpu_imag_shift(backend, imag_shift);
     let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
     let mut y = backend.apply_one_body(x, op.data, op.fock, lambda, (0, 1));
     apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
@@ -797,6 +798,7 @@ where
     let p = op.projection;
     let sx = p.s_0a.dot(x);
     let fx = p.f_0a.dot(x);
+    validate_factorised_gpu_imag_shift(backend, imag_shift);
     let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
     let partial = backend.apply_one_body(
         x,
@@ -808,6 +810,28 @@ where
     let mut y = all_reduce_array1(world, partial);
     apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
     y
+}
+
+/// Validate the current factorised GPU scalar boundary for `F - E0 S + i epsilon Q`.
+/// GPU one-body arithmetic is currently real `f64`, so `epsilon` must be zero before
+/// `lambda = -E0 + i epsilon` is constructed.
+/// # Arguments:
+/// - `backend`: Factorised one-body backend selected for this SNOCI solve.
+/// - `imag_shift`: Imaginary shift strength `epsilon`.
+/// # Returns
+/// - `()`: Continues only when the selected backend can represent the shift.
+fn validate_factorised_gpu_imag_shift<T: NOCIScalar>(
+    backend: &OneBodyBackend<T>,
+    imag_shift: f64,
+) {
+    if imag_shift == 0.0 {
+        return;
+    }
+    #[cfg(feature = "gpu")]
+    if matches!(backend, OneBodyBackend::GPU(_)) {
+        eprintln!("snoci.backend = \"gpu\" currently requires zero imaginary shift");
+        std::process::exit(1);
+    }
 }
 
 /// Apply the projected first-order-space overlap matrix `Q`.

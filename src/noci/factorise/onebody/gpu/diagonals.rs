@@ -3,51 +3,89 @@
 
 // External crate imports.
 use cubecl::prelude::*;
-use ndarray::Array1;
 
 // Crate-root imports.
-use crate::noci::types::NOCIScalar;
+use crate::gpu::{GpuBuffer, GpuContext, GpuRuntime};
 
-/// Build diagonal entries of `F + \lambda S` and `S` from device factors.
+// Parent/sibling imports.
+use super::data::DeviceOneBodyData;
+
+/// Initial diagonal kernel cube dimension.
+const DIAGONAL_CUBE_DIM: u32 = 128;
+
+/// Launch determinant diagonal fill from same-parent alpha and beta factors.
 /// # Arguments:
-/// - `n`: Number of determinant-space diagonal entries.
-/// - `lambda`: Scalar overlap shift in `F + \lambda S`.
+/// - `context`: CubeCL context.
+/// - `topology`: Device determinant topology.
+/// - `sa`: Same-parent alpha overlap factors.
+/// - `fa`: Same-parent alpha Fock factors.
+/// - `sb`: Same-parent beta overlap factors.
+/// - `fb`: Same-parent beta Fock factors.
+/// - `m_diag`: Device diagonal of `F + \lambda S`.
+/// - `s_diag`: Device diagonal of `S`.
+/// - `args`: Parent entry base, dimensions and shift.
 /// # Returns
-/// - `(Array1<T>, Array1<T>)`: Diagonal of `F + \lambda S` and diagonal of `S`.
-pub(crate) fn one_body_diagonals<T: NOCIScalar>(
-    _n: usize,
-    _lambda: T,
-) -> (Array1<T>, Array1<T>) {
-    eprintln!("GPU one-body diagonal construction is not implemented yet");
-    std::process::exit(1);
+/// - `()`: Writes diagonal values on the device.
+pub(crate) fn launch_fill_one_body_diagonal_block(
+    context: &GpuContext,
+    topology: &DeviceOneBodyData,
+    sa: &GpuBuffer<f64>,
+    fa: &GpuBuffer<f64>,
+    sb: &GpuBuffer<f64>,
+    fb: &GpuBuffer<f64>,
+    m_diag: &GpuBuffer<f64>,
+    s_diag: &GpuBuffer<f64>,
+    args: DiagonalBlockLaunch,
+) {
+    if args.nentry == 0 {
+        return;
+    }
+    let cubes = checked_u32(args.nentry.div_ceil(DIAGONAL_CUBE_DIM as usize));
+    unsafe {
+        fill_one_body_diagonal_block_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(cubes, 1, 1),
+            CubeDim::new_1d(DIAGONAL_CUBE_DIM),
+            sa.array_arg(),
+            fa.array_arg(),
+            sb.array_arg(),
+            fb.array_arg(),
+            topology.entry_det.array_arg(),
+            topology.entry_a.array_arg(),
+            topology.entry_b.array_arg(),
+            m_diag.array_arg(),
+            s_diag.array_arg(),
+            args.lambda,
+            args.entry_base,
+            args.nentry,
+            args.nsa,
+            args.nsb,
+        );
+    }
 }
 
-/// Fill determinant diagonals from one same-parent factor block on the device.
-/// # Arguments:
-/// - `m_diag`: Output diagonal of `F + \lambda S`.
-/// - `s_diag`: Output diagonal of `S`.
-/// # Returns
-/// - `()`: Writes diagonal values for actual determinants.
-pub(crate) fn fill_one_body_diagonal_block<T: NOCIScalar>(
-    _m_diag: &mut Array1<T>,
-    _s_diag: &mut Array1<T>,
-) {
-    eprintln!("GPU factorised one-body diagonal block construction is not implemented yet");
-    std::process::exit(1);
+/// Same-parent diagonal fill launch dimensions.
+#[derive(Clone, Copy)]
+pub(crate) struct DiagonalBlockLaunch {
+    /// Parent entry base.
+    pub(crate) entry_base: usize,
+    /// Number of parent entries.
+    pub(crate) nentry: usize,
+    /// Source alpha component count.
+    pub(crate) nsa: usize,
+    /// Source beta component count.
+    pub(crate) nsb: usize,
+    /// Overlap shift.
+    pub(crate) lambda: f64,
 }
 
-/// Fill same-parent orthogonal diagonals from parent-local Slater-Condon rules on the device.
+/// Convert host launch metadata to CubeCL grid-width `u32`.
 /// # Arguments:
-/// - `m_diag`: Output diagonal of `F + \lambda S`.
-/// - `s_diag`: Output diagonal of `S`.
+/// - `value`: Host launch value.
 /// # Returns
-/// - `()`: Writes diagonal values for actual determinants.
-pub(crate) fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
-    _m_diag: &mut Array1<T>,
-    _s_diag: &mut Array1<T>,
-) {
-    eprintln!("GPU orthogonal one-body diagonal block construction is not implemented yet");
-    std::process::exit(1);
+/// - `u32`: Checked CubeCL grid-width value.
+fn checked_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("GPU diagonal launch dimension exceeds u32")
 }
 
 /// Fill determinant diagonals from one same-parent factor block on the device.
@@ -62,6 +100,7 @@ pub(crate) fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
 /// - `m_diag`: Output diagonal of `F + \lambda S`.
 /// - `s_diag`: Output diagonal of `S`.
 /// - `lambda`: Scalar overlap shift.
+/// - `entry_base`: Parent entry base.
 /// - `nentry`: Number of parent entries.
 /// - `nsa`: Source alpha component count.
 /// - `nsb`: Source beta component count.
@@ -79,6 +118,7 @@ pub(crate) fn fill_one_body_diagonal_block_kernel(
     m_diag: &mut Array<f64>,
     s_diag: &mut Array<f64>,
     lambda: f64,
+    entry_base: usize,
     nentry: usize,
     nsa: usize,
     nsb: usize,
@@ -86,14 +126,16 @@ pub(crate) fn fill_one_body_diagonal_block_kernel(
     if ABSOLUTE_POS >= nentry {
         terminate!();
     }
-    let a = usize::cast_from(entry_a[ABSOLUTE_POS]);
-    let b = usize::cast_from(entry_b[ABSOLUTE_POS]);
+    let entry = entry_base + ABSOLUTE_POS;
+    let a = usize::cast_from(entry_a[entry]);
+    let b = usize::cast_from(entry_b[entry]);
     let saa = sa[a * nsa + a];
     let faa = fa[a * nsa + a];
     let sbb = sb[b * nsb + b];
     let fbb = fb[b * nsb + b];
     let s = saa * sbb;
-    let det = usize::cast_from(entry_det[ABSOLUTE_POS]);
+    let det = entry_det[entry];
+    let det = usize::cast_from(det);
     s_diag[det] = s;
     m_diag[det] = faa * sbb + saa * fbb + lambda * s;
 }

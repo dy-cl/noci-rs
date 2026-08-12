@@ -70,12 +70,16 @@ pub(crate) struct GpuOneBodyData {
     pub(crate) beta_rank_component: Vec<usize>,
     /// A-first CSR offsets keyed by source beta component for each parent.
     pub(crate) by_beta_offsets: Vec<usize>,
+    /// Host CSR base into `by_beta_offsets` for each parent.
+    pub(crate) by_beta_parent_offsets: Vec<usize>,
     /// A-first CSR determinant IDs.
     pub(crate) by_beta_det: Vec<usize>,
     /// A-first CSR source alpha component IDs.
     pub(crate) by_beta_alpha: Vec<usize>,
     /// B-first CSR offsets keyed by source alpha component for each parent.
     pub(crate) by_alpha_offsets: Vec<usize>,
+    /// Host CSR base into `by_alpha_offsets` for each parent.
+    pub(crate) by_alpha_parent_offsets: Vec<usize>,
     /// B-first CSR determinant IDs.
     pub(crate) by_alpha_det: Vec<usize>,
     /// B-first CSR source beta component IDs.
@@ -210,9 +214,9 @@ impl GpuOneBodyData {
             build_rank_groups(&spin.parents, true, &alpha, max_alpha_rank);
         let (parent_beta_rank_offsets, beta_rank_rep_det, beta_rank_component) =
             build_rank_groups(&spin.parents, false, &beta, max_beta_rank);
-        let (by_beta_offsets, by_beta_det, by_beta_alpha) =
+        let (by_beta_offsets, by_beta_parent_offsets, by_beta_det, by_beta_alpha) =
             build_source_groups_by_beta(&spin.parents);
-        let (by_alpha_offsets, by_alpha_det, by_alpha_beta) =
+        let (by_alpha_offsets, by_alpha_parent_offsets, by_alpha_det, by_alpha_beta) =
             build_source_groups_by_alpha(&spin.parents);
 
         Self {
@@ -241,9 +245,11 @@ impl GpuOneBodyData {
             beta_rank_rep_det,
             beta_rank_component,
             by_beta_offsets,
+            by_beta_parent_offsets,
             by_beta_det,
             by_beta_alpha,
             by_alpha_offsets,
+            by_alpha_parent_offsets,
             by_alpha_det,
             by_alpha_beta,
         }
@@ -417,11 +423,13 @@ fn build_rank_groups(
 /// - `(Vec<usize>, Vec<usize>, Vec<usize>)`: CSR offsets, determinant IDs and alpha components.
 fn build_source_groups_by_beta(
     parents: &[super::super::super::ParentSpinSpace]
-) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+) -> (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
     let mut offsets = Vec::new();
+    let mut parent_offsets = Vec::with_capacity(parents.len());
     let mut dets = Vec::new();
     let mut alphas = Vec::new();
     for parent in parents {
+        parent_offsets.push(offsets.len());
         for b in 0..parent.breps.len() {
             offsets.push(dets.len());
             for entry in &parent.entries {
@@ -433,7 +441,7 @@ fn build_source_groups_by_beta(
         }
         offsets.push(dets.len());
     }
-    (offsets, dets, alphas)
+    (offsets, parent_offsets, dets, alphas)
 }
 
 /// Build deterministic B-first source grouping by alpha component for every parent.
@@ -443,11 +451,13 @@ fn build_source_groups_by_beta(
 /// - `(Vec<usize>, Vec<usize>, Vec<usize>)`: CSR offsets, determinant IDs and beta components.
 fn build_source_groups_by_alpha(
     parents: &[super::super::super::ParentSpinSpace]
-) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+) -> (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
     let mut offsets = Vec::new();
+    let mut parent_offsets = Vec::with_capacity(parents.len());
     let mut dets = Vec::new();
     let mut betas = Vec::new();
     for parent in parents {
+        parent_offsets.push(offsets.len());
         for a in 0..parent.areps.len() {
             offsets.push(dets.len());
             for entry in &parent.entries {
@@ -459,7 +469,7 @@ fn build_source_groups_by_alpha(
         }
         offsets.push(dets.len());
     }
-    (offsets, dets, betas)
+    (offsets, parent_offsets, dets, betas)
 }
 
 /// Upload checked `usize` metadata as `u32`.

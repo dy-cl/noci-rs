@@ -25,13 +25,12 @@ pub(crate) fn xw_overlap(
     work: &mut Array<f64>,
     #[comptime] l: usize,
 ) -> f64 {
-    let m = usize::cast_from(w.m);
     let mut value: f64 = 0.0;
-    if m > l {
+    if w.m > l {
         value = 0.0;
-    } else if w.m == 0u32 {
+    } else if w.m == 0usize {
         value = xw_overlap_m0(w, det0, l);
-    } else if m == l {
+    } else if w.m == l {
         value = xw_overlap_ml(w, det1, l);
     } else {
         value = xw_overlap_gen(w, det0, det1, work, l);
@@ -243,7 +242,7 @@ pub(crate) fn xw_overlap_gen(
     let mut acc = 0.0;
     let limit = 1u32 << l;
     for bits in 0u32..limit {
-        if bits.count_ones() == w.m {
+        if usize::cast_from(bits.count_ones()) == w.m {
             mix_dets_same(det0, det1, work, l, bits);
             acc += det_or_zero(work, l);
         }

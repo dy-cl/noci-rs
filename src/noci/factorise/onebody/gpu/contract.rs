@@ -3,41 +3,348 @@
 
 // External crate imports.
 use cubecl::prelude::*;
-use ndarray::Array1;
 
 // Crate-root imports.
-use crate::noci::types::NOCIScalar;
+use crate::gpu::{GpuBuffer, GpuContext, GpuRuntime};
 
-/// Apply alpha-first contraction on the device.
-/// Computes `Y^Q += F^alpha D (S^beta)^T
-/// + S^alpha D (F^beta+\lambda S^beta)^T`.
+// Parent/sibling imports.
+use super::data::DeviceOneBodyData;
+
+/// Initial contraction kernel cube dimension.
+const CONTRACT_CUBE_DIM: u32 = 128;
+
+/// Launch a real-buffer zeroing kernel.
 /// # Arguments:
-/// - `x`: Source determinant vector.
-/// - `lambda`: Scalar overlap shift.
+/// - `context`: CubeCL context.
+/// - `out`: Device buffer to zero.
+/// - `len`: Logical number of entries to zero.
 /// # Returns
-/// - `Array1<T>`: Device-computed contribution after final download.
-pub(crate) fn apply_one_body_a_first<T: NOCIScalar>(
-    _x: &Array1<T>,
-    _lambda: T,
-) -> Array1<T> {
-    eprintln!("GPU alpha-first one-body contraction is not implemented yet");
-    std::process::exit(1);
+/// - `()`: Writes zero to `out[0..len]`.
+pub(crate) fn launch_zero_f64(
+    context: &GpuContext,
+    out: &GpuBuffer<f64>,
+    len: usize,
+) {
+    if len == 0 {
+        return;
+    }
+    let cubes = launch_cubes(len);
+    unsafe {
+        zero_f64_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(cubes, 1, 1),
+            CubeDim::new_1d(CONTRACT_CUBE_DIM),
+            out.array_arg(),
+            len,
+        );
+    }
 }
 
-/// Apply beta-first contraction on the device.
-/// Computes `Y^Q += S^alpha D (F^beta)^T
-/// + (F^alpha+\lambda S^alpha)D(S^beta)^T`.
+/// Launch the alpha-first stage contraction.
 /// # Arguments:
-/// - `x`: Source determinant vector.
-/// - `lambda`: Scalar overlap shift.
+/// - `context`: CubeCL context.
+/// - `topology`: Device determinant topology.
+/// - `sa`: Alpha overlap factors for this target panel.
+/// - `fa`: Alpha Fock factors for this target panel.
+/// - `x`: Source vector on the device.
+/// - `tf`: Output first-stage Fock table.
+/// - `ts`: Output first-stage overlap table.
+/// - `args`: Launch dimensions and source-parent CSR base.
 /// # Returns
-/// - `Array1<T>`: Device-computed contribution after final download.
-pub(crate) fn apply_one_body_b_first<T: NOCIScalar>(
-    _x: &Array1<T>,
-    _lambda: T,
-) -> Array1<T> {
-    eprintln!("GPU beta-first one-body contraction is not implemented yet");
-    std::process::exit(1);
+/// - `()`: Writes `TF` and `TS` for the panel.
+pub(crate) fn launch_a_first_stage(
+    context: &GpuContext,
+    topology: &DeviceOneBodyData,
+    sa: &GpuBuffer<f64>,
+    fa: &GpuBuffer<f64>,
+    x: &GpuBuffer<f64>,
+    tf: &GpuBuffer<f64>,
+    ts: &GpuBuffer<f64>,
+    args: AFirstStageLaunch,
+) {
+    let nwork = args
+        .nrow
+        .checked_mul(args.nsb)
+        .expect("GPU alpha-first stage length overflow");
+    if nwork == 0 {
+        return;
+    }
+    unsafe {
+        a_first_stage_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(launch_cubes(nwork), 1, 1),
+            CubeDim::new_1d(CONTRACT_CUBE_DIM),
+            sa.array_arg(),
+            fa.array_arg(),
+            x.array_arg(),
+            topology.by_beta_offsets.array_arg(),
+            topology.by_beta_det.array_arg(),
+            topology.by_beta_alpha.array_arg(),
+            tf.array_arg(),
+            ts.array_arg(),
+            args.nrow,
+            args.nsb,
+            args.nsa,
+            args.csr_base,
+            args.target_component_base,
+            args.worker,
+            args.nworker,
+        );
+    }
+}
+
+/// Launch the alpha-first final contraction.
+/// # Arguments:
+/// - `context`: CubeCL context.
+/// - `topology`: Device determinant topology.
+/// - `sb`: Full beta overlap factors.
+/// - `fb`: Full beta Fock factors.
+/// - `tf`: First-stage Fock table.
+/// - `ts`: First-stage overlap table.
+/// - `y`: Output vector to accumulate.
+/// - `args`: Target-parent entry and panel dimensions.
+/// # Returns
+/// - `()`: Accumulates determinant-space output for the panel.
+pub(crate) fn launch_a_first_final(
+    context: &GpuContext,
+    topology: &DeviceOneBodyData,
+    sb: &GpuBuffer<f64>,
+    fb: &GpuBuffer<f64>,
+    tf: &GpuBuffer<f64>,
+    ts: &GpuBuffer<f64>,
+    y: &GpuBuffer<f64>,
+    args: AFirstFinalLaunch,
+) {
+    if args.nentry == 0 {
+        return;
+    }
+    unsafe {
+        a_first_final_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(launch_cubes(args.nentry), 1, 1),
+            CubeDim::new_1d(CONTRACT_CUBE_DIM),
+            sb.array_arg(),
+            fb.array_arg(),
+            topology.entry_det.array_arg(),
+            topology.entry_a.array_arg(),
+            topology.entry_b.array_arg(),
+            tf.array_arg(),
+            ts.array_arg(),
+            y.array_arg(),
+            args.lambda,
+            args.entry_base,
+            args.nentry,
+            args.nsb,
+            args.target_component_base,
+            args.target_component_end,
+            args.worker,
+            args.nworker,
+        );
+    }
+}
+
+/// Launch the beta-first stage contraction.
+/// # Arguments:
+/// - `context`: CubeCL context.
+/// - `topology`: Device determinant topology.
+/// - `sb`: Beta overlap factors for this target panel.
+/// - `fb`: Beta Fock factors for this target panel.
+/// - `x`: Source vector on the device.
+/// - `uf`: Output first-stage Fock table.
+/// - `us`: Output first-stage overlap table.
+/// - `args`: Launch dimensions and source-parent CSR base.
+/// # Returns
+/// - `()`: Writes `UF` and `US` for the panel.
+pub(crate) fn launch_b_first_stage(
+    context: &GpuContext,
+    topology: &DeviceOneBodyData,
+    sb: &GpuBuffer<f64>,
+    fb: &GpuBuffer<f64>,
+    x: &GpuBuffer<f64>,
+    uf: &GpuBuffer<f64>,
+    us: &GpuBuffer<f64>,
+    args: BFirstStageLaunch,
+) {
+    let nwork = args
+        .nsa
+        .checked_mul(args.nrow)
+        .expect("GPU beta-first stage length overflow");
+    if nwork == 0 {
+        return;
+    }
+    unsafe {
+        b_first_stage_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(launch_cubes(nwork), 1, 1),
+            CubeDim::new_1d(CONTRACT_CUBE_DIM),
+            sb.array_arg(),
+            fb.array_arg(),
+            x.array_arg(),
+            topology.by_alpha_offsets.array_arg(),
+            topology.by_alpha_det.array_arg(),
+            topology.by_alpha_beta.array_arg(),
+            uf.array_arg(),
+            us.array_arg(),
+            args.nrow,
+            args.nsa,
+            args.nsb,
+            args.csr_base,
+            args.target_component_base,
+            args.worker,
+            args.nworker,
+        );
+    }
+}
+
+/// Launch the beta-first final contraction.
+/// # Arguments:
+/// - `context`: CubeCL context.
+/// - `topology`: Device determinant topology.
+/// - `sa`: Full alpha overlap factors.
+/// - `fa`: Full alpha Fock factors.
+/// - `uf`: First-stage Fock table.
+/// - `us`: First-stage overlap table.
+/// - `y`: Output vector to accumulate.
+/// - `args`: Target-parent entry and panel dimensions.
+/// # Returns
+/// - `()`: Accumulates determinant-space output for the panel.
+pub(crate) fn launch_b_first_final(
+    context: &GpuContext,
+    topology: &DeviceOneBodyData,
+    sa: &GpuBuffer<f64>,
+    fa: &GpuBuffer<f64>,
+    uf: &GpuBuffer<f64>,
+    us: &GpuBuffer<f64>,
+    y: &GpuBuffer<f64>,
+    args: BFirstFinalLaunch,
+) {
+    if args.nentry == 0 {
+        return;
+    }
+    unsafe {
+        b_first_final_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(launch_cubes(args.nentry), 1, 1),
+            CubeDim::new_1d(CONTRACT_CUBE_DIM),
+            sa.array_arg(),
+            fa.array_arg(),
+            topology.entry_det.array_arg(),
+            topology.entry_a.array_arg(),
+            topology.entry_b.array_arg(),
+            uf.array_arg(),
+            us.array_arg(),
+            y.array_arg(),
+            args.lambda,
+            args.entry_base,
+            args.nentry,
+            args.nsa,
+            args.nrow,
+            args.target_component_base,
+            args.target_component_end,
+            args.worker,
+            args.nworker,
+        );
+    }
+}
+
+/// Alpha-first stage launch dimensions.
+#[derive(Clone, Copy)]
+pub(crate) struct AFirstStageLaunch {
+    /// Alpha panel row count.
+    pub(crate) nrow: usize,
+    /// Source beta component count.
+    pub(crate) nsb: usize,
+    /// Source alpha component count.
+    pub(crate) nsa: usize,
+    /// Source-parent CSR base in `by_beta_offsets`.
+    pub(crate) csr_base: usize,
+    /// First target alpha component represented by panel row zero.
+    pub(crate) target_component_base: usize,
+    /// MPI worker id.
+    pub(crate) worker: usize,
+    /// MPI worker count.
+    pub(crate) nworker: usize,
+}
+
+/// Alpha-first final launch dimensions.
+#[derive(Clone, Copy)]
+pub(crate) struct AFirstFinalLaunch {
+    /// Target-parent entry base.
+    pub(crate) entry_base: usize,
+    /// Number of target-parent entries.
+    pub(crate) nentry: usize,
+    /// Source beta component count.
+    pub(crate) nsb: usize,
+    /// First target alpha component represented by panel row zero.
+    pub(crate) target_component_base: usize,
+    /// One-past-last target alpha component represented in the panel.
+    pub(crate) target_component_end: usize,
+    /// Overlap shift.
+    pub(crate) lambda: f64,
+    /// MPI worker id.
+    pub(crate) worker: usize,
+    /// MPI worker count.
+    pub(crate) nworker: usize,
+}
+
+/// Beta-first stage launch dimensions.
+#[derive(Clone, Copy)]
+pub(crate) struct BFirstStageLaunch {
+    /// Beta panel row count.
+    pub(crate) nrow: usize,
+    /// Source alpha component count.
+    pub(crate) nsa: usize,
+    /// Source beta component count.
+    pub(crate) nsb: usize,
+    /// Source-parent CSR base in `by_alpha_offsets`.
+    pub(crate) csr_base: usize,
+    /// First target beta component represented by panel row zero.
+    pub(crate) target_component_base: usize,
+    /// MPI worker id.
+    pub(crate) worker: usize,
+    /// MPI worker count.
+    pub(crate) nworker: usize,
+}
+
+/// Beta-first final launch dimensions.
+#[derive(Clone, Copy)]
+pub(crate) struct BFirstFinalLaunch {
+    /// Target-parent entry base.
+    pub(crate) entry_base: usize,
+    /// Number of target-parent entries.
+    pub(crate) nentry: usize,
+    /// Source alpha component count.
+    pub(crate) nsa: usize,
+    /// Beta panel row count.
+    pub(crate) nrow: usize,
+    /// First target beta component represented by panel row zero.
+    pub(crate) target_component_base: usize,
+    /// One-past-last target beta component represented in the panel.
+    pub(crate) target_component_end: usize,
+    /// Overlap shift.
+    pub(crate) lambda: f64,
+    /// MPI worker id.
+    pub(crate) worker: usize,
+    /// MPI worker count.
+    pub(crate) nworker: usize,
+}
+
+/// Convert a logical work length into CubeCL cube count.
+/// # Arguments:
+/// - `len`: Work-item count.
+/// # Returns
+/// - `u32`: Cube count.
+fn launch_cubes(len: usize) -> u32 {
+    checked_u32(len.div_ceil(CONTRACT_CUBE_DIM as usize))
+}
+
+/// Convert host metadata to device-width `u32`.
+/// # Arguments:
+/// - `value`: Host value.
+/// # Returns
+/// - `u32`: Checked device-width value.
+fn checked_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("GPU contraction launch dimension exceeds u32")
 }
 
 /// Zero a real device buffer before accumulation.
@@ -71,6 +378,8 @@ pub(crate) fn zero_f64_kernel(
 /// - `nta`: Target alpha component count.
 /// - `nsb`: Source beta component count.
 /// - `nsa`: Source alpha component count.
+/// - `csr_base`: Source-parent CSR base in `by_beta_offsets`.
+/// - `target_component_base`: First target alpha component in the panel.
 /// - `worker`: MPI worker id.
 /// - `nworker`: MPI worker count.
 /// # Returns
@@ -85,30 +394,33 @@ pub(crate) fn a_first_stage_kernel(
     by_beta_alpha: &Array<u32>,
     tf: &mut Array<f64>,
     ts: &mut Array<f64>,
-    nta: usize,
+    nrow: usize,
     nsb: usize,
     nsa: usize,
+    csr_base: usize,
+    target_component_base: usize,
     worker: usize,
     nworker: usize,
 ) {
-    if ABSOLUTE_POS >= nta * nsb {
+    if ABSOLUTE_POS >= nrow * nsb {
         terminate!();
     }
-    let abar = ABSOLUTE_POS / nsb;
-    let b = ABSOLUTE_POS - abar * nsb;
+    let row = ABSOLUTE_POS / nsb;
+    let abar = target_component_base + row;
+    let b = ABSOLUTE_POS - row * nsb;
     if abar % nworker != worker {
         terminate!();
     }
     let mut vf = 0.0;
     let mut vs = 0.0;
-    let start = usize::cast_from(by_beta_offsets[b]);
-    let end = usize::cast_from(by_beta_offsets[b + 1]);
+    let start = usize::cast_from(by_beta_offsets[csr_base + b]);
+    let end = usize::cast_from(by_beta_offsets[csr_base + b + 1usize]);
     for p in start..end {
         let det = usize::cast_from(by_beta_det[p]);
         let a = usize::cast_from(by_beta_alpha[p]);
         let xe = x[det];
-        vf += fa[abar * nsa + a] * xe;
-        vs += sa[abar * nsa + a] * xe;
+        vf += fa[row * nsa + a] * xe;
+        vs += sa[row * nsa + a] * xe;
     }
     tf[ABSOLUTE_POS] = vf;
     ts[ABSOLUTE_POS] = vs;
@@ -127,8 +439,11 @@ pub(crate) fn a_first_stage_kernel(
 /// - `ts`: First-stage overlap table.
 /// - `y`: Output determinant vector.
 /// - `lambda`: Overlap shift.
+/// - `entry_base`: Target-parent entry base.
 /// - `nentry`: Number of target entries.
 /// - `nsb`: Source beta component count.
+/// - `target_component_base`: First target alpha component in the panel.
+/// - `target_component_end`: One-past-last target alpha component in the panel.
 /// - `worker`: MPI worker id.
 /// - `nworker`: MPI worker count.
 /// # Returns
@@ -144,26 +459,34 @@ pub(crate) fn a_first_final_kernel(
     ts: &Array<f64>,
     y: &mut Array<f64>,
     lambda: f64,
+    entry_base: usize,
     nentry: usize,
     nsb: usize,
+    target_component_base: usize,
+    target_component_end: usize,
     worker: usize,
     nworker: usize,
 ) {
     if ABSOLUTE_POS >= nentry {
         terminate!();
     }
-    let abar = usize::cast_from(target_entry_a[ABSOLUTE_POS]);
+    let entry = entry_base + ABSOLUTE_POS;
+    let abar = usize::cast_from(target_entry_a[entry]);
+    if abar < target_component_base || abar >= target_component_end {
+        terminate!();
+    }
     if abar % nworker != worker {
         terminate!();
     }
-    let bbar = usize::cast_from(target_entry_b[ABSOLUTE_POS]);
+    let row = abar - target_component_base;
+    let bbar = usize::cast_from(target_entry_b[entry]);
     let mut value = 0.0;
     for b in 0usize..nsb {
-        value += tf[abar * nsb + b] * sb[bbar * nsb + b]
-            + ts[abar * nsb + b] * (fb[bbar * nsb + b] + lambda * sb[bbar * nsb + b]);
+        value += tf[row * nsb + b] * sb[bbar * nsb + b]
+            + ts[row * nsb + b] * (fb[bbar * nsb + b] + lambda * sb[bbar * nsb + b]);
     }
-    let det = usize::cast_from(target_entry_det[ABSOLUTE_POS]);
-    y[det] += value;
+    let det = usize::cast_from(target_entry_det[entry]);
+    y[det] = y[det] + value;
 }
 
 /// Beta-first stage kernel:
@@ -181,6 +504,8 @@ pub(crate) fn a_first_final_kernel(
 /// - `ntb`: Target beta component count.
 /// - `nsa`: Source alpha component count.
 /// - `nsb`: Source beta component count.
+/// - `csr_base`: Source-parent CSR base in `by_alpha_offsets`.
+/// - `target_component_base`: First target beta component in the panel.
 /// - `worker`: MPI worker id.
 /// - `nworker`: MPI worker count.
 /// # Returns
@@ -195,30 +520,33 @@ pub(crate) fn b_first_stage_kernel(
     by_alpha_beta: &Array<u32>,
     uf: &mut Array<f64>,
     us: &mut Array<f64>,
-    ntb: usize,
+    nrow: usize,
     nsa: usize,
     nsb: usize,
+    csr_base: usize,
+    target_component_base: usize,
     worker: usize,
     nworker: usize,
 ) {
-    if ABSOLUTE_POS >= nsa * ntb {
+    if ABSOLUTE_POS >= nsa * nrow {
         terminate!();
     }
-    let a = ABSOLUTE_POS / ntb;
-    let bbar = ABSOLUTE_POS - a * ntb;
+    let a = ABSOLUTE_POS / nrow;
+    let row = ABSOLUTE_POS - a * nrow;
+    let bbar = target_component_base + row;
     if bbar % nworker != worker {
         terminate!();
     }
     let mut vf = 0.0;
     let mut vs = 0.0;
-    let start = usize::cast_from(by_alpha_offsets[a]);
-    let end = usize::cast_from(by_alpha_offsets[a + 1]);
+    let start = usize::cast_from(by_alpha_offsets[csr_base + a]);
+    let end = usize::cast_from(by_alpha_offsets[csr_base + a + 1usize]);
     for p in start..end {
         let det = usize::cast_from(by_alpha_det[p]);
         let b = usize::cast_from(by_alpha_beta[p]);
         let xe = x[det];
-        vf += xe * fb[bbar * nsb + b];
-        vs += xe * sb[bbar * nsb + b];
+        vf += xe * fb[row * nsb + b];
+        vs += xe * sb[row * nsb + b];
     }
     uf[ABSOLUTE_POS] = vf;
     us[ABSOLUTE_POS] = vs;
@@ -237,9 +565,12 @@ pub(crate) fn b_first_stage_kernel(
 /// - `us`: First-stage overlap table.
 /// - `y`: Output determinant vector.
 /// - `lambda`: Overlap shift.
+/// - `entry_base`: Target-parent entry base.
 /// - `nentry`: Number of target entries.
 /// - `nsa`: Source alpha component count.
-/// - `ntb`: Target beta component count.
+/// - `nrow`: Target beta panel row count.
+/// - `target_component_base`: First target beta component in the panel.
+/// - `target_component_end`: One-past-last target beta component in the panel.
 /// - `worker`: MPI worker id.
 /// - `nworker`: MPI worker count.
 /// # Returns
@@ -255,25 +586,33 @@ pub(crate) fn b_first_final_kernel(
     us: &Array<f64>,
     y: &mut Array<f64>,
     lambda: f64,
+    entry_base: usize,
     nentry: usize,
     nsa: usize,
-    ntb: usize,
+    nrow: usize,
+    target_component_base: usize,
+    target_component_end: usize,
     worker: usize,
     nworker: usize,
 ) {
     if ABSOLUTE_POS >= nentry {
         terminate!();
     }
-    let bbar = usize::cast_from(target_entry_b[ABSOLUTE_POS]);
+    let entry = entry_base + ABSOLUTE_POS;
+    let bbar = usize::cast_from(target_entry_b[entry]);
+    if bbar < target_component_base || bbar >= target_component_end {
+        terminate!();
+    }
     if bbar % nworker != worker {
         terminate!();
     }
-    let abar = usize::cast_from(target_entry_a[ABSOLUTE_POS]);
+    let row = bbar - target_component_base;
+    let abar = usize::cast_from(target_entry_a[entry]);
     let mut value = 0.0;
     for a in 0usize..nsa {
-        value += sa[abar * nsa + a] * uf[a * ntb + bbar]
-            + (fa[abar * nsa + a] + lambda * sa[abar * nsa + a]) * us[a * ntb + bbar];
+        value += sa[abar * nsa + a] * uf[a * nrow + row]
+            + (fa[abar * nsa + a] + lambda * sa[abar * nsa + a]) * us[a * nrow + row];
     }
-    let det = usize::cast_from(target_entry_det[ABSOLUTE_POS]);
-    y[det] += value;
+    let det = usize::cast_from(target_entry_det[entry]);
+    y[det] = y[det] + value;
 }

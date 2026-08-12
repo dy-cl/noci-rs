@@ -131,6 +131,15 @@ impl<T: CubeElement> GpuBuffer<T> {
     pub(crate) fn len(&self) -> usize {
         self.len
     }
+
+    /// Create a CubeCL array launch argument for this device buffer.
+    /// # Arguments:
+    /// - `self`: Device buffer.
+    /// # Returns
+    /// - `ArrayArg<GpuRuntime>`: Runtime launch argument covering the full buffer.
+    pub(crate) fn array_arg(&self) -> ArrayArg<GpuRuntime> {
+        unsafe { ArrayArg::from_raw_parts(self.handle.clone(), self.len()) }
+    }
 }
 
 /// Return the selected CubeCL runtime name.

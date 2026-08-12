@@ -22,7 +22,7 @@ pub(crate) struct GpuSameSpinView {
     /// Scalar current-Fock intermediates.
     pub(crate) f0f: Slice<f64>,
     /// Number of zero-overlap occupied-orbital pairs.
-    pub(crate) m: u32,
+    pub(crate) m: usize,
     /// Number of molecular orbitals.
     pub(crate) nmo: u32,
     /// Number of occupied orbitals.
@@ -129,7 +129,7 @@ pub(crate) fn prepare_same(
     det1: &mut Array<f64>,
     #[comptime] l: usize,
 ) {
-    if w.m == 0u32 {
+    if w.m == 0usize {
         prepare_same_m0(
             w, l_rank, g_rank, l_holes, l_parts, g_holes, g_parts, rows, cols, det0, l,
         );

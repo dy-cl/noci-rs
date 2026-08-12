@@ -2,12 +2,12 @@
 //! GPU representation of nonorthogonal Wick intermediates.
 
 mod build;
-mod eval;
+pub(crate) mod eval;
 mod layout;
 mod pack;
 mod scratch;
 mod storage;
-mod types;
+pub(crate) mod types;
 mod view;
 
 // Crate-visible type re-exports.

@@ -36,7 +36,7 @@ pub(crate) fn xw_f(
     new_col: &mut Array<f64>,
     #[comptime] l: usize,
 ) -> f64 {
-    if w.m == 0u32 {
+    if w.m == 0usize {
         xw_one_body_m0(w, rows, cols, det0, cof, l)
     } else {
         xw_one_body_gen(w, rows, cols, det0, det1, work, cof, new_col, l)
@@ -240,7 +240,7 @@ pub(crate) fn xw_one_body_gen(
     let mut acc = 0.0;
     let limit = 1u32 << (l + 1usize);
     for bits in 0u32..limit {
-        if bits.count_ones() == w.m {
+        if usize::cast_from(bits.count_ones()) == w.m {
             let mi = bit(bits, 0usize);
             let cbits = bits >> 1u32;
             mix_dets_same(det0, det1, work, l, cbits);
