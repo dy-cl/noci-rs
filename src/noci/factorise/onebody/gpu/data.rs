@@ -2,6 +2,7 @@
 //! GPU-resident data layout for factorised one-body NOCI operator contractions.
 
 // Crate-root imports.
+use crate::gpu::{GpuBuffer, GpuContext};
 use crate::noci::types::{NOCIData, NOCIScalar};
 
 // Parent/sibling imports.
@@ -47,6 +48,98 @@ pub(crate) struct GpuOneBodyData {
     pub(crate) beta_holes: Vec<u16>,
     /// Flattened beta particle orbital indices.
     pub(crate) beta_parts: Vec<u16>,
+    /// Determinant alpha excitation phases.
+    pub(crate) pha: Vec<f64>,
+    /// Determinant beta excitation phases.
+    pub(crate) phb: Vec<f64>,
+    /// Maximum decoded alpha excitation rank.
+    pub(crate) max_alpha_rank: usize,
+    /// Maximum decoded beta excitation rank.
+    pub(crate) max_beta_rank: usize,
+    /// Per-parent alpha rank group offsets with stride `max_alpha_rank + 2`.
+    pub(crate) parent_alpha_rank_offsets: Vec<usize>,
+    /// Rank-sorted alpha representative determinant IDs.
+    pub(crate) alpha_rank_rep_det: Vec<usize>,
+    /// Original parent-local alpha component for each rank-sorted alpha representative.
+    pub(crate) alpha_rank_component: Vec<usize>,
+    /// Per-parent beta rank group offsets with stride `max_beta_rank + 2`.
+    pub(crate) parent_beta_rank_offsets: Vec<usize>,
+    /// Rank-sorted beta representative determinant IDs.
+    pub(crate) beta_rank_rep_det: Vec<usize>,
+    /// Original parent-local beta component for each rank-sorted beta representative.
+    pub(crate) beta_rank_component: Vec<usize>,
+    /// A-first CSR offsets keyed by source beta component for each parent.
+    pub(crate) by_beta_offsets: Vec<usize>,
+    /// A-first CSR determinant IDs.
+    pub(crate) by_beta_det: Vec<usize>,
+    /// A-first CSR source alpha component IDs.
+    pub(crate) by_beta_alpha: Vec<usize>,
+    /// B-first CSR offsets keyed by source alpha component for each parent.
+    pub(crate) by_alpha_offsets: Vec<usize>,
+    /// B-first CSR determinant IDs.
+    pub(crate) by_alpha_det: Vec<usize>,
+    /// B-first CSR source beta component IDs.
+    pub(crate) by_alpha_beta: Vec<usize>,
+}
+
+/// Device-resident determinant topology and decoded excitation data.
+pub(crate) struct DeviceOneBodyData {
+    /// Parent entry offsets.
+    pub(crate) parent_entry_offsets: GpuBuffer<u32>,
+    /// Entry determinant indices.
+    pub(crate) entry_det: GpuBuffer<u32>,
+    /// Entry parent-local alpha IDs.
+    pub(crate) entry_a: GpuBuffer<u32>,
+    /// Entry parent-local beta IDs.
+    pub(crate) entry_b: GpuBuffer<u32>,
+    /// Alpha excitation rank keyed by determinant.
+    pub(crate) alpha_rank: GpuBuffer<u32>,
+    /// Alpha hole offset keyed by determinant.
+    pub(crate) alpha_holes_offset: GpuBuffer<u32>,
+    /// Alpha particle offset keyed by determinant.
+    pub(crate) alpha_parts_offset: GpuBuffer<u32>,
+    /// Flattened alpha hole orbital labels.
+    pub(crate) alpha_holes: GpuBuffer<u32>,
+    /// Flattened alpha particle orbital labels.
+    pub(crate) alpha_parts: GpuBuffer<u32>,
+    /// Beta excitation rank keyed by determinant.
+    pub(crate) beta_rank: GpuBuffer<u32>,
+    /// Beta hole offset keyed by determinant.
+    pub(crate) beta_holes_offset: GpuBuffer<u32>,
+    /// Beta particle offset keyed by determinant.
+    pub(crate) beta_parts_offset: GpuBuffer<u32>,
+    /// Flattened beta hole orbital labels.
+    pub(crate) beta_holes: GpuBuffer<u32>,
+    /// Flattened beta particle orbital labels.
+    pub(crate) beta_parts: GpuBuffer<u32>,
+    /// Determinant alpha excitation phases.
+    pub(crate) pha: GpuBuffer<f64>,
+    /// Determinant beta excitation phases.
+    pub(crate) phb: GpuBuffer<f64>,
+    /// Per-parent alpha rank group offsets.
+    pub(crate) parent_alpha_rank_offsets: GpuBuffer<u32>,
+    /// Rank-sorted alpha representative determinant IDs.
+    pub(crate) alpha_rank_rep_det: GpuBuffer<u32>,
+    /// Original parent-local alpha component for rank-sorted alpha representatives.
+    pub(crate) alpha_rank_component: GpuBuffer<u32>,
+    /// Per-parent beta rank group offsets.
+    pub(crate) parent_beta_rank_offsets: GpuBuffer<u32>,
+    /// Rank-sorted beta representative determinant IDs.
+    pub(crate) beta_rank_rep_det: GpuBuffer<u32>,
+    /// Original parent-local beta component for rank-sorted beta representatives.
+    pub(crate) beta_rank_component: GpuBuffer<u32>,
+    /// A-first CSR offsets keyed by source beta component for each parent.
+    pub(crate) by_beta_offsets: GpuBuffer<u32>,
+    /// A-first CSR determinant IDs.
+    pub(crate) by_beta_det: GpuBuffer<u32>,
+    /// A-first CSR source alpha component IDs.
+    pub(crate) by_beta_alpha: GpuBuffer<u32>,
+    /// B-first CSR offsets keyed by source alpha component for each parent.
+    pub(crate) by_alpha_offsets: GpuBuffer<u32>,
+    /// B-first CSR determinant IDs.
+    pub(crate) by_alpha_det: GpuBuffer<u32>,
+    /// B-first CSR source beta component IDs.
+    pub(crate) by_alpha_beta: GpuBuffer<u32>,
 }
 
 impl GpuOneBodyData {
@@ -91,8 +184,12 @@ impl GpuOneBodyData {
         let mut alpha_parts = Vec::new();
         let mut beta_holes = Vec::new();
         let mut beta_parts = Vec::new();
+        let mut pha = Vec::with_capacity(data.basis.len());
+        let mut phb = Vec::with_capacity(data.basis.len());
 
         for det in data.basis {
+            pha.push(det.pha);
+            phb.push(det.phb);
             alpha.push(decode_excitation(
                 det.excitation.alpha.holes,
                 det.excitation.alpha.parts,
@@ -106,6 +203,17 @@ impl GpuOneBodyData {
                 &mut beta_parts,
             ));
         }
+
+        let max_alpha_rank = alpha.iter().map(|ex| ex.rank as usize).max().unwrap_or(0);
+        let max_beta_rank = beta.iter().map(|ex| ex.rank as usize).max().unwrap_or(0);
+        let (parent_alpha_rank_offsets, alpha_rank_rep_det, alpha_rank_component) =
+            build_rank_groups(&spin.parents, true, &alpha, max_alpha_rank);
+        let (parent_beta_rank_offsets, beta_rank_rep_det, beta_rank_component) =
+            build_rank_groups(&spin.parents, false, &beta, max_beta_rank);
+        let (by_beta_offsets, by_beta_det, by_beta_alpha) =
+            build_source_groups_by_beta(&spin.parents);
+        let (by_alpha_offsets, by_alpha_det, by_alpha_beta) =
+            build_source_groups_by_alpha(&spin.parents);
 
         Self {
             parent_entry_offsets,
@@ -122,6 +230,95 @@ impl GpuOneBodyData {
             alpha_parts,
             beta_holes,
             beta_parts,
+            pha,
+            phb,
+            max_alpha_rank,
+            max_beta_rank,
+            parent_alpha_rank_offsets,
+            alpha_rank_rep_det,
+            alpha_rank_component,
+            parent_beta_rank_offsets,
+            beta_rank_rep_det,
+            beta_rank_component,
+            by_beta_offsets,
+            by_beta_det,
+            by_beta_alpha,
+            by_alpha_offsets,
+            by_alpha_det,
+            by_alpha_beta,
+        }
+    }
+
+    /// Upload determinant topology and decoded excitations to CubeCL device buffers.
+    /// # Arguments:
+    /// - `self`: Host topology data.
+    /// - `context`: CubeCL context owning the target device.
+    /// # Returns
+    /// - `DeviceOneBodyData`: Device topology buffers.
+    pub(crate) fn upload(
+        &self,
+        context: &GpuContext,
+    ) -> DeviceOneBodyData {
+        let alpha_rank = self
+            .alpha
+            .iter()
+            .map(|ex| u32::from(ex.rank))
+            .collect::<Vec<_>>();
+        let alpha_holes_offset = self
+            .alpha
+            .iter()
+            .map(|ex| checked_u32(ex.holes_offset))
+            .collect::<Vec<_>>();
+        let alpha_parts_offset = self
+            .alpha
+            .iter()
+            .map(|ex| checked_u32(ex.parts_offset))
+            .collect::<Vec<_>>();
+        let beta_rank = self
+            .beta
+            .iter()
+            .map(|ex| u32::from(ex.rank))
+            .collect::<Vec<_>>();
+        let beta_holes_offset = self
+            .beta
+            .iter()
+            .map(|ex| checked_u32(ex.holes_offset))
+            .collect::<Vec<_>>();
+        let beta_parts_offset = self
+            .beta
+            .iter()
+            .map(|ex| checked_u32(ex.parts_offset))
+            .collect::<Vec<_>>();
+
+        DeviceOneBodyData {
+            parent_entry_offsets: upload_usize(context, &self.parent_entry_offsets),
+            entry_det: upload_usize(context, &self.entry_det),
+            entry_a: upload_usize(context, &self.entry_a),
+            entry_b: upload_usize(context, &self.entry_b),
+            alpha_rank: GpuBuffer::from_slice(context, &alpha_rank),
+            alpha_holes_offset: GpuBuffer::from_slice(context, &alpha_holes_offset),
+            alpha_parts_offset: GpuBuffer::from_slice(context, &alpha_parts_offset),
+            alpha_holes: upload_u16(context, &self.alpha_holes),
+            alpha_parts: upload_u16(context, &self.alpha_parts),
+            beta_rank: GpuBuffer::from_slice(context, &beta_rank),
+            beta_holes_offset: GpuBuffer::from_slice(context, &beta_holes_offset),
+            beta_parts_offset: GpuBuffer::from_slice(context, &beta_parts_offset),
+            beta_holes: upload_u16(context, &self.beta_holes),
+            beta_parts: upload_u16(context, &self.beta_parts),
+            pha: GpuBuffer::from_slice(context, &self.pha),
+            phb: GpuBuffer::from_slice(context, &self.phb),
+            parent_alpha_rank_offsets: upload_usize(context, &self.parent_alpha_rank_offsets),
+            alpha_rank_rep_det: upload_usize(context, &self.alpha_rank_rep_det),
+            alpha_rank_component: upload_usize(context, &self.alpha_rank_component),
+            parent_beta_rank_offsets: upload_usize(context, &self.parent_beta_rank_offsets),
+            beta_rank_rep_det: upload_usize(context, &self.beta_rank_rep_det),
+            beta_rank_component: upload_usize(context, &self.beta_rank_component),
+            by_beta_offsets: upload_usize(context, &self.by_beta_offsets),
+            by_beta_det: upload_usize(context, &self.by_beta_det),
+            by_beta_alpha: upload_usize(context, &self.by_beta_alpha),
+            by_alpha_offsets: upload_usize(context, &self.by_alpha_offsets),
+            by_alpha_det: upload_usize(context, &self.by_alpha_det),
+            by_alpha_beta: upload_usize(context, &self.by_alpha_beta),
         }
     }
 }
@@ -168,7 +365,136 @@ fn push_bits(
 ) {
     while bits != 0 {
         let orbital = bits.trailing_zeros();
+        if orbital > u16::MAX as u32 {
+            eprintln!("GPU decoded excitation orbital index exceeds u16 storage");
+            std::process::exit(1);
+        }
         out.push(orbital as u16);
         bits &= bits - 1;
     }
+}
+
+/// Build rank-sorted representative groups for one spin sector.
+/// # Arguments:
+/// - `parents`: Parent-local spin spaces.
+/// - `alpha`: Whether to group alpha or beta representatives.
+/// - `decoded`: Decoded excitations keyed by determinant.
+/// - `max_rank`: Largest rank in this spin sector.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>, Vec<usize>)`: Parent rank offsets, representative determinants and original components.
+fn build_rank_groups(
+    parents: &[super::super::super::ParentSpinSpace],
+    alpha: bool,
+    decoded: &[GpuDecodedExcitation],
+    max_rank: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let stride = max_rank + 2;
+    let mut offsets = Vec::with_capacity(parents.len() * stride);
+    let mut rep_det = Vec::new();
+    let mut component = Vec::new();
+
+    for parent in parents {
+        let reps = if alpha { &parent.areps } else { &parent.breps };
+        for rank in 0..=max_rank {
+            offsets.push(rep_det.len());
+            for (comp, &det) in reps.iter().enumerate() {
+                if decoded[det].rank as usize == rank {
+                    rep_det.push(det);
+                    component.push(comp);
+                }
+            }
+        }
+        offsets.push(rep_det.len());
+    }
+
+    (offsets, rep_det, component)
+}
+
+/// Build deterministic A-first source grouping by beta component for every parent.
+/// # Arguments:
+/// - `parents`: Parent-local spin spaces.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>, Vec<usize>)`: CSR offsets, determinant IDs and alpha components.
+fn build_source_groups_by_beta(
+    parents: &[super::super::super::ParentSpinSpace]
+) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut offsets = Vec::new();
+    let mut dets = Vec::new();
+    let mut alphas = Vec::new();
+    for parent in parents {
+        for b in 0..parent.breps.len() {
+            offsets.push(dets.len());
+            for entry in &parent.entries {
+                if entry.b == b {
+                    dets.push(entry.det);
+                    alphas.push(entry.a);
+                }
+            }
+        }
+        offsets.push(dets.len());
+    }
+    (offsets, dets, alphas)
+}
+
+/// Build deterministic B-first source grouping by alpha component for every parent.
+/// # Arguments:
+/// - `parents`: Parent-local spin spaces.
+/// # Returns
+/// - `(Vec<usize>, Vec<usize>, Vec<usize>)`: CSR offsets, determinant IDs and beta components.
+fn build_source_groups_by_alpha(
+    parents: &[super::super::super::ParentSpinSpace]
+) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut offsets = Vec::new();
+    let mut dets = Vec::new();
+    let mut betas = Vec::new();
+    for parent in parents {
+        for a in 0..parent.areps.len() {
+            offsets.push(dets.len());
+            for entry in &parent.entries {
+                if entry.a == a {
+                    dets.push(entry.det);
+                    betas.push(entry.b);
+                }
+            }
+        }
+        offsets.push(dets.len());
+    }
+    (offsets, dets, betas)
+}
+
+/// Upload checked `usize` metadata as `u32`.
+/// # Arguments:
+/// - `context`: CubeCL context.
+/// - `values`: Host values.
+/// # Returns
+/// - `GpuBuffer<u32>`: Device buffer.
+fn upload_usize(
+    context: &GpuContext,
+    values: &[usize],
+) -> GpuBuffer<u32> {
+    let values = values.iter().copied().map(checked_u32).collect::<Vec<_>>();
+    GpuBuffer::from_slice(context, &values)
+}
+
+/// Upload checked `u16` orbital labels as `u32`.
+/// # Arguments:
+/// - `context`: CubeCL context.
+/// - `values`: Host orbital labels.
+/// # Returns
+/// - `GpuBuffer<u32>`: Device buffer.
+fn upload_u16(
+    context: &GpuContext,
+    values: &[u16],
+) -> GpuBuffer<u32> {
+    let values = values.iter().copied().map(u32::from).collect::<Vec<_>>();
+    GpuBuffer::from_slice(context, &values)
+}
+
+/// Convert `usize` metadata to `u32`, failing before any silent truncation.
+/// # Arguments:
+/// - `value`: Host metadata value.
+/// # Returns
+/// - `u32`: Checked device-width value.
+fn checked_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("GPU one-body topology exceeds u32 device representation")
 }

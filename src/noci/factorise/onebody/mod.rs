@@ -31,7 +31,7 @@ pub(crate) enum OneBodyBackend<T: NOCIScalar> {
     GPU(GpuOneBodyBackend<T>),
 }
 
-impl<T: NOCIScalar> OneBodyBackend<T> {
+impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
     /// Build a factorised one-body backend for the current generalised Fock operator.
     /// # Arguments:
     /// - `backend`: Runtime backend requested by input.

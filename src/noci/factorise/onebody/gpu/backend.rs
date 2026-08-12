@@ -2,6 +2,7 @@
 //! GPU backend for spin-factorised one-body NOCI operator contractions.
 
 // Standard library imports.
+use std::any::TypeId;
 use std::path::Path;
 
 // External crate imports.
@@ -11,12 +12,13 @@ use ndarray::Array1;
 use crate::gpu::GpuContext;
 use crate::input::SNOCIStorage;
 use crate::noci::types::{FockData, NOCIData, NOCIScalar};
+use crate::nonorthogonalwicks::gpu::types::DeviceWicksShared;
 use crate::nonorthogonalwicks::{WicksRequirements, gpu};
 
 // Parent/sibling imports.
 use super::super::super::SpinFactorisation;
 use super::super::plan::OneBodyPlan;
-use super::data::GpuOneBodyData;
+use super::data::{DeviceOneBodyData, GpuOneBodyData};
 
 /// CubeCL factorised one-body backend for the current generalised Fock.
 pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
@@ -28,11 +30,15 @@ pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
     plan: OneBodyPlan,
     /// GPU-packed Wick data required for NOCI-PT2 one-body evaluation.
     wicks: gpu::WicksShared<T>,
+    /// Device-resident real Wick data.
+    device_wicks: DeviceWicksShared,
     /// Factorised-operator GPU topology data.
     data: GpuOneBodyData,
+    /// Device-resident determinant topology and decoded excitations.
+    device_data: DeviceOneBodyData,
 }
 
-impl<T: NOCIScalar> GpuOneBodyBackend<T> {
+impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     /// Build GPU-resident data for the current generalised Fock operator.
     /// # Arguments:
     /// - `data`: Shared NOCI data with Wick intermediates for the candidate determinant basis.
@@ -51,6 +57,10 @@ impl<T: NOCIScalar> GpuOneBodyBackend<T> {
         _iteration: usize,
         storage: SNOCIStorage,
     ) -> Self {
+        if TypeId::of::<T>() != TypeId::of::<f64>() {
+            eprintln!("snoci.backend = \"gpu\" currently supports real f64 NOCI-PT2 data only");
+            std::process::exit(1);
+        }
         if !matches!(storage, SNOCIStorage::None) {
             eprintln!("snoci.backend = \"gpu\" requires snoci.gmres.factor_tables = \"none\"");
             std::process::exit(1);
@@ -64,12 +74,17 @@ impl<T: NOCIScalar> GpuOneBodyBackend<T> {
         let requirements = WicksRequirements::one_body();
         let wicks = gpu::pack_wicks(wicks, requirements);
         let gpu_data = GpuOneBodyData::new(&spin, data);
+        let context = GpuContext::new();
+        let device_wicks = unsafe { upload_real_wicks(&wicks, &context) };
+        let device_data = gpu_data.upload(&context);
         Self {
-            context: GpuContext::new(),
+            context,
             spin,
             plan,
             wicks,
+            device_wicks,
             data: gpu_data,
+            device_data,
         }
     }
 
@@ -94,7 +109,7 @@ impl<T: NOCIScalar> GpuOneBodyBackend<T> {
         _partition: (usize, usize),
     ) -> Array1<T> {
         eprintln!(
-            "CubeCL GPU one-body arithmetic for runtime '{}' is not implemented yet",
+            "CubeCL GPU one-body orchestration for runtime '{}' is not complete: nonorthogonal kernels are present, but panel contraction launch wiring remains unsupported on this boundary",
             self.context.runtime_name()
         );
         std::process::exit(1);
@@ -114,9 +129,23 @@ impl<T: NOCIScalar> GpuOneBodyBackend<T> {
         _lambda: T,
     ) -> (Array1<T>, Array1<T>) {
         eprintln!(
-            "CubeCL GPU one-body diagonals for runtime '{}' are not implemented yet",
+            "CubeCL GPU one-body diagonal orchestration for runtime '{}' is not complete",
             self.context.runtime_name()
         );
         std::process::exit(1);
     }
+}
+
+/// Upload host-packed Wick storage after the caller has proven `T = f64`.
+/// # Arguments:
+/// - `wicks`: Host-packed Wick storage with real scalar layout.
+/// - `context`: CubeCL context owning the target device.
+/// # Returns
+/// - `DeviceWicksShared`: Device Wick buffers.
+unsafe fn upload_real_wicks<T: NOCIScalar>(
+    wicks: &gpu::WicksShared<T>,
+    context: &GpuContext,
+) -> DeviceWicksShared {
+    let real = &*(wicks as *const gpu::WicksShared<T> as *const gpu::WicksShared<f64>);
+    real.upload_f64(context)
 }
