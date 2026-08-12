@@ -198,7 +198,7 @@ pub(crate) fn xw_one_body_m0_gen(
     cols: &Array<u32>,
     d: &Array<f64>,
     cof: &mut Array<f64>,
-    l: usize,
+    #[comptime] l: usize,
 ) -> f64 {
     let det = fill_cofactors(d, cof, l);
     let mut contrib = det * w.f0f[0];
@@ -237,27 +237,35 @@ pub(crate) fn xw_one_body_gen(
     new_col: &mut Array<f64>,
     #[comptime] l: usize,
 ) -> f64 {
-    let mut acc = 0.0;
-    let limit = 1u32 << (l + 1usize);
-    for bits in 0u32..limit {
-        if usize::cast_from(bits.count_ones()) == w.m {
-            let mi = bit(bits, 0usize);
-            let cbits = bits >> 1u32;
-            mix_dets_same(det0, det1, work, l, cbits);
-            let det = fill_cofactors(work, cof, l);
-            let mut contrib = det * w.f0f[mi];
-            for z in 0usize..l {
-                let mj = bit(bits, z + 1usize);
-                for eta in 0usize..l {
-                    new_col[eta] = ff_t(w, mi, mj, cols[z], rows[eta]);
-                }
-                let corr = column_replacement_correction(l, work, cof, z, new_col);
-                contrib -= det + corr;
-            }
-            acc += contrib;
+    let mut value = 0.0;
+    if comptime!(l == 0usize) {
+        if w.m == 1usize {
+            value = prefactor(w) * w.f0f[1];
         }
+    } else {
+        let mut acc = 0.0;
+        let limit = 1u32 << (l + 1usize);
+        for bits in 0u32..limit {
+            if usize::cast_from(bits.count_ones()) == w.m {
+                let mi = bit(bits, 0usize);
+                let cbits = bits >> 1u32;
+                mix_dets_same(det0, det1, work, l, cbits);
+                let det = fill_cofactors(work, cof, l);
+                let mut contrib = det * w.f0f[mi];
+                for z in 0usize..l {
+                    let mj = bit(bits, z + 1usize);
+                    for eta in 0usize..l {
+                        new_col[eta] = ff_t(w, mi, mj, cols[z], rows[eta]);
+                    }
+                    let corr = column_replacement_correction(l, work, cof, z, new_col);
+                    contrib -= det + corr;
+                }
+                acc += contrib;
+            }
+        }
+        value = prefactor(w) * acc;
     }
-    prefactor(w) * acc
+    value
 }
 
 /// Fill cofactors for a small determinant without using inverse-based formulas.
@@ -271,21 +279,24 @@ pub(crate) fn xw_one_body_gen(
 pub(crate) fn fill_cofactors(
     d: &Array<f64>,
     cof: &mut Array<f64>,
-    l: usize,
+    #[comptime] l: usize,
 ) -> f64 {
-    if l == 1usize {
+    let mut value = 0.0;
+    if comptime!(l == 0usize) {
+        value = 1.0;
+    } else if comptime!(l == 1usize) {
         cof[0] = 1.0;
-        d[0]
-    } else if l == 2usize {
+        value = d[0];
+    } else if comptime!(l == 2usize) {
         cof[0] = d[3];
         cof[1] = -d[2];
         cof[2] = -d[1];
         cof[3] = d[0];
-        det2(d[0], d[1], d[2], d[3])
-    } else if l == 3usize {
-        adjugate_transpose3(d, cof)
-    } else if l == 4usize {
-        adjugate_transpose4(d, cof)
+        value = det2(d[0], d[1], d[2], d[3]);
+    } else if comptime!(l == 3usize) {
+        value = adjugate_transpose3(d, cof);
+    } else if comptime!(l == 4usize) {
+        value = adjugate_transpose4(d, cof);
     } else {
         let det = det_or_zero(d, l);
         for r in 0usize..l {
@@ -293,8 +304,9 @@ pub(crate) fn fill_cofactors(
                 cof[r * l + c] = cofactor_minor(d, l, r, c);
             }
         }
-        det
+        value = det;
     }
+    value
 }
 
 /// Evaluate one cofactor by an explicit minor determinant for fallback ranks.
@@ -308,7 +320,7 @@ pub(crate) fn fill_cofactors(
 #[cube]
 pub(crate) fn cofactor_minor(
     d: &Array<f64>,
-    l: usize,
+    #[comptime] l: usize,
     skip_r: usize,
     skip_c: usize,
 ) -> f64 {
