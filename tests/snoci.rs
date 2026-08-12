@@ -3,6 +3,7 @@ mod common;
 // External crate imports.
 use noci_rs::PostSCFData;
 use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
+use noci_rs::input::SNOCIBackend;
 use noci_rs::noci::{
     NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
 };
@@ -22,6 +23,22 @@ struct ExpectedSNOCI {
     reference_noci_energy: f64,
     /// Expected selected NOCI energy.
     snoci_energy: f64,
+}
+
+/// Energies and GMRES diagnostics from one backend-specific SNOCI run.
+struct SNOCIGpuComparisonRun {
+    /// Sorted SCF state energies.
+    scf_energies: Vec<f64>,
+    /// Reference-space NOCI energy.
+    reference_noci_energy: f64,
+    /// Selected NOCI energy after the SNOCI step.
+    snoci_energy: f64,
+    /// Last NOCI-PT2 correction energy used for selection.
+    ept2: f64,
+    /// Final GMRES residual.
+    gmres_residual: f64,
+    /// Final GMRES iteration count.
+    gmres_iterations: usize,
 }
 
 /// Run SCF, reference NOCI and selected NOCI and compare energies with known good energies.
@@ -146,6 +163,90 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     }
 
     (scf_energies, e_ref, result.ecurrent)
+}
+
+/// Run a Wicks SNOCI fixture with an explicit one-body backend.
+/// The input fixture supplies all numerical settings, while this helper overwrites only
+/// `snoci.backend` so CPU and GPU runs compare the same matrix-free factorised path.
+/// # Arguments:
+/// - `fixture`: Name of the Wicks fixture to load.
+/// - `backend`: One-body backend to use for the NOCI-PT2 solves inside SNOCI.
+/// # Returns
+/// - `SNOCIBackendRun`: Energies and GMRES diagnostics from the final completed iteration.
+fn run_snoci_fixture_wicks_with(
+    fixture: &str,
+    backend: SNOCIBackend,
+) -> SNOCIGpuComparisonRun {
+    let (mut input, ao, _expected): (_, _, ExpectedSNOCI) = load_test(fixture);
+    input
+        .snoci
+        .as_mut()
+        .expect("SNOCI fixture must define snoci")
+        .backend = backend;
+
+    let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
+    let states = basis.states;
+
+    let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
+    scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mut noci_reference_basis: Vec<_> =
+        states.iter().filter(|s| s.noci_basis).cloned().collect();
+    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
+        st.parent = i;
+    }
+
+    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+
+    let (_mpi_lock, universe) = mpi_universe();
+    let world = universe.world();
+
+    let mut wicks = build_wicks_shared::<f64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+    let (e_ref, _c0, _dt_hs_ref) = {
+        let wicks_view = wicks.view();
+        calculate_noci_energy(
+            &ao,
+            &input,
+            &noci_reference_basis,
+            1e-12,
+            &mocache,
+            Some(wicks_view),
+        )
+    };
+
+    let post = PostSCFData {
+        ao: &ao,
+        states: &states,
+        noci_reference_basis: &noci_reference_basis,
+        mocache: &mocache,
+        tol: 1e-12,
+    };
+
+    let result = snoci_step(
+        &post,
+        &noci_reference_basis,
+        &input,
+        Some(&mut wicks),
+        &world,
+    );
+    let pt2 = result
+        .pt2
+        .last()
+        .expect("SNOCI did not produce a NOCI-PT2 result");
+    assert!(
+        pt2.gmres_converged,
+        "SNOCI GMRES failed to converge: residual {}",
+        pt2.gmres_residual,
+    );
+
+    SNOCIGpuComparisonRun {
+        scf_energies,
+        reference_noci_energy: e_ref,
+        snoci_energy: result.ecurrent,
+        ept2: pt2.ept2,
+        gmres_residual: pt2.gmres_residual,
+        gmres_iterations: pt2.gmres_iterations,
+    }
 }
 
 /// Test that the H2 STO-3G 1.5 Angstrom fixture reproduces the expected SCF state energies,
@@ -568,4 +669,49 @@ fn snoci_h2_3_21g_1_5_ang_energies_agree() {
         1e-8,
         "H2 selected NOCI Wicks agreement",
     );
+}
+
+/// Test that the H2 3-21G GPU SNOCI path agrees with the CPU factorised path.
+/// # Panics
+/// - If CPU or GPU GMRES does not converge.
+/// - If SCF, reference NOCI, selected NOCI, PT2 correction or GMRES diagnostics differ outside
+///   tolerance.
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "gpu"]
+#[serial]
+fn snoci_h2_3_21g_1_5_ang_gpu_matches_cpu() {
+    let cpu = run_snoci_fixture_wicks_with("SNOCI_H2_3-21G_1_5_GPU", SNOCIBackend::CPU);
+    let gpu = run_snoci_fixture_wicks_with("SNOCI_H2_3-21G_1_5_GPU", SNOCIBackend::GPU);
+
+    assert_eq!(cpu.scf_energies.len(), gpu.scf_energies.len());
+    for (i, (&x, &y)) in cpu
+        .scf_energies
+        .iter()
+        .zip(gpu.scf_energies.iter())
+        .enumerate()
+    {
+        assert_close(x, y, 1e-8, &format!("H2 SCF state {i} GPU agreement"));
+    }
+
+    assert_close(
+        cpu.reference_noci_energy,
+        gpu.reference_noci_energy,
+        1e-8,
+        "H2 reference NOCI GPU agreement",
+    );
+    assert_close(
+        cpu.snoci_energy,
+        gpu.snoci_energy,
+        1e-8,
+        "H2 selected NOCI GPU agreement",
+    );
+    assert_close(cpu.ept2, gpu.ept2, 1e-8, "H2 EPT2 GPU agreement");
+    assert_close(
+        cpu.gmres_residual,
+        gpu.gmres_residual,
+        1e-8,
+        "H2 GMRES residual GPU agreement",
+    );
+    assert_eq!(cpu.gmres_iterations, gpu.gmres_iterations);
 }
