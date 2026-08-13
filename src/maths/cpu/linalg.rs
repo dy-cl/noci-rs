@@ -1,4 +1,4 @@
-// maths/linalg.rs
+// maths/cpu/linalg.rs
 
 // External crate imports.
 use ndarray::{Array1, Array2, Axis, ShapeBuilder};

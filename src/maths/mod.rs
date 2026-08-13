@@ -14,13 +14,9 @@
 //!
 //! Numerical kernels support real or complex scalar types where required by their callers.
 
-pub mod einsum;
-pub mod eri;
-pub mod linalg;
-pub mod wick;
+pub mod cpu;
+#[cfg(feature = "gpu")]
+pub(crate) mod gpu;
 
 // Public mixed re-exports.
-pub use einsum::*;
-pub use eri::*;
-pub use linalg::*;
-pub use wick::*;
+pub use cpu::*;

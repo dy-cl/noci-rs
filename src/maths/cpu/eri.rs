@@ -1,4 +1,4 @@
-// maths/eri.rs
+// maths/cpu/eri.rs
 
 // External crate imports.
 use ndarray::linalg::general_mat_mul;

@@ -1,4 +1,4 @@
-// maths/einsum.rs
+// maths/cpu/einsum.rs
 
 // Standard library imports.
 use std::cell::RefCell;

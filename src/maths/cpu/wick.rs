@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
-// maths/wick.rs
+// maths/cpu/wick.rs
 
 // External crate imports.
 #[cfg(feature = "nocc")]
