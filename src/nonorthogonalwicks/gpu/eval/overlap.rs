@@ -4,8 +4,11 @@
 // External crate imports.
 use cubecl::prelude::*;
 
+// Crate-root imports.
+use crate::maths::gpu::wick::{det2, det3, det4};
+
 // Parent/sibling imports.
-use super::helpers::{bit, det_or_zero, det2, det3, det4};
+use super::helpers::{bit, det_or_zero};
 use super::prepare::{GpuSameSpinView, prefactor};
 
 /// Evaluate the same-spin overlap between excited determinants generated from the ordered reference pair.

@@ -4,10 +4,13 @@
 // External crate imports.
 use cubecl::prelude::*;
 
-// Parent/sibling imports.
-use super::helpers::{
-    adjugate_transpose3, adjugate_transpose4, bit, column_replacement_correction, det_or_zero, det2,
+// Crate-root imports.
+use crate::maths::gpu::wick::{
+    adjugate_transpose1, adjugate_transpose2, adjugate_transpose3, adjugate_transpose4, det2,
 };
+
+// Parent/sibling imports.
+use super::helpers::{bit, column_replacement_correction, det_or_zero};
 use super::overlap::mix_dets_same;
 use super::prepare::{GpuSameSpinView, ff_t, prefactor};
 
@@ -285,14 +288,9 @@ pub(crate) fn fill_cofactors(
     if comptime!(l == 0usize) {
         value = 1.0;
     } else if comptime!(l == 1usize) {
-        cof[0] = 1.0;
-        value = d[0];
+        value = adjugate_transpose1(d, cof);
     } else if comptime!(l == 2usize) {
-        cof[0] = d[3];
-        cof[1] = -d[2];
-        cof[2] = -d[1];
-        cof[3] = d[0];
-        value = det2(d[0], d[1], d[2], d[3]);
+        value = adjugate_transpose2(d, cof);
     } else if comptime!(l == 3usize) {
         value = adjugate_transpose3(d, cof);
     } else if comptime!(l == 4usize) {

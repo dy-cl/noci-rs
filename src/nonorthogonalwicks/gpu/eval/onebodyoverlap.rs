@@ -4,10 +4,11 @@
 // External crate imports.
 use cubecl::prelude::*;
 
+// Crate-root imports.
+use crate::maths::gpu::wick::{adjugate_transpose3, adjugate_transpose4, det2};
+
 // Parent/sibling imports.
-use super::helpers::{
-    adjugate_transpose3, adjugate_transpose4, bit, column_replacement_correction, det2,
-};
+use super::helpers::{bit, column_replacement_correction};
 use super::onebody::fill_cofactors;
 use super::overlap::mix_dets_same;
 use super::prepare::{GpuSameSpinView, ff_t, prefactor};
