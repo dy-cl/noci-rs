@@ -2,6 +2,7 @@
 //! CubeCL GPU implementation of factorised one-body NOCI operator contractions.
 
 mod backend;
+mod consts;
 mod contract;
 mod data;
 mod diagonals;

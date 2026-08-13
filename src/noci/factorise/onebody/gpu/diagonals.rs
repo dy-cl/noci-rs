@@ -10,22 +10,22 @@ use crate::gpu::{GpuBuffer, GpuContext, GpuRuntime};
 // Parent/sibling imports.
 use super::data::DeviceOneBodyData;
 
-/// Initial diagonal kernel cube dimension.
-const DIAGONAL_CUBE_DIM: u32 = 128;
-
-/// Launch determinant diagonal fill from same-parent alpha and beta factors.
+/// Launch determinant diagonal construction from same-component spin factors.
+/// For determinant `(a,b)`, evaluates
+/// `(F + lambda S)_{II} = F^alpha_{aa} S^beta_{bb} + S^alpha_{aa} F^beta_{bb}
+/// + lambda S^alpha_{aa} S^beta_{bb}` without dense same-spin factor tables.
 /// # Arguments:
 /// - `context`: CubeCL context.
 /// - `topology`: Device determinant topology.
-/// - `sa`: Same-parent alpha overlap factors.
-/// - `fa`: Same-parent alpha Fock factors.
-/// - `sb`: Same-parent beta overlap factors.
-/// - `fb`: Same-parent beta Fock factors.
-/// - `m_diag`: Device diagonal of `F + \lambda S`.
+/// - `sa`: Alpha diagonal overlap factors `S^alpha_{aa}`.
+/// - `fa`: Alpha diagonal Fock factors `F^alpha_{aa}`.
+/// - `sb`: Beta diagonal overlap factors `S^beta_{bb}`.
+/// - `fb`: Beta diagonal Fock factors `F^beta_{bb}`.
+/// - `m_diag`: Device diagonal of `F + lambda S`.
 /// - `s_diag`: Device diagonal of `S`.
-/// - `args`: Parent entry base, dimensions and shift.
+/// - `args`: Parent-entry dimensions and overlap shift.
 /// # Returns
-/// - `()`: Writes diagonal values on the device.
+/// - `()`: Writes determinant-space diagonal values.
 pub(crate) fn launch_fill_one_body_diagonal_block(
     context: &GpuContext,
     topology: &DeviceOneBodyData,
@@ -40,12 +40,15 @@ pub(crate) fn launch_fill_one_body_diagonal_block(
     if args.nentry == 0 {
         return;
     }
-    let cubes = checked_u32(args.nentry.div_ceil(DIAGONAL_CUBE_DIM as usize));
+
+    let cube_dim = 128u32;
+    let cubes = checked_u32(args.nentry.div_ceil(cube_dim as usize));
+
     unsafe {
         fill_one_body_diagonal_block_kernel::launch_unchecked::<GpuRuntime>(
             context.client(),
             CubeCount::Static(cubes, 1, 1),
-            CubeDim::new_1d(DIAGONAL_CUBE_DIM),
+            CubeDim::new_1d(cube_dim),
             sa.array_arg(),
             fa.array_arg(),
             sb.array_arg(),
@@ -58,52 +61,35 @@ pub(crate) fn launch_fill_one_body_diagonal_block(
             args.lambda,
             args.entry_base,
             args.nentry,
-            args.nsa,
-            args.nsb,
         );
     }
 }
 
-/// Same-parent diagonal fill launch dimensions.
+/// Same-parent diagonal kernel launch dimensions.
 #[derive(Clone, Copy)]
 pub(crate) struct DiagonalBlockLaunch {
     /// Parent entry base.
     pub(crate) entry_base: usize,
     /// Number of parent entries.
     pub(crate) nentry: usize,
-    /// Source alpha component count.
-    pub(crate) nsa: usize,
-    /// Source beta component count.
-    pub(crate) nsb: usize,
-    /// Overlap shift.
+    /// Scalar overlap shift.
     pub(crate) lambda: f64,
 }
 
-/// Convert host launch metadata to CubeCL grid-width `u32`.
+/// Fill determinant diagonals from same-component alpha and beta factors.
 /// # Arguments:
-/// - `value`: Host launch value.
-/// # Returns
-/// - `u32`: Checked CubeCL grid-width value.
-fn checked_u32(value: usize) -> u32 {
-    u32::try_from(value).expect("GPU diagonal launch dimension exceeds u32")
-}
-
-/// Fill determinant diagonals from one same-parent factor block on the device.
-/// # Arguments:
-/// - `sa`: Row-major alpha overlap factors.
-/// - `fa`: Row-major alpha Fock factors.
-/// - `sb`: Row-major beta overlap factors.
-/// - `fb`: Row-major beta Fock factors.
-/// - `entry_det`: Parent entry determinant IDs.
-/// - `entry_a`: Parent entry alpha components.
-/// - `entry_b`: Parent entry beta components.
-/// - `m_diag`: Output diagonal of `F + \lambda S`.
+/// - `sa`: Alpha diagonal overlap factors.
+/// - `fa`: Alpha diagonal Fock factors.
+/// - `sb`: Beta diagonal overlap factors.
+/// - `fb`: Beta diagonal Fock factors.
+/// - `entry_det`: Parent-entry determinant IDs.
+/// - `entry_a`: Parent-entry alpha component IDs.
+/// - `entry_b`: Parent-entry beta component IDs.
+/// - `m_diag`: Output diagonal of `F + lambda S`.
 /// - `s_diag`: Output diagonal of `S`.
 /// - `lambda`: Scalar overlap shift.
-/// - `entry_base`: Parent entry base.
+/// - `entry_base`: Parent-entry base.
 /// - `nentry`: Number of parent entries.
-/// - `nsa`: Source alpha component count.
-/// - `nsb`: Source beta component count.
 /// # Returns
 /// - `()`: Writes diagonal values for actual determinants.
 #[cube(launch_unchecked)]
@@ -120,22 +106,30 @@ pub(crate) fn fill_one_body_diagonal_block_kernel(
     lambda: f64,
     entry_base: usize,
     nentry: usize,
-    nsa: usize,
-    nsb: usize,
 ) {
     if ABSOLUTE_POS >= nentry {
         terminate!();
     }
+
     let entry = entry_base + ABSOLUTE_POS;
     let a = usize::cast_from(entry_a[entry]);
     let b = usize::cast_from(entry_b[entry]);
-    let saa = sa[a * nsa + a];
-    let faa = fa[a * nsa + a];
-    let sbb = sb[b * nsb + b];
-    let fbb = fb[b * nsb + b];
+    let saa = sa[a];
+    let faa = fa[a];
+    let sbb = sb[b];
+    let fbb = fb[b];
     let s = saa * sbb;
-    let det = entry_det[entry];
-    let det = usize::cast_from(det);
+    let det = usize::cast_from(entry_det[entry]);
+
     s_diag[det] = s;
     m_diag[det] = faa * sbb + saa * fbb + lambda * s;
+}
+
+/// Convert a host diagonal launch count to CubeCL grid width.
+/// # Arguments:
+/// - `value`: Host launch count.
+/// # Returns
+/// - `u32`: Checked device-width launch count.
+fn checked_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("GPU diagonal launch dimension exceeds u32")
 }

@@ -11,7 +11,7 @@ scf = {
 }
 
 mol = {
-    basis = 'cc-pVDZ',
+    basis = '3-21G',
     r = {80.0},
     unit = 'Ang',
 
@@ -126,7 +126,7 @@ snoci = {
         0.0,
     },
     gmres = {
-        max_iter = 2,
+        max_iter = 512,
         full_m = "none",
         factor_tables = "none",
     },
