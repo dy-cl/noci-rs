@@ -14,7 +14,7 @@ pub(crate) use plan::{OneBodyBlockPlan, OneBodyContraction, OneBodyPlan};
 use ndarray::Array1;
 
 // Crate-root imports.
-use crate::input::{SNOCIBackend, SNOCIStorage};
+use crate::input::{SNOCIBackend, SNOCIGpuOptions, SNOCIStorage};
 use crate::noci::types::{FockData, NOCIData, NOCIScalar};
 
 // Parent/sibling imports.
@@ -41,6 +41,7 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
     /// - `rank`: MPI rank used in factor-cache filenames.
     /// - `iteration`: SNOCI iteration used in factor-cache filenames.
     /// - `storage`: Requested persistent factor-table storage backend.
+    /// - `gpu`: GPU transient-memory options.
     /// # Returns
     /// - `OneBodyBackend<T>`: Backend-specific factorised one-body operator.
     pub(crate) fn new(
@@ -51,12 +52,13 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
         rank: i32,
         iteration: usize,
         storage: SNOCIStorage,
+        gpu: SNOCIGpuOptions,
     ) -> Self {
         match backend {
             SNOCIBackend::CPU => Self::CPU(CpuOneBodyBackend::new(
                 data, fock, cache, rank, iteration, storage,
             )),
-            SNOCIBackend::GPU => Self::new_gpu(data, fock, cache, rank, iteration, storage),
+            SNOCIBackend::GPU => Self::new_gpu(data, fock, cache, rank, iteration, storage, gpu),
         }
     }
 
@@ -126,6 +128,7 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
     /// - `rank`: MPI rank used in factor-cache filenames.
     /// - `iteration`: SNOCI iteration used in factor-cache filenames.
     /// - `storage`: Requested persistent factor-table storage backend.
+    /// - `gpu`: GPU transient-memory options.
     /// # Returns
     /// - `OneBodyBackend<T>`: GPU one-body backend.
     #[cfg(feature = "gpu")]
@@ -136,9 +139,10 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
         rank: i32,
         iteration: usize,
         storage: SNOCIStorage,
+        gpu: SNOCIGpuOptions,
     ) -> Self {
         Self::GPU(GpuOneBodyBackend::new(
-            data, fock, cache, rank, iteration, storage,
+            data, fock, cache, rank, iteration, storage, gpu,
         ))
     }
 
@@ -150,6 +154,7 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
     /// - `rank`: MPI rank used in factor-cache filenames.
     /// - `iteration`: SNOCI iteration used in factor-cache filenames.
     /// - `storage`: Requested persistent factor-table storage backend.
+    /// - `_gpu`: Unused GPU transient-memory options.
     /// # Returns
     /// - `OneBodyBackend<T>`: This function exits instead of returning.
     #[cfg(not(feature = "gpu"))]
@@ -160,6 +165,7 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
         _rank: i32,
         _iteration: usize,
         _storage: SNOCIStorage,
+        _gpu: SNOCIGpuOptions,
     ) -> Self {
         eprintln!(
             "snoci.backend = \"gpu\" requires rebuilding with one of --features gpu-cuda, --features gpu-hip, or --features gpu-vulkan"

@@ -8,10 +8,175 @@ use cubecl::prelude::*;
 use crate::gpu::{GpuBuffer, GpuContext, GpuRuntime};
 
 // Parent/sibling imports.
+use super::consts::{
+    GEMM_TILE_DIM, GROUPED_FINAL_BLOCK_FIELDS, GROUPED_FINAL_CONTRIBUTION_FIELDS,
+    GROUPED_STAGE_BLOCK_FIELDS, GROUPED_STAGE_CONTRIBUTION_FIELDS,
+};
 use super::data::DeviceOneBodyData;
 
 /// Initial contraction kernel cube dimension.
 const CONTRACT_CUBE_DIM: u32 = 128;
+
+/// Launch metadata for one heterogeneous grouped rank contraction.
+#[derive(Clone, Copy)]
+pub(crate) struct GroupedRankLaunch {
+    /// Total flattened output-tile count.
+    pub(crate) tiles: usize,
+    /// Number of output block descriptors.
+    pub(crate) blocks: usize,
+    /// Full source-spin factor row stride.
+    pub(crate) factor_stride: usize,
+    /// Full other-spin intermediate row stride.
+    pub(crate) intermediate_stride: usize,
+    /// Overlap shift used by the final contraction.
+    pub(crate) lambda: f64,
+    /// MPI worker id.
+    pub(crate) worker: usize,
+    /// MPI worker count.
+    pub(crate) nworker: usize,
+}
+
+/// Launch one grouped rank stage containing every populated output sector.
+/// # Arguments:
+/// - Primitive factor, coefficient, component-map and intermediate buffers.
+/// - `blocks`: Persistent output block descriptors.
+/// - `contributions`: Persistent inner-rank contribution descriptors.
+/// - `args`: Flattened tile count, strides and ownership.
+/// - `a_first`: Whether to evaluate the alpha-first rather than beta-first equations.
+/// # Returns
+/// - `()`: Writes every grouped first-stage output with one tile writer.
+pub(crate) fn launch_grouped_rank_stage(
+    context: &GpuContext,
+    s: &GpuBuffer<f64>,
+    f: &GpuBuffer<f64>,
+    d: &GpuBuffer<f64>,
+    row_components: &GpuBuffer<u32>,
+    col_components: &GpuBuffer<u32>,
+    source_components: &GpuBuffer<u32>,
+    blocks: &GpuBuffer<u32>,
+    contributions: &GpuBuffer<u32>,
+    out_f: &GpuBuffer<f64>,
+    out_s: &GpuBuffer<f64>,
+    args: GroupedRankLaunch,
+    a_first: bool,
+) {
+    if args.tiles == 0 {
+        return;
+    }
+    let tile = checked_u32(GEMM_TILE_DIM);
+    unsafe {
+        grouped_rank_stage_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(checked_u32(args.tiles), 1, 1),
+            CubeDim::new_2d(tile, tile),
+            s.array_arg(),
+            f.array_arg(),
+            d.array_arg(),
+            row_components.array_arg(),
+            col_components.array_arg(),
+            source_components.array_arg(),
+            blocks.array_arg(),
+            contributions.array_arg(),
+            out_f.array_arg(),
+            out_s.array_arg(),
+            args.blocks,
+            args.factor_stride,
+            args.intermediate_stride,
+            args.worker,
+            args.nworker,
+            a_first,
+        );
+    }
+}
+
+/// Launch one grouped rank final containing every actual target sector.
+/// # Arguments:
+/// - Primitive factor, intermediate, topology, descriptor and output buffers.
+/// - `args`: Flattened tile count, strides, shift and ownership.
+/// - `a_first`: Whether to evaluate the alpha-first rather than beta-first equations.
+/// # Returns
+/// - `()`: Accumulates every grouped target sector with one tile writer.
+pub(crate) fn launch_grouped_rank_final(
+    context: &GpuContext,
+    s: &GpuBuffer<f64>,
+    f: &GpuBuffer<f64>,
+    intermediate_f: &GpuBuffer<f64>,
+    intermediate_s: &GpuBuffer<f64>,
+    alpha_components: &GpuBuffer<u32>,
+    beta_components: &GpuBuffer<u32>,
+    source_components: &GpuBuffer<u32>,
+    target_dets: &GpuBuffer<u32>,
+    blocks: &GpuBuffer<u32>,
+    contributions: &GpuBuffer<u32>,
+    y: &GpuBuffer<f64>,
+    args: GroupedRankLaunch,
+    a_first: bool,
+) {
+    if args.tiles == 0 {
+        return;
+    }
+    let tile = checked_u32(GEMM_TILE_DIM);
+    unsafe {
+        grouped_rank_final_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(checked_u32(args.tiles), 1, 1),
+            CubeDim::new_2d(tile, tile),
+            s.array_arg(),
+            f.array_arg(),
+            intermediate_f.array_arg(),
+            intermediate_s.array_arg(),
+            alpha_components.array_arg(),
+            beta_components.array_arg(),
+            source_components.array_arg(),
+            target_dets.array_arg(),
+            blocks.array_arg(),
+            contributions.array_arg(),
+            y.array_arg(),
+            args.blocks,
+            args.factor_stride,
+            args.intermediate_stride,
+            args.lambda,
+            args.worker,
+            args.nworker,
+            a_first,
+        );
+    }
+}
+
+/// Gather one dense rank block `D^{r,s}_{ij}=x[dets[i N_s+j]]` entirely on the device.
+/// # Arguments:
+/// - `context`: CubeCL context.
+/// - `topology`: Persistent dense determinant maps.
+/// - `x`: Source determinant vector.
+/// - `packed`: Reusable packed coefficient storage.
+/// - `det_offset`: Block offset in the flattened determinant map.
+/// - `len`: Number of actual determinants in the dense block.
+/// # Returns
+/// - `()`: Writes one alpha-major row-major coefficient block.
+pub(crate) fn launch_gather_rank_block(
+    context: &GpuContext,
+    topology: &DeviceOneBodyData,
+    x: &GpuBuffer<f64>,
+    packed: &GpuBuffer<f64>,
+    det_offset: usize,
+    len: usize,
+) {
+    if len == 0 {
+        return;
+    }
+    unsafe {
+        gather_rank_block_kernel::launch_unchecked::<GpuRuntime>(
+            context.client(),
+            CubeCount::Static(launch_cubes(len), 1, 1),
+            CubeDim::new_1d(CONTRACT_CUBE_DIM),
+            topology.dense_rank_dets.array_arg(),
+            x.array_arg(),
+            packed.array_arg(),
+            det_offset,
+            len,
+        );
+    }
+}
 
 /// Launch a real-buffer zeroing kernel.
 /// # Arguments:
@@ -357,6 +522,334 @@ fn launch_cubes(len: usize) -> u32 {
 /// - `u32`: Checked device-width value.
 fn checked_u32(value: usize) -> u32 {
     u32::try_from(value).expect("GPU contraction launch dimension exceeds u32")
+}
+
+/// Compute every grouped first-stage rank block in one heterogeneous tile grid.
+/// Each tile internally sums the populated inner-rank contributions, so no output atomics are
+/// required.
+/// # Arguments:
+/// - Primitive factors, packed coefficients, rank maps, descriptors and output arrays.
+/// - `nblocks`: Number of grouped output descriptors.
+/// - `factor_stride`: Full parent-local source-spin factor stride.
+/// - `intermediate_stride`: Full parent-local other-spin intermediate stride.
+/// - `worker`: MPI worker id.
+/// - `nworker`: MPI worker count.
+/// - `a_first`: Alpha-first rather than beta-first contraction orientation.
+/// # Returns
+/// - `()`: Writes one complete grouped intermediate tile.
+#[cube(launch_unchecked)]
+fn grouped_rank_stage_kernel(
+    s: &Array<f64>,
+    f: &Array<f64>,
+    d: &Array<f64>,
+    row_components: &Array<u32>,
+    col_components: &Array<u32>,
+    source_components: &Array<u32>,
+    blocks: &Array<u32>,
+    contributions: &Array<u32>,
+    out_f: &mut Array<f64>,
+    out_s: &mut Array<f64>,
+    nblocks: usize,
+    factor_stride: usize,
+    intermediate_stride: usize,
+    worker: usize,
+    nworker: usize,
+    #[comptime] a_first: bool,
+) {
+    let flat_tile = usize::cast_from(CUBE_POS_X);
+    let mut block_index = 0usize;
+    for candidate in 0usize..nblocks {
+        let base = candidate * GROUPED_STAGE_BLOCK_FIELDS;
+        let tile_begin = usize::cast_from(blocks[base]);
+        let tile_end = usize::cast_from(blocks[base + 1usize]);
+        if flat_tile >= tile_begin && flat_tile < tile_end {
+            block_index = candidate;
+        }
+    }
+
+    let base = block_index * GROUPED_STAGE_BLOCK_FIELDS;
+    let tile_begin = usize::cast_from(blocks[base]);
+    let m = usize::cast_from(blocks[base + 2usize]);
+    let n = usize::cast_from(blocks[base + 3usize]);
+    let row_map_offset = usize::cast_from(blocks[base + 4usize]);
+    let col_map_offset = usize::cast_from(blocks[base + 5usize]);
+    let contribution_begin = usize::cast_from(blocks[base + 6usize]);
+    let contribution_end = usize::cast_from(blocks[base + 7usize]);
+    let tiles_n = n.div_ceil(GEMM_TILE_DIM);
+    let local_tile = flat_tile - tile_begin;
+    let tile_row = local_tile / tiles_n;
+    let tile_col = local_tile - tile_row * tiles_n;
+    let ux = usize::cast_from(UNIT_POS_X);
+    let uy = usize::cast_from(UNIT_POS_Y);
+    let row = tile_row * GEMM_TILE_DIM + uy;
+    let col = tile_col * GEMM_TILE_DIM + ux;
+    let lane = uy * GEMM_TILE_DIM + ux;
+    let mut left_s = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut left_f = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut right = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut value_f = 0.0;
+    let mut value_s = 0.0;
+
+    for contribution in contribution_begin..contribution_end {
+        let contribution_base = contribution * GROUPED_STAGE_CONTRIBUTION_FIELDS;
+        let k = usize::cast_from(contributions[contribution_base]);
+        let source_map_offset = usize::cast_from(contributions[contribution_base + 1usize]);
+        let d_offset = usize::cast_from(contributions[contribution_base + 2usize]);
+        let d_stride = usize::cast_from(contributions[contribution_base + 3usize]);
+        let ntiles = k.div_ceil(GEMM_TILE_DIM);
+        for tile in 0usize..ntiles {
+            let tile_start = tile * GEMM_TILE_DIM;
+            let tile_len = (k - tile_start).min(GEMM_TILE_DIM);
+            let reduced_col = tile_start + ux;
+            let reduced_row = tile_start + uy;
+            if comptime!(a_first) {
+                if row < m && reduced_col < k {
+                    let target = usize::cast_from(row_components[row_map_offset + row]);
+                    let source =
+                        usize::cast_from(source_components[source_map_offset + reduced_col]);
+                    let factor_index = target * factor_stride + source;
+                    left_s[lane] = s[factor_index];
+                    left_f[lane] = f[factor_index];
+                } else {
+                    left_s[lane] = 0.0;
+                    left_f[lane] = 0.0;
+                }
+                if reduced_row < k && col < n {
+                    right[lane] = d[d_offset + reduced_row * d_stride + col];
+                } else {
+                    right[lane] = 0.0;
+                }
+            } else {
+                if row < m && reduced_col < k {
+                    left_s[lane] = d[d_offset + row * d_stride + reduced_col];
+                    left_f[lane] = left_s[lane];
+                } else {
+                    left_s[lane] = 0.0;
+                    left_f[lane] = 0.0;
+                }
+                let load_col = tile_col * GEMM_TILE_DIM + uy;
+                if reduced_col < k && load_col < n {
+                    let target = usize::cast_from(col_components[col_map_offset + load_col]);
+                    let source =
+                        usize::cast_from(source_components[source_map_offset + reduced_col]);
+                    let factor_index = target * factor_stride + source;
+                    let transposed_lane = ux * GEMM_TILE_DIM + uy;
+                    right[transposed_lane] = s[factor_index];
+                    left_f[transposed_lane] = f[factor_index];
+                } else {
+                    let transposed_lane = ux * GEMM_TILE_DIM + uy;
+                    right[transposed_lane] = 0.0;
+                    left_f[transposed_lane] = 0.0;
+                }
+            }
+            sync_cube();
+            if row < m && col < n {
+                for q in 0usize..tile_len {
+                    if comptime!(a_first) {
+                        value_f += left_f[uy * GEMM_TILE_DIM + q] * right[q * GEMM_TILE_DIM + ux];
+                        value_s += left_s[uy * GEMM_TILE_DIM + q] * right[q * GEMM_TILE_DIM + ux];
+                    } else {
+                        let coefficient = left_s[uy * GEMM_TILE_DIM + q];
+                        value_f += coefficient * left_f[q * GEMM_TILE_DIM + ux];
+                        value_s += coefficient * right[q * GEMM_TILE_DIM + ux];
+                    }
+                }
+            }
+            sync_cube();
+        }
+    }
+
+    if row < m && col < n {
+        let row_component = usize::cast_from(row_components[row_map_offset + row]);
+        let col_component = usize::cast_from(col_components[col_map_offset + col]);
+        let owner = if comptime!(a_first) {
+            row_component
+        } else {
+            col_component
+        };
+        if owner % nworker == worker {
+            let output = row_component * intermediate_stride + col_component;
+            out_f[output] = value_f;
+            out_s[output] = value_s;
+        }
+    }
+}
+
+/// Compute every grouped final target rank block in one heterogeneous tile grid.
+/// Each tile internally sums the complete contributing source-spin rank set and scatters once.
+/// # Arguments:
+/// - Primitive factors, intermediates, rank maps, determinant maps, descriptors and output array.
+/// - `nblocks`: Number of actual target rank-block descriptors.
+/// - `factor_stride`: Full parent-local source-spin factor stride.
+/// - `intermediate_stride`: Full parent-local intermediate row stride.
+/// - `lambda`: Overlap shift.
+/// - `worker`: MPI worker id.
+/// - `nworker`: MPI worker count.
+/// - `a_first`: Alpha-first rather than beta-first contraction orientation.
+/// # Returns
+/// - `()`: Accumulates one complete target determinant tile.
+#[cube(launch_unchecked)]
+fn grouped_rank_final_kernel(
+    s: &Array<f64>,
+    f: &Array<f64>,
+    intermediate_f: &Array<f64>,
+    intermediate_s: &Array<f64>,
+    alpha_components: &Array<u32>,
+    beta_components: &Array<u32>,
+    source_components: &Array<u32>,
+    target_dets: &Array<u32>,
+    blocks: &Array<u32>,
+    contributions: &Array<u32>,
+    y: &mut Array<f64>,
+    nblocks: usize,
+    factor_stride: usize,
+    intermediate_stride: usize,
+    lambda: f64,
+    worker: usize,
+    nworker: usize,
+    #[comptime] a_first: bool,
+) {
+    let flat_tile = usize::cast_from(CUBE_POS_X);
+    let mut block_index = 0usize;
+    for candidate in 0usize..nblocks {
+        let base = candidate * GROUPED_FINAL_BLOCK_FIELDS;
+        let tile_begin = usize::cast_from(blocks[base]);
+        let tile_end = usize::cast_from(blocks[base + 1usize]);
+        if flat_tile >= tile_begin && flat_tile < tile_end {
+            block_index = candidate;
+        }
+    }
+
+    let base = block_index * GROUPED_FINAL_BLOCK_FIELDS;
+    let tile_begin = usize::cast_from(blocks[base]);
+    let m = usize::cast_from(blocks[base + 2usize]);
+    let n = usize::cast_from(blocks[base + 3usize]);
+    let alpha_map_offset = usize::cast_from(blocks[base + 4usize]);
+    let beta_map_offset = usize::cast_from(blocks[base + 5usize]);
+    let det_offset = usize::cast_from(blocks[base + 6usize]);
+    let contribution_begin = usize::cast_from(blocks[base + 7usize]);
+    let contribution_end = usize::cast_from(blocks[base + 8usize]);
+    let tiles_n = n.div_ceil(GEMM_TILE_DIM);
+    let local_tile = flat_tile - tile_begin;
+    let tile_row = local_tile / tiles_n;
+    let tile_col = local_tile - tile_row * tiles_n;
+    let ux = usize::cast_from(UNIT_POS_X);
+    let uy = usize::cast_from(UNIT_POS_Y);
+    let row = tile_row * GEMM_TILE_DIM + uy;
+    let col = tile_col * GEMM_TILE_DIM + ux;
+    let lane = uy * GEMM_TILE_DIM + ux;
+    let mut left_f = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut left_s = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut right_f = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut right_s = SharedMemory::<f64>::new(GEMM_TILE_DIM * GEMM_TILE_DIM);
+    let mut value = 0.0;
+
+    for contribution in contribution_begin..contribution_end {
+        let contribution_base = contribution * GROUPED_FINAL_CONTRIBUTION_FIELDS;
+        let k = usize::cast_from(contributions[contribution_base]);
+        let source_map_offset = usize::cast_from(contributions[contribution_base + 1usize]);
+        let ntiles = k.div_ceil(GEMM_TILE_DIM);
+        for tile in 0usize..ntiles {
+            let tile_start = tile * GEMM_TILE_DIM;
+            let tile_len = (k - tile_start).min(GEMM_TILE_DIM);
+            let reduced_col = tile_start + ux;
+            let reduced_row = tile_start + uy;
+            if row < m && reduced_col < k {
+                let alpha = usize::cast_from(alpha_components[alpha_map_offset + row]);
+                let source = usize::cast_from(source_components[source_map_offset + reduced_col]);
+                let index = alpha
+                    * if comptime!(a_first) {
+                        intermediate_stride
+                    } else {
+                        factor_stride
+                    }
+                    + source;
+                if comptime!(a_first) {
+                    left_f[lane] = intermediate_f[index];
+                    left_s[lane] = intermediate_s[index];
+                } else {
+                    left_f[lane] = f[index];
+                    left_s[lane] = s[index];
+                }
+            } else {
+                left_f[lane] = 0.0;
+                left_s[lane] = 0.0;
+            }
+            if comptime!(a_first) {
+                let load_col = tile_col * GEMM_TILE_DIM + uy;
+                if reduced_col < k && load_col < n {
+                    let beta = usize::cast_from(beta_components[beta_map_offset + load_col]);
+                    let source =
+                        usize::cast_from(source_components[source_map_offset + reduced_col]);
+                    let index = beta * factor_stride + source;
+                    let transposed_lane = ux * GEMM_TILE_DIM + uy;
+                    right_f[transposed_lane] = f[index];
+                    right_s[transposed_lane] = s[index];
+                } else {
+                    let transposed_lane = ux * GEMM_TILE_DIM + uy;
+                    right_f[transposed_lane] = 0.0;
+                    right_s[transposed_lane] = 0.0;
+                }
+            } else if reduced_row < k && col < n {
+                let beta = usize::cast_from(beta_components[beta_map_offset + col]);
+                let source = usize::cast_from(source_components[source_map_offset + reduced_row]);
+                let index = source * intermediate_stride + beta;
+                right_f[lane] = intermediate_f[index];
+                right_s[lane] = intermediate_s[index];
+            } else {
+                right_f[lane] = 0.0;
+                right_s[lane] = 0.0;
+            }
+            sync_cube();
+            if row < m && col < n {
+                for q in 0usize..tile_len {
+                    let lf = left_f[uy * GEMM_TILE_DIM + q];
+                    let ls = left_s[uy * GEMM_TILE_DIM + q];
+                    let rf = right_f[q * GEMM_TILE_DIM + ux];
+                    let rs = right_s[q * GEMM_TILE_DIM + ux];
+                    if comptime!(a_first) {
+                        value += lf * rs + ls * (rf + lambda * rs);
+                    } else {
+                        value += ls * rf + (lf + lambda * ls) * rs;
+                    }
+                }
+            }
+            sync_cube();
+        }
+    }
+
+    if row < m && col < n {
+        let alpha = usize::cast_from(alpha_components[alpha_map_offset + row]);
+        let beta = usize::cast_from(beta_components[beta_map_offset + col]);
+        let owner = if comptime!(a_first) { alpha } else { beta };
+        if owner % nworker == worker {
+            let det = usize::cast_from(target_dets[det_offset + row * n + col]);
+            y[det] = y[det] + value;
+        }
+    }
+}
+
+/// Gather one packed dense coefficient rank block.
+/// # Arguments:
+/// - `dets`: Persistent global determinant map.
+/// - `x`: Global source determinant vector.
+/// - `packed`: Packed output block.
+/// - `det_offset`: Offset into `dets`.
+/// - `len`: Block entry count.
+/// # Returns
+/// - `()`: Writes `packed[i]=x[dets[det_offset+i]]`.
+#[cube(launch_unchecked)]
+fn gather_rank_block_kernel(
+    dets: &Array<u32>,
+    x: &Array<f64>,
+    packed: &mut Array<f64>,
+    det_offset: usize,
+    len: usize,
+) {
+    if ABSOLUTE_POS < len {
+        let det = usize::cast_from(dets[det_offset + ABSOLUTE_POS]);
+        packed[ABSOLUTE_POS] = x[det];
+    }
 }
 
 /// Zero a real device buffer before accumulation.

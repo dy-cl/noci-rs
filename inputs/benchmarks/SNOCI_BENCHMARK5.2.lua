@@ -131,6 +131,10 @@ snoci = {
         factor_tables = "none",
     },
     backend = "gpu",
+    gpu = {
+          factor_panel_mib = 1536,
+          first_panel_mib = 3072,
+    },
 }
 
 wicks = {

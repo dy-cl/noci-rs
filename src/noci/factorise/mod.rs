@@ -10,7 +10,7 @@ pub(crate) use onebody::{OneBodyBackend, OneBodyBlockPlan, OneBodyContraction, O
 pub(crate) use overlap::OverlapScratch;
 
 // Standard library imports.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // Crate-root imports.
 use crate::DetState;
@@ -27,6 +27,23 @@ pub(super) struct FactorEntry {
     pub(super) a: usize,
     /// Parent-local beta component `b_I`.
     pub(super) b: usize,
+}
+
+/// Populated joint alpha/beta excitation-rank sector for one parent.
+#[derive(Clone)]
+pub(super) struct ParentRankBlock {
+    /// Alpha excitation rank `r`.
+    pub(super) alpha_rank: usize,
+    /// Beta excitation rank `s`.
+    pub(super) beta_rank: usize,
+    /// Parent-local alpha components in rank-local order.
+    pub(super) alpha_components: Vec<usize>,
+    /// Parent-local beta components in rank-local order.
+    pub(super) beta_components: Vec<usize>,
+    /// Global determinant IDs in alpha-major row-major order when dense.
+    pub(super) dets: Vec<usize>,
+    /// Whether this sector is the complete Cartesian product without duplicates.
+    pub(super) dense: bool,
 }
 
 /// Parent-local determinant space in the shared spin factorisation.
@@ -46,6 +63,8 @@ pub(super) struct ParentSpinSpace {
     pub(super) first_det: usize,
     /// One-past-last determinant index belonging to this parent when parent blocks are contiguous.
     pub(super) last_det: usize,
+    /// Populated joint alpha/beta excitation-rank sectors.
+    pub(super) rank_blocks: Vec<ParentRankBlock>,
 }
 
 /// Shared determinant-space spin factorisation `I <-> (P,a_I,b_I)`.
@@ -73,7 +92,8 @@ impl SpinFactorisation {
         let mut bids = vec![0usize; data.basis.len()];
         let ma = assign_aids(data.basis, &mut aids);
         let mb = assign_bids(data.basis, &mut bids);
-        let parents = build_parent_spin_spaces(data.basis, &aids, &bids);
+        let mut parents = build_parent_spin_spaces(data.basis, &aids, &bids);
+        build_parent_rank_blocks(data.basis, &mut parents);
 
         Self {
             aids,
@@ -264,6 +284,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             oids: Vec::new(),
             first_det: usize::MAX,
             last_det: 0,
+            rank_blocks: Vec::new(),
         })
         .collect::<Vec<_>>();
 
@@ -316,4 +337,90 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
     }
 
     parents
+}
+
+/// Build populated joint excitation-rank sectors from actual determinant entries.
+/// A sector is dense only when every alpha/beta rank-local pair occurs exactly once.
+/// # Arguments:
+/// - `basis`: NOCI determinant basis defining excitation ranks.
+/// - `parents`: Parent-local spin spaces to extend with rank sectors.
+/// # Returns
+/// - `()`: Stores deterministic rank-block descriptors on each parent.
+fn build_parent_rank_blocks<T: NOCIScalar>(
+    basis: &[DetState<T>],
+    parents: &mut [ParentSpinSpace],
+) {
+    for parent in parents {
+        let alpha_rank = parent
+            .areps
+            .iter()
+            .map(|&det| basis[det].excitation.alpha.holes.count_ones() as usize)
+            .collect::<Vec<_>>();
+        let beta_rank = parent
+            .breps
+            .iter()
+            .map(|&det| basis[det].excitation.beta.holes.count_ones() as usize)
+            .collect::<Vec<_>>();
+        let mut sectors = BTreeMap::<(usize, usize), Vec<FactorEntry>>::new();
+
+        for &entry in &parent.entries {
+            sectors
+                .entry((alpha_rank[entry.a], beta_rank[entry.b]))
+                .or_default()
+                .push(entry);
+        }
+
+        for ((arank, brank), entries) in sectors {
+            let alpha_components = alpha_rank
+                .iter()
+                .enumerate()
+                .filter_map(|(component, &rank)| (rank == arank).then_some(component))
+                .collect::<Vec<_>>();
+            let beta_components = beta_rank
+                .iter()
+                .enumerate()
+                .filter_map(|(component, &rank)| (rank == brank).then_some(component))
+                .collect::<Vec<_>>();
+            let alpha_local = alpha_components
+                .iter()
+                .enumerate()
+                .map(|(local, &component)| (component, local))
+                .collect::<HashMap<_, _>>();
+            let beta_local = beta_components
+                .iter()
+                .enumerate()
+                .map(|(local, &component)| (component, local))
+                .collect::<HashMap<_, _>>();
+            let size = alpha_components
+                .len()
+                .checked_mul(beta_components.len())
+                .expect("joint excitation-rank block size overflow");
+            let mut slots = vec![None; size];
+            let mut dense = entries.len() == size;
+
+            for entry in entries {
+                let ia = alpha_local[&entry.a];
+                let ib = beta_local[&entry.b];
+                let slot = ia * beta_components.len() + ib;
+                if slots[slot].replace(entry.det).is_some() {
+                    dense = false;
+                }
+            }
+            dense &= slots.iter().all(Option::is_some);
+            let dets = if dense {
+                slots.into_iter().map(Option::unwrap).collect()
+            } else {
+                Vec::new()
+            };
+
+            parent.rank_blocks.push(ParentRankBlock {
+                alpha_rank: arank,
+                beta_rank: brank,
+                alpha_components,
+                beta_components,
+                dets,
+                dense,
+            });
+        }
+    }
 }

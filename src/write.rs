@@ -229,6 +229,8 @@ pub fn print_input(input: &Input) {
             println!("  METRIC_TOL: {}", s.gmres.metric_tol);
             println!("  FULL_M: {}", s.gmres.full_m.as_str());
             println!("  FACTOR_TABLES: {}", s.gmres.factor_tables.as_str());
+            println!("  GPU FACTOR PANEL (MiB): {}", s.gpu.factor_panel_mib);
+            println!("  GPU FIRST PANEL (MiB): {}", s.gpu.first_panel_mib);
         }
         None => {
             println!("ENABLED: false");

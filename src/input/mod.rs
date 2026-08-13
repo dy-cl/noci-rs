@@ -35,7 +35,9 @@ pub use mol::MolOptions;
 pub use prop::{PropagationOptions, Propagator};
 pub use qmc::{ExcitationGen, NOCCMCOptions, QMCOptions};
 pub use scf::{DiisOptions, SCFInfo};
-pub use snoci::{GMRESOptions, SNOCIBackend, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
+pub use snoci::{
+    GMRESOptions, SNOCIBackend, SNOCIGpuOptions, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage,
+};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};
 pub use wicks::{WicksOptions, WicksStorage};
 pub use write::WriteOptions;

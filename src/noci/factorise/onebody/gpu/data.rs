@@ -18,8 +18,31 @@ pub(crate) struct GpuDecodedExcitation {
     pub(crate) parts_offset: usize,
 }
 
+/// Host descriptor for one populated parent-local joint excitation-rank block.
+#[derive(Clone)]
+pub(crate) struct GpuRankBlock {
+    /// Parent reference.
+    pub(crate) parent: usize,
+    /// Alpha excitation rank.
+    pub(crate) alpha_rank: usize,
+    /// Beta excitation rank.
+    pub(crate) beta_rank: usize,
+    /// Alpha rank-local component count.
+    pub(crate) nalpha: usize,
+    /// Beta rank-local component count.
+    pub(crate) nbeta: usize,
+    /// Offset into the persistent dense determinant map.
+    pub(crate) det_offset: usize,
+    /// Whether the sector is a complete Cartesian product without duplicates.
+    pub(crate) dense: bool,
+}
+
 /// Persistent factorised-operator GPU topology.
 pub(crate) struct GpuOneBodyData {
+    /// Populated joint excitation-rank blocks grouped by parent.
+    pub(crate) rank_blocks: Vec<Vec<GpuRankBlock>>,
+    /// Dense determinant maps concatenated in alpha-major row-major order.
+    pub(crate) dense_rank_dets: Vec<usize>,
     /// Parent entry offsets.
     pub(crate) parent_entry_offsets: Vec<usize>,
     /// Parent alpha-representative offsets.
@@ -88,6 +111,8 @@ pub(crate) struct GpuOneBodyData {
 
 /// Device-resident determinant topology and decoded excitation data.
 pub(crate) struct DeviceOneBodyData {
+    /// Persistent dense rank-block determinant maps.
+    pub(crate) dense_rank_dets: GpuBuffer<u32>,
     /// Parent entry offsets.
     pub(crate) parent_entry_offsets: GpuBuffer<u32>,
     /// Entry determinant indices.
@@ -165,6 +190,8 @@ impl GpuOneBodyData {
         let mut entry_b = Vec::new();
         let mut areps = Vec::new();
         let mut breps = Vec::new();
+        let mut rank_blocks = Vec::with_capacity(spin.parents.len());
+        let mut dense_rank_dets = Vec::new();
 
         for parent in &spin.parents {
             parent_entry_offsets.push(entry_det.len());
@@ -177,6 +204,23 @@ impl GpuOneBodyData {
             }
             areps.extend_from_slice(&parent.areps);
             breps.extend_from_slice(&parent.breps);
+            let mut blocks = Vec::with_capacity(parent.rank_blocks.len());
+            for block in &parent.rank_blocks {
+                let det_offset = dense_rank_dets.len();
+                if block.dense {
+                    dense_rank_dets.extend_from_slice(&block.dets);
+                }
+                blocks.push(GpuRankBlock {
+                    parent: rank_blocks.len(),
+                    alpha_rank: block.alpha_rank,
+                    beta_rank: block.beta_rank,
+                    nalpha: block.alpha_components.len(),
+                    nbeta: block.beta_components.len(),
+                    det_offset,
+                    dense: block.dense,
+                });
+            }
+            rank_blocks.push(blocks);
         }
         parent_entry_offsets.push(entry_det.len());
         parent_arep_offsets.push(areps.len());
@@ -220,6 +264,8 @@ impl GpuOneBodyData {
             build_source_groups_by_alpha(&spin.parents);
 
         Self {
+            rank_blocks,
+            dense_rank_dets,
             parent_entry_offsets,
             parent_arep_offsets,
             parent_brep_offsets,
@@ -297,6 +343,7 @@ impl GpuOneBodyData {
             .collect::<Vec<_>>();
 
         DeviceOneBodyData {
+            dense_rank_dets: upload_usize(context, &self.dense_rank_dets),
             parent_entry_offsets: upload_usize(context, &self.parent_entry_offsets),
             entry_det: upload_usize(context, &self.entry_det),
             entry_a: upload_usize(context, &self.entry_a),
