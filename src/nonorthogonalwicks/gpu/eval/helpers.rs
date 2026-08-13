@@ -4,6 +4,9 @@
 // External crate imports.
 use cubecl::prelude::*;
 
+// Crate-root imports.
+use crate::maths::gpu::wick::det3_scalar;
+
 /// Extract one fundamental-contraction assignment from a packed distribution.
 /// # Arguments:
 /// - `bits`: Packed assignments.
@@ -144,17 +147,43 @@ pub(crate) fn adjugate_transpose4(
     d: &Array<f64>,
     cof: &mut Array<f64>,
 ) -> f64 {
-    for r in 0usize..4usize {
-        for c in 0usize..4usize {
-            let sign = if ((r + c) & 1usize) == 0usize {
-                1.0
-            } else {
-                -1.0
-            };
-            cof[r * 4usize + c] = sign * det3_minor4(d, r, c);
-        }
-    }
-    det4(d)
+    let a00 = d[0];
+    let a01 = d[1];
+    let a02 = d[2];
+    let a03 = d[3];
+    let a10 = d[4];
+    let a11 = d[5];
+    let a12 = d[6];
+    let a13 = d[7];
+    let a20 = d[8];
+    let a21 = d[9];
+    let a22 = d[10];
+    let a23 = d[11];
+    let a30 = d[12];
+    let a31 = d[13];
+    let a32 = d[14];
+    let a33 = d[15];
+
+    // cof[D]_{rc}=(-1)^{r+c}det D[r|c], stored row-major without transposition.
+    cof[0] = det3_scalar(a11, a12, a13, a21, a22, a23, a31, a32, a33);
+    cof[1] = -det3_scalar(a10, a12, a13, a20, a22, a23, a30, a32, a33);
+    cof[2] = det3_scalar(a10, a11, a13, a20, a21, a23, a30, a31, a33);
+    cof[3] = -det3_scalar(a10, a11, a12, a20, a21, a22, a30, a31, a32);
+    cof[4] = -det3_scalar(a01, a02, a03, a21, a22, a23, a31, a32, a33);
+    cof[5] = det3_scalar(a00, a02, a03, a20, a22, a23, a30, a32, a33);
+    cof[6] = -det3_scalar(a00, a01, a03, a20, a21, a23, a30, a31, a33);
+    cof[7] = det3_scalar(a00, a01, a02, a20, a21, a22, a30, a31, a32);
+    cof[8] = det3_scalar(a01, a02, a03, a11, a12, a13, a31, a32, a33);
+    cof[9] = -det3_scalar(a00, a02, a03, a10, a12, a13, a30, a32, a33);
+    cof[10] = det3_scalar(a00, a01, a03, a10, a11, a13, a30, a31, a33);
+    cof[11] = -det3_scalar(a00, a01, a02, a10, a11, a12, a30, a31, a32);
+    cof[12] = -det3_scalar(a01, a02, a03, a11, a12, a13, a21, a22, a23);
+    cof[13] = det3_scalar(a00, a02, a03, a10, a12, a13, a20, a22, a23);
+    cof[14] = -det3_scalar(a00, a01, a03, a10, a11, a13, a20, a21, a23);
+    cof[15] = det3_scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22);
+
+    // det D = sum_c D_{0c} cof[D]_{0c}; no additional rank-three minors are required.
+    d[0] * cof[0] + d[1] * cof[1] + d[2] * cof[2] + d[3] * cof[3]
 }
 
 /// Evaluate a small row-major determinant used by general fallback paths.

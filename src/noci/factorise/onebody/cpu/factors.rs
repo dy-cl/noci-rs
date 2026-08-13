@@ -10,7 +10,7 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::noci::types::{NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView};
-use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
+use crate::nonorthogonalwicks::{prepare_same, xw_overlap_f};
 
 // Parent/sibling imports.
 use super::super::super::SpinFactorisation;
@@ -211,15 +211,17 @@ pub(super) fn build_spin_one_body_factors<T: NOCIScalar>(
                     let gex = &gdet.excitation.alpha;
                     let phase = T::from_real(ldet.pha * gdet.pha);
                     prepare_same(&pair.aa, lex, gex, &mut scratch.aa);
-                    srow[col] = phase * xw_overlap(&pair.aa, lex, gex, &mut scratch.aa);
-                    frow[col] = phase * xw_f(&pair.aa, lex, gex, &mut scratch.aa, tol);
+                    let (s, f) = xw_overlap_f(&pair.aa, lex, gex, &mut scratch.aa, tol);
+                    srow[col] = phase * s;
+                    frow[col] = phase * f;
                 } else {
                     let lex = &ldet.excitation.beta;
                     let gex = &gdet.excitation.beta;
                     let phase = T::from_real(ldet.phb * gdet.phb);
                     prepare_same(&pair.bb, lex, gex, &mut scratch.bb);
-                    srow[col] = phase * xw_overlap(&pair.bb, lex, gex, &mut scratch.bb);
-                    frow[col] = phase * xw_f(&pair.bb, lex, gex, &mut scratch.bb, tol);
+                    let (s, f) = xw_overlap_f(&pair.bb, lex, gex, &mut scratch.bb, tol);
+                    srow[col] = phase * s;
+                    frow[col] = phase * f;
                 }
             }
         });

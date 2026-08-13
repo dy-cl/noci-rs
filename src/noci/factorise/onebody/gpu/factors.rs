@@ -6,10 +6,10 @@ use cubecl::prelude::*;
 
 // Crate-root imports.
 use crate::gpu::{GpuBuffer, GpuContext, GpuRuntime};
-use crate::nonorthogonalwicks::gpu::eval::onebody::xw_one_body_m0;
-use crate::nonorthogonalwicks::gpu::eval::overlap::xw_overlap_m0;
 use crate::nonorthogonalwicks::gpu::eval::prepare::{build_d_gen, build_d_m0};
-use crate::nonorthogonalwicks::gpu::{DeviceWicksShared, GpuSameSpinView, xw_f, xw_overlap};
+use crate::nonorthogonalwicks::gpu::{
+    DeviceWicksShared, GpuSameSpinView, xw_overlap_f, xw_overlap_f_m0,
+};
 
 // Parent/sibling imports.
 use super::contract::launch_zero_f64;
@@ -687,11 +687,10 @@ fn evaluate_factor_entry(
 
             build_d_m0(&view, &rows, &cols, &mut det0, l);
 
-            let s = xw_overlap_m0(&view, &det0, l);
-            let f = xw_one_body_m0(&view, &rows, &cols, &det0, &mut cof, l);
+            let values = xw_overlap_f_m0(&view, &rows, &cols, &det0, &mut cof, l);
 
-            s_out[out] = phase_external * s;
-            f_out[out] = phase_external * f;
+            s_out[out] = phase_external * values.s;
+            f_out[out] = phase_external * values.f;
         } else {
             let mut det1 = Array::<f64>::new(l * l);
             let mut work = Array::<f64>::new(l * l);
@@ -701,9 +700,7 @@ fn evaluate_factor_entry(
             build_d_gen(&view, 0usize, &rows, &cols, &mut det0, l);
             build_d_gen(&view, 1usize, &rows, &cols, &mut det1, l);
 
-            let s = xw_overlap(&view, &det0, &det1, &mut work, l);
-
-            let f = xw_f(
+            let values = xw_overlap_f(
                 &view,
                 &rows,
                 &cols,
@@ -715,8 +712,8 @@ fn evaluate_factor_entry(
                 l,
             );
 
-            s_out[out] = phase_external * s;
-            f_out[out] = phase_external * f;
+            s_out[out] = phase_external * values.s;
+            f_out[out] = phase_external * values.f;
         }
     }
 }

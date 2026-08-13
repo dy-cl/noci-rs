@@ -52,7 +52,8 @@ pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
 // Crate-visible function re-exports.
 pub(crate) use cpu::{
     assign_offsets, create_wicks_mmap, load_wicks_mmap, prepare_same, write_diff_spin,
-    write_same_spin, write2t, xw_f, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap, xw_overlap_same_f64,
+    write_same_spin, write2t, xw_f, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap, xw_overlap_f,
+    xw_overlap_same_f64,
 };
 #[cfg(feature = "nocc")]
 pub(crate) use cpu::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};
