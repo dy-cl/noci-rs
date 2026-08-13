@@ -131,35 +131,34 @@ fn print_build_candidate_m<T: NOCIScalar>(n: usize) {
     );
 }
 
-/// Print candidate full-M storage required for a packed upper-triangular matrix.
+/// Print estimated storage required for the SNOCI candidate-space operators.
 /// # Arguments:
-/// - `n`: Number of candidates.
+/// - `n`: Number of candidates in the current candidate basis.
+/// - `data`: Shared candidate NOCI data defining spin-component topology.
+/// - `fock`: Current generalised-Fock data identifying orthogonal same-parent shortcuts.
 /// # Returns:
-/// - `()`: Prints the packed full-M storage estimate to standard output.
-fn print_candidate_m_storage<T: NOCIScalar>(n: usize) {
+/// - `()`: Prints the storage estimates to standard output.
+fn print_snoci_storage_estimates<T: NOCIScalar>(
+    n: usize,
+    data: &NOCIData<'_, T>,
+    fock: &FockData<'_, T>,
+) {
     let nelem = n
         .checked_mul(n + 1)
         .and_then(|x| x.checked_div(2))
         .expect("packed candidate matrix length overflow");
-    let mib = nelem as f64 * std::mem::size_of::<T>() as f64 / 1024.0 / 1024.0;
-    println!("  Estimated storage required for full_m (MiB): {:.3}", mib);
-}
+    let matrix_mib = nelem as f64 * std::mem::size_of::<T>() as f64 / 1024.0 / 1024.0;
+    let factors_mib = OneBodyBackend::storage_bytes(data, fock) as f64 / 1024.0 / 1024.0;
 
-/// Print spin-factorised one-body factor-table storage required for this candidate basis.
-/// # Arguments:
-/// - `data`: Shared candidate NOCI data defining spin-component topology.
-/// - `fock`: Current generalised-Fock data identifying orthogonal same-parent shortcuts.
-/// # Returns:
-/// - `()`: Prints the raw factor-table storage estimate to standard output.
-fn print_factor_table_storage<T: NOCIScalar>(
-    data: &NOCIData<'_, T>,
-    fock: &FockData<'_, T>,
-) {
-    let nbytes = OneBodyBackend::storage_bytes(data, fock);
-    let mib = nbytes as f64 / 1024.0 / 1024.0;
+    println!("Estimated storage");
+    println!("{}", "-".repeat(100));
     println!(
-        "  Estimated storage required for factor_tables (MiB): {:.3}",
-        mib
+        "  Estimated storage required for Shifted Fock Matrix (MiB): {:.3}",
+        matrix_mib
+    );
+    println!(
+        "  Estimated storage required for Factor tables (MiB): {:.3}",
+        factors_mib
     );
 }
 
@@ -320,11 +319,6 @@ where
                 candidates: &pool.candidates,
                 projection: &projection,
             };
-            if world.rank() == 0 {
-                print_candidate_m_storage::<T>(op.candidates.len());
-                print_factor_table_storage(&candidate_data, &fock);
-            }
-
             let one_body = if matches!(opts.gmres.full_m, SNOCIStorage::None)
                 && input.wicks.enabled
                 && candidate_data.wicks.is_some()
@@ -344,11 +338,12 @@ where
                 None
             };
 
-            if it > 0 && world.rank() == 0 {
-                println!("{}", "=".repeat(100));
-            }
-
             if world.rank() == 0 {
+                print_snoci_storage_estimates::<T>(op.candidates.len(), &candidate_data, &fock);
+                if let Some(one_body) = one_body.as_ref() {
+                    one_body.report_memory_configuration();
+                }
+                println!("{}", "=".repeat(100));
                 print_snoci_iteration_start(
                     it,
                     selected_space.len(),

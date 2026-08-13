@@ -120,6 +120,17 @@ impl<T: NOCIScalar + 'static> OneBodyBackend<T> {
         }
     }
 
+    /// Print backend memory-configuration diagnostics when the selected backend has them.
+    /// # Returns
+    /// - `()`: Writes backend diagnostics to standard output.
+    pub(crate) fn report_memory_configuration(&self) {
+        match self {
+            Self::CPU(_) => {}
+            #[cfg(feature = "gpu")]
+            Self::GPU(backend) => backend.report_memory_configuration(),
+        }
+    }
+
     /// Build a GPU backend or terminate clearly when the executable lacks GPU support.
     /// # Arguments:
     /// - `data`: Shared NOCI data with Wick intermediates for the candidate determinant basis.

@@ -65,8 +65,6 @@ pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
     first_panel_bytes: usize,
     /// Physical bytes reserved for the CubeCL contraction workspace.
     workspace_bytes: usize,
-    /// Whether grouped contraction planning diagnostics have been printed.
-    reported_grouped_plan: bool,
     /// Marker preserving the scalar type checked at construction.
     marker: PhantomData<T>,
 }
@@ -146,9 +144,38 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             factor_panel_bytes,
             first_panel_bytes,
             workspace_bytes,
-            reported_grouped_plan: false,
             marker: PhantomData,
         }
+    }
+
+    /// Print the resolved GPU memory configuration and representative grouped-contraction plan.
+    /// # Returns
+    /// - `()`: Writes one human-readable GPU memory summary to standard output.
+    pub(crate) fn report_memory_configuration(&self) {
+        println!("{}", "=".repeat(100));
+        println!("GPU memory configuration");
+        println!("{}", "-".repeat(100));
+
+        for index in 0..self.plan.blocks.len() {
+            if matches!(
+                self.plan.blocks[index],
+                OneBodyBlockPlan::NonOrthogonal { .. }
+            ) {
+                let block = self.gpu_nonorthogonal_block(index);
+                if self.rank_block_dense(block.target_parent)
+                    && self.rank_block_dense(block.source_parent)
+                {
+                    self.report_grouped_plan(block);
+                    return;
+                }
+            }
+        }
+
+        let configured_mib = self.configured_workspace_bytes() as f64 / (1024.0 * 1024.0);
+        let workspace_mib = self.workspace_bytes as f64 / (1024.0 * 1024.0);
+        println!("  Grouped GPU contraction: unavailable");
+        println!("  Configured workspace (MiB): {configured_mib:.3}");
+        println!("  Usable workspace (MiB): {workspace_mib:.3}");
     }
 
     /// Apply `Y = (F + lambda S)x` using transient GPU factor generation and dense contractions.
@@ -368,10 +395,6 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     ) {
         if self.rank_block_dense(block.target_parent) && self.rank_block_dense(block.source_parent)
         {
-            if !self.reported_grouped_plan {
-                self.report_grouped_plan(block);
-                self.reported_grouped_plan = true;
-            }
             match block.contraction {
                 OneBodyContraction::AFirst => {
                     self.apply_a_first_grouped_rank_blocks(block, lambda, partition)
