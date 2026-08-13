@@ -140,6 +140,41 @@ impl<T: CubeElement> GpuBuffer<T> {
     pub(crate) fn array_arg(&self) -> ArrayArg<GpuRuntime> {
         unsafe { ArrayArg::from_raw_parts(self.handle.clone(), self.len()) }
     }
+
+    /// Create a typed view into this device allocation without allocating new storage.
+    /// # Arguments:
+    /// - `self`: Complete device allocation.
+    /// - `offset`: First typed element in the view.
+    /// - `len`: Number of typed elements in the view.
+    /// # Returns
+    /// - `GpuBuffer<T>`: Handle view sharing the original physical allocation.
+    pub(crate) fn slice(
+        &self,
+        offset: usize,
+        len: usize,
+    ) -> Self {
+        let end = offset
+            .checked_add(len)
+            .expect("GPU buffer view end overflow");
+        assert!(end <= self.len, "GPU buffer view exceeds allocation");
+        let element_bytes = core::mem::size_of::<T>();
+        let start_bytes = offset
+            .checked_mul(element_bytes)
+            .expect("GPU buffer view start overflow");
+        let end_bytes = (self.len - end)
+            .checked_mul(element_bytes)
+            .expect("GPU buffer view end trim overflow");
+        let handle = self
+            .handle
+            .clone()
+            .offset_start(start_bytes as u64)
+            .offset_end(end_bytes as u64);
+        Self {
+            handle,
+            len,
+            marker: PhantomData,
+        }
+    }
 }
 
 /// Return the selected CubeCL runtime name.

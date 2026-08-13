@@ -28,6 +28,14 @@ pub(crate) struct GroupedRankLaunch {
     pub(crate) factor_stride: usize,
     /// Full other-spin intermediate row stride.
     pub(crate) intermediate_stride: usize,
+    /// First target component represented by factor row zero.
+    pub(crate) factor_target_base: usize,
+    /// First source component represented by factor column zero.
+    pub(crate) factor_source_base: usize,
+    /// First target component represented by the compact intermediate dimension.
+    pub(crate) intermediate_target_base: usize,
+    /// First source component represented by the compact intermediate dimension.
+    pub(crate) intermediate_source_base: usize,
     /// Overlap shift used by the final contraction.
     pub(crate) lambda: f64,
     /// MPI worker id.
@@ -59,6 +67,7 @@ pub(crate) fn launch_grouped_rank_stage(
     out_s: &GpuBuffer<f64>,
     args: GroupedRankLaunch,
     a_first: bool,
+    accumulate: bool,
 ) {
     if args.tiles == 0 {
         return;
@@ -82,9 +91,14 @@ pub(crate) fn launch_grouped_rank_stage(
             args.blocks,
             args.factor_stride,
             args.intermediate_stride,
+            args.factor_target_base,
+            args.factor_source_base,
+            args.intermediate_target_base,
+            args.intermediate_source_base,
             args.worker,
             args.nworker,
             a_first,
+            accumulate,
         );
     }
 }
@@ -135,6 +149,10 @@ pub(crate) fn launch_grouped_rank_final(
             args.blocks,
             args.factor_stride,
             args.intermediate_stride,
+            args.factor_target_base,
+            args.factor_source_base,
+            args.intermediate_target_base,
+            args.intermediate_source_base,
             args.lambda,
             args.worker,
             args.nworker,
@@ -552,9 +570,14 @@ fn grouped_rank_stage_kernel(
     nblocks: usize,
     factor_stride: usize,
     intermediate_stride: usize,
+    factor_target_base: usize,
+    factor_source_base: usize,
+    intermediate_target_base: usize,
+    intermediate_source_base: usize,
     worker: usize,
     nworker: usize,
     #[comptime] a_first: bool,
+    #[comptime] accumulate: bool,
 ) {
     let flat_tile = usize::cast_from(CUBE_POS_X);
     let mut block_index = 0usize;
@@ -607,7 +630,8 @@ fn grouped_rank_stage_kernel(
                     let target = usize::cast_from(row_components[row_map_offset + row]);
                     let source =
                         usize::cast_from(source_components[source_map_offset + reduced_col]);
-                    let factor_index = target * factor_stride + source;
+                    let factor_index =
+                        (target - factor_target_base) * factor_stride + source - factor_source_base;
                     left_s[lane] = s[factor_index];
                     left_f[lane] = f[factor_index];
                 } else {
@@ -632,7 +656,8 @@ fn grouped_rank_stage_kernel(
                     let target = usize::cast_from(col_components[col_map_offset + load_col]);
                     let source =
                         usize::cast_from(source_components[source_map_offset + reduced_col]);
-                    let factor_index = target * factor_stride + source;
+                    let factor_index =
+                        (target - factor_target_base) * factor_stride + source - factor_source_base;
                     let transposed_lane = ux * GEMM_TILE_DIM + uy;
                     right[transposed_lane] = s[factor_index];
                     left_f[transposed_lane] = f[factor_index];
@@ -668,9 +693,20 @@ fn grouped_rank_stage_kernel(
             col_component
         };
         if owner % nworker == worker {
-            let output = row_component * intermediate_stride + col_component;
-            out_f[output] = value_f;
-            out_s[output] = value_s;
+            let output = if comptime!(a_first) {
+                (row_component - intermediate_target_base) * intermediate_stride + col_component
+                    - intermediate_source_base
+            } else {
+                (row_component - intermediate_source_base) * intermediate_stride + col_component
+                    - intermediate_target_base
+            };
+            if comptime!(accumulate) {
+                out_f[output] += value_f;
+                out_s[output] += value_s;
+            } else {
+                out_f[output] = value_f;
+                out_s[output] = value_s;
+            }
         }
     }
 }
@@ -704,6 +740,10 @@ fn grouped_rank_final_kernel(
     nblocks: usize,
     factor_stride: usize,
     intermediate_stride: usize,
+    factor_target_base: usize,
+    factor_source_base: usize,
+    intermediate_target_base: usize,
+    intermediate_source_base: usize,
     lambda: f64,
     worker: usize,
     nworker: usize,
@@ -729,6 +769,7 @@ fn grouped_rank_final_kernel(
     let det_offset = usize::cast_from(blocks[base + 6usize]);
     let contribution_begin = usize::cast_from(blocks[base + 7usize]);
     let contribution_end = usize::cast_from(blocks[base + 8usize]);
+    let det_stride = usize::cast_from(blocks[base + 9usize]);
     let tiles_n = n.div_ceil(GEMM_TILE_DIM);
     let local_tile = flat_tile - tile_begin;
     let tile_row = local_tile / tiles_n;
@@ -757,13 +798,12 @@ fn grouped_rank_final_kernel(
             if row < m && reduced_col < k {
                 let alpha = usize::cast_from(alpha_components[alpha_map_offset + row]);
                 let source = usize::cast_from(source_components[source_map_offset + reduced_col]);
-                let index = alpha
-                    * if comptime!(a_first) {
-                        intermediate_stride
-                    } else {
-                        factor_stride
-                    }
-                    + source;
+                let index = if comptime!(a_first) {
+                    (alpha - intermediate_target_base) * intermediate_stride + source
+                        - intermediate_source_base
+                } else {
+                    (alpha - factor_target_base) * factor_stride + source - factor_source_base
+                };
                 if comptime!(a_first) {
                     left_f[lane] = intermediate_f[index];
                     left_s[lane] = intermediate_s[index];
@@ -781,7 +821,8 @@ fn grouped_rank_final_kernel(
                     let beta = usize::cast_from(beta_components[beta_map_offset + load_col]);
                     let source =
                         usize::cast_from(source_components[source_map_offset + reduced_col]);
-                    let index = beta * factor_stride + source;
+                    let index =
+                        (beta - factor_target_base) * factor_stride + source - factor_source_base;
                     let transposed_lane = ux * GEMM_TILE_DIM + uy;
                     right_f[transposed_lane] = f[index];
                     right_s[transposed_lane] = s[index];
@@ -793,7 +834,8 @@ fn grouped_rank_final_kernel(
             } else if reduced_row < k && col < n {
                 let beta = usize::cast_from(beta_components[beta_map_offset + col]);
                 let source = usize::cast_from(source_components[source_map_offset + reduced_row]);
-                let index = source * intermediate_stride + beta;
+                let index = (source - intermediate_source_base) * intermediate_stride + beta
+                    - intermediate_target_base;
                 right_f[lane] = intermediate_f[index];
                 right_s[lane] = intermediate_s[index];
             } else {
@@ -823,7 +865,7 @@ fn grouped_rank_final_kernel(
         let beta = usize::cast_from(beta_components[beta_map_offset + col]);
         let owner = if comptime!(a_first) { alpha } else { beta };
         if owner % nworker == worker {
-            let det = usize::cast_from(target_dets[det_offset + row * n + col]);
+            let det = usize::cast_from(target_dets[det_offset + row * det_stride + col]);
             y[det] = y[det] + value;
         }
     }

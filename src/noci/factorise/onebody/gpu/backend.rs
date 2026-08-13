@@ -59,12 +59,14 @@ pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
     device_data: DeviceOneBodyData,
     /// Reusable device buffers for factor panels, intermediates and vectors.
     scratch: GpuOneBodyScratch,
-    /// Persistent heterogeneous grouped-GEMM descriptors keyed by parent-pair plan index.
-    grouped_plans: Vec<Option<GroupedRankPlan>>,
     /// Maximum bytes for one paired same-spin factor panel.
     factor_panel_bytes: usize,
     /// Maximum bytes for one paired first-stage intermediate panel.
     first_panel_bytes: usize,
+    /// Physical bytes reserved for the CubeCL contraction workspace.
+    workspace_bytes: usize,
+    /// Whether grouped contraction planning diagnostics have been printed.
+    reported_grouped_plan: bool,
     /// Marker preserving the scalar type checked at construction.
     marker: PhantomData<T>,
 }
@@ -112,14 +114,26 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         let wicks = gpu::pack_wicks(wicks, requirements);
         let wick_m = collect_wick_m(&wicks, plan.nparent);
         let gpu_data = GpuOneBodyData::new(&spin, data);
+        let factor_panel_bytes = mib_to_bytes(gpu.factor_panel_mib, "GPU factor panel budget");
+        let first_panel_bytes = mib_to_bytes(gpu.first_panel_mib, "GPU first-stage panel budget");
         let context = GpuContext::new();
+        let memory = &context.client().properties().memory;
+        let sliced_allocation_limit = memory
+            .max_page_size
+            .checked_div(8)
+            .and_then(|limit| limit.checked_sub(memory.alignment))
+            .and_then(|limit| usize::try_from(limit).ok())
+            .expect("CubeCL allocation-class limit exceeds usize");
+        let workspace_bytes = factor_panel_bytes
+            .checked_add(first_panel_bytes)
+            .expect("GPU contraction workspace byte count overflow")
+            .min(sliced_allocation_limit);
+        let scratch = GpuOneBodyScratch::with_contraction_workspace(&context, workspace_bytes);
         let orthogonal = GpuOrthogonalBlocks::new(&context, &spin, data, fock);
         let device_wicks = upload_real_wicks(&wicks, &context);
         let device_data = gpu_data.upload(&context);
-        let factor_panel_bytes = mib_to_bytes(gpu.factor_panel_mib, "GPU factor panel budget");
-        let first_panel_bytes = mib_to_bytes(gpu.first_panel_mib, "GPU first-stage panel budget");
 
-        let mut backend = Self {
+        Self {
             context,
             spin,
             plan,
@@ -128,23 +142,13 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             data: gpu_data,
             orthogonal,
             device_data,
-            scratch: GpuOneBodyScratch::default(),
-            grouped_plans: Vec::new(),
+            scratch,
             factor_panel_bytes,
             first_panel_bytes,
+            workspace_bytes,
+            reported_grouped_plan: false,
             marker: PhantomData,
-        };
-        for index in 0..backend.plan.blocks.len() {
-            let grouped = match backend.plan.blocks[index] {
-                OneBodyBlockPlan::NonOrthogonal { .. } => {
-                    let block = backend.gpu_nonorthogonal_block(index);
-                    Some(backend.build_grouped_rank_plan(block))
-                }
-                OneBodyBlockPlan::Orthogonal { .. } => None,
-            };
-            backend.grouped_plans.push(grouped);
         }
-        backend
     }
 
     /// Apply `Y = (F + lambda S)x` using transient GPU factor generation and dense contractions.
@@ -340,8 +344,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                     contraction,
                 };
 
-                block.contraction =
-                    select_gpu_contraction(block, self.factor_panel_bytes, self.first_panel_bytes);
+                block.contraction = select_gpu_contraction(block, self.workspace_bytes);
                 block
             }
             OneBodyBlockPlan::Orthogonal { .. } => {
@@ -363,10 +366,12 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         lambda: f64,
         partition: (usize, usize),
     ) {
-        if self.rank_block_dense(block.target_parent)
-            && self.rank_block_dense(block.source_parent)
-            && self.dense_rank_scratch_fits(block)
+        if self.rank_block_dense(block.target_parent) && self.rank_block_dense(block.source_parent)
         {
+            if !self.reported_grouped_plan {
+                self.report_grouped_plan(block);
+                self.reported_grouped_plan = true;
+            }
             match block.contraction {
                 OneBodyContraction::AFirst => {
                     self.apply_a_first_grouped_rank_blocks(block, lambda, partition)
@@ -397,40 +402,147 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             .all(|block| block.dense)
     }
 
-    /// Test whether unstreamed rank-block factor and intermediate tables fit configured budgets.
+    /// Print the pooled-memory plan and its estimated Wick factor-generation work once.
+    /// The estimate counts every generated same-spin factor entry, including regeneration
+    /// of the inner-spin factor table for each outer target panel.
     /// # Arguments:
-    /// - `block`: Parent-pair dimensions and selected contraction order.
+    /// - `block`: Dense parent-pair dimensions and selected contraction order.
     /// # Returns
-    /// - `bool`: Whether dense tiled routing respects both transient byte budgets.
-    fn dense_rank_scratch_fits(
+    /// - `()`: Writes one human-readable grouped-plan summary to standard output.
+    fn report_grouped_plan(
         &self,
         block: GpuFactorisedBlock,
-    ) -> bool {
-        let alpha_bytes = paired_f64_bytes(block.nta, block.nsa);
-        let beta_bytes = paired_f64_bytes(block.ntb, block.nsb);
-        let first_bytes = match block.contraction {
-            OneBodyContraction::AFirst => paired_f64_bytes(block.nta, block.nsb),
-            OneBodyContraction::BFirst => paired_f64_bytes(block.nsa, block.ntb),
+    ) {
+        let (label, panels) = match block.contraction {
+            OneBodyContraction::AFirst => (
+                "alpha-first",
+                grouped_plan(
+                    block.nta,
+                    block.nsa,
+                    block.nsb,
+                    block.ntb,
+                    block.nsb,
+                    self.workspace_bytes,
+                ),
+            ),
+            OneBodyContraction::BFirst => (
+                "beta-first",
+                grouped_plan(
+                    block.ntb,
+                    block.nsb,
+                    block.nsa,
+                    block.nta,
+                    block.nsa,
+                    self.workspace_bytes,
+                ),
+            ),
         };
-        alpha_bytes <= self.factor_panel_bytes
-            && beta_bytes <= self.factor_panel_bytes
-            && first_bytes <= self.first_panel_bytes
+        let outer_target = match block.contraction {
+            OneBodyContraction::AFirst => block.nta,
+            OneBodyContraction::BFirst => block.ntb,
+        };
+        let inner_target = match block.contraction {
+            OneBodyContraction::AFirst => block.ntb,
+            OneBodyContraction::BFirst => block.nta,
+        };
+        let outer_panels = outer_target.div_ceil(panels.outer_rows);
+        let inner_panels = inner_target.div_ceil(panels.inner_rows);
+        let source_columns = match block.contraction {
+            OneBodyContraction::AFirst => block.nsb,
+            OneBodyContraction::BFirst => block.nsa,
+        };
+        let reduction_columns = match block.contraction {
+            OneBodyContraction::AFirst => block.nsa,
+            OneBodyContraction::BFirst => block.nsb,
+        };
+        let source_panels = source_columns.div_ceil(panels.intermediate_columns);
+        let reduction_panels = reduction_columns.div_ceil(panels.reduction_columns);
+        let contraction_groups = outer_panels
+            .saturating_mul(source_panels)
+            .saturating_mul(reduction_panels.saturating_add(inner_panels));
+        let alpha_table = block.nta.saturating_mul(block.nsa);
+        let beta_table = block.ntb.saturating_mul(block.nsb);
+        let (alpha_work, beta_work) = match block.contraction {
+            OneBodyContraction::AFirst => (
+                source_panels.saturating_mul(alpha_table),
+                outer_panels.saturating_mul(beta_table),
+            ),
+            OneBodyContraction::BFirst => (
+                outer_panels.saturating_mul(alpha_table),
+                source_panels.saturating_mul(beta_table),
+            ),
+        };
+        let work = alpha_work.saturating_add(beta_work);
+        let table_scale = alpha_table.min(beta_table).max(1);
+        let equivalents = work as f64 / table_scale as f64;
+        let configured_mib = self.configured_workspace_bytes() as f64 / (1024.0 * 1024.0);
+        let workspace_mib = self.workspace_bytes as f64 / (1024.0 * 1024.0);
+
+        println!("  Grouped GPU contraction: streamed");
+        println!("  Contraction order: {label}");
+        println!("  Configured workspace (MiB): {configured_mib:.3}");
+        println!("  Usable workspace (MiB): {workspace_mib:.3}");
+        println!("  Outer factor rows: {}", panels.outer_rows);
+        println!("  Inner factor rows: {}", panels.inner_rows);
+        println!("  Reduction columns: {}", panels.reduction_columns);
+        println!("  Intermediate columns: {}", panels.intermediate_columns);
+        println!("  Outer panels: {outer_panels}");
+        println!("  Inner panels: {inner_panels}");
+        println!("  Source panels: {source_panels}");
+        println!("  Reduction panels: {reduction_panels}");
+        println!("  Sub-contraction groups: {contraction_groups}");
+        println!("  Estimated alpha factor entries: {alpha_work}");
+        println!("  Estimated beta factor entries: {beta_work}");
+        println!("  Factor-table equivalents: {equivalents:.3}");
     }
 
-    /// Build persistent heterogeneous grouped-GEMM descriptors for one parent pair.
-    /// Rank sums are represented as contribution ranges inside each owned output block.
+    /// Build heterogeneous grouped-GEMM descriptors for one parent-pair target panel.
+    /// Rank sums are represented as contribution ranges inside each owned output block,
+    /// while clipped component maps retain the dense block's original determinant stride.
     /// # Arguments:
     /// - `block`: Parent-pair dimensions and selected contraction order.
+    /// - `alpha_begin`: First target alpha component represented by the panel.
+    /// - `alpha_end`: One-past-last target alpha component represented by the panel.
+    /// - `beta_begin`: First target beta component represented by the panel.
+    /// - `beta_end`: One-past-last target beta component represented by the panel.
+    /// - `source_alpha_begin`: First source alpha component represented by the panel.
+    /// - `source_alpha_end`: One-past-last source alpha component represented by the panel.
+    /// - `source_beta_begin`: First source beta component represented by the panel.
+    /// - `source_beta_end`: One-past-last source beta component represented by the panel.
     /// # Returns
     /// - `GroupedRankPlan`: Device descriptor buffers and flattened tile counts.
     fn build_grouped_rank_plan(
         &self,
         block: GpuFactorisedBlock,
+        alpha_begin: usize,
+        alpha_end: usize,
+        beta_begin: usize,
+        beta_end: usize,
+        source_alpha_begin: usize,
+        source_alpha_end: usize,
+        source_beta_begin: usize,
+        source_beta_end: usize,
     ) -> GroupedRankPlan {
-        let target_alpha = self.rank_groups(block.target_parent, true);
-        let target_beta = self.rank_groups(block.target_parent, false);
-        let source_alpha = self.rank_groups(block.source_parent, true);
-        let source_beta = self.rank_groups(block.source_parent, false);
+        let full_target_alpha = self.rank_groups(block.target_parent, true);
+        let full_target_beta = self.rank_groups(block.target_parent, false);
+        let target_alpha =
+            self.rank_groups_in_range(block.target_parent, true, alpha_begin, alpha_end);
+        let target_beta =
+            self.rank_groups_in_range(block.target_parent, false, beta_begin, beta_end);
+        let full_source_alpha = self.rank_groups(block.source_parent, true);
+        let full_source_beta = self.rank_groups(block.source_parent, false);
+        let source_alpha = self.rank_groups_in_range(
+            block.source_parent,
+            true,
+            source_alpha_begin,
+            source_alpha_end,
+        );
+        let source_beta = self.rank_groups_in_range(
+            block.source_parent,
+            false,
+            source_beta_begin,
+            source_beta_end,
+        );
         let source_blocks = &self.data.rank_blocks[block.source_parent];
         let target_blocks = &self.data.rank_blocks[block.target_parent];
         let mut stage_blocks = Vec::new();
@@ -450,9 +562,20 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                             .filter(|source| source.beta_rank == source_rank)
                         {
                             let (_, source_offset, k) = source_alpha[source.alpha_rank];
+                            if k == 0 {
+                                continue;
+                            }
+                            let alpha_start =
+                                source_offset - full_source_alpha[source.alpha_rank].1;
+                            let beta_start = col_offset - full_source_beta[source.beta_rank].1;
                             extend_u32(
                                 &mut stage_contributions,
-                                &[k, source_offset, source.det_offset, source.nbeta],
+                                &[
+                                    k,
+                                    source_offset,
+                                    source.det_offset + alpha_start * source.nbeta + beta_start,
+                                    source.nbeta,
+                                ],
                             );
                         }
                         let contribution_end =
@@ -489,9 +612,19 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                             .filter(|source| source.alpha_rank == source_rank)
                         {
                             let (_, source_offset, k) = source_beta[source.beta_rank];
+                            if k == 0 {
+                                continue;
+                            }
+                            let alpha_start = row_offset - full_source_alpha[source.alpha_rank].1;
+                            let beta_start = source_offset - full_source_beta[source.beta_rank].1;
                             extend_u32(
                                 &mut stage_contributions,
-                                &[k, source_offset, source.det_offset, source.nbeta],
+                                &[
+                                    k,
+                                    source_offset,
+                                    source.det_offset + alpha_start * source.nbeta + beta_start,
+                                    source.nbeta,
+                                ],
                             );
                         }
                         let contribution_end =
@@ -525,6 +658,11 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         for target in target_blocks {
             let (_, alpha_offset, m) = target_alpha[target.alpha_rank];
             let (_, beta_offset, n) = target_beta[target.beta_rank];
+            if m == 0 || n == 0 {
+                continue;
+            }
+            let alpha_start = alpha_offset - full_target_alpha[target.alpha_rank].1;
+            let beta_start = beta_offset - full_target_beta[target.beta_rank].1;
             let contribution_begin = final_contributions.len() / GROUPED_FINAL_CONTRIBUTION_FIELDS;
             let source_groups = match block.contraction {
                 OneBodyContraction::AFirst => &source_beta,
@@ -551,9 +689,10 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                     n,
                     alpha_offset,
                     beta_offset,
-                    target.det_offset,
+                    target.det_offset + alpha_start * target.nbeta + beta_start,
                     contribution_begin,
                     contribution_end,
+                    target.nbeta,
                 ],
             );
         }
@@ -568,168 +707,279 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         }
     }
 
-    /// Apply one alpha-first parent pair with one grouped stage and one grouped final launch.
+    /// Apply one dense alpha-first grouped contraction with planner-selected ranges `I,K,J,L`.
+    /// The same loop evaluates `T_F[I,J] += F^alpha[I,K] D[K,J]` and
+    /// `T_S[I,J] += S^alpha[I,K] D[K,J]`, then accumulates
+    /// `Y[I,L] += T_F[I,J] (S^beta[L,J])^T
+    /// + T_S[I,J] (F^beta[L,J] + lambda S^beta[L,J])^T`.
+    /// Any range may equal its full logical dimension, so residency and streaming are plan values
+    /// of this algorithm rather than separate contraction paths.
     /// # Arguments:
     /// - `block`: Dense parent-pair dimensions and ordered Wick metadata.
     /// - `lambda`: Scalar overlap shift.
     /// - `partition`: MPI worker id and count using target alpha ownership.
     /// # Returns
-    /// - `()`: Accumulates actual target determinants into device `y`.
+    /// - `()`: Accumulates actual target determinants into device `y` with bounded scratch.
     fn apply_a_first_grouped_rank_blocks(
         &mut self,
         block: GpuFactorisedBlock,
         lambda: f64,
         partition: (usize, usize),
     ) {
-        self.scratch
-            .ensure_alpha_factors(&self.context, block.nta * block.nsa);
-        self.scratch
-            .ensure_beta_factors(&self.context, block.ntb * block.nsb);
-        self.scratch
-            .ensure_first(&self.context, block.nta * block.nsb);
-        self.build_factors(&block, true, 0, block.nta, block.nsa);
-        self.build_factors(&block, false, 0, block.ntb, block.nsb);
-        let plan_index = block.target_parent * self.plan.nparent + block.source_parent;
-        let grouped = self.grouped_plans[plan_index]
-            .as_ref()
-            .expect("dense parent pair must have grouped descriptors");
-        let packed = self
-            .scratch
-            .packed
-            .as_ref()
-            .expect("GPU packed coefficient buffer must exist");
-        let (sa, fa) = self.scratch.alpha_factors();
-        let (tf, ts) = self.scratch.first_buffers();
-        launch_grouped_rank_stage(
-            &self.context,
-            sa,
-            fa,
-            packed,
-            &self.device_data.alpha_rank_component,
-            &self.device_data.beta_rank_component,
-            &self.device_data.alpha_rank_component,
-            &grouped.stage_blocks,
-            &grouped.stage_contributions,
-            tf,
-            ts,
-            GroupedRankLaunch {
-                tiles: grouped.stage_tiles,
-                blocks: grouped.stage_blocks.len() / GROUPED_STAGE_BLOCK_FIELDS,
-                factor_stride: block.nsa,
-                intermediate_stride: block.nsb,
-                lambda,
-                worker: partition.0,
-                nworker: partition.1,
-            },
-            true,
+        let panels = grouped_plan(
+            block.nta,
+            block.nsa,
+            block.nsb,
+            block.ntb,
+            block.nsb,
+            self.workspace_bytes,
         );
-        let (sb, fb) = self.scratch.beta_factors();
-        launch_grouped_rank_final(
-            &self.context,
-            sb,
-            fb,
-            tf,
-            ts,
-            &self.device_data.alpha_rank_component,
-            &self.device_data.beta_rank_component,
-            &self.device_data.beta_rank_component,
-            &self.device_data.dense_rank_dets,
-            &grouped.final_blocks,
-            &grouped.final_contributions,
-            self.scratch.y.as_ref().expect("GPU y buffer must exist"),
-            GroupedRankLaunch {
-                tiles: grouped.final_tiles,
-                blocks: grouped.final_blocks.len() / GROUPED_FINAL_BLOCK_FIELDS,
-                factor_stride: block.nsb,
-                intermediate_stride: block.nsb,
-                lambda,
-                worker: partition.0,
-                nworker: partition.1,
-            },
-            true,
+        let outer_factor_len = checked_mul(
+            panels.outer_rows,
+            panels.reduction_columns,
+            "GPU alpha panel factor length",
         );
+        let inner_factor_len = checked_mul(
+            panels.inner_rows,
+            panels.intermediate_columns,
+            "GPU beta panel factor length",
+        );
+        let first_len = checked_mul(
+            panels.outer_rows,
+            panels.intermediate_columns,
+            "GPU alpha-first intermediate length",
+        );
+        self.scratch.prepare_contraction(
+            &self.context,
+            outer_factor_len.max(inner_factor_len),
+            first_len,
+        );
+
+        for a0 in (0..block.nta).step_by(panels.outer_rows) {
+            let a1 = (a0 + panels.outer_rows).min(block.nta);
+            for sb0 in (0..block.nsb).step_by(panels.intermediate_columns) {
+                let sb1 = (sb0 + panels.intermediate_columns).min(block.nsb);
+                let (tf, ts) = self.scratch.first_buffers();
+                let panel_first_len = (a1 - a0) * (sb1 - sb0);
+                launch_zero_f64(&self.context, tf, panel_first_len);
+                launch_zero_f64(&self.context, ts, panel_first_len);
+                for sa0 in (0..block.nsa).step_by(panels.reduction_columns) {
+                    let sa1 = (sa0 + panels.reduction_columns).min(block.nsa);
+                    self.build_factors(&block, true, a0, a1, sa0, sa1);
+                    let stage = self
+                        .build_grouped_rank_plan(block, a0, a1, 0, block.ntb, sa0, sa1, sb0, sb1);
+                    let packed = self
+                        .scratch
+                        .packed
+                        .as_ref()
+                        .expect("GPU packed coefficient buffer must exist");
+                    let (sa, fa) = self.scratch.factor_buffers();
+                    let (tf, ts) = self.scratch.first_buffers();
+                    launch_grouped_rank_stage(
+                        &self.context,
+                        sa,
+                        fa,
+                        packed,
+                        &self.device_data.alpha_rank_component,
+                        &self.device_data.beta_rank_component,
+                        &self.device_data.alpha_rank_component,
+                        &stage.stage_blocks,
+                        &stage.stage_contributions,
+                        tf,
+                        ts,
+                        GroupedRankLaunch {
+                            tiles: stage.stage_tiles,
+                            blocks: stage.stage_blocks.len() / GROUPED_STAGE_BLOCK_FIELDS,
+                            factor_stride: sa1 - sa0,
+                            intermediate_stride: sb1 - sb0,
+                            factor_target_base: a0,
+                            factor_source_base: sa0,
+                            intermediate_target_base: a0,
+                            intermediate_source_base: sb0,
+                            lambda,
+                            worker: partition.0,
+                            nworker: partition.1,
+                        },
+                        true,
+                        true,
+                    );
+                }
+
+                for b0 in (0..block.ntb).step_by(panels.inner_rows) {
+                    let b1 = (b0 + panels.inner_rows).min(block.ntb);
+                    self.build_factors(&block, false, b0, b1, sb0, sb1);
+                    let final_plan =
+                        self.build_grouped_rank_plan(block, a0, a1, b0, b1, 0, block.nsa, sb0, sb1);
+                    let (sb, fb) = self.scratch.factor_buffers();
+                    let (tf, ts) = self.scratch.first_buffers();
+                    launch_grouped_rank_final(
+                        &self.context,
+                        sb,
+                        fb,
+                        tf,
+                        ts,
+                        &self.device_data.alpha_rank_component,
+                        &self.device_data.beta_rank_component,
+                        &self.device_data.beta_rank_component,
+                        &self.device_data.dense_rank_dets,
+                        &final_plan.final_blocks,
+                        &final_plan.final_contributions,
+                        self.scratch.y.as_ref().expect("GPU y buffer must exist"),
+                        GroupedRankLaunch {
+                            tiles: final_plan.final_tiles,
+                            blocks: final_plan.final_blocks.len() / GROUPED_FINAL_BLOCK_FIELDS,
+                            factor_stride: sb1 - sb0,
+                            intermediate_stride: sb1 - sb0,
+                            factor_target_base: b0,
+                            factor_source_base: sb0,
+                            intermediate_target_base: a0,
+                            intermediate_source_base: sb0,
+                            lambda,
+                            worker: partition.0,
+                            nworker: partition.1,
+                        },
+                        true,
+                    );
+                }
+            }
+        }
     }
 
-    /// Apply one beta-first parent pair with one grouped stage and one grouped final launch.
+    /// Apply one dense beta-first grouped contraction with planner-selected ranges `I,K,J,L`.
+    /// The same loop evaluates `U_F[J,L] += D[J,K] (F^beta[L,K])^T` and
+    /// `U_S[J,L] += D[J,K] (S^beta[L,K])^T`, then accumulates
+    /// `Y[I,L] += S^alpha[I,J] U_F[J,L]
+    /// + (F^alpha[I,J] + lambda S^alpha[I,J]) U_S[J,L]`.
+    /// Any range may equal its full logical dimension, preserving spin symmetry with alpha-first.
     /// # Arguments:
     /// - `block`: Dense parent-pair dimensions and ordered Wick metadata.
     /// - `lambda`: Scalar overlap shift.
     /// - `partition`: MPI worker id and count using target beta ownership.
     /// # Returns
-    /// - `()`: Accumulates actual target determinants into device `y`.
+    /// - `()`: Accumulates actual target determinants into device `y` with bounded scratch.
     fn apply_b_first_grouped_rank_blocks(
         &mut self,
         block: GpuFactorisedBlock,
         lambda: f64,
         partition: (usize, usize),
     ) {
-        self.scratch
-            .ensure_alpha_factors(&self.context, block.nta * block.nsa);
-        self.scratch
-            .ensure_beta_factors(&self.context, block.ntb * block.nsb);
-        self.scratch
-            .ensure_first(&self.context, block.nsa * block.ntb);
-        self.build_factors(&block, true, 0, block.nta, block.nsa);
-        self.build_factors(&block, false, 0, block.ntb, block.nsb);
-        let plan_index = block.target_parent * self.plan.nparent + block.source_parent;
-        let grouped = self.grouped_plans[plan_index]
-            .as_ref()
-            .expect("dense parent pair must have grouped descriptors");
-        let packed = self
-            .scratch
-            .packed
-            .as_ref()
-            .expect("GPU packed coefficient buffer must exist");
-        let (sb, fb) = self.scratch.beta_factors();
-        let (uf, us) = self.scratch.first_buffers();
-        launch_grouped_rank_stage(
-            &self.context,
-            sb,
-            fb,
-            packed,
-            &self.device_data.alpha_rank_component,
-            &self.device_data.beta_rank_component,
-            &self.device_data.beta_rank_component,
-            &grouped.stage_blocks,
-            &grouped.stage_contributions,
-            uf,
-            us,
-            GroupedRankLaunch {
-                tiles: grouped.stage_tiles,
-                blocks: grouped.stage_blocks.len() / GROUPED_STAGE_BLOCK_FIELDS,
-                factor_stride: block.nsb,
-                intermediate_stride: block.ntb,
-                lambda,
-                worker: partition.0,
-                nworker: partition.1,
-            },
-            false,
+        let panels = grouped_plan(
+            block.ntb,
+            block.nsb,
+            block.nsa,
+            block.nta,
+            block.nsa,
+            self.workspace_bytes,
         );
-        let (sa, fa) = self.scratch.alpha_factors();
-        launch_grouped_rank_final(
-            &self.context,
-            sa,
-            fa,
-            uf,
-            us,
-            &self.device_data.alpha_rank_component,
-            &self.device_data.beta_rank_component,
-            &self.device_data.alpha_rank_component,
-            &self.device_data.dense_rank_dets,
-            &grouped.final_blocks,
-            &grouped.final_contributions,
-            self.scratch.y.as_ref().expect("GPU y buffer must exist"),
-            GroupedRankLaunch {
-                tiles: grouped.final_tiles,
-                blocks: grouped.final_blocks.len() / GROUPED_FINAL_BLOCK_FIELDS,
-                factor_stride: block.nsa,
-                intermediate_stride: block.ntb,
-                lambda,
-                worker: partition.0,
-                nworker: partition.1,
-            },
-            false,
+        let outer_factor_len = checked_mul(
+            panels.outer_rows,
+            panels.reduction_columns,
+            "GPU beta panel factor length",
         );
+        let inner_factor_len = checked_mul(
+            panels.inner_rows,
+            panels.intermediate_columns,
+            "GPU alpha panel factor length",
+        );
+        let first_len = checked_mul(
+            panels.outer_rows,
+            panels.intermediate_columns,
+            "GPU beta-first intermediate length",
+        );
+        self.scratch.prepare_contraction(
+            &self.context,
+            outer_factor_len.max(inner_factor_len),
+            first_len,
+        );
+
+        for b0 in (0..block.ntb).step_by(panels.outer_rows) {
+            let b1 = (b0 + panels.outer_rows).min(block.ntb);
+            for sa0 in (0..block.nsa).step_by(panels.intermediate_columns) {
+                let sa1 = (sa0 + panels.intermediate_columns).min(block.nsa);
+                let (uf, us) = self.scratch.first_buffers();
+                let panel_first_len = (sa1 - sa0) * (b1 - b0);
+                launch_zero_f64(&self.context, uf, panel_first_len);
+                launch_zero_f64(&self.context, us, panel_first_len);
+                for sb0 in (0..block.nsb).step_by(panels.reduction_columns) {
+                    let sb1 = (sb0 + panels.reduction_columns).min(block.nsb);
+                    self.build_factors(&block, false, b0, b1, sb0, sb1);
+                    let stage = self
+                        .build_grouped_rank_plan(block, 0, block.nta, b0, b1, sa0, sa1, sb0, sb1);
+                    let packed = self
+                        .scratch
+                        .packed
+                        .as_ref()
+                        .expect("GPU packed coefficient buffer must exist");
+                    let (sb, fb) = self.scratch.factor_buffers();
+                    let (uf, us) = self.scratch.first_buffers();
+                    launch_grouped_rank_stage(
+                        &self.context,
+                        sb,
+                        fb,
+                        packed,
+                        &self.device_data.alpha_rank_component,
+                        &self.device_data.beta_rank_component,
+                        &self.device_data.beta_rank_component,
+                        &stage.stage_blocks,
+                        &stage.stage_contributions,
+                        uf,
+                        us,
+                        GroupedRankLaunch {
+                            tiles: stage.stage_tiles,
+                            blocks: stage.stage_blocks.len() / GROUPED_STAGE_BLOCK_FIELDS,
+                            factor_stride: sb1 - sb0,
+                            intermediate_stride: b1 - b0,
+                            factor_target_base: b0,
+                            factor_source_base: sb0,
+                            intermediate_target_base: b0,
+                            intermediate_source_base: sa0,
+                            lambda,
+                            worker: partition.0,
+                            nworker: partition.1,
+                        },
+                        false,
+                        true,
+                    );
+                }
+
+                for a0 in (0..block.nta).step_by(panels.inner_rows) {
+                    let a1 = (a0 + panels.inner_rows).min(block.nta);
+                    self.build_factors(&block, true, a0, a1, sa0, sa1);
+                    let final_plan =
+                        self.build_grouped_rank_plan(block, a0, a1, b0, b1, sa0, sa1, 0, block.nsb);
+                    let (sa, fa) = self.scratch.factor_buffers();
+                    let (uf, us) = self.scratch.first_buffers();
+                    launch_grouped_rank_final(
+                        &self.context,
+                        sa,
+                        fa,
+                        uf,
+                        us,
+                        &self.device_data.alpha_rank_component,
+                        &self.device_data.beta_rank_component,
+                        &self.device_data.alpha_rank_component,
+                        &self.device_data.dense_rank_dets,
+                        &final_plan.final_blocks,
+                        &final_plan.final_contributions,
+                        self.scratch.y.as_ref().expect("GPU y buffer must exist"),
+                        GroupedRankLaunch {
+                            tiles: final_plan.final_tiles,
+                            blocks: final_plan.final_blocks.len() / GROUPED_FINAL_BLOCK_FIELDS,
+                            factor_stride: sa1 - sa0,
+                            intermediate_stride: b1 - b0,
+                            factor_target_base: a0,
+                            factor_source_base: sa0,
+                            intermediate_target_base: b0,
+                            intermediate_source_base: sa0,
+                            lambda,
+                            worker: partition.0,
+                            nworker: partition.1,
+                        },
+                        false,
+                    );
+                }
+            }
+        }
     }
 
     /// Return rank-group component-map ranges for one parent and spin.
@@ -763,6 +1013,39 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             .collect()
     }
 
+    /// Return rank-group map ranges clipped to one parent-local component interval.
+    /// Empty ranks are retained so excitation rank remains a direct vector index.
+    /// # Arguments:
+    /// - `parent`: Parent reference.
+    /// - `alpha`: Whether to select alpha rather than beta groups.
+    /// - `component_begin`: First requested parent-local component.
+    /// - `component_end`: One-past-last requested parent-local component.
+    /// # Returns
+    /// - `Vec<(usize,usize,usize)>`: Rank, clipped map offset and clipped length.
+    fn rank_groups_in_range(
+        &self,
+        parent: usize,
+        alpha: bool,
+        component_begin: usize,
+        component_end: usize,
+    ) -> Vec<(usize, usize, usize)> {
+        let groups = self.rank_groups(parent, alpha);
+        let components = if alpha {
+            &self.data.alpha_rank_component
+        } else {
+            &self.data.beta_rank_component
+        };
+        groups
+            .into_iter()
+            .map(|(rank, offset, len)| {
+                let values = &components[offset..offset + len];
+                let begin = values.partition_point(|&value| value < component_begin);
+                let end = values.partition_point(|&value| value < component_end);
+                (rank, offset + begin, end - begin)
+            })
+            .collect()
+    }
+
     /// Apply `Y^Q += F^alpha D (S^beta)^T + S^alpha D (F^beta + lambda S^beta)^T`.
     /// Panel widths are chosen from bounded factor and first-intermediate memory budgets.
     /// # Arguments:
@@ -777,39 +1060,43 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         lambda: f64,
         partition: (usize, usize),
     ) {
-        let panels = a_first_panels(block, self.factor_panel_bytes, self.first_panel_bytes);
+        let panels = grouped_plan(
+            block.nta,
+            block.nsa,
+            block.nsb,
+            block.ntb,
+            block.nsb,
+            self.workspace_bytes,
+        );
 
-        self.scratch.ensure_alpha_factors(
-            &self.context,
-            checked_mul(
-                panels.outer_rows,
-                block.nsa,
-                "GPU alpha panel factor length",
-            ),
+        let outer_factor_len = checked_mul(
+            panels.outer_rows,
+            block.nsa,
+            "GPU alpha panel factor length",
         );
-        self.scratch.ensure_beta_factors(
-            &self.context,
-            checked_mul(panels.inner_rows, block.nsb, "GPU beta panel factor length"),
+        let inner_factor_len =
+            checked_mul(panels.inner_rows, block.nsb, "GPU beta panel factor length");
+        let first_len = checked_mul(
+            panels.outer_rows,
+            block.nsb,
+            "GPU alpha-first intermediate length",
         );
-        self.scratch.ensure_first(
+        self.scratch.prepare_contraction(
             &self.context,
-            checked_mul(
-                panels.outer_rows,
-                block.nsb,
-                "GPU alpha-first intermediate length",
-            ),
+            outer_factor_len.max(inner_factor_len),
+            first_len,
         );
 
         for a0 in (0..block.nta).step_by(panels.outer_rows) {
             let a1 = (a0 + panels.outer_rows).min(block.nta);
 
-            self.build_factors(&block, true, a0, a1, block.nsa);
+            self.build_factors(&block, true, a0, a1, 0, block.nsa);
             self.launch_a_first_stage_panel(&block, partition, a0, a1);
 
             for b0 in (0..block.ntb).step_by(panels.inner_rows) {
                 let b1 = (b0 + panels.inner_rows).min(block.ntb);
 
-                self.build_factors(&block, false, b0, b1, block.nsb);
+                self.build_factors(&block, false, b0, b1, 0, block.nsb);
                 self.launch_a_first_final_panel(&block, lambda, partition, a0, a1, b0, b1);
             }
         }
@@ -829,39 +1116,43 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         lambda: f64,
         partition: (usize, usize),
     ) {
-        let panels = b_first_panels(block, self.factor_panel_bytes, self.first_panel_bytes);
+        let panels = grouped_plan(
+            block.ntb,
+            block.nsb,
+            block.nsa,
+            block.nta,
+            block.nsa,
+            self.workspace_bytes,
+        );
 
-        self.scratch.ensure_beta_factors(
-            &self.context,
-            checked_mul(panels.outer_rows, block.nsb, "GPU beta panel factor length"),
+        let outer_factor_len =
+            checked_mul(panels.outer_rows, block.nsb, "GPU beta panel factor length");
+        let inner_factor_len = checked_mul(
+            panels.inner_rows,
+            block.nsa,
+            "GPU alpha panel factor length",
         );
-        self.scratch.ensure_alpha_factors(
-            &self.context,
-            checked_mul(
-                panels.inner_rows,
-                block.nsa,
-                "GPU alpha panel factor length",
-            ),
+        let first_len = checked_mul(
+            panels.outer_rows,
+            block.nsa,
+            "GPU beta-first intermediate length",
         );
-        self.scratch.ensure_first(
+        self.scratch.prepare_contraction(
             &self.context,
-            checked_mul(
-                panels.outer_rows,
-                block.nsa,
-                "GPU beta-first intermediate length",
-            ),
+            outer_factor_len.max(inner_factor_len),
+            first_len,
         );
 
         for b0 in (0..block.ntb).step_by(panels.outer_rows) {
             let b1 = (b0 + panels.outer_rows).min(block.ntb);
 
-            self.build_factors(&block, false, b0, b1, block.nsb);
+            self.build_factors(&block, false, b0, b1, 0, block.nsb);
             self.launch_b_first_stage_panel(&block, partition, b0, b1);
 
             for a0 in (0..block.nta).step_by(panels.inner_rows) {
                 let a1 = (a0 + panels.inner_rows).min(block.nta);
 
-                self.build_factors(&block, true, a0, a1, block.nsa);
+                self.build_factors(&block, true, a0, a1, 0, block.nsa);
                 self.launch_b_first_final_panel(&block, lambda, partition, a0, a1, b0, b1);
             }
         }
@@ -873,7 +1164,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     /// - `alpha`: Whether to construct alpha-spin factors.
     /// - `row0`: First target component represented by panel row zero.
     /// - `row1`: One-past-last target component represented by the panel.
-    /// - `nsource`: Full source-component count.
+    /// - `source0`: First source component represented by panel column zero.
+    /// - `source1`: One-past-last source component represented by the panel.
     /// # Returns
     /// - `()`: Writes the requested overlap and Fock factor panel.
     fn build_factors(
@@ -882,13 +1174,10 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         alpha: bool,
         row0: usize,
         row1: usize,
-        nsource: usize,
+        source0: usize,
+        source1: usize,
     ) {
-        let (s, f) = if alpha {
-            self.scratch.alpha_factors()
-        } else {
-            self.scratch.beta_factors()
-        };
+        let (s, f) = self.scratch.factor_buffers();
         let wslot = self.wick_slot(block.lp, block.gp, alpha);
 
         build_spin_one_body_factors(
@@ -905,13 +1194,15 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                 m: self.wick_m[wslot],
                 target_component_base: row0,
                 target_component_end: row1,
-                nsource,
+                source_component_base: source0,
+                source_component_end: source1,
             },
             FactorOutput {
                 s,
                 f,
                 target_component_base: row0,
-                nsource,
+                source_component_base: source0,
+                source_stride: source1 - source0,
             },
         );
     }
@@ -933,7 +1224,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         a1: usize,
     ) {
         let (worker, nworker) = partition;
-        let (sa, fa) = self.scratch.alpha_factors();
+        let (sa, fa) = self.scratch.factor_buffers();
         let (tf, ts) = self.scratch.first_buffers();
 
         launch_a_first_stage(
@@ -978,7 +1269,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         b1: usize,
     ) {
         let (worker, nworker) = partition;
-        let (sb, fb) = self.scratch.beta_factors();
+        let (sb, fb) = self.scratch.factor_buffers();
         let (tf, ts) = self.scratch.first_buffers();
         let entry_base = self.data.parent_entry_offsets[block.target_parent];
         let entry_end = self.data.parent_entry_offsets[block.target_parent + 1];
@@ -1023,7 +1314,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         b1: usize,
     ) {
         let (worker, nworker) = partition;
-        let (sb, fb) = self.scratch.beta_factors();
+        let (sb, fb) = self.scratch.factor_buffers();
         let (uf, us) = self.scratch.first_buffers();
 
         launch_b_first_stage(
@@ -1068,7 +1359,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         b1: usize,
     ) {
         let (worker, nworker) = partition;
-        let (sa, fa) = self.scratch.alpha_factors();
+        let (sa, fa) = self.scratch.factor_buffers();
         let (uf, us) = self.scratch.first_buffers();
         let entry_base = self.data.parent_entry_offsets[block.target_parent];
         let entry_end = self.data.parent_entry_offsets[block.target_parent + 1];
@@ -1192,6 +1483,18 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     ) -> usize {
         (lp * self.plan.nparent + gp) * 2 + if alpha { 0 } else { 1 }
     }
+
+    /// Return the pooled transient bytes available to factors and first-stage intermediates.
+    /// The historical configuration reserves two factor panels and one first-stage panel.
+    /// # Arguments:
+    /// - `self`: GPU backend with resolved panel-memory budgets.
+    /// # Returns
+    /// - `usize`: Total reusable contraction workspace in bytes.
+    fn configured_workspace_bytes(&self) -> usize {
+        self.factor_panel_bytes
+            .checked_add(self.first_panel_bytes)
+            .expect("GPU streaming workspace byte count overflow")
+    }
 }
 
 /// Generic nonorthogonal GPU parent-pair block.
@@ -1219,13 +1522,17 @@ struct GpuFactorisedBlock {
     contraction: OneBodyContraction,
 }
 
-/// Outer and inner target-spin streaming widths.
+/// Target, reduction and intermediate streaming widths.
 #[derive(Clone, Copy)]
-struct StreamingPanels {
+struct GroupedPlan {
     /// First-stage target-spin panel width.
     outer_rows: usize,
     /// Final-stage target-spin factor-panel width.
     inner_rows: usize,
+    /// First-stage source-spin reduction width.
+    reduction_columns: usize,
+    /// First-stage other-spin coefficient and intermediate width.
+    intermediate_columns: usize,
 }
 
 /// Persistent device descriptors for one heterogeneous grouped rank contraction.
@@ -1275,65 +1582,149 @@ fn grouped_tile_count(
         .saturating_mul(n.div_ceil(GEMM_TILE_DIM))
 }
 
-/// Select alpha-first streaming widths from bounded factor and intermediate memory.
+/// Divide pooled contraction workspace between factor tiles and the first-stage intermediate.
+/// The selected widths balance repeated Wick factor evaluations and contraction fragmentation under
+/// `B = 2 sizeof(f64) [p_o p_j + max(p_o p_k, p_i p_j)]`, where `p_o` and `p_i`
+/// are target panels, `p_k` is the first-stage reduction panel and `p_j` is the
+/// shared coefficient/intermediate panel. Candidate widths cover every distinct panel count.
 /// # Arguments:
-/// - `block`: Parent-pair dimensions.
+/// - `outer_target`: Full first-contracted target-spin component count.
+/// - `outer_factor_columns`: Source-spin columns in each outer factor row.
+/// - `intermediate_columns`: Other-spin columns in each first-stage intermediate row.
+/// - `inner_target`: Full final-contracted target-spin component count.
+/// - `inner_factor_columns`: Source-spin columns in each inner factor row.
+/// - `workspace_bytes`: Total paired-factor and paired-intermediate workspace.
 /// # Returns
-/// - `StreamingPanels`: Alpha and beta target-panel widths.
-fn a_first_panels(
-    block: GpuFactorisedBlock,
-    factor_panel_bytes: usize,
-    first_panel_bytes: usize,
-) -> StreamingPanels {
-    let factor_rows = panel_rows(block.nta, block.nsa, factor_panel_bytes);
-    let first_rows = panel_rows(block.nta, block.nsb, first_panel_bytes);
+/// - `GroupedPlan`: Target, reduction and intermediate panel widths.
+fn grouped_plan(
+    outer_target: usize,
+    outer_factor_columns: usize,
+    intermediate_columns: usize,
+    inner_target: usize,
+    inner_factor_columns: usize,
+    workspace_bytes: usize,
+) -> GroupedPlan {
+    let pair_bytes = 2 * std::mem::size_of::<f64>();
+    let capacity = workspace_bytes / pair_bytes;
+    let outer_target = outer_target.max(1);
+    let outer_factor_columns = outer_factor_columns.max(1);
+    let intermediate_columns = intermediate_columns.max(1);
+    let inner_target = inner_target.max(1);
+    let inner_factor_columns = inner_factor_columns.max(1);
+    let alpha_entries = outer_target.saturating_mul(outer_factor_columns);
+    let beta_entries = inner_target.saturating_mul(inner_factor_columns);
+    let mut best = GroupedPlan {
+        outer_rows: 1,
+        inner_rows: 1,
+        reduction_columns: 1,
+        intermediate_columns: 1,
+    };
+    let mut best_score = u128::MAX;
+    let mut best_work = usize::MAX;
+    let mut best_groups = usize::MAX;
 
-    StreamingPanels {
-        outer_rows: factor_rows.min(first_rows),
-        inner_rows: panel_rows(block.ntb, block.nsb, factor_panel_bytes),
+    for shared_columns in panel_width_candidates(intermediate_columns) {
+        for reduction_columns in panel_width_candidates(outer_factor_columns) {
+            let outer_rows = (capacity / (shared_columns + reduction_columns))
+                .max(1)
+                .min(outer_target);
+            let first_entries = outer_rows.saturating_mul(shared_columns);
+            let factor_capacity = capacity.saturating_sub(first_entries);
+            let inner_rows = (factor_capacity / shared_columns).max(1).min(inner_target);
+            let factor_entries = outer_rows
+                .saturating_mul(reduction_columns)
+                .max(inner_rows.saturating_mul(shared_columns));
+            if first_entries.saturating_add(factor_entries) > capacity {
+                continue;
+            }
+
+            let outer_panels = outer_target.div_ceil(outer_rows);
+            let inner_panels = inner_target.div_ceil(inner_rows);
+            let reduction_panels = outer_factor_columns.div_ceil(reduction_columns);
+            let source_panels = intermediate_columns.div_ceil(shared_columns);
+            let work = source_panels
+                .saturating_mul(alpha_entries)
+                .saturating_add(outer_panels.saturating_mul(beta_entries));
+            let groups = outer_panels
+                .saturating_mul(source_panels)
+                .saturating_mul(reduction_panels.saturating_add(inner_panels));
+            let score = (work as u128).saturating_mul(groups as u128);
+            if score < best_score
+                || (score == best_score
+                    && (work < best_work || (work == best_work && groups < best_groups)))
+            {
+                best = GroupedPlan {
+                    outer_rows,
+                    inner_rows,
+                    reduction_columns,
+                    intermediate_columns: shared_columns,
+                };
+                best_score = score;
+                best_work = work;
+                best_groups = groups;
+            }
+        }
     }
+
+    best
 }
 
-/// Select beta-first streaming widths from bounded factor and intermediate memory.
+/// Enumerate one representative width for every distinct panel count of a logical dimension.
 /// # Arguments:
-/// - `block`: Parent-pair dimensions.
+/// - `dimension`: Full logical matrix dimension.
 /// # Returns
-/// - `StreamingPanels`: Beta and alpha target-panel widths.
-fn b_first_panels(
-    block: GpuFactorisedBlock,
-    factor_panel_bytes: usize,
-    first_panel_bytes: usize,
-) -> StreamingPanels {
-    let factor_rows = panel_rows(block.ntb, block.nsb, factor_panel_bytes);
-    let first_rows = panel_rows(block.ntb, block.nsa, first_panel_bytes);
-
-    StreamingPanels {
-        outer_rows: factor_rows.min(first_rows),
-        inner_rows: panel_rows(block.nta, block.nsa, factor_panel_bytes),
-    }
+/// - `Vec<usize>`: Sorted candidate panel widths including one and the full dimension.
+fn panel_width_candidates(dimension: usize) -> Vec<usize> {
+    let dimension = dimension.max(1);
+    let mut widths = (1..=dimension)
+        .map(|panels| dimension.div_ceil(panels))
+        .collect::<Vec<_>>();
+    widths.sort_unstable();
+    widths.dedup();
+    widths
 }
 
 /// Select the transient GPU contraction order from factor-generation work.
-/// For alpha-first, the beta factor table is regenerated once per alpha outer panel,
-/// giving `W_A = nta nsa + ceil(nta / p_a) ntb nsb`; beta-first is analogous.
+/// For alpha-first, `W_A = ceil(nsb / p_b) nta nsa + ceil(nta / p_a) ntb nsb`,
+/// where `p_b` is the intermediate source panel and `p_a` is the outer target panel;
+/// beta-first is the spin-swapped expression.
 /// # Arguments:
 /// - `block`: Parent-pair dimensions and shared contraction order.
 /// # Returns
 /// - `OneBodyContraction`: Lower transient factor-generation cost, using the shared order on ties.
 fn select_gpu_contraction(
     block: GpuFactorisedBlock,
-    factor_panel_bytes: usize,
-    first_panel_bytes: usize,
+    workspace_bytes: usize,
 ) -> OneBodyContraction {
-    let a_panels = a_first_panels(block, factor_panel_bytes, first_panel_bytes);
-    let b_panels = b_first_panels(block, factor_panel_bytes, first_panel_bytes);
+    let a_panels = grouped_plan(
+        block.nta,
+        block.nsa,
+        block.nsb,
+        block.ntb,
+        block.nsb,
+        workspace_bytes,
+    );
+    let b_panels = grouped_plan(
+        block.ntb,
+        block.nsb,
+        block.nsa,
+        block.nta,
+        block.nsa,
+        workspace_bytes,
+    );
     let alpha_entries = block.nta.saturating_mul(block.nsa);
     let beta_entries = block.ntb.saturating_mul(block.nsb);
     let na_panels = block.nta.div_ceil(a_panels.outer_rows);
     let nb_panels = block.ntb.div_ceil(b_panels.outer_rows);
+    let a_source_panels = block.nsb.div_ceil(a_panels.intermediate_columns);
+    let b_source_panels = block.nsa.div_ceil(b_panels.intermediate_columns);
 
-    let a_work = alpha_entries.saturating_add(na_panels.saturating_mul(beta_entries));
-    let b_work = beta_entries.saturating_add(nb_panels.saturating_mul(alpha_entries));
+    let a_work = a_source_panels
+        .saturating_mul(alpha_entries)
+        .saturating_add(na_panels.saturating_mul(beta_entries));
+    let b_work = b_source_panels
+        .saturating_mul(beta_entries)
+        .saturating_add(nb_panels.saturating_mul(alpha_entries));
 
     if a_work < b_work {
         OneBodyContraction::AFirst
@@ -1344,37 +1735,15 @@ fn select_gpu_contraction(
     }
 }
 
-/// Return the largest target-component panel fitting one paired `f64` scratch allocation.
-/// A minimum width of one is retained when one logical row itself exceeds the nominal budget.
-/// # Arguments:
-/// - `ntarget`: Full target-component count.
-/// - `nsource`: Source-component count forming one factor/intermediate row.
-/// - `byte_budget`: Maximum nominal bytes for the paired `S/F` buffers.
-/// # Returns
-/// - `usize`: Target rows per streaming panel.
-fn panel_rows(
-    ntarget: usize,
-    nsource: usize,
-    byte_budget: usize,
-) -> usize {
-    if ntarget == 0 {
-        return 1;
-    }
-
-    if nsource == 0 {
-        return ntarget;
-    }
-
-    let bytes_per_row = nsource
-        .checked_mul(2 * std::mem::size_of::<f64>())
-        .expect("GPU panel row byte count overflow");
-
-    (byte_budget / bytes_per_row).max(1).min(ntarget)
-}
-
 /// Reusable GPU one-body scratch buffers.
 #[derive(Default)]
 struct GpuOneBodyScratch {
+    /// Physical allocation for lifetime-reused factor panels and intermediates.
+    contraction_workspace: Option<GpuBuffer<f64>>,
+    /// Overlap-factor view into the reusable contraction workspace.
+    factor_s: Option<GpuBuffer<f64>>,
+    /// Fock-factor view into the reusable contraction workspace.
+    factor_f: Option<GpuBuffer<f64>>,
     /// Alpha target-panel overlap factors.
     alpha_s: Option<GpuBuffer<f64>>,
     /// Alpha target-panel Fock factors.
@@ -1400,6 +1769,61 @@ struct GpuOneBodyScratch {
 }
 
 impl GpuOneBodyScratch {
+    /// Reserve the contraction workspace before persistent Wick uploads.
+    /// # Arguments:
+    /// - `context`: CubeCL context used for allocation.
+    /// - `workspace_bytes`: Configured physical workspace size in bytes.
+    /// # Returns
+    /// - `GpuOneBodyScratch`: Scratch storage owning the reserved allocation.
+    fn with_contraction_workspace(
+        context: &GpuContext,
+        workspace_bytes: usize,
+    ) -> Self {
+        let element_bytes = std::mem::size_of::<f64>();
+        Self {
+            contraction_workspace: Some(GpuBuffer::empty(
+                context,
+                workspace_bytes.div_ceil(element_bytes),
+            )),
+            ..Self::default()
+        }
+    }
+
+    /// Partition the physical workspace into paired factor and intermediate views.
+    /// The factor region is used by the outer spin during the stage and then overwritten by
+    /// inner-spin factors during the final contraction; the intermediate region remains disjoint.
+    /// # Arguments:
+    /// - `context`: CubeCL context used for allocation.
+    /// - `factor_len`: Maximum entries in either paired factor panel.
+    /// - `first_len`: Entries in either paired first-stage intermediate.
+    /// # Returns
+    /// - `()`: Creates logical overlap/Fock views over the reusable physical allocation.
+    fn prepare_contraction(
+        &mut self,
+        context: &GpuContext,
+        factor_len: usize,
+        first_len: usize,
+    ) {
+        let total = factor_len
+            .checked_mul(2)
+            .and_then(|factor| {
+                first_len
+                    .checked_mul(2)
+                    .and_then(|first| factor.checked_add(first))
+            })
+            .expect("GPU contraction workspace length overflow");
+        ensure_buffer(context, &mut self.contraction_workspace, total);
+        let workspace = self
+            .contraction_workspace
+            .as_ref()
+            .expect("GPU contraction workspace missing");
+        self.factor_s = Some(workspace.slice(0, factor_len));
+        self.factor_f = Some(workspace.slice(factor_len, factor_len));
+        let first_base = 2 * factor_len;
+        self.first_f = Some(workspace.slice(first_base, first_len));
+        self.first_s = Some(workspace.slice(first_base + first_len, first_len));
+    }
+
     /// Ensure packed coefficient storage can hold one dense rank block.
     /// # Arguments:
     /// - `context`: CubeCL context used for allocation.
@@ -1413,21 +1837,6 @@ impl GpuOneBodyScratch {
     ) {
         ensure_buffer(context, &mut self.packed, len);
     }
-    /// Ensure first-stage buffers can hold `len` entries.
-    /// # Arguments:
-    /// - `context`: CubeCL context used for allocation.
-    /// - `len`: Required first-stage length.
-    /// # Returns
-    /// - `()`: Enlarges the buffers only when required.
-    fn ensure_first(
-        &mut self,
-        context: &GpuContext,
-        len: usize,
-    ) {
-        ensure_buffer(context, &mut self.first_f, len);
-        ensure_buffer(context, &mut self.first_s, len);
-    }
-
     /// Ensure the output-vector buffer can hold `len` entries.
     /// # Arguments:
     /// - `context`: CubeCL context used for allocation.
@@ -1524,6 +1933,18 @@ impl GpuOneBodyScratch {
         )
     }
 
+    /// Borrow the lifetime-reused overlap and Fock factor views.
+    /// # Arguments:
+    /// - `self`: Scratch storage with a prepared contraction workspace.
+    /// # Returns
+    /// - `(&GpuBuffer<f64>, &GpuBuffer<f64>)`: Overlap and Fock factor views.
+    fn factor_buffers(&self) -> (&GpuBuffer<f64>, &GpuBuffer<f64>) {
+        (
+            self.factor_s.as_ref().expect("GPU factor S view missing"),
+            self.factor_f.as_ref().expect("GPU factor F view missing"),
+        )
+    }
+
     /// Borrow first-stage Fock and overlap intermediate buffers.
     /// # Arguments:
     /// - `self`: Scratch storage with allocated first-stage buffers.
@@ -1582,20 +2003,6 @@ fn mib_to_bytes(
     mib.checked_mul(1024)
         .and_then(|value| value.checked_mul(1024))
         .expect(context)
-}
-
-/// Count bytes occupied by two row-major `f64` matrices.
-/// # Arguments:
-/// - `rows`: Matrix row count.
-/// - `cols`: Matrix column count.
-/// # Returns
-/// - `usize`: Saturating paired allocation size in bytes.
-fn paired_f64_bytes(
-    rows: usize,
-    cols: usize,
-) -> usize {
-    rows.saturating_mul(cols)
-        .saturating_mul(2 * std::mem::size_of::<f64>())
 }
 
 /// Collect host-known zero-overlap counts in the same pair/spin ordering as device Wick metadata.

@@ -35,7 +35,9 @@ pub(crate) fn build_spin_one_body_factors(
     request: FactorRequest,
     out: FactorOutput<'_>,
 ) {
-    if request.target_component_end <= request.target_component_base || request.nsource == 0 {
+    if request.target_component_end <= request.target_component_base
+        || request.source_component_end <= request.source_component_base
+    {
         return;
     }
 
@@ -51,7 +53,7 @@ pub(crate) fn build_spin_one_body_factors(
     if request.m > 1 {
         let nrow = request.target_component_end - request.target_component_base;
         let len = nrow
-            .checked_mul(request.nsource)
+            .checked_mul(request.source_component_end - request.source_component_base)
             .expect("GPU factor panel length overflow");
         launch_zero_f64(context, out.s, len);
         launch_zero_f64(context, out.f, len);
@@ -79,8 +81,8 @@ pub(crate) fn build_spin_one_body_factors(
                 request.source_parent,
                 request.alpha,
                 source_rank,
-                0,
-                request.nsource,
+                request.source_component_base,
+                request.source_component_end,
             );
 
             if source.len == 0 {
@@ -232,7 +234,8 @@ fn launch_spin_rank_block(
             source.offset,
             source.len,
             out.target_component_base,
-            out.nsource,
+            out.source_component_base,
+            out.source_stride,
             pair.target_left,
             ranks.target_rank,
             ranks.source_rank,
@@ -324,8 +327,10 @@ pub(crate) struct FactorRequest {
     pub(crate) target_component_base: usize,
     /// One-past-last target component represented by the panel.
     pub(crate) target_component_end: usize,
-    /// Full logical source-component count.
-    pub(crate) nsource: usize,
+    /// First source component represented by output column zero.
+    pub(crate) source_component_base: usize,
+    /// One-past-last source component represented by the panel.
+    pub(crate) source_component_end: usize,
 }
 
 /// Request for same-parent diagonal factor generation.
@@ -352,8 +357,10 @@ pub(crate) struct FactorOutput<'a> {
     pub(crate) f: &'a GpuBuffer<f64>,
     /// First target component represented by output row zero.
     pub(crate) target_component_base: usize,
-    /// Full logical source-component count.
-    pub(crate) nsource: usize,
+    /// First source component represented by output column zero.
+    pub(crate) source_component_base: usize,
+    /// Compact source-component row stride.
+    pub(crate) source_stride: usize,
 }
 
 /// Device diagonal factor outputs.
@@ -746,7 +753,8 @@ fn evaluate_factor_entry(
 /// - `source_offset`: Source rank-group offset.
 /// - `source_len`: Source rank-group length.
 /// - `target_component_base`: First output target component.
-/// - `nsource`: Full source-component count.
+/// - `source_component_base`: First output source component.
+/// - `source_stride`: Compact source-component row stride.
 /// - `target_left`: Whether target representatives are left determinants.
 /// - `target_rank`: Target spin excitation rank.
 /// - `source_rank`: Source spin excitation rank.
@@ -782,7 +790,8 @@ fn one_body_factor_kernel(
     source_offset: usize,
     source_len: usize,
     target_component_base: usize,
-    nsource: usize,
+    source_component_base: usize,
+    source_stride: usize,
     #[comptime] target_left: bool,
     #[comptime] target_rank: usize,
     #[comptime] source_rank: usize,
@@ -812,7 +821,7 @@ fn one_body_factor_kernel(
     } else {
         target_rank
     };
-    let out = (tcomp - target_component_base) * nsource + scomp;
+    let out = (tcomp - target_component_base) * source_stride + scomp - source_component_base;
 
     evaluate_factor_entry(
         slab,
