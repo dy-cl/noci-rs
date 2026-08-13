@@ -3,27 +3,6 @@
 // Standard library imports.
 use std::str::FromStr;
 
-/// GPU memory options for transient factorised one-body contractions.
-#[derive(Clone, Copy)]
-pub struct SNOCIGpuOptions {
-    /// Maximum MiB for one paired same-spin factor panel.
-    pub factor_panel_mib: usize,
-    /// Maximum MiB for one paired first-stage intermediate panel.
-    pub first_panel_mib: usize,
-}
-
-impl Default for SNOCIGpuOptions {
-    /// Return default GPU transient-memory options.
-    /// # Returns:
-    /// - `Self`: GPU options preserving the historical panel byte budgets.
-    fn default() -> Self {
-        Self {
-            factor_panel_mib: 1536,
-            first_panel_mib: 3072,
-        }
-    }
-}
-
 pub struct GMRESOptions {
     /// Maximum GMRES iterations.
     pub max_iter: usize,
@@ -189,8 +168,6 @@ impl Default for SNOCIPreconditioner {
 pub struct SNOCIOptions {
     /// Factorised one-body backend.
     pub backend: SNOCIBackend,
-    /// GPU backend memory options.
-    pub gpu: SNOCIGpuOptions,
     /// Selection denominator shift.
     pub sigma: f64,
     /// Candidate residual tolerance.
@@ -216,7 +193,6 @@ impl Default for SNOCIOptions {
     fn default() -> Self {
         Self {
             backend: SNOCIBackend::default(),
-            gpu: SNOCIGpuOptions::default(),
             sigma: 1e-6,
             tol: 1e-8,
             imag_shifts: vec![0.0],

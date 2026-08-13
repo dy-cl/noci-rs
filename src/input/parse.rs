@@ -10,9 +10,8 @@ use rlua::{Lua, Table, Value};
 use super::{
     DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, Input,
     Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
-    SCFExcitation, SCFInfo, SNOCIBackend, SNOCIGpuOptions, SNOCIOptions, SNOCIPreconditioner,
-    SNOCIStorage, SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage,
-    WriteOptions,
+    SCFExcitation, SCFInfo, SNOCIBackend, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage,
+    SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -487,7 +486,6 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
 fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
     snoci_tbl.map(|snoci_tbl| {
         let defaults = SNOCIOptions::default();
-        let gpu_defaults = SNOCIGpuOptions::default();
         let gmres_defaults = GMRESOptions::default();
 
         let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
@@ -532,20 +530,6 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             snoci_tbl.get::<_, Value>("backend"),
             defaults.backend,
         );
-        let gpu_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gpu").unwrap_or(None);
-        let gpu = if let Some(gpu_tbl) = gpu_tbl {
-            SNOCIGpuOptions {
-                factor_panel_mib: gpu_tbl
-                    .get("factor_panel_mib")
-                    .unwrap_or(gpu_defaults.factor_panel_mib),
-                first_panel_mib: gpu_tbl
-                    .get("first_panel_mib")
-                    .unwrap_or(gpu_defaults.first_panel_mib),
-            }
-        } else {
-            gpu_defaults
-        };
-
         let imag_shifts: Vec<f64> = snoci_tbl
             .get::<_, Option<Table>>("imag_shift")
             .unwrap_or(None)
@@ -558,7 +542,6 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
 
         SNOCIOptions {
             backend,
-            gpu,
             sigma: snoci_tbl.get("sigma").unwrap_or(defaults.sigma),
             tol: snoci_tbl.get("tol").unwrap_or(defaults.tol),
             imag_shifts,

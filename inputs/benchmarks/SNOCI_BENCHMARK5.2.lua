@@ -11,7 +11,7 @@ scf = {
 }
 
 mol = {
-    basis = '3-21G',
+    basis = 'cc-pVDZ',
     r = {80.0},
     unit = 'Ang',
 
@@ -126,15 +126,11 @@ snoci = {
         0.0,
     },
     gmres = {
-        max_iter = 32,
+        max_iter = 1,
         full_m = "none",
         factor_tables = "none",
     },
     backend = "gpu",
-    gpu = {
-          factor_panel_mib = 1536,
-          first_panel_mib = 3072,
-    },
 }
 
 wicks = {

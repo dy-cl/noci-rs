@@ -11,7 +11,7 @@ use ndarray::Array1;
 
 // Crate-root imports.
 use crate::gpu::{GpuBuffer, GpuContext};
-use crate::input::{SNOCIGpuOptions, SNOCIStorage};
+use crate::input::SNOCIStorage;
 use crate::noci::types::{FockData, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::gpu::DeviceWicksShared;
 use crate::nonorthogonalwicks::{WicksRequirements, gpu};
@@ -59,12 +59,8 @@ pub(crate) struct GpuOneBodyBackend<T: NOCIScalar> {
     device_data: DeviceOneBodyData,
     /// Reusable device buffers for factor panels, intermediates and vectors.
     scratch: GpuOneBodyScratch,
-    /// Maximum bytes for one paired same-spin factor panel.
-    factor_panel_bytes: usize,
-    /// Maximum bytes for one paired first-stage intermediate panel.
-    first_panel_bytes: usize,
-    /// Physical bytes reserved for the CubeCL contraction workspace.
-    workspace_bytes: usize,
+    /// Backend-neutral CubeCL allocation layout for each contraction region.
+    workspace: WorkspaceLayout,
     /// Marker preserving the scalar type checked at construction.
     marker: PhantomData<T>,
 }
@@ -79,7 +75,6 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     /// - `_rank`: Unused MPI cache rank.
     /// - `_iteration`: Unused SNOCI cache iteration.
     /// - `storage`: Requested factor-table storage strategy.
-    /// - `gpu`: GPU transient-memory options.
     /// # Returns
     /// - `GpuOneBodyBackend<T>`: GPU one-body backend.
     pub(crate) fn new(
@@ -89,7 +84,6 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         _rank: i32,
         _iteration: usize,
         storage: SNOCIStorage,
-        gpu: SNOCIGpuOptions,
     ) -> Self {
         if TypeId::of::<T>() != TypeId::of::<f64>() {
             eprintln!("snoci.backend = \"gpu\" currently supports real f64 NOCI-PT2 data only");
@@ -112,21 +106,10 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         let wicks = gpu::pack_wicks(wicks, requirements);
         let wick_m = collect_wick_m(&wicks, plan.nparent);
         let gpu_data = GpuOneBodyData::new(&spin, data);
-        let factor_panel_bytes = mib_to_bytes(gpu.factor_panel_mib, "GPU factor panel budget");
-        let first_panel_bytes = mib_to_bytes(gpu.first_panel_mib, "GPU first-stage panel budget");
         let context = GpuContext::new();
-        let memory = &context.client().properties().memory;
-        let sliced_allocation_limit = memory
-            .max_page_size
-            .checked_div(8)
-            .and_then(|limit| limit.checked_sub(memory.alignment))
-            .and_then(|limit| usize::try_from(limit).ok())
-            .expect("CubeCL allocation-class limit exceeds usize");
-        let workspace_bytes = factor_panel_bytes
-            .checked_add(first_panel_bytes)
-            .expect("GPU contraction workspace byte count overflow")
-            .min(sliced_allocation_limit);
-        let scratch = GpuOneBodyScratch::with_contraction_workspace(&context, workspace_bytes);
+        let workspace = WorkspaceLayout::from_context(&context);
+        let scratch =
+            GpuOneBodyScratch::with_contraction_regions(&context, workspace.region_elements);
         let orthogonal = GpuOrthogonalBlocks::new(&context, &spin, data, fock);
         let device_wicks = upload_real_wicks(&wicks, &context);
         let device_data = gpu_data.upload(&context);
@@ -141,14 +124,12 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             orthogonal,
             device_data,
             scratch,
-            factor_panel_bytes,
-            first_panel_bytes,
-            workspace_bytes,
+            workspace,
             marker: PhantomData,
         }
     }
 
-    /// Print the resolved GPU memory configuration and representative grouped-contraction plan.
+    /// Print the resolved CubeCL workspace and representative grouped-contraction plan.
     /// # Returns
     /// - `()`: Writes one human-readable GPU memory summary to standard output.
     pub(crate) fn report_memory_configuration(&self) {
@@ -171,11 +152,14 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             }
         }
 
-        let configured_mib = self.configured_workspace_bytes() as f64 / (1024.0 * 1024.0);
-        let workspace_mib = self.workspace_bytes as f64 / (1024.0 * 1024.0);
+        let region_mib = self.workspace.region_bytes as f64 / (1024.0 * 1024.0);
+        let backing_mib = self.workspace.backing_bytes as f64 / (1024.0 * 1024.0);
+        let page_mib = self.workspace.page_bytes as f64 / (1024.0 * 1024.0);
         println!("  Grouped GPU contraction: unavailable");
-        println!("  Configured workspace (MiB): {configured_mib:.3}");
-        println!("  Usable workspace (MiB): {workspace_mib:.3}");
+        println!("  CubeCL workspace region (MiB): {region_mib:.3}");
+        println!("  CubeCL sliced-page size (MiB): {page_mib:.3}");
+        println!("  CubeCL backing pages: {}", self.workspace.backing_pages);
+        println!("  CubeCL backing demand (MiB): {backing_mib:.3}");
     }
 
     /// Apply `Y = (F + lambda S)x` using transient GPU factor generation and dense contractions.
@@ -371,7 +355,11 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                     contraction,
                 };
 
-                block.contraction = select_gpu_contraction(block, self.workspace_bytes);
+                block.contraction = select_gpu_contraction(
+                    block,
+                    self.workspace.region_elements,
+                    self.workspace.region_elements,
+                );
                 block
             }
             OneBodyBlockPlan::Orthogonal { .. } => {
@@ -445,7 +433,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                     block.nsb,
                     block.ntb,
                     block.nsb,
-                    self.workspace_bytes,
+                    self.workspace.region_elements,
+                    self.workspace.region_elements,
                 ),
             ),
             OneBodyContraction::BFirst => (
@@ -456,7 +445,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                     block.nsa,
                     block.nta,
                     block.nsa,
-                    self.workspace_bytes,
+                    self.workspace.region_elements,
+                    self.workspace.region_elements,
                 ),
             ),
         };
@@ -498,13 +488,16 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
         let work = alpha_work.saturating_add(beta_work);
         let table_scale = alpha_table.min(beta_table).max(1);
         let equivalents = work as f64 / table_scale as f64;
-        let configured_mib = self.configured_workspace_bytes() as f64 / (1024.0 * 1024.0);
-        let workspace_mib = self.workspace_bytes as f64 / (1024.0 * 1024.0);
+        let region_mib = self.workspace.region_bytes as f64 / (1024.0 * 1024.0);
+        let backing_mib = self.workspace.backing_bytes as f64 / (1024.0 * 1024.0);
+        let page_mib = self.workspace.page_bytes as f64 / (1024.0 * 1024.0);
 
         println!("  Grouped GPU contraction: streamed");
         println!("  Contraction order: {label}");
-        println!("  Configured workspace (MiB): {configured_mib:.3}");
-        println!("  Usable workspace (MiB): {workspace_mib:.3}");
+        println!("  CubeCL workspace region (MiB): {region_mib:.3}");
+        println!("  CubeCL sliced-page size (MiB): {page_mib:.3}");
+        println!("  CubeCL backing pages: {}", self.workspace.backing_pages);
+        println!("  CubeCL backing demand (MiB): {backing_mib:.3}");
         println!("  Outer factor rows: {}", panels.outer_rows);
         println!("  Inner factor rows: {}", panels.inner_rows);
         println!("  Reduction columns: {}", panels.reduction_columns);
@@ -720,11 +713,27 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             );
         }
 
+        let stage_blocks_len = stage_blocks.len();
+        let stage_contributions_len = stage_contributions.len();
+        let final_blocks_len = final_blocks.len();
+        let final_contributions_len = final_contributions.len();
+        let mut descriptors = Vec::with_capacity(
+            stage_blocks_len + stage_contributions_len + final_blocks_len + final_contributions_len,
+        );
+        descriptors.extend_from_slice(&stage_blocks);
+        descriptors.extend_from_slice(&stage_contributions);
+        descriptors.extend_from_slice(&final_blocks);
+        descriptors.extend_from_slice(&final_contributions);
+        let storage = GpuBuffer::from_slice(&self.context, &descriptors);
+        let stage_contributions_offset = stage_blocks_len;
+        let final_blocks_offset = stage_contributions_offset + stage_contributions_len;
+        let final_contributions_offset = final_blocks_offset + final_blocks_len;
+
         GroupedRankPlan {
-            stage_blocks: GpuBuffer::from_slice(&self.context, &stage_blocks),
-            stage_contributions: GpuBuffer::from_slice(&self.context, &stage_contributions),
-            final_blocks: GpuBuffer::from_slice(&self.context, &final_blocks),
-            final_contributions: GpuBuffer::from_slice(&self.context, &final_contributions),
+            stage_blocks: storage.slice(0, stage_blocks_len),
+            stage_contributions: storage.slice(stage_contributions_offset, stage_contributions_len),
+            final_blocks: storage.slice(final_blocks_offset, final_blocks_len),
+            final_contributions: storage.slice(final_contributions_offset, final_contributions_len),
             stage_tiles,
             final_tiles,
         }
@@ -755,7 +764,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             block.nsb,
             block.ntb,
             block.nsb,
-            self.workspace_bytes,
+            self.workspace.region_elements,
+            self.workspace.region_elements,
         );
         let outer_factor_len = checked_mul(
             panels.outer_rows,
@@ -772,20 +782,20 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             panels.intermediate_columns,
             "GPU alpha-first intermediate length",
         );
-        self.scratch.prepare_contraction(
-            &self.context,
-            outer_factor_len.max(inner_factor_len),
-            first_len,
-        );
+        self.scratch
+            .prepare_contraction(outer_factor_len.max(inner_factor_len), first_len);
 
         for a0 in (0..block.nta).step_by(panels.outer_rows) {
             let a1 = (a0 + panels.outer_rows).min(block.nta);
             for sb0 in (0..block.nsb).step_by(panels.intermediate_columns) {
                 let sb1 = (sb0 + panels.intermediate_columns).min(block.nsb);
-                let (tf, ts) = self.scratch.first_buffers();
-                let panel_first_len = (a1 - a0) * (sb1 - sb0);
-                launch_zero_f64(&self.context, tf, panel_first_len);
-                launch_zero_f64(&self.context, ts, panel_first_len);
+                let accumulate_stage = panels.reduction_columns < block.nsa;
+                if accumulate_stage {
+                    let (tf, ts) = self.scratch.first_buffers();
+                    let panel_first_len = (a1 - a0) * (sb1 - sb0);
+                    launch_zero_f64(&self.context, tf, panel_first_len);
+                    launch_zero_f64(&self.context, ts, panel_first_len);
+                }
                 for sa0 in (0..block.nsa).step_by(panels.reduction_columns) {
                     let sa1 = (sa0 + panels.reduction_columns).min(block.nsa);
                     self.build_factors(&block, true, a0, a1, sa0, sa1);
@@ -824,7 +834,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                             nworker: partition.1,
                         },
                         true,
-                        true,
+                        accumulate_stage,
                     );
                 }
 
@@ -892,7 +902,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             block.nsa,
             block.nta,
             block.nsa,
-            self.workspace_bytes,
+            self.workspace.region_elements,
+            self.workspace.region_elements,
         );
         let outer_factor_len = checked_mul(
             panels.outer_rows,
@@ -909,20 +920,20 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             panels.intermediate_columns,
             "GPU beta-first intermediate length",
         );
-        self.scratch.prepare_contraction(
-            &self.context,
-            outer_factor_len.max(inner_factor_len),
-            first_len,
-        );
+        self.scratch
+            .prepare_contraction(outer_factor_len.max(inner_factor_len), first_len);
 
         for b0 in (0..block.ntb).step_by(panels.outer_rows) {
             let b1 = (b0 + panels.outer_rows).min(block.ntb);
             for sa0 in (0..block.nsa).step_by(panels.intermediate_columns) {
                 let sa1 = (sa0 + panels.intermediate_columns).min(block.nsa);
-                let (uf, us) = self.scratch.first_buffers();
-                let panel_first_len = (sa1 - sa0) * (b1 - b0);
-                launch_zero_f64(&self.context, uf, panel_first_len);
-                launch_zero_f64(&self.context, us, panel_first_len);
+                let accumulate_stage = panels.reduction_columns < block.nsb;
+                if accumulate_stage {
+                    let (uf, us) = self.scratch.first_buffers();
+                    let panel_first_len = (sa1 - sa0) * (b1 - b0);
+                    launch_zero_f64(&self.context, uf, panel_first_len);
+                    launch_zero_f64(&self.context, us, panel_first_len);
+                }
                 for sb0 in (0..block.nsb).step_by(panels.reduction_columns) {
                     let sb1 = (sb0 + panels.reduction_columns).min(block.nsb);
                     self.build_factors(&block, false, b0, b1, sb0, sb1);
@@ -961,7 +972,7 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
                             nworker: partition.1,
                         },
                         false,
-                        true,
+                        accumulate_stage,
                     );
                 }
 
@@ -1089,7 +1100,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             block.nsb,
             block.ntb,
             block.nsb,
-            self.workspace_bytes,
+            self.workspace.region_elements,
+            self.workspace.region_elements,
         );
 
         let outer_factor_len = checked_mul(
@@ -1104,11 +1116,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             block.nsb,
             "GPU alpha-first intermediate length",
         );
-        self.scratch.prepare_contraction(
-            &self.context,
-            outer_factor_len.max(inner_factor_len),
-            first_len,
-        );
+        self.scratch
+            .prepare_contraction(outer_factor_len.max(inner_factor_len), first_len);
 
         for a0 in (0..block.nta).step_by(panels.outer_rows) {
             let a1 = (a0 + panels.outer_rows).min(block.nta);
@@ -1145,7 +1154,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             block.nsa,
             block.nta,
             block.nsa,
-            self.workspace_bytes,
+            self.workspace.region_elements,
+            self.workspace.region_elements,
         );
 
         let outer_factor_len =
@@ -1160,11 +1170,8 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
             block.nsa,
             "GPU beta-first intermediate length",
         );
-        self.scratch.prepare_contraction(
-            &self.context,
-            outer_factor_len.max(inner_factor_len),
-            first_len,
-        );
+        self.scratch
+            .prepare_contraction(outer_factor_len.max(inner_factor_len), first_len);
 
         for b0 in (0..block.ntb).step_by(panels.outer_rows) {
             let b1 = (b0 + panels.outer_rows).min(block.ntb);
@@ -1506,17 +1513,71 @@ impl<T: NOCIScalar + 'static> GpuOneBodyBackend<T> {
     ) -> usize {
         (lp * self.plan.nparent + gp) * 2 + if alpha { 0 } else { 1 }
     }
+}
 
-    /// Return the pooled transient bytes available to factors and first-stage intermediates.
-    /// The historical configuration reserves two factor panels and one first-stage panel.
+/// Largest efficient CubeCL subslice class used by the four persistent contraction regions.
+#[derive(Clone, Copy)]
+struct WorkspaceLayout {
+    /// Logical bytes available in each factor or intermediate region.
+    region_bytes: usize,
+    /// Logical `f64` entries available in each region.
+    region_elements: usize,
+    /// Backing-page bytes for the selected `SubSlices` class.
+    page_bytes: usize,
+    /// Backing pages required when all four regions are live.
+    backing_pages: usize,
+    /// Total backing bytes required by the four regions.
+    backing_bytes: usize,
+}
+
+impl WorkspaceLayout {
+    /// Reproduce CubeCL 0.10's largest efficient `SubSlices` class from device properties.
+    /// For ordinary GPU page limits CubeCL constructs this class with
+    /// `page = align(max_page / 4)` and `max_slice = page / 2`, so two maximum slices share
+    /// one backing page. Devices below CubeCL's 32 MiB subdivision threshold use the final
+    /// full-page class instead.
     /// # Arguments:
-    /// - `self`: GPU backend with resolved panel-memory budgets.
+    /// - `context`: CubeCL context exposing backend-neutral memory properties.
     /// # Returns
-    /// - `usize`: Total reusable contraction workspace in bytes.
-    fn configured_workspace_bytes(&self) -> usize {
-        self.factor_panel_bytes
-            .checked_add(self.first_panel_bytes)
-            .expect("GPU streaming workspace byte count overflow")
+    /// - `WorkspaceLayout`: Logical region capacity and exact worst-case page demand.
+    fn from_context(context: &GpuContext) -> Self {
+        let memory = &context.client().properties().memory;
+        let alignment =
+            usize::try_from(memory.alignment).expect("CubeCL memory alignment exceeds usize");
+        let max_page =
+            usize::try_from(memory.max_page_size).expect("CubeCL maximum page size exceeds usize");
+        let subdivision_threshold = 32usize * 1024usize * 1024usize;
+        let (page_bytes, max_slice_bytes) = if max_page >= subdivision_threshold {
+            let page_bytes = max_page
+                .checked_div(4)
+                .expect("CubeCL maximum page size cannot form a sliced-page class")
+                .next_multiple_of(alignment);
+            (page_bytes, page_bytes / 2)
+        } else {
+            let page_bytes = max_page / alignment * alignment;
+            (page_bytes, page_bytes)
+        };
+        let element_bytes = std::mem::size_of::<f64>();
+        let region_elements = max_slice_bytes / element_bytes;
+        let region_bytes = region_elements
+            .checked_mul(element_bytes)
+            .expect("GPU workspace region byte count overflow");
+        let aligned_region_bytes = region_bytes.next_multiple_of(alignment);
+        let backing_pages = aligned_region_bytes
+            .checked_mul(4)
+            .expect("GPU workspace backing demand overflow")
+            .div_ceil(page_bytes);
+        let backing_bytes = backing_pages
+            .checked_mul(page_bytes)
+            .expect("GPU workspace backing byte count overflow");
+
+        Self {
+            region_bytes,
+            region_elements,
+            page_bytes,
+            backing_pages,
+            backing_bytes,
+        }
     }
 }
 
@@ -1605,18 +1666,19 @@ fn grouped_tile_count(
         .saturating_mul(n.div_ceil(GEMM_TILE_DIM))
 }
 
-/// Divide pooled contraction workspace between factor tiles and the first-stage intermediate.
+/// Choose factor and first-intermediate panels from their independent persistent capacities.
 /// The selected widths balance repeated Wick factor evaluations and contraction fragmentation under
-/// `B = 2 sizeof(f64) [p_o p_j + max(p_o p_k, p_i p_j)]`, where `p_o` and `p_i`
-/// are target panels, `p_k` is the first-stage reduction panel and `p_j` is the
-/// shared coefficient/intermediate panel. Candidate widths cover every distinct panel count.
+/// `p_o p_k <= C_F`, `p_i p_j <= C_F` and `p_o p_j <= C_T`, where `C_F` and `C_T`
+/// are the element capacities of one factor and one intermediate region. Candidate widths cover
+/// every distinct panel count, including the full logical dimensions.
 /// # Arguments:
 /// - `outer_target`: Full first-contracted target-spin component count.
 /// - `outer_factor_columns`: Source-spin columns in each outer factor row.
 /// - `intermediate_columns`: Other-spin columns in each first-stage intermediate row.
 /// - `inner_target`: Full final-contracted target-spin component count.
 /// - `inner_factor_columns`: Source-spin columns in each inner factor row.
-/// - `workspace_bytes`: Total paired-factor and paired-intermediate workspace.
+/// - `factor_capacity`: Entries available in each overlap/Fock factor region.
+/// - `first_capacity`: Entries available in each first-stage intermediate region.
 /// # Returns
 /// - `GroupedPlan`: Target, reduction and intermediate panel widths.
 fn grouped_plan(
@@ -1625,10 +1687,9 @@ fn grouped_plan(
     intermediate_columns: usize,
     inner_target: usize,
     inner_factor_columns: usize,
-    workspace_bytes: usize,
+    factor_capacity: usize,
+    first_capacity: usize,
 ) -> GroupedPlan {
-    let pair_bytes = 2 * std::mem::size_of::<f64>();
-    let capacity = workspace_bytes / pair_bytes;
     let outer_target = outer_target.max(1);
     let outer_factor_columns = outer_factor_columns.max(1);
     let intermediate_columns = intermediate_columns.max(1);
@@ -1648,16 +1709,16 @@ fn grouped_plan(
 
     for shared_columns in panel_width_candidates(intermediate_columns) {
         for reduction_columns in panel_width_candidates(outer_factor_columns) {
-            let outer_rows = (capacity / (shared_columns + reduction_columns))
+            let outer_rows = (factor_capacity / reduction_columns)
+                .min(first_capacity / shared_columns)
                 .max(1)
                 .min(outer_target);
             let first_entries = outer_rows.saturating_mul(shared_columns);
-            let factor_capacity = capacity.saturating_sub(first_entries);
             let inner_rows = (factor_capacity / shared_columns).max(1).min(inner_target);
             let factor_entries = outer_rows
                 .saturating_mul(reduction_columns)
                 .max(inner_rows.saturating_mul(shared_columns));
-            if first_entries.saturating_add(factor_entries) > capacity {
+            if first_entries > first_capacity || factor_entries > factor_capacity {
                 continue;
             }
 
@@ -1717,7 +1778,8 @@ fn panel_width_candidates(dimension: usize) -> Vec<usize> {
 /// - `OneBodyContraction`: Lower transient factor-generation cost, using the shared order on ties.
 fn select_gpu_contraction(
     block: GpuFactorisedBlock,
-    workspace_bytes: usize,
+    factor_capacity: usize,
+    first_capacity: usize,
 ) -> OneBodyContraction {
     let a_panels = grouped_plan(
         block.nta,
@@ -1725,7 +1787,8 @@ fn select_gpu_contraction(
         block.nsb,
         block.ntb,
         block.nsb,
-        workspace_bytes,
+        factor_capacity,
+        first_capacity,
     );
     let b_panels = grouped_plan(
         block.ntb,
@@ -1733,7 +1796,8 @@ fn select_gpu_contraction(
         block.nsa,
         block.nta,
         block.nsa,
-        workspace_bytes,
+        factor_capacity,
+        first_capacity,
     );
     let alpha_entries = block.nta.saturating_mul(block.nsa);
     let beta_entries = block.ntb.saturating_mul(block.nsb);
@@ -1761,11 +1825,9 @@ fn select_gpu_contraction(
 /// Reusable GPU one-body scratch buffers.
 #[derive(Default)]
 struct GpuOneBodyScratch {
-    /// Physical allocation for lifetime-reused factor panels and intermediates.
-    contraction_workspace: Option<GpuBuffer<f64>>,
-    /// Overlap-factor view into the reusable contraction workspace.
+    /// Persistent overlap-factor region reused by both spin stages.
     factor_s: Option<GpuBuffer<f64>>,
-    /// Fock-factor view into the reusable contraction workspace.
+    /// Persistent Fock-factor region reused by both spin stages.
     factor_f: Option<GpuBuffer<f64>>,
     /// Alpha target-panel overlap factors.
     alpha_s: Option<GpuBuffer<f64>>,
@@ -1792,59 +1854,54 @@ struct GpuOneBodyScratch {
 }
 
 impl GpuOneBodyScratch {
-    /// Reserve the contraction workspace before persistent Wick uploads.
+    /// Reserve four allocator-compatible contraction regions before persistent Wick uploads.
     /// # Arguments:
     /// - `context`: CubeCL context used for allocation.
-    /// - `workspace_bytes`: Configured physical workspace size in bytes.
+    /// - `region_elements`: Logical `f64` capacity of each persistent region.
     /// # Returns
     /// - `GpuOneBodyScratch`: Scratch storage owning the reserved allocation.
-    fn with_contraction_workspace(
+    fn with_contraction_regions(
         context: &GpuContext,
-        workspace_bytes: usize,
+        region_elements: usize,
     ) -> Self {
-        let element_bytes = std::mem::size_of::<f64>();
         Self {
-            contraction_workspace: Some(GpuBuffer::empty(
-                context,
-                workspace_bytes.div_ceil(element_bytes),
-            )),
+            factor_s: Some(GpuBuffer::empty(context, region_elements)),
+            factor_f: Some(GpuBuffer::empty(context, region_elements)),
+            first_f: Some(GpuBuffer::empty(context, region_elements)),
+            first_s: Some(GpuBuffer::empty(context, region_elements)),
             ..Self::default()
         }
     }
 
-    /// Partition the physical workspace into paired factor and intermediate views.
-    /// The factor region is used by the outer spin during the stage and then overwritten by
-    /// inner-spin factors during the final contraction; the intermediate region remains disjoint.
+    /// Verify one planned factor panel and first-stage intermediate fit their persistent regions.
     /// # Arguments:
-    /// - `context`: CubeCL context used for allocation.
     /// - `factor_len`: Maximum entries in either paired factor panel.
     /// - `first_len`: Entries in either paired first-stage intermediate.
     /// # Returns
-    /// - `()`: Creates logical overlap/Fock views over the reusable physical allocation.
+    /// - `()`: Confirms the planner respected both physical region capacities.
     fn prepare_contraction(
         &mut self,
-        context: &GpuContext,
         factor_len: usize,
         first_len: usize,
     ) {
-        let total = factor_len
-            .checked_mul(2)
-            .and_then(|factor| {
-                first_len
-                    .checked_mul(2)
-                    .and_then(|first| factor.checked_add(first))
-            })
-            .expect("GPU contraction workspace length overflow");
-        ensure_buffer(context, &mut self.contraction_workspace, total);
-        let workspace = self
-            .contraction_workspace
+        let factor_capacity = self
+            .factor_s
             .as_ref()
-            .expect("GPU contraction workspace missing");
-        self.factor_s = Some(workspace.slice(0, factor_len));
-        self.factor_f = Some(workspace.slice(factor_len, factor_len));
-        let first_base = 2 * factor_len;
-        self.first_f = Some(workspace.slice(first_base, first_len));
-        self.first_s = Some(workspace.slice(first_base + first_len, first_len));
+            .expect("GPU factor S buffer missing")
+            .len();
+        let first_capacity = self
+            .first_f
+            .as_ref()
+            .expect("GPU first F buffer missing")
+            .len();
+        assert!(
+            factor_len <= factor_capacity,
+            "GPU factor panel exceeds persistent region"
+        );
+        assert!(
+            first_len <= first_capacity,
+            "GPU intermediate exceeds persistent region"
+        );
     }
 
     /// Ensure packed coefficient storage can hold one dense rank block.
@@ -2011,21 +2068,6 @@ fn checked_mul(
     context: &str,
 ) -> usize {
     lhs.checked_mul(rhs).expect(context)
-}
-
-/// Convert a user MiB budget to bytes with overflow checking.
-/// # Arguments:
-/// - `mib`: Binary mebibyte count.
-/// - `context`: Panic message used on overflow.
-/// # Returns
-/// - `usize`: Byte budget.
-fn mib_to_bytes(
-    mib: usize,
-    context: &str,
-) -> usize {
-    mib.checked_mul(1024)
-        .and_then(|value| value.checked_mul(1024))
-        .expect(context)
 }
 
 /// Collect host-known zero-overlap counts in the same pair/spin ordering as device Wick metadata.

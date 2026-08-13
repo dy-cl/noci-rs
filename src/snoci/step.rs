@@ -332,7 +332,6 @@ where
                     world.rank(),
                     it,
                     opts.gmres.factor_tables,
-                    opts.gpu,
                 ))
             } else {
                 None

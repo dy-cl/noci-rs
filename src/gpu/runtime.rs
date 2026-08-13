@@ -141,7 +141,7 @@ impl<T: CubeElement> GpuBuffer<T> {
         unsafe { ArrayArg::from_raw_parts(self.handle.clone(), self.len()) }
     }
 
-    /// Create a typed view into this device allocation without allocating new storage.
+    /// Create a typed view into an existing device allocation.
     /// # Arguments:
     /// - `self`: Complete device allocation.
     /// - `offset`: First typed element in the view.
