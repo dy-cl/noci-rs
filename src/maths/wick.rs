@@ -78,13 +78,11 @@ mod build_d {
     // Standard library imports.
     #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
     use std::any::TypeId;
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    use std::arch::x86_64::{_mm256_i64gather_pd, _mm256_set1_epi64x};
     #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
     use std::arch::x86_64::{
         _mm256_maskstore_pd, _mm256_set_epi64x, _mm256_set_pd, _mm256_storeu_pd,
-    };
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    use std::arch::x86_64::{
-        _mm256_i64gather_pd, _mm256_set1_epi64x,
     };
 
     // External crate imports.
@@ -135,7 +133,6 @@ mod build_d {
         rows: &[usize],
         cols: &[usize],
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -211,7 +208,6 @@ mod build_d {
         rows: &[usize],
         cols: &[usize],
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -307,7 +303,6 @@ mod build_d {
         rows: &[usize],
         cols: &[usize],
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -425,7 +420,6 @@ mod build_d {
         rows: &[usize],
         cols: &[usize],
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -445,8 +439,7 @@ mod build_d {
                         let mut idx = [0i64; 4];
 
                         for lane in 0..count {
-                            idx[lane] =
-                                r * xstr[0] as i64 + cols[j + lane] as i64 * xstr[1] as i64;
+                            idx[lane] = r * xstr[0] as i64 + cols[j + lane] as i64 * xstr[1] as i64;
                         }
                         for lane in count..4 {
                             idx[lane] = idx[count - 1];
@@ -471,8 +464,7 @@ mod build_d {
                         let mut idx = [0i64; 4];
 
                         for lane in 0..count {
-                            idx[lane] =
-                                r * ystr[0] as i64 + cols[j + lane] as i64 * ystr[1] as i64;
+                            idx[lane] = r * ystr[0] as i64 + cols[j + lane] as i64 * ystr[1] as i64;
                         }
                         for lane in count..4 {
                             idx[lane] = idx[count - 1];
@@ -560,7 +552,7 @@ mod mix_columns {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
     use std::arch::x86_64::{
         _mm256_blendv_pd, _mm256_castsi256_pd, _mm256_loadu_pd, _mm256_maskload_pd,
-        _mm256_maskstore_pd, _mm256_set1_epi64x, _mm256_set_epi64x, _mm256_storeu_pd,
+        _mm256_maskstore_pd, _mm256_set_epi64x, _mm256_set1_epi64x, _mm256_storeu_pd,
     };
     /// Mix columns of `det1` into `det0` according to `bits` for excitation rank 1.
     /// # Arguments:
@@ -596,7 +588,6 @@ mod mix_columns {
         det1: &[T],
         bits: u64,
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -608,8 +599,7 @@ mod mix_columns {
                 let v1 = _mm256_loadu_pd(p1);
                 let b0 = if (bits & 1) != 0 { -1 } else { 0 };
                 let b1 = if (bits & 2) != 0 { -1 } else { 0 };
-                let mask =
-                    _mm256_castsi256_pd(_mm256_set_epi64x(b1, b0, b1, b0));
+                let mask = _mm256_castsi256_pd(_mm256_set_epi64x(b1, b0, b1, b0));
                 let mixed = _mm256_blendv_pd(v0, v1, mask);
 
                 _mm256_storeu_pd(dptr, mixed);
@@ -642,7 +632,6 @@ mod mix_columns {
         det1: &[T],
         bits: u64,
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -653,8 +642,7 @@ mod mix_columns {
                 let b0 = if (bits & 1) != 0 { -1 } else { 0 };
                 let b1 = if (bits & 2) != 0 { -1 } else { 0 };
                 let b2 = if (bits & 4) != 0 { -1 } else { 0 };
-                let select =
-                    _mm256_castsi256_pd(_mm256_set_epi64x(0, b2, b1, b0));
+                let select = _mm256_castsi256_pd(_mm256_set_epi64x(0, b2, b1, b0));
 
                 for r in 0..3 {
                     let v0 = _mm256_maskload_pd(p0.add(r * 3), valid);
@@ -699,7 +687,6 @@ mod mix_columns {
         det1: &[T],
         bits: u64,
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -710,8 +697,7 @@ mod mix_columns {
                 let b1 = if (bits & 2) != 0 { -1 } else { 0 };
                 let b2 = if (bits & 4) != 0 { -1 } else { 0 };
                 let b3 = if (bits & 8) != 0 { -1 } else { 0 };
-                let select =
-                    _mm256_castsi256_pd(_mm256_set_epi64x(b3, b2, b1, b0));
+                let select = _mm256_castsi256_pd(_mm256_set_epi64x(b3, b2, b1, b0));
 
                 for r in 0..4 {
                     let v0 = _mm256_loadu_pd(p0.add(r * 4));
@@ -767,7 +753,6 @@ mod mix_columns {
         l: usize,
         bits: u64,
     ) {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -790,8 +775,11 @@ mod mix_columns {
 
                         let mut selected = [0i64; 4];
                         for lane in 0..count {
-                            selected[lane] =
-                                if ((bits >> (c + lane)) & 1) != 0 { -1 } else { 0 };
+                            selected[lane] = if ((bits >> (c + lane)) & 1) != 0 {
+                                -1
+                            } else {
+                                0
+                            };
                         }
 
                         let select = _mm256_castsi256_pd(_mm256_set_epi64x(
@@ -865,7 +853,7 @@ mod minor_mod {
     use std::any::TypeId;
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     use std::arch::x86_64::{
-        _mm256_i64gather_pd, _mm256_maskstore_pd, _mm256_set1_epi64x, _mm256_set_epi64x,
+        _mm256_i64gather_pd, _mm256_maskstore_pd, _mm256_set_epi64x, _mm256_set1_epi64x,
         _mm256_storeu_pd,
     };
     /// Construct the matrix minor for fixed rank `L = 1`.
@@ -1149,9 +1137,7 @@ pub fn minor_adjugate_transpose<T: StateScalar>(
         2 => minor_adjt::minor_adjt_l2(adjt, minor_out, m, r_rm, c_rm),
         3 => minor_adjt::minor_adjt_l3(adjt, minor_out, m, r_rm, c_rm),
         4 => minor_adjt::minor_adjt_l4(adjt, minor_out, m, r_rm, c_rm),
-        _ => minor_adjt::minor_adjt_gen(
-            adjt, minor_out, invs, lu, m, l, r_rm, c_rm, thresh,
-        ),
+        _ => minor_adjt::minor_adjt_gen(adjt, minor_out, invs, lu, m, l, r_rm, c_rm, thresh),
     }
 }
 
@@ -1546,9 +1532,8 @@ mod det_mod {
     use std::any::TypeId;
     #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     use std::arch::x86_64::{
-        _mm_add_sd, _mm_cvtsd_f64,
-        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_fmadd_pd, _mm256_fmsub_pd,
-        _mm256_hadd_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_pd,
+        _mm_add_sd, _mm_cvtsd_f64, _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_fmadd_pd,
+        _mm256_fmsub_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_pd,
     };
 
     // External crate imports.
@@ -1576,7 +1561,6 @@ mod det_mod {
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
     pub(super) fn det_l2<T: StateScalar>(a: &[T]) -> T {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -1593,7 +1577,7 @@ mod det_mod {
         }
 
         det2scalar(a[0], a[1], a[2], a[3])
-}
+    }
 
     /// Calculate determinant of a 2 x 2 matrix from scalar elements.
     /// # Arguments:
@@ -1620,7 +1604,6 @@ mod det_mod {
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
     pub(super) fn det_l3<T: StateScalar>(a: &[T]) -> T {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -1654,7 +1637,7 @@ mod det_mod {
         let a22 = a[8];
 
         det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22)
-}
+    }
 
     /// Calculate determinant of a 3 x 3 matrix from scalar elements.
     /// # Arguments:
@@ -1692,7 +1675,6 @@ mod det_mod {
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
     pub(super) fn det_l4<T: StateScalar>(a: &[T]) -> T {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
@@ -1720,10 +1702,7 @@ mod det_mod {
 
                 let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
                 let minors = _mm256_fmadd_pd(x2, m2, minors01);
-                let cof = _mm256_mul_pd(
-                    minors,
-                    _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
-                );
+                let cof = _mm256_mul_pd(minors, _mm256_set_pd(-1.0, 1.0, -1.0, 1.0));
                 let row = _mm256_loadu_pd(a.as_ptr());
                 let products = _mm256_mul_pd(row, cof);
                 let sums = _mm256_hadd_pd(products, products);
@@ -1792,7 +1771,7 @@ mod det_mod {
         };
 
         a[0] * m00 - a[1] * m01 + a[2] * m02 - a[3] * m03
-}
+    }
 
     /// Compute determinant of `a` for arbitrary size using LU factorisation first and SVD as a fallback.
     /// # Arguments:
@@ -1966,9 +1945,8 @@ mod adjt_mod {
     use std::any::TypeId;
     #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     use std::arch::x86_64::{
-        _mm_add_sd, _mm_cvtsd_f64,
-        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_fmadd_pd, _mm256_fmsub_pd,
-        _mm256_hadd_pd, _mm256_loadu_pd, _mm256_maskstore_pd, _mm256_mul_pd,
+        _mm_add_sd, _mm_cvtsd_f64, _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_fmadd_pd,
+        _mm256_fmsub_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_maskstore_pd, _mm256_mul_pd,
         _mm256_set_epi64x, _mm256_set_pd, _mm256_storeu_pd,
     };
 
@@ -2008,13 +1986,11 @@ mod adjt_mod {
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 4);
-                let adjt =
-                    std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 4);
+                let adjt = std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 4);
 
                 let lhs0 = _mm256_set_pd(0.0, 0.0, 0.0, a[0]);
                 let rhs0 = _mm256_set_pd(0.0, 0.0, 0.0, a[3]);
@@ -2050,7 +2026,7 @@ mod adjt_mod {
         adjt[3] = a00;
 
         Some(det)
-}
+    }
 
     /// Calculate determinant of 3 by 3 matrix `a` and write its adjugate transpose into `adjt`.
     /// # Arguments:
@@ -2063,13 +2039,11 @@ mod adjt_mod {
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 9);
-                let adjt =
-                    std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 9);
+                let adjt = std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 9);
                 let valid = _mm256_set_epi64x(0, -1, -1, -1);
 
                 let r0 = [a[0], a[1], a[2]];
@@ -2155,7 +2129,7 @@ mod adjt_mod {
         adjt[8] = c22;
 
         Some(det)
-}
+    }
 
     /// Calculate determinant of 4 by 4 matrix `a` and write its adjugate transpose into `adjt`.
     /// # Arguments:
@@ -2168,13 +2142,11 @@ mod adjt_mod {
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
-
         #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 16);
-                let adjt =
-                    std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 16);
+                let adjt = std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 16);
 
                 let r0 = [a[0], a[1], a[2], a[3]];
                 let r1 = [a[4], a[5], a[6], a[7]];
@@ -2196,10 +2168,7 @@ mod adjt_mod {
                 let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
                 let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
                 let minors = _mm256_fmadd_pd(x2, m2, minors01);
-                let c0 = _mm256_mul_pd(
-                    minors,
-                    _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
-                );
+                let c0 = _mm256_mul_pd(minors, _mm256_set_pd(-1.0, 1.0, -1.0, 1.0));
 
                 _mm256_storeu_pd(adjt.as_mut_ptr(), c0);
 
@@ -2228,10 +2197,7 @@ mod adjt_mod {
                 let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
                 let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
                 let minors = _mm256_fmadd_pd(x2, m2, minors01);
-                let c1 = _mm256_mul_pd(
-                    minors,
-                    _mm256_set_pd(1.0, -1.0, 1.0, -1.0),
-                );
+                let c1 = _mm256_mul_pd(minors, _mm256_set_pd(1.0, -1.0, 1.0, -1.0));
 
                 _mm256_storeu_pd(adjt.as_mut_ptr().add(4), c1);
 
@@ -2250,10 +2216,7 @@ mod adjt_mod {
                 let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
                 let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
                 let minors = _mm256_fmadd_pd(x2, m2, minors01);
-                let c2 = _mm256_mul_pd(
-                    minors,
-                    _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
-                );
+                let c2 = _mm256_mul_pd(minors, _mm256_set_pd(-1.0, 1.0, -1.0, 1.0));
 
                 _mm256_storeu_pd(adjt.as_mut_ptr().add(8), c2);
 
@@ -2272,10 +2235,7 @@ mod adjt_mod {
                 let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
                 let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
                 let minors = _mm256_fmadd_pd(x2, m2, minors01);
-                let c3 = _mm256_mul_pd(
-                    minors,
-                    _mm256_set_pd(1.0, -1.0, 1.0, -1.0),
-                );
+                let c3 = _mm256_mul_pd(minors, _mm256_set_pd(1.0, -1.0, 1.0, -1.0));
 
                 _mm256_storeu_pd(adjt.as_mut_ptr().add(12), c3);
 
@@ -2345,7 +2305,7 @@ mod adjt_mod {
         adjt[15] = c33;
 
         Some(det)
-}
+    }
 
     /// Compute determinant and adjugate transpose using LU first and SVD as fallback.
     /// # Arguments:

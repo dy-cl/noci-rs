@@ -5,10 +5,9 @@
 use std::any::TypeId;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
 use std::arch::x86_64::{
-    _mm_add_sd, _mm_cvtsd_f64, _mm256_add_pd, _mm256_castpd256_pd128,
-    _mm256_extractf128_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_hadd_pd,
-    _mm256_loadu_pd, _mm256_maskload_pd, _mm256_mul_pd, _mm256_set_epi64x,
-    _mm256_set_pd, _mm256_storeu_pd,
+    _mm_add_sd, _mm_cvtsd_f64, _mm256_add_pd, _mm256_castpd256_pd128, _mm256_extractf128_pd,
+    _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_maskload_pd,
+    _mm256_mul_pd, _mm256_set_epi64x, _mm256_set_pd, _mm256_storeu_pd,
 };
 
 // Crate-root imports.
@@ -196,8 +195,7 @@ fn xw_f_overlap_m0_l2<T: NOCIScalar>(
                 let rhs0 = _mm256_set_pd(0.0, v1, a11, a11);
                 let lhs1 = _mm256_set_pd(0.0, v0, a01, a01);
                 let rhs1 = _mm256_set_pd(0.0, a10, u1, a10);
-                let values =
-                    _mm256_fmsub_pd(lhs0, rhs0, _mm256_mul_pd(lhs1, rhs1));
+                let values = _mm256_fmsub_pd(lhs0, rhs0, _mm256_mul_pd(lhs1, rhs1));
 
                 let mut packed = [0.0; 4];
                 _mm256_storeu_pd(packed.as_mut_ptr(), values);
@@ -292,26 +290,13 @@ fn xw_f_overlap_m0_l3<T: NOCIScalar>(
                     let c_row0 = _mm256_maskload_pd(cof.as_ptr(), mask);
                     let c_row1 = _mm256_maskload_pd(cof.as_ptr().add(3), mask);
                     let c_row2 = _mm256_maskload_pd(cof.as_ptr().add(6), mask);
-                    let f_row0 = _mm256_set_pd(
-                        0.0,
-                        fsl[c2 * n + r0],
-                        fsl[c1 * n + r0],
-                        fsl[c0 * n + r0],
-                    );
-                    let f_row1 = _mm256_set_pd(
-                        0.0,
-                        fsl[c2 * n + r1],
-                        fsl[c1 * n + r1],
-                        fsl[c0 * n + r1],
-                    );
-                    let f_row2 = _mm256_set_pd(
-                        0.0,
-                        fsl[c2 * n + r2],
-                        fsl[c1 * n + r2],
-                        fsl[c0 * n + r2],
-                    );
-                    let repl01 =
-                        _mm256_fmadd_pd(c_row1, f_row1, _mm256_mul_pd(c_row0, f_row0));
+                    let f_row0 =
+                        _mm256_set_pd(0.0, fsl[c2 * n + r0], fsl[c1 * n + r0], fsl[c0 * n + r0]);
+                    let f_row1 =
+                        _mm256_set_pd(0.0, fsl[c2 * n + r1], fsl[c1 * n + r1], fsl[c0 * n + r1]);
+                    let f_row2 =
+                        _mm256_set_pd(0.0, fsl[c2 * n + r2], fsl[c1 * n + r2], fsl[c0 * n + r2]);
+                    let repl01 = _mm256_fmadd_pd(c_row1, f_row1, _mm256_mul_pd(c_row0, f_row0));
                     let repl_v = _mm256_fmadd_pd(c_row2, f_row2, repl01);
                     let sums = _mm256_hadd_pd(repl_v, repl_v);
                     let low = _mm256_castpd256_pd128(sums);
@@ -441,10 +426,8 @@ fn xw_f_overlap_m0_l4<T: NOCIScalar>(
                         fsl[c1 * n + r3],
                         fsl[c0 * n + r3],
                     );
-                    let repl01 =
-                        _mm256_fmadd_pd(c_row1, f_row1, _mm256_mul_pd(c_row0, f_row0));
-                    let repl23 =
-                        _mm256_fmadd_pd(c_row3, f_row3, _mm256_mul_pd(c_row2, f_row2));
+                    let repl01 = _mm256_fmadd_pd(c_row1, f_row1, _mm256_mul_pd(c_row0, f_row0));
+                    let repl23 = _mm256_fmadd_pd(c_row3, f_row3, _mm256_mul_pd(c_row2, f_row2));
                     let repl_v = _mm256_add_pd(repl01, repl23);
                     let sums = _mm256_hadd_pd(repl_v, repl_v);
                     let low = _mm256_castpd256_pd128(sums);
