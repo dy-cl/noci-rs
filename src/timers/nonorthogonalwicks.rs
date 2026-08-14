@@ -91,6 +91,22 @@ pub struct Totals {
     pub xw_one_body_m0_l3: Counter,
     /// Total time spent in `xw_one_body_m0_l4`.
     pub xw_one_body_m0_l4: Counter,
+    /// Total time spent in `xw_f_overlap`.
+    pub xw_f_overlap: Counter,
+    /// Total time spent in `xw_f_overlap_gen`.
+    pub xw_f_overlap_gen: Counter,
+    /// Total time spent in `xw_f_overlap_m0`.
+    pub xw_f_overlap_m0: Counter,
+    /// Total time spent in `xw_f_overlap_m0_gen`.
+    pub xw_f_overlap_m0_gen: Counter,
+    /// Total time spent in `xw_f_overlap_m0_l1`.
+    pub xw_f_overlap_m0_l1: Counter,
+    /// Total time spent in `xw_f_overlap_m0_l2`.
+    pub xw_f_overlap_m0_l2: Counter,
+    /// Total time spent in `xw_f_overlap_m0_l3`.
+    pub xw_f_overlap_m0_l3: Counter,
+    /// Total time spent in `xw_f_overlap_m0_l4`.
+    pub xw_f_overlap_m0_l4: Counter,
     /// Total time spent in `xw_h2_same_m0_gen`.
     pub xw_h2_same_m0_gen: Counter,
     /// Total time spent in `xw_h2_same_m0_l1`.
@@ -213,6 +229,19 @@ impl Totals {
         self.xw_one_body_m0_l2.merge_from(&other.xw_one_body_m0_l2);
         self.xw_one_body_m0_l3.merge_from(&other.xw_one_body_m0_l3);
         self.xw_one_body_m0_l4.merge_from(&other.xw_one_body_m0_l4);
+        self.xw_f_overlap.merge_from(&other.xw_f_overlap);
+        self.xw_f_overlap_gen.merge_from(&other.xw_f_overlap_gen);
+        self.xw_f_overlap_m0.merge_from(&other.xw_f_overlap_m0);
+        self.xw_f_overlap_m0_gen
+            .merge_from(&other.xw_f_overlap_m0_gen);
+        self.xw_f_overlap_m0_l1
+            .merge_from(&other.xw_f_overlap_m0_l1);
+        self.xw_f_overlap_m0_l2
+            .merge_from(&other.xw_f_overlap_m0_l2);
+        self.xw_f_overlap_m0_l3
+            .merge_from(&other.xw_f_overlap_m0_l3);
+        self.xw_f_overlap_m0_l4
+            .merge_from(&other.xw_f_overlap_m0_l4);
         self.xw_h2_same_m0_gen.merge_from(&other.xw_h2_same_m0_gen);
         self.xw_h2_same_m0_l1.merge_from(&other.xw_h2_same_m0_l1);
         self.xw_h2_same_m0_l2.merge_from(&other.xw_h2_same_m0_l2);
@@ -678,6 +707,86 @@ pub fn add_xw_one_body_m0_l3(ns: u64) {
 #[inline(always)]
 pub fn add_xw_one_body_m0_l4(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_l4.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_gen` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_m0` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_m0` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_m0(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_m0_gen` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_gen`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_m0_gen` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_m0_gen(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_gen.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_m0_l1` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l1`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_m0_l1` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_m0_l1(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l1.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_m0_l2` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l2`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_m0_l2` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_m0_l2(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l2.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_m0_l3` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l3`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_m0_l3` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_m0_l3(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l3.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_f_overlap_m0_l4` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l4`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_f_overlap_m0_l4` counter.
+#[inline(always)]
+pub fn add_xw_f_overlap_m0_l4(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l4.add_ns(ns));
 }
 
 /// Add one timed call to the `xw_h2_same_m0_gen` counter.

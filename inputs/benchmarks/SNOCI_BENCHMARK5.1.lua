@@ -127,7 +127,7 @@ snoci = {
         0.0,
     },
     gmres = {
-        max_iter = 2,
+        max_iter = 1,
         full_m = "none",
         factor_tables = "none",
     },

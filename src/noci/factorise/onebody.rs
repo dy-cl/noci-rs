@@ -16,7 +16,7 @@ use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView};
-use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
+use crate::nonorthogonalwicks::{prepare_same, xw_f_overlap};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -942,6 +942,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
     let tol = data.tol;
     let row0 = rows.start;
     let row1 = rows.end;
+
     out.0[row0 * nsource..row1 * nsource]
         .par_chunks_mut(nsource)
         .zip(out.1[row0 * nsource..row1 * nsource].par_chunks_mut(nsource))
@@ -953,20 +954,25 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
                 } else {
                     (&data.basis[sdet], &data.basis[tdet])
                 };
+
                 if alpha {
                     let lex = &ldet.excitation.alpha;
                     let gex = &gdet.excitation.alpha;
                     let phase = T::from_real(ldet.pha * gdet.pha);
+
                     prepare_same(&pair.aa, lex, gex, &mut scratch.aa);
-                    srow[col] = phase * xw_overlap(&pair.aa, lex, gex, &mut scratch.aa);
-                    frow[col] = phase * xw_f(&pair.aa, lex, gex, &mut scratch.aa, tol);
+                    let (s, f) = xw_f_overlap(&pair.aa, lex, gex, &mut scratch.aa, tol);
+                    srow[col] = phase * s;
+                    frow[col] = phase * f;
                 } else {
                     let lex = &ldet.excitation.beta;
                     let gex = &gdet.excitation.beta;
                     let phase = T::from_real(ldet.phb * gdet.phb);
+
                     prepare_same(&pair.bb, lex, gex, &mut scratch.bb);
-                    srow[col] = phase * xw_overlap(&pair.bb, lex, gex, &mut scratch.bb);
-                    frow[col] = phase * xw_f(&pair.bb, lex, gex, &mut scratch.bb, tol);
+                    let (s, f) = xw_f_overlap(&pair.bb, lex, gex, &mut scratch.bb, tol);
+                    srow[col] = phase * s;
+                    frow[col] = phase * f;
                 }
             }
         });

@@ -56,7 +56,7 @@ pub(crate) fn det_occupied_minor<T: NOCIScalar>(
 /// # Returns
 /// - `()`: Writes the contraction determinant into `d`.
 #[inline(always)]
-pub fn build_d<T: Copy>(
+pub fn build_d<T: Copy + 'static>(
     d: &mut [T],
     l: usize,
     x: &ArrayView2<T>,
@@ -66,15 +66,28 @@ pub fn build_d<T: Copy>(
 ) {
     match l {
         0 => {}
-        1 => build_d::build_d1(d, x, y, rows, cols),
-        2 => build_d::build_d2(d, x, y, rows, cols),
-        3 => build_d::build_d3(d, x, y, rows, cols),
-        4 => build_d::build_d4(d, x, y, rows, cols),
+        1 => build_d::build_d_l1(d, x, y, rows, cols),
+        2 => build_d::build_d_l2(d, x, y, rows, cols),
+        3 => build_d::build_d_l3(d, x, y, rows, cols),
+        4 => build_d::build_d_l4(d, x, y, rows, cols),
         _ => build_d::build_d_gen(d, l, x, y, rows, cols),
     }
 }
 
 mod build_d {
+    // Standard library imports.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::any::TypeId;
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::arch::x86_64::{
+        _mm256_maskstore_pd, _mm256_set_epi64x, _mm256_set_pd, _mm256_storeu_pd,
+    };
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    use std::arch::x86_64::{
+        _mm256_i64gather_pd, _mm256_set1_epi64x,
+    };
+
+    // External crate imports.
     use ndarray::ArrayView2;
 
     /// Construct contraction determinant for excitation rank 1.
@@ -87,7 +100,7 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d1<T: Copy>(
+    pub(super) fn build_d_l1<T: Copy + 'static>(
         d: &mut [T],
         x: &ArrayView2<T>,
         _y: &ArrayView2<T>,
@@ -115,13 +128,48 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d2<T: Copy>(
+    pub(super) fn build_d_l2<T: Copy + 'static>(
         d: &mut [T],
         x: &ArrayView2<T>,
         y: &ArrayView2<T>,
         rows: &[usize],
         cols: &[usize],
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let xstr = x.strides();
+                let ystr = y.strides();
+                let xptr = x.as_ptr().cast::<f64>();
+                let yptr = y.as_ptr().cast::<f64>();
+                let dptr = d.as_mut_ptr().cast::<f64>();
+
+                let r0 = rows[0] as isize;
+                let r1 = rows[1] as isize;
+                let c0 = cols[0] as isize;
+                let c1 = cols[1] as isize;
+
+                let row0 = _mm256_set_pd(
+                    0.0,
+                    0.0,
+                    *yptr.offset(r0 * ystr[0] + c1 * ystr[1]),
+                    *xptr.offset(r0 * xstr[0] + c0 * xstr[1]),
+                );
+                let row1 = _mm256_set_pd(
+                    0.0,
+                    0.0,
+                    *xptr.offset(r1 * xstr[0] + c1 * xstr[1]),
+                    *xptr.offset(r1 * xstr[0] + c0 * xstr[1]),
+                );
+                let mask = _mm256_set_epi64x(0, 0, -1, -1);
+
+                _mm256_maskstore_pd(dptr, mask, row0);
+                _mm256_maskstore_pd(dptr.add(2), mask, row1);
+                return;
+            }
+        }
+
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -156,13 +204,57 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d3<T: Copy>(
+    pub(super) fn build_d_l3<T: Copy + 'static>(
         d: &mut [T],
         x: &ArrayView2<T>,
         y: &ArrayView2<T>,
         rows: &[usize],
         cols: &[usize],
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let xstr = x.strides();
+                let ystr = y.strides();
+                let xptr = x.as_ptr().cast::<f64>();
+                let yptr = y.as_ptr().cast::<f64>();
+                let dptr = d.as_mut_ptr().cast::<f64>();
+
+                let r0 = rows[0] as isize;
+                let r1 = rows[1] as isize;
+                let r2 = rows[2] as isize;
+                let c0 = cols[0] as isize;
+                let c1 = cols[1] as isize;
+                let c2 = cols[2] as isize;
+
+                let row0 = _mm256_set_pd(
+                    0.0,
+                    *yptr.offset(r0 * ystr[0] + c2 * ystr[1]),
+                    *yptr.offset(r0 * ystr[0] + c1 * ystr[1]),
+                    *xptr.offset(r0 * xstr[0] + c0 * xstr[1]),
+                );
+                let row1 = _mm256_set_pd(
+                    0.0,
+                    *yptr.offset(r1 * ystr[0] + c2 * ystr[1]),
+                    *xptr.offset(r1 * xstr[0] + c1 * xstr[1]),
+                    *xptr.offset(r1 * xstr[0] + c0 * xstr[1]),
+                );
+                let row2 = _mm256_set_pd(
+                    0.0,
+                    *xptr.offset(r2 * xstr[0] + c2 * xstr[1]),
+                    *xptr.offset(r2 * xstr[0] + c1 * xstr[1]),
+                    *xptr.offset(r2 * xstr[0] + c0 * xstr[1]),
+                );
+                let mask = _mm256_set_epi64x(0, -1, -1, -1);
+
+                _mm256_maskstore_pd(dptr, mask, row0);
+                _mm256_maskstore_pd(dptr.add(3), mask, row1);
+                _mm256_maskstore_pd(dptr.add(6), mask, row2);
+                return;
+            }
+        }
+
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -208,13 +300,65 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d4<T: Copy>(
+    pub(super) fn build_d_l4<T: Copy + 'static>(
         d: &mut [T],
         x: &ArrayView2<T>,
         y: &ArrayView2<T>,
         rows: &[usize],
         cols: &[usize],
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let xstr = x.strides();
+                let ystr = y.strides();
+                let xptr = x.as_ptr().cast::<f64>();
+                let yptr = y.as_ptr().cast::<f64>();
+                let dptr = d.as_mut_ptr().cast::<f64>();
+
+                let r0 = rows[0] as isize;
+                let r1 = rows[1] as isize;
+                let r2 = rows[2] as isize;
+                let r3 = rows[3] as isize;
+                let c0 = cols[0] as isize;
+                let c1 = cols[1] as isize;
+                let c2 = cols[2] as isize;
+                let c3 = cols[3] as isize;
+
+                let row0 = _mm256_set_pd(
+                    *yptr.offset(r0 * ystr[0] + c3 * ystr[1]),
+                    *yptr.offset(r0 * ystr[0] + c2 * ystr[1]),
+                    *yptr.offset(r0 * ystr[0] + c1 * ystr[1]),
+                    *xptr.offset(r0 * xstr[0] + c0 * xstr[1]),
+                );
+                let row1 = _mm256_set_pd(
+                    *yptr.offset(r1 * ystr[0] + c3 * ystr[1]),
+                    *yptr.offset(r1 * ystr[0] + c2 * ystr[1]),
+                    *xptr.offset(r1 * xstr[0] + c1 * xstr[1]),
+                    *xptr.offset(r1 * xstr[0] + c0 * xstr[1]),
+                );
+                let row2 = _mm256_set_pd(
+                    *yptr.offset(r2 * ystr[0] + c3 * ystr[1]),
+                    *xptr.offset(r2 * xstr[0] + c2 * xstr[1]),
+                    *xptr.offset(r2 * xstr[0] + c1 * xstr[1]),
+                    *xptr.offset(r2 * xstr[0] + c0 * xstr[1]),
+                );
+                let row3 = _mm256_set_pd(
+                    *xptr.offset(r3 * xstr[0] + c3 * xstr[1]),
+                    *xptr.offset(r3 * xstr[0] + c2 * xstr[1]),
+                    *xptr.offset(r3 * xstr[0] + c1 * xstr[1]),
+                    *xptr.offset(r3 * xstr[0] + c0 * xstr[1]),
+                );
+
+                _mm256_storeu_pd(dptr, row0);
+                _mm256_storeu_pd(dptr.add(4), row1);
+                _mm256_storeu_pd(dptr.add(8), row2);
+                _mm256_storeu_pd(dptr.add(12), row3);
+                return;
+            }
+        }
+
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -273,7 +417,7 @@ mod build_d {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn build_d_gen<T: Copy>(
+    pub(super) fn build_d_gen<T: Copy + 'static>(
         d: &mut [T],
         l: usize,
         x: &ArrayView2<T>,
@@ -281,6 +425,77 @@ mod build_d {
         rows: &[usize],
         cols: &[usize],
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let xstr = x.strides();
+                let ystr = y.strides();
+                let xptr = x.as_ptr().cast::<f64>();
+                let yptr = y.as_ptr().cast::<f64>();
+                let dptr = d.as_mut_ptr().cast::<f64>();
+
+                for i in 0..l {
+                    let r = rows[i] as i64;
+                    let base = i * l;
+                    let mut j = 0usize;
+
+                    while j <= i {
+                        let count = (i + 1 - j).min(4);
+                        let mut idx = [0i64; 4];
+
+                        for lane in 0..count {
+                            idx[lane] =
+                                r * xstr[0] as i64 + cols[j + lane] as i64 * xstr[1] as i64;
+                        }
+                        for lane in count..4 {
+                            idx[lane] = idx[count - 1];
+                        }
+
+                        let indices = _mm256_set_epi64x(idx[3], idx[2], idx[1], idx[0]);
+                        let values = _mm256_i64gather_pd(xptr, indices, 8);
+                        let mask = match count {
+                            1 => _mm256_set_epi64x(0, 0, 0, -1),
+                            2 => _mm256_set_epi64x(0, 0, -1, -1),
+                            3 => _mm256_set_epi64x(0, -1, -1, -1),
+                            _ => _mm256_set1_epi64x(-1),
+                        };
+
+                        _mm256_maskstore_pd(dptr.add(base + j), mask, values);
+                        j += count;
+                    }
+
+                    j = i + 1;
+                    while j < l {
+                        let count = (l - j).min(4);
+                        let mut idx = [0i64; 4];
+
+                        for lane in 0..count {
+                            idx[lane] =
+                                r * ystr[0] as i64 + cols[j + lane] as i64 * ystr[1] as i64;
+                        }
+                        for lane in count..4 {
+                            idx[lane] = idx[count - 1];
+                        }
+
+                        let indices = _mm256_set_epi64x(idx[3], idx[2], idx[1], idx[0]);
+                        let values = _mm256_i64gather_pd(yptr, indices, 8);
+                        let mask = match count {
+                            1 => _mm256_set_epi64x(0, 0, 0, -1),
+                            2 => _mm256_set_epi64x(0, 0, -1, -1),
+                            3 => _mm256_set_epi64x(0, -1, -1, -1),
+                            _ => _mm256_set1_epi64x(-1),
+                        };
+
+                        _mm256_maskstore_pd(dptr.add(base + j), mask, values);
+                        j += count;
+                    }
+                }
+
+                return;
+            }
+        }
+
         let xstr = x.strides();
         let ystr = y.strides();
         let xptr = x.as_ptr();
@@ -321,7 +536,7 @@ mod build_d {
 /// # Returns
 /// - `()`: Writes the mixed matrix into `d`.
 #[inline(always)]
-pub fn mix_columns<T: Copy>(
+pub fn mix_columns<T: Copy + 'static>(
     d: &mut [T],
     det0: &[T],
     det1: &[T],
@@ -330,15 +545,23 @@ pub fn mix_columns<T: Copy>(
 ) {
     match l {
         0 => {}
-        1 => mix_columns::mix_columns1(d, det0, det1, bits),
-        2 => mix_columns::mix_columns2(d, det0, det1, bits),
-        3 => mix_columns::mix_columns3(d, det0, det1, bits),
-        4 => mix_columns::mix_columns4(d, det0, det1, bits),
+        1 => mix_columns::mix_columns_l1(d, det0, det1, bits),
+        2 => mix_columns::mix_columns_l2(d, det0, det1, bits),
+        3 => mix_columns::mix_columns_l3(d, det0, det1, bits),
+        4 => mix_columns::mix_columns_l4(d, det0, det1, bits),
         _ => mix_columns::mix_columns_gen(d, det0, det1, l, bits),
     }
 }
 
 mod mix_columns {
+    // Standard library imports.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::any::TypeId;
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::arch::x86_64::{
+        _mm256_blendv_pd, _mm256_castsi256_pd, _mm256_loadu_pd, _mm256_maskload_pd,
+        _mm256_maskstore_pd, _mm256_set1_epi64x, _mm256_set_epi64x, _mm256_storeu_pd,
+    };
     /// Mix columns of `det1` into `det0` according to `bits` for excitation rank 1.
     /// # Arguments:
     /// - `d`: Matrix to write into.
@@ -348,7 +571,7 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns1<T: Copy>(
+    pub(super) fn mix_columns_l1<T: Copy + 'static>(
         d: &mut [T],
         det0: &[T],
         det1: &[T],
@@ -367,12 +590,33 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns2<T: Copy>(
+    pub(super) fn mix_columns_l2<T: Copy + 'static>(
         d: &mut [T],
         det0: &[T],
         det1: &[T],
         bits: u64,
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let dptr = d.as_mut_ptr().cast::<f64>();
+                let p0 = det0.as_ptr().cast::<f64>();
+                let p1 = det1.as_ptr().cast::<f64>();
+
+                let v0 = _mm256_loadu_pd(p0);
+                let v1 = _mm256_loadu_pd(p1);
+                let b0 = if (bits & 1) != 0 { -1 } else { 0 };
+                let b1 = if (bits & 2) != 0 { -1 } else { 0 };
+                let mask =
+                    _mm256_castsi256_pd(_mm256_set_epi64x(b1, b0, b1, b0));
+                let mixed = _mm256_blendv_pd(v0, v1, mask);
+
+                _mm256_storeu_pd(dptr, mixed);
+                return;
+            }
+        }
+
         let b0 = (bits & 1) != 0;
         let b1 = (bits & 2) != 0;
 
@@ -392,12 +636,37 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns3<T: Copy>(
+    pub(super) fn mix_columns_l3<T: Copy + 'static>(
         d: &mut [T],
         det0: &[T],
         det1: &[T],
         bits: u64,
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let dptr = d.as_mut_ptr().cast::<f64>();
+                let p0 = det0.as_ptr().cast::<f64>();
+                let p1 = det1.as_ptr().cast::<f64>();
+                let valid = _mm256_set_epi64x(0, -1, -1, -1);
+                let b0 = if (bits & 1) != 0 { -1 } else { 0 };
+                let b1 = if (bits & 2) != 0 { -1 } else { 0 };
+                let b2 = if (bits & 4) != 0 { -1 } else { 0 };
+                let select =
+                    _mm256_castsi256_pd(_mm256_set_epi64x(0, b2, b1, b0));
+
+                for r in 0..3 {
+                    let v0 = _mm256_maskload_pd(p0.add(r * 3), valid);
+                    let v1 = _mm256_maskload_pd(p1.add(r * 3), valid);
+                    let mixed = _mm256_blendv_pd(v0, v1, select);
+                    _mm256_maskstore_pd(dptr.add(r * 3), valid, mixed);
+                }
+
+                return;
+            }
+        }
+
         let b0 = (bits & 1) != 0;
         let b1 = (bits & 2) != 0;
         let b2 = (bits & 4) != 0;
@@ -424,12 +693,37 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns4<T: Copy>(
+    pub(super) fn mix_columns_l4<T: Copy + 'static>(
         d: &mut [T],
         det0: &[T],
         det1: &[T],
         bits: u64,
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let dptr = d.as_mut_ptr().cast::<f64>();
+                let p0 = det0.as_ptr().cast::<f64>();
+                let p1 = det1.as_ptr().cast::<f64>();
+                let b0 = if (bits & 1) != 0 { -1 } else { 0 };
+                let b1 = if (bits & 2) != 0 { -1 } else { 0 };
+                let b2 = if (bits & 4) != 0 { -1 } else { 0 };
+                let b3 = if (bits & 8) != 0 { -1 } else { 0 };
+                let select =
+                    _mm256_castsi256_pd(_mm256_set_epi64x(b3, b2, b1, b0));
+
+                for r in 0..4 {
+                    let v0 = _mm256_loadu_pd(p0.add(r * 4));
+                    let v1 = _mm256_loadu_pd(p1.add(r * 4));
+                    let mixed = _mm256_blendv_pd(v0, v1, select);
+                    _mm256_storeu_pd(dptr.add(r * 4), mixed);
+                }
+
+                return;
+            }
+        }
+
         let b0 = (bits & 1) != 0;
         let b1 = (bits & 2) != 0;
         let b2 = (bits & 4) != 0;
@@ -466,13 +760,59 @@ mod mix_columns {
     /// # Returns
     /// - `()`: Writes the contraction determinant into `d`.
     #[inline(always)]
-    pub(super) fn mix_columns_gen<T: Copy>(
+    pub(super) fn mix_columns_gen<T: Copy + 'static>(
         d: &mut [T],
         det0: &[T],
         det1: &[T],
         l: usize,
         bits: u64,
     ) {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let dptr = d.as_mut_ptr().cast::<f64>();
+                let p0 = det0.as_ptr().cast::<f64>();
+                let p1 = det1.as_ptr().cast::<f64>();
+
+                for r in 0..l {
+                    let base = r * l;
+                    let mut c = 0usize;
+
+                    while c < l {
+                        let count = (l - c).min(4);
+                        let valid = match count {
+                            1 => _mm256_set_epi64x(0, 0, 0, -1),
+                            2 => _mm256_set_epi64x(0, 0, -1, -1),
+                            3 => _mm256_set_epi64x(0, -1, -1, -1),
+                            _ => _mm256_set1_epi64x(-1),
+                        };
+
+                        let mut selected = [0i64; 4];
+                        for lane in 0..count {
+                            selected[lane] =
+                                if ((bits >> (c + lane)) & 1) != 0 { -1 } else { 0 };
+                        }
+
+                        let select = _mm256_castsi256_pd(_mm256_set_epi64x(
+                            selected[3],
+                            selected[2],
+                            selected[1],
+                            selected[0],
+                        ));
+                        let v0 = _mm256_maskload_pd(p0.add(base + c), valid);
+                        let v1 = _mm256_maskload_pd(p1.add(base + c), valid);
+                        let mixed = _mm256_blendv_pd(v0, v1, select);
+
+                        _mm256_maskstore_pd(dptr.add(base + c), valid, mixed);
+                        c += count;
+                    }
+                }
+
+                return;
+            }
+        }
+
         unsafe {
             for r in 0..l {
                 let base = r * l;
@@ -490,59 +830,307 @@ mod mix_columns {
     }
 }
 
-/// Construct the minor of an `n x n` matrix obtained by removing row `r_rm`
-/// and column `c_rm`. Dispatches to specialised implementations for small matrix sizes.
+/// Construct the minor of an `L x L` matrix obtained by removing row `r_rm` and column `c_rm`.
+/// The resulting matrix is `M^{(r_rm,c_rm)}` with dimension `(L - 1) x (L - 1)`.
+/// Fixed-rank kernels are used for `L = 1,...,4`; arbitrary ranks use the general minor builder.
 /// # Arguments:
-/// - `out`: Matrix to be written into.
-/// - `m`: Base matrix.
-/// - `n`: Dimension of the square matrix `m`.
-/// - `r_rm`: Row index to remove.
-/// - `c_rm`: Column index to remove.
+/// - `out`: Row-major matrix minor to write.
+/// - `m`: Input row-major matrix `M`.
+/// - `l`: Matrix rank `L`.
+/// - `r_rm`: Row index removed from `M`.
+/// - `c_rm`: Column index removed from `M`.
 /// # Returns
-/// - `()`: Writes the minor into `out`.
+/// - `()`: Writes `M^{(r_rm,c_rm)}` into `out`.
 #[inline(always)]
-pub fn minor<T: Copy>(
+pub fn minor<T: Copy + 'static>(
     out: &mut [T],
     m: &[T],
-    n: usize,
+    l: usize,
     r_rm: usize,
     c_rm: usize,
 ) {
-    if n == 0 {
-        return;
-    }
-
-    let mut ii = 0usize;
-    for i in 0..n {
-        if i == r_rm {
-            continue;
-        }
-        let mut jj = 0usize;
-        for j in 0..n {
-            if j == c_rm {
-                continue;
-            }
-            out[ii * (n - 1) + jj] = m[i * n + j];
-            jj += 1;
-        }
-        ii += 1;
+    match l {
+        0 => {}
+        1 => minor_mod::minor_l1(out, m, r_rm, c_rm),
+        2 => minor_mod::minor_l2(out, m, r_rm, c_rm),
+        3 => minor_mod::minor_l3(out, m, r_rm, c_rm),
+        4 => minor_mod::minor_l4(out, m, r_rm, c_rm),
+        _ => minor_mod::minor_gen(out, m, l, r_rm, c_rm),
     }
 }
 
-/// Construct a matrix minor and compute its adjugate transpose. Fixed kernels fuse the minor
-/// extraction with the adjugate calculation for small matrices.
+mod minor_mod {
+    // Standard library imports.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    use std::any::TypeId;
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    use std::arch::x86_64::{
+        _mm256_i64gather_pd, _mm256_maskstore_pd, _mm256_set1_epi64x, _mm256_set_epi64x,
+        _mm256_storeu_pd,
+    };
+    /// Construct the matrix minor for fixed rank `L = 1`.
+    /// Removing the only row and column produces the rank-zero minor.
+    /// # Arguments:
+    /// - `_out`: Empty output storage for the rank-zero minor.
+    /// - `_m`: Input row-major `1 x 1` matrix.
+    /// - `_r_rm`: Row index removed from `M`.
+    /// - `_c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `()`: The rank-zero minor contains no stored elements.
+    #[inline(always)]
+    pub(super) fn minor_l1<T: Copy + 'static>(
+        _out: &mut [T],
+        _m: &[T],
+        _r_rm: usize,
+        _c_rm: usize,
+    ) {
+    }
+
+    /// Construct the matrix minor for fixed rank `L = 2`.
+    /// The result is the single retained element of `M^{(r_rm,c_rm)}`.
+    /// # Arguments:
+    /// - `out`: Row-major `1 x 1` matrix minor to write.
+    /// - `m`: Input row-major `2 x 2` matrix `M`.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `()`: Writes the rank-one minor into `out`.
+    #[inline(always)]
+    pub(super) fn minor_l2<T: Copy + 'static>(
+        out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) {
+        let r = 1 ^ r_rm;
+        let c = 1 ^ c_rm;
+        out[0] = m[r * 2 + c];
+    }
+
+    /// Construct the matrix minor for fixed rank `L = 3`.
+    /// The result is the `2 x 2` matrix `M^{(r_rm,c_rm)}`.
+    /// The real-valued path gathers all four retained elements with packed AVX2 operations.
+    /// # Arguments:
+    /// - `out`: Row-major `2 x 2` matrix minor to write.
+    /// - `m`: Input row-major `3 x 3` matrix `M`.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `()`: Writes the rank-two minor into `out`.
+    #[inline(always)]
+    pub(super) fn minor_l3<T: Copy + 'static>(
+        out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) {
+        let rows = match r_rm {
+            0 => [1usize, 2],
+            1 => [0, 2],
+            2 => [0, 1],
+            _ => unreachable!(),
+        };
+        let cols = match c_rm {
+            0 => [1usize, 2],
+            1 => [0, 2],
+            2 => [0, 1],
+            _ => unreachable!(),
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let mptr = m.as_ptr().cast::<f64>();
+                let optr = out.as_mut_ptr().cast::<f64>();
+                let indices = _mm256_set_epi64x(
+                    (rows[1] * 3 + cols[1]) as i64,
+                    (rows[1] * 3 + cols[0]) as i64,
+                    (rows[0] * 3 + cols[1]) as i64,
+                    (rows[0] * 3 + cols[0]) as i64,
+                );
+                let values = _mm256_i64gather_pd(mptr, indices, 8);
+
+                _mm256_storeu_pd(optr, values);
+                return;
+            }
+        }
+
+        out[0] = m[rows[0] * 3 + cols[0]];
+        out[1] = m[rows[0] * 3 + cols[1]];
+        out[2] = m[rows[1] * 3 + cols[0]];
+        out[3] = m[rows[1] * 3 + cols[1]];
+    }
+
+    /// Construct the matrix minor for fixed rank `L = 4`.
+    /// The result is the `3 x 3` matrix `M^{(r_rm,c_rm)}`.
+    /// The real-valued path gathers each retained row with packed AVX2 operations.
+    /// # Arguments:
+    /// - `out`: Row-major `3 x 3` matrix minor to write.
+    /// - `m`: Input row-major `4 x 4` matrix `M`.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `()`: Writes the rank-three minor into `out`.
+    #[inline(always)]
+    pub(super) fn minor_l4<T: Copy + 'static>(
+        out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) {
+        let rows = match r_rm {
+            0 => [1usize, 2, 3],
+            1 => [0, 2, 3],
+            2 => [0, 1, 3],
+            3 => [0, 1, 2],
+            _ => unreachable!(),
+        };
+        let cols = match c_rm {
+            0 => [1usize, 2, 3],
+            1 => [0, 2, 3],
+            2 => [0, 1, 3],
+            3 => [0, 1, 2],
+            _ => unreachable!(),
+        };
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let mptr = m.as_ptr().cast::<f64>();
+                let optr = out.as_mut_ptr().cast::<f64>();
+                let mask = _mm256_set_epi64x(0, -1, -1, -1);
+
+                for i in 0..3 {
+                    let r = rows[i];
+                    let indices = _mm256_set_epi64x(
+                        (r * 4 + cols[2]) as i64,
+                        (r * 4 + cols[2]) as i64,
+                        (r * 4 + cols[1]) as i64,
+                        (r * 4 + cols[0]) as i64,
+                    );
+                    let values = _mm256_i64gather_pd(mptr, indices, 8);
+
+                    _mm256_maskstore_pd(optr.add(i * 3), mask, values);
+                }
+
+                return;
+            }
+        }
+
+        for i in 0..3 {
+            let base = i * 3;
+            out[base] = m[rows[i] * 4 + cols[0]];
+            out[base + 1] = m[rows[i] * 4 + cols[1]];
+            out[base + 2] = m[rows[i] * 4 + cols[2]];
+        }
+    }
+
+    /// Construct the matrix minor for arbitrary matrix rank `L`.
+    /// The result is the `(L - 1) x (L - 1)` matrix `M^{(r_rm,c_rm)}`.
+    /// The real-valued path gathers groups of up to four retained elements with packed AVX2 operations.
+    /// # Arguments:
+    /// - `out`: Row-major matrix minor to write.
+    /// - `m`: Input row-major `L x L` matrix `M`.
+    /// - `l`: Matrix rank `L`.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `()`: Writes `M^{(r_rm,c_rm)}` into `out`.
+    #[inline(always)]
+    pub(super) fn minor_gen<T: Copy + 'static>(
+        out: &mut [T],
+        m: &[T],
+        l: usize,
+        r_rm: usize,
+        c_rm: usize,
+    ) {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let mptr = m.as_ptr().cast::<f64>();
+                let optr = out.as_mut_ptr().cast::<f64>();
+                let out_l = l - 1;
+                let mut retained = Vec::with_capacity(out_l);
+                for j in 0..l {
+                    if j != c_rm {
+                        retained.push(j);
+                    }
+                }
+
+                let mut ii = 0usize;
+                for i in 0..l {
+                    if i == r_rm {
+                        continue;
+                    }
+
+                    let mut jj = 0usize;
+                    while jj < out_l {
+                        let count = (out_l - jj).min(4);
+                        let mut idx = [0i64; 4];
+
+                        for lane in 0..count {
+                            idx[lane] = (i * l + retained[jj + lane]) as i64;
+                        }
+                        for lane in count..4 {
+                            idx[lane] = idx[count - 1];
+                        }
+
+                        let indices = _mm256_set_epi64x(idx[3], idx[2], idx[1], idx[0]);
+                        let values = _mm256_i64gather_pd(mptr, indices, 8);
+                        let mask = match count {
+                            1 => _mm256_set_epi64x(0, 0, 0, -1),
+                            2 => _mm256_set_epi64x(0, 0, -1, -1),
+                            3 => _mm256_set_epi64x(0, -1, -1, -1),
+                            _ => _mm256_set1_epi64x(-1),
+                        };
+
+                        _mm256_maskstore_pd(optr.add(ii * out_l + jj), mask, values);
+                        jj += count;
+                    }
+
+                    ii += 1;
+                }
+
+                return;
+            }
+        }
+
+        let mut ii = 0usize;
+        for i in 0..l {
+            if i == r_rm {
+                continue;
+            }
+
+            let mut jj = 0usize;
+            for j in 0..l {
+                if j == c_rm {
+                    continue;
+                }
+
+                out[ii * (l - 1) + jj] = m[i * l + j];
+                jj += 1;
+            }
+            ii += 1;
+        }
+    }
+}
+
+/// Construct the minor `M^{(r_rm,c_rm)}` and compute its determinant and adjugate transpose.
+/// If `M` has rank `L`, the minor has rank `L - 1`, with cofactor matrix
+/// `C_{ij} = (-1)^{i+j} det((M^{(r_rm,c_rm)})^{(i,j)})`.
+/// Fixed-rank kernels are used for `L = 1,...,4`; arbitrary ranks use the general minor and adjugate kernels.
 /// # Arguments:
-/// - `adjt`: Cofactor matrix of the minor, in row-major order.
-/// - `minor_out`: Scratch matrix receiving the explicit minor for generic callers.
-/// - `invs`: Scratch inverse singular values used by the generic adjugate fallback.
-/// - `lu`: Scratch LU storage used by the generic adjugate fallback.
-/// - `m`: Base matrix.
-/// - `n`: Dimension of the square matrix `m`.
-/// - `r_rm`: Row index to remove.
-/// - `c_rm`: Column index to remove.
-/// - `thresh`: Numerical threshold used by the adjugate fallback.
+/// - `adjt`: Row-major cofactor matrix of the minor to write.
+/// - `minor_out`: Row-major matrix minor `M^{(r_rm,c_rm)}` to write.
+/// - `invs`: Scratch inverse singular values used by the generic SVD fallback.
+/// - `lu`: Scratch matrix used by the generic LU fallback.
+/// - `m`: Input row-major matrix `M`.
+/// - `l`: Matrix rank `L`.
+/// - `r_rm`: Row index removed from `M`.
+/// - `c_rm`: Column index removed from `M`.
+/// - `thresh`: Threshold below which a singular value is treated as zero.
 /// # Returns
-/// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
+/// - `Option<T>`: Determinant of `M^{(r_rm,c_rm)}`, or `None` if evaluation fails.
 #[inline(always)]
 pub fn minor_adjugate_transpose<T: StateScalar>(
     adjt: &mut [T],
@@ -550,183 +1138,142 @@ pub fn minor_adjugate_transpose<T: StateScalar>(
     invs: &mut [f64],
     lu: &mut [T],
     m: &[T],
-    n: usize,
+    l: usize,
     r_rm: usize,
     c_rm: usize,
     thresh: f64,
 ) -> Option<T> {
-    match n {
+    match l {
         0 => None,
-        1 => Some(T::from_real(1.0)),
-        2 => minor_adjt::minor2_adjt1(adjt, minor_out, m, r_rm, c_rm),
-        3 => minor_adjt::minor3_adjt2(adjt, minor_out, m, r_rm, c_rm),
-        4 => minor_adjt::minor4_adjt3(adjt, minor_out, m, r_rm, c_rm),
-        _ => {
-            minor(minor_out, m, n, r_rm, c_rm);
-            adjugate_transpose(adjt, invs, lu, minor_out, n - 1, thresh)
-        }
+        1 => minor_adjt::minor_adjt_l1(adjt, minor_out, m, r_rm, c_rm),
+        2 => minor_adjt::minor_adjt_l2(adjt, minor_out, m, r_rm, c_rm),
+        3 => minor_adjt::minor_adjt_l3(adjt, minor_out, m, r_rm, c_rm),
+        4 => minor_adjt::minor_adjt_l4(adjt, minor_out, m, r_rm, c_rm),
+        _ => minor_adjt::minor_adjt_gen(
+            adjt, minor_out, invs, lu, m, l, r_rm, c_rm, thresh,
+        ),
     }
 }
 
 mod minor_adjt {
-    use super::det_mod::det2scalar;
+    // Crate-root imports.
     use crate::StateScalar;
 
-    /// Compute the adjugate transpose of a `1 x 1` minor cut from a `2 x 2` matrix.
+    /// Compute the determinant and adjugate transpose of the rank-zero minor obtained for `L = 1`.
+    /// The determinant of the empty minor is `1`.
     /// # Arguments:
-    /// - `adjt`: Output row-major cofactor matrix of the minor.
-    /// - `minor_out`: Output row-major minor matrix.
-    /// - `m`: Base row-major `2 x 2` matrix.
-    /// - `r_rm`: Row index to remove.
-    /// - `c_rm`: Column index to remove.
-    /// # Returns:
-    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
+    /// - `_adjt`: Empty cofactor-matrix storage.
+    /// - `_minor_out`: Empty minor storage.
+    /// - `_m`: Input row-major `1 x 1` matrix.
+    /// - `_r_rm`: Row index removed from `M`.
+    /// - `_c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `Option<T>`: Unit determinant of the rank-zero minor.
     #[inline(always)]
-    pub(super) fn minor2_adjt1<T: StateScalar>(
-        adjt: &mut [T],
-        minor_out: &mut [T],
-        m: &[T],
-        r_rm: usize,
-        c_rm: usize,
+    pub(super) fn minor_adjt_l1<T: StateScalar>(
+        _adjt: &mut [T],
+        _minor_out: &mut [T],
+        _m: &[T],
+        _r_rm: usize,
+        _c_rm: usize,
     ) -> Option<T> {
-        let r = 1 ^ r_rm;
-        let c = 1 ^ c_rm;
-        minor_out[0] = m[r * 2 + c];
-        adjt[0] = T::from_real(1.0);
-        Some(minor_out[0])
+        Some(T::from_real(1.0))
     }
 
-    /// Compute the adjugate transpose of a `2 x 2` minor cut from a `3 x 3` matrix.
+    /// Construct the rank-one minor for `L = 2` and compute its determinant and adjugate transpose.
+    /// For the retained scalar `a`, `det(a) = a` and `adj(a)^T = [1]`.
     /// # Arguments:
-    /// - `adjt`: Output row-major cofactor matrix of the minor.
-    /// - `minor_out`: Output row-major minor matrix.
-    /// - `m`: Base row-major `3 x 3` matrix.
-    /// - `r_rm`: Row index to remove.
-    /// - `c_rm`: Column index to remove.
-    /// # Returns:
-    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
+    /// - `adjt`: Row-major rank-one cofactor matrix to write.
+    /// - `minor_out`: Row-major `1 x 1` minor to write.
+    /// - `m`: Input row-major `2 x 2` matrix.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `Option<T>`: Determinant of the rank-one minor.
     #[inline(always)]
-    pub(super) fn minor3_adjt2<T: StateScalar>(
+    pub(super) fn minor_adjt_l2<T: StateScalar>(
         adjt: &mut [T],
         minor_out: &mut [T],
         m: &[T],
         r_rm: usize,
         c_rm: usize,
     ) -> Option<T> {
-        let rows = match r_rm {
-            0 => [1, 2],
-            1 => [0, 2],
-            2 => [0, 1],
-            _ => unreachable!(),
-        };
-        let cols = match c_rm {
-            0 => [1, 2],
-            1 => [0, 2],
-            2 => [0, 1],
-            _ => unreachable!(),
-        };
-
-        let a00 = m[rows[0] * 3 + cols[0]];
-        let a01 = m[rows[0] * 3 + cols[1]];
-        let a10 = m[rows[1] * 3 + cols[0]];
-        let a11 = m[rows[1] * 3 + cols[1]];
-
-        minor_out[0] = a00;
-        minor_out[1] = a01;
-        minor_out[2] = a10;
-        minor_out[3] = a11;
-
-        let det = det2scalar(a00, a01, a10, a11);
-        if !det.abs().is_finite() {
-            return None;
-        }
-
-        adjt[0] = a11;
-        adjt[1] = T::from_real(-1.0) * a10;
-        adjt[2] = T::from_real(-1.0) * a01;
-        adjt[3] = a00;
-
-        Some(det)
+        super::minor_mod::minor_l2(minor_out, m, r_rm, c_rm);
+        super::adjt_mod::adjt_l1(adjt, minor_out)
     }
 
-    /// Compute the adjugate transpose of a `3 x 3` minor cut from a `4 x 4` matrix.
+    /// Construct the rank-two minor for `L = 3` and compute its determinant and adjugate transpose.
+    /// The real-valued minor construction and rank-two adjugate evaluation use the fixed-rank SIMD kernels.
     /// # Arguments:
-    /// - `adjt`: Output row-major cofactor matrix of the minor.
-    /// - `minor_out`: Output row-major minor matrix.
-    /// - `m`: Base row-major `4 x 4` matrix.
-    /// - `r_rm`: Row index to remove.
-    /// - `c_rm`: Column index to remove.
-    /// # Returns:
-    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
+    /// - `adjt`: Row-major rank-two cofactor matrix to write.
+    /// - `minor_out`: Row-major `2 x 2` minor to write.
+    /// - `m`: Input row-major `3 x 3` matrix.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `Option<T>`: Determinant of the rank-two minor, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn minor4_adjt3<T: StateScalar>(
+    pub(super) fn minor_adjt_l3<T: StateScalar>(
         adjt: &mut [T],
         minor_out: &mut [T],
         m: &[T],
         r_rm: usize,
         c_rm: usize,
     ) -> Option<T> {
-        let rows = match r_rm {
-            0 => [1, 2, 3],
-            1 => [0, 2, 3],
-            2 => [0, 1, 3],
-            3 => [0, 1, 2],
-            _ => unreachable!(),
-        };
-        let cols = match c_rm {
-            0 => [1, 2, 3],
-            1 => [0, 2, 3],
-            2 => [0, 1, 3],
-            3 => [0, 1, 2],
-            _ => unreachable!(),
-        };
+        super::minor_mod::minor_l3(minor_out, m, r_rm, c_rm);
+        super::adjt_mod::adjt_l2(adjt, minor_out)
+    }
 
-        let a00 = m[rows[0] * 4 + cols[0]];
-        let a01 = m[rows[0] * 4 + cols[1]];
-        let a02 = m[rows[0] * 4 + cols[2]];
-        let a10 = m[rows[1] * 4 + cols[0]];
-        let a11 = m[rows[1] * 4 + cols[1]];
-        let a12 = m[rows[1] * 4 + cols[2]];
-        let a20 = m[rows[2] * 4 + cols[0]];
-        let a21 = m[rows[2] * 4 + cols[1]];
-        let a22 = m[rows[2] * 4 + cols[2]];
+    /// Construct the rank-three minor for `L = 4` and compute its determinant and adjugate transpose.
+    /// The real-valued minor construction and rank-three adjugate evaluation use the fixed-rank SIMD kernels.
+    /// # Arguments:
+    /// - `adjt`: Row-major rank-three cofactor matrix to write.
+    /// - `minor_out`: Row-major `3 x 3` minor to write.
+    /// - `m`: Input row-major `4 x 4` matrix.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// # Returns
+    /// - `Option<T>`: Determinant of the rank-three minor, or `None` if evaluation fails.
+    #[inline(always)]
+    pub(super) fn minor_adjt_l4<T: StateScalar>(
+        adjt: &mut [T],
+        minor_out: &mut [T],
+        m: &[T],
+        r_rm: usize,
+        c_rm: usize,
+    ) -> Option<T> {
+        super::minor_mod::minor_l4(minor_out, m, r_rm, c_rm);
+        super::adjt_mod::adjt_l3(adjt, minor_out)
+    }
 
-        minor_out[0] = a00;
-        minor_out[1] = a01;
-        minor_out[2] = a02;
-        minor_out[3] = a10;
-        minor_out[4] = a11;
-        minor_out[5] = a12;
-        minor_out[6] = a20;
-        minor_out[7] = a21;
-        minor_out[8] = a22;
-
-        let c00 = a11 * a22 - a12 * a21;
-        let c01 = a12 * a20 - a10 * a22;
-        let c02 = a10 * a21 - a11 * a20;
-        let c10 = a02 * a21 - a01 * a22;
-        let c11 = a00 * a22 - a02 * a20;
-        let c12 = a01 * a20 - a00 * a21;
-        let c20 = a01 * a12 - a02 * a11;
-        let c21 = a02 * a10 - a00 * a12;
-        let c22 = a00 * a11 - a01 * a10;
-
-        let det = a00 * c00 + a01 * c01 + a02 * c02;
-        if !det.abs().is_finite() {
-            return None;
-        }
-
-        adjt[0] = c00;
-        adjt[1] = c01;
-        adjt[2] = c02;
-        adjt[3] = c10;
-        adjt[4] = c11;
-        adjt[5] = c12;
-        adjt[6] = c20;
-        adjt[7] = c21;
-        adjt[8] = c22;
-
-        Some(det)
+    /// Construct a minor of arbitrary rank and compute its determinant and adjugate transpose.
+    /// The minor is constructed explicitly before the generic adjugate evaluator is applied.
+    /// # Arguments:
+    /// - `adjt`: Row-major cofactor matrix of the minor to write.
+    /// - `minor_out`: Row-major minor matrix to write.
+    /// - `invs`: Scratch inverse singular values used by the SVD fallback.
+    /// - `lu`: Scratch matrix used by the LU fallback.
+    /// - `m`: Input row-major matrix `M`.
+    /// - `l`: Matrix rank `L`.
+    /// - `r_rm`: Row index removed from `M`.
+    /// - `c_rm`: Column index removed from `M`.
+    /// - `thresh`: Threshold below which a singular value is treated as zero.
+    /// # Returns
+    /// - `Option<T>`: Determinant of the minor, or `None` if evaluation fails.
+    #[inline(always)]
+    pub(super) fn minor_adjt_gen<T: StateScalar>(
+        adjt: &mut [T],
+        minor_out: &mut [T],
+        invs: &mut [f64],
+        lu: &mut [T],
+        m: &[T],
+        l: usize,
+        r_rm: usize,
+        c_rm: usize,
+        thresh: f64,
+    ) -> Option<T> {
+        super::minor_mod::minor_gen(minor_out, m, l, r_rm, c_rm);
+        super::adjugate_transpose(adjt, invs, lu, minor_out, l - 1, thresh)
     }
 }
 
@@ -748,17 +1295,17 @@ pub fn det<T: StateScalar>(
 
     match n {
         0 => Some(T::from_real(1.0)),
-        1 => Some(a[0]),
+        1 => Some(det_mod::det_l1(a)),
         2 => {
-            let d = det_mod::det2(a);
+            let d = det_mod::det_l2(a);
             if d.abs().is_finite() { Some(d) } else { None }
         }
         3 => {
-            let d = det_mod::det3(a);
+            let d = det_mod::det_l3(a);
             if d.abs().is_finite() { Some(d) } else { None }
         }
         4 => {
-            let d = det_mod::det4(a);
+            let d = det_mod::det_l4(a);
             if d.abs().is_finite() { Some(d) } else { None }
         }
         _ => det_mod::det_gen(a, n),
@@ -994,9 +1541,33 @@ fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(lu: &mut [T; S])
 }
 
 mod det_mod {
-    use crate::StateScalar;
+    // Standard library imports.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::any::TypeId;
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::arch::x86_64::{
+        _mm_add_sd, _mm_cvtsd_f64, _mm_sub_sd, _mm_unpackhi_pd, _mm256_add_pd,
+        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_hadd_pd, _mm256_loadu_pd,
+        _mm256_mul_pd, _mm256_set_pd, _mm256_sub_pd,
+    };
+
+    // External crate imports.
     use ndarray::ArrayView2;
     use ndarray_linalg::{Determinant, SVD};
+
+    // Crate-root imports.
+    use crate::StateScalar;
+
+    /// Calculate the determinant of a fixed `1 x 1` matrix `A`.
+    /// `det(A) = A_{00}`.
+    /// # Arguments:
+    /// - `a`: Input row-major `1 x 1` matrix `A`.
+    /// # Returns
+    /// - `T`: Determinant `det(A)`.
+    #[inline(always)]
+    pub(super) fn det_l1<T: StateScalar>(a: &[T]) -> T {
+        a[0]
+    }
 
     /// Calculate determinant of a 2 x 2 matrix.
     /// # Arguments:
@@ -1004,9 +1575,25 @@ mod det_mod {
     /// # Returns
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
-    pub(super) fn det2<T: StateScalar>(a: &[T]) -> T {
+    pub(super) fn det_l2<T: StateScalar>(a: &[T]) -> T {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 4);
+                let lhs = _mm256_set_pd(0.0, 0.0, a[1], a[0]);
+                let rhs = _mm256_set_pd(0.0, 0.0, a[2], a[3]);
+                let products = _mm256_mul_pd(lhs, rhs);
+                let low = _mm256_castpd256_pd128(products);
+                let high = _mm_unpackhi_pd(low, low);
+                let det = _mm_cvtsd_f64(_mm_sub_sd(low, high));
+
+                return T::from_real(det);
+            }
+        }
+
         det2scalar(a[0], a[1], a[2], a[3])
-    }
+}
 
     /// Calculate determinant of a 2 x 2 matrix from scalar elements.
     /// # Arguments:
@@ -1032,7 +1619,30 @@ mod det_mod {
     /// # Returns
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
-    pub(super) fn det3<T: StateScalar>(a: &[T]) -> T {
+    pub(super) fn det_l3<T: StateScalar>(a: &[T]) -> T {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 9);
+
+                let x0 = _mm256_set_pd(0.0, a[3], a[5], a[4]);
+                let y0 = _mm256_set_pd(0.0, a[7], a[6], a[8]);
+                let x1 = _mm256_set_pd(0.0, a[4], a[3], a[5]);
+                let y1 = _mm256_set_pd(0.0, a[6], a[8], a[7]);
+                let cof = _mm256_sub_pd(_mm256_mul_pd(x0, y0), _mm256_mul_pd(x1, y1));
+
+                let row = _mm256_set_pd(0.0, a[2], a[1], a[0]);
+                let products = _mm256_mul_pd(row, cof);
+                let sums = _mm256_hadd_pd(products, products);
+                let low = _mm256_castpd256_pd128(sums);
+                let high = _mm256_extractf128_pd(sums, 1);
+                let det = _mm_cvtsd_f64(_mm_add_sd(low, high));
+
+                return T::from_real(det);
+            }
+        }
+
         let a00 = a[0];
         let a01 = a[1];
         let a02 = a[2];
@@ -1044,7 +1654,7 @@ mod det_mod {
         let a22 = a[8];
 
         det3scalar(a00, a01, a02, a10, a11, a12, a20, a21, a22)
-    }
+}
 
     /// Calculate determinant of a 3 x 3 matrix from scalar elements.
     /// # Arguments:
@@ -1081,7 +1691,52 @@ mod det_mod {
     /// # Returns
     /// - `T`: Determinant of the matrix.
     #[inline(always)]
-    pub(super) fn det4<T: StateScalar>(a: &[T]) -> T {
+    pub(super) fn det_l4<T: StateScalar>(a: &[T]) -> T {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 16);
+
+                let x = [a[4], a[5], a[6], a[7]];
+                let y = [a[8], a[9], a[10], a[11]];
+                let z = [a[12], a[13], a[14], a[15]];
+
+                let x0 = _mm256_set_pd(x[0], x[0], x[0], x[1]);
+                let x1 = _mm256_set_pd(x[1], x[1], x[2], x[2]);
+                let x2 = _mm256_set_pd(x[2], x[3], x[3], x[3]);
+
+                let y0 = _mm256_set_pd(y[0], y[0], y[0], y[1]);
+                let y1 = _mm256_set_pd(y[1], y[1], y[2], y[2]);
+                let y2 = _mm256_set_pd(y[2], y[3], y[3], y[3]);
+
+                let z0 = _mm256_set_pd(z[0], z[0], z[0], z[1]);
+                let z1 = _mm256_set_pd(z[1], z[1], z[2], z[2]);
+                let z2 = _mm256_set_pd(z[2], z[3], z[3], z[3]);
+
+                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+
+                let minors = _mm256_add_pd(
+                    _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
+                    _mm256_mul_pd(x2, m2),
+                );
+                let cof = _mm256_mul_pd(
+                    minors,
+                    _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
+                );
+                let row = _mm256_loadu_pd(a.as_ptr());
+                let products = _mm256_mul_pd(row, cof);
+                let sums = _mm256_hadd_pd(products, products);
+                let low = _mm256_castpd256_pd128(sums);
+                let high = _mm256_extractf128_pd(sums, 1);
+                let det = _mm_cvtsd_f64(_mm_add_sd(low, high));
+
+                return T::from_real(det);
+            }
+        }
+
         let m00 = {
             let a11 = a[5];
             let a12 = a[6];
@@ -1139,7 +1794,7 @@ mod det_mod {
         };
 
         a[0] * m00 - a[1] * m01 + a[2] * m02 - a[3] * m03
-    }
+}
 
     /// Compute determinant of `a` for arbitrary size using LU factorisation first and SVD as a fallback.
     /// # Arguments:
@@ -1299,19 +1954,35 @@ pub fn adjugate_transpose<T: StateScalar>(
 ) -> Option<T> {
     match n {
         0 => Some(T::from_real(1.0)),
-        1 => adjt_mod::adjt1(adjt, a),
-        2 => adjt_mod::adjt2(adjt, a),
-        3 => adjt_mod::adjt3(adjt, a),
-        4 => adjt_mod::adjt4(adjt, a),
+        1 => adjt_mod::adjt_l1(adjt, a),
+        2 => adjt_mod::adjt_l2(adjt, a),
+        3 => adjt_mod::adjt_l3(adjt, a),
+        4 => adjt_mod::adjt_l4(adjt, a),
         _ => adjt_mod::adjt_gen(adjt, invs, lu, a, n, thresh),
     }
 }
 
 mod adjt_mod {
-    use super::det_mod::{det2scalar, det3scalar};
-    use crate::StateScalar;
+    // Standard library imports.
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::any::TypeId;
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    use std::arch::x86_64::{
+        _mm_add_sd, _mm_cvtsd_f64, _mm_sub_sd, _mm_unpackhi_pd, _mm256_add_pd,
+        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_hadd_pd, _mm256_loadu_pd,
+        _mm256_maskstore_pd, _mm256_mul_pd, _mm256_set1_pd, _mm256_set_epi64x,
+        _mm256_set_pd, _mm256_storeu_pd, _mm256_sub_pd,
+    };
+
+    // External crate imports.
     use ndarray::{Array2, ArrayView2};
     use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
+
+    // Crate-root imports.
+    use crate::StateScalar;
+
+    // Parent/sibling imports.
+    use super::det_mod::{det2scalar, det3scalar};
 
     /// Calculate determinant of 1 by 1 matrix `a` and write its adjugate transpose into `adjt`.
     /// # Arguments:
@@ -1320,7 +1991,7 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt1<T: StateScalar>(
+    pub(super) fn adjt_l1<T: StateScalar>(
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
@@ -1335,10 +2006,36 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt2<T: StateScalar>(
+    pub(super) fn adjt_l2<T: StateScalar>(
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 4);
+                let adjt =
+                    std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 4);
+
+                let lhs = _mm256_set_pd(0.0, 0.0, a[1], a[0]);
+                let rhs = _mm256_set_pd(0.0, 0.0, a[2], a[3]);
+                let products = _mm256_mul_pd(lhs, rhs);
+                let low = _mm256_castpd256_pd128(products);
+                let high = _mm_unpackhi_pd(low, low);
+                let det = _mm_cvtsd_f64(_mm_sub_sd(low, high));
+
+                if !det.abs().is_finite() {
+                    return None;
+                }
+
+                let cof = _mm256_set_pd(a[0], -a[1], -a[2], a[3]);
+                _mm256_storeu_pd(adjt.as_mut_ptr(), cof);
+
+                return Some(T::from_real(det));
+            }
+        }
+
         let a00 = a[0];
         let a01 = a[1];
         let a10 = a[2];
@@ -1355,7 +2052,7 @@ mod adjt_mod {
         adjt[3] = a00;
 
         Some(det)
-    }
+}
 
     /// Calculate determinant of 3 by 3 matrix `a` and write its adjugate transpose into `adjt`.
     /// # Arguments:
@@ -1364,10 +2061,67 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt3<T: StateScalar>(
+    pub(super) fn adjt_l3<T: StateScalar>(
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 9);
+                let adjt =
+                    std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 9);
+                let valid = _mm256_set_epi64x(0, -1, -1, -1);
+
+                let r0 = [a[0], a[1], a[2]];
+                let r1 = [a[3], a[4], a[5]];
+                let r2 = [a[6], a[7], a[8]];
+
+                let p00 = _mm256_set_pd(0.0, r1[0], r1[2], r1[1]);
+                let q00 = _mm256_set_pd(0.0, r2[1], r2[0], r2[2]);
+                let p01 = _mm256_set_pd(0.0, r1[1], r1[0], r1[2]);
+                let q01 = _mm256_set_pd(0.0, r2[0], r2[2], r2[1]);
+                let c0 =
+                    _mm256_sub_pd(_mm256_mul_pd(p00, q00), _mm256_mul_pd(p01, q01));
+
+                _mm256_maskstore_pd(adjt.as_mut_ptr(), valid, c0);
+
+                let row0 = _mm256_set_pd(0.0, r0[2], r0[1], r0[0]);
+                let products = _mm256_mul_pd(row0, c0);
+                let sums = _mm256_hadd_pd(products, products);
+                let low = _mm256_castpd256_pd128(sums);
+                let high = _mm256_extractf128_pd(sums, 1);
+                let det = _mm_cvtsd_f64(_mm_add_sd(low, high));
+
+                if !det.abs().is_finite() {
+                    return None;
+                }
+
+                let p10 = _mm256_set_pd(0.0, r0[0], r0[2], r0[1]);
+                let q10 = _mm256_set_pd(0.0, r2[1], r2[0], r2[2]);
+                let p11 = _mm256_set_pd(0.0, r0[1], r0[0], r0[2]);
+                let q11 = _mm256_set_pd(0.0, r2[0], r2[2], r2[1]);
+                let c1 = _mm256_mul_pd(
+                    _mm256_sub_pd(_mm256_mul_pd(p10, q10), _mm256_mul_pd(p11, q11)),
+                    _mm256_set1_pd(-1.0),
+                );
+
+                _mm256_maskstore_pd(adjt.as_mut_ptr().add(3), valid, c1);
+
+                let p20 = _mm256_set_pd(0.0, r0[0], r0[2], r0[1]);
+                let q20 = _mm256_set_pd(0.0, r1[1], r1[0], r1[2]);
+                let p21 = _mm256_set_pd(0.0, r0[1], r0[0], r0[2]);
+                let q21 = _mm256_set_pd(0.0, r1[0], r1[2], r1[1]);
+                let c2 =
+                    _mm256_sub_pd(_mm256_mul_pd(p20, q20), _mm256_mul_pd(p21, q21));
+
+                _mm256_maskstore_pd(adjt.as_mut_ptr().add(6), valid, c2);
+
+                return Some(T::from_real(det));
+            }
+        }
+
         let a00 = a[0];
         let a01 = a[1];
         let a02 = a[2];
@@ -1408,7 +2162,7 @@ mod adjt_mod {
         adjt[8] = c22;
 
         Some(det)
-    }
+}
 
     /// Calculate determinant of 4 by 4 matrix `a` and write its adjugate transpose into `adjt`.
     /// # Arguments:
@@ -1417,10 +2171,129 @@ mod adjt_mod {
     /// # Returns
     /// - `Option<T>`: Determinant of `a`, or `None` if evaluation fails.
     #[inline(always)]
-    pub(super) fn adjt4<T: StateScalar>(
+    pub(super) fn adjt_l4<T: StateScalar>(
         adjt: &mut [T],
         a: &[T],
     ) -> Option<T> {
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        if TypeId::of::<T>() == TypeId::of::<f64>() {
+            unsafe {
+                let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 16);
+                let adjt =
+                    std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 16);
+
+                let r0 = [a[0], a[1], a[2], a[3]];
+                let r1 = [a[4], a[5], a[6], a[7]];
+                let r2 = [a[8], a[9], a[10], a[11]];
+                let r3 = [a[12], a[13], a[14], a[15]];
+
+                let x0 = _mm256_set_pd(r1[0], r1[0], r1[0], r1[1]);
+                let x1 = _mm256_set_pd(r1[1], r1[1], r1[2], r1[2]);
+                let x2 = _mm256_set_pd(r1[2], r1[3], r1[3], r1[3]);
+                let y0 = _mm256_set_pd(r2[0], r2[0], r2[0], r2[1]);
+                let y1 = _mm256_set_pd(r2[1], r2[1], r2[2], r2[2]);
+                let y2 = _mm256_set_pd(r2[2], r2[3], r2[3], r2[3]);
+                let z0 = _mm256_set_pd(r3[0], r3[0], r3[0], r3[1]);
+                let z1 = _mm256_set_pd(r3[1], r3[1], r3[2], r3[2]);
+                let z2 = _mm256_set_pd(r3[2], r3[3], r3[3], r3[3]);
+
+                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let c0 = _mm256_mul_pd(
+                    _mm256_add_pd(
+                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
+                        _mm256_mul_pd(x2, m2),
+                    ),
+                    _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
+                );
+
+                _mm256_storeu_pd(adjt.as_mut_ptr(), c0);
+
+                let products = _mm256_mul_pd(_mm256_loadu_pd(a.as_ptr()), c0);
+                let sums = _mm256_hadd_pd(products, products);
+                let low = _mm256_castpd256_pd128(sums);
+                let high = _mm256_extractf128_pd(sums, 1);
+                let det = _mm_cvtsd_f64(_mm_add_sd(low, high));
+
+                if !det.abs().is_finite() {
+                    return None;
+                }
+
+                let x0 = _mm256_set_pd(r0[0], r0[0], r0[0], r0[1]);
+                let x1 = _mm256_set_pd(r0[1], r0[1], r0[2], r0[2]);
+                let x2 = _mm256_set_pd(r0[2], r0[3], r0[3], r0[3]);
+                let y0 = _mm256_set_pd(r2[0], r2[0], r2[0], r2[1]);
+                let y1 = _mm256_set_pd(r2[1], r2[1], r2[2], r2[2]);
+                let y2 = _mm256_set_pd(r2[2], r2[3], r2[3], r2[3]);
+                let z0 = _mm256_set_pd(r3[0], r3[0], r3[0], r3[1]);
+                let z1 = _mm256_set_pd(r3[1], r3[1], r3[2], r3[2]);
+                let z2 = _mm256_set_pd(r3[2], r3[3], r3[3], r3[3]);
+
+                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let c1 = _mm256_mul_pd(
+                    _mm256_add_pd(
+                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
+                        _mm256_mul_pd(x2, m2),
+                    ),
+                    _mm256_set_pd(1.0, -1.0, 1.0, -1.0),
+                );
+
+                _mm256_storeu_pd(adjt.as_mut_ptr().add(4), c1);
+
+                let x0 = _mm256_set_pd(r0[0], r0[0], r0[0], r0[1]);
+                let x1 = _mm256_set_pd(r0[1], r0[1], r0[2], r0[2]);
+                let x2 = _mm256_set_pd(r0[2], r0[3], r0[3], r0[3]);
+                let y0 = _mm256_set_pd(r1[0], r1[0], r1[0], r1[1]);
+                let y1 = _mm256_set_pd(r1[1], r1[1], r1[2], r1[2]);
+                let y2 = _mm256_set_pd(r1[2], r1[3], r1[3], r1[3]);
+                let z0 = _mm256_set_pd(r3[0], r3[0], r3[0], r3[1]);
+                let z1 = _mm256_set_pd(r3[1], r3[1], r3[2], r3[2]);
+                let z2 = _mm256_set_pd(r3[2], r3[3], r3[3], r3[3]);
+
+                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let c2 = _mm256_mul_pd(
+                    _mm256_add_pd(
+                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
+                        _mm256_mul_pd(x2, m2),
+                    ),
+                    _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
+                );
+
+                _mm256_storeu_pd(adjt.as_mut_ptr().add(8), c2);
+
+                let x0 = _mm256_set_pd(r0[0], r0[0], r0[0], r0[1]);
+                let x1 = _mm256_set_pd(r0[1], r0[1], r0[2], r0[2]);
+                let x2 = _mm256_set_pd(r0[2], r0[3], r0[3], r0[3]);
+                let y0 = _mm256_set_pd(r1[0], r1[0], r1[0], r1[1]);
+                let y1 = _mm256_set_pd(r1[1], r1[1], r1[2], r1[2]);
+                let y2 = _mm256_set_pd(r1[2], r1[3], r1[3], r1[3]);
+                let z0 = _mm256_set_pd(r2[0], r2[0], r2[0], r2[1]);
+                let z1 = _mm256_set_pd(r2[1], r2[1], r2[2], r2[2]);
+                let z2 = _mm256_set_pd(r2[2], r2[3], r2[3], r2[3]);
+
+                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let c3 = _mm256_mul_pd(
+                    _mm256_add_pd(
+                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
+                        _mm256_mul_pd(x2, m2),
+                    ),
+                    _mm256_set_pd(1.0, -1.0, 1.0, -1.0),
+                );
+
+                _mm256_storeu_pd(adjt.as_mut_ptr().add(12), c3);
+
+                return Some(T::from_real(det));
+            }
+        }
+
         let a00 = a[0];
         let a01 = a[1];
         let a02 = a[2];
@@ -1483,7 +2356,7 @@ mod adjt_mod {
         adjt[15] = c33;
 
         Some(det)
-    }
+}
 
     /// Compute determinant and adjugate transpose using LU first and SVD as fallback.
     /// # Arguments:

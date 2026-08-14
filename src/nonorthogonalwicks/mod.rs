@@ -53,7 +53,8 @@ pub(crate) use view::WicksPairView;
 
 // Crate-visible function re-exports.
 pub(crate) use eval::{
-    prepare_same, xw_f, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap, xw_overlap_same_f64,
+    prepare_same, xw_f, xw_f_overlap, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap,
+    xw_overlap_same_f64,
 };
 #[cfg(feature = "nocc")]
 pub(crate) use eval::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};

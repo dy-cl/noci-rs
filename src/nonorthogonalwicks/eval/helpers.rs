@@ -723,7 +723,7 @@ pub(super) fn for_each_m_combination(
 /// # Returns
 /// - `Option<T>`: `\det\mathbf D when its magnitude exceeds tol.`
 #[inline(always)]
-fn adjugate_transpose_generic<T: NOCIScalar>(
+pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
     adjt: &mut [T],
     full: &[T],
     n: usize,

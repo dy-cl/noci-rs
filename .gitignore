@@ -1,10 +1,12 @@
 target/
+/target
 inputs/*
 !inputs/benchmarks/
 !inputs/benchmarks/**
 !inputs/examples/
 !inputs/examples/**
 outputs/
+/outputs
 wickscache/
 tests/fixtures/**/data.h5
 tests/fixtures/**/data_*.h5
