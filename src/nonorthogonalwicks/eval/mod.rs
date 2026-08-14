@@ -3,6 +3,7 @@ mod h2same;
 mod helpers;
 mod onebody;
 mod onebodyoverlap;
+mod prepareonebodyoverlap;
 mod overlap;
 mod prepare;
 #[cfg(feature = "nocc")]
@@ -23,6 +24,7 @@ pub(crate) use h2diff::xw_h2_diff;
 pub(crate) use h2same::xw_h2_same;
 pub(crate) use onebody::{xw_f, xw_h1};
 pub(crate) use onebodyoverlap::xw_f_overlap;
+pub(crate) use prepareonebodyoverlap::xw_f_overlap_prepared;
 pub(crate) use overlap::xw_overlap_same_f64;
 #[cfg(feature = "nocc")]
 pub(crate) use rdm1::xw_rdm1;

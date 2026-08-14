@@ -17,7 +17,7 @@ use crate::noci::NOCIScalar;
 /// - `c`: Orbital coefficient matrix in an orthonormal basis.
 /// - `mask`: Occupation bitstring.
 /// - `nel`: Number of occupied orbitals.
-/// # Returns:
+/// # Returns
 /// - `T`: Determinant coefficient for the occupied rows and first `nel` columns.
 #[cfg(feature = "nocc")]
 pub(crate) fn det_occupied_minor<T: NOCIScalar>(
@@ -1542,13 +1542,13 @@ fn det_lu_fixed<T: StateScalar, const N: usize, const S: usize>(lu: &mut [T; S])
 
 mod det_mod {
     // Standard library imports.
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     use std::any::TypeId;
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     use std::arch::x86_64::{
-        _mm_add_sd, _mm_cvtsd_f64, _mm_sub_sd, _mm_unpackhi_pd, _mm256_add_pd,
-        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_hadd_pd, _mm256_loadu_pd,
-        _mm256_mul_pd, _mm256_set_pd, _mm256_sub_pd,
+        _mm_add_sd, _mm_cvtsd_f64,
+        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_fmadd_pd, _mm256_fmsub_pd,
+        _mm256_hadd_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_pd,
     };
 
     // External crate imports.
@@ -1577,16 +1577,16 @@ mod det_mod {
     #[inline(always)]
     pub(super) fn det_l2<T: StateScalar>(a: &[T]) -> T {
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 4);
-                let lhs = _mm256_set_pd(0.0, 0.0, a[1], a[0]);
-                let rhs = _mm256_set_pd(0.0, 0.0, a[2], a[3]);
-                let products = _mm256_mul_pd(lhs, rhs);
-                let low = _mm256_castpd256_pd128(products);
-                let high = _mm_unpackhi_pd(low, low);
-                let det = _mm_cvtsd_f64(_mm_sub_sd(low, high));
+                let lhs0 = _mm256_set_pd(0.0, 0.0, 0.0, a[0]);
+                let rhs0 = _mm256_set_pd(0.0, 0.0, 0.0, a[3]);
+                let lhs1 = _mm256_set_pd(0.0, 0.0, 0.0, a[1]);
+                let rhs1 = _mm256_set_pd(0.0, 0.0, 0.0, a[2]);
+                let values = _mm256_fmsub_pd(lhs0, rhs0, _mm256_mul_pd(lhs1, rhs1));
+                let det = _mm_cvtsd_f64(_mm256_castpd256_pd128(values));
 
                 return T::from_real(det);
             }
@@ -1621,7 +1621,7 @@ mod det_mod {
     #[inline(always)]
     pub(super) fn det_l3<T: StateScalar>(a: &[T]) -> T {
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 9);
@@ -1630,7 +1630,7 @@ mod det_mod {
                 let y0 = _mm256_set_pd(0.0, a[7], a[6], a[8]);
                 let x1 = _mm256_set_pd(0.0, a[4], a[3], a[5]);
                 let y1 = _mm256_set_pd(0.0, a[6], a[8], a[7]);
-                let cof = _mm256_sub_pd(_mm256_mul_pd(x0, y0), _mm256_mul_pd(x1, y1));
+                let cof = _mm256_fmsub_pd(x0, y0, _mm256_mul_pd(x1, y1));
 
                 let row = _mm256_set_pd(0.0, a[2], a[1], a[0]);
                 let products = _mm256_mul_pd(row, cof);
@@ -1693,7 +1693,7 @@ mod det_mod {
     #[inline(always)]
     pub(super) fn det_l4<T: StateScalar>(a: &[T]) -> T {
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 16);
@@ -1714,14 +1714,12 @@ mod det_mod {
                 let z1 = _mm256_set_pd(z[1], z[1], z[2], z[2]);
                 let z2 = _mm256_set_pd(z[2], z[3], z[3], z[3]);
 
-                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
-                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
-                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let m0 = _mm256_fmsub_pd(y1, z2, _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_fmsub_pd(y0, z2, _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
 
-                let minors = _mm256_add_pd(
-                    _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
-                    _mm256_mul_pd(x2, m2),
-                );
+                let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
+                let minors = _mm256_fmadd_pd(x2, m2, minors01);
                 let cof = _mm256_mul_pd(
                     minors,
                     _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
@@ -1964,14 +1962,14 @@ pub fn adjugate_transpose<T: StateScalar>(
 
 mod adjt_mod {
     // Standard library imports.
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     use std::any::TypeId;
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
     use std::arch::x86_64::{
-        _mm_add_sd, _mm_cvtsd_f64, _mm_sub_sd, _mm_unpackhi_pd, _mm256_add_pd,
-        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_hadd_pd, _mm256_loadu_pd,
-        _mm256_maskstore_pd, _mm256_mul_pd, _mm256_set1_pd, _mm256_set_epi64x,
-        _mm256_set_pd, _mm256_storeu_pd, _mm256_sub_pd,
+        _mm_add_sd, _mm_cvtsd_f64,
+        _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_fmadd_pd, _mm256_fmsub_pd,
+        _mm256_hadd_pd, _mm256_loadu_pd, _mm256_maskstore_pd, _mm256_mul_pd,
+        _mm256_set_epi64x, _mm256_set_pd, _mm256_storeu_pd,
     };
 
     // External crate imports.
@@ -2011,19 +2009,19 @@ mod adjt_mod {
         a: &[T],
     ) -> Option<T> {
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 4);
                 let adjt =
                     std::slice::from_raw_parts_mut(adjt.as_mut_ptr().cast::<f64>(), 4);
 
-                let lhs = _mm256_set_pd(0.0, 0.0, a[1], a[0]);
-                let rhs = _mm256_set_pd(0.0, 0.0, a[2], a[3]);
-                let products = _mm256_mul_pd(lhs, rhs);
-                let low = _mm256_castpd256_pd128(products);
-                let high = _mm_unpackhi_pd(low, low);
-                let det = _mm_cvtsd_f64(_mm_sub_sd(low, high));
+                let lhs0 = _mm256_set_pd(0.0, 0.0, 0.0, a[0]);
+                let rhs0 = _mm256_set_pd(0.0, 0.0, 0.0, a[3]);
+                let lhs1 = _mm256_set_pd(0.0, 0.0, 0.0, a[1]);
+                let rhs1 = _mm256_set_pd(0.0, 0.0, 0.0, a[2]);
+                let values = _mm256_fmsub_pd(lhs0, rhs0, _mm256_mul_pd(lhs1, rhs1));
+                let det = _mm_cvtsd_f64(_mm256_castpd256_pd128(values));
 
                 if !det.abs().is_finite() {
                     return None;
@@ -2066,7 +2064,7 @@ mod adjt_mod {
         a: &[T],
     ) -> Option<T> {
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 9);
@@ -2082,8 +2080,7 @@ mod adjt_mod {
                 let q00 = _mm256_set_pd(0.0, r2[1], r2[0], r2[2]);
                 let p01 = _mm256_set_pd(0.0, r1[1], r1[0], r1[2]);
                 let q01 = _mm256_set_pd(0.0, r2[0], r2[2], r2[1]);
-                let c0 =
-                    _mm256_sub_pd(_mm256_mul_pd(p00, q00), _mm256_mul_pd(p01, q01));
+                let c0 = _mm256_fmsub_pd(p00, q00, _mm256_mul_pd(p01, q01));
 
                 _mm256_maskstore_pd(adjt.as_mut_ptr(), valid, c0);
 
@@ -2102,10 +2099,7 @@ mod adjt_mod {
                 let q10 = _mm256_set_pd(0.0, r2[1], r2[0], r2[2]);
                 let p11 = _mm256_set_pd(0.0, r0[1], r0[0], r0[2]);
                 let q11 = _mm256_set_pd(0.0, r2[0], r2[2], r2[1]);
-                let c1 = _mm256_mul_pd(
-                    _mm256_sub_pd(_mm256_mul_pd(p10, q10), _mm256_mul_pd(p11, q11)),
-                    _mm256_set1_pd(-1.0),
-                );
+                let c1 = _mm256_fmsub_pd(p11, q11, _mm256_mul_pd(p10, q10));
 
                 _mm256_maskstore_pd(adjt.as_mut_ptr().add(3), valid, c1);
 
@@ -2113,8 +2107,7 @@ mod adjt_mod {
                 let q20 = _mm256_set_pd(0.0, r1[1], r1[0], r1[2]);
                 let p21 = _mm256_set_pd(0.0, r0[1], r0[0], r0[2]);
                 let q21 = _mm256_set_pd(0.0, r1[0], r1[2], r1[1]);
-                let c2 =
-                    _mm256_sub_pd(_mm256_mul_pd(p20, q20), _mm256_mul_pd(p21, q21));
+                let c2 = _mm256_fmsub_pd(p20, q20, _mm256_mul_pd(p21, q21));
 
                 _mm256_maskstore_pd(adjt.as_mut_ptr().add(6), valid, c2);
 
@@ -2176,7 +2169,7 @@ mod adjt_mod {
         a: &[T],
     ) -> Option<T> {
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let a = std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), 16);
@@ -2198,14 +2191,13 @@ mod adjt_mod {
                 let z1 = _mm256_set_pd(r3[1], r3[1], r3[2], r3[2]);
                 let z2 = _mm256_set_pd(r3[2], r3[3], r3[3], r3[3]);
 
-                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
-                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
-                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let m0 = _mm256_fmsub_pd(y1, z2, _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_fmsub_pd(y0, z2, _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
+                let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
+                let minors = _mm256_fmadd_pd(x2, m2, minors01);
                 let c0 = _mm256_mul_pd(
-                    _mm256_add_pd(
-                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
-                        _mm256_mul_pd(x2, m2),
-                    ),
+                    minors,
                     _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
                 );
 
@@ -2231,14 +2223,13 @@ mod adjt_mod {
                 let z1 = _mm256_set_pd(r3[1], r3[1], r3[2], r3[2]);
                 let z2 = _mm256_set_pd(r3[2], r3[3], r3[3], r3[3]);
 
-                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
-                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
-                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let m0 = _mm256_fmsub_pd(y1, z2, _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_fmsub_pd(y0, z2, _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
+                let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
+                let minors = _mm256_fmadd_pd(x2, m2, minors01);
                 let c1 = _mm256_mul_pd(
-                    _mm256_add_pd(
-                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
-                        _mm256_mul_pd(x2, m2),
-                    ),
+                    minors,
                     _mm256_set_pd(1.0, -1.0, 1.0, -1.0),
                 );
 
@@ -2254,14 +2245,13 @@ mod adjt_mod {
                 let z1 = _mm256_set_pd(r3[1], r3[1], r3[2], r3[2]);
                 let z2 = _mm256_set_pd(r3[2], r3[3], r3[3], r3[3]);
 
-                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
-                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
-                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let m0 = _mm256_fmsub_pd(y1, z2, _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_fmsub_pd(y0, z2, _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
+                let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
+                let minors = _mm256_fmadd_pd(x2, m2, minors01);
                 let c2 = _mm256_mul_pd(
-                    _mm256_add_pd(
-                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
-                        _mm256_mul_pd(x2, m2),
-                    ),
+                    minors,
                     _mm256_set_pd(-1.0, 1.0, -1.0, 1.0),
                 );
 
@@ -2277,14 +2267,13 @@ mod adjt_mod {
                 let z1 = _mm256_set_pd(r2[1], r2[1], r2[2], r2[2]);
                 let z2 = _mm256_set_pd(r2[2], r2[3], r2[3], r2[3]);
 
-                let m0 = _mm256_sub_pd(_mm256_mul_pd(y1, z2), _mm256_mul_pd(y2, z1));
-                let m1 = _mm256_sub_pd(_mm256_mul_pd(y0, z2), _mm256_mul_pd(y2, z0));
-                let m2 = _mm256_sub_pd(_mm256_mul_pd(y0, z1), _mm256_mul_pd(y1, z0));
+                let m0 = _mm256_fmsub_pd(y1, z2, _mm256_mul_pd(y2, z1));
+                let m1 = _mm256_fmsub_pd(y0, z2, _mm256_mul_pd(y2, z0));
+                let m2 = _mm256_fmsub_pd(y0, z1, _mm256_mul_pd(y1, z0));
+                let minors01 = _mm256_fmsub_pd(x0, m0, _mm256_mul_pd(x1, m1));
+                let minors = _mm256_fmadd_pd(x2, m2, minors01);
                 let c3 = _mm256_mul_pd(
-                    _mm256_add_pd(
-                        _mm256_sub_pd(_mm256_mul_pd(x0, m0), _mm256_mul_pd(x1, m1)),
-                        _mm256_mul_pd(x2, m2),
-                    ),
+                    minors,
                     _mm256_set_pd(1.0, -1.0, 1.0, -1.0),
                 );
 

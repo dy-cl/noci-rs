@@ -1,13 +1,14 @@
 // nonorthogonalwicks/eval/onebodyoverlap.rs
 
 // Standard library imports.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
 use std::any::TypeId;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
 use std::arch::x86_64::{
     _mm_add_sd, _mm_cvtsd_f64, _mm256_add_pd, _mm256_castpd256_pd128,
-    _mm256_extractf128_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_maskload_pd,
-    _mm256_mul_pd, _mm256_set_epi64x, _mm256_set_pd, _mm256_storeu_pd, _mm256_sub_pd,
+    _mm256_extractf128_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_hadd_pd,
+    _mm256_loadu_pd, _mm256_maskload_pd, _mm256_mul_pd, _mm256_set_epi64x,
+    _mm256_set_pd, _mm256_storeu_pd,
 };
 
 // Crate-root imports.
@@ -154,7 +155,7 @@ fn xw_f_overlap_m0_l1<T: NOCIScalar>(
 /// `- \det\mathbf D_{\mathrm{ov}}^{0\rightarrow\mathcal F_0}`
 /// `- \det\mathbf D_{\mathrm{ov}}^{1\rightarrow\mathcal F_1}].`
 /// The real-valued path evaluates the overlap determinant and both replacement determinants
-/// simultaneously with packed AVX operations.
+/// simultaneously with packed AVX FMA operations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-two contraction determinant and its row and column labels.
@@ -175,7 +176,7 @@ fn xw_f_overlap_m0_l2<T: NOCIScalar>(
         let fsl = w.ff_t_slice(0, 0);
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
 
-        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             unsafe {
                 let d = std::slice::from_raw_parts(d.as_ptr().cast::<f64>(), 4);
@@ -195,10 +196,8 @@ fn xw_f_overlap_m0_l2<T: NOCIScalar>(
                 let rhs0 = _mm256_set_pd(0.0, v1, a11, a11);
                 let lhs1 = _mm256_set_pd(0.0, v0, a01, a01);
                 let rhs1 = _mm256_set_pd(0.0, a10, u1, a10);
-                let values = _mm256_sub_pd(
-                    _mm256_mul_pd(lhs0, rhs0),
-                    _mm256_mul_pd(lhs1, rhs1),
-                );
+                let values =
+                    _mm256_fmsub_pd(lhs0, rhs0, _mm256_mul_pd(lhs1, rhs1));
 
                 let mut packed = [0.0; 4];
                 _mm256_storeu_pd(packed.as_mut_ptr(), values);
@@ -244,7 +243,7 @@ fn xw_f_overlap_m0_l2<T: NOCIScalar>(
 /// `- \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}`
 /// `\mathcal F_{\eta z}^{(0,0)}].`
 /// The determinant and cofactor matrix are shared between the overlap and Fock terms. The
-/// real-valued cofactor-Fock contraction is evaluated three rows at a time with packed AVX operations.
+/// real-valued cofactor-Fock contraction is evaluated three rows at a time with packed AVX FMA operations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-three contraction determinant and scratch storage for its cofactors.
@@ -282,7 +281,7 @@ fn xw_f_overlap_m0_l3<T: NOCIScalar>(
             let c2 = cols[2];
             let fsl = w.ff_t_slice(0, 0);
 
-            #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
             if TypeId::of::<T>() == TypeId::of::<f64>() {
                 unsafe {
                     let cof = std::slice::from_raw_parts(cof.as_ptr().cast::<f64>(), 9);
@@ -311,13 +310,9 @@ fn xw_f_overlap_m0_l3<T: NOCIScalar>(
                         fsl[c1 * n + r2],
                         fsl[c0 * n + r2],
                     );
-                    let repl_v = _mm256_add_pd(
-                        _mm256_add_pd(
-                            _mm256_mul_pd(c_row0, f_row0),
-                            _mm256_mul_pd(c_row1, f_row1),
-                        ),
-                        _mm256_mul_pd(c_row2, f_row2),
-                    );
+                    let repl01 =
+                        _mm256_fmadd_pd(c_row1, f_row1, _mm256_mul_pd(c_row0, f_row0));
+                    let repl_v = _mm256_fmadd_pd(c_row2, f_row2, repl01);
                     let sums = _mm256_hadd_pd(repl_v, repl_v);
                     let low = _mm256_castpd256_pd128(sums);
                     let high = _mm256_extractf128_pd(sums, 1);
@@ -371,7 +366,7 @@ fn xw_f_overlap_m0_l3<T: NOCIScalar>(
 /// `- \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}`
 /// `\mathcal F_{\eta z}^{(0,0)}].`
 /// The determinant and cofactor matrix are shared between the overlap and Fock terms. The
-/// real-valued cofactor-Fock contraction is evaluated four rows at a time with packed AVX operations.
+/// real-valued cofactor-Fock contraction is evaluated four rows at a time with packed AVX FMA operations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared rank-four contraction determinant and scratch storage for its cofactors.
@@ -411,7 +406,7 @@ fn xw_f_overlap_m0_l4<T: NOCIScalar>(
             let c3 = cols[3];
             let fsl = w.ff_t_slice(0, 0);
 
-            #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+            #[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
             if TypeId::of::<T>() == TypeId::of::<f64>() {
                 unsafe {
                     let cof = std::slice::from_raw_parts(cof.as_ptr().cast::<f64>(), 16);
@@ -446,16 +441,11 @@ fn xw_f_overlap_m0_l4<T: NOCIScalar>(
                         fsl[c1 * n + r3],
                         fsl[c0 * n + r3],
                     );
-                    let repl_v = _mm256_add_pd(
-                        _mm256_add_pd(
-                            _mm256_mul_pd(c_row0, f_row0),
-                            _mm256_mul_pd(c_row1, f_row1),
-                        ),
-                        _mm256_add_pd(
-                            _mm256_mul_pd(c_row2, f_row2),
-                            _mm256_mul_pd(c_row3, f_row3),
-                        ),
-                    );
+                    let repl01 =
+                        _mm256_fmadd_pd(c_row1, f_row1, _mm256_mul_pd(c_row0, f_row0));
+                    let repl23 =
+                        _mm256_fmadd_pd(c_row3, f_row3, _mm256_mul_pd(c_row2, f_row2));
+                    let repl_v = _mm256_add_pd(repl01, repl23);
                     let sums = _mm256_hadd_pd(repl_v, repl_v);
                     let low = _mm256_castpd256_pd128(sums);
                     let high = _mm256_extractf128_pd(sums, 1);
