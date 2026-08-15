@@ -11,13 +11,13 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::ExcitationSpin;
 use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
-use crate::nonorthogonalwicks::xw_f_overlap_prepared_batch;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView};
+use crate::nonorthogonalwicks::{
+    WickBatchPair, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batch,
+};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -945,87 +945,62 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
     let tol = data.tol;
     let row0 = rows.start;
     let row1 = rows.end;
-    let zero = T::from_real(0.0);
-    let empty_ex = ExcitationSpin { holes: 0, parts: 0 };
 
     out.0[row0 * nsource..row1 * nsource]
         .par_chunks_mut(nsource)
         .zip(out.1[row0 * nsource..row1 * nsource].par_chunks_mut(nsource))
         .zip(target_reps[row0..row1].par_iter())
-        .for_each_init(
-            || {
-                (
-                    WickScratchSpin::new(),
-                    Vec::<ExcitationSpin>::new(),
-                    Vec::<ExcitationSpin>::new(),
-                    Vec::<f64>::new(),
-                    Vec::<T>::new(),
-                    Vec::<T>::new(),
-                )
-            },
-            |state, ((srow, frow), &tdet)| {
-                let (scratch, l_ex_batch, g_ex_batch, phase_batch, overlap_batch, fock_batch) =
-                    state;
+        .for_each_init(WickScratchSpin::new, |scratch, ((srow, frow), &tdet)| {
+            let target = &data.basis[tdet];
 
-                l_ex_batch.resize(nsource, empty_ex);
-                g_ex_batch.resize(nsource, empty_ex);
-                phase_batch.resize(nsource, 1.0);
-                overlap_batch.resize(nsource, zero);
-                fock_batch.resize(nsource, zero);
+            if alpha {
+                let target_ex = &target.excitation.alpha;
+                let target_rank = usize::from(target.rank_a);
+                let target_phase = target.pha;
+                let pairs = source_reps.iter().enumerate().map(|(col, &sdet)| {
+                    let source = &data.basis[sdet];
+                    let source_ex = &source.excitation.alpha;
+                    let (l_ex, g_ex) = if target_left {
+                        (target_ex, source_ex)
+                    } else {
+                        (source_ex, target_ex)
+                    };
 
-                if alpha {
-                    for (col, &sdet) in source_reps.iter().enumerate() {
-                        let (ldet, gdet) = if target_left {
-                            (&data.basis[tdet], &data.basis[sdet])
-                        } else {
-                            (&data.basis[sdet], &data.basis[tdet])
-                        };
+                    WickBatchPair::new(
+                        l_ex,
+                        g_ex,
+                        target_rank + usize::from(source.rank_a),
+                        target_phase * source.pha,
+                        col,
+                    )
+                });
 
-                        l_ex_batch[col] = ldet.excitation.alpha;
-                        g_ex_batch[col] = gdet.excitation.alpha;
-                        phase_batch[col] = ldet.pha * gdet.pha;
-                    }
+                xw_f_overlap_prepared_batch(&pair.aa, pairs, &mut scratch.aa, tol, srow, frow);
+            } else {
+                let target_ex = &target.excitation.beta;
+                let target_rank = usize::from(target.rank_b);
+                let target_phase = target.phb;
+                let pairs = source_reps.iter().enumerate().map(|(col, &sdet)| {
+                    let source = &data.basis[sdet];
+                    let source_ex = &source.excitation.beta;
+                    let (l_ex, g_ex) = if target_left {
+                        (target_ex, source_ex)
+                    } else {
+                        (source_ex, target_ex)
+                    };
 
-                    xw_f_overlap_prepared_batch(
-                        &pair.aa,
-                        l_ex_batch.as_slice(),
-                        g_ex_batch.as_slice(),
-                        &mut scratch.aa,
-                        tol,
-                        overlap_batch.as_mut_slice(),
-                        fock_batch.as_mut_slice(),
-                    );
-                } else {
-                    for (col, &sdet) in source_reps.iter().enumerate() {
-                        let (ldet, gdet) = if target_left {
-                            (&data.basis[tdet], &data.basis[sdet])
-                        } else {
-                            (&data.basis[sdet], &data.basis[tdet])
-                        };
+                    WickBatchPair::new(
+                        l_ex,
+                        g_ex,
+                        target_rank + usize::from(source.rank_b),
+                        target_phase * source.phb,
+                        col,
+                    )
+                });
 
-                        l_ex_batch[col] = ldet.excitation.beta;
-                        g_ex_batch[col] = gdet.excitation.beta;
-                        phase_batch[col] = ldet.phb * gdet.phb;
-                    }
-
-                    xw_f_overlap_prepared_batch(
-                        &pair.bb,
-                        l_ex_batch.as_slice(),
-                        g_ex_batch.as_slice(),
-                        &mut scratch.bb,
-                        tol,
-                        overlap_batch.as_mut_slice(),
-                        fock_batch.as_mut_slice(),
-                    );
-                }
-
-                for col in 0..nsource {
-                    let phase = T::from_real(phase_batch[col]);
-                    srow[col] = phase * overlap_batch[col];
-                    frow[col] = phase * fock_batch[col];
-                }
-            },
-        );
+                xw_f_overlap_prepared_batch(&pair.bb, pairs, &mut scratch.bb, tol, srow, frow);
+            }
+        });
 }
 
 /// Select alpha-first or beta-first contraction from dense structural costs.

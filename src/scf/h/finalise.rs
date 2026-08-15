@@ -66,6 +66,8 @@ pub(crate) fn finalise(
         ob,
         pha: 1.0,
         phb: 1.0,
+        rank_a: 0,
+        rank_b: 0,
         ca: Arc::new(ca),
         cb: Arc::new(cb),
         da: Arc::new(da),

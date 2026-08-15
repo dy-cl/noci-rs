@@ -66,41 +66,73 @@ pub(crate) fn xw_f_overlap_prepared<T: NOCIScalar>(
     })
 }
 
-/// Prepare and evaluate a batch of same-spin overlap and generalised-Fock matrix elements.
-/// For real `m = 0` matrix elements, the dispatcher uses eight independent Wick pairs per
-/// `AVX-512` vector when `avx512f` is available, otherwise four independent pairs per `AVX2/FMA`
-/// vector when both `avx2` and `fma` are available. Unsupported ranks, complex arithmetic,
-/// singular-reference cases with `m > 0`, and incomplete SIMD batches use
-/// `xw_f_overlap_prepared` without changing the matrix-element definition.
+/// Borrowed excitation pair consumed by the prepared batched Wick evaluator.
+/// The total excitation rank and determinant phase are supplied by the caller so immutable
+/// determinant metadata is not recomputed or copied into whole-row temporary buffers.
+#[derive(Clone, Copy)]
+pub(crate) struct WickBatchPair<'a> {
+    l_ex: &'a ExcitationSpin,
+    g_ex: &'a ExcitationSpin,
+    rank: usize,
+    phase: f64,
+    output: usize,
+}
+
+impl<'a> WickBatchPair<'a> {
+    /// Construct one borrowed prepared-Wick batch item.
+    /// # Arguments:
+    /// - `l_ex`: Bra excitation relative to its parent reference.
+    /// - `g_ex`: Ket excitation relative to its parent reference.
+    /// - `rank`: Total excitation rank `L = L_x + L_w`.
+    /// - `phase`: Product of the bra and ket determinant excitation phases.
+    /// - `output`: Output-row position receiving the matrix element.
+    /// # Returns
+    /// - `WickBatchPair<'a>`: Borrowed batch item.
+    #[inline(always)]
+    pub(crate) fn new(
+        l_ex: &'a ExcitationSpin,
+        g_ex: &'a ExcitationSpin,
+        rank: usize,
+        phase: f64,
+        output: usize,
+    ) -> Self {
+        Self {
+            l_ex,
+            g_ex,
+            rank,
+            phase,
+            output,
+        }
+    }
+}
+
+/// Prepare and evaluate a stream of same-spin overlap and generalised-Fock matrix elements.
+/// Real `m = 0` pairs are accumulated only in fixed-size per-rank SIMD bins; no arrays scaling
+/// with the number of source determinants are constructed. Unsupported ranks, complex arithmetic,
+/// singular-reference cases with `m > 0`, and incomplete SIMD bins use the existing scalar
+/// prepared evaluator without changing the matrix-element definition.
 /// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates shared by every pair in the batch.
-/// - `l_ex`: Bra excitations, one for each requested matrix element.
-/// - `g_ex`: Ket excitations, one for each requested matrix element.
-/// - `scratch`: Scratch storage used by single-pair fallback evaluations.
+/// - `w`: Same-spin reference-pair Wick intermediates shared by every pair in the stream.
+/// - `pairs`: Borrowed excitation pairs with cached total ranks, phases and output positions.
+/// - `scratch`: Scratch storage used by scalar-tail and unsupported-rank fallback evaluations.
 /// - `tol`: Numerical tolerance used by determinant and adjugate-transpose fallbacks.
-/// - `overlap`: Output same-spin overlaps in the same order as the excitation slices.
-/// - `fock`: Output same-spin generalised-Fock matrix elements in the same order.
+/// - `overlap`: Final same-spin overlap output row.
+/// - `fock`: Final same-spin generalised-Fock output row.
 /// # Returns
-/// - `()`: Fills `overlap` and `fock`.
-/// # Panics
-/// - Panics if the excitation and output slices do not have identical lengths.
+/// - `()`: Writes phased matrix elements directly to `overlap` and `fock`.
 #[inline(always)]
-pub(crate) fn xw_f_overlap_prepared_batch<T: NOCIScalar>(
+pub(crate) fn xw_f_overlap_prepared_batch<'a, T, I>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
+    pairs: I,
     scratch: &mut WickScratch<T>,
     tol: f64,
     overlap: &mut [T],
     fock: &mut [T],
-) {
-    assert_eq!(l_ex.len(), g_ex.len());
-    assert_eq!(l_ex.len(), overlap.len());
-    assert_eq!(l_ex.len(), fock.len());
-
-    if l_ex.is_empty() {
-        return;
-    }
+) where
+    T: NOCIScalar,
+    I: IntoIterator<Item = WickBatchPair<'a>>,
+{
+    let mut pairs = pairs.into_iter();
 
     #[cfg(target_arch = "x86_64")]
     if TypeId::of::<T>() == TypeId::of::<f64>() && w.m == 0 {
@@ -111,21 +143,22 @@ pub(crate) fn xw_f_overlap_prepared_batch<T: NOCIScalar>(
                 std::slice::from_raw_parts_mut(fock.as_mut_ptr().cast::<f64>(), fock.len());
 
             if is_x86_feature_detected!("avx512f") {
-                xw_f_overlap_m0_prepared_f64x8(w, l_ex, g_ex, scratch, tol, overlap_f64, fock_f64);
+                xw_f_overlap_m0_prepared_f64x8(w, &mut pairs, scratch, tol, overlap_f64, fock_f64);
                 return;
             }
 
             if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                xw_f_overlap_m0_prepared_f64x4(w, l_ex, g_ex, scratch, tol, overlap_f64, fock_f64);
+                xw_f_overlap_m0_prepared_f64x4(w, &mut pairs, scratch, tol, overlap_f64, fock_f64);
                 return;
             }
         }
     }
 
-    for i in 0..l_ex.len() {
-        let (s, f) = xw_f_overlap_prepared(w, &l_ex[i], &g_ex[i], scratch, tol);
-        overlap[i] = s;
-        fock[i] = f;
+    for pair in pairs {
+        let (s, f) = xw_f_overlap_prepared(w, pair.l_ex, pair.g_ex, scratch, tol);
+        let phase = T::from_real(pair.phase);
+        overlap[pair.output] = phase * s;
+        fock[pair.output] = phase * f;
     }
 }
 
@@ -168,151 +201,187 @@ fn xw_f_overlap_m0_prepared<T: NOCIScalar>(
     })
 }
 
-/// Evaluate real `m = 0` prepared matrix elements in four-pair AVX2/FMA batches.
-/// Pair indices are binned by total excitation rank `L = L_x + L_w`; complete bins for
-/// `L = 1,\ldots,4` use the corresponding `f64x4` kernel and all remaining pairs use the
-/// existing single-pair prepared evaluator.
+/// Evaluate a stream of real `m = 0` prepared matrix elements in four-pair AVX2/FMA batches.
+/// Only four excitation descriptors per supported rank are retained at once; complete bins use
+/// the corresponding fixed-rank kernel and write phased values directly to the final output row.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the requested matrix elements.
-/// - `g_ex`: Ket excitations for the requested matrix elements.
+/// - `pairs`: Stream of borrowed excitation pairs with cached rank, phase and output position.
 /// - `scratch`: Scratch storage used by scalar-tail and unsupported-rank fallbacks.
 /// - `tol`: Numerical tolerance used by fallback determinant evaluation.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `overlap`: Final real overlap output row.
+/// - `fock`: Final real generalised-Fock output row.
 /// # Returns
 /// - `()`: Fills `overlap` and `fock`.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for both `avx2` and `fma`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_f_overlap_m0_prepared_f64x4<T: NOCIScalar>(
+unsafe fn xw_f_overlap_m0_prepared_f64x4<'a, T, I>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
+    pairs: &mut I,
     scratch: &mut WickScratch<T>,
     tol: f64,
     overlap: &mut [f64],
     fock: &mut [f64],
-) {
+) where
+    T: NOCIScalar,
+    I: Iterator<Item = WickBatchPair<'a>>,
+{
     unsafe {
-        let mut bins = [[0usize; 4]; 5];
+        let empty_ex = ExcitationSpin { holes: 0, parts: 0 };
+        let mut l_bins = [[empty_ex; 4]; 5];
+        let mut g_bins = [[empty_ex; 4]; 5];
+        let mut phases = [[1.0f64; 4]; 5];
+        let mut outputs = [[0usize; 4]; 5];
         let mut counts = [0usize; 5];
+        let indices = [0usize, 1, 2, 3];
 
-        for i in 0..l_ex.len() {
-            let l = l_ex[i].holes.count_ones() as usize + g_ex[i].holes.count_ones() as usize;
-
+        for pair in pairs {
+            let l = pair.rank;
             if (1..=4).contains(&l) {
                 let count = counts[l];
-                bins[l][count] = i;
+                l_bins[l][count] = *pair.l_ex;
+                g_bins[l][count] = *pair.g_ex;
+                phases[l][count] = pair.phase;
+                outputs[l][count] = pair.output;
                 counts[l] += 1;
 
                 if counts[l] == 4 {
+                    let mut s = [0.0f64; 4];
+                    let mut f = [0.0f64; 4];
                     match l {
-                        1 => {
-                            xw_f_overlap_m0_l1_prepared_f64x4(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
-                        2 => {
-                            xw_f_overlap_m0_l2_prepared_f64x4(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
-                        3 => {
-                            xw_f_overlap_m0_l3_prepared_f64x4(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
-                        4 => {
-                            xw_f_overlap_m0_l4_prepared_f64x4(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
+                        1 => xw_f_overlap_m0_l1_prepared_f64x4(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
+                        2 => xw_f_overlap_m0_l2_prepared_f64x4(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
+                        3 => xw_f_overlap_m0_l3_prepared_f64x4(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
+                        4 => xw_f_overlap_m0_l4_prepared_f64x4(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
                         _ => unreachable!(),
+                    }
+
+                    for lane in 0..4 {
+                        let output = outputs[l][lane];
+                        let phase = phases[l][lane];
+                        overlap[output] = phase * s[lane];
+                        fock[output] = phase * f[lane];
                     }
                     counts[l] = 0;
                 }
             } else {
-                let (s, f) = xw_f_overlap_prepared(w, &l_ex[i], &g_ex[i], scratch, tol);
-                overlap[i] = *std::ptr::from_ref(&s).cast::<f64>();
-                fock[i] = *std::ptr::from_ref(&f).cast::<f64>();
+                let (s, f) = xw_f_overlap_prepared(w, pair.l_ex, pair.g_ex, scratch, tol);
+                overlap[pair.output] = pair.phase * *std::ptr::from_ref(&s).cast::<f64>();
+                fock[pair.output] = pair.phase * *std::ptr::from_ref(&f).cast::<f64>();
             }
         }
 
         for l in 1..=4 {
             for pos in 0..counts[l] {
-                let i = bins[l][pos];
-                let (s, f) = xw_f_overlap_prepared(w, &l_ex[i], &g_ex[i], scratch, tol);
-                overlap[i] = *std::ptr::from_ref(&s).cast::<f64>();
-                fock[i] = *std::ptr::from_ref(&f).cast::<f64>();
+                let (s, f) =
+                    xw_f_overlap_prepared(w, &l_bins[l][pos], &g_bins[l][pos], scratch, tol);
+                let output = outputs[l][pos];
+                let phase = phases[l][pos];
+                overlap[output] = phase * *std::ptr::from_ref(&s).cast::<f64>();
+                fock[output] = phase * *std::ptr::from_ref(&f).cast::<f64>();
             }
         }
     }
 }
 
-/// Evaluate real `m = 0` prepared matrix elements in eight-pair AVX-512 batches.
-/// Pair indices are binned by total excitation rank `L = L_x + L_w`; complete bins for
-/// `L = 1,\ldots,4` use the corresponding `f64x8` kernel and all remaining pairs use the
-/// existing single-pair prepared evaluator.
+/// Evaluate a stream of real `m = 0` prepared matrix elements in eight-pair AVX-512 batches.
+/// Only eight excitation descriptors per supported rank are retained at once; complete bins use
+/// the corresponding fixed-rank kernel and write phased values directly to the final output row.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the requested matrix elements.
-/// - `g_ex`: Ket excitations for the requested matrix elements.
+/// - `pairs`: Stream of borrowed excitation pairs with cached rank, phase and output position.
 /// - `scratch`: Scratch storage used by scalar-tail and unsupported-rank fallbacks.
 /// - `tol`: Numerical tolerance used by fallback determinant evaluation.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `overlap`: Final real overlap output row.
+/// - `fock`: Final real generalised-Fock output row.
 /// # Returns
 /// - `()`: Fills `overlap` and `fock`.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `avx512f`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_f_overlap_m0_prepared_f64x8<T: NOCIScalar>(
+unsafe fn xw_f_overlap_m0_prepared_f64x8<'a, T, I>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
+    pairs: &mut I,
     scratch: &mut WickScratch<T>,
     tol: f64,
     overlap: &mut [f64],
     fock: &mut [f64],
-) {
+) where
+    T: NOCIScalar,
+    I: Iterator<Item = WickBatchPair<'a>>,
+{
     unsafe {
-        let mut bins = [[0usize; 8]; 5];
+        let empty_ex = ExcitationSpin { holes: 0, parts: 0 };
+        let mut l_bins = [[empty_ex; 8]; 5];
+        let mut g_bins = [[empty_ex; 8]; 5];
+        let mut phases = [[1.0f64; 8]; 5];
+        let mut outputs = [[0usize; 8]; 5];
         let mut counts = [0usize; 5];
+        let indices = [0usize, 1, 2, 3, 4, 5, 6, 7];
 
-        for i in 0..l_ex.len() {
-            let l = l_ex[i].holes.count_ones() as usize + g_ex[i].holes.count_ones() as usize;
-
+        for pair in pairs {
+            let l = pair.rank;
             if (1..=4).contains(&l) {
                 let count = counts[l];
-                bins[l][count] = i;
+                l_bins[l][count] = *pair.l_ex;
+                g_bins[l][count] = *pair.g_ex;
+                phases[l][count] = pair.phase;
+                outputs[l][count] = pair.output;
                 counts[l] += 1;
 
                 if counts[l] == 8 {
+                    let mut s = [0.0f64; 8];
+                    let mut f = [0.0f64; 8];
                     match l {
-                        1 => {
-                            xw_f_overlap_m0_l1_prepared_f64x8(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
-                        2 => {
-                            xw_f_overlap_m0_l2_prepared_f64x8(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
-                        3 => {
-                            xw_f_overlap_m0_l3_prepared_f64x8(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
-                        4 => {
-                            xw_f_overlap_m0_l4_prepared_f64x8(w, l_ex, g_ex, bins[l], overlap, fock)
-                        }
+                        1 => xw_f_overlap_m0_l1_prepared_f64x8(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
+                        2 => xw_f_overlap_m0_l2_prepared_f64x8(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
+                        3 => xw_f_overlap_m0_l3_prepared_f64x8(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
+                        4 => xw_f_overlap_m0_l4_prepared_f64x8(
+                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
+                        ),
                         _ => unreachable!(),
+                    }
+
+                    for lane in 0..8 {
+                        let output = outputs[l][lane];
+                        let phase = phases[l][lane];
+                        overlap[output] = phase * s[lane];
+                        fock[output] = phase * f[lane];
                     }
                     counts[l] = 0;
                 }
             } else {
-                let (s, f) = xw_f_overlap_prepared(w, &l_ex[i], &g_ex[i], scratch, tol);
-                overlap[i] = *std::ptr::from_ref(&s).cast::<f64>();
-                fock[i] = *std::ptr::from_ref(&f).cast::<f64>();
+                let (s, f) = xw_f_overlap_prepared(w, pair.l_ex, pair.g_ex, scratch, tol);
+                overlap[pair.output] = pair.phase * *std::ptr::from_ref(&s).cast::<f64>();
+                fock[pair.output] = pair.phase * *std::ptr::from_ref(&f).cast::<f64>();
             }
         }
 
         for l in 1..=4 {
             for pos in 0..counts[l] {
-                let i = bins[l][pos];
-                let (s, f) = xw_f_overlap_prepared(w, &l_ex[i], &g_ex[i], scratch, tol);
-                overlap[i] = *std::ptr::from_ref(&s).cast::<f64>();
-                fock[i] = *std::ptr::from_ref(&f).cast::<f64>();
+                let (s, f) =
+                    xw_f_overlap_prepared(w, &l_bins[l][pos], &g_bins[l][pos], scratch, tol);
+                let output = outputs[l][pos];
+                let phase = phases[l][pos];
+                overlap[output] = phase * *std::ptr::from_ref(&s).cast::<f64>();
+                fock[output] = phase * *std::ptr::from_ref(&f).cast::<f64>();
             }
         }
     }

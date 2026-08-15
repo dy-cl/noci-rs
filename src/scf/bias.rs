@@ -36,6 +36,8 @@ pub(crate) fn metadynamics_bias(
         ob: 0u128,
         pha: 1.0,
         phb: 1.0,
+        rank_a: 0,
+        rank_b: 0,
         ca: Arc::new(Array2::zeros((nbf, nbf))),
         cb: Arc::new(Array2::zeros((nbf, nbf))),
         da: Arc::new(da.clone()),

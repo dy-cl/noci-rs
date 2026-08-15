@@ -25,7 +25,7 @@ pub(crate) use h2same::xw_h2_same;
 pub(crate) use onebody::{xw_f, xw_h1};
 pub(crate) use onebodyoverlap::xw_f_overlap;
 pub(crate) use overlap::xw_overlap_same_f64;
-pub(crate) use prepareonebodyoverlap::xw_f_overlap_prepared_batch;
+pub(crate) use prepareonebodyoverlap::{WickBatchPair, xw_f_overlap_prepared_batch};
 #[cfg(feature = "nocc")]
 pub(crate) use rdm1::xw_rdm1;
 #[cfg(feature = "nocc")]

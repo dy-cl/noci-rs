@@ -32,6 +32,8 @@ fn make_excited_state<T: NOCIScalar>(
 ) -> DetState<T> {
     let pha = excitation_phase_bits(parent_occ.0, excitation.alpha.holes, excitation.alpha.parts);
     let phb = excitation_phase_bits(parent_occ.1, excitation.beta.holes, excitation.beta.parts);
+    let rank_a = excitation.alpha.holes.count_ones() as u8;
+    let rank_b = excitation.beta.holes.count_ones() as u8;
 
     DetState {
         e: T::from_real(0.0),
@@ -39,6 +41,8 @@ fn make_excited_state<T: NOCIScalar>(
         ob: occ.1,
         pha,
         phb,
+        rank_a,
+        rank_b,
         ca: Arc::clone(&reference.ca),
         cb: Arc::clone(&reference.cb),
         da: Arc::clone(&reference.da),

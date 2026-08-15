@@ -46,6 +46,7 @@ pub use view::WicksView;
 
 // Crate-visible type re-exports.
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
+pub(crate) use eval::WickBatchPair;
 pub(crate) use scratch::WickScratchSpin;
 pub(crate) use storage::{WicksDiskMeta, WicksRma};
 pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};

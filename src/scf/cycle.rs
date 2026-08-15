@@ -318,6 +318,8 @@ pub fn scf_cycle(
                 ob: occvec_to_bits(&idx_b),
                 pha: 1.0,
                 phb: 1.0,
+                rank_a: 0,
+                rank_b: 0,
                 ca: Arc::new(ca),
                 cb: Arc::new(cb),
                 da: Arc::new(da_new),
