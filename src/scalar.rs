@@ -44,6 +44,10 @@ pub struct DetState<T: StateScalar> {
     pub rank_a: u8,
     /// Excitation rank relative to parent for spin beta electrons.
     pub rank_b: u8,
+    /// Cached hole then particle orbital indices for spin alpha, `[i0..i3,a0..a3]`.
+    pub indices_a: [u8; 8],
+    /// Cached hole then particle orbital indices for spin beta, `[i0..i3,a0..a3]`.
+    pub indices_b: [u8; 8],
     /// MO coefficients for spin alpha electrons, (nao, nao).
     pub ca: Arc<Array2<T>>,
     /// MO coefficients for spin beta electrons, (nao, nao).
@@ -83,6 +87,8 @@ impl HSCFState {
             phb: st.phb,
             rank_a: st.rank_a,
             rank_b: st.rank_b,
+            indices_a: st.indices_a,
+            indices_b: st.indices_b,
             ca: Arc::new(st.ca.mapv(|x| Complex64::new(x, 0.0))),
             cb: Arc::new(st.cb.mapv(|x| Complex64::new(x, 0.0))),
             da: Arc::new(st.da.mapv(|x| Complex64::new(x, 0.0))),

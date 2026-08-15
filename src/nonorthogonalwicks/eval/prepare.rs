@@ -544,8 +544,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 /// `(r_{L_x+k},c_{L_x+k}) = (j_k,b_k) for 0 \leq k < L_w.`
 /// `Hence the row space is V_x \cup O_w and the column space is O_x \cup V_w.`
 /// # Arguments:
-/// - `l_ex`: `Excitation defining the bra determinant generated from \langle{}^x\Psi|.`
-/// - `g_ex`: `Excitation defining the ket determinant generated from |{}^w\Psi\rangle.`
+/// - `x_ex`: `Excitation defining the bra determinant generated from \langle{}^x\Psi|.`
+/// - `w_ex`: `Excitation defining the ket determinant generated from |{}^w\Psi\rangle.`
 /// - `w`: Same-spin intermediates containing the compact occupied and virtual block dimensions.
 /// - `rows`: `Output labels in V_x \cup O_w.`
 /// - `cols`: `Output labels in O_x \cup V_w.`
@@ -553,8 +553,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 /// - `()`: Writes the ordered contraction-determinant labels into `rows` and `cols`.
 #[inline(always)]
 pub(super) fn construct_determinant_indices<T: NOCIScalar>(
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     w: &SameSpinView<'_, T>,
     rows: &mut [usize],
     cols: &mut [usize],
@@ -566,20 +566,20 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
 
-            let mut lh = l_ex.holes;
-            let mut lp = l_ex.parts;
-            let mut gh = g_ex.holes;
-            let mut gp = g_ex.parts;
+            let mut xh = x_ex.holes;
+            let mut xp = x_ex.parts;
+            let mut wh = w_ex.holes;
+            let mut wp = w_ex.parts;
 
             let mut i = 0usize;
 
             // Map the x-reference pairs to the V_x row block and O_x column block.
-            while lh != 0 {
-                let hole = lh.trailing_zeros() as usize;
-                let part = lp.trailing_zeros() as usize;
+            while xh != 0 {
+                let hole = xh.trailing_zeros() as usize;
+                let part = xp.trailing_zeros() as usize;
 
-                lh &= lh - 1;
-                lp &= lp - 1;
+                xh &= xh - 1;
+                xp &= xp - 1;
 
                 rows[i] = part - nocc;
                 cols[i] = hole;
@@ -587,12 +587,12 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             }
 
             // Append the w-reference pairs in the O_w row block and V_w column block.
-            while gh != 0 {
-                let hole = gh.trailing_zeros() as usize;
-                let part = gp.trailing_zeros() as usize;
+            while wh != 0 {
+                let hole = wh.trailing_zeros() as usize;
+                let part = wp.trailing_zeros() as usize;
 
-                gh &= gh - 1;
-                gp &= gp - 1;
+                wh &= wh - 1;
+                wp &= wp - 1;
 
                 rows[i] = nvirt + hole;
                 cols[i] = part;
@@ -600,4 +600,228 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             }
         }
     )
+}
+
+/// Construct fixed-rank `L = 1` contraction labels from decoded x- and w-excitation indices.
+/// # Arguments:
+/// - `x_rank`: Excitation rank relative to the x reference.
+/// - `w_rank`: Excitation rank relative to the w reference.
+/// - `x_indices`: Cached x hole then particle orbital indices, `[i0..i3,a0..a3]`.
+/// - `w_indices`: Cached w hole then particle orbital indices, `[j0..j3,b0..b3]`.
+/// - `w`: Same-spin intermediates containing occupied and virtual block dimensions.
+/// - `rows`: Output contraction-row labels.
+/// - `cols`: Output contraction-column labels.
+/// # Returns
+/// - `()`: Writes one ordered contraction label pair.
+#[inline(always)]
+pub(super) fn construct_determinant_indices_l1<T: NOCIScalar>(
+    x_rank: u8,
+    w_rank: u8,
+    x_indices: &[u8; 8],
+    w_indices: &[u8; 8],
+    w: &SameSpinView<'_, T>,
+    rows: &mut [usize; 1],
+    cols: &mut [usize; 1],
+) {
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
+
+    match x_rank {
+        0 => {
+            rows[0] = nvirt + usize::from(w_indices[0]);
+            cols[0] = usize::from(w_indices[4]);
+        }
+        1 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Construct fixed-rank `L = 2` contraction labels from decoded x- and w-excitation indices.
+/// # Arguments:
+/// - `x_rank`: Excitation rank relative to the x reference.
+/// - `w_rank`: Excitation rank relative to the w reference.
+/// - `x_indices`: Cached x hole then particle orbital indices, `[i0..i3,a0..a3]`.
+/// - `w_indices`: Cached w hole then particle orbital indices, `[j0..j3,b0..b3]`.
+/// - `w`: Same-spin intermediates containing occupied and virtual block dimensions.
+/// - `rows`: Output contraction-row labels.
+/// - `cols`: Output contraction-column labels.
+/// # Returns
+/// - `()`: Writes two ordered contraction label pairs.
+#[inline(always)]
+pub(super) fn construct_determinant_indices_l2<T: NOCIScalar>(
+    x_rank: u8,
+    w_rank: u8,
+    x_indices: &[u8; 8],
+    w_indices: &[u8; 8],
+    w: &SameSpinView<'_, T>,
+    rows: &mut [usize; 2],
+    cols: &mut [usize; 2],
+) {
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
+
+    match x_rank {
+        0 => {
+            rows[0] = nvirt + usize::from(w_indices[0]);
+            cols[0] = usize::from(w_indices[4]);
+            rows[1] = nvirt + usize::from(w_indices[1]);
+            cols[1] = usize::from(w_indices[5]);
+        }
+        1 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = nvirt + usize::from(w_indices[0]);
+            cols[1] = usize::from(w_indices[4]);
+        }
+        2 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = usize::from(x_indices[5]) - nocc;
+            cols[1] = usize::from(x_indices[1]);
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Construct fixed-rank `L = 3` contraction labels from decoded x- and w-excitation indices.
+/// # Arguments:
+/// - `x_rank`: Excitation rank relative to the x reference.
+/// - `w_rank`: Excitation rank relative to the w reference.
+/// - `x_indices`: Cached x hole then particle orbital indices, `[i0..i3,a0..a3]`.
+/// - `w_indices`: Cached w hole then particle orbital indices, `[j0..j3,b0..b3]`.
+/// - `w`: Same-spin intermediates containing occupied and virtual block dimensions.
+/// - `rows`: Output contraction-row labels.
+/// - `cols`: Output contraction-column labels.
+/// # Returns
+/// - `()`: Writes three ordered contraction label pairs.
+#[inline(always)]
+pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
+    x_rank: u8,
+    w_rank: u8,
+    x_indices: &[u8; 8],
+    w_indices: &[u8; 8],
+    w: &SameSpinView<'_, T>,
+    rows: &mut [usize; 3],
+    cols: &mut [usize; 3],
+) {
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
+
+    match x_rank {
+        0 => {
+            rows[0] = nvirt + usize::from(w_indices[0]);
+            cols[0] = usize::from(w_indices[4]);
+            rows[1] = nvirt + usize::from(w_indices[1]);
+            cols[1] = usize::from(w_indices[5]);
+            rows[2] = nvirt + usize::from(w_indices[2]);
+            cols[2] = usize::from(w_indices[6]);
+        }
+        1 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = nvirt + usize::from(w_indices[0]);
+            cols[1] = usize::from(w_indices[4]);
+            rows[2] = nvirt + usize::from(w_indices[1]);
+            cols[2] = usize::from(w_indices[5]);
+        }
+        2 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = usize::from(x_indices[5]) - nocc;
+            cols[1] = usize::from(x_indices[1]);
+            rows[2] = nvirt + usize::from(w_indices[0]);
+            cols[2] = usize::from(w_indices[4]);
+        }
+        3 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = usize::from(x_indices[5]) - nocc;
+            cols[1] = usize::from(x_indices[1]);
+            rows[2] = usize::from(x_indices[6]) - nocc;
+            cols[2] = usize::from(x_indices[2]);
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Construct fixed-rank `L = 4` contraction labels from decoded x- and w-excitation indices.
+/// # Arguments:
+/// - `x_rank`: Excitation rank relative to the x reference.
+/// - `w_rank`: Excitation rank relative to the w reference.
+/// - `x_indices`: Cached x hole then particle orbital indices, `[i0..i3,a0..a3]`.
+/// - `w_indices`: Cached w hole then particle orbital indices, `[j0..j3,b0..b3]`.
+/// - `w`: Same-spin intermediates containing occupied and virtual block dimensions.
+/// - `rows`: Output contraction-row labels.
+/// - `cols`: Output contraction-column labels.
+/// # Returns
+/// - `()`: Writes four ordered contraction label pairs.
+#[inline(always)]
+pub(super) fn construct_determinant_indices_l4<T: NOCIScalar>(
+    x_rank: u8,
+    w_rank: u8,
+    x_indices: &[u8; 8],
+    w_indices: &[u8; 8],
+    w: &SameSpinView<'_, T>,
+    rows: &mut [usize; 4],
+    cols: &mut [usize; 4],
+) {
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
+
+    match x_rank {
+        0 => {
+            rows[0] = nvirt + usize::from(w_indices[0]);
+            cols[0] = usize::from(w_indices[4]);
+            rows[1] = nvirt + usize::from(w_indices[1]);
+            cols[1] = usize::from(w_indices[5]);
+            rows[2] = nvirt + usize::from(w_indices[2]);
+            cols[2] = usize::from(w_indices[6]);
+            rows[3] = nvirt + usize::from(w_indices[3]);
+            cols[3] = usize::from(w_indices[7]);
+        }
+        1 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = nvirt + usize::from(w_indices[0]);
+            cols[1] = usize::from(w_indices[4]);
+            rows[2] = nvirt + usize::from(w_indices[1]);
+            cols[2] = usize::from(w_indices[5]);
+            rows[3] = nvirt + usize::from(w_indices[2]);
+            cols[3] = usize::from(w_indices[6]);
+        }
+        2 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = usize::from(x_indices[5]) - nocc;
+            cols[1] = usize::from(x_indices[1]);
+            rows[2] = nvirt + usize::from(w_indices[0]);
+            cols[2] = usize::from(w_indices[4]);
+            rows[3] = nvirt + usize::from(w_indices[1]);
+            cols[3] = usize::from(w_indices[5]);
+        }
+        3 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = usize::from(x_indices[5]) - nocc;
+            cols[1] = usize::from(x_indices[1]);
+            rows[2] = usize::from(x_indices[6]) - nocc;
+            cols[2] = usize::from(x_indices[2]);
+            rows[3] = nvirt + usize::from(w_indices[0]);
+            cols[3] = usize::from(w_indices[4]);
+        }
+        4 => {
+            rows[0] = usize::from(x_indices[4]) - nocc;
+            cols[0] = usize::from(x_indices[0]);
+            rows[1] = usize::from(x_indices[5]) - nocc;
+            cols[1] = usize::from(x_indices[1]);
+            rows[2] = usize::from(x_indices[6]) - nocc;
+            cols[2] = usize::from(x_indices[2]);
+            rows[3] = usize::from(x_indices[7]) - nocc;
+            cols[3] = usize::from(x_indices[3]);
+        }
+        _ => unreachable!(),
+    }
 }

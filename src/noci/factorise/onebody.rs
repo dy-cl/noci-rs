@@ -954,48 +954,34 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
             let target = &data.basis[tdet];
 
             if alpha {
-                let target_ex = &target.excitation.alpha;
-                let target_rank = usize::from(target.rank_a);
+                let target_ex = (&target.excitation.alpha, target.rank_a, &target.indices_a);
                 let target_phase = target.pha;
                 let pairs = source_reps.iter().enumerate().map(|(col, &sdet)| {
                     let source = &data.basis[sdet];
-                    let source_ex = &source.excitation.alpha;
-                    let (l_ex, g_ex) = if target_left {
+                    let source_ex = (&source.excitation.alpha, source.rank_a, &source.indices_a);
+                    let (x_ex, w_ex) = if target_left {
                         (target_ex, source_ex)
                     } else {
                         (source_ex, target_ex)
                     };
 
-                    WickBatchPair::new(
-                        l_ex,
-                        g_ex,
-                        target_rank + usize::from(source.rank_a),
-                        target_phase * source.pha,
-                        col,
-                    )
+                    WickBatchPair::new(x_ex, w_ex, target_phase * source.pha, col)
                 });
 
                 xw_f_overlap_prepared_batch(&pair.aa, pairs, &mut scratch.aa, tol, srow, frow);
             } else {
-                let target_ex = &target.excitation.beta;
-                let target_rank = usize::from(target.rank_b);
+                let target_ex = (&target.excitation.beta, target.rank_b, &target.indices_b);
                 let target_phase = target.phb;
                 let pairs = source_reps.iter().enumerate().map(|(col, &sdet)| {
                     let source = &data.basis[sdet];
-                    let source_ex = &source.excitation.beta;
-                    let (l_ex, g_ex) = if target_left {
+                    let source_ex = (&source.excitation.beta, source.rank_b, &source.indices_b);
+                    let (x_ex, w_ex) = if target_left {
                         (target_ex, source_ex)
                     } else {
                         (source_ex, target_ex)
                     };
 
-                    WickBatchPair::new(
-                        l_ex,
-                        g_ex,
-                        target_rank + usize::from(source.rank_b),
-                        target_phase * source.phb,
-                        col,
-                    )
+                    WickBatchPair::new(x_ex, w_ex, target_phase * source.phb, col)
                 });
 
                 xw_f_overlap_prepared_batch(&pair.bb, pairs, &mut scratch.bb, tol, srow, frow);

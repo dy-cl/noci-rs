@@ -320,6 +320,8 @@ pub fn scf_cycle(
                 phb: 1.0,
                 rank_a: 0,
                 rank_b: 0,
+                indices_a: [0; 8],
+                indices_b: [0; 8],
                 ca: Arc::new(ca),
                 cb: Arc::new(cb),
                 da: Arc::new(da_new),

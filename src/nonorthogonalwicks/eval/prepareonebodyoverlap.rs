@@ -13,6 +13,8 @@ use std::arch::x86_64::{
     _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_loadu_pd, _mm512_mul_pd,
     _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd, _mm512_sub_pd,
 };
+#[cfg(target_arch = "x86_64")]
+use std::mem::MaybeUninit;
 
 // Crate-root imports.
 use crate::ExcitationSpin;
@@ -26,7 +28,11 @@ use super::super::view::SameSpinView;
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, mix_dets_same,
 };
-use super::prepare::construct_determinant_indices;
+use super::prepare::{
+    construct_determinant_indices, construct_determinant_indices_l1,
+    construct_determinant_indices_l2, construct_determinant_indices_l3,
+    construct_determinant_indices_l4,
+};
 
 /// Prepare and evaluate the same-spin overlap and generalised-Fock matrix element between excited
 /// determinants generated from the reference pair `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
@@ -43,8 +49,8 @@ use super::prepare::construct_determinant_indices;
 /// `the required contraction determinants are constructed once before the constrained distribution sum.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
-/// - `g_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
+/// - `x_ex`: `Excitation defining the bra determinant \langle{}^x\Psi_{i\cdots}^{a\cdots}|.`
+/// - `w_ex`: `Excitation defining the ket determinant |{}^w\Psi_{j\cdots}^{b\cdots}\rangle.`
 /// - `scratch`: Scratch storage for determinant labels, generic contraction determinants and work buffers.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
@@ -52,28 +58,31 @@ use super::prepare::construct_determinant_indices;
 #[inline(always)]
 pub(crate) fn xw_f_overlap_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap, {
         if w.m == 0 {
-            xw_f_overlap_m0_prepared(w, l_ex, g_ex, scratch, tol)
+            xw_f_overlap_m0_prepared(w, x_ex, w_ex, scratch, tol)
         } else {
-            xw_f_overlap_gen_prepared(w, l_ex, g_ex, scratch, tol)
+            xw_f_overlap_gen_prepared(w, x_ex, w_ex, scratch, tol)
         }
     })
 }
 
 /// Borrowed excitation pair consumed by the prepared batched Wick evaluator.
-/// The total excitation rank and determinant phase are supplied by the caller so immutable
-/// determinant metadata is not recomputed or copied into whole-row temporary buffers.
+/// Borrowed excitation metadata for one reference side: mask, rank and decoded orbital indices.
+type WickExcitation<'a> = (&'a ExcitationSpin, u8, &'a [u8; 8]);
+
+/// Borrowed x/w excitation pair consumed by the prepared batched Wick evaluator.
+/// Complete excitation masks are retained for scalar fallback while the cached rank and decoded
+/// orbital indices feed the fixed-rank SIMD kernels without rescanning the `u128` masks.
 #[derive(Clone, Copy)]
 pub(crate) struct WickBatchPair<'a> {
-    l_ex: &'a ExcitationSpin,
-    g_ex: &'a ExcitationSpin,
-    rank: usize,
+    x_ex: WickExcitation<'a>,
+    w_ex: WickExcitation<'a>,
     phase: f64,
     output: usize,
 }
@@ -81,28 +90,35 @@ pub(crate) struct WickBatchPair<'a> {
 impl<'a> WickBatchPair<'a> {
     /// Construct one borrowed prepared-Wick batch item.
     /// # Arguments:
-    /// - `l_ex`: Bra excitation relative to its parent reference.
-    /// - `g_ex`: Ket excitation relative to its parent reference.
-    /// - `rank`: Total excitation rank `L = L_x + L_w`.
+    /// - `x_ex`: x-reference excitation mask, rank and decoded orbital indices.
+    /// - `w_ex`: w-reference excitation mask, rank and decoded orbital indices.
     /// - `phase`: Product of the bra and ket determinant excitation phases.
     /// - `output`: Output-row position receiving the matrix element.
     /// # Returns
     /// - `WickBatchPair<'a>`: Borrowed batch item.
     #[inline(always)]
     pub(crate) fn new(
-        l_ex: &'a ExcitationSpin,
-        g_ex: &'a ExcitationSpin,
-        rank: usize,
+        x_ex: (&'a ExcitationSpin, u8, &'a [u8; 8]),
+        w_ex: (&'a ExcitationSpin, u8, &'a [u8; 8]),
         phase: f64,
         output: usize,
     ) -> Self {
         Self {
-            l_ex,
-            g_ex,
-            rank,
+            x_ex,
+            w_ex,
             phase,
             output,
         }
+    }
+
+    /// Return the total contraction rank `L = L_x + L_w`.
+    /// # Arguments:
+    /// - `self`: Borrowed prepared-Wick batch item.
+    /// # Returns
+    /// - `usize`: Total excitation rank for the pair.
+    #[inline(always)]
+    fn rank(&self) -> usize {
+        usize::from(self.x_ex.1) + usize::from(self.w_ex.1)
     }
 }
 
@@ -155,7 +171,7 @@ pub(crate) fn xw_f_overlap_prepared_batch<'a, T, I>(
     }
 
     for pair in pairs {
-        let (s, f) = xw_f_overlap_prepared(w, pair.l_ex, pair.g_ex, scratch, tol);
+        let (s, f) = xw_f_overlap_prepared(w, pair.x_ex.0, pair.w_ex.0, scratch, tol);
         let phase = T::from_real(pair.phase);
         overlap[pair.output] = phase * s;
         fock[pair.output] = phase * f;
@@ -170,8 +186,8 @@ pub(crate) fn xw_f_overlap_prepared_batch<'a, T, I>(
 /// `{}^x F_0^{(0)} contributes to F.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage for determinant labels and generic work arrays.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
@@ -179,24 +195,24 @@ pub(crate) fn xw_f_overlap_prepared_batch<'a, T, I>(
 #[inline(always)]
 fn xw_f_overlap_m0_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0, {
-        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
+        let l = x_ex.holes.count_ones() as usize + w_ex.holes.count_ones() as usize;
 
         match l {
             0 => {
                 let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
                 (pref, pref * w.f0f[0])
             }
-            1 => xw_f_overlap_m0_l1_prepared(w, l_ex, g_ex, scratch),
-            2 => xw_f_overlap_m0_l2_prepared(w, l_ex, g_ex, scratch),
-            3 => xw_f_overlap_m0_l3_prepared(w, l_ex, g_ex, scratch, tol),
-            4 => xw_f_overlap_m0_l4_prepared(w, l_ex, g_ex, scratch, tol),
-            _ => xw_f_overlap_m0_gen_prepared(w, l_ex, g_ex, scratch, l, tol),
+            1 => xw_f_overlap_m0_l1_prepared(w, x_ex, w_ex, scratch),
+            2 => xw_f_overlap_m0_l2_prepared(w, x_ex, w_ex, scratch),
+            3 => xw_f_overlap_m0_l3_prepared(w, x_ex, w_ex, scratch, tol),
+            4 => xw_f_overlap_m0_l4_prepared(w, x_ex, w_ex, scratch, tol),
+            _ => xw_f_overlap_m0_gen_prepared(w, x_ex, w_ex, scratch, l, tol),
         }
     })
 }
@@ -229,40 +245,42 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4<'a, T, I>(
     I: Iterator<Item = WickBatchPair<'a>>,
 {
     unsafe {
-        let empty_ex = ExcitationSpin { holes: 0, parts: 0 };
-        let mut l_bins = [[empty_ex; 4]; 5];
-        let mut g_bins = [[empty_ex; 4]; 5];
+        let mut x_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 4]; 5];
+        let mut w_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 4]; 5];
         let mut phases = [[1.0f64; 4]; 5];
         let mut outputs = [[0usize; 4]; 5];
         let mut counts = [0usize; 5];
-        let indices = [0usize, 1, 2, 3];
 
         for pair in pairs {
-            let l = pair.rank;
+            let l = pair.rank();
             if (1..=4).contains(&l) {
                 let count = counts[l];
-                l_bins[l][count] = *pair.l_ex;
-                g_bins[l][count] = *pair.g_ex;
+                x_bins[l][count].write(pair.x_ex);
+                w_bins[l][count].write(pair.w_ex);
                 phases[l][count] = pair.phase;
                 outputs[l][count] = pair.output;
                 counts[l] += 1;
 
                 if counts[l] == 4 {
+                    let x_ex = [
+                        x_bins[l][0].assume_init_read(),
+                        x_bins[l][1].assume_init_read(),
+                        x_bins[l][2].assume_init_read(),
+                        x_bins[l][3].assume_init_read(),
+                    ];
+                    let w_ex = [
+                        w_bins[l][0].assume_init_read(),
+                        w_bins[l][1].assume_init_read(),
+                        w_bins[l][2].assume_init_read(),
+                        w_bins[l][3].assume_init_read(),
+                    ];
                     let mut s = [0.0f64; 4];
                     let mut f = [0.0f64; 4];
                     match l {
-                        1 => xw_f_overlap_m0_l1_prepared_f64x4(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
-                        2 => xw_f_overlap_m0_l2_prepared_f64x4(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
-                        3 => xw_f_overlap_m0_l3_prepared_f64x4(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
-                        4 => xw_f_overlap_m0_l4_prepared_f64x4(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
+                        1 => xw_f_overlap_m0_l1_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
+                        2 => xw_f_overlap_m0_l2_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
+                        3 => xw_f_overlap_m0_l3_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
+                        4 => xw_f_overlap_m0_l4_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
                         _ => unreachable!(),
                     }
 
@@ -275,7 +293,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4<'a, T, I>(
                     counts[l] = 0;
                 }
             } else {
-                let (s, f) = xw_f_overlap_prepared(w, pair.l_ex, pair.g_ex, scratch, tol);
+                let (s, f) = xw_f_overlap_prepared(w, pair.x_ex.0, pair.w_ex.0, scratch, tol);
                 overlap[pair.output] = pair.phase * *std::ptr::from_ref(&s).cast::<f64>();
                 fock[pair.output] = pair.phase * *std::ptr::from_ref(&f).cast::<f64>();
             }
@@ -283,8 +301,9 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4<'a, T, I>(
 
         for l in 1..=4 {
             for pos in 0..counts[l] {
-                let (s, f) =
-                    xw_f_overlap_prepared(w, &l_bins[l][pos], &g_bins[l][pos], scratch, tol);
+                let x_ex = x_bins[l][pos].assume_init_read();
+                let w_ex = w_bins[l][pos].assume_init_read();
+                let (s, f) = xw_f_overlap_prepared(w, x_ex.0, w_ex.0, scratch, tol);
                 let output = outputs[l][pos];
                 let phase = phases[l][pos];
                 overlap[output] = phase * *std::ptr::from_ref(&s).cast::<f64>();
@@ -322,40 +341,50 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8<'a, T, I>(
     I: Iterator<Item = WickBatchPair<'a>>,
 {
     unsafe {
-        let empty_ex = ExcitationSpin { holes: 0, parts: 0 };
-        let mut l_bins = [[empty_ex; 8]; 5];
-        let mut g_bins = [[empty_ex; 8]; 5];
+        let mut x_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 8]; 5];
+        let mut w_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 8]; 5];
         let mut phases = [[1.0f64; 8]; 5];
         let mut outputs = [[0usize; 8]; 5];
         let mut counts = [0usize; 5];
-        let indices = [0usize, 1, 2, 3, 4, 5, 6, 7];
 
         for pair in pairs {
-            let l = pair.rank;
+            let l = pair.rank();
             if (1..=4).contains(&l) {
                 let count = counts[l];
-                l_bins[l][count] = *pair.l_ex;
-                g_bins[l][count] = *pair.g_ex;
+                x_bins[l][count].write(pair.x_ex);
+                w_bins[l][count].write(pair.w_ex);
                 phases[l][count] = pair.phase;
                 outputs[l][count] = pair.output;
                 counts[l] += 1;
 
                 if counts[l] == 8 {
+                    let x_ex = [
+                        x_bins[l][0].assume_init_read(),
+                        x_bins[l][1].assume_init_read(),
+                        x_bins[l][2].assume_init_read(),
+                        x_bins[l][3].assume_init_read(),
+                        x_bins[l][4].assume_init_read(),
+                        x_bins[l][5].assume_init_read(),
+                        x_bins[l][6].assume_init_read(),
+                        x_bins[l][7].assume_init_read(),
+                    ];
+                    let w_ex = [
+                        w_bins[l][0].assume_init_read(),
+                        w_bins[l][1].assume_init_read(),
+                        w_bins[l][2].assume_init_read(),
+                        w_bins[l][3].assume_init_read(),
+                        w_bins[l][4].assume_init_read(),
+                        w_bins[l][5].assume_init_read(),
+                        w_bins[l][6].assume_init_read(),
+                        w_bins[l][7].assume_init_read(),
+                    ];
                     let mut s = [0.0f64; 8];
                     let mut f = [0.0f64; 8];
                     match l {
-                        1 => xw_f_overlap_m0_l1_prepared_f64x8(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
-                        2 => xw_f_overlap_m0_l2_prepared_f64x8(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
-                        3 => xw_f_overlap_m0_l3_prepared_f64x8(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
-                        4 => xw_f_overlap_m0_l4_prepared_f64x8(
-                            w, &l_bins[l], &g_bins[l], indices, &mut s, &mut f,
-                        ),
+                        1 => xw_f_overlap_m0_l1_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
+                        2 => xw_f_overlap_m0_l2_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
+                        3 => xw_f_overlap_m0_l3_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
+                        4 => xw_f_overlap_m0_l4_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
                         _ => unreachable!(),
                     }
 
@@ -368,7 +397,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8<'a, T, I>(
                     counts[l] = 0;
                 }
             } else {
-                let (s, f) = xw_f_overlap_prepared(w, pair.l_ex, pair.g_ex, scratch, tol);
+                let (s, f) = xw_f_overlap_prepared(w, pair.x_ex.0, pair.w_ex.0, scratch, tol);
                 overlap[pair.output] = pair.phase * *std::ptr::from_ref(&s).cast::<f64>();
                 fock[pair.output] = pair.phase * *std::ptr::from_ref(&f).cast::<f64>();
             }
@@ -376,8 +405,9 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8<'a, T, I>(
 
         for l in 1..=4 {
             for pos in 0..counts[l] {
-                let (s, f) =
-                    xw_f_overlap_prepared(w, &l_bins[l][pos], &g_bins[l][pos], scratch, tol);
+                let x_ex = x_bins[l][pos].assume_init_read();
+                let w_ex = w_bins[l][pos].assume_init_read();
+                let (s, f) = xw_f_overlap_prepared(w, x_ex.0, w_ex.0, scratch, tol);
                 let output = outputs[l][pos];
                 let phase = phases[l][pos];
                 overlap[output] = phase * *std::ptr::from_ref(&s).cast::<f64>();
@@ -394,16 +424,16 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8<'a, T, I>(
 /// materialising `scratch.det0`.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage receiving the rank-one row and column labels.
 /// # Returns
 /// - `(T, T)`: Same-spin `(overlap, generalised-Fock matrix element)` for `L = 1` and `m = 0`.
 #[inline(always)]
 fn xw_f_overlap_m0_l1_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0_l1, {
@@ -412,8 +442,8 @@ fn xw_f_overlap_m0_l1_prepared<T: NOCIScalar>(
         scratch.cols.ensure(1);
 
         construct_determinant_indices(
-            l_ex,
-            g_ex,
+            x_ex,
+            w_ex,
             w,
             scratch.rows.as_mut_slice(),
             scratch.cols.as_mut_slice(),
@@ -438,22 +468,20 @@ fn xw_f_overlap_m0_l1_prepared<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 4 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 4 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 4 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX2/FMA`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 4],
+    x_ex: &[WickExcitation<'_>; 4],
+    w_ex: &[WickExcitation<'_>; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -469,10 +497,13 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
         let mut d = [[0.0f64; 4]; 1];
         let mut ff = [[0.0f64; 4]; 1];
         for lane in 0..4 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 1];
             let mut cols = [0usize; 1];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l1(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
         }
@@ -489,8 +520,8 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
         _mm256_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..4 {
-            overlap[indices[lane]] = overlap_lane[lane];
-            fock[indices[lane]] = fock_lane[lane];
+            overlap[lane] = overlap_lane[lane];
+            fock[lane] = fock_lane[lane];
         }
     }
 }
@@ -501,22 +532,20 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 8 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 8 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 8 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX-512`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 8],
+    x_ex: &[WickExcitation<'_>; 8],
+    w_ex: &[WickExcitation<'_>; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -532,10 +561,13 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
         let mut d = [[0.0f64; 8]; 1];
         let mut ff = [[0.0f64; 8]; 1];
         for lane in 0..8 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 1];
             let mut cols = [0usize; 1];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l1(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
         }
@@ -552,8 +584,8 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
         _mm512_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..8 {
-            overlap[indices[lane]] = overlap_lane[lane];
-            fock[indices[lane]] = fock_lane[lane];
+            overlap[lane] = overlap_lane[lane];
+            fock[lane] = fock_lane[lane];
         }
     }
 }
@@ -568,16 +600,16 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
 /// replacement determinants simultaneously with packed AVX FMA operations.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage receiving the rank-two row and column labels.
 /// # Returns
 /// - `(T, T)`: Same-spin `(overlap, generalised-Fock matrix element)` for `L = 2` and `m = 0`.
 #[inline(always)]
 fn xw_f_overlap_m0_l2_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0_l2, {
@@ -586,8 +618,8 @@ fn xw_f_overlap_m0_l2_prepared<T: NOCIScalar>(
         scratch.cols.ensure(2);
 
         construct_determinant_indices(
-            l_ex,
-            g_ex,
+            x_ex,
+            w_ex,
             w,
             scratch.rows.as_mut_slice(),
             scratch.cols.as_mut_slice(),
@@ -665,22 +697,20 @@ fn xw_f_overlap_m0_l2_prepared<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 4 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 4 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 4 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX2/FMA`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 4],
+    x_ex: &[WickExcitation<'_>; 4],
+    w_ex: &[WickExcitation<'_>; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -698,10 +728,13 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
         let mut d = [[0.0f64; 4]; 4];
         let mut ff = [[0.0f64; 4]; 4];
         for lane in 0..4 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 2];
             let mut cols = [0usize; 2];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l2(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
@@ -741,8 +774,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
         _mm256_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..4 {
-            overlap[indices[lane]] = overlap_lane[lane];
-            fock[indices[lane]] = fock_lane[lane];
+            overlap[lane] = overlap_lane[lane];
+            fock[lane] = fock_lane[lane];
         }
     }
 }
@@ -753,22 +786,20 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 8 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 8 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 8 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX-512`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 8],
+    x_ex: &[WickExcitation<'_>; 8],
+    w_ex: &[WickExcitation<'_>; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -786,10 +817,13 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
         let mut d = [[0.0f64; 8]; 4];
         let mut ff = [[0.0f64; 8]; 4];
         for lane in 0..8 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 2];
             let mut cols = [0usize; 2];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l2(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
@@ -829,8 +863,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
         _mm512_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..8 {
-            overlap[indices[lane]] = overlap_lane[lane];
-            fock[indices[lane]] = fock_lane[lane];
+            overlap[lane] = overlap_lane[lane];
+            fock[lane] = fock_lane[lane];
         }
     }
 }
@@ -846,8 +880,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
 /// path materialises the local `3 x 3` contraction determinant before applying the shared adjugate routine.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage for determinant labels and generic adjugate work arrays.
 /// - `tol`: Numerical tolerance used when evaluating the generic adjugate-transpose matrix.
 /// # Returns
@@ -855,8 +889,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
 #[inline(always)]
 fn xw_f_overlap_m0_l3_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> (T, T) {
@@ -864,8 +898,8 @@ fn xw_f_overlap_m0_l3_prepared<T: NOCIScalar>(
         scratch.ensure_same(3);
 
         construct_determinant_indices(
-            l_ex,
-            g_ex,
+            x_ex,
+            w_ex,
             w,
             scratch.rows.as_mut_slice(),
             scratch.cols.as_mut_slice(),
@@ -1009,22 +1043,20 @@ fn xw_f_overlap_m0_l3_prepared<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 4 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 4 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 4 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX2/FMA`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 4],
+    x_ex: &[WickExcitation<'_>; 4],
+    w_ex: &[WickExcitation<'_>; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -1042,10 +1074,13 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
         let mut d = [[0.0f64; 4]; 9];
         let mut ff = [[0.0f64; 4]; 9];
         for lane in 0..4 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 3];
             let mut cols = [0usize; 3];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l3(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
@@ -1182,11 +1217,11 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..4 {
             if det_lane[lane].is_finite() {
-                overlap[indices[lane]] = overlap_lane[lane];
-                fock[indices[lane]] = fock_lane[lane];
+                overlap[lane] = overlap_lane[lane];
+                fock[lane] = fock_lane[lane];
             } else {
-                overlap[indices[lane]] = 0.0;
-                fock[indices[lane]] = 0.0;
+                overlap[lane] = 0.0;
+                fock[lane] = 0.0;
             }
         }
     }
@@ -1198,22 +1233,20 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 8 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 8 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 8 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX-512`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 8],
+    x_ex: &[WickExcitation<'_>; 8],
+    w_ex: &[WickExcitation<'_>; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -1231,10 +1264,13 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
         let mut d = [[0.0f64; 8]; 9];
         let mut ff = [[0.0f64; 8]; 9];
         for lane in 0..8 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 3];
             let mut cols = [0usize; 3];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l3(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
@@ -1371,11 +1407,11 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..8 {
             if det_lane[lane].is_finite() {
-                overlap[indices[lane]] = overlap_lane[lane];
-                fock[indices[lane]] = fock_lane[lane];
+                overlap[lane] = overlap_lane[lane];
+                fock[lane] = fock_lane[lane];
             } else {
-                overlap[indices[lane]] = 0.0;
-                fock[indices[lane]] = 0.0;
+                overlap[lane] = 0.0;
+                fock[lane] = 0.0;
             }
         }
     }
@@ -1392,8 +1428,8 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
 /// path materialises the local `4 x 4` contraction determinant before applying the shared adjugate routine.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage for determinant labels and generic adjugate work arrays.
 /// - `tol`: Numerical tolerance used when evaluating the generic adjugate-transpose matrix.
 /// # Returns
@@ -1401,8 +1437,8 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
 #[inline(always)]
 fn xw_f_overlap_m0_l4_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> (T, T) {
@@ -1410,8 +1446,8 @@ fn xw_f_overlap_m0_l4_prepared<T: NOCIScalar>(
         scratch.ensure_same(4);
 
         construct_determinant_indices(
-            l_ex,
-            g_ex,
+            x_ex,
+            w_ex,
             w,
             scratch.rows.as_mut_slice(),
             scratch.cols.as_mut_slice(),
@@ -1654,24 +1690,21 @@ fn xw_f_overlap_m0_l4_prepared<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 4 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 4 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 4 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX2/FMA`.
-/// - Every entry in `indices` must address valid elements of `l_ex`, `g_ex`, `overlap`, and `fock`.
-/// - Excitation labels must define valid contraction indices for the dimensions stored in `w`.
+/// - Cached excitation labels must define valid contraction indices for the dimensions stored in `w`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 4],
+    x_ex: &[WickExcitation<'_>; 4],
+    w_ex: &[WickExcitation<'_>; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -1695,11 +1728,13 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
         let mut d = [[0.0f64; 4]; 16];
 
         for lane in 0..4 {
-            let i = *indices.get_unchecked(lane);
-
-            construct_determinant_indices(
-                l_ex.get_unchecked(i),
-                g_ex.get_unchecked(i),
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
+            construct_determinant_indices_l4(
+                x_data.1,
+                w_data.1,
+                x_data.2,
+                w_data.2,
                 w,
                 &mut rows[lane],
                 &mut cols[lane],
@@ -2329,14 +2364,12 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
 
         for lane in 0..4 {
-            let i = *indices.get_unchecked(lane);
-
             if det_lane[lane].is_finite() {
-                *overlap.get_unchecked_mut(i) = overlap_lane[lane];
-                *fock.get_unchecked_mut(i) = fock_lane[lane];
+                *overlap.get_unchecked_mut(lane) = overlap_lane[lane];
+                *fock.get_unchecked_mut(lane) = fock_lane[lane];
             } else {
-                *overlap.get_unchecked_mut(i) = 0.0;
-                *fock.get_unchecked_mut(i) = 0.0;
+                *overlap.get_unchecked_mut(lane) = 0.0;
+                *fock.get_unchecked_mut(lane) = 0.0;
             }
         }
     }
@@ -2348,22 +2381,20 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
 /// horizontal reductions between pairs.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `l_ex`: Bra excitations for the enclosing batch.
-/// - `g_ex`: Ket excitations for the enclosing batch.
-/// - `indices`: Positions of the 8 equal-rank pairs within the enclosing batch.
-/// - `overlap`: Real overlap output slice.
-/// - `fock`: Real generalised-Fock output slice.
+/// - `x_ex`: 8 x-reference excitations with cached ranks and decoded orbital indices.
+/// - `w_ex`: 8 w-reference excitations with cached ranks and decoded orbital indices.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements at `indices`.
+/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
 /// - The caller must ensure `T = f64` and CPU support for `AVX-512`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &[ExcitationSpin],
-    g_ex: &[ExcitationSpin],
-    indices: [usize; 8],
+    x_ex: &[WickExcitation<'_>; 8],
+    w_ex: &[WickExcitation<'_>; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -2381,10 +2412,13 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         let mut d = [[0.0f64; 8]; 16];
         let mut ff = [[0.0f64; 8]; 16];
         for lane in 0..8 {
-            let i = indices[lane];
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 4];
             let mut cols = [0usize; 4];
-            construct_determinant_indices(&l_ex[i], &g_ex[i], w, &mut rows, &mut cols);
+            construct_determinant_indices_l4(
+                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+            );
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
@@ -2989,11 +3023,11 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
         for lane in 0..8 {
             if det_lane[lane].is_finite() {
-                overlap[indices[lane]] = overlap_lane[lane];
-                fock[indices[lane]] = fock_lane[lane];
+                overlap[lane] = overlap_lane[lane];
+                fock[lane] = fock_lane[lane];
             } else {
-                overlap[indices[lane]] = 0.0;
-                fock[indices[lane]] = 0.0;
+                overlap[lane] = 0.0;
+                fock[lane] = 0.0;
             }
         }
     }
@@ -3008,8 +3042,8 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
 /// `determinant is evaluated separately, preserving the numerical convention of the existing evaluator.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage receiving the contraction determinant and its cofactors.
 /// - `l`: Total excitation rank `L = L_x + L_w`.
 /// - `tol`: Numerical tolerance used when evaluating the determinant and adjugate-transpose matrix.
@@ -3018,8 +3052,8 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
 #[inline(always)]
 fn xw_f_overlap_m0_gen_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     l: usize,
     tol: f64,
@@ -3030,8 +3064,8 @@ fn xw_f_overlap_m0_gen_prepared<T: NOCIScalar>(
             scratch.ensure_same(l);
 
             construct_determinant_indices(
-                l_ex,
-                g_ex,
+                x_ex,
+                w_ex,
                 w,
                 scratch.rows.as_mut_slice(),
                 scratch.cols.as_mut_slice(),
@@ -3097,8 +3131,8 @@ fn xw_f_overlap_m0_gen_prepared<T: NOCIScalar>(
 /// `m_2+\cdots+m_{L+1}=m and are accumulated into the overlap without a second distribution loop.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
+/// - `x_ex`: Excitation defining the bra determinant.
+/// - `w_ex`: Excitation defining the ket determinant.
 /// - `scratch`: Scratch storage for endpoint and mixed contraction determinants, cofactors and work buffers.
 /// - `tol`: Numerical tolerance used when evaluating determinants and adjugate-transpose matrices.
 /// # Returns
@@ -3106,18 +3140,18 @@ fn xw_f_overlap_m0_gen_prepared<T: NOCIScalar>(
 #[inline(always)]
 fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    l_ex: &ExcitationSpin,
-    g_ex: &ExcitationSpin,
+    x_ex: &ExcitationSpin,
+    w_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap_gen, {
-        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
+        let l = x_ex.holes.count_ones() as usize + w_ex.holes.count_ones() as usize;
         scratch.ensure_same(l);
 
         construct_determinant_indices(
-            l_ex,
-            g_ex,
+            x_ex,
+            w_ex,
             w,
             scratch.rows.as_mut_slice(),
             scratch.cols.as_mut_slice(),
