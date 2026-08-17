@@ -59,6 +59,8 @@ struct TransientOneBodyBlock {
     target_parent: usize,
     /// Source parent `P`.
     source_parent: usize,
+    /// Selected dense contraction order for this parent pair.
+    contraction: OneBodyContraction,
 }
 
 /// Actual determinant target in one orthogonal occupation group.
@@ -160,10 +162,22 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         target_parent,
                     )));
                 } else if matches!(storage, SNOCIStorage::None) {
-                    blocks.push(OneBodyBlock::Transient(build_transient_one_body_block(
+                    let target = &spin.parents[target_parent];
+                    let source = &spin.parents[source_parent];
+                    let contraction = select_one_body_contraction(
+                        target.areps.len(),
+                        target.breps.len(),
+                        source.areps.len(),
+                        source.breps.len(),
+                        target.entries.len(),
+                        source.entries.len(),
+                    );
+
+                    blocks.push(OneBodyBlock::Transient(TransientOneBodyBlock {
                         target_parent,
                         source_parent,
-                    )));
+                        contraction,
+                    }));
                 } else {
                     blocks.push(OneBodyBlock::Factorised(build_one_body_factor_tables(
                         &spin,
@@ -290,25 +304,26 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     scratch,
                     (worker, nworker),
                 ),
-                OneBodyBlock::Transient(block) => {
-                    let mut storage_plan =
-                        OneBodyStoragePlan::new(Path::new("."), 0, 0, SNOCIStorage::RAM);
-                    let block = build_one_body_factor_tables(
-                        &self.spin,
-                        data,
-                        &mut storage_plan,
-                        block.target_parent,
-                        block.source_parent,
-                    );
-                    self.apply_one_body_factorised(
-                        &block,
+                OneBodyBlock::Transient(block) => match block.contraction {
+                    OneBodyContraction::AFirst => self.apply_one_body_transient_a_first(
+                        block,
                         xs,
                         &mut y,
+                        data,
                         lambda,
                         scratch,
                         (worker, nworker),
-                    )
-                }
+                    ),
+                    OneBodyContraction::BFirst => self.apply_one_body_transient_b_first(
+                        block,
+                        xs,
+                        &mut y,
+                        data,
+                        lambda,
+                        scratch,
+                        (worker, nworker),
+                    ),
+                },
             }
         }
 
@@ -444,7 +459,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         }
     }
 
-    /// Apply alpha-first contraction for `Y^Q += F^alpha D (S^beta)^T + S^alpha D (F^beta+\lambda S^beta)^T`.
+    /// Apply alpha-first contraction for
+    /// `Y^Q += F^alpha D (S^beta)^T + S^alpha D (F^beta+\lambda S^beta)^T`.
     /// # Arguments:
     /// - `block`: Cached parent-pair one-body factors.
     /// - `x`: Source determinant vector.
@@ -469,61 +485,61 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let (worker, nworker) = partition;
         let (sa, fa, sb, fb) = block.factors.factors();
 
-        for a0 in (0..block.nta).step_by(512) {
-            let a1 = (a0 + 512).min(block.nta);
-            let nrow = a1 - a0;
+        scratch.first_f.clear();
+        scratch.first_s.clear();
+        scratch.first_f.resize(block.nta * block.nsb, zero);
+        scratch.first_s.resize(block.nta * block.nsb, zero);
 
-            scratch.first_f.clear();
-            scratch.first_s.clear();
-            scratch.first_f.resize(nrow * block.nsb, zero);
-            scratch.first_s.resize(nrow * block.nsb, zero);
+        scratch
+            .first_f
+            .par_chunks_mut(block.nsb)
+            .zip(scratch.first_s.par_chunks_mut(block.nsb))
+            .enumerate()
+            .for_each(|(ta, (tf, ts))| {
+                if ta % nworker != worker {
+                    return;
+                }
 
-            scratch
-                .first_f
-                .par_chunks_mut(block.nsb)
-                .zip(scratch.first_s.par_chunks_mut(block.nsb))
-                .enumerate()
-                .for_each(|(row, (tf, ts))| {
-                    let ta = a0 + row;
-                    if ta % nworker != worker {
-                        return;
+                let frow = &fa[ta * block.nsa..(ta + 1) * block.nsa];
+                let srow = &sa[ta * block.nsa..(ta + 1) * block.nsa];
+
+                for entry in &source.entries {
+                    let xe = x[entry.det];
+
+                    if xe != zero {
+                        tf[entry.b] += frow[entry.a] * xe;
+                        ts[entry.b] += srow[entry.a] * xe;
                     }
-                    let frow = &fa[ta * block.nsa..(ta + 1) * block.nsa];
-                    let srow = &sa[ta * block.nsa..(ta + 1) * block.nsa];
-                    for entry in &source.entries {
-                        let xe = x[entry.det];
-                        if xe != zero {
-                            tf[entry.b] += frow[entry.a] * xe;
-                            ts[entry.b] += srow[entry.a] * xe;
-                        }
-                    }
-                });
+                }
+            });
 
-            let updates: Vec<(usize, T)> = target
-                .entries
-                .par_iter()
-                .filter(|entry| entry.a >= a0 && entry.a < a1 && entry.a % nworker == worker)
-                .map(|entry| {
-                    let row = entry.a - a0;
-                    let tf = &scratch.first_f[row * block.nsb..(row + 1) * block.nsb];
-                    let ts = &scratch.first_s[row * block.nsb..(row + 1) * block.nsb];
-                    let sbrow = &sb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
-                    let fbrow = &fb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
-                    let mut value = zero;
-                    for b in 0..block.nsb {
-                        value += tf[b] * sbrow[b] + ts[b] * (fbrow[b] + lambda * sbrow[b]);
-                    }
-                    (entry.det, value)
-                })
-                .collect();
+        let updates: Vec<(usize, T)> = target
+            .entries
+            .par_iter()
+            .filter(|entry| entry.a % nworker == worker)
+            .map(|entry| {
+                let tf = &scratch.first_f[entry.a * block.nsb..(entry.a + 1) * block.nsb];
+                let ts = &scratch.first_s[entry.a * block.nsb..(entry.a + 1) * block.nsb];
+                let sbrow = &sb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
+                let fbrow = &fb[entry.b * block.nsb..(entry.b + 1) * block.nsb];
 
-            for (det, value) in updates {
-                y[det] += value;
-            }
+                let mut value = zero;
+
+                for b in 0..block.nsb {
+                    value += tf[b] * sbrow[b] + ts[b] * (fbrow[b] + lambda * sbrow[b]);
+                }
+
+                (entry.det, value)
+            })
+            .collect();
+
+        for (det, value) in updates {
+            y[det] += value;
         }
     }
 
-    /// Apply beta-first contraction for `Y^Q += S^alpha D (F^beta)^T + (F^alpha+\lambda S^alpha)D(S^beta)^T`.
+    /// Apply beta-first contraction for
+    /// `Y^Q += S^alpha D (F^beta)^T + (F^alpha+\lambda S^alpha)D(S^beta)^T`.
     /// # Arguments:
     /// - `block`: Cached parent-pair one-body factors.
     /// - `x`: Source determinant vector.
@@ -548,27 +564,285 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let (worker, nworker) = partition;
         let (sa, fa, sb, fb) = block.factors.factors();
 
-        for b0 in (0..block.ntb).step_by(512) {
-            let b1 = (b0 + 512).min(block.ntb);
-            let nrow = b1 - b0;
+        scratch.first_f.clear();
+        scratch.first_s.clear();
+        scratch.first_f.resize(block.ntb * block.nsa, zero);
+        scratch.first_s.resize(block.ntb * block.nsa, zero);
 
-            scratch.first_f.clear();
-            scratch.first_s.clear();
-            scratch.first_f.resize(nrow * block.nsa, zero);
-            scratch.first_s.resize(nrow * block.nsa, zero);
+        scratch
+            .first_f
+            .par_chunks_mut(block.nsa)
+            .zip(scratch.first_s.par_chunks_mut(block.nsa))
+            .enumerate()
+            .for_each(|(tb, (uf, us))| {
+                if tb % nworker != worker {
+                    return;
+                }
 
-            scratch
-                .first_f
-                .par_chunks_mut(block.nsa)
-                .zip(scratch.first_s.par_chunks_mut(block.nsa))
-                .enumerate()
-                .for_each(|(row, (uf, us))| {
-                    let tb = b0 + row;
+                let frow = &fb[tb * block.nsb..(tb + 1) * block.nsb];
+                let srow = &sb[tb * block.nsb..(tb + 1) * block.nsb];
+
+                for entry in &source.entries {
+                    let xe = x[entry.det];
+
+                    if xe != zero {
+                        uf[entry.a] += xe * frow[entry.b];
+                        us[entry.a] += xe * srow[entry.b];
+                    }
+                }
+            });
+
+        let updates: Vec<(usize, T)> = target
+            .entries
+            .par_iter()
+            .filter(|entry| entry.b % nworker == worker)
+            .map(|entry| {
+                let uf = &scratch.first_f[entry.b * block.nsa..(entry.b + 1) * block.nsa];
+                let us = &scratch.first_s[entry.b * block.nsa..(entry.b + 1) * block.nsa];
+                let sarow = &sa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
+                let farow = &fa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
+
+                let mut value = zero;
+
+                for a in 0..block.nsa {
+                    value += sarow[a] * uf[a] + (farow[a] + lambda * sarow[a]) * us[a];
+                }
+
+                (entry.det, value)
+            })
+            .collect();
+
+        for (det, value) in updates {
+            y[det] += value;
+        }
+    }
+
+    /// Apply transient alpha-first contraction without materialising same-spin factor tables.
+    /// Forms `T^F_{\bar a b} = \sum_a F^\alpha_{\bar a a} D_{ab}` and
+    /// `T^S_{\bar a b} = \sum_a S^\alpha_{\bar a a} D_{ab}` while alpha factors are generated,
+    /// then generates each beta factor row once and immediately contracts it into `Y^Q`.
+    /// # Arguments:
+    /// - `block`: Nonpersistent parent-pair metadata.
+    /// - `x`: Source determinant vector.
+    /// - `y`: Output determinant vector to accumulate.
+    /// - `data`: Shared NOCI data containing Wick intermediates.
+    /// - `lambda`: Scalar overlap shift.
+    /// - `scratch`: Reusable dense first-stage contraction buffers.
+    /// - `partition`: Worker index and worker count for target alpha rows.
+    /// # Returns
+    /// - `()`: Adds this parent-pair contribution into `y`.
+    fn apply_one_body_transient_a_first(
+        &self,
+        block: &TransientOneBodyBlock,
+        x: &[T],
+        y: &mut [T],
+        data: &NOCIData<'_, T>,
+        lambda: T,
+        scratch: &mut OneBodyScratch<T>,
+        partition: (usize, usize),
+    ) {
+        let zero = T::from_real(0.0);
+        let source = &self.spin.parents[block.source_parent];
+        let target = &self.spin.parents[block.target_parent];
+        let nta = target.areps.len();
+        let nsa = source.areps.len();
+        let ntb = target.breps.len();
+        let nsb = source.breps.len();
+        let (worker, nworker) = partition;
+
+        let (lp, gp, target_left) =
+            ordered_parent_pair(&self.spin, block.target_parent, block.source_parent);
+        let pair = data
+            .wicks
+            .expect("factorised one-body requires Wick intermediates")
+            .pair(lp, gp);
+
+        let first_len = nta
+            .checked_mul(nsb)
+            .expect("alpha-first transient intermediate length overflow");
+
+        // Retain the allocation between parent blocks. Unlike clear followed by
+        // resize, equal-sized blocks do not serially rewrite the complete buffer.
+        if scratch.first_f.len() != first_len {
+            scratch.first_f.resize(first_len, zero);
+        }
+        if scratch.first_s.len() != first_len {
+            scratch.first_s.resize(first_len, zero);
+        }
+
+        // Generate one alpha factor row per target alpha component and consume it
+        // immediately into the first-stage F and S intermediates.
+        scratch
+            .first_f
+            .par_chunks_mut(nsb)
+            .zip(scratch.first_s.par_chunks_mut(nsb))
+            .enumerate()
+            .for_each_init(
+                || (WickScratchSpin::new(), vec![zero; nsa], vec![zero; nsa]),
+                |state, (ta, (tf, ts))| {
+                    if ta % nworker != worker {
+                        return;
+                    }
+
+                    tf.fill(zero);
+                    ts.fill(zero);
+
+                    let (wick, srow, frow) = state;
+                    build_spin_one_body_factor_row(
+                        &pair,
+                        data,
+                        target.areps[ta],
+                        source.areps.as_slice(),
+                        target_left,
+                        true,
+                        wick,
+                        srow.as_mut_slice(),
+                        frow.as_mut_slice(),
+                    );
+
+                    for entry in &source.entries {
+                        let xe = x[entry.det];
+                        if xe != zero {
+                            tf[entry.b] += frow[entry.a] * xe;
+                            ts[entry.b] += srow[entry.a] * xe;
+                        }
+                    }
+                },
+            );
+
+        // A beta row is shared by every target determinant with the same beta
+        // component. Generate it once, consume it completely, then reuse the row
+        // buffers for the next component.
+        let update_groups = (0..ntb)
+            .into_par_iter()
+            .map_init(
+                || (WickScratchSpin::new(), vec![zero; nsb], vec![zero; nsb]),
+                |state, tb| {
+                    let (wick, srow, frow) = state;
+                    build_spin_one_body_factor_row(
+                        &pair,
+                        data,
+                        target.breps[tb],
+                        source.breps.as_slice(),
+                        target_left,
+                        false,
+                        wick,
+                        srow.as_mut_slice(),
+                        frow.as_mut_slice(),
+                    );
+
+                    let mut updates = Vec::with_capacity(target.entries_by_b[tb].len());
+
+                    for &det in &target.entries_by_b[tb] {
+                        let ta = self.spin.aids[det];
+                        if ta % nworker != worker {
+                            continue;
+                        }
+
+                        let tf = &scratch.first_f[ta * nsb..(ta + 1) * nsb];
+                        let ts = &scratch.first_s[ta * nsb..(ta + 1) * nsb];
+                        let mut value = zero;
+
+                        for b in 0..nsb {
+                            value += tf[b] * srow[b] + ts[b] * (frow[b] + lambda * srow[b]);
+                        }
+
+                        updates.push((det, value));
+                    }
+
+                    updates
+                },
+            )
+            .collect::<Vec<_>>();
+
+        for updates in update_groups {
+            for (det, value) in updates {
+                y[det] += value;
+            }
+        }
+    }
+
+    /// Apply transient beta-first contraction without materialising same-spin factor tables.
+    /// Forms `U^F_{a\bar b} = \sum_b D_{ab} F^\beta_{\bar b b}` and
+    /// `U^S_{a\bar b} = \sum_b D_{ab} S^\beta_{\bar b b}` while beta factors are generated,
+    /// then generates each alpha factor row once and immediately contracts it into `Y^Q`.
+    /// # Arguments:
+    /// - `block`: Nonpersistent parent-pair metadata.
+    /// - `x`: Source determinant vector.
+    /// - `y`: Output determinant vector to accumulate.
+    /// - `data`: Shared NOCI data containing Wick intermediates.
+    /// - `lambda`: Scalar overlap shift.
+    /// - `scratch`: Reusable dense first-stage contraction buffers.
+    /// - `partition`: Worker index and worker count for target beta rows.
+    /// # Returns
+    /// - `()`: Adds this parent-pair contribution into `y`.
+    fn apply_one_body_transient_b_first(
+        &self,
+        block: &TransientOneBodyBlock,
+        x: &[T],
+        y: &mut [T],
+        data: &NOCIData<'_, T>,
+        lambda: T,
+        scratch: &mut OneBodyScratch<T>,
+        partition: (usize, usize),
+    ) {
+        let zero = T::from_real(0.0);
+        let source = &self.spin.parents[block.source_parent];
+        let target = &self.spin.parents[block.target_parent];
+        let nta = target.areps.len();
+        let nsa = source.areps.len();
+        let ntb = target.breps.len();
+        let nsb = source.breps.len();
+        let (worker, nworker) = partition;
+
+        let (lp, gp, target_left) =
+            ordered_parent_pair(&self.spin, block.target_parent, block.source_parent);
+        let pair = data
+            .wicks
+            .expect("factorised one-body requires Wick intermediates")
+            .pair(lp, gp);
+
+        let first_len = ntb
+            .checked_mul(nsa)
+            .expect("beta-first transient intermediate length overflow");
+
+        if scratch.first_f.len() != first_len {
+            scratch.first_f.resize(first_len, zero);
+        }
+        if scratch.first_s.len() != first_len {
+            scratch.first_s.resize(first_len, zero);
+        }
+
+        // Generate one beta factor row per target beta component and consume it
+        // immediately into the first-stage F and S intermediates.
+        scratch
+            .first_f
+            .par_chunks_mut(nsa)
+            .zip(scratch.first_s.par_chunks_mut(nsa))
+            .enumerate()
+            .for_each_init(
+                || (WickScratchSpin::new(), vec![zero; nsb], vec![zero; nsb]),
+                |state, (tb, (uf, us))| {
                     if tb % nworker != worker {
                         return;
                     }
-                    let frow = &fb[tb * block.nsb..(tb + 1) * block.nsb];
-                    let srow = &sb[tb * block.nsb..(tb + 1) * block.nsb];
+
+                    uf.fill(zero);
+                    us.fill(zero);
+
+                    let (wick, srow, frow) = state;
+                    build_spin_one_body_factor_row(
+                        &pair,
+                        data,
+                        target.breps[tb],
+                        source.breps.as_slice(),
+                        target_left,
+                        false,
+                        wick,
+                        srow.as_mut_slice(),
+                        frow.as_mut_slice(),
+                    );
+
                     for entry in &source.entries {
                         let xe = x[entry.det];
                         if xe != zero {
@@ -576,26 +850,54 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                             us[entry.a] += xe * srow[entry.b];
                         }
                     }
-                });
+                },
+            );
 
-            let updates: Vec<(usize, T)> = target
-                .entries
-                .par_iter()
-                .filter(|entry| entry.b >= b0 && entry.b < b1 && entry.b % nworker == worker)
-                .map(|entry| {
-                    let row = entry.b - b0;
-                    let uf = &scratch.first_f[row * block.nsa..(row + 1) * block.nsa];
-                    let us = &scratch.first_s[row * block.nsa..(row + 1) * block.nsa];
-                    let sarow = &sa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
-                    let farow = &fa[entry.a * block.nsa..(entry.a + 1) * block.nsa];
-                    let mut value = zero;
-                    for a in 0..block.nsa {
-                        value += sarow[a] * uf[a] + (farow[a] + lambda * sarow[a]) * us[a];
+        // Generate each alpha factor row once and immediately consume it for all
+        // target determinants sharing that alpha component.
+        let update_groups = (0..nta)
+            .into_par_iter()
+            .map_init(
+                || (WickScratchSpin::new(), vec![zero; nsa], vec![zero; nsa]),
+                |state, ta| {
+                    let (wick, srow, frow) = state;
+                    build_spin_one_body_factor_row(
+                        &pair,
+                        data,
+                        target.areps[ta],
+                        source.areps.as_slice(),
+                        target_left,
+                        true,
+                        wick,
+                        srow.as_mut_slice(),
+                        frow.as_mut_slice(),
+                    );
+
+                    let mut updates = Vec::with_capacity(target.entries_by_a[ta].len());
+
+                    for &det in &target.entries_by_a[ta] {
+                        let tb = self.spin.bids[det];
+                        if tb % nworker != worker {
+                            continue;
+                        }
+
+                        let uf = &scratch.first_f[tb * nsa..(tb + 1) * nsa];
+                        let us = &scratch.first_s[tb * nsa..(tb + 1) * nsa];
+                        let mut value = zero;
+
+                        for a in 0..nsa {
+                            value += srow[a] * uf[a] + (frow[a] + lambda * srow[a]) * us[a];
+                        }
+
+                        updates.push((det, value));
                     }
-                    (entry.det, value)
-                })
-                .collect();
 
+                    updates
+                },
+            )
+            .collect::<Vec<_>>();
+
+        for updates in update_groups {
             for (det, value) in updates {
                 y[det] += value;
             }
@@ -636,16 +938,16 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     let nb = ntb
         .checked_mul(nsb)
         .expect("beta one-body factor length overflow");
+
     let mut factors = storage_plan.allocate::<T>(target_parent, source_parent, na, nb);
 
-    for row0 in (0..nta).step_by(512) {
-        let row1 = (row0 + 512).min(nta);
+    {
         let out = factors.alpha_mut();
         build_spin_one_body_factors(
             &pair,
             data,
             (target.areps.as_slice(), source.areps.as_slice()),
-            row0..row1,
+            0..nta,
             target_left,
             true,
             out,
@@ -653,14 +955,13 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     }
     factors.flush();
 
-    for row0 in (0..ntb).step_by(512) {
-        let row1 = (row0 + 512).min(ntb);
+    {
         let out = factors.beta_mut();
         build_spin_one_body_factors(
             &pair,
             data,
             (target.breps.as_slice(), source.breps.as_slice()),
-            row0..row1,
+            0..ntb,
             target_left,
             false,
             out,
@@ -686,22 +987,6 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
         nsb,
         contraction,
         factors,
-    }
-}
-
-/// Build nonpersistent one-body factor metadata for parent pair `QP`.
-/// # Arguments:
-/// - `target_parent`: Target parent `Q`.
-/// - `source_parent`: Source parent `P`.
-/// # Returns
-/// - `TransientOneBodyBlock`: Parent-pair metadata for regenerated factor tables.
-fn build_transient_one_body_block(
-    target_parent: usize,
-    source_parent: usize,
-) -> TransientOneBodyBlock {
-    TransientOneBodyBlock {
-        target_parent,
-        source_parent,
     }
 }
 
@@ -951,42 +1236,79 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
         .zip(out.1[row0 * nsource..row1 * nsource].par_chunks_mut(nsource))
         .zip(target_reps[row0..row1].par_iter())
         .for_each_init(WickScratchSpin::new, |scratch, ((srow, frow), &tdet)| {
-            let target = &data.basis[tdet];
-
-            if alpha {
-                let target_ex = (&target.excitation.alpha, target.rank_a, &target.indices_a);
-                let target_phase = target.pha;
-                let pairs = source_reps.iter().enumerate().map(|(col, &sdet)| {
-                    let source = &data.basis[sdet];
-                    let source_ex = (&source.excitation.alpha, source.rank_a, &source.indices_a);
-                    let (x_ex, w_ex) = if target_left {
-                        (target_ex, source_ex)
-                    } else {
-                        (source_ex, target_ex)
-                    };
-
-                    WickBatchPair::new(x_ex, w_ex, target_phase * source.pha, col)
-                });
-
-                xw_f_overlap_prepared_batch(&pair.aa, pairs, &mut scratch.aa, tol, srow, frow);
-            } else {
-                let target_ex = (&target.excitation.beta, target.rank_b, &target.indices_b);
-                let target_phase = target.phb;
-                let pairs = source_reps.iter().enumerate().map(|(col, &sdet)| {
-                    let source = &data.basis[sdet];
-                    let source_ex = (&source.excitation.beta, source.rank_b, &source.indices_b);
-                    let (x_ex, w_ex) = if target_left {
-                        (target_ex, source_ex)
-                    } else {
-                        (source_ex, target_ex)
-                    };
-
-                    WickBatchPair::new(x_ex, w_ex, target_phase * source.phb, col)
-                });
-
-                xw_f_overlap_prepared_batch(&pair.bb, pairs, &mut scratch.bb, tol, srow, frow);
-            }
+            build_spin_one_body_factor_row(
+                pair,
+                data,
+                tdet,
+                source_reps,
+                target_left,
+                alpha,
+                scratch,
+                srow,
+                frow,
+            );
         });
+}
+
+/// Build one same-spin `S` and `F` factor row from prepared Wick pair batches.
+/// # Arguments:
+/// - `pair`: Wick intermediates for the ordered parent pair.
+/// - `data`: Shared NOCI determinant data.
+/// - `target_det`: Representative determinant defining the target spin component.
+/// - `source_reps`: Representative determinants for all source spin components.
+/// - `target_left`: Whether the target determinant belongs to the left Wick reference.
+/// - `alpha`: Whether to evaluate alpha-alpha or beta-beta factors.
+/// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
+/// - `srow`: Output same-spin overlap factor row.
+/// - `frow`: Output same-spin generalised-Fock factor row.
+/// # Returns
+/// - `()`: Fills `srow` and `frow` for the target spin component.
+fn build_spin_one_body_factor_row<T: NOCIScalar>(
+    pair: &WicksPairView<'_, T>,
+    data: &NOCIData<'_, T>,
+    target_det: usize,
+    source_reps: &[usize],
+    target_left: bool,
+    alpha: bool,
+    scratch: &mut WickScratchSpin<T>,
+    srow: &mut [T],
+    frow: &mut [T],
+) {
+    let target = &data.basis[target_det];
+
+    if alpha {
+        let target_ex = (&target.excitation.alpha, target.rank_a, &target.indices_a);
+        let target_phase = target.pha;
+        let pairs = source_reps.iter().enumerate().map(|(col, &source_det)| {
+            let source = &data.basis[source_det];
+            let source_ex = (&source.excitation.alpha, source.rank_a, &source.indices_a);
+            let (x_ex, w_ex) = if target_left {
+                (target_ex, source_ex)
+            } else {
+                (source_ex, target_ex)
+            };
+
+            WickBatchPair::new(x_ex, w_ex, target_phase * source.pha, col)
+        });
+
+        xw_f_overlap_prepared_batch(&pair.aa, pairs, &mut scratch.aa, data.tol, srow, frow);
+    } else {
+        let target_ex = (&target.excitation.beta, target.rank_b, &target.indices_b);
+        let target_phase = target.phb;
+        let pairs = source_reps.iter().enumerate().map(|(col, &source_det)| {
+            let source = &data.basis[source_det];
+            let source_ex = (&source.excitation.beta, source.rank_b, &source.indices_b);
+            let (x_ex, w_ex) = if target_left {
+                (target_ex, source_ex)
+            } else {
+                (source_ex, target_ex)
+            };
+
+            WickBatchPair::new(x_ex, w_ex, target_phase * source.phb, col)
+        });
+
+        xw_f_overlap_prepared_batch(&pair.bb, pairs, &mut scratch.bb, data.tol, srow, frow);
+    }
 }
 
 /// Select alpha-first or beta-first contraction from dense structural costs.

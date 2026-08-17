@@ -38,6 +38,10 @@ pub(super) struct ParentSpinSpace {
     pub(super) breps: Vec<usize>,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
+    /// Determinant indices grouped by parent-local alpha component.
+    pub(super) entries_by_a: Vec<Vec<usize>>,
+    /// Determinant indices grouped by parent-local beta component.
+    pub(super) entries_by_b: Vec<Vec<usize>>,
     /// Representative determinant for each parent-local occupation pair.
     pub(super) oreps: Vec<usize>,
     /// Occupation-pair ID keyed by determinant offset from `first_det`.
@@ -260,6 +264,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             areps: Vec::new(),
             breps: Vec::new(),
             entries: Vec::new(),
+            entries_by_a: Vec::new(),
+            entries_by_b: Vec::new(),
             oreps: Vec::new(),
             oids: Vec::new(),
             first_det: usize::MAX,
@@ -269,13 +275,25 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
 
     for (det, state) in basis.iter().enumerate() {
         let parent = &mut parents[state.parent];
+
         parent.first_det = parent.first_det.min(det);
         parent.last_det = parent.last_det.max(det + 1);
+
         parent.entries.push(FactorEntry {
             det,
             a: aids[det],
             b: bids[det],
         });
+
+        if parent.entries_by_a.len() <= aids[det] {
+            parent.entries_by_a.resize_with(aids[det] + 1, Vec::new);
+        }
+        parent.entries_by_a[aids[det]].push(det);
+
+        if parent.entries_by_b.len() <= bids[det] {
+            parent.entries_by_b.resize_with(bids[det] + 1, Vec::new);
+        }
+        parent.entries_by_b[bids[det]].push(det);
 
         if parent.areps.len() <= aids[det] {
             parent.areps.resize(aids[det] + 1, usize::MAX);
