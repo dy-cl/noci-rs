@@ -11,6 +11,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import ConnectionPatch, Rectangle
 import numpy as np
 import pandas as pd
+from itertools import permutations
 
 # Plotting parameters
 TICKFONTSIZE = 32
@@ -27,6 +28,17 @@ ENERGYSTATEREGEX = re.compile(
     r"(?:\s*[+-]\s*[+-]?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?i)?",
     re.MULTILINE,
 )
+
+# Full NOCI-reference GEVP spectrum.
+GEVPREGEX = re.compile(
+    r"GEVP eigenvalues in NOCI-reference basis:\s*\[(?P<values>.*?)\]",
+    re.DOTALL,
+)
+
+FLOATREGEX = re.compile(
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?"
+)
+
 DETITERREGEX = re.compile(r"iter\s+(\d+)", re.IGNORECASE)
 DETRELEVANTHEADERREGEX = re.compile(r"^Relevant space coefficients")
 DETNULLHEADERREGEX = re.compile(r"^Null space coefficients")
@@ -45,6 +57,7 @@ LIVE_READ_ERRORS = (
     pd.errors.ParserError,
 )
 
+
 def isQMCHeader(header: str) -> bool:
     """
     Check whether a line is a stochastic QMC table header.
@@ -58,6 +71,7 @@ def isQMCHeader(header: str) -> bool:
         ["NWalk", "NRef", "-", "-"],
         ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
     )
+
 
 def qmcPopulationColumns(df: pd.DataFrame):
     """
@@ -107,6 +121,7 @@ def showLive(args, fig, update):
         fig.canvas.flush_events()
         plt.pause(args.interval)
 
+
 def findQMC(path: Path):
     """
     Find where QMC starts.
@@ -140,6 +155,7 @@ def findQMC(path: Path):
         raise ValueError("Stochastic QMC table header not found")
 
     return start, nrows
+
 
 def readQMC(path: Path) -> pd.DataFrame:
     """
@@ -178,6 +194,7 @@ def readQMC(path: Path) -> pd.DataFrame:
 
     return df
 
+
 def readQMCFiles(paths) -> pd.DataFrame:
     """
     Read and combine stochastic QMC tables from one or more output files.
@@ -196,6 +213,7 @@ def readQMCFiles(paths) -> pd.DataFrame:
         .drop_duplicates(subset = "Iter", keep = "last")
         .reset_index(drop = True)
     )
+
 
 def findDeterministicQMC(path: Path):
     """
@@ -261,6 +279,7 @@ def readDeterministicQMC(path: Path) -> pd.DataFrame:
         engine = "c",
     )
 
+
 def readDeterministicCoefficients(path: Path) -> pd.DataFrame:
     """
     Read in deterministic coefficient lines from a deterministic NOCIQMC output file and create a pandas dataframe.
@@ -316,6 +335,7 @@ def readDeterministicCoefficients(path: Path) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns = ["iter", "space", "state", "coeff"])
 
+
 def shiftChange(series: pd.Series):
     """
     Find the first iteration where either of the shifts change. Or more generally any series.
@@ -327,6 +347,7 @@ def shiftChange(series: pd.Series):
         idx = int(mask.argmax())
         return idx, arr[idx]
     return None, None
+
 
 def qmcShiftCorrelation(df: pd.DataFrame):
     """
@@ -357,52 +378,238 @@ def qmcShiftCorrelation(df: pd.DataFrame):
 
     return shiftCorr, iterShift
 
-def readEnergy(path: Path) -> pd.DataFrame:
+def trackNOCIRoots(spectra, nstates):
     """
-    Read in energy values for calculations performed across a range of geometries and create a dataframe.
+    Track NOCI states across geometries by energy continuity.
+    """
+    if not spectra:
+        return []
+
+    R0, values0 = spectra[0]
+    values0 = np.sort(np.asarray(values0, dtype = float))
+
+    tracked = values0[:nstates].copy()
+
+    historyR = [R0]
+    historyE = [tracked.copy()]
+
+    rows = [
+        (R0, state, E)
+        for state, E in enumerate(tracked)
+    ]
+
+    for R, values in spectra[1:]:
+        values = np.sort(np.asarray(values, dtype = float))
+
+        if len(historyR) == 1:
+            predicted = historyE[-1]
+        else:
+            R1 = historyR[-2]
+            R2 = historyR[-1]
+
+            E1 = historyE[-2]
+            E2 = historyE[-1]
+
+            slope = (E2 - E1) / (R2 - R1)
+            predicted = E2 + slope * (R - R2)
+
+        bestPermutation = None
+        bestCost = np.inf
+
+        for rootIndices in permutations(range(len(values)), nstates):
+            candidate = np.array(
+                [values[j] for j in rootIndices],
+                dtype = float,
+            )
+
+            cost = np.sum(
+                (candidate - predicted) ** 2
+            )
+
+            if cost < bestCost:
+                bestCost = cost
+                bestPermutation = rootIndices
+
+        tracked = np.array(
+            [values[j] for j in bestPermutation],
+            dtype = float,
+        )
+
+        rows.extend(
+            (R, state, E)
+            for state, E in enumerate(tracked)
+        )
+
+        historyR.append(R)
+        historyE.append(tracked.copy())
+
+    return rows
+
+def readEnergy(path: Path, nstates = 1) -> pd.DataFrame:
+    """
+    Read energy values across a geometry scan.
     """
     text = path.read_text()
 
-    rPositions = [(m.start(), float(m.group(1))) for m in ENERGYRREGEX.finditer(text)]
-    rPositions.append((len(text), None))
+    rMatches = list(
+        ENERGYRREGEX.finditer(text)
+    )
 
     rows = []
-    for i in range(len(rPositions) - 1):
-        start, R = rPositions[i]
-        end, _ = rPositions[i + 1]
-        if R is None:
-            continue
+
+    for i, rMatch in enumerate(rMatches):
+        R = float(rMatch.group(1))
+
+        start = rMatch.start()
+        end = (
+            rMatches[i + 1].start()
+            if i + 1 < len(rMatches)
+            else len(text)
+        )
 
         block = text[start:end]
+
         for m in ENERGYSTATEREGEX.finditer(block):
             idx = m.group("idx")
-            rawLabel = (m.group("label") or "").strip()
-            if m.group("hprefix") and rawLabel and not rawLabel.startswith("h-"):
-                if rawLabel.startswith("RHF") or rawLabel.startswith("UHF"):
-                    rawLabel = f"h-{rawLabel}"
-            E = float(m.group("E"))
-            label = createEnergyLabel(idx, rawLabel)
-            rows.append((R, idx, rawLabel, label, E))
+            rawLabel = (
+                m.group("label") or ""
+            ).strip()
 
-    return pd.DataFrame(rows, columns = ["R", "idx", "rawLabel", "label", "E"]).sort_values(["label", "R"])
+            if (
+                m.group("hprefix")
+                and rawLabel
+                and not rawLabel.startswith("h-")
+            ):
+                if (
+                    rawLabel.startswith("RHF")
+                    or rawLabel.startswith("UHF")
+                ):
+                    rawLabel = f"h-{rawLabel}"
+
+            E = float(m.group("E"))
+            label = createEnergyLabel(
+                idx,
+                rawLabel,
+            )
+
+            rows.append(
+                (
+                    R,
+                    idx,
+                    rawLabel,
+                    label,
+                    E,
+                )
+            )
+
+    rows = [
+        row
+        for row in rows
+        if row[3] != "NOCI"
+    ]
+
+    spectra = []
+
+    for gevpMatch in GEVPREGEX.finditer(text):
+
+        rMatch = next(
+            (
+                r
+                for r in rMatches
+                if r.start() > gevpMatch.end()
+            ),
+            None,
+        )
+
+        if rMatch is None:
+            continue
+
+        R = float(rMatch.group(1))
+
+        valuesText = gevpMatch.group(
+            "values"
+        )
+
+        eigenvalues = [
+            float(value)
+            for value in FLOATREGEX.findall(
+                valuesText
+            )
+        ]
+
+        spectra.append(
+            (R, eigenvalues)
+        )
+
+    trackedRows = trackNOCIRoots(
+        spectra,
+        nstates,
+    )
+
+    for R, state, E in trackedRows:
+
+        label = (
+            "NOCI"
+            if state == 0
+            else f"NOCI {state}"
+        )
+
+        idx = f"NOCI-reference {state}"
+        rawLabel = f"NOCI tracked state {state}"
+
+        rows.append(
+            (
+                R,
+                idx,
+                rawLabel,
+                label,
+                E,
+            )
+        )
+
+    return (
+        pd.DataFrame(
+            rows,
+            columns = [
+                "R",
+                "idx",
+                "rawLabel",
+                "label",
+                "E",
+            ],
+        )
+        .sort_values(
+            ["label", "R"]
+        )
+    )
 
 def readEnergyTable(path: Path, label = None) -> pd.DataFrame:
     """
     Read a simple energy table with columns E and R.
     The column order shoule be R E`.
     """
-    df = pd.read_csv(path, sep = r"\s+|,", engine = "python", comment = "#")
+    df = pd.read_csv(
+        path,
+        sep = r"\s+|,",
+        engine = "python",
+        comment = "#",
+    )
     cols = {c.strip().lower(): c for c in df.columns}
 
     if "e" not in cols or "r" not in cols:
-        raise ValueError(f"{path} must contain columns named E and R")
+        raise ValueError(
+            f"{path} must contain columns named E and R"
+        )
 
     out = pd.DataFrame({
         "R": pd.to_numeric(df[cols["r"]]),
         "E": pd.to_numeric(df[cols["e"]]),
     })
+
     out["label"] = label if label is not None else path.stem
+
     return out.sort_values("R")
+
 
 def createEnergyLabel(idx: str, rawLabel: str) -> str:
     """
@@ -410,19 +617,27 @@ def createEnergyLabel(idx: str, rawLabel: str) -> str:
     """
     if idx.startswith("NOCI-qmc"):
         return "NOCIQMC"
+
     if idx.startswith("NOCI-PT2"):
         m = ISHIFTREGEX.search(idx)
+
         if m is not None:
             shift = float(m.group(1))
             return f"NOCI-PT2 iShift={shift:g}"
+
         return "NOCI-PT2"
-    #if idx.startswith("SNOCI"):
-    #    return "SNOCI"
+
+    # if idx.startswith("SNOCI"):
+    #     return "SNOCI"
+
     if idx.startswith("NOCI"):
         return "NOCI"
+
     if idx.startswith("FCI"):
         return "FCI"
+
     return rawLabel if rawLabel else f"State({idx})"
+
 
 def readMatrix(path: Path) -> pd.DataFrame:
     """
@@ -430,6 +645,7 @@ def readMatrix(path: Path) -> pd.DataFrame:
     """
     M = np.loadtxt(path)
     return pd.DataFrame(M)
+
 
 def readHistogram(filepath: Path) -> pd.DataFrame:
     with open(filepath, "r") as f:
@@ -439,17 +655,43 @@ def readHistogram(filepath: Path) -> pd.DataFrame:
         nbins = int(nbins)
 
         ntotal, nlow, nhigh = map(int, f.readline().split())
-        counts = np.array([int(f.readline()) for _ in range(nbins)])
+        counts = np.array(
+            [int(f.readline()) for _ in range(nbins)]
+        )
 
-    binedges = np.linspace(logmin, logmax, nbins + 1)
-    bincenters = 0.5 * (binedges[:-1] + binedges[1:])
+    binedges = np.linspace(
+        logmin,
+        logmax,
+        nbins + 1,
+    )
+    bincenters = 0.5 * (
+        binedges[:-1] + binedges[1:]
+    )
     binwidth = binedges[1] - binedges[0]
 
-    return pd.DataFrame({"file": filepath.name, "logmin": logmin, "logmax": logmax, "nbins": nbins, "ntotal": ntotal,
-                         "nlow": nlow, "nhigh": nhigh, "bin": np.arange(nbins), "binLeft": binedges[:-1], "binRight": binedges[1:],
-                         "binCenter": bincenters, "binWidth": binwidth, "count": counts})
+    return pd.DataFrame({
+        "file": filepath.name,
+        "logmin": logmin,
+        "logmax": logmax,
+        "nbins": nbins,
+        "ntotal": ntotal,
+        "nlow": nlow,
+        "nhigh": nhigh,
+        "bin": np.arange(nbins),
+        "binLeft": binedges[:-1],
+        "binRight": binedges[1:],
+        "binCenter": bincenters,
+        "binWidth": binwidth,
+        "count": counts,
+    })
 
-def formatAxes(xlabel = None, ylabel = None, legend = False, legendLoc = None):
+
+def formatAxes(
+    xlabel = None,
+    ylabel = None,
+    legend = False,
+    legendLoc = None,
+):
     """
     Apply uniform axis formatting.
     Legends are always placed outside the plotting axes for consistency.
@@ -458,11 +700,21 @@ def formatAxes(xlabel = None, ylabel = None, legend = False, legendLoc = None):
     fig = ax.figure
 
     if xlabel is not None:
-        ax.set_xlabel(xlabel, fontsize = LABELFONTSIZE)
-    if ylabel is not None:
-        ax.set_ylabel(ylabel, fontsize = LABELFONTSIZE)
+        ax.set_xlabel(
+            xlabel,
+            fontsize = LABELFONTSIZE,
+        )
 
-    ax.tick_params(axis = "both", labelsize = TICKFONTSIZE)
+    if ylabel is not None:
+        ax.set_ylabel(
+            ylabel,
+            fontsize = LABELFONTSIZE,
+        )
+
+    ax.tick_params(
+        axis = "both",
+        labelsize = TICKFONTSIZE,
+    )
 
     if legend:
         ax.legend(
@@ -472,26 +724,47 @@ def formatAxes(xlabel = None, ylabel = None, legend = False, legendLoc = None):
             frameon = False,
             borderaxespad = 0.0,
         )
+
     fig.subplots_adjust(right = 0.75)
+
 
 def plotDeterministicCoefficients(args):
     """
     Plot deterministic relevant and null-space coefficients.
     """
     df = readDeterministicCoefficients(args.path)
+
     if df.empty:
-        raise ValueError(f"No deterministic coefficients found in {args.path}")
+        raise ValueError(
+            f"No deterministic coefficients found in {args.path}"
+        )
 
     selectedSpace = args.space
-    backgroundSpace = "null" if selectedSpace == "relevant" else "relevant"
+    backgroundSpace = (
+        "null"
+        if selectedSpace == "relevant"
+        else "relevant"
+    )
 
     finalIter = df["iter"].max()
 
     def topStates(space):
-        finalDf = df[(df["iter"] == finalIter) & (df["space"] == space)].copy()
+        finalDf = df[
+            (df["iter"] == finalIter)
+            & (df["space"] == space)
+        ].copy()
+
         finalDf["absCoeff"] = finalDf["coeff"].abs()
-        ntop = min(args.ncoeffs, len(finalDf))
-        return finalDf.nlargest(ntop, "absCoeff")["state"].to_numpy()
+
+        ntop = min(
+            args.ncoeffs,
+            len(finalDf),
+        )
+
+        return finalDf.nlargest(
+            ntop,
+            "absCoeff",
+        )["state"].to_numpy()
 
     selectedStates = topStates(selectedSpace)
     backgroundStates = topStates(backgroundSpace)
@@ -504,11 +777,22 @@ def plotDeterministicCoefficients(args):
 
     setStyle()
     plt.figure()
+
     cmap = plt.get_cmap("summer")
-    selectedColors = cmap(np.linspace(0, 1, max(len(selectedStates), 1)))
+    selectedColors = cmap(
+        np.linspace(
+            0,
+            1,
+            max(len(selectedStates), 1),
+        )
+    )
 
     for state in backgroundStates:
-        g = df[(df["space"] == backgroundSpace) & (df["state"] == state)].sort_values("iter")
+        g = df[
+            (df["space"] == backgroundSpace)
+            & (df["state"] == state)
+        ].sort_values("iter")
+
         plt.plot(
             g["iter"],
             g["coeff"],
@@ -518,8 +802,15 @@ def plotDeterministicCoefficients(args):
             zorder = 1,
         )
 
-    for color, state in zip(selectedColors, selectedStates):
-        g = df[(df["space"] == selectedSpace) & (df["state"] == state)].sort_values("iter")
+    for color, state in zip(
+        selectedColors,
+        selectedStates,
+    ):
+        g = df[
+            (df["space"] == selectedSpace)
+            & (df["state"] == state)
+        ].sort_values("iter")
+
         plt.plot(
             g["iter"],
             g["coeff"],
@@ -529,11 +820,22 @@ def plotDeterministicCoefficients(args):
             zorder = 2,
         )
 
-    formatAxes(xlabel = "Iteration", ylabel = ylabel)
+    formatAxes(
+        xlabel = "Iteration",
+        ylabel = ylabel,
+    )
+
     plt.subplots_adjust(left = 0.15)
     finish(args)
 
-def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25], side = "right"):
+
+def addEnergyInset(
+    ax,
+    xlim,
+    ylim,
+    loc = [0.64, 0.22, 0.25, 0.25],
+    side = "right",
+):
     """
     Add an inset showing a zoomed region of the main energy plot.
 
@@ -545,17 +847,28 @@ def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25], side = "right
         inset.plot(
             line.get_xdata(),
             line.get_ydata(),
-            linewidth = max(1.5, 0.55 * line.get_linewidth()),
+            linewidth = max(
+                1.5,
+                0.55 * line.get_linewidth(),
+            ),
             linestyle = line.get_linestyle(),
             marker = line.get_marker(),
-            markersize = max(3, 0.55 * line.get_markersize()),
+            markersize = max(
+                3,
+                0.55 * line.get_markersize(),
+            ),
             color = line.get_color(),
             zorder = line.get_zorder(),
         )
 
     inset.set_xlim(*xlim)
     inset.set_ylim(*ylim)
-    inset.tick_params(axis = "both", labelsize = 16)
+
+    inset.tick_params(
+        axis = "both",
+        labelsize = 16,
+    )
+
     inset.grid(True)
 
     xmin, xmax = xlim
@@ -579,16 +892,19 @@ def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25], side = "right
             ((xmax, ymax), (0.0, 1.0)),
             ((xmax, ymin), (0.0, 0.0)),
         ]
+
     elif side == "left":
         connectors = [
             ((xmin, ymax), (1.0, 1.0)),
             ((xmin, ymin), (1.0, 0.0)),
         ]
+
     elif side == "above":
         connectors = [
             ((xmin, ymax), (0.0, 0.0)),
             ((xmax, ymax), (1.0, 0.0)),
         ]
+
     else:
         connectors = [
             ((xmin, ymin), (0.0, 1.0)),
@@ -608,62 +924,173 @@ def addEnergyInset(ax, xlim, ylim, loc = [0.64, 0.22, 0.25, 0.25], side = "right
             zorder = 60,
             clip_on = False,
         )
+
         ax.add_artist(con)
 
-    return inset 
+    return inset
+
 
 def plotEnergy(args):
     """
     Plot energies across a geometry scan.
     """
-    df = readEnergy(args.path)
+    df = readEnergy(
+        args.path,
+        nstates = args.nstates,
+    )
 
-    tablePaths = list(args.tables_pos) + list(args.tables_opt)
+    geometryValues = sorted(
+        df["R"].unique()
+    )
+
+    geometryIndex = {
+        r: i
+        for i, r in enumerate(geometryValues)
+    }
+
+    tablePaths = (
+        list(args.tables_pos)
+        + list(args.tables_opt)
+    )
+
     tableDfs = []
+
     for i, path in enumerate(tablePaths):
-        label = args.table_label[i] if i < len(args.table_label) else path.stem
-        tableDfs.append(readEnergyTable(path, label = label))
+        label = (
+            args.table_label[i]
+            if i < len(args.table_label)
+            else path.stem
+        )
+
+        tableDfs.append(
+            readEnergyTable(
+                path,
+                label = label,
+            )
+        )
 
     setStyle()
     fig, ax = plt.subplots()
 
-    def plotLabel(lbl, display = None, **kwargs):
-        g = df[df["label"] == lbl].sort_values("R")
+    def plotLabel(
+        lbl,
+        display = None,
+        **kwargs,
+    ):
+        g = df[
+            df["label"] == lbl
+        ].sort_values("R")
+
         if not g.empty:
-            ax.plot(g["R"], g["E"], label = display if display is not None else lbl, **kwargs)
+            ax.plot(
+                g["R"],
+                g["E"],
+                label = (
+                    display
+                    if display is not None
+                    else lbl
+                ),
+                **kwargs,
+            )
+
+    # Plot the N lowest energy-ordered NOCI roots.
+    if args.nstates < 1:
+        raise ValueError(
+            "--nstates must be at least 1"
+        )
     
-    plotLabel("NOCI", display = r"$|\Psi^{\mathrm{NOCI}}\rangle$", linewidth = LINEWIDTH, zorder = 10, color = "tab:green")
-    
+    nociColors = [
+        "tab:green",
+        "tab:orange",
+        "tab:purple",
+        "tab:brown",
+        "tab:olive",
+    ]
+
+    for state in range(args.nstates):
+        color = nociColors[state % len(nociColors)]
+
+        lbl = "NOCI" if state == 0 else f"NOCI {state}"
+
+        plotLabel(
+            lbl,
+            display = rf"$|\Psi_{{{state}}}^{{\mathrm{{NOCI}}}}\rangle$",
+            linewidth = LINEWIDTH,
+            zorder = 10,
+            color = color,
+        )
+
     pt2Labels = sorted(
-        [lbl for lbl in df["label"].unique() if lbl.startswith("NOCI-PT2")],
-        key = lambda lbl: float(ISHIFTREGEX.search(lbl).group(1)) if ISHIFTREGEX.search(lbl) else -1.0,
+        [
+            lbl
+            for lbl in df["label"].unique()
+            if lbl.startswith("NOCI-PT2")
+        ],
+        key = (
+            lambda lbl:
+            float(
+                ISHIFTREGEX.search(lbl).group(1)
+            )
+            if ISHIFTREGEX.search(lbl)
+            else -1.0
+        ),
     )
 
     pt2Shifts = [
-        float(ISHIFTREGEX.search(lbl).group(1))
+        float(
+            ISHIFTREGEX.search(lbl).group(1)
+        )
         for lbl in pt2Labels
         if ISHIFTREGEX.search(lbl)
     ]
 
     if pt2Labels:
         baseCmap = plt.get_cmap("Purples")
+
         cmap = mcolors.LinearSegmentedColormap.from_list(
             "Purples_trunc",
-            baseCmap(np.linspace(0.5, 0.9, 256)),
+            baseCmap(
+                np.linspace(
+                    0.5,
+                    0.9,
+                    256,
+                )
+            ),
         )
+
         if pt2Shifts:
-            norm = mcolors.Normalize(vmin = min(pt2Shifts), vmax = max(pt2Shifts))
+            norm = mcolors.Normalize(
+                vmin = min(pt2Shifts),
+                vmax = max(pt2Shifts),
+            )
         else:
-            norm = mcolors.Normalize(vmin = 0.0, vmax = 1.0)
+            norm = mcolors.Normalize(
+                vmin = 0.0,
+                vmax = 1.0,
+            )
 
         for i, lbl in enumerate(pt2Labels):
             m = ISHIFTREGEX.search(lbl)
-            shift = float(m.group(1)) if m else 0.0
-            color = cmap(norm(shift)) if pt2Shifts else "tab:purple"
+
+            shift = (
+                float(m.group(1))
+                if m
+                else 0.0
+            )
+
+            color = (
+                cmap(norm(shift))
+                if pt2Shifts
+                else "tab:purple"
+            )
 
             plotLabel(
                 lbl,
-                display = r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$" if i == len(pt2Labels) - 1 else "_nolegend_",
+                display = (
+                    r"$|\Psi^{\mathrm{NOCI-PT2}}\rangle$"
+                    if i == len(pt2Labels) - 1
+                    else "_nolegend_"
+                ),
                 linewidth = LINEWIDTH,
                 linestyle = "-",
                 zorder = 15,
@@ -671,66 +1098,159 @@ def plotEnergy(args):
             )
 
         if len(set(pt2Shifts)) > 1:
-            sm = plt.cm.ScalarMappable(norm = norm, cmap = cmap)
+            sm = plt.cm.ScalarMappable(
+                norm = norm,
+                cmap = cmap,
+            )
             sm.set_array([])
-            
-            cax = ax.inset_axes([0.08, 0.90, 0.28, 0.035])
-            cbar = fig.colorbar(sm, cax = cax, orientation = "horizontal")
-            cbar.set_label(r"$\epsilon / E_h$", fontsize = 20)
-            cbar.ax.tick_params(labelsize = 16)
-    
-    plotLabel("SNOCI", display = r"$|\Psi^{\mathrm{SNOCI}}\rangle$", linewidth = LINEWIDTH, linestyle = ":", zorder = 16, color = "tab:cyan")
-    plotLabel("NOCIQMC", display = r"$|\Psi^{\mathrm{NOCI\!-\!QMC}}\rangle$", linewidth = LINEWIDTH, zorder = 20, color = "tab:pink")
 
-    gFCI = df[df["label"] == "FCI"].sort_values("R")
+            cax = ax.inset_axes(
+                [0.08, 0.90, 0.28, 0.035]
+            )
+
+            cbar = fig.colorbar(
+                sm,
+                cax = cax,
+                orientation = "horizontal",
+            )
+
+            cbar.set_label(
+                r"$\epsilon / E_h$",
+                fontsize = 20,
+            )
+
+            cbar.ax.tick_params(
+                labelsize = 16,
+            )
+
+    plotLabel(
+        "SNOCI",
+        display = r"$|\Psi^{\mathrm{SNOCI}}\rangle$",
+        linewidth = LINEWIDTH,
+        linestyle = ":",
+        zorder = 16,
+        color = "tab:cyan",
+    )
+
+    plotLabel(
+        "NOCIQMC",
+        display = r"$|\Psi^{\mathrm{NOCI\!-\!QMC}}\rangle$",
+        linewidth = LINEWIDTH,
+        zorder = 20,
+        color = "tab:pink",
+    )
+
+    gFCI = df[
+        df["label"] == "FCI"
+    ].sort_values("R")
+
     if not gFCI.empty:
-        ax.plot(gFCI["R"], gFCI["E"], label = "FCI", color = "black", marker = "o", linestyle = " ", markersize = MARKERSIZE, zorder = 30)
+        ax.plot(
+            gFCI["R"],
+            gFCI["E"],
+            label = "FCI",
+            color = "black",
+            marker = "o",
+            linestyle = " ",
+            markersize = MARKERSIZE,
+            zorder = 30,
+        )
 
     seen = set()
-    autoLabels = sorted(l for l in df["label"].unique() if l.startswith("RHF") or l.startswith("UHF") or l.startswith("h-RHF") or l.startswith("h-UHF") or l.startswith("M "))
+
+    autoLabels = sorted(
+        l
+        for l in df["label"].unique()
+        if (
+            l.startswith("RHF")
+            or l.startswith("UHF")
+            or l.startswith("h-RHF")
+            or l.startswith("h-UHF")
+            or l.startswith("M ")
+        )
+    )
+
     for lbl in autoLabels:
-        g = df[df["label"] == lbl].sort_values("R")
+        g = df[
+            df["label"] == lbl
+        ].sort_values("R")
+
         if g.empty:
             continue
 
         linestyle = "-"
+
         if lbl.startswith("h-RHF"):
             color = "tab:red"
-            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!RHF}}\rangle$"
+            display = (
+                r"$|\tilde{\Psi}^{"
+                r"\mathrm{h\!-\!RHF}}\rangle$"
+            )
             linestyle = "--"
+
         elif lbl.startswith("h-UHF"):
             color = "tab:blue"
-            display = r"$|\tilde{\Psi}^{\mathrm{h\!-\!UHF}}\rangle$"
+            display = (
+                r"$|\tilde{\Psi}^{"
+                r"\mathrm{h\!-\!UHF}}\rangle$"
+            )
             linestyle = "--"
+
         elif "RHF" in lbl:
             color = "tab:red"
-            display = r"$|\Psi^{\mathrm{RHF}}\rangle$"
+            display = (
+                r"$|\Psi^{\mathrm{RHF}}\rangle$"
+            )
+
         elif "UHF" in lbl:
             color = "tab:blue"
-            display = r"$|\Psi^{\mathrm{UHF}}\rangle$"
+            display = (
+                r"$|\Psi^{\mathrm{UHF}}\rangle$"
+            )
+
         else:
             color = None
             display = lbl
 
-        label = display if display not in seen else None
+        label = (
+            display
+            if display not in seen
+            else None
+        )
+
         seen.add(display)
 
         # Holomorphic branches may disappear when they coalesce with a real
         # solution and reappear elsewhere. Do not connect those disconnected
         # pieces with an artificial straight line.
-        if lbl.startswith("h-RHF") or lbl.startswith("h-UHF"):
-            geometryPositions = g["R"].map(geometryIndex)
-            segmentId = (geometryPositions.diff() > 1).cumsum()
+        if (
+            lbl.startswith("h-RHF")
+            or lbl.startswith("h-UHF")
+        ):
+            geometryPositions = g["R"].map(
+                geometryIndex
+            )
 
-            for i, (_, segment) in enumerate(g.groupby(segmentId)):
+            segmentId = (
+                geometryPositions.diff() > 1
+            ).cumsum()
+
+            for i, (_, segment) in enumerate(
+                g.groupby(segmentId)
+            ):
                 ax.plot(
                     segment["R"],
                     segment["E"],
                     linewidth = LINEWIDTH,
                     color = color,
                     linestyle = linestyle,
-                    label = label if i == 0 else None,
+                    label = (
+                        label
+                        if i == 0
+                        else None
+                    ),
                 )
+
         else:
             # Preserve the previous behaviour for ordinary RHF, UHF and
             # metadynamics states.
@@ -744,8 +1264,13 @@ def plotEnergy(args):
             )
 
     for tableDf in tableDfs:
-        rawLabel = tableDf["label"].iloc[0]
-        display = rf"$|\Psi^{{\mathrm{{{rawLabel}}}}}\rangle$"
+        rawLabel = tableDf[
+            "label"
+        ].iloc[0]
+
+        display = (
+            rf"$|\Psi^{{\mathrm{{{rawLabel}}}}}\rangle$"
+        )
 
         ax.plot(
             tableDf["R"],
@@ -754,26 +1279,47 @@ def plotEnergy(args):
             linewidth = LINEWIDTH,
             linestyle = "-",
             zorder = 1,
-            color = 'tab:orange'
+            color = "tab:orange",
         )
 
-    formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
+    formatAxes(
+        xlabel = "R / Å",
+        ylabel = "E / Ha",
+        legend = True,
+    )
+
     ax.grid(True)
 
     if args.inset is not None:
         xmin, xmax, ymin, ymax = args.inset
-        left, bottom = args.inset_location
-        width, height = args.inset_size
+
+        left, bottom = (
+            args.inset_location
+        )
+
+        width, height = (
+            args.inset_size
+        )
 
         addEnergyInset(
             ax,
             xlim = (xmin, xmax),
             ylim = (ymin, ymax),
-            loc = [left, bottom, width, height],
-            side = args.inset_side
+            loc = [
+                left,
+                bottom,
+                width,
+                height,
+            ],
+            side = args.inset_side,
         )
 
-    formatAxes(xlabel = "R / Å", ylabel = "E / Ha", legend = True)
+    formatAxes(
+        xlabel = "R / Å",
+        ylabel = "E / Ha",
+        legend = True,
+    )
+
     plt.grid(True)
     finish(args)
 
@@ -786,13 +1332,32 @@ def plotMatrix(args):
     M = df.to_numpy()
 
     vmin = 0.0
-    vmax = float(np.max(M)) if np.max(M) > 0 else 1.0
+    vmax = (
+        float(np.max(M))
+        if np.max(M) > 0
+        else 1.0
+    )
 
     plt.figure()
-    im = plt.imshow(M, cmap = "inferno", vmin = vmin, vmax = vmax, interpolation = "nearest")
+
+    im = plt.imshow(
+        M,
+        cmap = "inferno",
+        vmin = vmin,
+        vmax = vmax,
+        interpolation = "nearest",
+    )
+
     plt.colorbar(im)
-    plt.xticks(fontsize = TICKFONTSIZE)
-    plt.yticks(fontsize = TICKFONTSIZE)
+
+    plt.xticks(
+        fontsize = TICKFONTSIZE,
+    )
+
+    plt.yticks(
+        fontsize = TICKFONTSIZE,
+    )
+
     plt.tight_layout()
     finish(args)
 
@@ -805,25 +1370,55 @@ def plotExcitationHist(args):
 
     setStyle()
     fig, ax = plt.subplots()
-    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: rf"$10^{{{int(np.round(x))}}}$"))
 
-    norm = mcolors.Normalize(vmin = df["binCenter"].min(), vmax = df["binCenter"].max())
-    cmap = plt.cm.winter
-    colors = cmap(norm(df["binCenter"].to_numpy()))
-
-    ax.bar(df["binCenter"], df["count"], width = df["binWidth"], align = "center", color = colors)
-    formatAxes(
-        xlabel = r"$\frac{\Delta\tau|H_{\Pi\Omega} - E_s^S(\tau)S_{\Pi\Omega}|}{P_{\text{gen}(\Pi|\Omega)}}$",
-        ylabel = "Frequency"
+    ax.xaxis.set_major_formatter(
+        mticker.FuncFormatter(
+            lambda x, pos:
+            rf"$10^{{{int(np.round(x))}}}$"
+        )
     )
+
+    norm = mcolors.Normalize(
+        vmin = df["binCenter"].min(),
+        vmax = df["binCenter"].max(),
+    )
+
+    cmap = plt.cm.winter
+
+    colors = cmap(
+        norm(
+            df["binCenter"].to_numpy()
+        )
+    )
+
+    ax.bar(
+        df["binCenter"],
+        df["count"],
+        width = df["binWidth"],
+        align = "center",
+        color = colors,
+    )
+
+    formatAxes(
+        xlabel = (
+            r"$\frac{\Delta\tau|H_{\Pi\Omega} - "
+            r"E_s^S(\tau)S_{\Pi\Omega}|}"
+            r"{P_{\text{gen}(\Pi|\Omega)}}$"
+        ),
+        ylabel = "Frequency",
+    )
+
     finish(args)
+
 
 def plotProjectedShift(args):
     """
     Plot projected and population-control shift correlation energies.
     """
     if not args.live:
-        df = readQMCFiles(args.paths).dropna(
+        df = readQMCFiles(
+            args.paths
+        ).dropna(
             subset = [
                 "Iter",
                 "EProj",
@@ -832,11 +1427,12 @@ def plotProjectedShift(args):
             ]
         )
 
-        shiftCorr, iterShift = qmcShiftCorrelation(df)
+        shiftCorr, iterShift = (
+            qmcShiftCorrelation(df)
+        )
 
         setStyle()
         plt.figure()
-
 
         if iterShift is not None:
             plt.plot(
@@ -907,7 +1503,9 @@ def plotProjectedShift(args):
     )
 
     def update():
-        df = readQMCFiles(args.paths).dropna(
+        df = readQMCFiles(
+            args.paths
+        ).dropna(
             subset = [
                 "Iter",
                 "EProj",
@@ -920,7 +1518,10 @@ def plotProjectedShift(args):
             return
 
         x = df["Iter"].to_numpy()
-        shiftCorr, iterShift = qmcShiftCorrelation(df)
+
+        shiftCorr, iterShift = (
+            qmcShiftCorrelation(df)
+        )
 
         lineEproj.set_data(
             x,
@@ -933,16 +1534,27 @@ def plotProjectedShift(args):
         )
 
         if iterShift is not None:
-            value = df["Iter"].iloc[iterShift]
-            shiftLine.set_xdata([value, value])
+            value = df["Iter"].iloc[
+                iterShift
+            ]
+
+            shiftLine.set_xdata(
+                [value, value]
+            )
             shiftLine.set_visible(True)
+
         else:
             shiftLine.set_visible(False)
 
         ax.relim()
         ax.autoscale_view()
 
-    showLive(args, fig, update)
+    showLive(
+        args,
+        fig,
+        update,
+    )
+
 
 def plotNW(args):
     """
@@ -950,13 +1562,27 @@ def plotNW(args):
     """
     if not args.live:
         df = readQMCFiles(args.paths)
-        population, _, sampled, _ = qmcPopulationColumns(df)
-        subset = ["Iter", "EShift", population]
+
+        population, _, sampled, _ = (
+            qmcPopulationColumns(df)
+        )
+
+        subset = [
+            "Iter",
+            "EShift",
+            population,
+        ]
+
         if sampled is not None:
             subset.append(sampled)
-        df = df.dropna(subset = subset)
 
-        iterShift, _ = shiftChange(df["EShift"])
+        df = df.dropna(
+            subset = subset
+        )
+
+        iterShift, _ = shiftChange(
+            df["EShift"]
+        )
 
         setStyle()
         plt.figure()
@@ -1030,11 +1656,23 @@ def plotNW(args):
 
     def update():
         df = readQMCFiles(args.paths)
-        population, _, sampled, _ = qmcPopulationColumns(df)
-        subset = ["Iter", "EShift", population]
+
+        population, _, sampled, _ = (
+            qmcPopulationColumns(df)
+        )
+
+        subset = [
+            "Iter",
+            "EShift",
+            population,
+        ]
+
         if sampled is not None:
             subset.append(sampled)
-        df = df.dropna(subset = subset)
+
+        df = df.dropna(
+            subset = subset
+        )
 
         if df.empty:
             return
@@ -1052,31 +1690,52 @@ def plotNW(args):
                 df[sampled].to_numpy(),
             )
             lineSampled.set_visible(True)
+
         else:
             lineSampled.set_visible(False)
 
-        iterShift, _ = shiftChange(df["EShift"])
+        iterShift, _ = shiftChange(
+            df["EShift"]
+        )
 
         if iterShift is not None:
-            value = df["Iter"].iloc[iterShift]
-            shiftLine.set_xdata([value, value])
+            value = df["Iter"].iloc[
+                iterShift
+            ]
+
+            shiftLine.set_xdata(
+                [value, value]
+            )
             shiftLine.set_visible(True)
+
         else:
             shiftLine.set_visible(False)
 
         ax.relim()
         ax.autoscale_view()
 
-    showLive(args, fig, update)
+    showLive(
+        args,
+        fig,
+        update,
+    )
+
 
 def plotDeterministicNW(args):
     """
     Plot deterministic coefficient populations against iteration.
     """
-    df = readDeterministicQMC(args.path)
+    df = readDeterministicQMC(
+        args.path
+    )
 
-    iterEs, _ = shiftChange(df["es"])
-    iterEsS, _ = shiftChange(df["ess"])
+    iterEs, _ = shiftChange(
+        df["es"]
+    )
+
+    iterEsS, _ = shiftChange(
+        df["ess"]
+    )
 
     setStyle()
     plt.figure()
@@ -1087,6 +1746,7 @@ def plotDeterministicNW(args):
         label = r"$\|C(\tau)\|_1$",
         linewidth = LINEWIDTH,
     )
+
     plt.plot(
         df["iter"],
         df["nwsc"],
@@ -1115,17 +1775,26 @@ def plotDeterministicNW(args):
         ylabel = "Population",
         legend = True,
     )
+
     finish(args)
+
 
 def plotDeterministicProjectedShift(args):
     """
     Plot deterministic energy and shift trajectories against iteration.
     """
     if not args.live:
-        df = readDeterministicQMC(args.path)
+        df = readDeterministicQMC(
+            args.path
+        )
 
-        iterEs, _ = shiftChange(df["es"])
-        iterEsS, _ = shiftChange(df["ess"])
+        iterEs, _ = shiftChange(
+            df["es"]
+        )
+
+        iterEsS, _ = shiftChange(
+            df["ess"]
+        )
 
         setStyle()
         plt.figure()
@@ -1137,6 +1806,7 @@ def plotDeterministicProjectedShift(args):
             linewidth = LINEWIDTH,
             color = "tab:blue",
         )
+
         plt.plot(
             df["iter"],
             df["ess"],
@@ -1175,6 +1845,7 @@ def plotDeterministicProjectedShift(args):
             legend = True,
             legendLoc = "lower right",
         )
+
         finish(args)
         return
 
@@ -1188,6 +1859,7 @@ def plotDeterministicProjectedShift(args):
         linewidth = LINEWIDTH,
         color = "tab:blue",
     )
+
     lineEsS, = ax.plot(
         [],
         [],
@@ -1195,6 +1867,7 @@ def plotDeterministicProjectedShift(args):
         linewidth = LINEWIDTH,
         color = "tab:orange",
     )
+
     lineEnergy, = ax.plot(
         [],
         [],
@@ -1210,6 +1883,7 @@ def plotDeterministicProjectedShift(args):
         color = "tab:blue",
         visible = False,
     )
+
     shiftEsSLine = ax.axvline(
         0.0,
         linestyle = "--",
@@ -1226,39 +1900,80 @@ def plotDeterministicProjectedShift(args):
     )
 
     def update():
-        df = readDeterministicQMC(args.path).dropna(
-            subset = ["iter", "energy", "es", "ess"]
+        df = readDeterministicQMC(
+            args.path
+        ).dropna(
+            subset = [
+                "iter",
+                "energy",
+                "es",
+                "ess",
+            ]
         )
+
         if df.empty:
             return
 
         x = df["iter"].to_numpy()
 
-        lineEs.set_data(x, df["es"].to_numpy())
-        lineEsS.set_data(x, df["ess"].to_numpy())
-        lineEnergy.set_data(x, df["energy"].to_numpy())
+        lineEs.set_data(
+            x,
+            df["es"].to_numpy(),
+        )
 
-        iterEs, _ = shiftChange(df["es"])
-        iterEsS, _ = shiftChange(df["ess"])
+        lineEsS.set_data(
+            x,
+            df["ess"].to_numpy(),
+        )
+
+        lineEnergy.set_data(
+            x,
+            df["energy"].to_numpy(),
+        )
+
+        iterEs, _ = shiftChange(
+            df["es"]
+        )
+
+        iterEsS, _ = shiftChange(
+            df["ess"]
+        )
 
         if iterEs is not None:
-            value = df["iter"].iloc[iterEs]
-            shiftEsLine.set_xdata([value, value])
+            value = df["iter"].iloc[
+                iterEs
+            ]
+
+            shiftEsLine.set_xdata(
+                [value, value]
+            )
             shiftEsLine.set_visible(True)
+
         else:
             shiftEsLine.set_visible(False)
 
         if iterEsS is not None:
-            value = df["iter"].iloc[iterEsS]
-            shiftEsSLine.set_xdata([value, value])
+            value = df["iter"].iloc[
+                iterEsS
+            ]
+
+            shiftEsSLine.set_xdata(
+                [value, value]
+            )
             shiftEsSLine.set_visible(True)
+
         else:
             shiftEsSLine.set_visible(False)
 
         ax.relim()
         ax.autoscale_view()
 
-    showLive(args, fig, update)
+    showLive(
+        args,
+        fig,
+        update,
+    )
+
 
 def plotShoulder(args):
     """
@@ -1266,12 +1981,26 @@ def plotShoulder(args):
     """
     if not args.live:
         df = readQMCFiles(args.paths)
-        population, reference, _, _ = qmcPopulationColumns(df)
-        df = df.dropna(subset = [population, reference])
 
-        df = df[df[reference] != 0.0]
+        population, reference, _, _ = (
+            qmcPopulationColumns(df)
+        )
 
-        ratio = df[population] / df[reference]
+        df = df.dropna(
+            subset = [
+                population,
+                reference,
+            ]
+        )
+
+        df = df[
+            df[reference] != 0.0
+        ]
+
+        ratio = (
+            df[population]
+            / df[reference]
+        )
 
         setStyle()
         plt.figure()
@@ -1324,15 +2053,29 @@ def plotShoulder(args):
 
     def update():
         df = readQMCFiles(args.paths)
-        population, reference, _, _ = qmcPopulationColumns(df)
-        df = df.dropna(subset = [population, reference])
 
-        df = df[df[reference] != 0.0]
+        population, reference, _, _ = (
+            qmcPopulationColumns(df)
+        )
+
+        df = df.dropna(
+            subset = [
+                population,
+                reference,
+            ]
+        )
+
+        df = df[
+            df[reference] != 0.0
+        ]
 
         if df.empty:
             return
 
-        ratio = df[population] / df[reference]
+        ratio = (
+            df[population]
+            / df[reference]
+        )
 
         lineRatio.set_data(
             df[population].to_numpy(),
@@ -1342,7 +2085,12 @@ def plotShoulder(args):
         ax.relim()
         ax.autoscale_view()
 
-    showLive(args, fig, update)
+    showLive(
+        args,
+        fig,
+        update,
+    )
+
 
 def plotReferenceOverlap(args):
     """
@@ -1350,12 +2098,28 @@ def plotReferenceOverlap(args):
     """
     if not args.live:
         df = readQMCFiles(args.paths)
-        population, _, _, _ = qmcPopulationColumns(df)
-        df = df.dropna(subset = ["Iter", "EProjDen", population])
 
-        df = df[df[population] != 0.0]
+        population, _, _, _ = (
+            qmcPopulationColumns(df)
+        )
 
-        overlap = df["EProjDen"] / df[population]
+        df = df.dropna(
+            subset = [
+                "Iter",
+                "EProjDen",
+                population,
+            ]
+        )
+
+        df = df[
+            df[population] != 0.0
+        ]
+
+        overlap = (
+            df["EProjDen"]
+            / df[population]
+        )
+
         average = overlap.rolling(
             window = args.window,
             min_periods = 1,
@@ -1388,7 +2152,8 @@ def plotReferenceOverlap(args):
         formatAxes(
             xlabel = r"Iteration / $\tau$",
             ylabel = (
-                r"$\frac{\langle \Psi_{\mathrm{Ref}} | \Psi(\tau) \rangle}"
+                r"$\frac{\langle \Psi_{\mathrm{Ref}} | "
+                r"\Psi(\tau) \rangle}"
                 r"{N_w(\tau)}$"
             ),
             legend = True,
@@ -1408,7 +2173,8 @@ def plotReferenceOverlap(args):
         alpha = 0.7,
         color = "tab:blue",
         label = (
-            r"$\frac{\langle \Psi_{\mathrm{Ref}} | \Psi(\tau) \rangle}"
+            r"$\frac{\langle \Psi_{\mathrm{Ref}} | "
+            r"\Psi(\tau) \rangle}"
             r"{N_w(\tau)}$"
         ),
     )
@@ -1427,7 +2193,8 @@ def plotReferenceOverlap(args):
     formatAxes(
         xlabel = r"Iteration / $\tau$",
         ylabel = (
-            r"$\frac{\langle \Psi_{\mathrm{Ref}} | \Psi(\tau) \rangle}"
+            r"$\frac{\langle \Psi_{\mathrm{Ref}} | "
+            r"\Psi(\tau) \rangle}"
             r"{N_w(\tau)}$"
         ),
         legend = True,
@@ -1437,16 +2204,33 @@ def plotReferenceOverlap(args):
 
     def update():
         df = readQMCFiles(args.paths)
-        population, _, _, _ = qmcPopulationColumns(df)
-        df = df.dropna(subset = ["Iter", "EProjDen", population])
 
-        df = df[df[population] != 0.0]
+        population, _, _, _ = (
+            qmcPopulationColumns(df)
+        )
+
+        df = df.dropna(
+            subset = [
+                "Iter",
+                "EProjDen",
+                population,
+            ]
+        )
+
+        df = df[
+            df[population] != 0.0
+        ]
 
         if df.empty:
             return
 
         x = df["Iter"].to_numpy()
-        overlap = df["EProjDen"] / df[population]
+
+        overlap = (
+            df["EProjDen"]
+            / df[population]
+        )
+
         average = overlap.rolling(
             window = args.window,
             min_periods = 1,
@@ -1465,7 +2249,12 @@ def plotReferenceOverlap(args):
         ax.relim()
         ax.autoscale_view()
 
-    showLive(args, fig, update)
+    showLive(
+        args,
+        fig,
+        update,
+    )
+
 
 def setStyle():
     """
@@ -1475,122 +2264,332 @@ def setStyle():
     plt.rcParams["font.family"] = "serif"
     plt.rcParams["figure.figsize"] = (22, 10)
 
+
 def addCommonArgs(parser):
     """
     Add common output arguments to a subparser.
     """
-    parser.add_argument("--save", type = Path, default = None)
-    parser.add_argument("--dpi", type = int, default = 300)
+    parser.add_argument(
+        "--save",
+        type = Path,
+        default = None,
+    )
+
+    parser.add_argument(
+        "--dpi",
+        type = int,
+        default = 300,
+    )
+
 
 def buildParser():
     """
     Build the command-line parser.
     """
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest = "plot", required = True)
 
-    p = subparsers.add_parser("deterministic-coefficients")
-    p.add_argument("path", type = Path)
-    p.add_argument("--ncoeffs", type = int, default = 10)
-    p.add_argument("--space", choices = ["relevant", "null"], default = "relevant")
-    p.add_argument("--background-alpha", type = float, default = 0.18)
-    addCommonArgs(p)
-    p.set_defaults(func = plotDeterministicCoefficients)
+    subparsers = parser.add_subparsers(
+        dest = "plot",
+        required = True,
+    )
 
-    p = subparsers.add_parser("deterministic-population")
-    p.add_argument("path", type = Path)
+    p = subparsers.add_parser(
+        "deterministic-coefficients"
+    )
+
+    p.add_argument(
+        "path",
+        type = Path,
+    )
+
+    p.add_argument(
+        "--ncoeffs",
+        type = int,
+        default = 10,
+    )
+
+    p.add_argument(
+        "--space",
+        choices = [
+            "relevant",
+            "null",
+        ],
+        default = "relevant",
+    )
+
+    p.add_argument(
+        "--background-alpha",
+        type = float,
+        default = 0.18,
+    )
+
     addCommonArgs(p)
-    p.set_defaults(func = plotDeterministicNW)
-    
-    p = subparsers.add_parser("deterministic-projected-shift")
-    p.add_argument("path", type = Path)
+
+    p.set_defaults(
+        func = plotDeterministicCoefficients
+    )
+
+    p = subparsers.add_parser(
+        "deterministic-population"
+    )
+
+    p.add_argument(
+        "path",
+        type = Path,
+    )
+
+    addCommonArgs(p)
+
+    p.set_defaults(
+        func = plotDeterministicNW
+    )
+
+    p = subparsers.add_parser(
+        "deterministic-projected-shift"
+    )
+
+    p.add_argument(
+        "path",
+        type = Path,
+    )
+
     addTrajectoryArgs(p)
-    p.set_defaults(func = plotDeterministicProjectedShift)
 
-    p = subparsers.add_parser("energy")
-    p.add_argument("path", type = Path)
-    p.add_argument("tables_pos", nargs = "*", type = Path)
-    p.add_argument("--table", dest = "tables_opt", action = "append", type = Path, default = [])
-    p.add_argument("--table-label", action = "append", default = [])
+    p.set_defaults(
+        func = plotDeterministicProjectedShift
+    )
+
+    p = subparsers.add_parser(
+        "energy"
+    )
+
+    p.add_argument(
+        "path",
+        type = Path,
+    )
+
+    p.add_argument(
+        "tables_pos",
+        nargs = "*",
+        type = Path,
+    )
+
+    p.add_argument(
+        "--table",
+        dest = "tables_opt",
+        action = "append",
+        type = Path,
+        default = [],
+    )
+
+    p.add_argument(
+        "--table-label",
+        action = "append",
+        default = [],
+    )
+
+    p.add_argument(
+        "--nstates",
+        type = int,
+        default = 1,
+        help = (
+            "Number of lowest NOCI eigenvalues to plot."
+        ),
+    )
+
     p.add_argument(
         "--inset",
         nargs = 4,
         type = float,
-        metavar = ("XMIN", "XMAX", "YMIN", "YMAX"),
+        metavar = (
+            "XMIN",
+            "XMAX",
+            "YMIN",
+            "YMAX",
+        ),
         default = None,
-        help = "Add an inset with zoom limits XMIN XMAX YMIN YMAX.",
+        help = (
+            "Add an inset with zoom limits "
+            "XMIN XMAX YMIN YMAX."
+        ),
     )
+
     p.add_argument(
         "--inset-side",
-        choices = ["right", "left", "above", "below"],
+        choices = [
+            "right",
+            "left",
+            "above",
+            "below",
+        ],
         default = "right",
-        help = "Side of the zoom region where the inset is placed.",
+        help = (
+            "Side of the zoom region where "
+            "the inset is placed."
+        ),
     )
+
     p.add_argument(
         "--inset-location",
         nargs = 2,
         type = float,
-        metavar = ("LEFT", "BOTTOM"),
-        default = [0.72, 0.03],
-        help = "Inset lower-left position in axes-fraction coordinates.",
+        metavar = (
+            "LEFT",
+            "BOTTOM",
+        ),
+        default = [
+            0.72,
+            0.03,
+        ],
+        help = (
+            "Inset lower-left position in "
+            "axes-fraction coordinates."
+        ),
     )
+
     p.add_argument(
         "--inset-size",
         nargs = 2,
         type = float,
-        metavar = ("WIDTH", "HEIGHT"),
-        default = [0.25, 0.25],
-        help = "Inset size in axes-fraction coordinates.",
+        metavar = (
+            "WIDTH",
+            "HEIGHT",
+        ),
+        default = [
+            0.25,
+            0.25,
+        ],
+        help = (
+            "Inset size in axes-fraction coordinates."
+        ),
     )
-    addCommonArgs(p)
-    p.set_defaults(func = plotEnergy)
 
-    p = subparsers.add_parser("matrix")
-    p.add_argument("path", type = Path)
     addCommonArgs(p)
-    p.set_defaults(func = plotMatrix)
 
-    p = subparsers.add_parser("excitation-hist")
-    p.add_argument("path", type = Path)
+    p.set_defaults(
+        func = plotEnergy
+    )
+
+    p = subparsers.add_parser(
+        "matrix"
+    )
+
+    p.add_argument(
+        "path",
+        type = Path,
+    )
+
     addCommonArgs(p)
-    p.set_defaults(func = plotExcitationHist)
-    
-    p = subparsers.add_parser("nw")
-    p.add_argument("paths", nargs = "+", type = Path)
-    addTrajectoryArgs(p)
-    p.set_defaults(func = plotNW)
-    
-    p = subparsers.add_parser("projected-shift")
-    p.add_argument("paths", nargs = "+", type = Path)
-    addTrajectoryArgs(p)
-    p.set_defaults(func = plotProjectedShift)
-    
-    p = subparsers.add_parser("shoulder")
-    p.add_argument("paths", nargs = "+", type = Path)
-    addTrajectoryArgs(p)
-    p.set_defaults(func = plotShoulder)
 
-    p = subparsers.add_parser("reference-overlap")
-    p.add_argument("paths", nargs = "+", type = Path)
+    p.set_defaults(
+        func = plotMatrix
+    )
+
+    p = subparsers.add_parser(
+        "excitation-hist"
+    )
+
+    p.add_argument(
+        "path",
+        type = Path,
+    )
+
+    addCommonArgs(p)
+
+    p.set_defaults(
+        func = plotExcitationHist
+    )
+
+    p = subparsers.add_parser(
+        "nw"
+    )
+
+    p.add_argument(
+        "paths",
+        nargs = "+",
+        type = Path,
+    )
+
+    addTrajectoryArgs(p)
+
+    p.set_defaults(
+        func = plotNW
+    )
+
+    p = subparsers.add_parser(
+        "projected-shift"
+    )
+
+    p.add_argument(
+        "paths",
+        nargs = "+",
+        type = Path,
+    )
+
+    addTrajectoryArgs(p)
+
+    p.set_defaults(
+        func = plotProjectedShift
+    )
+
+    p = subparsers.add_parser(
+        "shoulder"
+    )
+
+    p.add_argument(
+        "paths",
+        nargs = "+",
+        type = Path,
+    )
+
+    addTrajectoryArgs(p)
+
+    p.set_defaults(
+        func = plotShoulder
+    )
+
+    p = subparsers.add_parser(
+        "reference-overlap"
+    )
+
+    p.add_argument(
+        "paths",
+        nargs = "+",
+        type = Path,
+    )
+
     p.add_argument(
         "--window",
         type = int,
         default = 1000,
-        help = "Number of output samples used in the rolling mean.",
+        help = (
+            "Number of output samples used "
+            "in the rolling mean."
+        ),
     )
+
     addTrajectoryArgs(p)
-    p.set_defaults(func = plotReferenceOverlap)
+
+    p.set_defaults(
+        func = plotReferenceOverlap
+    )
 
     return parser
+
 
 def finish(args):
     """
     Save a figure or show it interactively.
     """
     if args.save is not None:
-        plt.savefig(args.save, dpi = args.dpi, bbox_inches = "tight")
+        plt.savefig(
+            args.save,
+            dpi = args.dpi,
+            bbox_inches = "tight",
+        )
     else:
         plt.show()
+
 
 def main():
     """
