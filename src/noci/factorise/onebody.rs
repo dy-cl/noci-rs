@@ -16,12 +16,12 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::ExcitationSpinCache;
 use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, xw_f_overlap_prepared};
+use crate::{ExcitationSpinCache, ReducedDetState};
 
 #[cfg(target_arch = "x86_64")]
 use crate::nonorthogonalwicks::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};
@@ -1240,12 +1240,11 @@ fn apply_orthogonal_beta_singles<T: NOCIScalar>(
 }
 
 /// Build same-spin `S` and `F` factor rows from prepared Wick pair batches.
-/// Independent source components are evaluated together so the prepared evaluator can select
-/// the widest available CPU vector kernel while preserving the scalar fallback.
+/// Independent source components are evaluated together so the widest fixed-rank SIMD kernel can be used.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data.
-/// - `reps`: Representative determinants for target and source spin components.
+/// - `reps`: Reduced target and source spin representatives.
 /// - `rows`: Target-row range to fill.
 /// - `target_left`: Whether target determinants are left determinants in `pair`.
 /// - `alpha`: Whether to build alpha or beta factors.
@@ -1255,7 +1254,7 @@ fn apply_orthogonal_beta_singles<T: NOCIScalar>(
 fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    reps: (&[usize], &[usize]),
+    reps: (&[ReducedDetState], &[ReducedDetState]),
     rows: Range<usize>,
     target_left: bool,
     alpha: bool,
@@ -1270,24 +1269,28 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
         .par_chunks_mut(nsource)
         .zip(out.1[row0 * nsource..row1 * nsource].par_chunks_mut(nsource))
         .zip(target_reps[row0..row1].par_iter())
-        .for_each_init(WickScratchSpin::new, |scratch, ((srow, frow), &tdet)| {
-            build_spin_one_body_factor_row(
-                pair,
-                data,
-                (tdet, source_reps),
-                target_left,
-                alpha,
-                scratch,
-                (srow, frow),
-            );
-        });
+        .for_each_init(
+            WickScratchSpin::new,
+            |scratch, ((srow, frow), &target_rep)| {
+                build_spin_one_body_factor_row(
+                    pair,
+                    data,
+                    (target_rep, source_reps),
+                    target_left,
+                    alpha,
+                    scratch,
+                    (srow, frow),
+                );
+            },
+        );
 }
 
 /// Build one same-spin `S` and `F` factor row from prepared Wick pair batches.
+/// Fixed-rank paths read phase and excitation metadata directly from `ReducedDetState`.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
-/// - `data`: Shared NOCI determinant data.
-/// - `reps`: Target representative determinant and source representative determinants.
+/// - `data`: Shared NOCI determinant data used by the generic fallback.
+/// - `reps`: Reduced target representative and source representatives.
 /// - `target_left`: Whether the target determinant belongs to the left Wick reference.
 /// - `alpha`: Whether to evaluate alpha-alpha or beta-beta factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
@@ -1297,34 +1300,23 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    reps: (usize, &[usize]),
+    reps: (ReducedDetState, &[ReducedDetState]),
     target_left: bool,
     alpha: bool,
     scratch: &mut WickScratchSpin<T>,
     out: (&mut [T], &mut [T]),
 ) {
-    let (target_det, source_reps) = reps;
+    let (target_rep, source_reps) = reps;
     let (srow, frow) = out;
 
-    let target = &data.basis[target_det];
-
-    let (w, target_ex, target_cache, target_phase, scratch) = if alpha {
-        (
-            &pair.aa,
-            &target.excitation.alpha,
-            target.excitation_cache.alpha,
-            target.pha,
-            &mut scratch.aa,
-        )
+    let (w, scratch) = if alpha {
+        (&pair.aa, &mut scratch.aa)
     } else {
-        (
-            &pair.bb,
-            &target.excitation.beta,
-            target.excitation_cache.beta,
-            target.phb,
-            &mut scratch.bb,
-        )
+        (&pair.bb, &mut scratch.bb)
     };
+
+    let target_cache = target_rep.excitation_cache;
+    let target_phase = target_rep.phase;
 
     #[cfg(target_arch = "x86_64")]
     if TypeId::of::<T>() == TypeId::of::<f64>() && w.m == 0 {
@@ -1340,23 +1332,9 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
                 let mut outputs = [[0usize; 8]; 5];
                 let mut counts = [0usize; 5];
 
-                for (col, &source_det) in source_reps.iter().enumerate() {
-                    let source = &data.basis[source_det];
-
-                    let (source_ex, source_cache, source_phase) = if alpha {
-                        (
-                            &source.excitation.alpha,
-                            source.excitation_cache.alpha,
-                            source.pha,
-                        )
-                    } else {
-                        (
-                            &source.excitation.beta,
-                            source.excitation_cache.beta,
-                            source.phb,
-                        )
-                    };
-
+                for (col, source_rep) in source_reps.iter().enumerate() {
+                    let source_cache = source_rep.excitation_cache;
+                    let source_phase = source_rep.phase;
                     let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
 
                     if (1..=4).contains(&l) {
@@ -1389,9 +1367,19 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
                                 srow_f64[output] = phase * s[lane];
                                 frow_f64[output] = phase * f[lane];
                             }
+
                             counts[l] = 0;
                         }
                     } else {
+                        let target = &data.basis[target_rep.det];
+                        let source = &data.basis[source_rep.det];
+
+                        let (target_ex, source_ex) = if alpha {
+                            (&target.excitation.alpha, &source.excitation.alpha)
+                        } else {
+                            (&target.excitation.beta, &source.excitation.beta)
+                        };
+
                         let (x_ex, w_ex) = if target_left {
                             (target_ex, source_ex)
                         } else {
@@ -1450,23 +1438,9 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
                 let mut outputs = [[0usize; 4]; 5];
                 let mut counts = [0usize; 5];
 
-                for (col, &source_det) in source_reps.iter().enumerate() {
-                    let source = &data.basis[source_det];
-
-                    let (source_ex, source_cache, source_phase) = if alpha {
-                        (
-                            &source.excitation.alpha,
-                            source.excitation_cache.alpha,
-                            source.pha,
-                        )
-                    } else {
-                        (
-                            &source.excitation.beta,
-                            source.excitation_cache.beta,
-                            source.phb,
-                        )
-                    };
-
+                for (col, source_rep) in source_reps.iter().enumerate() {
+                    let source_cache = source_rep.excitation_cache;
+                    let source_phase = source_rep.phase;
                     let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
 
                     if (1..=4).contains(&l) {
@@ -1499,9 +1473,19 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
                                 srow_f64[output] = phase * s[lane];
                                 frow_f64[output] = phase * f[lane];
                             }
+
                             counts[l] = 0;
                         }
                     } else {
+                        let target = &data.basis[target_rep.det];
+                        let source = &data.basis[source_rep.det];
+
+                        let (target_ex, source_ex) = if alpha {
+                            (&target.excitation.alpha, &source.excitation.alpha)
+                        } else {
+                            (&target.excitation.beta, &source.excitation.beta)
+                        };
+
                         let (x_ex, w_ex) = if target_left {
                             (target_ex, source_ex)
                         } else {
@@ -1556,13 +1540,20 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
         }
     }
 
-    for (col, &source_det) in source_reps.iter().enumerate() {
-        let source = &data.basis[source_det];
+    // The generic path requires the full excitation bit masks rather than only the fixed-rank cache.
+    let target = &data.basis[target_rep.det];
+    let target_ex = if alpha {
+        &target.excitation.alpha
+    } else {
+        &target.excitation.beta
+    };
 
-        let (source_ex, source_phase) = if alpha {
-            (&source.excitation.alpha, source.pha)
+    for (col, source_rep) in source_reps.iter().enumerate() {
+        let source = &data.basis[source_rep.det];
+        let source_ex = if alpha {
+            &source.excitation.alpha
         } else {
-            (&source.excitation.beta, source.phb)
+            &source.excitation.beta
         };
 
         let (x_ex, w_ex) = if target_left {
@@ -1572,7 +1563,7 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
         };
 
         let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
-        let phase = T::from_real(target_phase * source_phase);
+        let phase = T::from_real(target_phase * source_rep.phase);
 
         srow[col] = phase * s;
         frow[col] = phase * f;

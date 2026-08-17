@@ -166,6 +166,67 @@ pub struct ExcitationCache {
     pub beta: ExcitationSpinCache,
 }
 
+/// Reduced determinant metadata used by fixed-rank determinant-space contractions.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReducedDetState {
+    /// Global determinant index used to recover the full `DetState` when required.
+    pub(crate) det: usize,
+    /// Fermionic phase `\phi` relative to the parent determinant for this spin sector.
+    pub(crate) phase: f64,
+    /// Cached excitation rank and orbital labels for this spin sector.
+    pub(crate) excitation_cache: ExcitationSpinCache,
+}
+
+impl ReducedDetState {
+    /// Construct reduced determinant metadata for one spin sector.
+    /// # Arguments:
+    /// - `det`: Global determinant index `I`.
+    /// - `phase`: Fermionic phase `\phi_I` relative to the parent determinant.
+    /// - `excitation_cache`: Cached excitation rank and orbital labels.
+    /// # Returns
+    /// - `ReducedDetState`: Reduced metadata for determinant `I`.
+    #[inline(always)]
+    pub(crate) fn new(
+        det: usize,
+        phase: f64,
+        excitation_cache: ExcitationSpinCache,
+    ) -> Self {
+        Self {
+            det,
+            phase,
+            excitation_cache,
+        }
+    }
+
+    /// Construct reduced alpha-spin metadata from a full determinant state.
+    /// # Arguments:
+    /// - `det`: Global determinant index `I`.
+    /// - `state`: Full determinant state containing alpha-spin phase and excitation metadata.
+    /// # Returns
+    /// - `ReducedDetState`: Reduced alpha-spin metadata for determinant `I`.
+    #[inline(always)]
+    pub(crate) fn from_alpha<T: StateScalar>(
+        det: usize,
+        state: &DetState<T>,
+    ) -> Self {
+        Self::new(det, state.pha, state.excitation_cache.alpha)
+    }
+
+    /// Construct reduced beta-spin metadata from a full determinant state.
+    /// # Arguments:
+    /// - `det`: Global determinant index `I`.
+    /// - `state`: Full determinant state containing beta-spin phase and excitation metadata.
+    /// # Returns
+    /// - `ReducedDetState`: Reduced beta-spin metadata for determinant `I`.
+    #[inline(always)]
+    pub(crate) fn from_beta<T: StateScalar>(
+        det: usize,
+        state: &DetState<T>,
+    ) -> Self {
+        Self::new(det, state.phb, state.excitation_cache.beta)
+    }
+}
+
 /// Data shared by post-SCF NOCI, NOCI-QMC, and SNOCI methods.
 pub struct PostSCFData<'a, T: NOCIScalar> {
     /// AO integrals and other system data.

@@ -466,12 +466,12 @@ impl SpinFactorisation {
                     afac.resize(nsa, 0.0);
                     bfac.resize(nsb, 0.0);
 
-                    let tadet = self.parents[target.parent].areps[t.a];
-                    let tbdet = self.parents[target.parent].breps[t.b];
+                    let tadet = self.parents[target.parent].areps[t.a].det;
+                    let tbdet = self.parents[target.parent].breps[t.b].det;
 
                     // Construct A^{QP}_{\bar a a} and B^{QP}_{\bar b b} once for this target row.
                     for (pos, &sa) in source.aids.iter().enumerate() {
-                        let sdet = self.parents[source.parent].areps[sa];
+                        let sdet = self.parents[source.parent].areps[sa].det;
                         let (ldet, gdet) = if target_left {
                             (&data.basis[tadet], &data.basis[sdet])
                         } else {
@@ -482,7 +482,7 @@ impl SpinFactorisation {
                     }
 
                     for (pos, &sb) in source.bids.iter().enumerate() {
-                        let sdet = self.parents[source.parent].breps[sb];
+                        let sdet = self.parents[source.parent].breps[sb].det;
                         let (ldet, gdet) = if target_left {
                             (&data.basis[tbdet], &data.basis[sdet])
                         } else {
@@ -708,40 +708,46 @@ impl SpinFactorisation {
 
         let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
 
-        // Build A rows independently; each task owns one output row.
+        // Build `A` rows independently; each task owns one output row.
         scratch
             .afac
             .par_chunks_mut(nsa)
             .zip(target.aids.par_iter())
             .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &ta)| {
                 let pair = wicks.pair(lp, gp);
-                let tdet = self.parents[target.parent].areps[ta];
+                let tdet = self.parents[target.parent].areps[ta].det;
+
                 for (col, &sa) in source.aids.iter().enumerate() {
-                    let sdet = self.parents[source.parent].areps[sa];
+                    let sdet = self.parents[source.parent].areps[sa].det;
+
                     let (ldet, gdet) = if target_left {
                         (&data.basis[tdet], &data.basis[sdet])
                     } else {
                         (&data.basis[sdet], &data.basis[tdet])
                     };
+
                     row[col] = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
                 }
             });
 
-        // Build B rows independently; each task owns one output row.
+        // Build `B` rows independently; each task owns one output row.
         scratch
             .bfac
             .par_chunks_mut(nsb)
             .zip(target.bids.par_iter())
             .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &tb)| {
                 let pair = wicks.pair(lp, gp);
-                let tdet = self.parents[target.parent].breps[tb];
+                let tdet = self.parents[target.parent].breps[tb].det;
+
                 for (col, &sb) in source.bids.iter().enumerate() {
-                    let sdet = self.parents[source.parent].breps[sb];
+                    let sdet = self.parents[source.parent].breps[sb].det;
+
                     let (ldet, gdet) = if target_left {
                         (&data.basis[tdet], &data.basis[sdet])
                     } else {
                         (&data.basis[sdet], &data.basis[tdet])
                     };
+
                     row[col] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
                 }
             });

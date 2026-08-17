@@ -8,7 +8,7 @@ use std::arch::x86_64::{
     _mm_add_sd, _mm_cvtsd_f64, _mm256_add_pd, _mm256_castpd256_pd128, _mm256_extractf128_pd,
     _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_mul_pd,
     _mm256_set_pd, _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd, _mm256_sub_pd,
-    _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_loadu_pd, _mm512_mul_pd,
+    _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_loadu_pd, _mm512_mul_pd, _mm512_set_pd,
     _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd, _mm512_sub_pd,
 };
 
@@ -1518,21 +1518,10 @@ fn xw_f_overlap_m0_l4_prepared<T: NOCIScalar>(
     })
 }
 
-/// Prepare and evaluate 4 independent real fixed-rank `L = 4` matrix elements for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates the same
-/// determinant, cofactor and generalised-Fock algebra for 4 independent excitation pairs without
-/// horizontal reductions between pairs.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `x_ex`: 4 x-reference excitations with cached ranks and decoded orbital indices.
-/// - `w_ex`: 4 w-reference excitations with cached ranks and decoded orbital indices.
-/// - `overlap`: Real overlap output slice in SIMD-lane order.
-/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
-/// # Returns
-/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements in SIMD-lane order.
+/// Prepare and evaluate 4 real `m = 0`, `L = 4` overlap and generalised-Fock matrix elements.
+/// Each AVX2 lane represents one independent Wick pair.
 /// # Safety
-/// - The caller must ensure `T = f64` and CPU support for `AVX2/FMA`.
-/// - Cached excitation labels must define valid contraction indices for the dimensions stored in `w`.
+/// The caller must ensure `T = f64`, AVX2/FMA support and valid cached excitation labels.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
@@ -1544,26 +1533,27 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
 ) {
     unsafe {
         let n = w.n();
+
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
 
-        // Preserve the four contraction-label sets because the generalised-Fock matrix
-        // element is consumed once per cofactor and therefore does not need its own
-        // 16 x 4 scalar staging buffer.
+        // Construct the integer labels defining each lane's `4 x 4` contraction matrix `\mathbf D`.
         let mut rows = [[0usize; 4]; 4];
         let mut cols = [[0usize; 4]; 4];
-        let mut d = [[0.0f64; 4]; 16];
 
         for lane in 0..4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             construct_determinant_indices_l4(
                 x_data.rank,
                 &x_data.indices,
@@ -1572,40 +1562,21 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
                 &mut rows[lane],
                 &mut cols[lane],
             );
-
-            let r0 = rows[lane][0];
-            let r1 = rows[lane][1];
-            let r2 = rows[lane][2];
-            let r3 = rows[lane][3];
-            let c0 = cols[lane][0];
-            let c1 = cols[lane][1];
-            let c2 = cols[lane][2];
-            let c3 = cols[lane][3];
-
-            d[0][lane] = *x0.get_unchecked(r0 * n + c0);
-            d[1][lane] = *y0.get_unchecked(r0 * n + c1);
-            d[2][lane] = *y0.get_unchecked(r0 * n + c2);
-            d[3][lane] = *y0.get_unchecked(r0 * n + c3);
-
-            d[4][lane] = *x0.get_unchecked(r1 * n + c0);
-            d[5][lane] = *x0.get_unchecked(r1 * n + c1);
-            d[6][lane] = *y0.get_unchecked(r1 * n + c2);
-            d[7][lane] = *y0.get_unchecked(r1 * n + c3);
-
-            d[8][lane] = *x0.get_unchecked(r2 * n + c0);
-            d[9][lane] = *x0.get_unchecked(r2 * n + c1);
-            d[10][lane] = *x0.get_unchecked(r2 * n + c2);
-            d[11][lane] = *y0.get_unchecked(r2 * n + c3);
-
-            d[12][lane] = *x0.get_unchecked(r3 * n + c0);
-            d[13][lane] = *x0.get_unchecked(r3 * n + c1);
-            d[14][lane] = *x0.get_unchecked(r3 * n + c2);
-            d[15][lane] = *x0.get_unchecked(r3 * n + c3);
         }
 
-        // Each Fock element is used exactly once. Build the four-lane vector directly
-        // from the four pair-specific contraction labels instead of staging 64 scalars
-        // to the stack and loading them back into a YMM register.
+        // Gather one `D_{ij}` across the four independent matrix elements.
+        macro_rules! dvec {
+            ($slice:expr, $row:expr, $col:expr) => {{
+                _mm256_set_pd(
+                    *$slice.get_unchecked(rows[3][$row] * n + cols[3][$col]),
+                    *$slice.get_unchecked(rows[2][$row] * n + cols[2][$col]),
+                    *$slice.get_unchecked(rows[1][$row] * n + cols[1][$col]),
+                    *$slice.get_unchecked(rows[0][$row] * n + cols[0][$col]),
+                )
+            }};
+        }
+
+        // Gather `\mathcal F_{ij}` only when its cofactor `C_{ij}` is ready for contraction.
         macro_rules! fvec {
             ($row:expr, $col:expr) => {{
                 _mm256_set_pd(
@@ -1617,612 +1588,242 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
             }};
         }
 
+        // Evaluate the `2 x 2` minor `ab - cd` with the same operation order as the previous kernel.
+        macro_rules! minor {
+            ($a:expr, $b:expr, $c:expr, $d:expr) => {{ _mm256_fmsub_pd($a, $b, _mm256_mul_pd($c, $d)) }};
+        }
+
+        // Evaluate `C = a M_0 - b M_1 + c M_2` with the original `fmsub` then `fmadd` ordering.
+        macro_rules! cof_pos {
+            ($a:expr, $m0:expr, $b:expr, $m1:expr, $c:expr, $m2:expr) => {{
+                let t = _mm256_fmsub_pd($a, $m0, _mm256_mul_pd($b, $m1));
+                _mm256_fmadd_pd($c, $m2, t)
+            }};
+        }
+
+        // Evaluate `C = -(a M_0 - b M_1 + c M_2)` without reassociating the `3 x 3` determinant.
+        macro_rules! cof_neg {
+            ($a:expr, $m0:expr, $b:expr, $m1:expr, $c:expr, $m2:expr) => {{
+                let t = _mm256_fmsub_pd($a, $m0, _mm256_mul_pd($b, $m1));
+                let value = _mm256_fmadd_pd($c, $m2, t);
+                _mm256_sub_pd(_mm256_setzero_pd(), value)
+            }};
+        }
+
+        // The old 16 cofactors contain `16 x 3 = 48` minor occurrences. Preserving their exact
+        // expansions leaves `6 + 6 + 6 = 18` distinct minors, so 18 is the lower bound for this DAG.
+        // AVX2 cannot keep all 16 `D_{ij}` plus these intermediates live, so `D_{ij}` is reloaded by group.
+
+        // `B_{ab} = D_{2a}D_{3b} - D_{2b}D_{3a}` supplies cofactor rows 0 and 1.
+        let (b01, b02, b03, b12, b13, b23) = {
+            let d20 = dvec!(x0, 2, 0);
+            let d21 = dvec!(x0, 2, 1);
+            let d22 = dvec!(x0, 2, 2);
+            let d23 = dvec!(y0, 2, 3);
+
+            let d30 = dvec!(x0, 3, 0);
+            let d31 = dvec!(x0, 3, 1);
+
+            let b01 = minor!(d20, d31, d21, d30);
+
+            let d32 = dvec!(x0, 3, 2);
+
+            let b02 = minor!(d20, d32, d22, d30);
+            let b12 = minor!(d21, d32, d22, d31);
+
+            let d33 = dvec!(x0, 3, 3);
+
+            let b03 = minor!(d20, d33, d23, d30);
+            let b13 = minor!(d21, d33, d23, d31);
+            let b23 = minor!(d22, d33, d23, d32);
+
+            (b01, b02, b03, b12, b13, b23)
+        };
+
+        // Form `det(\mathbf D) = \sum_j D_{0j}C_{0j}` and row 0 of `C:\mathcal F`.
         let mut det_v = _mm256_setzero_pd();
         let mut repl0 = _mm256_setzero_pd();
-        let mut repl1 = _mm256_setzero_pd();
-        let mut repl2 = _mm256_setzero_pd();
-        let mut repl3 = _mm256_setzero_pd();
 
-        let cof00 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m2, t)
-        };
-        det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[0].as_ptr()), cof00, det_v);
-        repl0 = _mm256_fmadd_pd(fvec!(0, 0), cof00, repl0);
+        {
+            let d10 = dvec!(x0, 1, 0);
+            let d11 = dvec!(x0, 1, 1);
+            let d12 = dvec!(y0, 1, 2);
+            let d13 = dvec!(y0, 1, 3);
 
-        let cof01 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[1].as_ptr()), cof01, det_v);
-        repl0 = _mm256_fmadd_pd(fvec!(0, 1), cof01, repl0);
+            let cof00 = cof_pos!(d11, b23, d12, b13, d13, b12);
+            det_v = _mm256_fmadd_pd(dvec!(x0, 0, 0), cof00, det_v);
+            repl0 = _mm256_fmadd_pd(fvec!(0, 0), cof00, repl0);
 
-        let cof02 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m2, t)
-        };
-        det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), cof02, det_v);
-        repl0 = _mm256_fmadd_pd(fvec!(0, 2), cof02, repl0);
+            let cof01 = cof_neg!(d10, b23, d12, b03, d13, b02);
+            det_v = _mm256_fmadd_pd(dvec!(y0, 0, 1), cof01, det_v);
+            repl0 = _mm256_fmadd_pd(fvec!(0, 1), cof01, repl0);
 
-        let cof03 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[6].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), cof03, det_v);
-        repl0 = _mm256_fmadd_pd(fvec!(0, 3), cof03, repl0);
+            let cof02 = cof_pos!(d10, b13, d11, b03, d13, b01);
+            det_v = _mm256_fmadd_pd(dvec!(y0, 0, 2), cof02, det_v);
+            repl0 = _mm256_fmadd_pd(fvec!(0, 2), cof02, repl0);
 
-        let cof10 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[1].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[2].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        repl1 = _mm256_fmadd_pd(fvec!(1, 0), cof10, repl1);
+            let cof03 = cof_neg!(d10, b12, d11, b02, d12, b01);
+            det_v = _mm256_fmadd_pd(dvec!(y0, 0, 3), cof03, det_v);
+            repl0 = _mm256_fmadd_pd(fvec!(0, 3), cof03, repl0);
+        }
 
-        let cof11 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[2].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl1 = _mm256_fmadd_pd(fvec!(1, 1), cof11, repl1);
-
-        let cof12 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[11].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[1].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        repl1 = _mm256_fmadd_pd(fvec!(1, 2), cof12, repl1);
-
-        let cof13 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[8].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[1].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), m2, t)
-        };
-        repl1 = _mm256_fmadd_pd(fvec!(1, 3), cof13, repl1);
-
-        let cof20 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[6].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[1].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[2].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl2 = _mm256_fmadd_pd(fvec!(2, 0), cof20, repl2);
-
-        let cof21 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[6].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[2].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        repl2 = _mm256_fmadd_pd(fvec!(2, 1), cof21, repl2);
-
-        let cof22 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[15].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[5].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[1].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl2 = _mm256_fmadd_pd(fvec!(2, 2), cof22, repl2);
-
-        let cof23 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[5].as_ptr()),
-                    _mm256_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[1].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        repl2 = _mm256_fmadd_pd(fvec!(2, 3), cof23, repl2);
-
-        let cof30 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[6].as_ptr()),
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[1].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[2].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        repl3 = _mm256_fmadd_pd(fvec!(3, 0), cof30, repl3);
-
-        let cof31 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[6].as_ptr()),
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[10].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[2].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl3 = _mm256_fmadd_pd(fvec!(3, 1), cof31, repl3);
-
-        let cof32 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[7].as_ptr()),
-                    _mm256_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[5].as_ptr()),
-                    _mm256_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[1].as_ptr()), m1),
-            );
-            let minor = _mm256_fmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm256_sub_pd(_mm256_setzero_pd(), minor)
-        };
-        repl3 = _mm256_fmadd_pd(fvec!(3, 2), cof32, repl3);
-
-        let cof33 = {
-            let m0 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let m1 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[6].as_ptr()),
-                    _mm256_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let m2 = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_mul_pd(
-                    _mm256_loadu_pd(d[5].as_ptr()),
-                    _mm256_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let t = _mm256_fmsub_pd(
-                _mm256_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm256_mul_pd(_mm256_loadu_pd(d[1].as_ptr()), m1),
-            );
-            _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), m2, t)
-        };
-        repl3 = _mm256_fmadd_pd(fvec!(3, 3), cof33, repl3);
-
-        let repl01 = _mm256_add_pd(repl0, repl1);
-        let repl23 = _mm256_add_pd(repl2, repl3);
-        let repl_v = _mm256_add_pd(repl01, repl23);
-
-        let pref_v = _mm256_set1_pd(pref);
-        let f0_v = _mm256_set1_pd(f0);
-        let overlap_v = _mm256_mul_pd(det_v, pref_v);
-        let contrib = _mm256_fmsub_pd(det_v, f0_v, repl_v);
-        let fock_v = _mm256_mul_pd(contrib, pref_v);
-
+        // Store `det(\mathbf D)` at its first natural endpoint so it does not remain live across all cofactors.
         let mut det_lane = [0.0f64; 4];
         let mut overlap_lane = [0.0f64; 4];
         let mut fock_lane = [0.0f64; 4];
 
         _mm256_storeu_pd(det_lane.as_mut_ptr(), det_v);
+
+        // Reuse the same six `B_{ab}` values for row 1 of `C:\mathcal F`.
+        let mut repl1 = _mm256_setzero_pd();
+
+        {
+            let d00 = dvec!(x0, 0, 0);
+            let d01 = dvec!(y0, 0, 1);
+            let d02 = dvec!(y0, 0, 2);
+            let d03 = dvec!(y0, 0, 3);
+
+            let cof10 = cof_neg!(d01, b23, d02, b13, d03, b12);
+            repl1 = _mm256_fmadd_pd(fvec!(1, 0), cof10, repl1);
+
+            let cof11 = cof_pos!(d00, b23, d02, b03, d03, b02);
+            repl1 = _mm256_fmadd_pd(fvec!(1, 1), cof11, repl1);
+
+            let cof12 = cof_neg!(d00, b13, d01, b03, d03, b01);
+            repl1 = _mm256_fmadd_pd(fvec!(1, 2), cof12, repl1);
+
+            let cof13 = cof_pos!(d00, b12, d01, b02, d02, b01);
+            repl1 = _mm256_fmadd_pd(fvec!(1, 3), cof13, repl1);
+        }
+
+        let repl01 = _mm256_add_pd(repl0, repl1);
+
+        // `Q_{ab} = D_{1a}D_{3b} - D_{1b}D_{3a}` supplies cofactor row 2.
+        let (q01, q02, q03, q12, q13, q23) = {
+            let d10 = dvec!(x0, 1, 0);
+            let d11 = dvec!(x0, 1, 1);
+            let d12 = dvec!(y0, 1, 2);
+            let d13 = dvec!(y0, 1, 3);
+
+            let d30 = dvec!(x0, 3, 0);
+            let d31 = dvec!(x0, 3, 1);
+
+            let q01 = minor!(d10, d31, d11, d30);
+
+            let d32 = dvec!(x0, 3, 2);
+
+            let q02 = minor!(d10, d32, d12, d30);
+            let q12 = minor!(d11, d32, d12, d31);
+
+            let d33 = dvec!(x0, 3, 3);
+
+            let q03 = minor!(d10, d33, d13, d30);
+            let q13 = minor!(d11, d33, d13, d31);
+            let q23 = minor!(d12, d33, d13, d32);
+
+            (q01, q02, q03, q12, q13, q23)
+        };
+
+        let mut repl2 = _mm256_setzero_pd();
+
+        {
+            let d00 = dvec!(x0, 0, 0);
+            let d01 = dvec!(y0, 0, 1);
+            let d02 = dvec!(y0, 0, 2);
+            let d03 = dvec!(y0, 0, 3);
+
+            let cof20 = cof_pos!(d01, q23, d02, q13, d03, q12);
+            repl2 = _mm256_fmadd_pd(fvec!(2, 0), cof20, repl2);
+
+            let cof21 = cof_neg!(d00, q23, d02, q03, d03, q02);
+            repl2 = _mm256_fmadd_pd(fvec!(2, 1), cof21, repl2);
+
+            let cof22 = cof_pos!(d00, q13, d01, q03, d03, q01);
+            repl2 = _mm256_fmadd_pd(fvec!(2, 2), cof22, repl2);
+
+            let cof23 = cof_neg!(d00, q12, d01, q02, d02, q01);
+            repl2 = _mm256_fmadd_pd(fvec!(2, 3), cof23, repl2);
+        }
+
+        // `R_{ab} = D_{1a}D_{2b} - D_{1b}D_{2a}` supplies cofactor row 3.
+        let (r01, r02, r03, r12, r13, r23) = {
+            let d10 = dvec!(x0, 1, 0);
+            let d11 = dvec!(x0, 1, 1);
+            let d12 = dvec!(y0, 1, 2);
+            let d13 = dvec!(y0, 1, 3);
+
+            let d20 = dvec!(x0, 2, 0);
+            let d21 = dvec!(x0, 2, 1);
+
+            let r01 = minor!(d10, d21, d11, d20);
+
+            let d22 = dvec!(x0, 2, 2);
+
+            let r02 = minor!(d10, d22, d12, d20);
+            let r12 = minor!(d11, d22, d12, d21);
+
+            let d23 = dvec!(y0, 2, 3);
+
+            let r03 = minor!(d10, d23, d13, d20);
+            let r13 = minor!(d11, d23, d13, d21);
+            let r23 = minor!(d12, d23, d13, d22);
+
+            (r01, r02, r03, r12, r13, r23)
+        };
+
+        let mut repl3 = _mm256_setzero_pd();
+
+        {
+            let d00 = dvec!(x0, 0, 0);
+            let d01 = dvec!(y0, 0, 1);
+            let d02 = dvec!(y0, 0, 2);
+            let d03 = dvec!(y0, 0, 3);
+
+            let cof30 = cof_neg!(d01, r23, d02, r13, d03, r12);
+            repl3 = _mm256_fmadd_pd(fvec!(3, 0), cof30, repl3);
+
+            let cof31 = cof_pos!(d00, r23, d02, r03, d03, r02);
+            repl3 = _mm256_fmadd_pd(fvec!(3, 1), cof31, repl3);
+
+            let cof32 = cof_neg!(d00, r13, d01, r03, d03, r01);
+            repl3 = _mm256_fmadd_pd(fvec!(3, 2), cof32, repl3);
+
+            let cof33 = cof_pos!(d00, r12, d01, r02, d02, r01);
+            repl3 = _mm256_fmadd_pd(fvec!(3, 3), cof33, repl3);
+        }
+
+        // Preserve the previous contraction tree `((repl0 + repl1) + (repl2 + repl3))`.
+        let repl23 = _mm256_add_pd(repl2, repl3);
+        let repl_v = _mm256_add_pd(repl01, repl23);
+
+        let det_v = _mm256_loadu_pd(det_lane.as_ptr());
+        let pref_v = _mm256_set1_pd(pref);
+        let f0_v = _mm256_set1_pd(f0);
+
+        // `S = P det(\mathbf D)` and `F = P[F_0 det(\mathbf D) - C:\mathcal F]`.
+        let overlap_v = _mm256_mul_pd(det_v, pref_v);
+        let contrib = _mm256_fmsub_pd(det_v, f0_v, repl_v);
+        let fock_v = _mm256_mul_pd(contrib, pref_v);
+
         _mm256_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
 
         for lane in 0..4 {
             if det_lane[lane].is_finite() {
-                *overlap.get_unchecked_mut(lane) = overlap_lane[lane];
-                *fock.get_unchecked_mut(lane) = fock_lane[lane];
+                overlap[lane] = overlap_lane[lane];
+                fock[lane] = fock_lane[lane];
             } else {
-                *overlap.get_unchecked_mut(lane) = 0.0;
-                *fock.get_unchecked_mut(lane) = 0.0;
+                overlap[lane] = 0.0;
+                fock[lane] = 0.0;
             }
         }
     }
 }
 
-/// Prepare and evaluate 8 independent real fixed-rank `L = 4` matrix elements for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates the same
-/// determinant, cofactor and generalised-Fock algebra for 8 independent excitation pairs without
-/// horizontal reductions between pairs.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `x_ex`: 8 x-reference excitations with cached ranks and decoded orbital indices.
-/// - `w_ex`: 8 w-reference excitations with cached ranks and decoded orbital indices.
-/// - `overlap`: Real overlap output slice in SIMD-lane order.
-/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
-/// # Returns
-/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements in SIMD-lane order.
+/// Prepare and evaluate 8 real `m = 0`, `L = 4` overlap and generalised-Fock matrix elements.
+/// Each AVX-512 lane represents one independent Wick pair.
 /// # Safety
-/// - The caller must ensure `T = f64` and CPU support for `AVX-512`.
+/// The caller must ensure `T = f64`, AVX-512 support and valid cached excitation labels.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
@@ -2234,6 +1835,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
 ) {
     unsafe {
         let n = w.n();
+
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
@@ -2246,616 +1848,195 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
 
-        let mut d = [[0.0f64; 8]; 16];
-        let mut ff = [[0.0f64; 8]; 16];
+        // Construct the integer labels defining each lane's `4 x 4` contraction matrix `\mathbf D`.
+        let mut rows = [[0usize; 4]; 8];
+        let mut cols = [[0usize; 4]; 8];
+
         for lane in 0..8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
 
-            let mut rows = [0usize; 4];
-            let mut cols = [0usize; 4];
             construct_determinant_indices_l4(
                 x_data.rank,
                 &x_data.indices,
                 &w_data.indices,
                 w,
-                &mut rows,
-                &mut cols,
+                &mut rows[lane],
+                &mut cols[lane],
             );
-
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            ff[0][lane] = fsl[cols[0] * n + rows[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            ff[1][lane] = fsl[cols[1] * n + rows[0]];
-
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            ff[2][lane] = fsl[cols[2] * n + rows[0]];
-
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-            ff[3][lane] = fsl[cols[3] * n + rows[0]];
-            d[4][lane] = x0[rows[1] * n + cols[0]];
-            ff[4][lane] = fsl[cols[0] * n + rows[1]];
-            d[5][lane] = x0[rows[1] * n + cols[1]];
-            ff[5][lane] = fsl[cols[1] * n + rows[1]];
-            d[6][lane] = y0[rows[1] * n + cols[2]];
-            ff[6][lane] = fsl[cols[2] * n + rows[1]];
-            d[7][lane] = y0[rows[1] * n + cols[3]];
-            ff[7][lane] = fsl[cols[3] * n + rows[1]];
-            d[8][lane] = x0[rows[2] * n + cols[0]];
-            ff[8][lane] = fsl[cols[0] * n + rows[2]];
-            d[9][lane] = x0[rows[2] * n + cols[1]];
-            ff[9][lane] = fsl[cols[1] * n + rows[2]];
-            d[10][lane] = x0[rows[2] * n + cols[2]];
-            ff[10][lane] = fsl[cols[2] * n + rows[2]];
-            d[11][lane] = y0[rows[2] * n + cols[3]];
-            ff[11][lane] = fsl[cols[3] * n + rows[2]];
-            d[12][lane] = x0[rows[3] * n + cols[0]];
-            ff[12][lane] = fsl[cols[0] * n + rows[3]];
-            d[13][lane] = x0[rows[3] * n + cols[1]];
-            ff[13][lane] = fsl[cols[1] * n + rows[3]];
-            d[14][lane] = x0[rows[3] * n + cols[2]];
-            ff[14][lane] = fsl[cols[2] * n + rows[3]];
-            d[15][lane] = x0[rows[3] * n + cols[3]];
-            ff[15][lane] = fsl[cols[3] * n + rows[3]];
         }
+
+        macro_rules! dvec {
+            ($slice:expr, $row:expr, $col:expr) => {{
+                _mm512_set_pd(
+                    *$slice.get_unchecked(rows[7][$row] * n + cols[7][$col]),
+                    *$slice.get_unchecked(rows[6][$row] * n + cols[6][$col]),
+                    *$slice.get_unchecked(rows[5][$row] * n + cols[5][$col]),
+                    *$slice.get_unchecked(rows[4][$row] * n + cols[4][$col]),
+                    *$slice.get_unchecked(rows[3][$row] * n + cols[3][$col]),
+                    *$slice.get_unchecked(rows[2][$row] * n + cols[2][$col]),
+                    *$slice.get_unchecked(rows[1][$row] * n + cols[1][$col]),
+                    *$slice.get_unchecked(rows[0][$row] * n + cols[0][$col]),
+                )
+            }};
+        }
+
+        // Each `\mathcal F_{ij}` occurs once in `C:\mathcal F`, so consume it directly with `C_{ij}`.
+        macro_rules! fvec {
+            ($row:expr, $col:expr) => {{
+                _mm512_set_pd(
+                    *fsl.get_unchecked(cols[7][$col] * n + rows[7][$row]),
+                    *fsl.get_unchecked(cols[6][$col] * n + rows[6][$row]),
+                    *fsl.get_unchecked(cols[5][$col] * n + rows[5][$row]),
+                    *fsl.get_unchecked(cols[4][$col] * n + rows[4][$row]),
+                    *fsl.get_unchecked(cols[3][$col] * n + rows[3][$row]),
+                    *fsl.get_unchecked(cols[2][$col] * n + rows[2][$row]),
+                    *fsl.get_unchecked(cols[1][$col] * n + rows[1][$row]),
+                    *fsl.get_unchecked(cols[0][$col] * n + rows[0][$row]),
+                )
+            }};
+        }
+
+        // Keep the existing `ab - cd` and `a M_0 - b M_1 + c M_2` floating-point expressions.
+        macro_rules! minor {
+            ($a:expr, $b:expr, $c:expr, $d:expr) => {{ _mm512_fmsub_pd($a, $b, _mm512_mul_pd($c, $d)) }};
+        }
+
+        macro_rules! cof_pos {
+            ($a:expr, $m0:expr, $b:expr, $m1:expr, $c:expr, $m2:expr) => {{
+                let t = _mm512_fmsub_pd($a, $m0, _mm512_mul_pd($b, $m1));
+                _mm512_fmadd_pd($c, $m2, t)
+            }};
+        }
+
+        macro_rules! cof_neg {
+            ($a:expr, $m0:expr, $b:expr, $m1:expr, $c:expr, $m2:expr) => {{
+                let t = _mm512_fmsub_pd($a, $m0, _mm512_mul_pd($b, $m1));
+                let value = _mm512_fmadd_pd($c, $m2, t);
+                _mm512_sub_pd(_mm512_setzero_pd(), value)
+            }};
+        }
+
+        // Preserving the explicit `L = 4` cofactor DAG reduces 48 minor occurrences to exactly
+        // `3 binom(4,2) = 18` distinct minors. Each is required, so 18 is the lower bound for this DAG.
+        // AVX-512 has 32 ZMM registers, allowing the 16 distinct `D_{ij}` inputs to remain resident.
+
+        let d00 = dvec!(x0, 0, 0);
+        let d01 = dvec!(y0, 0, 1);
+        let d02 = dvec!(y0, 0, 2);
+        let d03 = dvec!(y0, 0, 3);
+
+        let d10 = dvec!(x0, 1, 0);
+        let d11 = dvec!(x0, 1, 1);
+        let d12 = dvec!(y0, 1, 2);
+        let d13 = dvec!(y0, 1, 3);
+
+        let d20 = dvec!(x0, 2, 0);
+        let d21 = dvec!(x0, 2, 1);
+        let d22 = dvec!(x0, 2, 2);
+        let d23 = dvec!(y0, 2, 3);
+
+        let d30 = dvec!(x0, 3, 0);
+        let d31 = dvec!(x0, 3, 1);
+        let d32 = dvec!(x0, 3, 2);
+        let d33 = dvec!(x0, 3, 3);
+
+        // `B_{ab}` contains the six row-pair `(2,3)` minors used by cofactor rows 0 and 1.
+        let b01 = minor!(d20, d31, d21, d30);
+        let b02 = minor!(d20, d32, d22, d30);
+        let b03 = minor!(d20, d33, d23, d30);
+        let b12 = minor!(d21, d32, d22, d31);
+        let b13 = minor!(d21, d33, d23, d31);
+        let b23 = minor!(d22, d33, d23, d32);
 
         let mut det_v = _mm512_setzero_pd();
         let mut repl0 = _mm512_setzero_pd();
         let mut repl1 = _mm512_setzero_pd();
+
+        // Form `det(\mathbf D)` through row 0 while contracting cofactor row 0 with `\mathcal F`.
+        let cof00 = cof_pos!(d11, b23, d12, b13, d13, b12);
+        det_v = _mm512_fmadd_pd(d00, cof00, det_v);
+        repl0 = _mm512_fmadd_pd(fvec!(0, 0), cof00, repl0);
+
+        let cof01 = cof_neg!(d10, b23, d12, b03, d13, b02);
+        det_v = _mm512_fmadd_pd(d01, cof01, det_v);
+        repl0 = _mm512_fmadd_pd(fvec!(0, 1), cof01, repl0);
+
+        let cof02 = cof_pos!(d10, b13, d11, b03, d13, b01);
+        det_v = _mm512_fmadd_pd(d02, cof02, det_v);
+        repl0 = _mm512_fmadd_pd(fvec!(0, 2), cof02, repl0);
+
+        let cof03 = cof_neg!(d10, b12, d11, b02, d12, b01);
+        det_v = _mm512_fmadd_pd(d03, cof03, det_v);
+        repl0 = _mm512_fmadd_pd(fvec!(0, 3), cof03, repl0);
+
+        // The same `B_{ab}` values give cofactor row 1 without any further minor evaluation.
+        let cof10 = cof_neg!(d01, b23, d02, b13, d03, b12);
+        repl1 = _mm512_fmadd_pd(fvec!(1, 0), cof10, repl1);
+
+        let cof11 = cof_pos!(d00, b23, d02, b03, d03, b02);
+        repl1 = _mm512_fmadd_pd(fvec!(1, 1), cof11, repl1);
+
+        let cof12 = cof_neg!(d00, b13, d01, b03, d03, b01);
+        repl1 = _mm512_fmadd_pd(fvec!(1, 2), cof12, repl1);
+
+        let cof13 = cof_pos!(d00, b12, d01, b02, d02, b01);
+        repl1 = _mm512_fmadd_pd(fvec!(1, 3), cof13, repl1);
+
+        let repl01 = _mm512_add_pd(repl0, repl1);
+
+        // `Q_{ab}` contains the six row-pair `(1,3)` minors required by cofactor row 2.
+        let q01 = minor!(d10, d31, d11, d30);
+        let q02 = minor!(d10, d32, d12, d30);
+        let q03 = minor!(d10, d33, d13, d30);
+        let q12 = minor!(d11, d32, d12, d31);
+        let q13 = minor!(d11, d33, d13, d31);
+        let q23 = minor!(d12, d33, d13, d32);
+
         let mut repl2 = _mm512_setzero_pd();
+
+        let cof20 = cof_pos!(d01, q23, d02, q13, d03, q12);
+        repl2 = _mm512_fmadd_pd(fvec!(2, 0), cof20, repl2);
+
+        let cof21 = cof_neg!(d00, q23, d02, q03, d03, q02);
+        repl2 = _mm512_fmadd_pd(fvec!(2, 1), cof21, repl2);
+
+        let cof22 = cof_pos!(d00, q13, d01, q03, d03, q01);
+        repl2 = _mm512_fmadd_pd(fvec!(2, 2), cof22, repl2);
+
+        let cof23 = cof_neg!(d00, q12, d01, q02, d02, q01);
+        repl2 = _mm512_fmadd_pd(fvec!(2, 3), cof23, repl2);
+
+        // `R_{ab}` contains the final six row-pair `(1,2)` minors required by cofactor row 3.
+        let r01 = minor!(d10, d21, d11, d20);
+        let r02 = minor!(d10, d22, d12, d20);
+        let r03 = minor!(d10, d23, d13, d20);
+        let r12 = minor!(d11, d22, d12, d21);
+        let r13 = minor!(d11, d23, d13, d21);
+        let r23 = minor!(d12, d23, d13, d22);
+
         let mut repl3 = _mm512_setzero_pd();
 
-        let cof00 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t)
-        };
-        det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[0].as_ptr()), cof00, det_v);
-        repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[0].as_ptr()), cof00, repl0);
+        let cof30 = cof_neg!(d01, r23, d02, r13, d03, r12);
+        repl3 = _mm512_fmadd_pd(fvec!(3, 0), cof30, repl3);
 
-        let cof01 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), cof01, det_v);
-        repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[1].as_ptr()), cof01, repl0);
+        let cof31 = cof_pos!(d00, r23, d02, r03, d03, r02);
+        repl3 = _mm512_fmadd_pd(fvec!(3, 1), cof31, repl3);
 
-        let cof02 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t)
-        };
-        det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), cof02, det_v);
-        repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[2].as_ptr()), cof02, repl0);
-        let cof03 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[6].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), cof03, det_v);
-        repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[3].as_ptr()), cof03, repl0);
+        let cof32 = cof_neg!(d00, r13, d01, r03, d03, r01);
+        repl3 = _mm512_fmadd_pd(fvec!(3, 2), cof32, repl3);
 
-        let cof10 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[1].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[4].as_ptr()), cof10, repl1);
-        let cof11 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[5].as_ptr()), cof11, repl1);
-        let cof12 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[11].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[6].as_ptr()), cof12, repl1);
-        let cof13 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[8].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t)
-        };
-        repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[7].as_ptr()), cof13, repl1);
+        let cof33 = cof_pos!(d00, r12, d01, r02, d02, r01);
+        repl3 = _mm512_fmadd_pd(fvec!(3, 3), cof33, repl3);
 
-        let cof20 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[6].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[1].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[8].as_ptr()), cof20, repl2);
-        let cof21 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[6].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[14].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[9].as_ptr()), cof21, repl2);
-        let cof22 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[15].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[5].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[10].as_ptr()), cof22, repl2);
-        let cof23 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[13].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[5].as_ptr()),
-                    _mm512_loadu_pd(d[12].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[11].as_ptr()), cof23, repl2);
-
-        let cof30 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[6].as_ptr()),
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[1].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        repl3 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[12].as_ptr()), cof30, repl3);
-        let cof31 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[6].as_ptr()),
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[10].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
-        };
-        repl3 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[13].as_ptr()), cof31, repl3);
-        let cof32 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[7].as_ptr()),
-                    _mm512_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[5].as_ptr()),
-                    _mm512_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
-            );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            _mm512_sub_pd(_mm512_setzero_pd(), minor)
-        };
-        repl3 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[14].as_ptr()), cof32, repl3);
-        let cof33 = {
-            let m0 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[9].as_ptr()),
-                ),
-            );
-            let m1 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[6].as_ptr()),
-                    _mm512_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let m2 = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_mul_pd(
-                    _mm512_loadu_pd(d[5].as_ptr()),
-                    _mm512_loadu_pd(d[8].as_ptr()),
-                ),
-            );
-            let t = _mm512_fmsub_pd(
-                _mm512_loadu_pd(d[0].as_ptr()),
-                m0,
-                _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
-            );
-            _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t)
-        };
-        repl3 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[15].as_ptr()), cof33, repl3);
-        let repl01 = _mm512_add_pd(repl0, repl1);
+        // Preserve `C:\mathcal F = (repl0 + repl1) + (repl2 + repl3)` from the old kernel.
         let repl23 = _mm512_add_pd(repl2, repl3);
         let repl_v = _mm512_add_pd(repl01, repl23);
 
         let pref_v = _mm512_set1_pd(pref);
         let f0_v = _mm512_set1_pd(f0);
+
+        // `S = P det(\mathbf D)` and `F = P[F_0 det(\mathbf D) - C:\mathcal F]`.
         let overlap_v = _mm512_mul_pd(det_v, pref_v);
         let contrib = _mm512_fmsub_pd(det_v, f0_v, repl_v);
         let fock_v = _mm512_mul_pd(contrib, pref_v);
@@ -2863,9 +2044,11 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         let mut det_lane = [0.0f64; 8];
         let mut overlap_lane = [0.0f64; 8];
         let mut fock_lane = [0.0f64; 8];
+
         _mm512_storeu_pd(det_lane.as_mut_ptr(), det_v);
         _mm512_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
+
         for lane in 0..8 {
             if det_lane[lane].is_finite() {
                 overlap[lane] = overlap_lane[lane];

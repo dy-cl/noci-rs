@@ -13,7 +13,7 @@ pub(crate) use overlap::OverlapScratch;
 use std::collections::HashMap;
 
 // Crate-root imports.
-use crate::DetState;
+use crate::{DetState, ExcitationSpinCache, ReducedDetState};
 
 // Parent/sibling imports.
 use super::types::{NOCIData, NOCIScalar};
@@ -32,10 +32,10 @@ pub(super) struct FactorEntry {
 /// Parent-local determinant space in the shared spin factorisation.
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
-    /// Representative determinant for each parent-local alpha component.
-    pub(super) areps: Vec<usize>,
-    /// Representative determinant for each parent-local beta component.
-    pub(super) breps: Vec<usize>,
+    /// Reduced representative for each parent-local alpha component.
+    pub(super) areps: Vec<ReducedDetState>,
+    /// Reduced representative for each parent-local beta component.
+    pub(super) breps: Vec<ReducedDetState>,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
     /// Determinant indices grouped by parent-local alpha component.
@@ -259,6 +259,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         .max()
         .map(|parent| parent + 1)
         .unwrap_or(0);
+
     let mut parents = (0..nparents)
         .map(|_| ParentSpinSpace {
             areps: Vec::new(),
@@ -272,6 +273,9 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             last_det: 0,
         })
         .collect::<Vec<_>>();
+
+    // `usize::MAX` marks representative slots which have not yet received their first determinant.
+    let unassigned_rep = ReducedDetState::new(usize::MAX, 1.0, ExcitationSpinCache::default());
 
     for (det, state) in basis.iter().enumerate() {
         let parent = &mut parents[state.parent];
@@ -295,18 +299,20 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         }
         parent.entries_by_b[bids[det]].push(det);
 
+        // Store the first determinant carrying each alpha component as compact hot-path metadata.
         if parent.areps.len() <= aids[det] {
-            parent.areps.resize(aids[det] + 1, usize::MAX);
+            parent.areps.resize(aids[det] + 1, unassigned_rep);
         }
-        if parent.areps[aids[det]] == usize::MAX {
-            parent.areps[aids[det]] = det;
+        if parent.areps[aids[det]].det == usize::MAX {
+            parent.areps[aids[det]] = ReducedDetState::from_alpha(det, state);
         }
 
+        // Store the corresponding reduced beta representative without retaining the full `DetState`.
         if parent.breps.len() <= bids[det] {
-            parent.breps.resize(bids[det] + 1, usize::MAX);
+            parent.breps.resize(bids[det] + 1, unassigned_rep);
         }
-        if parent.breps[bids[det]] == usize::MAX {
-            parent.breps[bids[det]] = det;
+        if parent.breps[bids[det]].det == usize::MAX {
+            parent.breps[bids[det]] = ReducedDetState::from_beta(det, state);
         }
     }
 
@@ -324,12 +330,14 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
 
     for (det, state) in basis.iter().enumerate() {
         let parent = &mut parents[state.parent];
+
         let oid = *occupation_ids[state.parent]
             .entry((state.oa, state.ob))
             .or_insert_with(|| {
                 parent.oreps.push(det);
                 parent.oreps.len() - 1
             });
+
         parent.oids[det - parent.first_det] = oid;
     }
 
