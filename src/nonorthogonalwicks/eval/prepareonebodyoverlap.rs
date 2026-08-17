@@ -4,8 +4,6 @@
 #[cfg(target_arch = "x86_64")]
 use std::any::TypeId;
 #[cfg(target_arch = "x86_64")]
-use std::arch::is_x86_feature_detected;
-#[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     _mm_add_sd, _mm_cvtsd_f64, _mm256_add_pd, _mm256_castpd256_pd128, _mm256_extractf128_pd,
     _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_mul_pd,
@@ -13,14 +11,12 @@ use std::arch::x86_64::{
     _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_loadu_pd, _mm512_mul_pd,
     _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd, _mm512_sub_pd,
 };
-#[cfg(target_arch = "x86_64")]
-use std::mem::MaybeUninit;
 
 // Crate-root imports.
-use crate::ExcitationSpin;
 use crate::maths::{adjugate_transpose, build_d, det};
 use crate::noci::NOCIScalar;
 use crate::time_call;
+use crate::{ExcitationSpin, ExcitationSpinCache};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
@@ -72,112 +68,6 @@ pub(crate) fn xw_f_overlap_prepared<T: NOCIScalar>(
     })
 }
 
-/// Borrowed excitation pair consumed by the prepared batched Wick evaluator.
-/// Borrowed excitation metadata for one reference side: mask, rank and decoded orbital indices.
-type WickExcitation<'a> = (&'a ExcitationSpin, u8, &'a [u8; 8]);
-
-/// Borrowed x/w excitation pair consumed by the prepared batched Wick evaluator.
-/// Complete excitation masks are retained for scalar fallback while the cached rank and decoded
-/// orbital indices feed the fixed-rank SIMD kernels without rescanning the `u128` masks.
-#[derive(Clone, Copy)]
-pub(crate) struct WickBatchPair<'a> {
-    x_ex: WickExcitation<'a>,
-    w_ex: WickExcitation<'a>,
-    phase: f64,
-    output: usize,
-}
-
-impl<'a> WickBatchPair<'a> {
-    /// Construct one borrowed prepared-Wick batch item.
-    /// # Arguments:
-    /// - `x_ex`: x-reference excitation mask, rank and decoded orbital indices.
-    /// - `w_ex`: w-reference excitation mask, rank and decoded orbital indices.
-    /// - `phase`: Product of the bra and ket determinant excitation phases.
-    /// - `output`: Output-row position receiving the matrix element.
-    /// # Returns
-    /// - `WickBatchPair<'a>`: Borrowed batch item.
-    #[inline(always)]
-    pub(crate) fn new(
-        x_ex: (&'a ExcitationSpin, u8, &'a [u8; 8]),
-        w_ex: (&'a ExcitationSpin, u8, &'a [u8; 8]),
-        phase: f64,
-        output: usize,
-    ) -> Self {
-        Self {
-            x_ex,
-            w_ex,
-            phase,
-            output,
-        }
-    }
-
-    /// Return the total contraction rank `L = L_x + L_w`.
-    /// # Arguments:
-    /// - `self`: Borrowed prepared-Wick batch item.
-    /// # Returns
-    /// - `usize`: Total excitation rank for the pair.
-    #[inline(always)]
-    fn rank(&self) -> usize {
-        usize::from(self.x_ex.1) + usize::from(self.w_ex.1)
-    }
-}
-
-/// Prepare and evaluate a stream of same-spin overlap and generalised-Fock matrix elements.
-/// Real `m = 0` pairs are accumulated only in fixed-size per-rank SIMD bins; no arrays scaling
-/// with the number of source determinants are constructed. Unsupported ranks, complex arithmetic,
-/// singular-reference cases with `m > 0`, and incomplete SIMD bins use the existing scalar
-/// prepared evaluator without changing the matrix-element definition.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates shared by every pair in the stream.
-/// - `pairs`: Borrowed excitation pairs with cached total ranks, phases and output positions.
-/// - `scratch`: Scratch storage used by scalar-tail and unsupported-rank fallback evaluations.
-/// - `tol`: Numerical tolerance used by determinant and adjugate-transpose fallbacks.
-/// - `overlap`: Final same-spin overlap output row.
-/// - `fock`: Final same-spin generalised-Fock output row.
-/// # Returns
-/// - `()`: Writes phased matrix elements directly to `overlap` and `fock`.
-#[inline(always)]
-pub(crate) fn xw_f_overlap_prepared_batch<'a, T, I>(
-    w: &SameSpinView<'_, T>,
-    pairs: I,
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-    overlap: &mut [T],
-    fock: &mut [T],
-) where
-    T: NOCIScalar,
-    I: IntoIterator<Item = WickBatchPair<'a>>,
-{
-    let mut pairs = pairs.into_iter();
-
-    #[cfg(target_arch = "x86_64")]
-    if TypeId::of::<T>() == TypeId::of::<f64>() && w.m == 0 {
-        unsafe {
-            let overlap_f64 =
-                std::slice::from_raw_parts_mut(overlap.as_mut_ptr().cast::<f64>(), overlap.len());
-            let fock_f64 =
-                std::slice::from_raw_parts_mut(fock.as_mut_ptr().cast::<f64>(), fock.len());
-
-            if is_x86_feature_detected!("avx512f") {
-                xw_f_overlap_m0_prepared_f64x8(w, &mut pairs, scratch, tol, overlap_f64, fock_f64);
-                return;
-            }
-
-            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                xw_f_overlap_m0_prepared_f64x4(w, &mut pairs, scratch, tol, overlap_f64, fock_f64);
-                return;
-            }
-        }
-    }
-
-    for pair in pairs {
-        let (s, f) = xw_f_overlap_prepared(w, pair.x_ex.0, pair.w_ex.0, scratch, tol);
-        let phase = T::from_real(pair.phase);
-        overlap[pair.output] = phase * s;
-        fock[pair.output] = phase * f;
-    }
-}
-
 /// Prepare and evaluate the overlap and generalised-Fock matrix element together when `m = 0`.
 /// `Every contraction uses m_i = 0, so the total excitation rank L = L_x + L_w determines one`
 /// `contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0). Fixed-rank prepared kernels are`
@@ -217,202 +107,68 @@ fn xw_f_overlap_m0_prepared<T: NOCIScalar>(
     })
 }
 
-/// Evaluate a stream of real `m = 0` prepared matrix elements in four-pair AVX2/FMA batches.
-/// Only four excitation descriptors per supported rank are retained at once; complete bins use
-/// the corresponding fixed-rank kernel and write phased values directly to the final output row.
+/// Dispatch 4 real `m = 0` matrix elements to the fixed-rank AVX2/FMA kernel.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `pairs`: Stream of borrowed excitation pairs with cached rank, phase and output position.
-/// - `scratch`: Scratch storage used by scalar-tail and unsupported-rank fallbacks.
-/// - `tol`: Numerical tolerance used by fallback determinant evaluation.
-/// - `overlap`: Final real overlap output row.
-/// - `fock`: Final real generalised-Fock output row.
+/// - `l`: Total excitation rank `L = L_x + L_w`.
+/// - `x_ex`: 4 x-reference excitation caches.
+/// - `w_ex`: 4 w-reference excitation caches.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Fills `overlap` and `fock`.
+/// - `()`: Writes 4 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
-/// - The caller must ensure `T = f64` and CPU support for both `avx2` and `fma`.
+/// - The caller must ensure `T = f64` and CPU support for `AVX2/FMA`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn xw_f_overlap_m0_prepared_f64x4<'a, T, I>(
+pub(crate) unsafe fn xw_f_overlap_m0_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    pairs: &mut I,
-    scratch: &mut WickScratch<T>,
-    tol: f64,
+    l: usize,
+    x_ex: &[ExcitationSpinCache; 4],
+    w_ex: &[ExcitationSpinCache; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
-) where
-    T: NOCIScalar,
-    I: Iterator<Item = WickBatchPair<'a>>,
-{
+) {
     unsafe {
-        let mut x_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 4]; 5];
-        let mut w_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 4]; 5];
-        let mut phases = [[1.0f64; 4]; 5];
-        let mut outputs = [[0usize; 4]; 5];
-        let mut counts = [0usize; 5];
-
-        for pair in pairs {
-            let l = pair.rank();
-            if (1..=4).contains(&l) {
-                let count = counts[l];
-                x_bins[l][count].write(pair.x_ex);
-                w_bins[l][count].write(pair.w_ex);
-                phases[l][count] = pair.phase;
-                outputs[l][count] = pair.output;
-                counts[l] += 1;
-
-                if counts[l] == 4 {
-                    let x_ex = [
-                        x_bins[l][0].assume_init_read(),
-                        x_bins[l][1].assume_init_read(),
-                        x_bins[l][2].assume_init_read(),
-                        x_bins[l][3].assume_init_read(),
-                    ];
-                    let w_ex = [
-                        w_bins[l][0].assume_init_read(),
-                        w_bins[l][1].assume_init_read(),
-                        w_bins[l][2].assume_init_read(),
-                        w_bins[l][3].assume_init_read(),
-                    ];
-                    let mut s = [0.0f64; 4];
-                    let mut f = [0.0f64; 4];
-                    match l {
-                        1 => xw_f_overlap_m0_l1_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
-                        2 => xw_f_overlap_m0_l2_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
-                        3 => xw_f_overlap_m0_l3_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
-                        4 => xw_f_overlap_m0_l4_prepared_f64x4(w, &x_ex, &w_ex, &mut s, &mut f),
-                        _ => unreachable!(),
-                    }
-
-                    for lane in 0..4 {
-                        let output = outputs[l][lane];
-                        let phase = phases[l][lane];
-                        overlap[output] = phase * s[lane];
-                        fock[output] = phase * f[lane];
-                    }
-                    counts[l] = 0;
-                }
-            } else {
-                let (s, f) = xw_f_overlap_prepared(w, pair.x_ex.0, pair.w_ex.0, scratch, tol);
-                overlap[pair.output] = pair.phase * *std::ptr::from_ref(&s).cast::<f64>();
-                fock[pair.output] = pair.phase * *std::ptr::from_ref(&f).cast::<f64>();
-            }
-        }
-
-        for l in 1..=4 {
-            for pos in 0..counts[l] {
-                let x_ex = x_bins[l][pos].assume_init_read();
-                let w_ex = w_bins[l][pos].assume_init_read();
-                let (s, f) = xw_f_overlap_prepared(w, x_ex.0, w_ex.0, scratch, tol);
-                let output = outputs[l][pos];
-                let phase = phases[l][pos];
-                overlap[output] = phase * *std::ptr::from_ref(&s).cast::<f64>();
-                fock[output] = phase * *std::ptr::from_ref(&f).cast::<f64>();
-            }
+        match l {
+            1 => xw_f_overlap_m0_l1_prepared_f64x4(w, x_ex, w_ex, overlap, fock),
+            2 => xw_f_overlap_m0_l2_prepared_f64x4(w, x_ex, w_ex, overlap, fock),
+            3 => xw_f_overlap_m0_l3_prepared_f64x4(w, x_ex, w_ex, overlap, fock),
+            4 => xw_f_overlap_m0_l4_prepared_f64x4(w, x_ex, w_ex, overlap, fock),
+            _ => unreachable!(),
         }
     }
 }
 
-/// Evaluate a stream of real `m = 0` prepared matrix elements in eight-pair AVX-512 batches.
-/// Only eight excitation descriptors per supported rank are retained at once; complete bins use
-/// the corresponding fixed-rank kernel and write phased values directly to the final output row.
+/// Dispatch 8 real `m = 0` matrix elements to the fixed-rank AVX-512 kernel.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `pairs`: Stream of borrowed excitation pairs with cached rank, phase and output position.
-/// - `scratch`: Scratch storage used by scalar-tail and unsupported-rank fallbacks.
-/// - `tol`: Numerical tolerance used by fallback determinant evaluation.
-/// - `overlap`: Final real overlap output row.
-/// - `fock`: Final real generalised-Fock output row.
+/// - `l`: Total excitation rank `L = L_x + L_w`.
+/// - `x_ex`: 8 x-reference excitation caches.
+/// - `w_ex`: 8 w-reference excitation caches.
+/// - `overlap`: Real overlap output slice in SIMD-lane order.
+/// - `fock`: Real generalised-Fock output slice in SIMD-lane order.
 /// # Returns
-/// - `()`: Fills `overlap` and `fock`.
+/// - `()`: Writes 8 overlaps and generalised-Fock matrix elements in SIMD-lane order.
 /// # Safety
-/// - The caller must ensure `T = f64` and CPU support for `avx512f`.
+/// - The caller must ensure `T = f64` and CPU support for `AVX-512`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_f_overlap_m0_prepared_f64x8<'a, T, I>(
+pub(crate) unsafe fn xw_f_overlap_m0_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    pairs: &mut I,
-    scratch: &mut WickScratch<T>,
-    tol: f64,
+    l: usize,
+    x_ex: &[ExcitationSpinCache; 8],
+    w_ex: &[ExcitationSpinCache; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
-) where
-    T: NOCIScalar,
-    I: Iterator<Item = WickBatchPair<'a>>,
-{
+) {
     unsafe {
-        let mut x_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 8]; 5];
-        let mut w_bins = [[MaybeUninit::<WickExcitation<'a>>::uninit(); 8]; 5];
-        let mut phases = [[1.0f64; 8]; 5];
-        let mut outputs = [[0usize; 8]; 5];
-        let mut counts = [0usize; 5];
-
-        for pair in pairs {
-            let l = pair.rank();
-            if (1..=4).contains(&l) {
-                let count = counts[l];
-                x_bins[l][count].write(pair.x_ex);
-                w_bins[l][count].write(pair.w_ex);
-                phases[l][count] = pair.phase;
-                outputs[l][count] = pair.output;
-                counts[l] += 1;
-
-                if counts[l] == 8 {
-                    let x_ex = [
-                        x_bins[l][0].assume_init_read(),
-                        x_bins[l][1].assume_init_read(),
-                        x_bins[l][2].assume_init_read(),
-                        x_bins[l][3].assume_init_read(),
-                        x_bins[l][4].assume_init_read(),
-                        x_bins[l][5].assume_init_read(),
-                        x_bins[l][6].assume_init_read(),
-                        x_bins[l][7].assume_init_read(),
-                    ];
-                    let w_ex = [
-                        w_bins[l][0].assume_init_read(),
-                        w_bins[l][1].assume_init_read(),
-                        w_bins[l][2].assume_init_read(),
-                        w_bins[l][3].assume_init_read(),
-                        w_bins[l][4].assume_init_read(),
-                        w_bins[l][5].assume_init_read(),
-                        w_bins[l][6].assume_init_read(),
-                        w_bins[l][7].assume_init_read(),
-                    ];
-                    let mut s = [0.0f64; 8];
-                    let mut f = [0.0f64; 8];
-                    match l {
-                        1 => xw_f_overlap_m0_l1_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
-                        2 => xw_f_overlap_m0_l2_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
-                        3 => xw_f_overlap_m0_l3_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
-                        4 => xw_f_overlap_m0_l4_prepared_f64x8(w, &x_ex, &w_ex, &mut s, &mut f),
-                        _ => unreachable!(),
-                    }
-
-                    for lane in 0..8 {
-                        let output = outputs[l][lane];
-                        let phase = phases[l][lane];
-                        overlap[output] = phase * s[lane];
-                        fock[output] = phase * f[lane];
-                    }
-                    counts[l] = 0;
-                }
-            } else {
-                let (s, f) = xw_f_overlap_prepared(w, pair.x_ex.0, pair.w_ex.0, scratch, tol);
-                overlap[pair.output] = pair.phase * *std::ptr::from_ref(&s).cast::<f64>();
-                fock[pair.output] = pair.phase * *std::ptr::from_ref(&f).cast::<f64>();
-            }
-        }
-
-        for l in 1..=4 {
-            for pos in 0..counts[l] {
-                let x_ex = x_bins[l][pos].assume_init_read();
-                let w_ex = w_bins[l][pos].assume_init_read();
-                let (s, f) = xw_f_overlap_prepared(w, x_ex.0, w_ex.0, scratch, tol);
-                let output = outputs[l][pos];
-                let phase = phases[l][pos];
-                overlap[output] = phase * *std::ptr::from_ref(&s).cast::<f64>();
-                fock[output] = phase * *std::ptr::from_ref(&f).cast::<f64>();
-            }
+        match l {
+            1 => xw_f_overlap_m0_l1_prepared_f64x8(w, x_ex, w_ex, overlap, fock),
+            2 => xw_f_overlap_m0_l2_prepared_f64x8(w, x_ex, w_ex, overlap, fock),
+            3 => xw_f_overlap_m0_l3_prepared_f64x8(w, x_ex, w_ex, overlap, fock),
+            4 => xw_f_overlap_m0_l4_prepared_f64x8(w, x_ex, w_ex, overlap, fock),
+            _ => unreachable!(),
         }
     }
 }
@@ -480,8 +236,8 @@ fn xw_f_overlap_m0_l1_prepared<T: NOCIScalar>(
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 4],
-    w_ex: &[WickExcitation<'_>; 4],
+    x_ex: &[ExcitationSpinCache; 4],
+    w_ex: &[ExcitationSpinCache; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -489,21 +245,31 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
         let n = w.n();
         let x0_t = w.x_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 4]; 1];
         let mut ff = [[0.0f64; 4]; 1];
         for lane in 0..4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 1];
             let mut cols = [0usize; 1];
             construct_determinant_indices_l1(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
         }
@@ -519,10 +285,8 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
         let mut fock_lane = [0.0f64; 4];
         _mm256_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
-        for lane in 0..4 {
-            overlap[lane] = overlap_lane[lane];
-            fock[lane] = fock_lane[lane];
-        }
+        overlap[..4].copy_from_slice(&overlap_lane);
+        fock[..4].copy_from_slice(&fock_lane);
     }
 }
 
@@ -544,8 +308,8 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x4<T: NOCIScalar>(
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 8],
-    w_ex: &[WickExcitation<'_>; 8],
+    x_ex: &[ExcitationSpinCache; 8],
+    w_ex: &[ExcitationSpinCache; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -553,21 +317,31 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
         let n = w.n();
         let x0_t = w.x_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 8]; 1];
         let mut ff = [[0.0f64; 8]; 1];
         for lane in 0..8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 1];
             let mut cols = [0usize; 1];
             construct_determinant_indices_l1(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
         }
@@ -583,10 +357,8 @@ unsafe fn xw_f_overlap_m0_l1_prepared_f64x8<T: NOCIScalar>(
         let mut fock_lane = [0.0f64; 8];
         _mm512_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
-        for lane in 0..8 {
-            overlap[lane] = overlap_lane[lane];
-            fock[lane] = fock_lane[lane];
-        }
+        overlap[..8].copy_from_slice(&overlap_lane);
+        fock[..8].copy_from_slice(&fock_lane);
     }
 }
 
@@ -709,8 +481,8 @@ fn xw_f_overlap_m0_l2_prepared<T: NOCIScalar>(
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 4],
-    w_ex: &[WickExcitation<'_>; 4],
+    x_ex: &[ExcitationSpinCache; 4],
+    w_ex: &[ExcitationSpinCache; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -719,31 +491,43 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 4]; 4];
         let mut ff = [[0.0f64; 4]; 4];
         for lane in 0..4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 2];
             let mut cols = [0usize; 2];
             construct_determinant_indices_l2(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
             ff[1][lane] = fsl[cols[1] * n + rows[0]];
+
             d[2][lane] = x0[rows[1] * n + cols[0]];
             ff[2][lane] = fsl[cols[0] * n + rows[1]];
             d[3][lane] = x0[rows[1] * n + cols[1]];
             ff[3][lane] = fsl[cols[1] * n + rows[1]];
         }
+
         let a00 = _mm256_loadu_pd(d[0].as_ptr());
         let a01 = _mm256_loadu_pd(d[1].as_ptr());
         let a10 = _mm256_loadu_pd(d[2].as_ptr());
@@ -773,10 +557,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
         let mut fock_lane = [0.0f64; 4];
         _mm256_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm256_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
-        for lane in 0..4 {
-            overlap[lane] = overlap_lane[lane];
-            fock[lane] = fock_lane[lane];
-        }
+        overlap[..4].copy_from_slice(&overlap_lane);
+        fock[..4].copy_from_slice(&fock_lane);
     }
 }
 
@@ -798,8 +580,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x4<T: NOCIScalar>(
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 8],
-    w_ex: &[WickExcitation<'_>; 8],
+    x_ex: &[ExcitationSpinCache; 8],
+    w_ex: &[ExcitationSpinCache; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -808,31 +590,43 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 8]; 4];
         let mut ff = [[0.0f64; 8]; 4];
         for lane in 0..8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 2];
             let mut cols = [0usize; 2];
             construct_determinant_indices_l2(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
             ff[1][lane] = fsl[cols[1] * n + rows[0]];
+
             d[2][lane] = x0[rows[1] * n + cols[0]];
             ff[2][lane] = fsl[cols[0] * n + rows[1]];
             d[3][lane] = x0[rows[1] * n + cols[1]];
             ff[3][lane] = fsl[cols[1] * n + rows[1]];
         }
+
         let a00 = _mm512_loadu_pd(d[0].as_ptr());
         let a01 = _mm512_loadu_pd(d[1].as_ptr());
         let a10 = _mm512_loadu_pd(d[2].as_ptr());
@@ -862,10 +656,8 @@ unsafe fn xw_f_overlap_m0_l2_prepared_f64x8<T: NOCIScalar>(
         let mut fock_lane = [0.0f64; 8];
         _mm512_storeu_pd(overlap_lane.as_mut_ptr(), overlap_v);
         _mm512_storeu_pd(fock_lane.as_mut_ptr(), fock_v);
-        for lane in 0..8 {
-            overlap[lane] = overlap_lane[lane];
-            fock[lane] = fock_lane[lane];
-        }
+        overlap[..8].copy_from_slice(&overlap_lane);
+        fock[..8].copy_from_slice(&fock_lane);
     }
 }
 
@@ -909,12 +701,15 @@ fn xw_f_overlap_m0_l3_prepared<T: NOCIScalar>(
         let r0 = scratch.rows[0];
         let r1 = scratch.rows[1];
         let r2 = scratch.rows[2];
+
         let c0 = scratch.cols[0];
         let c1 = scratch.cols[1];
         let c2 = scratch.cols[2];
+
         let x0 = w.x_slice(0);
         let y0 = w.y_slice(0);
         let fsl = w.ff_t_slice(0, 0);
+
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
         let zero = <T as From<f64>>::from(0.0);
 
@@ -1055,8 +850,8 @@ fn xw_f_overlap_m0_l3_prepared<T: NOCIScalar>(
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 4],
-    w_ex: &[WickExcitation<'_>; 4],
+    x_ex: &[ExcitationSpinCache; 4],
+    w_ex: &[ExcitationSpinCache; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -1065,34 +860,47 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 4]; 9];
         let mut ff = [[0.0f64; 4]; 9];
         for lane in 0..4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 3];
             let mut cols = [0usize; 3];
             construct_determinant_indices_l3(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
             ff[1][lane] = fsl[cols[1] * n + rows[0]];
+
             d[2][lane] = y0[rows[0] * n + cols[2]];
             ff[2][lane] = fsl[cols[2] * n + rows[0]];
+
             d[3][lane] = x0[rows[1] * n + cols[0]];
             ff[3][lane] = fsl[cols[0] * n + rows[1]];
             d[4][lane] = x0[rows[1] * n + cols[1]];
             ff[4][lane] = fsl[cols[1] * n + rows[1]];
             d[5][lane] = y0[rows[1] * n + cols[2]];
             ff[5][lane] = fsl[cols[2] * n + rows[1]];
+
             d[6][lane] = x0[rows[2] * n + cols[0]];
             ff[6][lane] = fsl[cols[0] * n + rows[2]];
             d[7][lane] = x0[rows[2] * n + cols[1]];
@@ -1100,6 +908,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
             d[8][lane] = x0[rows[2] * n + cols[2]];
             ff[8][lane] = fsl[cols[2] * n + rows[2]];
         }
+
         let mut det_v = _mm256_setzero_pd();
         let mut repl0 = _mm256_setzero_pd();
         let mut repl1 = _mm256_setzero_pd();
@@ -1115,6 +924,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
         );
         det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[0].as_ptr()), cof00, det_v);
         repl0 = _mm256_fmadd_pd(_mm256_loadu_pd(ff[0].as_ptr()), cof00, repl0);
+
         let cof01 = _mm256_sub_pd(
             _mm256_setzero_pd(),
             _mm256_fmsub_pd(
@@ -1128,6 +938,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
         );
         det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[1].as_ptr()), cof01, det_v);
         repl0 = _mm256_fmadd_pd(_mm256_loadu_pd(ff[1].as_ptr()), cof01, repl0);
+
         let cof02 = _mm256_fmsub_pd(
             _mm256_loadu_pd(d[3].as_ptr()),
             _mm256_loadu_pd(d[7].as_ptr()),
@@ -1138,6 +949,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
         );
         det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), cof02, det_v);
         repl0 = _mm256_fmadd_pd(_mm256_loadu_pd(ff[2].as_ptr()), cof02, repl0);
+
         let cof10 = _mm256_sub_pd(
             _mm256_setzero_pd(),
             _mm256_fmsub_pd(
@@ -1171,6 +983,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
             ),
         );
         repl1 = _mm256_fmadd_pd(_mm256_loadu_pd(ff[5].as_ptr()), cof12, repl1);
+
         let cof20 = _mm256_fmsub_pd(
             _mm256_loadu_pd(d[1].as_ptr()),
             _mm256_loadu_pd(d[5].as_ptr()),
@@ -1245,8 +1058,8 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x4<T: NOCIScalar>(
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 8],
-    w_ex: &[WickExcitation<'_>; 8],
+    x_ex: &[ExcitationSpinCache; 8],
+    w_ex: &[ExcitationSpinCache; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -1255,34 +1068,47 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 8]; 9];
         let mut ff = [[0.0f64; 8]; 9];
         for lane in 0..8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 3];
             let mut cols = [0usize; 3];
             construct_determinant_indices_l3(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
             ff[1][lane] = fsl[cols[1] * n + rows[0]];
+
             d[2][lane] = y0[rows[0] * n + cols[2]];
             ff[2][lane] = fsl[cols[2] * n + rows[0]];
+
             d[3][lane] = x0[rows[1] * n + cols[0]];
             ff[3][lane] = fsl[cols[0] * n + rows[1]];
             d[4][lane] = x0[rows[1] * n + cols[1]];
             ff[4][lane] = fsl[cols[1] * n + rows[1]];
             d[5][lane] = y0[rows[1] * n + cols[2]];
             ff[5][lane] = fsl[cols[2] * n + rows[1]];
+
             d[6][lane] = x0[rows[2] * n + cols[0]];
             ff[6][lane] = fsl[cols[0] * n + rows[2]];
             d[7][lane] = x0[rows[2] * n + cols[1]];
@@ -1290,6 +1116,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
             d[8][lane] = x0[rows[2] * n + cols[2]];
             ff[8][lane] = fsl[cols[2] * n + rows[2]];
         }
+
         let mut det_v = _mm512_setzero_pd();
         let mut repl0 = _mm512_setzero_pd();
         let mut repl1 = _mm512_setzero_pd();
@@ -1305,6 +1132,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
         );
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[0].as_ptr()), cof00, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[0].as_ptr()), cof00, repl0);
+
         let cof01 = _mm512_sub_pd(
             _mm512_setzero_pd(),
             _mm512_fmsub_pd(
@@ -1318,6 +1146,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
         );
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), cof01, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[1].as_ptr()), cof01, repl0);
+
         let cof02 = _mm512_fmsub_pd(
             _mm512_loadu_pd(d[3].as_ptr()),
             _mm512_loadu_pd(d[7].as_ptr()),
@@ -1328,6 +1157,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
         );
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), cof02, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[2].as_ptr()), cof02, repl0);
+
         let cof10 = _mm512_sub_pd(
             _mm512_setzero_pd(),
             _mm512_fmsub_pd(
@@ -1361,6 +1191,7 @@ unsafe fn xw_f_overlap_m0_l3_prepared_f64x8<T: NOCIScalar>(
             ),
         );
         repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[5].as_ptr()), cof12, repl1);
+
         let cof20 = _mm512_fmsub_pd(
             _mm512_loadu_pd(d[1].as_ptr()),
             _mm512_loadu_pd(d[5].as_ptr()),
@@ -1458,13 +1289,16 @@ fn xw_f_overlap_m0_l4_prepared<T: NOCIScalar>(
         let r1 = scratch.rows[1];
         let r2 = scratch.rows[2];
         let r3 = scratch.rows[3];
+
         let c0 = scratch.cols[0];
         let c1 = scratch.cols[1];
         let c2 = scratch.cols[2];
         let c3 = scratch.cols[3];
+
         let x0 = w.x_slice(0);
         let y0 = w.y_slice(0);
         let fsl = w.ff_t_slice(0, 0);
+
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
         let zero = <T as From<f64>>::from(0.0);
 
@@ -1703,8 +1537,8 @@ fn xw_f_overlap_m0_l4_prepared<T: NOCIScalar>(
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 4],
-    w_ex: &[WickExcitation<'_>; 4],
+    x_ex: &[ExcitationSpinCache; 4],
+    w_ex: &[ExcitationSpinCache; 4],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -1731,10 +1565,9 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             construct_determinant_indices_l4(
-                x_data.1,
-                w_data.1,
-                x_data.2,
-                w_data.2,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
                 w,
                 &mut rows[lane],
                 &mut cols[lane],
@@ -2349,6 +2182,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
         let repl01 = _mm256_add_pd(repl0, repl1);
         let repl23 = _mm256_add_pd(repl2, repl3);
         let repl_v = _mm256_add_pd(repl01, repl23);
+
         let pref_v = _mm256_set1_pd(pref);
         let f0_v = _mm256_set1_pd(f0);
         let overlap_v = _mm256_mul_pd(det_v, pref_v);
@@ -2393,8 +2227,8 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
-    x_ex: &[WickExcitation<'_>; 8],
-    w_ex: &[WickExcitation<'_>; 8],
+    x_ex: &[ExcitationSpinCache; 8],
+    w_ex: &[ExcitationSpinCache; 8],
     overlap: &mut [f64],
     fock: &mut [f64],
 ) {
@@ -2403,28 +2237,40 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         let x0_t = w.x_slice(0);
         let y0_t = w.y_slice(0);
         let fsl_t = w.ff_t_slice(0, 0);
+
         let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
         let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
         let fsl = std::slice::from_raw_parts(fsl_t.as_ptr().cast::<f64>(), fsl_t.len());
+
         let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
         let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
         let pref = phase * w.tilde_s_prod;
+
         let mut d = [[0.0f64; 8]; 16];
         let mut ff = [[0.0f64; 8]; 16];
         for lane in 0..8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
+
             let mut rows = [0usize; 4];
             let mut cols = [0usize; 4];
             construct_determinant_indices_l4(
-                x_data.1, w_data.1, x_data.2, w_data.2, w, &mut rows, &mut cols,
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
             );
+
             d[0][lane] = x0[rows[0] * n + cols[0]];
             ff[0][lane] = fsl[cols[0] * n + rows[0]];
             d[1][lane] = y0[rows[0] * n + cols[1]];
             ff[1][lane] = fsl[cols[1] * n + rows[0]];
+
             d[2][lane] = y0[rows[0] * n + cols[2]];
             ff[2][lane] = fsl[cols[2] * n + rows[0]];
+
             d[3][lane] = y0[rows[0] * n + cols[3]];
             ff[3][lane] = fsl[cols[3] * n + rows[0]];
             d[4][lane] = x0[rows[1] * n + cols[0]];
@@ -2452,6 +2298,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
             d[15][lane] = x0[rows[3] * n + cols[3]];
             ff[15][lane] = fsl[cols[3] * n + rows[3]];
         }
+
         let mut det_v = _mm512_setzero_pd();
         let mut repl0 = _mm512_setzero_pd();
         let mut repl1 = _mm512_setzero_pd();
@@ -2488,11 +2335,11 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t)
         };
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[0].as_ptr()), cof00, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[0].as_ptr()), cof00, repl0);
+
         let cof01 = {
             let m0 = _mm512_fmsub_pd(
                 _mm512_loadu_pd(d[10].as_ptr()),
@@ -2528,6 +2375,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         };
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), cof01, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[1].as_ptr()), cof01, repl0);
+
         let cof02 = {
             let m0 = _mm512_fmsub_pd(
                 _mm512_loadu_pd(d[9].as_ptr()),
@@ -2558,8 +2406,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m2, t)
         };
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), cof02, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[2].as_ptr()), cof02, repl0);
@@ -2598,6 +2445,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         };
         det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), cof03, det_v);
         repl0 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[3].as_ptr()), cof03, repl0);
+
         let cof10 = {
             let m0 = _mm512_fmsub_pd(
                 _mm512_loadu_pd(d[10].as_ptr()),
@@ -2662,8 +2510,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
         };
         repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[5].as_ptr()), cof11, repl1);
         let cof12 = {
@@ -2730,10 +2577,10 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t)
         };
         repl1 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[7].as_ptr()), cof13, repl1);
+
         let cof20 = {
             let m0 = _mm512_fmsub_pd(
                 _mm512_loadu_pd(d[6].as_ptr()),
@@ -2764,8 +2611,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
         };
         repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[8].as_ptr()), cof20, repl2);
         let cof21 = {
@@ -2832,8 +2678,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
         };
         repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[10].as_ptr()), cof22, repl2);
         let cof23 = {
@@ -2870,6 +2715,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
             _mm512_sub_pd(_mm512_setzero_pd(), minor)
         };
         repl2 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[11].as_ptr()), cof23, repl2);
+
         let cof30 = {
             let m0 = _mm512_fmsub_pd(
                 _mm512_loadu_pd(d[6].as_ptr()),
@@ -2934,8 +2780,7 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[2].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m2, t)
         };
         repl3 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[13].as_ptr()), cof31, repl3);
         let cof32 = {
@@ -3002,13 +2847,13 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
                 m0,
                 _mm512_mul_pd(_mm512_loadu_pd(d[1].as_ptr()), m1),
             );
-            let minor = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t);
-            minor
+            _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, t)
         };
         repl3 = _mm512_fmadd_pd(_mm512_loadu_pd(ff[15].as_ptr()), cof33, repl3);
         let repl01 = _mm512_add_pd(repl0, repl1);
         let repl23 = _mm512_add_pd(repl2, repl3);
         let repl_v = _mm512_add_pd(repl01, repl23);
+
         let pref_v = _mm512_set1_pd(pref);
         let f0_v = _mm512_set1_pd(f0);
         let overlap_v = _mm512_mul_pd(det_v, pref_v);

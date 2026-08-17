@@ -2,6 +2,11 @@
 //! Spin-factorised one-body NOCI operator contractions.
 
 // Standard library imports.
+#[cfg(target_arch = "x86_64")]
+use std::any::TypeId;
+#[cfg(target_arch = "x86_64")]
+use std::arch::is_x86_feature_detected;
+
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
@@ -11,13 +16,15 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::ExcitationSpinCache;
 use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
-use crate::nonorthogonalwicks::{
-    WickBatchPair, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batch,
-};
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, xw_f_overlap_prepared};
+
+#[cfg(target_arch = "x86_64")]
+use crate::nonorthogonalwicks::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -39,14 +46,17 @@ struct FactorisedOneBodyBlock<T: NOCIScalar> {
     target_parent: usize,
     /// Source parent `P`.
     source_parent: usize,
+
     /// Number of target alpha rows.
     nta: usize,
     /// Number of target beta rows.
     ntb: usize,
+
     /// Number of source alpha columns.
     nsa: usize,
     /// Number of source beta columns.
     nsb: usize,
+
     /// Selected dense contraction order for this parent pair.
     contraction: OneBodyContraction,
     /// Raw `S/F` alpha and beta factor backing.
@@ -94,6 +104,7 @@ struct OrthogonalApplyContext<'a, T: NOCIScalar> {
     data: &'a NOCIData<'a, T>,
     /// MO-basis Fock cache for the parent.
     cache: &'a FockMOCache<T>,
+
     /// Scalar overlap shift in `F + \lambda S`.
     lambda: T,
     /// Worker index and worker count for target rows.
@@ -148,6 +159,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     ) -> Self {
         let spin = SpinFactorisation::new(data);
         let nparent = spin.parents.len();
+
         let mut blocks = Vec::with_capacity(nparent * nparent);
         let mut storage_plan = OneBodyStoragePlan::new(cache, rank, iteration, storage);
 
@@ -222,6 +234,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     ) -> usize {
         let spin = SpinFactorisation::new(data);
         let nparent = spin.parents.len();
+
         let mut nentries = 0usize;
         for target_parent in 0..nparent {
             let target = &spin.parents[target_parent];
@@ -231,17 +244,21 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 {
                     continue;
                 }
+
                 let source = &spin.parents[source_parent];
+
                 let alpha = target
                     .areps
                     .len()
                     .checked_mul(source.areps.len())
                     .expect("alpha one-body factor length overflow");
+
                 let beta = target
                     .breps
                     .len()
                     .checked_mul(source.breps.len())
                     .expect("beta one-body factor length overflow");
+
                 let block_entries = 2usize
                     .checked_mul(
                         alpha
@@ -249,6 +266,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                             .expect("one-body factor length overflow"),
                     )
                     .expect("one-body factor length overflow");
+
                 nentries = nentries
                     .checked_add(block_entries)
                     .expect("one-body factor total length overflow");
@@ -280,9 +298,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     ) -> Array1<T> {
         let zero = T::from_real(0.0);
         let mut y = vec![zero; x.len()];
+
         let xs = x
             .as_slice_memory_order()
             .expect("NOCI-PT2 vector must be contiguous.");
+
         let (worker, nworker) = partition;
 
         for block in &self.blocks {
@@ -307,8 +327,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 OneBodyBlock::Transient(block) => match block.contraction {
                     OneBodyContraction::AFirst => self.apply_one_body_transient_a_first(
                         block,
-                        xs,
-                        &mut y,
+                        (xs, &mut y),
                         data,
                         lambda,
                         scratch,
@@ -316,8 +335,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     ),
                     OneBodyContraction::BFirst => self.apply_one_body_transient_b_first(
                         block,
-                        xs,
-                        &mut y,
+                        (xs, &mut y),
                         data,
                         lambda,
                         scratch,
@@ -623,8 +641,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// then generates each beta factor row once and immediately contracts it into `Y^Q`.
     /// # Arguments:
     /// - `block`: Nonpersistent parent-pair metadata.
-    /// - `x`: Source determinant vector.
-    /// - `y`: Output determinant vector to accumulate.
+    /// - `vectors`: Source determinant vector and output determinant vector to accumulate.
     /// - `data`: Shared NOCI data containing Wick intermediates.
     /// - `lambda`: Scalar overlap shift.
     /// - `scratch`: Reusable dense first-stage contraction buffers.
@@ -634,24 +651,29 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     fn apply_one_body_transient_a_first(
         &self,
         block: &TransientOneBodyBlock,
-        x: &[T],
-        y: &mut [T],
+        vectors: (&[T], &mut [T]),
         data: &NOCIData<'_, T>,
         lambda: T,
         scratch: &mut OneBodyScratch<T>,
         partition: (usize, usize),
     ) {
+        let (x, y) = vectors;
         let zero = T::from_real(0.0);
+
         let source = &self.spin.parents[block.source_parent];
         let target = &self.spin.parents[block.target_parent];
+
         let nta = target.areps.len();
-        let nsa = source.areps.len();
         let ntb = target.breps.len();
+
+        let nsa = source.areps.len();
         let nsb = source.breps.len();
+
         let (worker, nworker) = partition;
 
         let (lp, gp, target_left) =
             ordered_parent_pair(&self.spin, block.target_parent, block.source_parent);
+
         let pair = data
             .wicks
             .expect("factorised one-body requires Wick intermediates")
@@ -666,6 +688,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         if scratch.first_f.len() != first_len {
             scratch.first_f.resize(first_len, zero);
         }
+
         if scratch.first_s.len() != first_len {
             scratch.first_s.resize(first_len, zero);
         }
@@ -691,17 +714,16 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     build_spin_one_body_factor_row(
                         &pair,
                         data,
-                        target.areps[ta],
-                        source.areps.as_slice(),
+                        (target.areps[ta], source.areps.as_slice()),
                         target_left,
                         true,
                         wick,
-                        srow.as_mut_slice(),
-                        frow.as_mut_slice(),
+                        (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
                     for entry in &source.entries {
                         let xe = x[entry.det];
+
                         if xe != zero {
                             tf[entry.b] += frow[entry.a] * xe;
                             ts[entry.b] += srow[entry.a] * xe;
@@ -722,13 +744,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     build_spin_one_body_factor_row(
                         &pair,
                         data,
-                        target.breps[tb],
-                        source.breps.as_slice(),
+                        (target.breps[tb], source.breps.as_slice()),
                         target_left,
                         false,
                         wick,
-                        srow.as_mut_slice(),
-                        frow.as_mut_slice(),
+                        (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
                     let mut updates = Vec::with_capacity(target.entries_by_b[tb].len());
@@ -768,8 +788,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// then generates each alpha factor row once and immediately contracts it into `Y^Q`.
     /// # Arguments:
     /// - `block`: Nonpersistent parent-pair metadata.
-    /// - `x`: Source determinant vector.
-    /// - `y`: Output determinant vector to accumulate.
+    /// - `vectors`: Source determinant vector and output determinant vector to accumulate.
     /// - `data`: Shared NOCI data containing Wick intermediates.
     /// - `lambda`: Scalar overlap shift.
     /// - `scratch`: Reusable dense first-stage contraction buffers.
@@ -779,24 +798,29 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     fn apply_one_body_transient_b_first(
         &self,
         block: &TransientOneBodyBlock,
-        x: &[T],
-        y: &mut [T],
+        vectors: (&[T], &mut [T]),
         data: &NOCIData<'_, T>,
         lambda: T,
         scratch: &mut OneBodyScratch<T>,
         partition: (usize, usize),
     ) {
+        let (x, y) = vectors;
         let zero = T::from_real(0.0);
+
         let source = &self.spin.parents[block.source_parent];
         let target = &self.spin.parents[block.target_parent];
+
         let nta = target.areps.len();
-        let nsa = source.areps.len();
         let ntb = target.breps.len();
+
+        let nsa = source.areps.len();
         let nsb = source.breps.len();
+
         let (worker, nworker) = partition;
 
         let (lp, gp, target_left) =
             ordered_parent_pair(&self.spin, block.target_parent, block.source_parent);
+
         let pair = data
             .wicks
             .expect("factorised one-body requires Wick intermediates")
@@ -809,6 +833,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         if scratch.first_f.len() != first_len {
             scratch.first_f.resize(first_len, zero);
         }
+
         if scratch.first_s.len() != first_len {
             scratch.first_s.resize(first_len, zero);
         }
@@ -834,17 +859,16 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     build_spin_one_body_factor_row(
                         &pair,
                         data,
-                        target.breps[tb],
-                        source.breps.as_slice(),
+                        (target.breps[tb], source.breps.as_slice()),
                         target_left,
                         false,
                         wick,
-                        srow.as_mut_slice(),
-                        frow.as_mut_slice(),
+                        (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
                     for entry in &source.entries {
                         let xe = x[entry.det];
+
                         if xe != zero {
                             uf[entry.a] += xe * frow[entry.b];
                             us[entry.a] += xe * srow[entry.b];
@@ -864,13 +888,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     build_spin_one_body_factor_row(
                         &pair,
                         data,
-                        target.areps[ta],
-                        source.areps.as_slice(),
+                        (target.areps[ta], source.areps.as_slice()),
                         target_left,
                         true,
                         wick,
-                        srow.as_mut_slice(),
-                        frow.as_mut_slice(),
+                        (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
                     let mut updates = Vec::with_capacity(target.entries_by_a[ta].len());
@@ -922,11 +944,15 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
 ) -> FactorisedOneBodyBlock<T> {
     let target = &spin.parents[target_parent];
     let source = &spin.parents[source_parent];
+
     let nta = target.areps.len();
     let ntb = target.breps.len();
+
     let nsa = source.areps.len();
     let nsb = source.breps.len();
+
     let (lp, gp, target_left) = ordered_parent_pair(spin, target_parent, source_parent);
+
     let pair = data
         .wicks
         .expect("factorised one-body requires Wick intermediates")
@@ -935,6 +961,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     let na = nta
         .checked_mul(nsa)
         .expect("alpha one-body factor length overflow");
+
     let nb = ntb
         .checked_mul(nsb)
         .expect("beta one-body factor length overflow");
@@ -1049,9 +1076,12 @@ fn fill_one_body_diagonal_block<T: NOCIScalar>(
     for entry in &parent.entries {
         let saa = sa[entry.a * block.nsa + entry.a];
         let faa = fa[entry.a * block.nsa + entry.a];
+
         let sbb = sb[entry.b * block.nsb + entry.b];
         let fbb = fb[entry.b * block.nsb + entry.b];
+
         let s = saa * sbb;
+
         s_diag[entry.det] = s;
         m_diag[entry.det] = faa * sbb + saa * fbb + lambda * s;
     }
@@ -1138,14 +1168,17 @@ fn apply_orthogonal_alpha_singles<T: NOCIScalar>(
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
         holes &= holes - 1;
+
         for part in 0..nmo {
             if ((oa >> part) & 1) == 1 {
                 continue;
             }
             let target_oa = (oa & !(1u128 << hole)) | (1u128 << part);
+
             let Some(&opos) = orthogonal.opos.get(&(target_oa, ob)) else {
                 continue;
             };
+
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
                     let target_det = &context.data.basis[target.det];
@@ -1184,14 +1217,17 @@ fn apply_orthogonal_beta_singles<T: NOCIScalar>(
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
         holes &= holes - 1;
+
         for part in 0..nmo {
             if ((ob >> part) & 1) == 1 {
                 continue;
             }
             let target_ob = (ob & !(1u128 << hole)) | (1u128 << part);
+
             let Some(&opos) = orthogonal.opos.get(&(oa, target_ob)) else {
                 continue;
             };
+
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
                     let target_det = &context.data.basis[target.det];
@@ -1227,7 +1263,6 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 ) {
     let (target_reps, source_reps) = reps;
     let nsource = source_reps.len();
-    let tol = data.tol;
     let row0 = rows.start;
     let row1 = rows.end;
 
@@ -1239,13 +1274,11 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
             build_spin_one_body_factor_row(
                 pair,
                 data,
-                tdet,
-                source_reps,
+                (tdet, source_reps),
                 target_left,
                 alpha,
                 scratch,
-                srow,
-                frow,
+                (srow, frow),
             );
         });
 }
@@ -1254,60 +1287,295 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data.
-/// - `target_det`: Representative determinant defining the target spin component.
-/// - `source_reps`: Representative determinants for all source spin components.
+/// - `reps`: Target representative determinant and source representative determinants.
 /// - `target_left`: Whether the target determinant belongs to the left Wick reference.
 /// - `alpha`: Whether to evaluate alpha-alpha or beta-beta factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
-/// - `srow`: Output same-spin overlap factor row.
-/// - `frow`: Output same-spin generalised-Fock factor row.
+/// - `out`: Output same-spin overlap and generalised-Fock factor rows.
 /// # Returns
 /// - `()`: Fills `srow` and `frow` for the target spin component.
 fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target_det: usize,
-    source_reps: &[usize],
+    reps: (usize, &[usize]),
     target_left: bool,
     alpha: bool,
     scratch: &mut WickScratchSpin<T>,
-    srow: &mut [T],
-    frow: &mut [T],
+    out: (&mut [T], &mut [T]),
 ) {
+    let (target_det, source_reps) = reps;
+    let (srow, frow) = out;
+
     let target = &data.basis[target_det];
 
-    if alpha {
-        let target_ex = (&target.excitation.alpha, target.rank_a, &target.indices_a);
-        let target_phase = target.pha;
-        let pairs = source_reps.iter().enumerate().map(|(col, &source_det)| {
-            let source = &data.basis[source_det];
-            let source_ex = (&source.excitation.alpha, source.rank_a, &source.indices_a);
-            let (x_ex, w_ex) = if target_left {
-                (target_ex, source_ex)
-            } else {
-                (source_ex, target_ex)
-            };
-
-            WickBatchPair::new(x_ex, w_ex, target_phase * source.pha, col)
-        });
-
-        xw_f_overlap_prepared_batch(&pair.aa, pairs, &mut scratch.aa, data.tol, srow, frow);
+    let (w, target_ex, target_cache, target_phase, scratch) = if alpha {
+        (
+            &pair.aa,
+            &target.excitation.alpha,
+            target.excitation_cache.alpha,
+            target.pha,
+            &mut scratch.aa,
+        )
     } else {
-        let target_ex = (&target.excitation.beta, target.rank_b, &target.indices_b);
-        let target_phase = target.phb;
-        let pairs = source_reps.iter().enumerate().map(|(col, &source_det)| {
-            let source = &data.basis[source_det];
-            let source_ex = (&source.excitation.beta, source.rank_b, &source.indices_b);
-            let (x_ex, w_ex) = if target_left {
-                (target_ex, source_ex)
-            } else {
-                (source_ex, target_ex)
-            };
+        (
+            &pair.bb,
+            &target.excitation.beta,
+            target.excitation_cache.beta,
+            target.phb,
+            &mut scratch.bb,
+        )
+    };
 
-            WickBatchPair::new(x_ex, w_ex, target_phase * source.phb, col)
-        });
+    #[cfg(target_arch = "x86_64")]
+    if TypeId::of::<T>() == TypeId::of::<f64>() && w.m == 0 {
+        unsafe {
+            let srow_f64 =
+                std::slice::from_raw_parts_mut(srow.as_mut_ptr().cast::<f64>(), srow.len());
+            let frow_f64 =
+                std::slice::from_raw_parts_mut(frow.as_mut_ptr().cast::<f64>(), frow.len());
 
-        xw_f_overlap_prepared_batch(&pair.bb, pairs, &mut scratch.bb, data.tol, srow, frow);
+            if is_x86_feature_detected!("avx512f") {
+                let mut bins = [[ExcitationSpinCache::default(); 8]; 5];
+                let mut phases = [[1.0f64; 8]; 5];
+                let mut outputs = [[0usize; 8]; 5];
+                let mut counts = [0usize; 5];
+
+                for (col, &source_det) in source_reps.iter().enumerate() {
+                    let source = &data.basis[source_det];
+
+                    let (source_ex, source_cache, source_phase) = if alpha {
+                        (
+                            &source.excitation.alpha,
+                            source.excitation_cache.alpha,
+                            source.pha,
+                        )
+                    } else {
+                        (
+                            &source.excitation.beta,
+                            source.excitation_cache.beta,
+                            source.phb,
+                        )
+                    };
+
+                    let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
+
+                    if (1..=4).contains(&l) {
+                        let count = counts[l];
+
+                        bins[l][count] = source_cache;
+                        phases[l][count] = source_phase;
+                        outputs[l][count] = col;
+                        counts[l] += 1;
+
+                        if counts[l] == 8 {
+                            let target_batch = [target_cache; 8];
+                            let source_batch = bins[l];
+
+                            let (x_ex, w_ex) = if target_left {
+                                (&target_batch, &source_batch)
+                            } else {
+                                (&source_batch, &target_batch)
+                            };
+
+                            let mut s = [0.0f64; 8];
+                            let mut f = [0.0f64; 8];
+
+                            xw_f_overlap_m0_prepared_f64x8(w, l, x_ex, w_ex, &mut s, &mut f);
+
+                            for lane in 0..8 {
+                                let output = outputs[l][lane];
+                                let phase = target_phase * phases[l][lane];
+
+                                srow_f64[output] = phase * s[lane];
+                                frow_f64[output] = phase * f[lane];
+                            }
+                            counts[l] = 0;
+                        }
+                    } else {
+                        let (x_ex, w_ex) = if target_left {
+                            (target_ex, source_ex)
+                        } else {
+                            (source_ex, target_ex)
+                        };
+
+                        let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
+                        let phase = target_phase * source_phase;
+
+                        srow_f64[col] = phase * *std::ptr::from_ref::<T>(&s).cast::<f64>();
+                        frow_f64[col] = phase * *std::ptr::from_ref::<T>(&f).cast::<f64>();
+                    }
+                }
+
+                for l in 1..=4 {
+                    let count = counts[l];
+
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let fill = bins[l][0];
+                    for slot in bins[l].iter_mut().skip(count) {
+                        *slot = fill;
+                    }
+
+                    let target_batch = [target_cache; 8];
+                    let source_batch = bins[l];
+
+                    let (x_ex, w_ex) = if target_left {
+                        (&target_batch, &source_batch)
+                    } else {
+                        (&source_batch, &target_batch)
+                    };
+
+                    let mut s = [0.0f64; 8];
+                    let mut f = [0.0f64; 8];
+
+                    xw_f_overlap_m0_prepared_f64x8(w, l, x_ex, w_ex, &mut s, &mut f);
+
+                    for lane in 0..count {
+                        let output = outputs[l][lane];
+                        let phase = target_phase * phases[l][lane];
+
+                        srow_f64[output] = phase * s[lane];
+                        frow_f64[output] = phase * f[lane];
+                    }
+                }
+
+                return;
+            }
+
+            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                let mut bins = [[ExcitationSpinCache::default(); 4]; 5];
+                let mut phases = [[1.0f64; 4]; 5];
+                let mut outputs = [[0usize; 4]; 5];
+                let mut counts = [0usize; 5];
+
+                for (col, &source_det) in source_reps.iter().enumerate() {
+                    let source = &data.basis[source_det];
+
+                    let (source_ex, source_cache, source_phase) = if alpha {
+                        (
+                            &source.excitation.alpha,
+                            source.excitation_cache.alpha,
+                            source.pha,
+                        )
+                    } else {
+                        (
+                            &source.excitation.beta,
+                            source.excitation_cache.beta,
+                            source.phb,
+                        )
+                    };
+
+                    let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
+
+                    if (1..=4).contains(&l) {
+                        let count = counts[l];
+
+                        bins[l][count] = source_cache;
+                        phases[l][count] = source_phase;
+                        outputs[l][count] = col;
+                        counts[l] += 1;
+
+                        if counts[l] == 4 {
+                            let target_batch = [target_cache; 4];
+                            let source_batch = bins[l];
+
+                            let (x_ex, w_ex) = if target_left {
+                                (&target_batch, &source_batch)
+                            } else {
+                                (&source_batch, &target_batch)
+                            };
+
+                            let mut s = [0.0f64; 4];
+                            let mut f = [0.0f64; 4];
+
+                            xw_f_overlap_m0_prepared_f64x4(w, l, x_ex, w_ex, &mut s, &mut f);
+
+                            for lane in 0..4 {
+                                let output = outputs[l][lane];
+                                let phase = target_phase * phases[l][lane];
+
+                                srow_f64[output] = phase * s[lane];
+                                frow_f64[output] = phase * f[lane];
+                            }
+                            counts[l] = 0;
+                        }
+                    } else {
+                        let (x_ex, w_ex) = if target_left {
+                            (target_ex, source_ex)
+                        } else {
+                            (source_ex, target_ex)
+                        };
+
+                        let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
+                        let phase = target_phase * source_phase;
+
+                        srow_f64[col] = phase * *std::ptr::from_ref::<T>(&s).cast::<f64>();
+                        frow_f64[col] = phase * *std::ptr::from_ref::<T>(&f).cast::<f64>();
+                    }
+                }
+
+                for l in 1..=4 {
+                    let count = counts[l];
+
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let fill = bins[l][0];
+                    for slot in bins[l].iter_mut().skip(count) {
+                        *slot = fill;
+                    }
+
+                    let target_batch = [target_cache; 4];
+                    let source_batch = bins[l];
+
+                    let (x_ex, w_ex) = if target_left {
+                        (&target_batch, &source_batch)
+                    } else {
+                        (&source_batch, &target_batch)
+                    };
+
+                    let mut s = [0.0f64; 4];
+                    let mut f = [0.0f64; 4];
+
+                    xw_f_overlap_m0_prepared_f64x4(w, l, x_ex, w_ex, &mut s, &mut f);
+
+                    for lane in 0..count {
+                        let output = outputs[l][lane];
+                        let phase = target_phase * phases[l][lane];
+
+                        srow_f64[output] = phase * s[lane];
+                        frow_f64[output] = phase * f[lane];
+                    }
+                }
+
+                return;
+            }
+        }
+    }
+
+    for (col, &source_det) in source_reps.iter().enumerate() {
+        let source = &data.basis[source_det];
+
+        let (source_ex, source_phase) = if alpha {
+            (&source.excitation.alpha, source.pha)
+        } else {
+            (&source.excitation.beta, source.phb)
+        };
+
+        let (x_ex, w_ex) = if target_left {
+            (target_ex, source_ex)
+        } else {
+            (source_ex, target_ex)
+        };
+
+        let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
+        let phase = T::from_real(target_phase * source_phase);
+
+        srow[col] = phase * s;
+        frow[col] = phase * f;
     }
 }
 
@@ -1333,10 +1601,12 @@ fn select_one_body_contraction(
         .saturating_mul(nta)
         .saturating_mul(ns)
         .saturating_add(2usize.saturating_mul(nt).saturating_mul(nsb));
+
     let cb = 2usize
         .saturating_mul(ntb)
         .saturating_mul(ns)
         .saturating_add(2usize.saturating_mul(nt).saturating_mul(nsa));
+
     if ca <= cb {
         OneBodyContraction::AFirst
     } else {

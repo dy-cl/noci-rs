@@ -2,7 +2,6 @@ mod h2diff;
 mod h2same;
 mod helpers;
 mod onebody;
-mod onebodyoverlap;
 mod overlap;
 mod prepare;
 mod prepareonebodyoverlap;
@@ -23,9 +22,12 @@ pub use prepare::prepare_same;
 pub(crate) use h2diff::xw_h2_diff;
 pub(crate) use h2same::xw_h2_same;
 pub(crate) use onebody::{xw_f, xw_h1};
-pub(crate) use onebodyoverlap::xw_f_overlap;
 pub(crate) use overlap::xw_overlap_same_f64;
-pub(crate) use prepareonebodyoverlap::{WickBatchPair, xw_f_overlap_prepared_batch};
+pub(crate) use prepareonebodyoverlap::xw_f_overlap_prepared;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use prepareonebodyoverlap::{
+    xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8,
+};
 #[cfg(feature = "nocc")]
 pub(crate) use rdm1::xw_rdm1;
 #[cfg(feature = "nocc")]

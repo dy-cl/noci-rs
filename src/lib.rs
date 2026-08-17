@@ -78,9 +78,9 @@ pub struct AoData {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Excitation {
     /// Excitation information for spin alpha.
-    alpha: ExcitationSpin,
+    pub alpha: ExcitationSpin,
     /// Excitation information for spin beta.
-    beta: ExcitationSpin,
+    pub beta: ExcitationSpin,
 }
 
 impl Excitation {
@@ -95,6 +95,19 @@ impl Excitation {
             beta: ExcitationSpin { holes: 0, parts: 0 },
         }
     }
+
+    /// Build the cached fixed-rank representation of this excitation.
+    /// # Arguments:
+    /// - `self`: Excitation to cache.
+    /// # Returns:
+    /// - `ExcitationCache`: Cached alpha- and beta-spin excitation data.
+    #[inline(always)]
+    pub fn cache(&self) -> ExcitationCache {
+        ExcitationCache {
+            alpha: self.alpha.cache(),
+            beta: self.beta.cache(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
@@ -103,6 +116,54 @@ pub struct ExcitationSpin {
     pub holes: u128,
     /// Bit mask of previously unoccupied now occupied orbitals.
     pub parts: u128,
+}
+
+impl ExcitationSpin {
+    /// Build the cached rank and orbital indices used by fixed-rank Wick kernels.
+    /// # Arguments:
+    /// - `self`: Spin excitation to cache.
+    /// # Returns:
+    /// - `ExcitationSpinCache`: Cached rank and first four hole/particle indices.
+    #[inline(always)]
+    pub fn cache(&self) -> ExcitationSpinCache {
+        let rank = self.holes.count_ones() as u8;
+        debug_assert_eq!(u32::from(rank), self.parts.count_ones());
+        let mut indices = [0u8; 8];
+        let mut holes = self.holes;
+        let mut parts = self.parts;
+
+        // Cache the first four hole and particle indices used by the L = 1,...,4 kernels.
+        for i in 0..4 {
+            if holes != 0 {
+                indices[i] = holes.trailing_zeros() as u8;
+                holes &= holes - 1;
+            }
+            if parts != 0 {
+                indices[4 + i] = parts.trailing_zeros() as u8;
+                parts &= parts - 1;
+            }
+        }
+
+        ExcitationSpinCache { rank, indices }
+    }
+}
+
+/// Cached fixed-rank representation of one spin excitation.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Default)]
+pub struct ExcitationSpinCache {
+    /// Excitation rank relative to the parent determinant.
+    pub rank: u8,
+    /// First four hole then particle orbital indices.
+    pub indices: [u8; 8],
+}
+
+/// Cached fixed-rank representations of both spin excitations.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Default)]
+pub struct ExcitationCache {
+    /// Alpha-spin excitation cache.
+    pub alpha: ExcitationSpinCache,
+    /// Beta-spin excitation cache.
+    pub beta: ExcitationSpinCache,
 }
 
 /// Data shared by post-SCF NOCI, NOCI-QMC, and SNOCI methods.

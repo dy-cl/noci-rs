@@ -8,7 +8,7 @@ use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
-use crate::Excitation;
+use crate::{Excitation, ExcitationCache};
 
 // Scalar generic marker trait for SCF states.
 pub trait StateScalar:
@@ -40,14 +40,6 @@ pub struct DetState<T: StateScalar> {
     pub pha: f64,
     /// Fermionic phase relative to parent for spin beta electrons.
     pub phb: f64,
-    /// Excitation rank relative to parent for spin alpha electrons.
-    pub rank_a: u8,
-    /// Excitation rank relative to parent for spin beta electrons.
-    pub rank_b: u8,
-    /// Cached hole then particle orbital indices for spin alpha, `[i0..i3,a0..a3]`.
-    pub indices_a: [u8; 8],
-    /// Cached hole then particle orbital indices for spin beta, `[i0..i3,a0..a3]`.
-    pub indices_b: [u8; 8],
     /// MO coefficients for spin alpha electrons, (nao, nao).
     pub ca: Arc<Array2<T>>,
     /// MO coefficients for spin beta electrons, (nao, nao).
@@ -64,6 +56,8 @@ pub struct DetState<T: StateScalar> {
     pub parent: usize,
     /// Excitation relative to parent if excited for QMC basis.
     pub excitation: Excitation,
+    /// Cached fixed-rank excitation metadata.
+    pub excitation_cache: ExcitationCache,
 }
 
 /// Real-valued SCF determinant state.
@@ -85,10 +79,6 @@ impl HSCFState {
             ob: st.ob,
             pha: st.pha,
             phb: st.phb,
-            rank_a: st.rank_a,
-            rank_b: st.rank_b,
-            indices_a: st.indices_a,
-            indices_b: st.indices_b,
             ca: Arc::new(st.ca.mapv(|x| Complex64::new(x, 0.0))),
             cb: Arc::new(st.cb.mapv(|x| Complex64::new(x, 0.0))),
             da: Arc::new(st.da.mapv(|x| Complex64::new(x, 0.0))),
@@ -97,6 +87,7 @@ impl HSCFState {
             noci_basis: st.noci_basis,
             parent: st.parent,
             excitation: st.excitation.clone(),
+            excitation_cache: st.excitation_cache,
         }
     }
 }

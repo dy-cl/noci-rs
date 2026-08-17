@@ -13,7 +13,7 @@ use crate::input::{Input, SCFExcitation, Spin, StateType};
 use crate::maths::general_evp_x;
 use crate::utils::print_array2_indexed;
 use crate::write::write_orbitals;
-use crate::{AoData, Excitation, SCFState};
+use crate::{AoData, Excitation, ExcitationCache, SCFState};
 
 // Parent/sibling imports.
 use super::bias::metadynamics_bias;
@@ -337,10 +337,6 @@ pub fn scf_cycle(
                 ob: occvec_to_bits(&idx_b),
                 pha: 1.0,
                 phb: 1.0,
-                rank_a: 0,
-                rank_b: 0,
-                indices_a: [0; 8],
-                indices_b: [0; 8],
                 ca: Arc::new(ca),
                 cb: Arc::new(cb),
                 da: Arc::new(da_new),
@@ -349,6 +345,7 @@ pub fn scf_cycle(
                 noci_basis,
                 parent: i,
                 excitation: Excitation::empty(),
+                excitation_cache: ExcitationCache::default(),
             };
             return Some(finalise(state, &ea, &eb, ao, input));
         }

@@ -12,39 +12,6 @@ use crate::noci::NOCIScalar;
 use crate::scf::spin_occupation;
 use crate::{DetState, Excitation, ExcitationSpin};
 
-/// Decode the first four hole and particle orbital indices from an excitation bit mask.
-/// `indices[0..4]` stores ascending hole indices and `indices[4..8]` stores ascending particle
-/// indices. Fixed-rank SIMD Wick kernels only consume this cache when the spin excitation rank is
-/// at most four; higher-rank paths continue to use the complete `u128` excitation masks.
-/// # Arguments:
-/// - `holes`: Hole orbital bit mask.
-/// - `parts`: Particle orbital bit mask.
-/// # Returns
-/// - `(u8, [u8; 8])`: Excitation rank and cached hole/particle orbital indices.
-#[inline(always)]
-fn decode_excitation_indices(
-    holes: u128,
-    parts: u128,
-) -> (u8, [u8; 8]) {
-    let rank = holes.count_ones() as u8;
-    let mut indices = [0u8; 8];
-    let mut holes_left = holes;
-    let mut parts_left = parts;
-
-    for i in 0..4 {
-        if holes_left != 0 {
-            indices[i] = holes_left.trailing_zeros() as u8;
-            holes_left &= holes_left - 1;
-        }
-        if parts_left != 0 {
-            indices[4 + i] = parts_left.trailing_zeros() as u8;
-            parts_left &= parts_left - 1;
-        }
-    }
-
-    (rank, indices)
-}
-
 /// Copy a reference determinant and replace its alpha and beta occupation bitstrings.
 /// # Arguments
 /// - `reference`: State from which to build an excited determinant.
@@ -65,10 +32,7 @@ fn make_excited_state<T: NOCIScalar>(
 ) -> DetState<T> {
     let pha = excitation_phase_bits(parent_occ.0, excitation.alpha.holes, excitation.alpha.parts);
     let phb = excitation_phase_bits(parent_occ.1, excitation.beta.holes, excitation.beta.parts);
-    let (rank_a, indices_a) =
-        decode_excitation_indices(excitation.alpha.holes, excitation.alpha.parts);
-    let (rank_b, indices_b) =
-        decode_excitation_indices(excitation.beta.holes, excitation.beta.parts);
+    let excitation_cache = excitation.cache();
 
     DetState {
         e: T::from_real(0.0),
@@ -76,10 +40,6 @@ fn make_excited_state<T: NOCIScalar>(
         ob: occ.1,
         pha,
         phb,
-        rank_a,
-        rank_b,
-        indices_a,
-        indices_b,
         ca: Arc::clone(&reference.ca),
         cb: Arc::clone(&reference.cb),
         da: Arc::clone(&reference.da),
@@ -88,6 +48,7 @@ fn make_excited_state<T: NOCIScalar>(
         noci_basis: false,
         parent,
         excitation,
+        excitation_cache,
     }
 }
 

@@ -429,8 +429,8 @@ mod build_d {
                 let yptr = y.as_ptr().cast::<f64>();
                 let dptr = d.as_mut_ptr().cast::<f64>();
 
-                for i in 0..l {
-                    let r = rows[i] as i64;
+                for (i, &row) in rows.iter().take(l).enumerate() {
+                    let r = row as i64;
                     let base = i * l;
                     let mut j = 0usize;
 
@@ -774,8 +774,9 @@ mod mix_columns {
                         };
 
                         let mut selected = [0i64; 4];
-                        for lane in 0..count {
-                            selected[lane] = if ((bits >> (c + lane)) & 1) != 0 {
+
+                        for (lane, value) in selected.iter_mut().enumerate().take(count) {
+                            *value = if ((bits >> (c + lane)) & 1) != 0 {
                                 -1
                             } else {
                                 0
@@ -988,8 +989,7 @@ mod minor_mod {
                 let optr = out.as_mut_ptr().cast::<f64>();
                 let mask = _mm256_set_epi64x(0, -1, -1, -1);
 
-                for i in 0..3 {
-                    let r = rows[i];
+                for (i, &r) in rows.iter().enumerate() {
                     let indices = _mm256_set_epi64x(
                         (r * 4 + cols[2]) as i64,
                         (r * 4 + cols[2]) as i64,
@@ -997,7 +997,6 @@ mod minor_mod {
                         (r * 4 + cols[0]) as i64,
                     );
                     let values = _mm256_i64gather_pd(mptr, indices, 8);
-
                     _mm256_maskstore_pd(optr.add(i * 3), mask, values);
                 }
 
@@ -1005,11 +1004,11 @@ mod minor_mod {
             }
         }
 
-        for i in 0..3 {
+        for (i, &r) in rows.iter().enumerate() {
             let base = i * 3;
-            out[base] = m[rows[i] * 4 + cols[0]];
-            out[base + 1] = m[rows[i] * 4 + cols[1]];
-            out[base + 2] = m[rows[i] * 4 + cols[2]];
+            out[base] = m[r * 4 + cols[0]];
+            out[base + 1] = m[r * 4 + cols[1]];
+            out[base + 2] = m[r * 4 + cols[2]];
         }
     }
 
