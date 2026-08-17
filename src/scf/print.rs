@@ -2,6 +2,7 @@
 
 // External crate imports.
 use ndarray::Array1;
+use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::input::{Input, SCFExcitation};
@@ -45,12 +46,14 @@ pub(in crate::scf) fn print_header(
 pub(in crate::scf) fn print_header_h(
     input: &Input,
     label: &str,
+    lambda: Complex64,
 ) {
     if input.write.verbose < 1 {
         return;
     }
     println!("{}Begin h-SCF{}", "=".repeat(45), "=".repeat(46));
     println!("State: {label}");
+    println!("Lambda: {:.10} {:+.10}i", lambda.re, lambda.im);
     println!(
         "{:>4} {:>16} {:>17} {:>12} {:>12} {:>12}",
         "i", "Re(E)", "Im(E)", "||g_ov||", "alpha", "||p||"

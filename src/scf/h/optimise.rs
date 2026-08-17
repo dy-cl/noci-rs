@@ -48,7 +48,7 @@ pub(crate) fn hscf_cycle(
     // to improve approximation of Hessian quantities.
     let mut hist: Vec<SecantPair> = Vec::new();
 
-    print_header_h(input, run.label);
+    print_header_h(input, run.label, run.lambda);
 
     // Retain previous gradient and orbital displacement to construct
     // secant pairs which are stored in `hist`.

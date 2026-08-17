@@ -39,18 +39,30 @@ pub(in crate::scf) fn spin_label(spin: &Spin) -> &str {
 
 /// Determine which spin channels should use MOM occupation selection.
 /// # Arguments
+/// - `input`: User input specifying the SCF state-search method.
 /// - `scfexcitation`: Optional excited SCF occupation request.
 /// # Returns
 /// - `(bool, bool)`: Whether alpha and beta occupations should use MOM.
-fn mom_flags(scfexcitation: Option<&SCFExcitation>) -> (bool, bool) {
+fn mom_flags(
+    input: &Input,
+    scfexcitation: Option<&SCFExcitation>,
+) -> (bool, bool) {
+    // If no MOM is requested neither spin channel has true.
+    if !matches!(&input.states, StateType::Mom(_)) {
+        return (false, false);
+    }
+
+    // If excitations are specified require MOM flags for
+    // the specified spin type.
     if let Some(ex) = scfexcitation {
         match ex.spin {
             Spin::Alpha => (true, false),
             Spin::Beta => (false, true),
             Spin::Both => (true, true),
         }
+    // If no excitation is specified use MOM for both.
     } else {
-        (false, false)
+        (true, true)
     }
 }
 
@@ -94,15 +106,20 @@ fn occupy(
 ) -> (Vec<usize>, Array2<f64>) {
     let idx = if use_mom {
         match c_occ_old {
+            // If some orbitals already exist use MOM on them.
             Some(c_occ_old) => mom_select(c_occ_old, c, s, nocc),
-            None => seed_excited_occupation(
-                nocc,
-                scfexcitation.expect("MOM occupation requires an SCF excitation."),
-            ),
+            // If they do not exist we are on first MOM iteration.
+            None => match scfexcitation {
+                // If there's an excitation do excited state MOM.
+                Some(ex) => seed_excited_occupation(nocc, ex),
+                // Otherwise take Aufbau ordering for first MOM iteration.
+                None => aufbau_indices(e, nocc),
+            },
         }
     } else {
         aufbau_indices(e, nocc)
     };
+
     let c_occ = c.select(Axis(1), &idx);
     (idx, c_occ)
 }
@@ -226,11 +243,13 @@ pub fn scf_cycle(
     let mut cb_occ_old: Option<Array2<f64>> = None;
 
     print_header(input, scfexcitation);
+
     let lambda = match &input.states {
         StateType::Metadynamics(meta) => Some(meta.lambda),
         _ => None,
     };
-    let (mom_a, mom_b) = mom_flags(scfexcitation);
+
+    let (mom_a, mom_b) = mom_flags(input, scfexcitation);
 
     let (mut fa_phys, mut fb_phys) = fock(&ao.h, &ao.eri_coul, &da, &db);
 
