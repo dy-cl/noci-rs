@@ -6,7 +6,9 @@ use mpi::traits::*;
 
 // Crate-root imports.
 use crate::SCFState;
-use crate::noci::{DetPair, NOCIData, calculate_hs_pair, calculate_s_pair};
+use crate::noci::{
+    DetPair, NOCIData, calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
+};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
@@ -70,6 +72,41 @@ pub(in crate::stochastic) fn find_hs(
         DetPair::new(&data.basis[a], &data.basis[b]),
         Some(scratch),
     )
+}
+
+/// Find batched Hamiltonian and overlap matrix elements for canonically ordered determinant pairs.
+/// Extended nonorthogonal Wick evaluation uses the batched NOCI path. Without Wick evaluation,
+/// requests fall back to the existing scalar matrix-element evaluator.
+/// # Arguments:
+/// - `data`: Immutable stochastic propagation data.
+/// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
+/// - `scratch`: Reusable Wick scratch space for scalar and generic-rank evaluation.
+/// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
+/// # Returns:
+/// - `()`: Writes every requested `(H, S)` pair into `out`.
+pub(in crate::stochastic) fn find_hs_batched(
+    data: &NOCIData<'_, f64>,
+    pairs: &[(usize, usize)],
+    scratch: &mut WickScratchSpin<f64>,
+    out: &mut [(f64, f64)],
+) {
+    if data.input.wicks.enabled && data.wicks.is_some() {
+        calculate_hs_pairs_wicks_batched(data, pairs, scratch, out);
+        return;
+    }
+
+    for (i, &(a, b)) in pairs.iter().enumerate() {
+        let ldet = &data.basis[a];
+        let gdet = &data.basis[b];
+
+        if ldet.parent == gdet.parent
+            && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4
+        {
+            out[i] = (0.0, 0.0);
+        } else {
+            out[i] = find_hs(data, a, b, scratch);
+        }
+    }
 }
 
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended

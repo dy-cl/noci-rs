@@ -15,7 +15,7 @@ use std::arch::x86_64::{
 // Crate-root imports.
 use crate::maths::{adjugate_transpose, det};
 use crate::noci::NOCIScalar;
-use crate::{Excitation, ExcitationCache};
+use crate::{DetState, Excitation, ExcitationCache};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
@@ -100,6 +100,315 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
     }
 
     xw_hamiltonian_overlap_gen_prepared(w, x_ex, w_ex, excitation_phase, enuc, scratch, tol)
+}
+
+/// Evaluate batched Hamiltonian and overlap matrix elements for one ordered reference pair.
+/// Matching requests are streamed through the 28 fixed `(L_\alpha, L_\beta)` bins when
+/// `m_\alpha = m_\beta = 0`. The widest supported real SIMD kernel is selected internally,
+/// incomplete bins are padded with one valid request, and unsupported requests use the existing
+/// prepared scalar evaluator.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
+/// - `basis`: Determinant basis used to read excitation metadata.
+/// - `pairs`: Canonically ordered determinant-index pairs in output order.
+/// - `lp`: Bra-reference parent index represented by `w`.
+/// - `gp`: Ket-reference parent index represented by `w`.
+/// - `enuc`: Nuclear repulsion energy.
+/// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
+/// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
+/// - `out`: Hamiltonian and overlap results aligned with `pairs`.
+/// # Returns:
+/// - `()`: Writes matrix elements belonging to this ordered reference pair into `out`.
+pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
+    w: &WicksPairView<'_, f64>,
+    basis: &[DetState<f64>],
+    pairs: &[(usize, usize)],
+    lp: usize,
+    gp: usize,
+    enuc: f64,
+    scratch: &mut WickScratchSpin<f64>,
+    tol: f64,
+    out: &mut [(f64, f64)],
+) {
+    #[cfg(target_arch = "x86_64")]
+    if w.aa.m == 0 && w.bb.m == 0 {
+        if std::arch::is_x86_feature_detected!("avx512f") {
+            let mut x_bins = [[ExcitationCache::default(); 8]; 28];
+            let mut w_bins = [[ExcitationCache::default(); 8]; 28];
+            let mut phases = [[1.0f64; 8]; 28];
+            let mut outputs = [[0usize; 8]; 28];
+            let mut counts = [0usize; 28];
+
+            for (output, &(a, b)) in pairs.iter().enumerate() {
+                let ldet = &basis[a];
+                let gdet = &basis[b];
+
+                if ldet.parent != lp || gdet.parent != gp {
+                    continue;
+                }
+
+                if lp == gp
+                    && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4
+                {
+                    out[output] = (0.0, 0.0);
+                    continue;
+                }
+
+                let x_cache = ldet.excitation_cache;
+                let w_cache = gdet.excitation_cache;
+                let fixed = x_cache.alpha.rank <= 4
+                    && x_cache.beta.rank <= 4
+                    && w_cache.alpha.rank <= 4
+                    && w_cache.beta.rank <= 4;
+                let la = usize::from(x_cache.alpha.rank) + usize::from(w_cache.alpha.rank);
+                let lb = usize::from(x_cache.beta.rank) + usize::from(w_cache.beta.rank);
+
+                if fixed && la + lb <= 6 {
+                    let bin = la * (15 - la) / 2 + lb;
+                    let count = counts[bin];
+
+                    x_bins[bin][count] = x_cache;
+                    w_bins[bin][count] = w_cache;
+                    phases[bin][count] = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+                    outputs[bin][count] = output;
+                    counts[bin] += 1;
+
+                    if counts[bin] == 8 {
+                        let mut h = [0.0f64; 8];
+                        let mut s = [0.0f64; 8];
+
+                        unsafe {
+                            xw_hamiltonian_overlap_m0_prepared_f64x8(
+                                w,
+                                la,
+                                lb,
+                                &x_bins[bin],
+                                &w_bins[bin],
+                                &phases[bin],
+                                enuc,
+                                &mut h,
+                                &mut s,
+                            );
+                        }
+
+                        for lane in 0..8 {
+                            out[outputs[bin][lane]] = (h[lane], s[lane]);
+                        }
+                        counts[bin] = 0;
+                    }
+                } else {
+                    let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+
+                    out[output] = xw_hamiltonian_overlap_prepared(
+                        w,
+                        &ldet.excitation,
+                        &gdet.excitation,
+                        &x_cache,
+                        &w_cache,
+                        excitation_phase,
+                        enuc,
+                        scratch,
+                        tol,
+                    );
+                }
+            }
+
+            for la in 0..=6 {
+                for lb in 0..=(6 - la) {
+                    let bin = la * (15 - la) / 2 + lb;
+                    let count = counts[bin];
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let fill_x = x_bins[bin][0];
+                    let fill_w = w_bins[bin][0];
+                    let fill_phase = phases[bin][0];
+
+                    for lane in count..8 {
+                        x_bins[bin][lane] = fill_x;
+                        w_bins[bin][lane] = fill_w;
+                        phases[bin][lane] = fill_phase;
+                    }
+
+                    let mut h = [0.0f64; 8];
+                    let mut s = [0.0f64; 8];
+
+                    unsafe {
+                        xw_hamiltonian_overlap_m0_prepared_f64x8(
+                            w,
+                            la,
+                            lb,
+                            &x_bins[bin],
+                            &w_bins[bin],
+                            &phases[bin],
+                            enuc,
+                            &mut h,
+                            &mut s,
+                        );
+                    }
+
+                    for lane in 0..count {
+                        out[outputs[bin][lane]] = (h[lane], s[lane]);
+                    }
+                }
+            }
+            return;
+        }
+
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
+            let mut x_bins = [[ExcitationCache::default(); 4]; 28];
+            let mut w_bins = [[ExcitationCache::default(); 4]; 28];
+            let mut phases = [[1.0f64; 4]; 28];
+            let mut outputs = [[0usize; 4]; 28];
+            let mut counts = [0usize; 28];
+
+            for (output, &(a, b)) in pairs.iter().enumerate() {
+                let ldet = &basis[a];
+                let gdet = &basis[b];
+
+                if ldet.parent != lp || gdet.parent != gp {
+                    continue;
+                }
+
+                if lp == gp
+                    && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4
+                {
+                    out[output] = (0.0, 0.0);
+                    continue;
+                }
+
+                let x_cache = ldet.excitation_cache;
+                let w_cache = gdet.excitation_cache;
+                let fixed = x_cache.alpha.rank <= 4
+                    && x_cache.beta.rank <= 4
+                    && w_cache.alpha.rank <= 4
+                    && w_cache.beta.rank <= 4;
+                let la = usize::from(x_cache.alpha.rank) + usize::from(w_cache.alpha.rank);
+                let lb = usize::from(x_cache.beta.rank) + usize::from(w_cache.beta.rank);
+
+                if fixed && la + lb <= 6 {
+                    let bin = la * (15 - la) / 2 + lb;
+                    let count = counts[bin];
+
+                    x_bins[bin][count] = x_cache;
+                    w_bins[bin][count] = w_cache;
+                    phases[bin][count] = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+                    outputs[bin][count] = output;
+                    counts[bin] += 1;
+
+                    if counts[bin] == 4 {
+                        let mut h = [0.0f64; 4];
+                        let mut s = [0.0f64; 4];
+
+                        unsafe {
+                            xw_hamiltonian_overlap_m0_prepared_f64x4(
+                                w,
+                                la,
+                                lb,
+                                &x_bins[bin],
+                                &w_bins[bin],
+                                &phases[bin],
+                                enuc,
+                                &mut h,
+                                &mut s,
+                            );
+                        }
+
+                        for lane in 0..4 {
+                            out[outputs[bin][lane]] = (h[lane], s[lane]);
+                        }
+                        counts[bin] = 0;
+                    }
+                } else {
+                    let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+
+                    out[output] = xw_hamiltonian_overlap_prepared(
+                        w,
+                        &ldet.excitation,
+                        &gdet.excitation,
+                        &x_cache,
+                        &w_cache,
+                        excitation_phase,
+                        enuc,
+                        scratch,
+                        tol,
+                    );
+                }
+            }
+
+            for la in 0..=6 {
+                for lb in 0..=(6 - la) {
+                    let bin = la * (15 - la) / 2 + lb;
+                    let count = counts[bin];
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let fill_x = x_bins[bin][0];
+                    let fill_w = w_bins[bin][0];
+                    let fill_phase = phases[bin][0];
+
+                    for lane in count..4 {
+                        x_bins[bin][lane] = fill_x;
+                        w_bins[bin][lane] = fill_w;
+                        phases[bin][lane] = fill_phase;
+                    }
+
+                    let mut h = [0.0f64; 4];
+                    let mut s = [0.0f64; 4];
+
+                    unsafe {
+                        xw_hamiltonian_overlap_m0_prepared_f64x4(
+                            w,
+                            la,
+                            lb,
+                            &x_bins[bin],
+                            &w_bins[bin],
+                            &phases[bin],
+                            enuc,
+                            &mut h,
+                            &mut s,
+                        );
+                    }
+
+                    for lane in 0..count {
+                        out[outputs[bin][lane]] = (h[lane], s[lane]);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    for (output, &(a, b)) in pairs.iter().enumerate() {
+        let ldet = &basis[a];
+        let gdet = &basis[b];
+
+        if ldet.parent != lp || gdet.parent != gp {
+            continue;
+        }
+
+        if lp == gp && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4 {
+            out[output] = (0.0, 0.0);
+            continue;
+        }
+
+        let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+
+        out[output] = xw_hamiltonian_overlap_prepared(
+            w,
+            &ldet.excitation,
+            &gdet.excitation,
+            &ldet.excitation_cache,
+            &gdet.excitation_cache,
+            excitation_phase,
+            enuc,
+            scratch,
+            tol,
+        );
+    }
 }
 
 /// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to a fixed

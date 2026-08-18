@@ -409,6 +409,8 @@ pub(in crate::stochastic) fn propagate_iteration(
                             worker.spawning(gamma, population, shift, data, run);
                         }
                     }
+
+                    worker.resolve_uniform_spawning(shift, data, run);
                 });
             }
 

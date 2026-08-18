@@ -1,7 +1,4 @@
 // stochastic/state.rs
-// Standard library imports.
-use std::collections::HashMap;
-
 // External crate imports.
 use mpi::traits::*;
 use rand::rngs::SmallRng;
@@ -13,8 +10,8 @@ use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
-use super::common::find_hs;
-use super::excit::{init_heat_bath, pgen_heat_bath, pgen_uniform};
+use super::common::find_hs_batched;
+use super::excit::{init_heat_bath, pgen_heat_bath};
 use super::metric::fri;
 
 /// Storage for QMC timings.
@@ -424,11 +421,12 @@ pub(in crate::stochastic) struct ThreadPropagation {
     pub(in crate::stochastic) samples: Vec<f64>,
     /// Thread local RNG.
     pub(in crate::stochastic) rng: SmallRng,
-    /// Thread-local Hamiltonian and overlap values reused only within one propagation iteration.
-    /// The cache is cleared before each worker starts an iteration, so memory is bounded by the
-    /// number of distinct determinant pairs requested by that worker during one iteration rather
-    /// than by the full determinant basis.
-    hs_cache: HashMap<(usize, usize), (f64, f64)>,
+    /// Uniform spawn requests accumulated over one worker propagation iteration.
+    uniform_spawns: Vec<(usize, usize, f64)>,
+    /// Canonically ordered determinant pairs corresponding to `uniform_spawns`.
+    uniform_pairs: Vec<(usize, usize)>,
+    /// Hamiltonian and overlap elements corresponding to `uniform_spawns`.
+    uniform_hs: Vec<(f64, f64)>,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
     pub(in crate::stochastic) wick_scratch: Box<WickScratchSpin<f64>>,
 }
@@ -453,7 +451,9 @@ impl ThreadPropagation {
             remote: Vec::new(),
             samples: Vec::new(),
             rng: SmallRng::seed_from_u64(seed),
-            hs_cache: HashMap::new(),
+            uniform_spawns: Vec::new(),
+            uniform_pairs: Vec::new(),
+            uniform_hs: Vec::new(),
             wick_scratch: Box::new(WickScratchSpin::with_sizes(maxsame, maxla, maxlb)),
         }
     }
@@ -467,36 +467,90 @@ impl ThreadPropagation {
         self.local.clear();
         self.remote.clear();
         self.samples.clear();
-        self.hs_cache.clear();
+        self.uniform_spawns.clear();
+        self.uniform_pairs.clear();
+        self.uniform_hs.clear();
     }
 
-    /// Find Hamiltonian and overlap matrix elements using the thread-local iteration cache.
-    /// The cache is intentionally short-lived: it is cleared by `ThreadPropagation::clear`
-    /// before each propagation iteration, so it avoids repeated HS work without retaining
-    /// report- or run-length storage. It stores only pairs actually requested by one worker during
-    /// the current iteration, so memory remains small compared with any dense HS matrix.
+    /// Resolve all uniform spawn requests accumulated by this worker during one propagation
+    /// iteration. Matrix elements are evaluated together before the ordinary spawning, FRI and
+    /// ownership logic is applied in request order.
     /// # Arguments:
+    /// - `shift`: Current population-control shift.
     /// - `data`: Immutable stochastic propagation data.
-    /// - `i`: First determinant index.
-    /// - `j`: Second determinant index.
+    /// - `run`: Rank-local propagation metadata.
     /// # Returns:
-    /// - `(f64, f64)`: Hamiltonian and overlap matrix elements `H_{ij}` and `S_{ij}`.
-    #[inline(always)]
-    fn cached_hs(
+    /// - `()`: Appends resolved local and remote population changes.
+    pub(in crate::stochastic) fn resolve_uniform_spawning(
         &mut self,
+        shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
-        i: usize,
-        j: usize,
-    ) -> (f64, f64) {
-        let key = if i <= j { (i, j) } else { (j, i) };
-
-        if let Some(&hs) = self.hs_cache.get(&key) {
-            return hs;
+        run: &QMCRunInfo,
+    ) {
+        if self.uniform_spawns.is_empty() {
+            return;
         }
 
-        let hs = find_hs(data, key.0, key.1, self.wick_scratch.as_mut());
-        self.hs_cache.insert(key, hs);
-        hs
+        let qmc = data.input.qmc.as_ref().unwrap();
+        let dt = data.input.prop_ref().dt;
+        let pgen = 1.0 / (data.basis.len() - 1) as f64;
+        let write_excitation_hist = data.input.write.write_excitation_hist;
+
+        self.uniform_pairs.clear();
+        for &(lambda, gamma, _) in &self.uniform_spawns {
+            let pair = if lambda <= gamma {
+                (lambda, gamma)
+            } else {
+                (gamma, lambda)
+            };
+            self.uniform_pairs.push(pair);
+        }
+
+        self.uniform_hs.clear();
+        self.uniform_hs.resize(self.uniform_pairs.len(), (0.0, 0.0));
+        find_hs_batched(
+            data,
+            &self.uniform_pairs,
+            self.wick_scratch.as_mut(),
+            &mut self.uniform_hs,
+        );
+
+        for i in 0..self.uniform_spawns.len() {
+            let (lambda, _, parent_population) = self.uniform_spawns[i];
+            let (h, s) = self.uniform_hs[i];
+            let raw = -dt * shift.coupling(h, s) * parent_population / pgen;
+
+            if write_excitation_hist {
+                self.samples.push(raw.abs());
+            }
+
+            let dn = fri(raw, qmc.spawn_cutoff, &mut self.rng);
+            if dn == 0.0 {
+                continue;
+            }
+
+            if run.nranks == 1 {
+                self.local.push((lambda, dn));
+            } else {
+                let destination = run.det_owner[lambda];
+
+                if destination == run.irank {
+                    self.local.push((lambda, dn));
+                } else {
+                    self.remote.push((
+                        destination,
+                        PopulationUpdate {
+                            det: lambda as u64,
+                            dn,
+                        },
+                    ));
+                }
+            }
+        }
+
+        self.uniform_spawns.clear();
+        self.uniform_pairs.clear();
+        self.uniform_hs.clear();
     }
 
     /// Generate the diagonal real population change for one sampled determinant.
@@ -553,72 +607,16 @@ impl ThreadPropagation {
         let nattempts = population.abs().ceil().max(1.0) as usize;
         let parent_population = population / nattempts as f64;
 
-        if let ExcitationGen::Uniform = qmc.excitation_gen
-            && data.wicks.is_some()
-        {
+        if let ExcitationGen::Uniform = qmc.excitation_gen {
             let ndets = data.basis.len();
-            let pgen = 1.0 / (ndets - 1) as f64;
 
-            let sample_uniform = |rng: &mut SmallRng| -> usize {
-                let mut lambda = rng.gen_range(0..ndets - 1);
+            for _ in 0..nattempts {
+                let mut lambda = self.rng.gen_range(0..ndets - 1);
                 if lambda >= gamma {
                     lambda += 1;
                 }
-                lambda
-            };
 
-            let mut lambda = sample_uniform(&mut self.rng);
-
-            for iattempt in 0..nattempts {
-                let next = if iattempt + 1 < nattempts {
-                    Some(sample_uniform(&mut self.rng))
-                } else {
-                    None
-                };
-
-                let lambda_det = &data.basis[lambda];
-                let gamma_det = &data.basis[gamma];
-                let k = if lambda_det.parent == gamma_det.parent
-                    && (lambda_det.oa ^ gamma_det.oa).count_ones()
-                        + (lambda_det.ob ^ gamma_det.ob).count_ones()
-                        > 4
-                {
-                    0.0
-                } else {
-                    let (hxw, sxw) = self.cached_hs(data, lambda, gamma);
-                    shift.coupling(hxw, sxw)
-                };
-                let raw = -dt * k * parent_population / pgen;
-
-                if write_excitation_hist {
-                    self.samples.push(raw.abs());
-                }
-
-                let dn = fri(raw, qmc.spawn_cutoff, &mut self.rng);
-
-                if dn != 0.0 {
-                    if run.nranks == 1 {
-                        self.local.push((lambda, dn));
-                    } else {
-                        let destination = run.det_owner[lambda];
-
-                        if destination == run.irank {
-                            self.local.push((lambda, dn));
-                        } else {
-                            self.remote.push((
-                                destination,
-                                PopulationUpdate {
-                                    det: lambda as u64,
-                                    dn,
-                                },
-                            ));
-                        }
-                    }
-                }
-
-                if let Some(next) = next {
-                    lambda = next;
-                }
+                self.uniform_spawns.push((lambda, gamma, parent_population));
             }
 
             return;
@@ -637,13 +635,6 @@ impl ThreadPropagation {
 
         for _ in 0..nattempts {
             let (pgen, k, lambda) = match qmc.excitation_gen {
-                ExcitationGen::Uniform => pgen_uniform(
-                    gamma,
-                    shift.overlap_shift(),
-                    data,
-                    &mut self.rng,
-                    self.wick_scratch.as_mut(),
-                ),
                 ExcitationGen::HeatBath => pgen_heat_bath(
                     gamma,
                     shift.overlap_shift(),
@@ -655,6 +646,7 @@ impl ThreadPropagation {
                 ExcitationGen::ApproximateHeatBath => {
                     unimplemented!()
                 }
+                ExcitationGen::Uniform => unreachable!(),
             };
 
             let raw = -dt * k * parent_population / pgen;

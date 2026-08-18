@@ -93,38 +93,6 @@ pub(in crate::stochastic) fn init_heat_bath(
     }
 }
 
-/// Sample an off-diagonal child determinant uniformly. The generation probability is
-/// `P_{\mathrm{Gen}}(x|w) = 1/(N_{\mathrm{det}}-1)\) for every x \neq w.`
-/// # Arguments:
-/// - `gamma`: Parent determinant index w.
-/// - `shift`: `Current population-control shift E_s(\Delta \tau).`
-/// - `data`: Immutable stochastic propagation data.
-/// - `rng`: Random-number generator.
-/// - `scratch`: Scratch space for nonorthogonal Wick quantities.
-/// # Returns:
-/// - `(f64, f64, usize)`: `Generation probability P_{\mathrm{Gen}}(x|w),`
-///   `shifted coupling T_{xw}(\Delta \tau), and sampled child index x.`
-pub(in crate::stochastic) fn pgen_uniform(
-    gamma: usize,
-    shift: f64,
-    data: &NOCIData<'_, f64>,
-    rng: &mut SmallRng,
-    scratch: &mut WickScratchSpin<f64>,
-) -> (f64, f64, usize) {
-    let ndets = data.basis.len();
-    // Sample a child determinant uniformly from all dets except w. If the sampled index is the same or
-    // greater than or equal to the parent index we map it back into the full index set.
-    let mut lambda = rng.gen_range(0..(ndets - 1));
-    if lambda >= gamma {
-        lambda += 1;
-    }
-
-    let k = coupling(lambda, gamma, shift, data, scratch);
-    // Uniform generation probability
-    let pgen = 1.0 / ((ndets - 1) as f64);
-    (pgen, k, lambda)
-}
-
 /// Sample an off-diagonal child determinant from the exact heat-bath
 /// `distribution. For nonzero total weight, P_{\mathrm{gen}}(xw)`
 /// `= |T_{xw}(\Delta \tau)| / W_w, if W_w = 0,`

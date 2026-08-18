@@ -52,7 +52,7 @@ pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
 pub(crate) use fock::calculate_f_pair;
-pub(crate) use hs::calculate_hs_pair;
+pub(crate) use hs::{calculate_hs_pair, calculate_hs_pairs_wicks_batched};
 pub(crate) use m::calculate_m_pair;
 pub(crate) use matrix::build_noci_fock;
 pub(crate) use naive::occ_coeffs;

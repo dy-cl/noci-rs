@@ -1,7 +1,10 @@
 // noci/hs.rs
 // Crate-root imports.
 use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView, xw_hamiltonian_overlap_prepared};
+use crate::nonorthogonalwicks::{
+    WickScratchSpin, WicksView, xw_hamiltonian_overlap_prepared,
+    xw_hamiltonian_overlap_prepared_batched,
+};
 use crate::time_call;
 use crate::{AoData, DetState};
 
@@ -52,6 +55,75 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
             calculate_hs_pair_naive(data.ao, ldet, gdet, data.tol)
         }
     })
+}
+
+/// Calculate batched Hamiltonian and overlap matrix elements using extended nonorthogonal Wick's
+/// theorem. The determinant pairs are canonically ordered before this routine is called.
+/// Same-parent Slater-Condon cases are handled here; all CPU-specific batching is delegated to the
+/// nonorthogonal Wick evaluator.
+/// # Arguments:
+/// - `data`: Shared real NOCI data with precomputed Wick intermediates.
+/// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
+/// - `scratch`: Reusable Wick workspace for generic-rank evaluation.
+/// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
+/// # Returns:
+/// - `()`: Writes every requested `(H, S)` pair into `out`.
+pub(crate) fn calculate_hs_pairs_wicks_batched(
+    data: &NOCIData<'_, f64>,
+    pairs: &[(usize, usize)],
+    scratch: &mut WickScratchSpin<f64>,
+    out: &mut [(f64, f64)],
+) {
+    let wicks = data.wicks.unwrap();
+
+    // Resolve same-parent matrix elements whose Slater-Condon structure is known before entering
+    // the nonorthogonal Wick batching layer.
+    for (i, &(a, b)) in pairs.iter().enumerate() {
+        let ldet = &data.basis[a];
+        let gdet = &data.basis[b];
+
+        if ldet.parent != gdet.parent {
+            continue;
+        }
+
+        if (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4 {
+            out[i] = (0.0, 0.0);
+            continue;
+        }
+
+        if let Some(mocache) = data.mocache {
+            let cache = &mocache[ldet.parent];
+            if cache.orthogonal_slater_condon {
+                out[i] = calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
+            }
+        }
+    }
+
+    // Each call below owns one ordered reference pair. The evaluator itself decides whether the
+    // matching determinant requests are handled by AVX-512, AVX2/FMA, or the scalar path.
+    for lp in 0..wicks.nref {
+        for gp in 0..wicks.nref {
+            if lp == gp
+                && let Some(mocache) = data.mocache
+                && mocache[lp].orthogonal_slater_condon
+            {
+                continue;
+            }
+
+            let w = wicks.pair(lp, gp);
+            xw_hamiltonian_overlap_prepared_batched(
+                &w,
+                data.basis,
+                pairs,
+                lp,
+                gp,
+                data.ao.enuc,
+                scratch,
+                data.tol,
+                out,
+            );
+        }
+    }
 }
 
 /// Compare naive and Wick's calculation of matrix elements to ensure consistency.
