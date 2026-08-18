@@ -27,7 +27,6 @@ use super::helpers::{
 use super::prepare::{
     construct_determinant_indices, construct_determinant_indices_l1,
     construct_determinant_indices_l2, construct_determinant_indices_l3,
-    construct_determinant_indices_l4,
 };
 
 /// Prepare and evaluate the same-spin overlap and generalised-Fock matrix element between excited
