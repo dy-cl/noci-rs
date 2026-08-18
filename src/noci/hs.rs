@@ -1,8 +1,7 @@
 // noci/hs.rs
 // Crate-root imports.
 use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::nonorthogonalwicks::{prepare_same, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap};
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksView, xw_hamiltonian_overlap_prepared};
 use crate::time_call;
 use crate::{AoData, DetState};
 
@@ -352,91 +351,19 @@ pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair_wicks, {
-        let lp = ldet.parent;
-        let gp = gdet.parent;
+        let w = wicks.pair(ldet.parent, gdet.parent);
+        let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
 
-        let w = wicks.pair(lp, gp);
-        let ex_la = &ldet.excitation.alpha;
-        let ex_ga = &gdet.excitation.alpha;
-        let ex_lb = &ldet.excitation.beta;
-        let ex_gb = &gdet.excitation.beta;
-
-        let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
-        let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
-
-        let dosa = w.aa.m <= la;
-        let doh1a = w.aa.m <= la + 1;
-        let doh2aa = w.aa.m <= la + 2;
-        let dosb = w.bb.m <= lb;
-        let doh1b = w.bb.m <= lb + 1;
-        let doh2bb = w.bb.m <= lb + 2;
-        let doh2ab = (w.aa.m <= la + 1) && (w.bb.m <= lb + 1);
-
-        let mut sa = <T as From<f64>>::from(0.0);
-        let mut sb = <T as From<f64>>::from(0.0);
-        let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
-        let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
-
-        if dosa || doh1a || doh2aa {
-            prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-            if dosa {
-                sa = pha * xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-            }
-        }
-
-        if dosb || doh1b || doh2bb {
-            prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-            if dosb {
-                sb = phb * xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-            }
-        }
-
-        let mut h1a = <T as From<f64>>::from(0.0);
-        let mut h2aa = <T as From<f64>>::from(0.0);
-        if sb.abs() != 0.0 {
-            if doh1a {
-                h1a = xw_h1(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
-            }
-            if doh2aa {
-                h2aa = xw_h2_same(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
-            }
-        }
-
-        let mut h1b = <T as From<f64>>::from(0.0);
-        let mut h2bb = <T as From<f64>>::from(0.0);
-        if sa.abs() != 0.0 {
-            if doh1b {
-                h1b = xw_h1(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
-            }
-            if doh2bb {
-                h2bb = xw_h2_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
-            }
-        }
-
-        let mut h2ab = <T as From<f64>>::from(0.0);
-        if doh2ab {
-            h2ab = xw_h2_diff(
-                &w,
-                &ldet.excitation,
-                &gdet.excitation,
-                &mut scratch.diff,
-                &scratch.aa,
-                &scratch.bb,
-                tol,
-            );
-        }
-
-        let s = sa * sb;
-        let mut hnuc = <T as From<f64>>::from(0.0);
-        if dosa && dosb && w.aa.m == 0 && w.bb.m == 0 {
-            hnuc = <T as From<f64>>::from(ao.enuc) * s
-        }
-
-        let h1 = pha * h1a * sb + phb * h1b * sa;
-        let h2 = (<T as From<f64>>::from(0.5) * pha * sb * h2aa)
-            + (<T as From<f64>>::from(0.5) * phb * sa * h2bb)
-            + (pha * phb * h2ab);
-
-        (hnuc + h1 + h2, s)
+        xw_hamiltonian_overlap_prepared(
+            &w,
+            &ldet.excitation,
+            &gdet.excitation,
+            &ldet.excitation_cache,
+            &gdet.excitation_cache,
+            excitation_phase,
+            ao.enuc,
+            scratch,
+            tol,
+        )
     })
 }

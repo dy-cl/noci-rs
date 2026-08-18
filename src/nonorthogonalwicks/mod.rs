@@ -53,11 +53,14 @@ pub(crate) use view::WicksPairView;
 
 // Crate-visible function re-exports.
 pub(crate) use eval::{
-    prepare_same, xw_f, xw_f_overlap_prepared, xw_h1, xw_h2_diff, xw_h2_same, xw_overlap,
-    xw_overlap_same_f64,
+    prepare_same, xw_f, xw_f_overlap_prepared, xw_h1, xw_h2_diff, xw_h2_same,
+    xw_hamiltonian_overlap_prepared, xw_overlap, xw_overlap_same_f64,
 };
 #[cfg(target_arch = "x86_64")]
-pub(crate) use eval::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};
+pub(crate) use eval::{
+    xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8,
+    xw_hamiltonian_overlap_m0_prepared_f64x4, xw_hamiltonian_overlap_m0_prepared_f64x8,
+};
 #[cfg(feature = "nocc")]
 pub(crate) use eval::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};
 pub(crate) use layout::{assign_offsets, write_diff_spin, write_same_spin, write2t};
