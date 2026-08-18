@@ -1550,18 +1550,85 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x4<T: NOCIScalar>(
         let mut rows = [[0usize; 4]; 4];
         let mut cols = [[0usize; 4]; 4];
 
-        for lane in 0..4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
+        let nocc = w.nocc;
+        let nvirt = w.nmo - nocc;
+        let x_rank = x_ex.get_unchecked(0).rank;
 
-            construct_determinant_indices_l4(
-                x_data.rank,
-                &x_data.indices,
-                &w_data.indices,
-                w,
-                &mut rows[lane],
-                &mut cols[lane],
-            );
+        match x_rank {
+            0 => {
+                for lane in 0..4 {
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = nvirt + usize::from(wi[0]);
+                    cols[lane][0] = usize::from(wi[4]);
+                    rows[lane][1] = nvirt + usize::from(wi[1]);
+                    cols[lane][1] = usize::from(wi[5]);
+                    rows[lane][2] = nvirt + usize::from(wi[2]);
+                    cols[lane][2] = usize::from(wi[6]);
+                    rows[lane][3] = nvirt + usize::from(wi[3]);
+                    cols[lane][3] = usize::from(wi[7]);
+                }
+            }
+            1 => {
+                for lane in 0..4 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = nvirt + usize::from(wi[0]);
+                    cols[lane][1] = usize::from(wi[4]);
+                    rows[lane][2] = nvirt + usize::from(wi[1]);
+                    cols[lane][2] = usize::from(wi[5]);
+                    rows[lane][3] = nvirt + usize::from(wi[2]);
+                    cols[lane][3] = usize::from(wi[6]);
+                }
+            }
+            2 => {
+                for lane in 0..4 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = usize::from(xi[5]) - nocc;
+                    cols[lane][1] = usize::from(xi[1]);
+                    rows[lane][2] = nvirt + usize::from(wi[0]);
+                    cols[lane][2] = usize::from(wi[4]);
+                    rows[lane][3] = nvirt + usize::from(wi[1]);
+                    cols[lane][3] = usize::from(wi[5]);
+                }
+            }
+            3 => {
+                for lane in 0..4 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = usize::from(xi[5]) - nocc;
+                    cols[lane][1] = usize::from(xi[1]);
+                    rows[lane][2] = usize::from(xi[6]) - nocc;
+                    cols[lane][2] = usize::from(xi[2]);
+                    rows[lane][3] = nvirt + usize::from(wi[0]);
+                    cols[lane][3] = usize::from(wi[4]);
+                }
+            }
+            4 => {
+                for lane in 0..4 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = usize::from(xi[5]) - nocc;
+                    cols[lane][1] = usize::from(xi[1]);
+                    rows[lane][2] = usize::from(xi[6]) - nocc;
+                    cols[lane][2] = usize::from(xi[2]);
+                    rows[lane][3] = usize::from(xi[7]) - nocc;
+                    cols[lane][3] = usize::from(xi[3]);
+                }
+            }
+            _ => unreachable!(),
         }
 
         // Gather one `D_{ij}` across the four independent matrix elements.
@@ -1852,18 +1919,85 @@ unsafe fn xw_f_overlap_m0_l4_prepared_f64x8<T: NOCIScalar>(
         let mut rows = [[0usize; 4]; 8];
         let mut cols = [[0usize; 4]; 8];
 
-        for lane in 0..8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
+        let nocc = w.nocc;
+        let nvirt = w.nmo - nocc;
+        let x_rank = x_ex.get_unchecked(0).rank;
 
-            construct_determinant_indices_l4(
-                x_data.rank,
-                &x_data.indices,
-                &w_data.indices,
-                w,
-                &mut rows[lane],
-                &mut cols[lane],
-            );
+        match x_rank {
+            0 => {
+                for lane in 0..8 {
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = nvirt + usize::from(wi[0]);
+                    cols[lane][0] = usize::from(wi[4]);
+                    rows[lane][1] = nvirt + usize::from(wi[1]);
+                    cols[lane][1] = usize::from(wi[5]);
+                    rows[lane][2] = nvirt + usize::from(wi[2]);
+                    cols[lane][2] = usize::from(wi[6]);
+                    rows[lane][3] = nvirt + usize::from(wi[3]);
+                    cols[lane][3] = usize::from(wi[7]);
+                }
+            }
+            1 => {
+                for lane in 0..8 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = nvirt + usize::from(wi[0]);
+                    cols[lane][1] = usize::from(wi[4]);
+                    rows[lane][2] = nvirt + usize::from(wi[1]);
+                    cols[lane][2] = usize::from(wi[5]);
+                    rows[lane][3] = nvirt + usize::from(wi[2]);
+                    cols[lane][3] = usize::from(wi[6]);
+                }
+            }
+            2 => {
+                for lane in 0..8 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = usize::from(xi[5]) - nocc;
+                    cols[lane][1] = usize::from(xi[1]);
+                    rows[lane][2] = nvirt + usize::from(wi[0]);
+                    cols[lane][2] = usize::from(wi[4]);
+                    rows[lane][3] = nvirt + usize::from(wi[1]);
+                    cols[lane][3] = usize::from(wi[5]);
+                }
+            }
+            3 => {
+                for lane in 0..8 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+                    let wi = &w_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = usize::from(xi[5]) - nocc;
+                    cols[lane][1] = usize::from(xi[1]);
+                    rows[lane][2] = usize::from(xi[6]) - nocc;
+                    cols[lane][2] = usize::from(xi[2]);
+                    rows[lane][3] = nvirt + usize::from(wi[0]);
+                    cols[lane][3] = usize::from(wi[4]);
+                }
+            }
+            4 => {
+                for lane in 0..8 {
+                    let xi = &x_ex.get_unchecked(lane).indices;
+
+                    rows[lane][0] = usize::from(xi[4]) - nocc;
+                    cols[lane][0] = usize::from(xi[0]);
+                    rows[lane][1] = usize::from(xi[5]) - nocc;
+                    cols[lane][1] = usize::from(xi[1]);
+                    rows[lane][2] = usize::from(xi[6]) - nocc;
+                    cols[lane][2] = usize::from(xi[2]);
+                    rows[lane][3] = usize::from(xi[7]) - nocc;
+                    cols[lane][3] = usize::from(xi[3]);
+                }
+            }
+            _ => unreachable!(),
         }
 
         macro_rules! dvec {
