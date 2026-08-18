@@ -103,28 +103,25 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 }
 
 /// Evaluate batched Hamiltonian and overlap matrix elements for one ordered reference pair.
-/// Matching requests are streamed through the 28 fixed `(L_\alpha, L_\beta)` bins when
+/// Every request supplied to this routine already belongs to that reference pair. Requests are
+/// streamed through the 28 fixed `(L_\alpha, L_\beta)` bins when
 /// `m_\alpha = m_\beta = 0`. The widest supported real SIMD kernel is selected internally,
 /// incomplete bins are padded with one valid request, and unsupported requests use the existing
 /// prepared scalar evaluator.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `basis`: Determinant basis used to read excitation metadata.
-/// - `pairs`: Canonically ordered determinant-index pairs in output order.
-/// - `lp`: Bra-reference parent index represented by `w`.
-/// - `gp`: Ket-reference parent index represented by `w`.
+/// - `requests`: Tuples `(output, a, b)` containing the output position and determinant indices.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
-/// - `out`: Hamiltonian and overlap results aligned with `pairs`.
+/// - `out`: Hamiltonian and overlap results aligned with the original request order.
 /// # Returns:
-/// - `()`: Writes matrix elements belonging to this ordered reference pair into `out`.
+/// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
     w: &WicksPairView<'_, f64>,
     basis: &[DetState<f64>],
-    pairs: &[(usize, usize)],
-    lp: usize,
-    gp: usize,
+    requests: &[(usize, usize, usize)],
     enuc: f64,
     scratch: &mut WickScratchSpin<f64>,
     tol: f64,
@@ -139,20 +136,9 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
             let mut outputs = [[0usize; 8]; 28];
             let mut counts = [0usize; 28];
 
-            for (output, &(a, b)) in pairs.iter().enumerate() {
+            for &(output, a, b) in requests {
                 let ldet = &basis[a];
                 let gdet = &basis[b];
-
-                if ldet.parent != lp || gdet.parent != gp {
-                    continue;
-                }
-
-                if lp == gp
-                    && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4
-                {
-                    out[output] = (0.0, 0.0);
-                    continue;
-                }
 
                 let x_cache = ldet.excitation_cache;
                 let w_cache = gdet.excitation_cache;
@@ -264,20 +250,9 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
             let mut outputs = [[0usize; 4]; 28];
             let mut counts = [0usize; 28];
 
-            for (output, &(a, b)) in pairs.iter().enumerate() {
+            for &(output, a, b) in requests {
                 let ldet = &basis[a];
                 let gdet = &basis[b];
-
-                if ldet.parent != lp || gdet.parent != gp {
-                    continue;
-                }
-
-                if lp == gp
-                    && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4
-                {
-                    out[output] = (0.0, 0.0);
-                    continue;
-                }
 
                 let x_cache = ldet.excitation_cache;
                 let w_cache = gdet.excitation_cache;
@@ -382,18 +357,9 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
         }
     }
 
-    for (output, &(a, b)) in pairs.iter().enumerate() {
+    for &(output, a, b) in requests {
         let ldet = &basis[a];
         let gdet = &basis[b];
-
-        if ldet.parent != lp || gdet.parent != gp {
-            continue;
-        }
-
-        if lp == gp && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4 {
-            out[output] = (0.0, 0.0);
-            continue;
-        }
 
         let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
 

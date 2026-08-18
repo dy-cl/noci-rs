@@ -59,8 +59,8 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 
 /// Calculate batched Hamiltonian and overlap matrix elements using extended nonorthogonal Wick's
 /// theorem. The determinant pairs are canonically ordered before this routine is called.
-/// Same-parent Slater-Condon cases are handled here; all CPU-specific batching is delegated to the
-/// nonorthogonal Wick evaluator.
+/// Same-parent Slater-Condon cases are handled here; all remaining requests are grouped once by
+/// ordered reference pair before CPU-specific rank batching is delegated to the Wick evaluator.
 /// # Arguments:
 /// - `data`: Shared real NOCI data with precomputed Wick intermediates.
 /// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
@@ -75,54 +75,55 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
     out: &mut [(f64, f64)],
 ) {
     let wicks = data.wicks.unwrap();
+    let ngroups = wicks.nref * wicks.nref;
+    let group_capacity = (pairs.len() + ngroups - 1) / ngroups;
+    let mut groups: Vec<Vec<(usize, usize, usize)>> = (0..ngroups)
+        .map(|_| Vec::with_capacity(group_capacity))
+        .collect();
 
-    // Resolve same-parent matrix elements whose Slater-Condon structure is known before entering
-    // the nonorthogonal Wick batching layer.
-    for (i, &(a, b)) in pairs.iter().enumerate() {
+    // Resolve same-parent Slater-Condon cases and place every remaining request into exactly one
+    // ordered reference-pair group. The Wick evaluator therefore never filters unrelated pairs.
+    for (output, &(a, b)) in pairs.iter().enumerate() {
         let ldet = &data.basis[a];
         let gdet = &data.basis[b];
 
-        if ldet.parent != gdet.parent {
-            continue;
-        }
-
-        if (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4 {
-            out[i] = (0.0, 0.0);
-            continue;
-        }
-
-        if let Some(mocache) = data.mocache {
-            let cache = &mocache[ldet.parent];
-            if cache.orthogonal_slater_condon {
-                out[i] = calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
-            }
-        }
-    }
-
-    // Each call below owns one ordered reference pair. The evaluator itself decides whether the
-    // matching determinant requests are handled by AVX-512, AVX2/FMA, or the scalar path.
-    for lp in 0..wicks.nref {
-        for gp in 0..wicks.nref {
-            if lp == gp
-                && let Some(mocache) = data.mocache
-                && mocache[lp].orthogonal_slater_condon
-            {
+        if ldet.parent == gdet.parent {
+            if (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4 {
+                out[output] = (0.0, 0.0);
                 continue;
             }
 
-            let w = wicks.pair(lp, gp);
-            xw_hamiltonian_overlap_prepared_batched(
-                &w,
-                data.basis,
-                pairs,
-                lp,
-                gp,
-                data.ao.enuc,
-                scratch,
-                data.tol,
-                out,
-            );
+            if let Some(mocache) = data.mocache {
+                let cache = &mocache[ldet.parent];
+                if cache.orthogonal_slater_condon {
+                    out[output] = calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
+                    continue;
+                }
+            }
         }
+
+        let pair = ldet.parent * wicks.nref + gdet.parent;
+        groups[pair].push((output, a, b));
+    }
+
+    // Each nonempty group now contains only requests belonging to one WicksPairView.
+    for (pair, requests) in groups.iter().enumerate() {
+        if requests.is_empty() {
+            continue;
+        }
+
+        let lp = pair / wicks.nref;
+        let gp = pair % wicks.nref;
+        let w = wicks.pair(lp, gp);
+        xw_hamiltonian_overlap_prepared_batched(
+            &w,
+            data.basis,
+            requests,
+            data.ao.enuc,
+            scratch,
+            data.tol,
+            out,
+        );
     }
 }
 
