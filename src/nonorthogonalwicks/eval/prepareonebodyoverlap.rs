@@ -1,14 +1,17 @@
 // nonorthogonalwicks/eval/prepareonebodyoverlap.rs
 
 // Standard library imports.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
 use std::any::TypeId;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx", target_feature = "fma"))]
+use std::arch::x86_64::{
+    _mm_add_sd, _mm_cvtsd_f64, _mm256_castpd256_pd128, _mm256_extractf128_pd, _mm256_hadd_pd,
+};
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    _mm_add_sd, _mm_cvtsd_f64, _mm256_add_pd, _mm256_castpd256_pd128, _mm256_extractf128_pd,
-    _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_hadd_pd, _mm256_loadu_pd, _mm256_mul_pd,
-    _mm256_set_pd, _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd, _mm256_sub_pd,
-    _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_loadu_pd, _mm512_mul_pd, _mm512_set_pd,
+    _mm256_add_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_pd,
+    _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd, _mm256_sub_pd, _mm512_add_pd,
+    _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_loadu_pd, _mm512_mul_pd, _mm512_set_pd,
     _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd, _mm512_sub_pd,
 };
 

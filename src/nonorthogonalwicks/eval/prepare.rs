@@ -729,4 +729,3 @@ pub(super) fn construct_determinant_indices_l3<T: NOCIScalar>(
         _ => unreachable!(),
     }
 }
-
