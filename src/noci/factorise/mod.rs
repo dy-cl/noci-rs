@@ -13,7 +13,7 @@ pub(crate) use overlap::OverlapScratch;
 use std::collections::HashMap;
 
 // Crate-root imports.
-use crate::{DetState, ExcitationSpinCache, ReducedDetState};
+use crate::{DetState, ExcitationSpinCache, ReducedOneSpinDetState};
 
 // Parent/sibling imports.
 use super::types::{NOCIData, NOCIScalar};
@@ -33,9 +33,9 @@ pub(super) struct FactorEntry {
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
     /// Reduced representative for each parent-local alpha component.
-    pub(super) areps: Vec<ReducedDetState>,
+    pub(super) areps: Vec<ReducedOneSpinDetState>,
     /// Reduced representative for each parent-local beta component.
-    pub(super) breps: Vec<ReducedDetState>,
+    pub(super) breps: Vec<ReducedOneSpinDetState>,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
     /// Determinant indices grouped by parent-local alpha component.
@@ -275,7 +275,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         .collect::<Vec<_>>();
 
     // `usize::MAX` marks representative slots which have not yet received their first determinant.
-    let unassigned_rep = ReducedDetState::new(usize::MAX, 1.0, ExcitationSpinCache::default());
+    let unassigned_rep =
+        ReducedOneSpinDetState::new(usize::MAX, 1.0, ExcitationSpinCache::default());
 
     for (det, state) in basis.iter().enumerate() {
         let parent = &mut parents[state.parent];
@@ -304,7 +305,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             parent.areps.resize(aids[det] + 1, unassigned_rep);
         }
         if parent.areps[aids[det]].det == usize::MAX {
-            parent.areps[aids[det]] = ReducedDetState::from_alpha(det, state);
+            parent.areps[aids[det]] = ReducedOneSpinDetState::from_alpha(det, state);
         }
 
         // Store the corresponding reduced beta representative without retaining the full `DetState`.
@@ -312,7 +313,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             parent.breps.resize(bids[det] + 1, unassigned_rep);
         }
         if parent.breps[bids[det]].det == usize::MAX {
-            parent.breps[bids[det]] = ReducedDetState::from_beta(det, state);
+            parent.breps[bids[det]] = ReducedOneSpinDetState::from_beta(det, state);
         }
     }
 

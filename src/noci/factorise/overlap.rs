@@ -187,75 +187,35 @@ impl SpinFactorisation {
 
                     afac.par_chunks_mut(nsa)
                         .zip(target.areps.par_iter())
-                        .for_each_init(
-                            || {
-                                (
-                                    WickScratchSpin::new(),
-                                    Vec::<(usize, usize, usize)>::with_capacity(nsa),
-                                )
-                            },
-                            |state, (row, target_rep)| {
-                                let (scratch, requests) = state;
-                                let pair = wicks.pair(lp, gp);
-                                let tdet = target_rep.det;
-
-                                requests.clear();
-                                for (col, source_rep) in source.areps.iter().enumerate() {
-                                    let sdet = source_rep.det;
-                                    let (xdet, wdet) = if target_left {
-                                        (tdet, sdet)
-                                    } else {
-                                        (sdet, tdet)
-                                    };
-                                    requests.push((col, xdet, wdet));
-                                }
-
-                                xw_overlap_same_f64_batched(
-                                    &pair.aa,
-                                    data.basis,
-                                    requests,
-                                    true,
-                                    &mut scratch.aa,
-                                    row,
-                                );
-                            },
-                        );
+                        .for_each_init(WickScratchSpin::new, |scratch, (row, target_rep)| {
+                            let pair = wicks.pair(lp, gp);
+                            xw_overlap_same_f64_batched(
+                                &pair.aa,
+                                data.basis,
+                                *target_rep,
+                                &source.areps,
+                                target_left,
+                                true,
+                                &mut scratch.aa,
+                                row,
+                            );
+                        });
 
                     bfac.par_chunks_mut(nsb)
                         .zip(target.breps.par_iter())
-                        .for_each_init(
-                            || {
-                                (
-                                    WickScratchSpin::new(),
-                                    Vec::<(usize, usize, usize)>::with_capacity(nsb),
-                                )
-                            },
-                            |state, (row, target_rep)| {
-                                let (scratch, requests) = state;
-                                let pair = wicks.pair(lp, gp);
-                                let tdet = target_rep.det;
-
-                                requests.clear();
-                                for (col, source_rep) in source.breps.iter().enumerate() {
-                                    let sdet = source_rep.det;
-                                    let (xdet, wdet) = if target_left {
-                                        (tdet, sdet)
-                                    } else {
-                                        (sdet, tdet)
-                                    };
-                                    requests.push((col, xdet, wdet));
-                                }
-
-                                xw_overlap_same_f64_batched(
-                                    &pair.bb,
-                                    data.basis,
-                                    requests,
-                                    false,
-                                    &mut scratch.bb,
-                                    row,
-                                );
-                            },
-                        );
+                        .for_each_init(WickScratchSpin::new, |scratch, (row, target_rep)| {
+                            let pair = wicks.pair(lp, gp);
+                            xw_overlap_same_f64_batched(
+                                &pair.bb,
+                                data.basis,
+                                *target_rep,
+                                &source.breps,
+                                target_left,
+                                false,
+                                &mut scratch.bb,
+                                row,
+                            );
+                        });
 
                     factor_blocks[target_parent * nparent + source_parent] =
                         Some(OverlapFactorBlock {

@@ -6,7 +6,7 @@ use crate::nonorthogonalwicks::{
     xw_hamiltonian_overlap_prepared_batched,
 };
 use crate::time_call;
-use crate::{AoData, DetState};
+use crate::{AoData, DetState, ReducedTwoSpinDetState};
 
 // Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
@@ -64,6 +64,7 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 /// # Arguments:
 /// - `data`: Shared real NOCI data with precomputed Wick intermediates.
 /// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
+/// - `reduced_basis`: Compact two-spin metadata keyed by global determinant index.
 /// - `scratch`: Reusable Wick workspace for generic-rank evaluation.
 /// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
 /// # Returns:
@@ -71,6 +72,7 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 pub(crate) fn calculate_hs_pairs_wicks_batched(
     data: &NOCIData<'_, f64>,
     pairs: &[(usize, usize)],
+    reduced_basis: &[ReducedTwoSpinDetState],
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
@@ -118,6 +120,7 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
         xw_hamiltonian_overlap_prepared_batched(
             &w,
             data.basis,
+            reduced_basis,
             requests,
             data.ao.enuc,
             scratch,

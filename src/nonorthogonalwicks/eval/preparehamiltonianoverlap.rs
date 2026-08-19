@@ -15,7 +15,7 @@ use std::arch::x86_64::{
 // Crate-root imports.
 use crate::maths::{adjugate_transpose, det};
 use crate::noci::NOCIScalar;
-use crate::{DetState, Excitation, ExcitationCache};
+use crate::{DetState, Excitation, ExcitationCache, ReducedTwoSpinDetState};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
@@ -110,8 +110,9 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// prepared scalar evaluator.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `basis`: Determinant basis used to read excitation metadata.
-/// - `requests`: Tuples `(output, a, b)` containing the output position and determinant indices.
+/// - `basis`: Determinant basis used only by generic fallback evaluation.
+/// - `reduced_basis`: Compact two-spin metadata keyed by global determinant index.
+/// - `requests`: Tuples `(output, a, b)` containing output position and determinant indices.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
@@ -121,6 +122,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
     w: &WicksPairView<'_, f64>,
     basis: &[DetState<f64>],
+    reduced_basis: &[ReducedTwoSpinDetState],
     requests: &[(usize, usize, usize)],
     enuc: f64,
     scratch: &mut WickScratchSpin<f64>,
@@ -137,11 +139,10 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
             let mut counts = [0usize; 28];
 
             for &(output, a, b) in requests {
-                let ldet = &basis[a];
-                let gdet = &basis[b];
-
-                let x_cache = ldet.excitation_cache;
-                let w_cache = gdet.excitation_cache;
+                let x_det = &reduced_basis[a];
+                let w_det = &reduced_basis[b];
+                let x_cache = x_det.excitation_cache;
+                let w_cache = w_det.excitation_cache;
                 let fixed = x_cache.alpha.rank <= 4
                     && x_cache.beta.rank <= 4
                     && w_cache.alpha.rank <= 4
@@ -155,7 +156,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
 
                     x_bins[bin][count] = x_cache;
                     w_bins[bin][count] = w_cache;
-                    phases[bin][count] = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+                    phases[bin][count] = x_det.phase * w_det.phase;
                     outputs[bin][count] = output;
                     counts[bin] += 1;
 
@@ -183,15 +184,16 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
                         counts[bin] = 0;
                     }
                 } else {
-                    let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+                    let x_state = &basis[a];
+                    let w_state = &basis[b];
 
                     out[output] = xw_hamiltonian_overlap_prepared(
                         w,
-                        &ldet.excitation,
-                        &gdet.excitation,
+                        &x_state.excitation,
+                        &w_state.excitation,
                         &x_cache,
                         &w_cache,
-                        excitation_phase,
+                        x_det.phase * w_det.phase,
                         enuc,
                         scratch,
                         tol,
@@ -251,11 +253,10 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
             let mut counts = [0usize; 28];
 
             for &(output, a, b) in requests {
-                let ldet = &basis[a];
-                let gdet = &basis[b];
-
-                let x_cache = ldet.excitation_cache;
-                let w_cache = gdet.excitation_cache;
+                let x_det = &reduced_basis[a];
+                let w_det = &reduced_basis[b];
+                let x_cache = x_det.excitation_cache;
+                let w_cache = w_det.excitation_cache;
                 let fixed = x_cache.alpha.rank <= 4
                     && x_cache.beta.rank <= 4
                     && w_cache.alpha.rank <= 4
@@ -269,7 +270,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
 
                     x_bins[bin][count] = x_cache;
                     w_bins[bin][count] = w_cache;
-                    phases[bin][count] = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+                    phases[bin][count] = x_det.phase * w_det.phase;
                     outputs[bin][count] = output;
                     counts[bin] += 1;
 
@@ -297,15 +298,16 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
                         counts[bin] = 0;
                     }
                 } else {
-                    let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+                    let x_state = &basis[a];
+                    let w_state = &basis[b];
 
                     out[output] = xw_hamiltonian_overlap_prepared(
                         w,
-                        &ldet.excitation,
-                        &gdet.excitation,
+                        &x_state.excitation,
+                        &w_state.excitation,
                         &x_cache,
                         &w_cache,
-                        excitation_phase,
+                        x_det.phase * w_det.phase,
                         enuc,
                         scratch,
                         tol,
@@ -358,18 +360,18 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
     }
 
     for &(output, a, b) in requests {
-        let ldet = &basis[a];
-        let gdet = &basis[b];
-
-        let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+        let x_det = &reduced_basis[a];
+        let w_det = &reduced_basis[b];
+        let x_state = &basis[a];
+        let w_state = &basis[b];
 
         out[output] = xw_hamiltonian_overlap_prepared(
             w,
-            &ldet.excitation,
-            &gdet.excitation,
-            &ldet.excitation_cache,
-            &gdet.excitation_cache,
-            excitation_phase,
+            &x_state.excitation,
+            &w_state.excitation,
+            &x_det.excitation_cache,
+            &w_det.excitation_cache,
+            x_det.phase * w_det.phase,
             enuc,
             scratch,
             tol,

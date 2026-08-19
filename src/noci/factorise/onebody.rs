@@ -21,7 +21,7 @@ use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, xw_f_overlap_prepared};
-use crate::{ExcitationSpinCache, ReducedDetState};
+use crate::{ExcitationSpinCache, ReducedOneSpinDetState};
 
 #[cfg(target_arch = "x86_64")]
 use crate::nonorthogonalwicks::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};
@@ -1254,7 +1254,7 @@ fn apply_orthogonal_beta_singles<T: NOCIScalar>(
 fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    reps: (&[ReducedDetState], &[ReducedDetState]),
+    reps: (&[ReducedOneSpinDetState], &[ReducedOneSpinDetState]),
     rows: Range<usize>,
     target_left: bool,
     alpha: bool,
@@ -1286,7 +1286,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 }
 
 /// Build one same-spin `S` and `F` factor row from prepared Wick pair batches.
-/// Fixed-rank paths read phase and excitation metadata directly from `ReducedDetState`.
+/// Fixed-rank paths read phase and excitation metadata directly from `ReducedOneSpinDetState`.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data used by the generic fallback.
@@ -1300,7 +1300,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    reps: (ReducedDetState, &[ReducedDetState]),
+    reps: (ReducedOneSpinDetState, &[ReducedOneSpinDetState]),
     target_left: bool,
     alpha: bool,
     scratch: &mut WickScratchSpin<T>,

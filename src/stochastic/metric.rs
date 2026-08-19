@@ -14,6 +14,7 @@ use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::ReducedTwoSpinDetState;
 use crate::input::Input;
 use crate::noci::{NOCIData, OverlapScratch, SpinFactorisation};
 use crate::nonorthogonalwicks::WickScratchSpin;
@@ -830,11 +831,19 @@ pub fn qmc_step(
         )
         .collect::<Vec<_>>();
 
+    let reduced_basis = data
+        .basis
+        .iter()
+        .enumerate()
+        .map(|(det, state)| ReducedTwoSpinDetState::from_state(det, state))
+        .collect::<Vec<_>>();
+
     let overlap_factor = SpinFactorisation::new(data);
     let run = QMCRunInfo {
         irank,
         nranks,
         ndets,
+        reduced_basis,
         det_owner,
         owned,
         base_seed,

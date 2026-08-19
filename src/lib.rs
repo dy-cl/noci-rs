@@ -132,7 +132,7 @@ impl ExcitationSpin {
         let mut holes = self.holes;
         let mut parts = self.parts;
 
-        // Cache the first four hole and particle indices used by the L = 1,...,4 kernels.
+        // Cache the first four hole and particle indices used by fixed-rank Wick kernels.
         for i in 0..4 {
             if holes != 0 {
                 indices[i] = holes.trailing_zeros() as u8;
@@ -166,9 +166,9 @@ pub struct ExcitationCache {
     pub beta: ExcitationSpinCache,
 }
 
-/// Reduced determinant metadata used by fixed-rank determinant-space contractions.
+/// Reduced one-spin determinant metadata used by fixed-rank determinant-space contractions.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedDetState {
+pub(crate) struct ReducedOneSpinDetState {
     /// Global determinant index used to recover the full `DetState` when required.
     pub(crate) det: usize,
     /// Fermionic phase `\phi` relative to the parent determinant for this spin sector.
@@ -177,14 +177,14 @@ pub(crate) struct ReducedDetState {
     pub(crate) excitation_cache: ExcitationSpinCache,
 }
 
-impl ReducedDetState {
+impl ReducedOneSpinDetState {
     /// Construct reduced determinant metadata for one spin sector.
     /// # Arguments:
     /// - `det`: Global determinant index `I`.
     /// - `phase`: Fermionic phase `\phi_I` relative to the parent determinant.
     /// - `excitation_cache`: Cached excitation rank and orbital labels.
     /// # Returns
-    /// - `ReducedDetState`: Reduced metadata for determinant `I`.
+    /// - `ReducedOneSpinDetState`: Reduced metadata for determinant `I`.
     #[inline(always)]
     pub(crate) fn new(
         det: usize,
@@ -203,7 +203,7 @@ impl ReducedDetState {
     /// - `det`: Global determinant index `I`.
     /// - `state`: Full determinant state containing alpha-spin phase and excitation metadata.
     /// # Returns
-    /// - `ReducedDetState`: Reduced alpha-spin metadata for determinant `I`.
+    /// - `ReducedOneSpinDetState`: Reduced alpha-spin metadata for determinant `I`.
     #[inline(always)]
     pub(crate) fn from_alpha<T: StateScalar>(
         det: usize,
@@ -217,13 +217,60 @@ impl ReducedDetState {
     /// - `det`: Global determinant index `I`.
     /// - `state`: Full determinant state containing beta-spin phase and excitation metadata.
     /// # Returns
-    /// - `ReducedDetState`: Reduced beta-spin metadata for determinant `I`.
+    /// - `ReducedOneSpinDetState`: Reduced beta-spin metadata for determinant `I`.
     #[inline(always)]
     pub(crate) fn from_beta<T: StateScalar>(
         det: usize,
         state: &DetState<T>,
     ) -> Self {
         Self::new(det, state.phb, state.excitation_cache.beta)
+    }
+}
+
+/// Reduced determinant metadata for fixed-rank two-spin contractions.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReducedTwoSpinDetState {
+    /// Global determinant index used to recover the full `DetState` when required.
+    pub(crate) det: usize,
+    /// Product of alpha- and beta-spin fermionic phases relative to the parent determinant.
+    pub(crate) phase: f64,
+    /// Cached excitation ranks and orbital labels for both spin sectors.
+    pub(crate) excitation_cache: ExcitationCache,
+}
+
+impl ReducedTwoSpinDetState {
+    /// Construct reduced determinant metadata for both spin sectors.
+    /// # Arguments:
+    /// - `det`: Global determinant index `I`.
+    /// - `phase`: Product of alpha- and beta-spin fermionic phases for determinant `I`.
+    /// - `excitation_cache`: Cached excitation ranks and orbital labels for both spin sectors.
+    /// # Returns
+    /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
+    #[inline(always)]
+    pub(crate) fn new(
+        det: usize,
+        phase: f64,
+        excitation_cache: ExcitationCache,
+    ) -> Self {
+        Self {
+            det,
+            phase,
+            excitation_cache,
+        }
+    }
+
+    /// Construct reduced two-spin metadata from a full determinant state.
+    /// # Arguments:
+    /// - `det`: Global determinant index `I`.
+    /// - `state`: Full determinant state containing both spin phases and excitation metadata.
+    /// # Returns
+    /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
+    #[inline(always)]
+    pub(crate) fn from_state<T: StateScalar>(
+        det: usize,
+        state: &DetState<T>,
+    ) -> Self {
+        Self::new(det, state.pha * state.phb, state.excitation_cache)
     }
 }
 

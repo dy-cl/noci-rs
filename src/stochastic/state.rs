@@ -5,6 +5,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 // Crate-root imports.
+use crate::ReducedTwoSpinDetState;
 use crate::input::{ExcitationGen, Propagator};
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
@@ -47,6 +48,8 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) nranks: usize,
     /// Total number of determinants in the stochastic basis.
     pub(in crate::stochastic) ndets: usize,
+    /// Compact two-spin metadata keyed by global determinant index.
+    pub(in crate::stochastic) reduced_basis: Vec<ReducedTwoSpinDetState>,
     /// MPI owner rank for each global determinant.
     pub(in crate::stochastic) det_owner: Vec<usize>,
     /// Global determinant indices owned by this rank.
@@ -511,6 +514,7 @@ impl ThreadPropagation {
         find_hs_batched(
             data,
             &self.uniform_pairs,
+            &run.reduced_basis,
             self.wick_scratch.as_mut(),
             &mut self.uniform_hs,
         );

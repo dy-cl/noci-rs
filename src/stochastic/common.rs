@@ -5,12 +5,12 @@ use mpi::topology::Communicator;
 use mpi::traits::*;
 
 // Crate-root imports.
-use crate::SCFState;
 use crate::noci::{
     DetPair, NOCIData, calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
 };
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
+use crate::{ReducedTwoSpinDetState, SCFState};
 
 // Parent/sibling imports.
 use super::state::{MPIScratch, PopulationUpdate};
@@ -80,6 +80,7 @@ pub(in crate::stochastic) fn find_hs(
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
+/// - `reduced_basis`: Compact two-spin metadata keyed by global determinant index.
 /// - `scratch`: Reusable Wick scratch space for scalar and generic-rank evaluation.
 /// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
 /// # Returns:
@@ -87,11 +88,12 @@ pub(in crate::stochastic) fn find_hs(
 pub(in crate::stochastic) fn find_hs_batched(
     data: &NOCIData<'_, f64>,
     pairs: &[(usize, usize)],
+    reduced_basis: &[ReducedTwoSpinDetState],
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
     if data.input.wicks.enabled && data.wicks.is_some() {
-        calculate_hs_pairs_wicks_batched(data, pairs, scratch, out);
+        calculate_hs_pairs_wicks_batched(data, pairs, reduced_basis, scratch, out);
         return;
     }
 

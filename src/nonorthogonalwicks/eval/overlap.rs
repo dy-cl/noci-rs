@@ -14,7 +14,7 @@ use crate::ExcitationSpinCache;
 use crate::maths::{det, det_lu_l5, det_lu_l6};
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use crate::{DetState, ExcitationSpin};
+use crate::{DetState, ExcitationSpin, ReducedOneSpinDetState};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
@@ -105,104 +105,116 @@ pub(crate) fn xw_overlap_same_f64(
     xw_overlap(w, l_ex, g_ex, scratch)
 }
 
-/// Evaluate batched real same-spin overlaps for one ordered reference pair.
-/// Requests with `m = 0`, `L = 1,\ldots,6`, and individual excitation ranks at most four are
-/// grouped by fixed contraction rank and evaluated with the widest available SIMD kernel.
-/// Incomplete groups use the scalar overlap-only path.
-/// `L = 0`, non-zero `m`, and arbitrary-rank requests use the scalar overlap-only evaluator.
+/// Evaluate one row of real same-spin overlaps for one ordered reference pair.
+/// The target representative is paired with every source representative. Requests with `m = 0`,
+/// `L = 1,\ldots,6`, and individual excitation ranks at most four are grouped by fixed contraction
+/// rank and evaluated with the widest available SIMD kernel. Incomplete groups use the scalar
+/// overlap-only path. Other requests use the generic overlap-only evaluator.
 /// Excitation phases are applied here so each output is the complete alpha- or beta-spin factor.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `basis`: Determinant basis used to read excitation metadata and phases.
-/// - `requests`: Tuples `(output,x,w)` containing output position and ordered determinant indices.
+/// - `basis`: Determinant basis used only by generic fallback evaluation.
+/// - `target`: Reduced target spin representative shared by the row.
+/// - `sources`: Reduced source spin representatives in output-column order.
+/// - `target_left`: Whether the target belongs to the left reference in `w`.
 /// - `alpha`: Whether to evaluate alpha-spin rather than beta-spin overlap factors.
 /// - `scratch`: Reusable Wick workspace for scalar fallback evaluation.
-/// - `out`: Output same-spin overlap factors indexed by `requests[*].0`.
+/// - `out`: Output same-spin overlap factors in source-representative order.
 /// # Returns
-/// - `()`: Writes every requested same-spin overlap factor into `out`.
+/// - `()`: Writes one complete same-spin overlap-factor row into `out`.
 pub(crate) fn xw_overlap_same_f64_batched(
     w: &SameSpinView<'_, f64>,
     basis: &[DetState<f64>],
-    requests: &[(usize, usize, usize)],
+    target: ReducedOneSpinDetState,
+    sources: &[ReducedOneSpinDetState],
+    target_left: bool,
     alpha: bool,
     scratch: &mut WickScratch<f64>,
     out: &mut [f64],
 ) {
+    let target_cache = target.excitation_cache;
+    let target_phase = target.phase;
+
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 {
         if std::arch::is_x86_feature_detected!("avx512f") {
-            let mut x_bins = [[ExcitationSpinCache::default(); 8]; 7];
-            let mut w_bins = [[ExcitationSpinCache::default(); 8]; 7];
-            let mut x_dets = [[0usize; 8]; 7];
-            let mut w_dets = [[0usize; 8]; 7];
+            let mut bins = [[ExcitationSpinCache::default(); 8]; 7];
             let mut phases = [[1.0f64; 8]; 7];
             let mut outputs = [[0usize; 8]; 7];
             let mut counts = [0usize; 7];
 
-            for &(output, x_det, w_det) in requests {
-                let x_state = &basis[x_det];
-                let w_state = &basis[w_det];
-                let (x_ex, w_ex, x_cache, w_cache, phase) = if alpha {
-                    (
-                        &x_state.excitation.alpha,
-                        &w_state.excitation.alpha,
-                        x_state.excitation_cache.alpha,
-                        w_state.excitation_cache.alpha,
-                        x_state.pha * w_state.pha,
-                    )
-                } else {
-                    (
-                        &x_state.excitation.beta,
-                        &w_state.excitation.beta,
-                        x_state.excitation_cache.beta,
-                        w_state.excitation_cache.beta,
-                        x_state.phb * w_state.phb,
-                    )
-                };
-                let l = usize::from(x_cache.rank) + usize::from(w_cache.rank);
+            for (col, source) in sources.iter().enumerate() {
+                let source_cache = source.excitation_cache;
+                let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
 
-                if x_cache.rank <= 4 && w_cache.rank <= 4 && (1..=6).contains(&l) {
+                if target_cache.rank <= 4 && source_cache.rank <= 4 && (1..=6).contains(&l) {
                     let count = counts[l];
-                    x_bins[l][count] = x_cache;
-                    w_bins[l][count] = w_cache;
-                    x_dets[l][count] = x_det;
-                    w_dets[l][count] = w_det;
-                    phases[l][count] = phase;
-                    outputs[l][count] = output;
+                    bins[l][count] = source_cache;
+                    phases[l][count] = source.phase;
+                    outputs[l][count] = col;
                     counts[l] += 1;
 
                     if counts[l] == 8 {
+                        let target_batch = [target_cache; 8];
+                        let source_batch = bins[l];
+                        let (x_ex, w_ex) = if target_left {
+                            (&target_batch, &source_batch)
+                        } else {
+                            (&source_batch, &target_batch)
+                        };
                         let mut overlap = [0.0f64; 8];
+
                         unsafe {
-                            xw_overlap_m0_prepared_f64x8(
-                                w,
-                                l,
-                                &x_bins[l],
-                                &w_bins[l],
-                                &mut overlap,
-                            );
+                            xw_overlap_m0_prepared_f64x8(w, l, x_ex, w_ex, &mut overlap);
                         }
+
                         for lane in 0..8 {
-                            out[outputs[l][lane]] = phases[l][lane] * overlap[lane];
+                            out[outputs[l][lane]] = target_phase * phases[l][lane] * overlap[lane];
                         }
                         counts[l] = 0;
                     }
                 } else {
-                    out[output] = phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
+                    let target_state = &basis[target.det];
+                    let source_state = &basis[source.det];
+                    let (target_ex, source_ex) = if alpha {
+                        (
+                            &target_state.excitation.alpha,
+                            &source_state.excitation.alpha,
+                        )
+                    } else {
+                        (&target_state.excitation.beta, &source_state.excitation.beta)
+                    };
+                    let (x_ex, w_ex) = if target_left {
+                        (target_ex, source_ex)
+                    } else {
+                        (source_ex, target_ex)
+                    };
+                    out[col] =
+                        target_phase * source.phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
                 }
             }
 
             for l in 1..=6 {
                 for lane in 0..counts[l] {
-                    let x_state = &basis[x_dets[l][lane]];
-                    let w_state = &basis[w_dets[l][lane]];
-                    let (x_ex, w_ex) = if alpha {
-                        (&x_state.excitation.alpha, &w_state.excitation.alpha)
+                    let col = outputs[l][lane];
+                    let source = sources[col];
+                    let target_state = &basis[target.det];
+                    let source_state = &basis[source.det];
+                    let (target_ex, source_ex) = if alpha {
+                        (
+                            &target_state.excitation.alpha,
+                            &source_state.excitation.alpha,
+                        )
                     } else {
-                        (&x_state.excitation.beta, &w_state.excitation.beta)
+                        (&target_state.excitation.beta, &source_state.excitation.beta)
                     };
-                    out[outputs[l][lane]] =
-                        phases[l][lane] * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
+                    let (x_ex, w_ex) = if target_left {
+                        (target_ex, source_ex)
+                    } else {
+                        (source_ex, target_ex)
+                    };
+                    out[col] =
+                        target_phase * source.phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
                 }
             }
             return;
@@ -210,101 +222,109 @@ pub(crate) fn xw_overlap_same_f64_batched(
 
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
         {
-            let mut x_bins = [[ExcitationSpinCache::default(); 4]; 7];
-            let mut w_bins = [[ExcitationSpinCache::default(); 4]; 7];
-            let mut x_dets = [[0usize; 4]; 7];
-            let mut w_dets = [[0usize; 4]; 7];
+            let mut bins = [[ExcitationSpinCache::default(); 4]; 7];
             let mut phases = [[1.0f64; 4]; 7];
             let mut outputs = [[0usize; 4]; 7];
             let mut counts = [0usize; 7];
 
-            for &(output, x_det, w_det) in requests {
-                let x_state = &basis[x_det];
-                let w_state = &basis[w_det];
-                let (x_ex, w_ex, x_cache, w_cache, phase) = if alpha {
-                    (
-                        &x_state.excitation.alpha,
-                        &w_state.excitation.alpha,
-                        x_state.excitation_cache.alpha,
-                        w_state.excitation_cache.alpha,
-                        x_state.pha * w_state.pha,
-                    )
-                } else {
-                    (
-                        &x_state.excitation.beta,
-                        &w_state.excitation.beta,
-                        x_state.excitation_cache.beta,
-                        w_state.excitation_cache.beta,
-                        x_state.phb * w_state.phb,
-                    )
-                };
-                let l = usize::from(x_cache.rank) + usize::from(w_cache.rank);
+            for (col, source) in sources.iter().enumerate() {
+                let source_cache = source.excitation_cache;
+                let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
 
-                if x_cache.rank <= 4 && w_cache.rank <= 4 && (1..=6).contains(&l) {
+                if target_cache.rank <= 4 && source_cache.rank <= 4 && (1..=6).contains(&l) {
                     let count = counts[l];
-                    x_bins[l][count] = x_cache;
-                    w_bins[l][count] = w_cache;
-                    x_dets[l][count] = x_det;
-                    w_dets[l][count] = w_det;
-                    phases[l][count] = phase;
-                    outputs[l][count] = output;
+                    bins[l][count] = source_cache;
+                    phases[l][count] = source.phase;
+                    outputs[l][count] = col;
                     counts[l] += 1;
 
                     if counts[l] == 4 {
+                        let target_batch = [target_cache; 4];
+                        let source_batch = bins[l];
+                        let (x_ex, w_ex) = if target_left {
+                            (&target_batch, &source_batch)
+                        } else {
+                            (&source_batch, &target_batch)
+                        };
                         let mut overlap = [0.0f64; 4];
+
                         unsafe {
-                            xw_overlap_m0_prepared_f64x4(
-                                w,
-                                l,
-                                &x_bins[l],
-                                &w_bins[l],
-                                &mut overlap,
-                            );
+                            xw_overlap_m0_prepared_f64x4(w, l, x_ex, w_ex, &mut overlap);
                         }
+
                         for lane in 0..4 {
-                            out[outputs[l][lane]] = phases[l][lane] * overlap[lane];
+                            out[outputs[l][lane]] = target_phase * phases[l][lane] * overlap[lane];
                         }
                         counts[l] = 0;
                     }
                 } else {
-                    out[output] = phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
+                    let target_state = &basis[target.det];
+                    let source_state = &basis[source.det];
+                    let (target_ex, source_ex) = if alpha {
+                        (
+                            &target_state.excitation.alpha,
+                            &source_state.excitation.alpha,
+                        )
+                    } else {
+                        (&target_state.excitation.beta, &source_state.excitation.beta)
+                    };
+                    let (x_ex, w_ex) = if target_left {
+                        (target_ex, source_ex)
+                    } else {
+                        (source_ex, target_ex)
+                    };
+                    out[col] =
+                        target_phase * source.phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
                 }
             }
 
             for l in 1..=6 {
                 for lane in 0..counts[l] {
-                    let x_state = &basis[x_dets[l][lane]];
-                    let w_state = &basis[w_dets[l][lane]];
-                    let (x_ex, w_ex) = if alpha {
-                        (&x_state.excitation.alpha, &w_state.excitation.alpha)
+                    let col = outputs[l][lane];
+                    let source = sources[col];
+                    let target_state = &basis[target.det];
+                    let source_state = &basis[source.det];
+                    let (target_ex, source_ex) = if alpha {
+                        (
+                            &target_state.excitation.alpha,
+                            &source_state.excitation.alpha,
+                        )
                     } else {
-                        (&x_state.excitation.beta, &w_state.excitation.beta)
+                        (&target_state.excitation.beta, &source_state.excitation.beta)
                     };
-                    out[outputs[l][lane]] =
-                        phases[l][lane] * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
+                    let (x_ex, w_ex) = if target_left {
+                        (target_ex, source_ex)
+                    } else {
+                        (source_ex, target_ex)
+                    };
+                    out[col] =
+                        target_phase * source.phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
                 }
             }
             return;
         }
     }
 
-    for &(output, x_det, w_det) in requests {
-        let x_state = &basis[x_det];
-        let w_state = &basis[w_det];
-        let (x_ex, w_ex, phase) = if alpha {
-            (
-                &x_state.excitation.alpha,
-                &w_state.excitation.alpha,
-                x_state.pha * w_state.pha,
-            )
+    let target_state = &basis[target.det];
+    let target_ex = if alpha {
+        &target_state.excitation.alpha
+    } else {
+        &target_state.excitation.beta
+    };
+
+    for (col, source) in sources.iter().enumerate() {
+        let source_state = &basis[source.det];
+        let source_ex = if alpha {
+            &source_state.excitation.alpha
         } else {
-            (
-                &x_state.excitation.beta,
-                &w_state.excitation.beta,
-                x_state.phb * w_state.phb,
-            )
+            &source_state.excitation.beta
         };
-        out[output] = phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
+        let (x_ex, w_ex) = if target_left {
+            (target_ex, source_ex)
+        } else {
+            (source_ex, target_ex)
+        };
+        out[col] = target_phase * source.phase * xw_overlap_same_f64(w, x_ex, w_ex, scratch);
     }
 }
 

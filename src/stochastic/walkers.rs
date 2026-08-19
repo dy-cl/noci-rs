@@ -11,6 +11,7 @@ use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::ReducedTwoSpinDetState;
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
@@ -203,10 +204,18 @@ pub fn qmc_step(
         )
         .collect::<Vec<_>>();
 
+    let reduced_basis = data
+        .basis
+        .iter()
+        .enumerate()
+        .map(|(det, state)| ReducedTwoSpinDetState::from_state(det, state))
+        .collect::<Vec<_>>();
+
     let run = QMCRunInfo {
         irank,
         nranks,
         ndets,
+        reduced_basis,
         det_owner,
         owned,
         base_seed,
