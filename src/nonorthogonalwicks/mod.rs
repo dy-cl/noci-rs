@@ -55,6 +55,7 @@ pub(crate) use view::WicksPairView;
 pub(crate) use eval::{
     prepare_same, xw_f, xw_f_overlap_prepared, xw_hamiltonian_overlap_prepared,
     xw_hamiltonian_overlap_prepared_batched, xw_overlap, xw_overlap_same_f64,
+    xw_overlap_same_f64_batched,
 };
 #[cfg(target_arch = "x86_64")]
 pub(crate) use eval::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};

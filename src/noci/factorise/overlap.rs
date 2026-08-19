@@ -5,13 +5,10 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::maths::dot_f64;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
+use crate::nonorthogonalwicks::{WickScratchSpin, xw_overlap_same_f64_batched};
 
 // Crate-root imports.
-use crate::noci::overlap::{
-    calculate_s_alpha_pair_wicks, calculate_s_beta_pair_wicks, calculate_s_pair,
-    calculate_s_pair_naive,
-};
+use crate::noci::overlap::{calculate_s_pair, calculate_s_pair_naive};
 use crate::noci::types::{DetPair, NOCIData};
 
 // Parent/sibling imports.
@@ -102,12 +99,26 @@ enum OverlapContraction {
     BFirst,
 }
 
+/// Persistent same-spin overlap factors for one ordered cross-parent block `QP`.
+struct OverlapFactorBlock {
+    /// Number of source alpha-spin components.
+    nsa: usize,
+    /// Number of source beta-spin components.
+    nsb: usize,
+    /// Full row-major `A^{QP}_{\bar a a}` factor table.
+    afac: Vec<f64>,
+    /// Full row-major `B^{QP}_{\bar b b}` factor table.
+    bfac: Vec<f64>,
+}
+
 /// `Reusable storage for one application of S\Delta.`
 pub(crate) struct OverlapScratch {
     /// Sparse updates grouped by source parent.
     updates: Vec<ParentUpdates>,
     /// Source parents touched by the current update list.
     active_parents: Vec<usize>,
+    /// Persistent cross-parent overlap factors indexed as `Q * nparent + P`.
+    factor_blocks: Vec<Option<OverlapFactorBlock>>,
     /// `Temporary A^{QP}_{\bar a a} factor table.`
     afac: Vec<f64>,
     /// `Temporary B^{QP}_{\bar b b} factor table.`
@@ -128,20 +139,139 @@ pub(crate) struct OverlapScratch {
 
 impl SpinFactorisation {
     /// `Construct reusable storage for one full application of S\Delta.`
-    /// Temporary factor tables and contraction buffers are allocated once, but their numerical
-    /// values are cleared or overwritten on every application and are never reused as overlap data.
+    /// Cross-parent same-spin overlap factors are built once for the fixed determinant basis and
+    /// reused by every subsequent stochastic overlap application.
     /// # Arguments:
     /// - `self`: Immutable sparse overlap action plan.
+    /// - `data`: Shared NOCI data containing fixed Wick intermediates.
     /// # Returns:
-    /// - `OverlapScratch`: Empty allocation storage for grouped updates and factor tables.
-    pub(crate) fn scratch(&self) -> OverlapScratch {
-        let mut updates = Vec::with_capacity(self.parents.len());
-        for parent in 0..self.parents.len() {
+    /// - `OverlapScratch`: Reusable grouped-update, factor and contraction storage.
+    pub(crate) fn scratch(
+        &self,
+        data: &NOCIData<'_, f64>,
+    ) -> OverlapScratch {
+        let nparent = self.parents.len();
+        let mut updates = Vec::with_capacity(nparent);
+        for parent in 0..nparent {
             updates.push(ParentUpdates::new(parent, self.ma, self.mb));
         }
+
+        let mut factor_blocks = (0..nparent * nparent).map(|_| None).collect::<Vec<_>>();
+        if data.input.wicks.enabled
+            && let Some(wicks) = data.wicks
+        {
+            for target_parent in 0..nparent {
+                let target = &self.parents[target_parent];
+                if target.entries.is_empty() {
+                    continue;
+                }
+
+                for source_parent in 0..nparent {
+                    if target_parent == source_parent {
+                        continue;
+                    }
+
+                    let source = &self.parents[source_parent];
+                    if source.entries.is_empty() {
+                        continue;
+                    }
+
+                    let nta = target.areps.len();
+                    let ntb = target.breps.len();
+                    let nsa = source.areps.len();
+                    let nsb = source.breps.len();
+                    let (lp, gp, target_left) =
+                        ordered_parent_pair(self, target_parent, source_parent);
+                    let mut afac = vec![0.0; nta * nsa];
+                    let mut bfac = vec![0.0; ntb * nsb];
+
+                    afac.par_chunks_mut(nsa)
+                        .zip(target.areps.par_iter())
+                        .for_each_init(
+                            || {
+                                (
+                                    WickScratchSpin::new(),
+                                    Vec::<(usize, usize, usize)>::with_capacity(nsa),
+                                )
+                            },
+                            |state, (row, target_rep)| {
+                                let (scratch, requests) = state;
+                                let pair = wicks.pair(lp, gp);
+                                let tdet = target_rep.det;
+
+                                requests.clear();
+                                for (col, source_rep) in source.areps.iter().enumerate() {
+                                    let sdet = source_rep.det;
+                                    let (xdet, wdet) = if target_left {
+                                        (tdet, sdet)
+                                    } else {
+                                        (sdet, tdet)
+                                    };
+                                    requests.push((col, xdet, wdet));
+                                }
+
+                                xw_overlap_same_f64_batched(
+                                    &pair.aa,
+                                    data.basis,
+                                    requests,
+                                    true,
+                                    &mut scratch.aa,
+                                    row,
+                                );
+                            },
+                        );
+
+                    bfac.par_chunks_mut(nsb)
+                        .zip(target.breps.par_iter())
+                        .for_each_init(
+                            || {
+                                (
+                                    WickScratchSpin::new(),
+                                    Vec::<(usize, usize, usize)>::with_capacity(nsb),
+                                )
+                            },
+                            |state, (row, target_rep)| {
+                                let (scratch, requests) = state;
+                                let pair = wicks.pair(lp, gp);
+                                let tdet = target_rep.det;
+
+                                requests.clear();
+                                for (col, source_rep) in source.breps.iter().enumerate() {
+                                    let sdet = source_rep.det;
+                                    let (xdet, wdet) = if target_left {
+                                        (tdet, sdet)
+                                    } else {
+                                        (sdet, tdet)
+                                    };
+                                    requests.push((col, xdet, wdet));
+                                }
+
+                                xw_overlap_same_f64_batched(
+                                    &pair.bb,
+                                    data.basis,
+                                    requests,
+                                    false,
+                                    &mut scratch.bb,
+                                    row,
+                                );
+                            },
+                        );
+
+                    factor_blocks[target_parent * nparent + source_parent] =
+                        Some(OverlapFactorBlock {
+                            nsa,
+                            nsb,
+                            afac,
+                            bfac,
+                        });
+                }
+            }
+        }
+
         OverlapScratch {
             updates,
             active_parents: Vec::new(),
+            factor_blocks,
             afac: Vec::new(),
             bfac: Vec::new(),
             intermediate: Vec::new(),
@@ -156,7 +286,7 @@ impl SpinFactorisation {
     /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
     /// Orthogonal same-parent blocks are applied directly, while cross-parent blocks use
     /// `S_{w\Omega} = A^{QP}_{\bar a_w a_\Omega}B^{QP}_{\bar b_w b_\Omega}.`
-    /// Temporary factor tables are rebuilt for each overlap application and are not cached across iterations.
+    /// Cross-parent same-spin factors are cached once and reused across overlap applications.
     /// # Arguments:
     /// - `populations`: `Rank-local persistent populations N_w.`
     /// - `targets`: Global determinant index for each rank-local row in `populations`.
@@ -404,109 +534,87 @@ impl SpinFactorisation {
             return;
         }
 
-        let Some(wicks) = data.wicks else {
+        if data.wicks.is_none() {
             self.apply_overlap_direct(output, target, source, data, scratch);
             return;
-        };
+        }
 
+        let factors = scratch.factor_blocks[target.parent * self.parents.len() + source.parent]
+            .as_ref()
+            .expect("cross-parent overlap factors must be precomputed");
         let contraction = self.select_overlap_contraction(target, source);
         match contraction {
             OverlapContraction::FactorisedRows => {
-                self.apply_overlap_factorised_rows(output, target, source, data, wicks, scratch);
+                Self::apply_overlap_factorised_rows(
+                    output,
+                    target,
+                    source,
+                    factors,
+                    &mut scratch.values,
+                );
             }
             OverlapContraction::AFirst => {
-                self.build_overlap_factor_tables(target, source, data, wicks, scratch);
+                Self::gather_overlap_factor_tables(
+                    target,
+                    source,
+                    factors,
+                    &mut scratch.afac,
+                    &mut scratch.bfac,
+                );
                 self.apply_overlap_a_first(output, target, source, scratch);
             }
             OverlapContraction::BFirst => {
-                self.build_overlap_factor_tables(target, source, data, wicks, scratch);
+                Self::gather_overlap_factor_tables(
+                    target,
+                    source,
+                    factors,
+                    &mut scratch.afac,
+                    &mut scratch.bfac,
+                );
                 self.apply_overlap_b_first(output, target, source, scratch);
             }
         }
     }
 
     /// Apply one cross-parent block with target-local sparse-row factor reuse.
-    /// For each target determinant, this builds A and B factor vectors once and contracts
-    /// `\delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b} D^P_{ab}.`
-    /// The direct determinant-pair Wick loop is avoided because it would recompute the same
-    /// same-spin factors for every sparse entry sharing a source a or b component.
+    /// Precomputed same-spin factors are indexed directly by target and source component IDs before
+    /// contracting `\delta N_w^{QP} = \sum_{(a,b)} A^{QP}_{\bar a a} B^{QP}_{\bar b b}D^P_{ab}`.
     /// # Arguments:
+    /// - `output`: Rank-local persistent population increment.
     /// - `target`: `Rank-local target parent block Q defining w = (\bar a,\bar b).`
     /// - `source`: `Source parent P sparse D^P_{ab} entries and active positions.`
-    /// - `data`: Shared NOCI determinant data.
-    /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
-    /// - `scratch`: Reusable value storage receiving one output per target row.
+    /// - `factors`: Persistent full same-spin overlap factors for this ordered parent pair.
+    /// - `values`: Reusable value storage receiving one output per target row.
     /// # Returns:
-    /// - `()`: `Adds factorized sparse-row S\Delta values to output.`
+    /// - `()`: Adds factorised sparse-row `S\Delta` values to `output`.
     fn apply_overlap_factorised_rows(
-        &self,
         output: &mut [f64],
         target: &LocalParentBlock,
         source: &ParentUpdates,
-        data: &NOCIData<'_, f64>,
-        wicks: &WicksView<f64>,
-        scratch: &mut OverlapScratch,
+        factors: &OverlapFactorBlock,
+        values: &mut Vec<f64>,
     ) {
-        let nsa = source.aids.len();
-        let nsb = source.bids.len();
+        values.clear();
+        values.resize(target.targets.len(), 0.0);
 
-        scratch.values.clear();
-        scratch.values.resize(target.targets.len(), 0.0);
-
-        let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
-
-        scratch
-            .values
+        values
             .par_iter_mut()
             .zip(target.targets.par_iter())
-            .for_each_init(
-                || (WickScratchSpin::new(), Vec::<f64>::new(), Vec::<f64>::new()),
-                |(wick_scratch, afac, bfac), (value, t)| {
-                    let pair = wicks.pair(lp, gp);
-                    afac.resize(nsa, 0.0);
-                    bfac.resize(nsb, 0.0);
+            .for_each(|(value, target)| {
+                let arow = &factors.afac[target.a * factors.nsa..(target.a + 1) * factors.nsa];
+                let brow = &factors.bfac[target.b * factors.nsb..(target.b + 1) * factors.nsb];
+                let mut dp = 0.0;
 
-                    let tadet = self.parents[target.parent].areps[t.a].det;
-                    let tbdet = self.parents[target.parent].breps[t.b].det;
+                for entry in &source.entries {
+                    let a = source.aids[entry.apos];
+                    let b = source.bids[entry.bpos];
+                    dp += arow[a] * brow[b] * entry.dn;
+                }
 
-                    // Construct A^{QP}_{\bar a a} and B^{QP}_{\bar b b} once for this target row.
-                    for (pos, &sa) in source.aids.iter().enumerate() {
-                        let sdet = self.parents[source.parent].areps[sa].det;
-                        let (ldet, gdet) = if target_left {
-                            (&data.basis[tadet], &data.basis[sdet])
-                        } else {
-                            (&data.basis[sdet], &data.basis[tadet])
-                        };
+                *value = dp;
+            });
 
-                        afac[pos] = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
-                    }
-
-                    for (pos, &sb) in source.bids.iter().enumerate() {
-                        let sdet = self.parents[source.parent].breps[sb].det;
-                        let (ldet, gdet) = if target_left {
-                            (&data.basis[tbdet], &data.basis[sdet])
-                        } else {
-                            (&data.basis[sdet], &data.basis[tbdet])
-                        };
-
-                        bfac[pos] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
-                    }
-
-                    // Accumulate sparse D^P_{ab} with factors indexed through active positions.
-                    let mut dp = 0.0;
-
-                    for entry in &source.entries {
-                        let sa_pos = entry.apos;
-                        let sb_pos = entry.bpos;
-
-                        dp += afac[sa_pos] * bfac[sb_pos] * entry.dn;
-                    }
-
-                    *value = dp;
-                },
-            );
-
-        for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
+        for (value, target) in values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {
                 output[target.local] += value;
             }
@@ -678,77 +786,53 @@ impl SpinFactorisation {
         }
     }
 
-    /// `Build A^{QP}_{\bar a a} and B^{QP}_{\bar b b} for active spin components.`
-    /// `Each factor value is recomputed for this S\Delta application using representative determinants.`
+    /// Gather active same-spin factor submatrices from the persistent full parent-pair tables.
+    /// `A^{QP}_{\bar a a}` and `B^{QP}_{\bar b b}` are selected only for the target and source
+    /// component IDs active in the current sparse `S\Delta` application.
     /// # Arguments:
-    /// - `target`: `Target parent block defining active \bar a and \bar b rows.`
-    /// - `source`: Source parent updates defining active a and b columns.
-    /// - `data`: Shared NOCI determinant data.
-    /// - `wicks`: Shared Wick intermediates for parent-pair factor evaluation.
-    /// - `scratch`: Reusable `afac` and `bfac` storage overwritten for this parent pair.
+    /// - `target`: Target parent block defining active target component IDs.
+    /// - `source`: Source parent updates defining active source component IDs.
+    /// - `factors`: Persistent full same-spin overlap factors for this ordered parent pair.
+    /// - `afac`: Reusable active alpha-factor submatrix storage.
+    /// - `bfac`: Reusable active beta-factor submatrix storage.
     /// # Returns:
-    /// - `()`: Fills `scratch.afac` and `scratch.bfac` for the current QP block.
-    fn build_overlap_factor_tables(
-        &self,
+    /// - `()`: Fills the active alpha- and beta-factor submatrices without Wick evaluation.
+    fn gather_overlap_factor_tables(
         target: &LocalParentBlock,
         source: &ParentUpdates,
-        data: &NOCIData<'_, f64>,
-        wicks: &WicksView<f64>,
-        scratch: &mut OverlapScratch,
+        factors: &OverlapFactorBlock,
+        afac: &mut Vec<f64>,
+        bfac: &mut Vec<f64>,
     ) {
         let nta = target.aids.len();
         let ntb = target.bids.len();
         let nsa = source.aids.len();
         let nsb = source.bids.len();
+        let na = nta * nsa;
+        let nb = ntb * nsb;
 
-        scratch.afac.clear();
-        scratch.bfac.clear();
-        scratch.afac.resize(nta * nsa, 0.0);
-        scratch.bfac.resize(ntb * nsb, 0.0);
+        if afac.len() != na {
+            afac.resize(na, 0.0);
+        }
+        if bfac.len() != nb {
+            bfac.resize(nb, 0.0);
+        }
 
-        let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
-
-        // Build `A` rows independently; each task owns one output row.
-        scratch
-            .afac
-            .par_chunks_mut(nsa)
+        afac.par_chunks_mut(nsa)
             .zip(target.aids.par_iter())
-            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &ta)| {
-                let pair = wicks.pair(lp, gp);
-                let tdet = self.parents[target.parent].areps[ta].det;
-
+            .for_each(|(row, &ta)| {
+                let full = &factors.afac[ta * factors.nsa..(ta + 1) * factors.nsa];
                 for (col, &sa) in source.aids.iter().enumerate() {
-                    let sdet = self.parents[source.parent].areps[sa].det;
-
-                    let (ldet, gdet) = if target_left {
-                        (&data.basis[tdet], &data.basis[sdet])
-                    } else {
-                        (&data.basis[sdet], &data.basis[tdet])
-                    };
-
-                    row[col] = calculate_s_alpha_pair_wicks(ldet, gdet, &pair, wick_scratch);
+                    row[col] = full[sa];
                 }
             });
 
-        // Build `B` rows independently; each task owns one output row.
-        scratch
-            .bfac
-            .par_chunks_mut(nsb)
+        bfac.par_chunks_mut(nsb)
             .zip(target.bids.par_iter())
-            .for_each_init(WickScratchSpin::new, |wick_scratch, (row, &tb)| {
-                let pair = wicks.pair(lp, gp);
-                let tdet = self.parents[target.parent].breps[tb].det;
-
+            .for_each(|(row, &tb)| {
+                let full = &factors.bfac[tb * factors.nsb..(tb + 1) * factors.nsb];
                 for (col, &sb) in source.bids.iter().enumerate() {
-                    let sdet = self.parents[source.parent].breps[sb].det;
-
-                    let (ldet, gdet) = if target_left {
-                        (&data.basis[tdet], &data.basis[sdet])
-                    } else {
-                        (&data.basis[sdet], &data.basis[tdet])
-                    };
-
-                    row[col] = calculate_s_beta_pair_wicks(ldet, gdet, &pair, wick_scratch);
+                    row[col] = full[sb];
                 }
             });
     }

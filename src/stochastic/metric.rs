@@ -854,7 +854,7 @@ pub fn qmc_step(
         })
         .collect::<Vec<_>>();
     let mut propagation_result = PropagationResult::new();
-    let mut overlap_scratch = overlap_factor.scratch();
+    let mut overlap_scratch = overlap_factor.scratch(data);
 
     // Thread local scratch for Wick's theorem and for MPI communicattion.
     let mut scratch = WickScratchSpin::new();
