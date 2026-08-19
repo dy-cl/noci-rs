@@ -73,30 +73,50 @@ pub fn run_geometry(
         broadcast(world, &mut prep.states);
         broadcast(world, &mut prep.hstates);
 
-        let holomorphic_noci_refs = matches!(
-            &input.states,
-            StateType::Mom(recipes) if recipes.iter().any(|st| st.holomorphic && st.noci)
-        );
-        let mut reference =
-            run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Complex, world);
-        let post = run_holomorphic_post_reference(
-            &ao,
-            &mut reference,
-            input,
-            tol,
-            holomorphic_noci_refs,
-            world,
-        );
-        let timings = timers::snapshot_all_mpi(world);
-        GeometryResults::from_holomorphic(
-            r,
-            (prep.states, prep.hstates, prep.htracks),
-            reference,
-            post,
-            ao.e_fci,
-            world.size() as usize,
-            timings,
-        )
+        let holomorphic = prep.hstates[prep.states.len()..]
+            .iter()
+            .any(|state| state.noci_basis);
+
+        if holomorphic {
+            let mut reference =
+                run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Complex, world);
+            let post =
+                run_holomorphic_post_reference(&ao, &mut reference, input, tol, holomorphic, world);
+            let timings = timers::snapshot_all_mpi(world);
+            GeometryResults::from_holomorphic(
+                r,
+                (prep.states, prep.hstates, prep.htracks),
+                reference,
+                post,
+                ao.e_fci,
+                world.size() as usize,
+                timings,
+            )
+        } else {
+            let mut reference = run_reference_space(
+                &ao,
+                input,
+                prep.states.clone(),
+                tol,
+                ReferenceKind::Real,
+                world,
+            );
+            let post =
+                run_real_post_reference(&ao, &prep.states, &mut reference, input, tol, world);
+            let timings = timers::snapshot_all_mpi(world);
+            let mut results = GeometryResults::from_real(
+                r,
+                prep.states,
+                reference,
+                post,
+                ao.e_fci,
+                world.size() as usize,
+                timings,
+            );
+            results.hstates = prep.hstates;
+            results.htracks = prep.htracks;
+            results
+        }
     } else {
         let mut prep = if world.rank() == 0 {
             generate_real_references(&ao, input, prev_states)
