@@ -3,10 +3,12 @@
 // Standard library imports.
 use std::str::FromStr;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum ExcitationGen {
     Uniform,
     HeatBath,
     ApproximateHeatBath,
+    OverlapWeighted,
 }
 
 impl FromStr for ExcitationGen {
@@ -22,6 +24,7 @@ impl FromStr for ExcitationGen {
             "uniform" => Ok(Self::Uniform),
             "heat-bath" => Ok(Self::HeatBath),
             "approximate-heat-bath" => Ok(Self::ApproximateHeatBath),
+            "overlap-weighted" => Ok(Self::OverlapWeighted),
             _ => Err(format!("invalid excitation generator: {s}")),
         }
     }
@@ -55,6 +58,10 @@ pub struct QMCOptions {
     pub nreports: usize,
     /// Excitation generator choice.
     pub excitation_gen: ExcitationGen,
+    /// Mixture weight for the factorised-overlap excitation proposal.
+    pub overlap_weight: f64,
+    /// Whether to optimise the overlap mixture weight during propagation.
+    pub optimise_overlap_weight: bool,
     /// Optional RNG seed.
     pub seed: Option<u64>,
 }
@@ -71,6 +78,8 @@ impl Default for QMCOptions {
             ncycles: 10,
             nreports: 1000,
             excitation_gen: ExcitationGen::default(),
+            overlap_weight: 0.0,
+            optimise_overlap_weight: false,
             seed: None,
         }
     }

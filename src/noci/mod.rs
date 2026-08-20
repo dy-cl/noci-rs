@@ -46,7 +46,7 @@ pub use wicks::{build_wicks_shared, update_wicks_fock};
 
 // Crate-visible type re-exports.
 pub(crate) use factorise::{
-    OneBodyFactorisation, OneBodyScratch, OverlapScratch, SpinFactorisation,
+    OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch, SpinFactorisation,
 };
 pub(crate) use types::{DetPair, FockData};
 

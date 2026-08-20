@@ -114,17 +114,25 @@ pub(in crate::stochastic) fn initialise_qmc_state(
 
         *es = restart.shift;
 
+        let excitation_hist =
+            if data.input.write.write_excitation_hist && restart.excitation_hist.is_none() {
+                Some(ExcitationHist::new(-60.0, 1e-12, 100))
+            } else {
+                restart.excitation_hist
+            };
+
         let mc = MCState {
             populations: restart.populations,
             sampled: SparsePopulations::new(run.ndets),
             delta: vec![0.0; run.ndets],
             changed: Vec::new(),
-            excitation_hist: restart.excitation_hist,
+            excitation_hist,
         };
 
         let pe = projected_energy(&mc.populations, run, world);
 
         let prev_pop = PopulationStats::new(restart.nwprev, restart.nrefprev, 0.0, 0);
+        let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
         return PropagationState::new(
             mc,
@@ -132,6 +140,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             restart.report + 1,
             restart.nwprev >= qmc.target_population,
             prev_pop,
+            overlap_weight,
         );
     }
 
@@ -186,5 +195,5 @@ pub(in crate::stochastic) fn initialise_qmc_state(
 
     let stats = PopulationStats::new(global[0], global[1], 0.0, 0);
 
-    PropagationState::new(mc, pe, 0, false, stats)
+    PropagationState::new(mc, pe, 0, false, stats, qmc.overlap_weight)
 }

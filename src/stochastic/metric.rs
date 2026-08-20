@@ -15,8 +15,8 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::ReducedTwoSpinDetState;
-use crate::input::Input;
-use crate::noci::{NOCIData, OverlapScratch, SpinFactorisation};
+use crate::input::{ExcitationGen, Input};
+use crate::noci::{NOCIData, OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
@@ -24,13 +24,15 @@ use crate::time_call;
 use super::common::{
     coalesce_population_updates, exchange_population_changes, find_hs, max_scratch_sizes,
 };
+use super::excit::update_overlap_weight;
 use super::init::initialise_qmc_state;
+use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::state::owner;
 use super::state::{
-    ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, ProjectedEnergyUpdate,
-    PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations,
-    ThreadPropagation,
+    ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats, PopulationUpdate,
+    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec,
+    SparsePopulations, ThreadPropagation,
 };
 
 /// Accumulate a real population change on determinant `i`.
@@ -96,6 +98,7 @@ pub(in crate::stochastic) fn take_population_changes(
 /// - `updates`: `Sparse pre-overlap changes \Omega, \Delta_\Omega.`
 /// - `data`: Immutable NOCI data.
 /// - `overlap_factor`: Precomputed determinant and spin-component mappings.
+/// - `overlap_factors`: Persistent cross-parent overlap factors.
 /// - `targets`: Global determinant indices for rank-local rows.
 /// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
 /// # Returns:
@@ -105,12 +108,20 @@ fn apply_population_changes_local<I>(
     updates: I,
     data: &NOCIData<'_, f64>,
     overlap_factor: &SpinFactorisation,
+    overlap_factors: &OverlapFactors,
     targets: &[usize],
     scratch: &mut OverlapScratch,
 ) where
     I: IntoIterator<Item = (usize, f64)>,
 {
-    overlap_factor.apply_overlap_sparse(populations, targets, updates, data, scratch);
+    overlap_factor.apply_overlap_sparse(
+        populations,
+        targets,
+        updates,
+        data,
+        overlap_factors,
+        scratch,
+    );
 }
 
 /// Apply the global overlap-transformed population change.
@@ -126,6 +137,7 @@ fn apply_population_changes_local<I>(
 /// - `dlocal`: Local determinant population changes.
 /// - `data`: Immutable stochastic propagation data.
 /// - `overlap_factor`: Reusable spin overlap factors.
+/// - `overlap_factors`: Persistent cross-parent overlap factors.
 /// - `run`: Rank-local run metadata.
 /// - `mpi`: MPI communicator and reusable MPI scratch storage.
 /// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`
@@ -136,6 +148,7 @@ fn apply_overlap_population_changes(
     dlocal: &[PopulationUpdate],
     data: &NOCIData<'_, f64>,
     overlap_factor: &SpinFactorisation,
+    overlap_factors: &OverlapFactors,
     run: &QMCRunInfo,
     mpi: (&impl CommunicatorCollectives, &mut MPIScratch),
     scratch: &mut OverlapScratch,
@@ -152,6 +165,7 @@ fn apply_overlap_population_changes(
                         dlocal.iter().map(|up| (up.det as usize, up.dn)),
                         data,
                         overlap_factor,
+                        overlap_factors,
                         &run.owned,
                         scratch,
                     );
@@ -206,6 +220,7 @@ fn apply_overlap_population_changes(
                     mpi.gather_recv.iter().map(|up| (up.det as usize, up.dn)),
                     data,
                     overlap_factor,
+                    overlap_factors,
                     &run.owned,
                     scratch,
                 );
@@ -350,6 +365,10 @@ pub(in crate::stochastic) fn exchange_accumulated_updates(
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local propagation metadata.
 /// - `shift`: `Current population-control shift E_s(\Delta \tau).`
+/// - `overlap_factors`: Persistent cross-parent overlap factors.
+/// - `overlap_generator`: Optional overlap-weighted excitation generator.
+/// - `overlap_weight`: Current report overlap mixture probability.
+/// - `optimise_overlap_weight`: Whether to accumulate adaptive derivative sums.
 /// - `workers`: Persistent thread-local propagation storage.
 /// - `result`: Reusable storage for generated population changes.
 /// # Returns:
@@ -360,6 +379,10 @@ pub(in crate::stochastic) fn propagate_iteration(
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
     shift: ShiftSpec,
+    overlap_factors: Option<&OverlapFactors>,
+    overlap_generator: Option<&OverlapWeightedGenerator>,
+    overlap_weight: f64,
+    optimise_overlap_weight: bool,
     workers: &mut [Mutex<ThreadPropagation>],
     result: &mut PropagationResult,
 ) {
@@ -407,11 +430,28 @@ pub(in crate::stochastic) fn propagate_iteration(
                                 &run.diagonal_hs,
                             );
 
-                            worker.spawning(gamma, population, shift, data, run);
+                            worker.spawning(
+                                gamma,
+                                population,
+                                shift,
+                                data,
+                                run,
+                                overlap_factors,
+                                overlap_generator,
+                                overlap_weight,
+                            );
                         }
                     }
 
-                    worker.resolve_uniform_spawning(shift, data, run);
+                    worker.resolve_batched_spawning(
+                        shift,
+                        data,
+                        run,
+                        overlap_factors,
+                        overlap_generator,
+                        overlap_weight,
+                        optimise_overlap_weight,
+                    );
                 });
             }
 
@@ -420,6 +460,7 @@ pub(in crate::stochastic) fn propagate_iteration(
                 result.local.append(&mut worker.local);
                 result.remote.append(&mut worker.remote);
                 result.samples.append(&mut worker.samples);
+                result.overlap_derivatives.add(&worker.overlap_derivatives);
             }
         }
     );
@@ -839,6 +880,17 @@ pub fn qmc_step(
         .collect::<Vec<_>>();
 
     let overlap_factor = SpinFactorisation::new(data);
+    let build_overlap_cdfs = matches!(qmc.excitation_gen, ExcitationGen::OverlapWeighted);
+    let overlap_factors = overlap_factor.build_overlap_factors(data, build_overlap_cdfs);
+    let overlap_generator = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
+        Some(OverlapWeightedGenerator::new(
+            data,
+            &overlap_factor,
+            &overlap_factors,
+        ))
+    } else {
+        None
+    };
     let run = QMCRunInfo {
         irank,
         nranks,
@@ -863,7 +915,7 @@ pub fn qmc_step(
         })
         .collect::<Vec<_>>();
     let mut propagation_result = PropagationResult::new();
-    let mut overlap_scratch = overlap_factor.scratch(data);
+    let mut overlap_scratch = overlap_factor.overlap_scratch();
 
     // Thread local scratch for Wick's theorem and for MPI communicattion.
     let mut scratch = WickScratchSpin::new();
@@ -910,6 +962,7 @@ pub fn qmc_step(
 
     let mut population_changes = Vec::new();
     let mut sample_chunks = Vec::new();
+    let mut overlap_derivatives = OverlapDerivativeSums::default();
 
     for report in state.start_report..qmc.nreports {
         for cycle in 0..qmc.ncycles {
@@ -934,9 +987,14 @@ pub fn qmc_step(
                 data,
                 &run,
                 ShiftSpec::direct_overlap(*es),
+                Some(&overlap_factors),
+                overlap_generator.as_ref(),
+                state.overlap_weight,
+                qmc.optimise_overlap_weight,
                 &mut workers,
                 &mut propagation_result,
             );
+            overlap_derivatives.add(&propagation_result.overlap_derivatives);
 
             accumulate_generated_updates(
                 &mut state.mc,
@@ -962,6 +1020,7 @@ pub fn qmc_step(
             &population_changes,
             data,
             &overlap_factor,
+            &overlap_factors,
             &run,
             (world, &mut mpiscratch),
             &mut overlap_scratch,
@@ -977,6 +1036,13 @@ pub fn qmc_step(
         state.cur_pop = stats;
 
         update_shift(&stats, &mut state, es, data.input);
+        update_overlap_weight(
+            &mut state,
+            &mut overlap_derivatives,
+            data.input,
+            &run,
+            world,
+        );
 
         if let Some(ret) = check_stop(
             report,

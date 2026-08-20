@@ -408,11 +408,26 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
                     ExcitationGen::Uniform => "uniform".to_string(),
                     ExcitationGen::HeatBath => "heat-bath".to_string(),
                     ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
+                    ExcitationGen::OverlapWeighted => "overlap-weighted".to_string(),
                 });
         let excitation_gen: ExcitationGen = excitation_gen_str.parse().unwrap_or_else(|msg| {
             eprintln!("{msg}");
             std::process::exit(1);
         });
+        let overlap_weight = qmc_tbl
+            .get("overlap_weight")
+            .unwrap_or(defaults.overlap_weight);
+        if !overlap_weight.is_finite() || !(0.0..1.0).contains(&overlap_weight) {
+            eprintln!("qmc.overlap_weight must satisfy 0.0 <= overlap_weight < 1.0");
+            std::process::exit(1);
+        }
+        let optimise_overlap_weight = qmc_tbl
+            .get("optimise_overlap_weight")
+            .unwrap_or(defaults.optimise_overlap_weight);
+        if optimise_overlap_weight && excitation_gen != ExcitationGen::OverlapWeighted {
+            eprintln!("qmc.optimise_overlap_weight requires excitation_gen = \"overlap-weighted\"");
+            std::process::exit(1);
+        }
 
         let sampling_cutoff1 = qmc_tbl.get("sampling_cutoff1").unwrap_or_else(|_| {
             qmc_tbl
@@ -438,6 +453,8 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
             nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,
+            overlap_weight,
+            optimise_overlap_weight,
             seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
             sampling_cutoff1,
             sampling_cutoff2,

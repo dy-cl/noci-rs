@@ -163,6 +163,7 @@ pub(in crate::stochastic) fn write_restart(
         populations: state.mc.populations.clone(),
         excitation_hist: state.mc.excitation_hist.clone(),
         base_seed: Some(run.base_seed),
+        overlap_weight: Some(state.overlap_weight),
     };
 
     let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");
@@ -210,6 +211,7 @@ pub(in crate::stochastic) fn check_stop(
         populations: std::mem::take(&mut state.mc.populations),
         excitation_hist: state.mc.excitation_hist.take(),
         base_seed: Some(run.base_seed),
+        overlap_weight: Some(state.overlap_weight),
     };
 
     let restart_path = restart_path.map(String::as_str).unwrap_or("RESTART.H5");

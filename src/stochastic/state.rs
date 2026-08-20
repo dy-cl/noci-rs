@@ -7,13 +7,14 @@ use rand::{Rng, SeedableRng};
 // Crate-root imports.
 use crate::ReducedTwoSpinDetState;
 use crate::input::{ExcitationGen, Propagator};
-use crate::noci::NOCIData;
+use crate::noci::{NOCIData, OverlapFactors};
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::find_hs_batched;
 use super::excit::{init_heat_bath, pgen_heat_bath};
 use super::metric::fri;
+use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
@@ -346,6 +347,8 @@ pub(in crate::stochastic) struct PropagationState {
     pub(in crate::stochastic) reached: bool,
     /// Current projected energy.
     pub(in crate::stochastic) eprojcur: f64,
+    /// Current overlap-weighted mixture probability `p`.
+    pub(in crate::stochastic) overlap_weight: f64,
 }
 
 impl PropagationState {
@@ -364,6 +367,7 @@ impl PropagationState {
         start_report: usize,
         reached: bool,
         prev_pop: PopulationStats,
+        overlap_weight: f64,
     ) -> Self {
         let eprojcur = pe.num / pe.den;
 
@@ -375,6 +379,7 @@ impl PropagationState {
             start_report,
             reached,
             eprojcur,
+            overlap_weight,
         }
     }
 }
@@ -387,6 +392,33 @@ pub(in crate::stochastic) struct PropagationResult {
     pub(in crate::stochastic) remote: Vec<(usize, PopulationUpdate)>,
     /// Excitation generation samples.
     pub(in crate::stochastic) samples: Vec<f64>,
+    /// Report-local adaptive overlap-weight derivative sums.
+    pub(in crate::stochastic) overlap_derivatives: OverlapDerivativeSums,
+}
+
+/// Report-local derivative sums for adaptive overlap-weight optimisation.
+#[derive(Clone, Copy, Default)]
+pub(in crate::stochastic) struct OverlapDerivativeSums {
+    /// Stochastic estimate of `M2'(p)`.
+    pub(in crate::stochastic) gradient: f64,
+    /// Stochastic estimate of `M2''(p)`.
+    pub(in crate::stochastic) hessian: f64,
+}
+
+impl OverlapDerivativeSums {
+    /// Add another pair of overlap-weight derivative sums.
+    /// # Arguments:
+    /// - `self`: Accumulator to update.
+    /// - `other`: Derivative sums to add.
+    /// # Returns:
+    /// - `()`: Adds `other` in place.
+    pub(in crate::stochastic) fn add(
+        &mut self,
+        other: &Self,
+    ) {
+        self.gradient += other.gradient;
+        self.hessian += other.hessian;
+    }
 }
 
 impl PropagationResult {
@@ -399,6 +431,7 @@ impl PropagationResult {
             local: Vec::new(),
             remote: Vec::new(),
             samples: Vec::new(),
+            overlap_derivatives: OverlapDerivativeSums::default(),
         }
     }
 
@@ -411,7 +444,20 @@ impl PropagationResult {
         self.local.clear();
         self.remote.clear();
         self.samples.clear();
+        self.overlap_derivatives = OverlapDerivativeSums::default();
     }
+}
+
+/// Batched off-diagonal spawn request with a known generation probability.
+struct BatchedSpawnRequest {
+    /// Child determinant index.
+    child: usize,
+    /// Parent determinant index.
+    parent: usize,
+    /// Per-attempt sampled parent population.
+    parent_population: f64,
+    /// Exact total generation probability for this determinant pair.
+    pgen: f64,
 }
 
 /// Storage for per thread propagation quantities.
@@ -424,14 +470,16 @@ pub(in crate::stochastic) struct ThreadPropagation {
     pub(in crate::stochastic) samples: Vec<f64>,
     /// Thread local RNG.
     pub(in crate::stochastic) rng: SmallRng,
-    /// Uniform spawn requests accumulated over one worker propagation iteration.
-    uniform_spawns: Vec<(usize, usize, f64)>,
-    /// Canonically ordered determinant pairs corresponding to `uniform_spawns`.
-    uniform_pairs: Vec<(usize, usize)>,
-    /// Hamiltonian and overlap elements corresponding to `uniform_spawns`.
-    uniform_hs: Vec<(f64, f64)>,
+    /// Batched off-diagonal spawn requests accumulated over one worker propagation iteration.
+    spawn_requests: Vec<BatchedSpawnRequest>,
+    /// Canonically ordered determinant pairs corresponding to `spawn_requests`.
+    spawn_pairs: Vec<(usize, usize)>,
+    /// Hamiltonian and overlap elements corresponding to `spawn_requests`.
+    spawn_hs: Vec<(f64, f64)>,
     /// Per thread scratch space for extended non-orthogonal Wick's theorem.
     pub(in crate::stochastic) wick_scratch: Box<WickScratchSpin<f64>>,
+    /// Iteration-local adaptive overlap-weight derivative sums.
+    pub(in crate::stochastic) overlap_derivatives: OverlapDerivativeSums,
 }
 
 impl ThreadPropagation {
@@ -454,10 +502,11 @@ impl ThreadPropagation {
             remote: Vec::new(),
             samples: Vec::new(),
             rng: SmallRng::seed_from_u64(seed),
-            uniform_spawns: Vec::new(),
-            uniform_pairs: Vec::new(),
-            uniform_hs: Vec::new(),
+            spawn_requests: Vec::new(),
+            spawn_pairs: Vec::new(),
+            spawn_hs: Vec::new(),
             wick_scratch: Box::new(WickScratchSpin::with_sizes(maxsame, maxla, maxlb)),
+            overlap_derivatives: OverlapDerivativeSums::default(),
         }
     }
 
@@ -470,12 +519,13 @@ impl ThreadPropagation {
         self.local.clear();
         self.remote.clear();
         self.samples.clear();
-        self.uniform_spawns.clear();
-        self.uniform_pairs.clear();
-        self.uniform_hs.clear();
+        self.spawn_requests.clear();
+        self.spawn_pairs.clear();
+        self.spawn_hs.clear();
+        self.overlap_derivatives = OverlapDerivativeSums::default();
     }
 
-    /// Resolve all uniform spawn requests accumulated by this worker during one propagation
+    /// Resolve all batched spawn requests accumulated by this worker during one propagation
     /// iteration. Matrix elements are evaluated together before the ordinary spawning, FRI and
     /// ownership logic is applied in request order.
     /// # Arguments:
@@ -484,45 +534,75 @@ impl ThreadPropagation {
     /// - `run`: Rank-local propagation metadata.
     /// # Returns:
     /// - `()`: Appends resolved local and remote population changes.
-    pub(in crate::stochastic) fn resolve_uniform_spawning(
+    pub(in crate::stochastic) fn resolve_batched_spawning(
         &mut self,
         shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
+        overlap_factors: Option<&OverlapFactors>,
+        overlap_generator: Option<&OverlapWeightedGenerator>,
+        overlap_weight: f64,
+        optimise_overlap_weight: bool,
     ) {
-        if self.uniform_spawns.is_empty() {
+        if self.spawn_requests.is_empty() {
             return;
         }
 
         let qmc = data.input.qmc.as_ref().unwrap();
         let dt = data.input.prop_ref().dt;
-        let pgen = 1.0 / (data.basis.len() - 1) as f64;
         let write_excitation_hist = data.input.write.write_excitation_hist;
 
-        self.uniform_pairs.clear();
-        for &(lambda, gamma, _) in &self.uniform_spawns {
-            let pair = if lambda <= gamma {
-                (lambda, gamma)
+        self.spawn_pairs.clear();
+        for request in &self.spawn_requests {
+            let pair = if request.child <= request.parent {
+                (request.child, request.parent)
             } else {
-                (gamma, lambda)
+                (request.parent, request.child)
             };
-            self.uniform_pairs.push(pair);
+            self.spawn_pairs.push(pair);
         }
 
-        self.uniform_hs.clear();
-        self.uniform_hs.resize(self.uniform_pairs.len(), (0.0, 0.0));
+        self.spawn_hs.clear();
+        self.spawn_hs.resize(self.spawn_pairs.len(), (0.0, 0.0));
         find_hs_batched(
             data,
-            &self.uniform_pairs,
+            &self.spawn_pairs,
             &run.reduced_basis,
             self.wick_scratch.as_mut(),
-            &mut self.uniform_hs,
+            &mut self.spawn_hs,
         );
 
-        for i in 0..self.uniform_spawns.len() {
-            let (lambda, _, parent_population) = self.uniform_spawns[i];
-            let (h, s) = self.uniform_hs[i];
-            let raw = -dt * shift.coupling(h, s) * parent_population / pgen;
+        for i in 0..self.spawn_requests.len() {
+            let request = &self.spawn_requests[i];
+            let (h, s) = self.spawn_hs[i];
+            let coupling = shift.coupling(h, s);
+            let raw = -dt * coupling * request.parent_population / request.pgen;
+
+            if optimise_overlap_weight {
+                let q_u = 1.0 / (data.basis.len() - 1) as f64;
+                // For p > 0, recover d/q_p from the realised q_p:
+                // d/q_p = (q_p - q_U)/(p q_p), where d = q_S - q_U.
+                // At p = 0, q_p = q_U and q_S must be evaluated explicitly.
+                let score = if overlap_weight > 0.0 {
+                    (request.pgen - q_u) / (overlap_weight * request.pgen)
+                } else if let Some(generator) = overlap_generator {
+                    let overlap_factors =
+                        overlap_factors.expect("overlap-weighted factors must be present");
+                    let q_s = generator.overlap_probability(
+                        request.parent,
+                        request.child,
+                        overlap_factors,
+                    );
+                    (q_s - q_u) / q_u
+                } else {
+                    0.0
+                };
+                // With raw = A/q_p, accumulate unbiased estimators
+                // g = -raw^2 d/q_p and h = 2 raw^2 (d/q_p)^2.
+                let raw2 = raw * raw;
+                self.overlap_derivatives.gradient += -raw2 * score;
+                self.overlap_derivatives.hessian += 2.0 * raw2 * score * score;
+            }
 
             if write_excitation_hist {
                 self.samples.push(raw.abs());
@@ -534,17 +614,17 @@ impl ThreadPropagation {
             }
 
             if run.nranks == 1 {
-                self.local.push((lambda, dn));
+                self.local.push((request.child, dn));
             } else {
-                let destination = run.det_owner[lambda];
+                let destination = run.det_owner[request.child];
 
                 if destination == run.irank {
-                    self.local.push((lambda, dn));
+                    self.local.push((request.child, dn));
                 } else {
                     self.remote.push((
                         destination,
                         PopulationUpdate {
-                            det: lambda as u64,
+                            det: request.child as u64,
                             dn,
                         },
                     ));
@@ -552,9 +632,9 @@ impl ThreadPropagation {
             }
         }
 
-        self.uniform_spawns.clear();
-        self.uniform_pairs.clear();
-        self.uniform_hs.clear();
+        self.spawn_requests.clear();
+        self.spawn_pairs.clear();
+        self.spawn_hs.clear();
     }
 
     /// Generate the diagonal real population change for one sampled determinant.
@@ -590,6 +670,8 @@ impl ThreadPropagation {
     /// - `shift`: Current population-control shift.
     /// - `data`: Immutable stochastic propagation data.
     /// - `run`: Rank-local propagation metadata.
+    /// - `overlap_factors`: Optional persistent cross-parent overlap factors.
+    /// - `overlap_generator`: Optional overlap-weighted proposal generator.
     /// # Returns:
     /// - `()`: Appends local and remote real population changes.
     pub(in crate::stochastic) fn spawning(
@@ -599,6 +681,9 @@ impl ThreadPropagation {
         shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
+        overlap_factors: Option<&OverlapFactors>,
+        overlap_generator: Option<&OverlapWeightedGenerator>,
+        overlap_weight: f64,
     ) {
         if population == 0.0 {
             return;
@@ -613,6 +698,7 @@ impl ThreadPropagation {
 
         if let ExcitationGen::Uniform = qmc.excitation_gen {
             let ndets = data.basis.len();
+            let pgen = 1.0 / (ndets - 1) as f64;
 
             for _ in 0..nattempts {
                 let mut lambda = self.rng.gen_range(0..ndets - 1);
@@ -620,7 +706,60 @@ impl ThreadPropagation {
                     lambda += 1;
                 }
 
-                self.uniform_spawns.push((lambda, gamma, parent_population));
+                self.spawn_requests.push(BatchedSpawnRequest {
+                    child: lambda,
+                    parent: gamma,
+                    parent_population,
+                    pgen,
+                });
+            }
+
+            return;
+        }
+
+        if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
+            let ndets = data.basis.len();
+            let generator = overlap_generator.expect("overlap-weighted generator must be present");
+            let overlap_factors =
+                overlap_factors.expect("overlap-weighted factors must be present");
+
+            for _ in 0..nattempts {
+                if self.rng.r#gen::<f64>() < overlap_weight {
+                    match generator.sample_overlap(
+                        gamma,
+                        overlap_factors,
+                        overlap_weight,
+                        &mut self.rng,
+                    ) {
+                        OverlapProposal::Valid { child, pgen } => {
+                            self.spawn_requests.push(BatchedSpawnRequest {
+                                child,
+                                parent: gamma,
+                                parent_population,
+                                pgen,
+                            });
+                        }
+                        OverlapProposal::Null => {}
+                    }
+                } else {
+                    let mut lambda = self.rng.gen_range(0..ndets - 1);
+                    if lambda >= gamma {
+                        lambda += 1;
+                    }
+                    let pgen = generator.mixture_probability(
+                        gamma,
+                        lambda,
+                        overlap_factors,
+                        overlap_weight,
+                    );
+
+                    self.spawn_requests.push(BatchedSpawnRequest {
+                        child: lambda,
+                        parent: gamma,
+                        parent_population,
+                        pgen,
+                    });
+                }
             }
 
             return;
@@ -651,6 +790,7 @@ impl ThreadPropagation {
                     unimplemented!()
                 }
                 ExcitationGen::Uniform => unreachable!(),
+                ExcitationGen::OverlapWeighted => unreachable!(),
             };
 
             let raw = -dt * k * parent_population / pgen;

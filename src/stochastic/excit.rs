@@ -1,15 +1,19 @@
 // stochastic/excit.rs
 // External crate imports.
+use mpi::collective::SystemOperation;
+use mpi::topology::Communicator;
+use mpi::traits::*;
 use rand::Rng;
 use rand::rngs::SmallRng;
 
 // Crate-root imports.
+use crate::input::{ExcitationGen, Input};
 use crate::noci::NOCIData;
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::find_hs;
-use super::state::HeatBath;
+use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo};
 
 /// Evaluate the shifted off-diagonal coupling
 /// `T_{xw}(\Delta\tau) = H_{xw} - E_s(\Delta \tau) S_{xw}.`
@@ -161,4 +165,58 @@ pub(in crate::stochastic) fn pgen_heat_bath(
     let k = hb.ks[i];
     let pgen = k.abs() / hb.sumxw;
     (pgen, k, lambda)
+}
+
+/// Apply one report-level stochastic Newton update to the overlap mixture probability.
+/// The accumulated derivatives estimate `M_2'(p)` and `M_2''(p)` for
+/// `M_2(p) = \sum_w A_{wx}^2/q_p(w|x)`, so the Newton update is
+/// `p_{\text{next}} = p - M_2'(p)/M_2''(p)`.
+/// # Arguments:
+/// - `state`: Current propagation state containing the mutable overlap mixture probability.
+/// - `derivatives`: Report-local derivative sums to reduce and then clear.
+/// - `input`: User input options.
+/// - `run`: Rank-local propagation metadata.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `()`: Updates `state.overlap_weight` for the next report when the Newton step is finite.
+pub(in crate::stochastic) fn update_overlap_weight(
+    state: &mut PropagationState,
+    derivatives: &mut OverlapDerivativeSums,
+    input: &Input,
+    run: &QMCRunInfo,
+    world: &impl Communicator,
+) {
+    let qmc = input.qmc.as_ref().unwrap();
+    if !qmc.optimise_overlap_weight || qmc.excitation_gen != ExcitationGen::OverlapWeighted {
+        *derivatives = OverlapDerivativeSums::default();
+        return;
+    }
+
+    let local = [derivatives.gradient, derivatives.hessian];
+    let mut global = [0.0; 2];
+    if run.nranks == 1 {
+        global = local;
+    } else {
+        world.all_reduce_into(&local, &mut global, SystemOperation::sum());
+    }
+
+    let gradient = global[0];
+    let hessian = global[1];
+    if gradient.is_finite() && hessian.is_finite() && hessian > 0.0 {
+        // Convex stochastic Newton step:
+        // \Delta p = -G/H, with G \approx M_2'(p) and H \approx M_2''(p).
+        let delta = -gradient / hessian;
+        if delta.is_finite() {
+            let candidate = state.overlap_weight + delta;
+            state.overlap_weight = if candidate < 0.0 {
+                0.0
+            } else if candidate >= 1.0 {
+                1.0 - f64::EPSILON
+            } else {
+                candidate
+            };
+        }
+    }
+
+    *derivatives = OverlapDerivativeSums::default();
 }

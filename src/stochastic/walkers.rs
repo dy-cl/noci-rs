@@ -12,21 +12,24 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::ReducedTwoSpinDetState;
-use crate::noci::NOCIData;
+use crate::input::ExcitationGen;
+use crate::noci::{NOCIData, SpinFactorisation};
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::{coalesce_population_updates, find_hs, max_scratch_sizes};
+use super::excit::update_overlap_weight;
 use super::metric::{
     accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
     sample_populations, take_population_changes, update_shift,
 };
+use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::restart::read_restart_hdf5;
 use super::state::{
-    ExcitationHist, MCState, MPIScratch, PopulationStats, ProjectedEnergyUpdate, PropagationResult,
-    PropagationState, QMCRunInfo, ScratchSize, ShiftSpec, SparsePopulations, ThreadPropagation,
-    owner,
+    ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats,
+    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec,
+    SparsePopulations, ThreadPropagation, owner,
 };
 
 /// Initialise rank-local walker populations from the initial coefficient vector.
@@ -224,6 +227,16 @@ pub fn qmc_step(
         diagonal_hs,
     };
 
+    let overlap_generation = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
+        let overlap_factor = SpinFactorisation::new(data);
+        let overlap_factors = overlap_factor.build_overlap_factors(data, true);
+        let overlap_generator =
+            OverlapWeightedGenerator::new(data, &overlap_factor, &overlap_factors);
+        Some((overlap_factors, overlap_generator))
+    } else {
+        None
+    };
+
     let mut local_pos = vec![usize::MAX; ndets];
     for (k, &det) in run.owned.iter().enumerate() {
         local_pos[det] = k;
@@ -250,15 +263,23 @@ pub fn qmc_step(
         let restart = read_restart_hdf5(path, world).unwrap();
         *es = restart.shift;
 
+        let excitation_hist =
+            if data.input.write.write_excitation_hist && restart.excitation_hist.is_none() {
+                Some(ExcitationHist::new(-60.0, 1e-12, 100))
+            } else {
+                restart.excitation_hist
+            };
+
         let mc = MCState {
             populations: restart.populations,
             sampled: SparsePopulations::new(run.ndets),
             delta: vec![0.0; run.ndets],
             changed: Vec::new(),
-            excitation_hist: restart.excitation_hist,
+            excitation_hist,
         };
         let (_, pe) = population_stats_projected_energy(&mc, &isref, &run, world);
         let prev_pop = PopulationStats::new(restart.nwprev, restart.nrefprev, 0.0, 0);
+        let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
         PropagationState::new(
             mc,
@@ -266,6 +287,7 @@ pub fn qmc_step(
             restart.report + 1,
             restart.nwprev >= qmc.target_population,
             prev_pop,
+            overlap_weight,
         )
     } else {
         let populations = initialise_populations(c0, qmc.initial_population, &run, world);
@@ -287,6 +309,7 @@ pub fn qmc_step(
             0,
             false,
             PopulationStats::new(qmc.initial_population, 0.0, 0.0, 0),
+            qmc.overlap_weight,
         );
 
         let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
@@ -309,6 +332,7 @@ pub fn qmc_step(
 
     let mut population_changes = Vec::new();
     let mut sample_chunks = Vec::new();
+    let mut overlap_derivatives = OverlapDerivativeSums::default();
 
     for report in state.start_report..qmc.nreports {
         for cycle in 0..qmc.ncycles {
@@ -337,9 +361,14 @@ pub fn qmc_step(
                     es_s: *es,
                     propagator: data.input.prop_ref().propagator,
                 },
+                overlap_generation.as_ref().map(|(factors, _)| factors),
+                overlap_generation.as_ref().map(|(_, generator)| generator),
+                state.overlap_weight,
+                qmc.optimise_overlap_weight,
                 &mut workers,
                 &mut propagation_result,
             );
+            overlap_derivatives.add(&propagation_result.overlap_derivatives);
 
             accumulate_generated_updates(
                 &mut state.mc,
@@ -363,6 +392,13 @@ pub fn qmc_step(
         state.cur_pop = stats;
 
         update_shift(&stats, &mut state, es, data.input);
+        update_overlap_weight(
+            &mut state,
+            &mut overlap_derivatives,
+            data.input,
+            &run,
+            world,
+        );
 
         if let Some(ret) = check_stop(
             report,

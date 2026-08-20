@@ -201,8 +201,11 @@ pub fn print_input(input: &Input) {
                 ExcitationGen::Uniform => "uniform",
                 ExcitationGen::HeatBath => "heat-bath",
                 ExcitationGen::ApproximateHeatBath => "approximate-heat-bath",
+                ExcitationGen::OverlapWeighted => "overlap-weighted",
             };
             println!("EXCITATION_GEN: {}", excitation_gen);
+            println!("OVERLAP_WEIGHT: {}", q.overlap_weight);
+            println!("OPTIMISE_OVERLAP_WEIGHT: {}", q.optimise_overlap_weight);
             println!("SEED: {:?}", q.seed);
         }
         None => {

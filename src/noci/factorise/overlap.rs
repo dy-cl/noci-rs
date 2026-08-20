@@ -100,15 +100,29 @@ enum OverlapContraction {
 }
 
 /// Persistent same-spin overlap factors for one ordered cross-parent block `QP`.
-struct OverlapFactorBlock {
+pub(crate) struct OverlapFactorBlock {
+    /// Number of target alpha-spin components.
+    pub(super) nta: usize,
+    /// Number of target beta-spin components.
+    pub(super) ntb: usize,
     /// Number of source alpha-spin components.
-    nsa: usize,
+    pub(super) nsa: usize,
     /// Number of source beta-spin components.
-    nsb: usize,
+    pub(super) nsb: usize,
     /// Full row-major `A^{QP}_{\bar a a}` factor table.
-    afac: Vec<f64>,
+    pub(super) afac: Vec<f64>,
     /// Full row-major `B^{QP}_{\bar b b}` factor table.
-    bfac: Vec<f64>,
+    pub(super) bfac: Vec<f64>,
+    /// Source-major CDFs of `|A^{QP}_{\bar a a}|` columns.
+    pub(super) acdf: Vec<f64>,
+    /// Source-major CDFs of `|B^{QP}_{\bar b b}|` columns.
+    pub(super) bcdf: Vec<f64>,
+}
+
+/// Persistent cross-parent overlap factors indexed by ordered parent pair `QP`.
+pub(crate) struct OverlapFactors {
+    /// Cross-parent factor blocks indexed as `Q * nparent + P`.
+    blocks: Vec<Option<OverlapFactorBlock>>,
 }
 
 /// `Reusable storage for one application of S\Delta.`
@@ -117,8 +131,6 @@ pub(crate) struct OverlapScratch {
     updates: Vec<ParentUpdates>,
     /// Source parents touched by the current update list.
     active_parents: Vec<usize>,
-    /// Persistent cross-parent overlap factors indexed as `Q * nparent + P`.
-    factor_blocks: Vec<Option<OverlapFactorBlock>>,
     /// `Temporary A^{QP}_{\bar a a} factor table.`
     afac: Vec<f64>,
     /// `Temporary B^{QP}_{\bar b b} factor table.`
@@ -137,25 +149,132 @@ pub(crate) struct OverlapScratch {
     target_blocks: Vec<LocalParentBlock>,
 }
 
+impl OverlapFactors {
+    /// Return the persistent factor block for ordered parent pair `QP`.
+    /// # Arguments:
+    /// - `self`: Persistent overlap factors.
+    /// - `nparent`: Number of parent references in the spin factorisation.
+    /// - `target_parent`: Target parent `Q`.
+    /// - `source_parent`: Source parent `P`.
+    /// # Returns:
+    /// - `Option<&OverlapFactorBlock>`: Cross-parent factor block when present.
+    pub(crate) fn block(
+        &self,
+        nparent: usize,
+        target_parent: usize,
+        source_parent: usize,
+    ) -> Option<&OverlapFactorBlock> {
+        self.blocks[target_parent * nparent + source_parent].as_ref()
+    }
+}
+
+impl OverlapFactorBlock {
+    /// Return `Z_A^{QP}(a_x)` from the source-major alpha CDF.
+    /// # Arguments:
+    /// - `self`: Ordered parent-pair factor block.
+    /// - `source_a`: Source alpha component `a_x`.
+    /// # Returns:
+    /// - `f64`: Absolute alpha-column sum.
+    pub(crate) fn alpha_total(
+        &self,
+        source_a: usize,
+    ) -> f64 {
+        if self.acdf.is_empty() {
+            0.0
+        } else {
+            self.acdf[source_a * self.nta + self.nta - 1]
+        }
+    }
+
+    /// Return `Z_B^{QP}(b_x)` from the source-major beta CDF.
+    /// # Arguments:
+    /// - `self`: Ordered parent-pair factor block.
+    /// - `source_b`: Source beta component `b_x`.
+    /// # Returns:
+    /// - `f64`: Absolute beta-column sum.
+    pub(crate) fn beta_total(
+        &self,
+        source_b: usize,
+    ) -> f64 {
+        if self.bcdf.is_empty() {
+            0.0
+        } else {
+            self.bcdf[source_b * self.ntb + self.ntb - 1]
+        }
+    }
+
+    /// Return `|A^{QP}_{a_w a_x}B^{QP}_{b_w b_x}|`.
+    /// # Arguments:
+    /// - `self`: Ordered parent-pair factor block.
+    /// - `target_a`: Target alpha component `a_w`.
+    /// - `target_b`: Target beta component `b_w`.
+    /// - `source_a`: Source alpha component `a_x`.
+    /// - `source_b`: Source beta component `b_x`.
+    /// # Returns:
+    /// - `f64`: Absolute factorised determinant overlap.
+    pub(crate) fn factor_abs(
+        &self,
+        target_a: usize,
+        target_b: usize,
+        source_a: usize,
+        source_b: usize,
+    ) -> f64 {
+        (self.afac[target_a * self.nsa + source_a] * self.bfac[target_b * self.nsb + source_b])
+            .abs()
+    }
+
+    /// Sample a target alpha component from one source-major CDF row.
+    /// # Arguments:
+    /// - `self`: Ordered parent-pair factor block.
+    /// - `source_a`: Source alpha component `a_x`.
+    /// - `draw`: Uniform draw in `[0,Z_A)`.
+    /// # Returns:
+    /// - `usize`: Sampled target alpha component.
+    pub(crate) fn sample_alpha(
+        &self,
+        source_a: usize,
+        draw: f64,
+    ) -> usize {
+        let row = &self.acdf[source_a * self.nta..(source_a + 1) * self.nta];
+        row.partition_point(|&value| value <= draw)
+            .min(self.nta - 1)
+    }
+
+    /// Sample a target beta component from one source-major CDF row.
+    /// # Arguments:
+    /// - `self`: Ordered parent-pair factor block.
+    /// - `source_b`: Source beta component `b_x`.
+    /// - `draw`: Uniform draw in `[0,Z_B)`.
+    /// # Returns:
+    /// - `usize`: Sampled target beta component.
+    pub(crate) fn sample_beta(
+        &self,
+        source_b: usize,
+        draw: f64,
+    ) -> usize {
+        let row = &self.bcdf[source_b * self.ntb..(source_b + 1) * self.ntb];
+        row.partition_point(|&value| value <= draw)
+            .min(self.ntb - 1)
+    }
+}
+
 impl SpinFactorisation {
-    /// `Construct reusable storage for one full application of S\Delta.`
-    /// Cross-parent same-spin overlap factors are built once for the fixed determinant basis and
-    /// reused by every subsequent stochastic overlap application.
+    /// Construct persistent cross-parent factors for factorised overlap application.
+    /// The factor tables store `S_{wx} = A^{QP}_{a_w a_x}B^{QP}_{b_w b_x}` inputs once for
+    /// every ordered cross-parent block, and optionally build source-major CDFs for excitation
+    /// generation.
     /// # Arguments:
     /// - `self`: Immutable sparse overlap action plan.
     /// - `data`: Shared NOCI data containing fixed Wick intermediates.
+    /// - `build_cdfs`: Whether to build overlap-weighted proposal CDFs.
     /// # Returns:
-    /// - `OverlapScratch`: Reusable grouped-update, factor and contraction storage.
-    pub(crate) fn scratch(
+    /// - `OverlapFactors`: Persistent immutable cross-parent factor tables.
+    pub(crate) fn build_overlap_factors(
         &self,
         data: &NOCIData<'_, f64>,
-    ) -> OverlapScratch {
+        build_cdfs: bool,
+    ) -> OverlapFactors {
         let nparent = self.parents.len();
-        let mut updates = Vec::with_capacity(nparent);
-        for parent in 0..nparent {
-            updates.push(ParentUpdates::new(parent, self.ma, self.mb));
-        }
-
         let mut factor_blocks = (0..nparent * nparent).map(|_| None).collect::<Vec<_>>();
         if data.input.wicks.enabled
             && let Some(wicks) = data.wicks
@@ -217,21 +336,67 @@ impl SpinFactorisation {
                             );
                         });
 
+                    let (acdf, bcdf) = if build_cdfs {
+                        let mut acdf = vec![0.0; nsa * nta];
+                        let mut bcdf = vec![0.0; nsb * ntb];
+
+                        for sa in 0..nsa {
+                            let mut sum = 0.0;
+                            for ta in 0..nta {
+                                sum += afac[ta * nsa + sa].abs();
+                                acdf[sa * nta + ta] = sum;
+                            }
+                        }
+                        for sb in 0..nsb {
+                            let mut sum = 0.0;
+                            for tb in 0..ntb {
+                                sum += bfac[tb * nsb + sb].abs();
+                                bcdf[sb * ntb + tb] = sum;
+                            }
+                        }
+
+                        (acdf, bcdf)
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
+
                     factor_blocks[target_parent * nparent + source_parent] =
                         Some(OverlapFactorBlock {
+                            nta,
+                            ntb,
                             nsa,
                             nsb,
                             afac,
                             bfac,
+                            acdf,
+                            bcdf,
                         });
                 }
             }
         }
 
+        OverlapFactors {
+            blocks: factor_blocks,
+        }
+    }
+
+    /// `Construct reusable storage for one full application of S\Delta.`
+    /// The scratch contains only mutable grouping and contraction workspaces; persistent
+    /// factor tables live in `OverlapFactors`.
+    /// # Arguments:
+    /// - `self`: Immutable sparse overlap action plan.
+    /// # Returns:
+    /// - `OverlapScratch`: Reusable grouped-update and contraction storage.
+    pub(crate) fn overlap_scratch(&self) -> OverlapScratch {
+        let nparent = self.parents.len();
+        let mut updates = Vec::with_capacity(nparent);
+        for parent in 0..nparent {
+            updates.push(ParentUpdates::new(parent, self.ma, self.mb));
+        }
+
         OverlapScratch {
             updates,
             active_parents: Vec::new(),
-            factor_blocks,
             afac: Vec::new(),
             bfac: Vec::new(),
             intermediate: Vec::new(),
@@ -252,6 +417,7 @@ impl SpinFactorisation {
     /// - `targets`: Global determinant index for each rank-local row in `populations`.
     /// - `updates`: `Sparse pre-overlap changes \Omega, \Delta_\Omega.`
     /// - `data`: Shared NOCI data.
+    /// - `factors`: Persistent cross-parent same-spin overlap factors.
     /// - `scratch`: `Reusable allocation storage for one application of S\Delta.`
     /// # Returns:
     /// - `()`: `Applies N_w \leftarrow N_w + \delta N_w.`
@@ -261,6 +427,7 @@ impl SpinFactorisation {
         targets: &[usize],
         updates: I,
         data: &NOCIData<'_, f64>,
+        factors: &OverlapFactors,
         scratch: &mut OverlapScratch,
     ) where
         I: IntoIterator<Item = (usize, f64)>,
@@ -286,7 +453,14 @@ impl SpinFactorisation {
                 continue;
             }
             for target in &target_blocks {
-                self.apply_overlap_parent_pair(populations, target, &source, data, scratch);
+                self.apply_overlap_parent_pair(
+                    populations,
+                    target,
+                    &source,
+                    data,
+                    factors,
+                    scratch,
+                );
             }
             source.clear();
             scratch.updates[source_parent] = source;
@@ -466,6 +640,7 @@ impl SpinFactorisation {
     /// - `target`: Rank-local target block for parent Q.
     /// - `source`: `Source parent P grouped D^P updates.`
     /// - `data`: Shared NOCI data and Wick intermediates.
+    /// - `factors`: Persistent cross-parent same-spin overlap factors.
     /// - `scratch`: Reusable storage for factors, contractions, and output increments.
     /// # Returns:
     /// - `()`: Adds the QP contribution to `scratch.increments`.
@@ -475,6 +650,7 @@ impl SpinFactorisation {
         target: &LocalParentBlock,
         source: &ParentUpdates,
         data: &NOCIData<'_, f64>,
+        factors: &OverlapFactors,
         scratch: &mut OverlapScratch,
     ) {
         if target.parent == source.parent
@@ -499,7 +675,7 @@ impl SpinFactorisation {
             return;
         }
 
-        let factors = scratch.factor_blocks[target.parent * self.parents.len() + source.parent]
+        let factors = factors.blocks[target.parent * self.parents.len() + source.parent]
             .as_ref()
             .expect("cross-parent overlap factors must be precomputed");
         let contraction = self.select_overlap_contraction(target, source);

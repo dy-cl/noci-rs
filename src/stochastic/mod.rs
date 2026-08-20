@@ -84,6 +84,7 @@ mod common;
 mod excit;
 mod init;
 mod metric;
+mod overlapweighted;
 mod propagate;
 mod report;
 mod restart;

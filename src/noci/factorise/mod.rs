@@ -7,7 +7,7 @@ mod storage;
 
 // Crate-visible type re-exports.
 pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
-pub(crate) use overlap::OverlapScratch;
+pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 
 // Standard library imports.
 use std::collections::HashMap;
@@ -20,13 +20,13 @@ use super::types::{NOCIData, NOCIScalar};
 
 /// Actual determinant entry in a parent-local spin factorisation.
 #[derive(Clone, Copy)]
-pub(super) struct FactorEntry {
+pub(crate) struct FactorEntry {
     /// Global determinant index `I`.
-    pub(super) det: usize,
+    pub(crate) det: usize,
     /// Parent-local alpha component `a_I`.
-    pub(super) a: usize,
+    pub(crate) a: usize,
     /// Parent-local beta component `b_I`.
-    pub(super) b: usize,
+    pub(crate) b: usize,
 }
 
 /// Parent-local determinant space in the shared spin factorisation.
@@ -86,6 +86,70 @@ impl SpinFactorisation {
             mb,
             parents,
         }
+    }
+
+    /// Return the number of parent references in the determinant factorisation.
+    /// # Arguments:
+    /// - `self`: Shared parent-local spin topology.
+    /// # Returns:
+    /// - `usize`: Number of parent references.
+    pub(crate) fn nparents(&self) -> usize {
+        self.parents.len()
+    }
+
+    /// Return the parent-local alpha component ID for one determinant.
+    /// # Arguments:
+    /// - `self`: Shared parent-local spin topology.
+    /// - `det`: Global determinant index.
+    /// # Returns:
+    /// - `usize`: Parent-local alpha component ID.
+    pub(crate) fn aid(
+        &self,
+        det: usize,
+    ) -> usize {
+        self.aids[det]
+    }
+
+    /// Return the parent-local beta component ID for one determinant.
+    /// # Arguments:
+    /// - `self`: Shared parent-local spin topology.
+    /// - `det`: Global determinant index.
+    /// # Returns:
+    /// - `usize`: Parent-local beta component ID.
+    pub(crate) fn bid(
+        &self,
+        det: usize,
+    ) -> usize {
+        self.bids[det]
+    }
+
+    /// Return the spin-component dimensions for one parent reference.
+    /// # Arguments:
+    /// - `self`: Shared parent-local spin topology.
+    /// - `parent`: Parent reference index.
+    /// # Returns:
+    /// - `(usize, usize)`: Number of alpha and beta components.
+    pub(crate) fn parent_component_counts(
+        &self,
+        parent: usize,
+    ) -> (usize, usize) {
+        (
+            self.parents[parent].areps.len(),
+            self.parents[parent].breps.len(),
+        )
+    }
+
+    /// Return the actual determinant entries for one parent reference.
+    /// # Arguments:
+    /// - `self`: Shared parent-local spin topology.
+    /// - `parent`: Parent reference index.
+    /// # Returns:
+    /// - `&[FactorEntry]`: Existing determinant entries `(I,a_I,b_I)`.
+    pub(crate) fn parent_entries(
+        &self,
+        parent: usize,
+    ) -> &[FactorEntry] {
+        &self.parents[parent].entries
     }
 }
 

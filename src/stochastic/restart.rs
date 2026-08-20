@@ -27,6 +27,8 @@ pub(in crate::stochastic) struct RestartState {
     pub(in crate::stochastic) excitation_hist: Option<ExcitationHist>,
     /// Optional base RNG seed.
     pub(in crate::stochastic) base_seed: Option<u64>,
+    /// Optional current overlap-weight mixture probability.
+    pub(in crate::stochastic) overlap_weight: Option<f64>,
 }
 
 /// Write a restart file containing the current stochastic propagation state.
@@ -74,6 +76,12 @@ pub(in crate::stochastic) fn write_restart_hdf5(
             meta.new_dataset_builder()
                 .with_data(&[seed])
                 .create("base_seed")?;
+        }
+
+        if let Some(overlap_weight) = state.overlap_weight {
+            meta.new_dataset_builder()
+                .with_data(&[overlap_weight])
+                .create("overlap_weight")?;
         }
     }
 
@@ -156,6 +164,11 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         .ok()
         .map(|dataset| dataset.read_1d::<u64>().unwrap()[0]);
 
+    let overlap_weight = meta
+        .dataset("overlap_weight")
+        .ok()
+        .map(|dataset| dataset.read_1d::<f64>().unwrap()[0]);
+
     let group = file.group(&format!("rank_{irank:02}"))?;
 
     let populations = group.dataset("populations")?.read_1d::<f64>()?.to_vec();
@@ -190,5 +203,6 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         populations,
         excitation_hist,
         base_seed,
+        overlap_weight,
     })
 }

@@ -647,7 +647,10 @@ def readMatrix(path: Path) -> pd.DataFrame:
     return pd.DataFrame(M)
 
 
-def readHistogram(filepath: Path) -> pd.DataFrame:
+def readExcitationHistogram(filepath: Path) -> pd.DataFrame:
+    """
+    Read an excitation histogram file.
+    """
     with open(filepath, "r") as f:
         logmin, logmax, nbins = f.readline().split()
         logmin = float(logmin)
