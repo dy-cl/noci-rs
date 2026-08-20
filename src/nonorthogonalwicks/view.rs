@@ -319,6 +319,19 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
         self.w.slice2(self.off.v[mi][mj][mk], self.n())
     }
 
+    /// Return the transposed precombined `m_\alpha = m_\beta = 0` Hamiltonian
+    /// one-column intermediate for this spin sector. It is stored in `[z,r]` order and
+    /// is only allocated and valid when both spin sectors of the ordered reference pair
+    /// have `m = 0`.
+    /// # Arguments:
+    /// - `self`: Same-spin Wick view.
+    /// # Returns
+    /// - `&[T]`: Flat transposed precombined Hamiltonian one-column matrix.
+    #[inline(always)]
+    pub(in crate::nonorthogonalwicks) fn hcol0_t_slice(&self) -> &[T] {
+        self.w.slice2(self.off.hcol0, self.n())
+    }
+
     /// Return one symmetry-unique same-spin
     /// `\mathcal J^{(m_1,m_2,m_3,m_4)} tensor in stored [i,j,r,c] evaluator order.`
     /// # Arguments:

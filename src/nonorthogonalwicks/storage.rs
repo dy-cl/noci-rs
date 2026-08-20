@@ -15,6 +15,9 @@ use crate::noci::NOCIScalar;
 use super::types::{PairMeta, PairOffset};
 use super::view::WicksView;
 
+/// Current Wick disk-cache metadata and slab-layout version.
+pub(crate) const WICKS_DISK_CACHE_VERSION: u32 = 2;
+
 /// Backing allocation used by the contiguous slab of precomputed nonorthogonal Wick intermediates.
 #[allow(dead_code)]
 pub(crate) enum WicksBacking<T: NOCIScalar> {
@@ -226,6 +229,16 @@ pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
     meta_path: &std::path::Path,
 ) -> std::io::Result<WicksShared<T>> {
     let disk_meta: WicksDiskMeta<T> = bincode::deserialize(&std::fs::read(meta_path)?).unwrap();
+    if disk_meta.version != WICKS_DISK_CACHE_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Wick disk-cache version {} is incompatible with expected version {}",
+                disk_meta.version, WICKS_DISK_CACHE_VERSION
+            ),
+        ));
+    }
+
     let file = File::open(slab_path)?;
     let mmap = unsafe { MmapOptions::new().map(&file)? };
     let ptr = mmap.as_ptr() as *mut T;

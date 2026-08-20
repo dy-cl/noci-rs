@@ -15,10 +15,11 @@ use crate::mpiutils::Sharedffi;
 use crate::mpiutils::broadcast;
 use crate::nonorthogonalwicks::{
     DiffSpinBuild, DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinBuild, SameSpinMeta,
-    WicksDiskMeta, WicksRma, WicksShared, WicksView,
+    WICKS_DISK_CACHE_VERSION, WicksDiskMeta, WicksRma, WicksShared, WicksView,
 };
 use crate::nonorthogonalwicks::{
-    assign_offsets, create_wicks_mmap, load_wicks_mmap, write_diff_spin, write_same_spin, write2t,
+    assign_offsets, create_wicks_mmap, load_wicks_mmap, write_diff_spin, write_hcol0,
+    write_same_spin, write2t,
 };
 use crate::{AoData, DetState};
 
@@ -183,6 +184,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                         write_same_spin(tensor, &offset[idx].aa, &aa);
                         write_same_spin(tensor, &offset[idx].bb, &bb);
                         write_diff_spin(tensor, &offset[idx].ab, &ab);
+                        write_hcol0(tensor, &offset[idx], nmo);
                     }
                 }
             }
@@ -253,6 +255,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                         write_same_spin(slab, &offset[idx].aa, &aa);
                         write_same_spin(slab, &offset[idx].bb, &bb);
                         write_diff_spin(slab, &offset[idx].ab, &ab);
+                        write_hcol0(slab, &offset[idx], nmo);
                     }
                 }
 
@@ -260,7 +263,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
 
                 let view = wicks.view();
                 let disk_meta = WicksDiskMeta::<T> {
-                    version: 1,
+                    version: WICKS_DISK_CACHE_VERSION,
                     nref: view.nref,
                     slab_len: view.slab_len,
                     off: view.off.clone(),

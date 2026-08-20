@@ -35,6 +35,9 @@ pub fn assign_offsets(
     let mut i: usize = 0;
 
     for (p, plan) in off.iter_mut().zip(plans.iter()) {
+        p.aa.hcol0 = usize::MAX;
+        p.bb.hcol0 = usize::MAX;
+
         // Allocate the alpha-spin X^{(m_i)} and Y^{(m_i)} fundamental contractions.
         for mi in 0..2 {
             p.aa.x[mi] = i;
@@ -157,6 +160,14 @@ pub fn assign_offsets(
                 }
             }
         }
+        // Allocate the precombined `m_\alpha = m_\beta = 0` Hamiltonian one-column
+        // intermediates only for all-zero ordered reference pairs.
+        if plan.ma == 0 && plan.mb == 0 {
+            p.aa.hcol0 = i;
+            i += nn2;
+            p.bb.hcol0 = i;
+            i += nn2;
+        }
         // Allocate only those \mathcal{II} tensors whose alpha- and beta-spin assignments
         // can satisfy their independent constraints.
         p.ab.iiab = [[[[usize::MAX; 2]; 2]; 2]; 2];
@@ -256,6 +267,34 @@ pub fn write_diff_spin<T: NOCIScalar>(
     // The constructed and evaluator \mathcal{II} axis orders agree, so no permutation is required.
     for ((ma0, maj, mb0, mbj), blk) in &w.iiab {
         write4rcij(slab, o.iiab[*ma0][*maj][*mb0][*mbj], blk);
+    }
+}
+
+/// Write the precombined `m_\alpha = m_\beta = 0` Hamiltonian one-column intermediates.
+/// The alpha-spin matrix is `F_\alpha + V_{\alpha\alpha} + V_{\alpha\beta}` and the
+/// beta-spin matrix is `F_\beta + V_{\beta\beta} + V_{\beta\alpha}`, preserving the
+/// stored `[z,r]` ordering of their source matrices.
+/// # Arguments:
+/// - `slab`: Contiguous tensor storage.
+/// - `off`: Pair offsets into the slab.
+/// - `nmo`: Number of molecular orbitals in one reference orbital set.
+/// # Returns
+/// - `()`: Writes the alpha- and beta-spin `hcol0` matrices into the slab when allocated.
+pub fn write_hcol0<T: NOCIScalar>(
+    slab: &mut [T],
+    off: &PairOffset,
+    nmo: usize,
+) {
+    if off.aa.hcol0 == usize::MAX {
+        return;
+    }
+
+    let nn2 = nmo * nmo;
+    for i in 0..nn2 {
+        slab[off.aa.hcol0 + i] =
+            slab[off.aa.fh[0][0] + i] + slab[off.aa.v[0][0][0] + i] + slab[off.ab.vab[0][0][0] + i];
+        slab[off.bb.hcol0 + i] =
+            slab[off.bb.fh[0][0] + i] + slab[off.bb.v[0][0][0] + i] + slab[off.ab.vba[0][0][0] + i];
     }
 }
 

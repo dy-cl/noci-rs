@@ -1244,15 +1244,13 @@ fn xw_hamiltonian_overlap_m0_01_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..1 {
         let base = cols_b[z] * n_b;
         for eta in 0..1 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += value;
         }
     }
@@ -1364,21 +1362,15 @@ unsafe fn xw_hamiltonian_overlap_m0_01_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm256_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_add_pd(replacement_b, values);
@@ -1495,21 +1487,15 @@ unsafe fn xw_hamiltonian_overlap_m0_01_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm512_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_add_pd(replacement_b, values);
@@ -1614,21 +1600,25 @@ fn xw_hamiltonian_overlap_m0_02_prepared<T: NOCIScalar>(
     let r1 = rows_b[1];
     let c0 = cols_b[0];
     let c1 = cols_b[1];
-    let direct = jsl_b[(((r0 * n_b + c0) * n_b + r1) * n_b) + c1];
-    let exchange = jsl_b[(((r0 * n_b + c1) * n_b + r1) * n_b) + c0];
+    let n_b2 = n_b * n_b;
+    let n_b3 = n_b2 * n_b;
+    let r0_n3 = r0 * n_b3;
+    let r1_n = r1 * n_b;
+    let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+    let direct = jsl_b[direct_base + c1];
+    let exchange = jsl_b[exchange_base + c0];
     let j_b = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..2 {
         let base = cols_b[z] * n_b;
         for eta in 0..2 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 2 + z] * value;
         }
     }
@@ -1754,28 +1744,28 @@ unsafe fn xw_hamiltonian_overlap_m0_02_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -1906,28 +1896,28 @@ unsafe fn xw_hamiltonian_overlap_m0_02_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -2057,8 +2047,14 @@ fn xw_hamiltonian_overlap_m0_03_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -2104,15 +2100,13 @@ fn xw_hamiltonian_overlap_m0_03_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..3 {
         let base = cols_b[z] * n_b;
         for eta in 0..3 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 3 + z] * value;
         }
     }
@@ -2257,10 +2251,14 @@ unsafe fn xw_hamiltonian_overlap_m0_03_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -2311,21 +2309,15 @@ unsafe fn xw_hamiltonian_overlap_m0_03_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -2475,10 +2467,14 @@ unsafe fn xw_hamiltonian_overlap_m0_03_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -2529,21 +2525,15 @@ unsafe fn xw_hamiltonian_overlap_m0_03_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -2673,8 +2663,14 @@ fn xw_hamiltonian_overlap_m0_04_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -2720,15 +2716,13 @@ fn xw_hamiltonian_overlap_m0_04_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..4 {
         let base = cols_b[z] * n_b;
         for eta in 0..4 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 4 + z] * value;
         }
     }
@@ -2874,10 +2868,14 @@ unsafe fn xw_hamiltonian_overlap_m0_04_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -2928,21 +2926,15 @@ unsafe fn xw_hamiltonian_overlap_m0_04_prepared_f64x4<T: NOCIScalar>(
         for z in 1..4 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 4 + z], values, replacement_b);
@@ -3093,10 +3085,14 @@ unsafe fn xw_hamiltonian_overlap_m0_04_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -3147,21 +3143,15 @@ unsafe fn xw_hamiltonian_overlap_m0_04_prepared_f64x8<T: NOCIScalar>(
         for z in 1..4 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 4 + z], values, replacement_b);
@@ -3320,8 +3310,14 @@ fn xw_hamiltonian_overlap_m0_05_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -3367,15 +3363,13 @@ fn xw_hamiltonian_overlap_m0_05_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..5 {
         let base = cols_b[z] * n_b;
         for eta in 0..5 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 5 + z] * value;
         }
     }
@@ -3552,10 +3546,14 @@ unsafe fn xw_hamiltonian_overlap_m0_05_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -3606,21 +3604,15 @@ unsafe fn xw_hamiltonian_overlap_m0_05_prepared_f64x4<T: NOCIScalar>(
         for z in 1..5 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 5 + z], values, replacement_b);
@@ -3802,10 +3794,14 @@ unsafe fn xw_hamiltonian_overlap_m0_05_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -3856,21 +3852,15 @@ unsafe fn xw_hamiltonian_overlap_m0_05_prepared_f64x8<T: NOCIScalar>(
         for z in 1..5 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 5 + z], values, replacement_b);
@@ -4046,8 +4036,14 @@ fn xw_hamiltonian_overlap_m0_06_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -4093,15 +4089,13 @@ fn xw_hamiltonian_overlap_m0_06_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..6 {
         let base = cols_b[z] * n_b;
         for eta in 0..6 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 6 + z] * value;
         }
     }
@@ -4294,10 +4288,14 @@ unsafe fn xw_hamiltonian_overlap_m0_06_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -4348,21 +4346,15 @@ unsafe fn xw_hamiltonian_overlap_m0_06_prepared_f64x4<T: NOCIScalar>(
         for z in 1..6 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..6 {
             for eta in 0..6 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 6 + z], values, replacement_b);
@@ -4560,10 +4552,14 @@ unsafe fn xw_hamiltonian_overlap_m0_06_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -4614,21 +4610,15 @@ unsafe fn xw_hamiltonian_overlap_m0_06_prepared_f64x8<T: NOCIScalar>(
         for z in 1..6 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..6 {
             for eta in 0..6 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 6 + z], values, replacement_b);
@@ -4727,15 +4717,13 @@ fn xw_hamiltonian_overlap_m0_10_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..1 {
         let base = cols_a[z] * n_a;
         for eta in 0..1 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += value;
         }
     }
@@ -4846,21 +4834,15 @@ unsafe fn xw_hamiltonian_overlap_m0_10_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm256_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_add_pd(replacement_a, values);
@@ -4976,21 +4958,15 @@ unsafe fn xw_hamiltonian_overlap_m0_10_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm512_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_add_pd(replacement_a, values);
@@ -5092,15 +5068,13 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..1 {
         let base = cols_a[z] * n_a;
         for eta in 0..1 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += value;
         }
     }
@@ -5145,15 +5119,13 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..1 {
         let base = cols_b[z] * n_b;
         for eta in 0..1 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += value;
         }
     }
@@ -5162,7 +5134,10 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
     // cofactor multiplications.
     let iisl = w.ab.iiab_slice(0, 0, 0, 0);
     let n = w.ab.n();
-    let ii_term = iisl[(((rows_a[0] * n + cols_a[0]) * n + rows_b[0]) * n) + cols_b[0]];
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let ii_base = rows_a[0] * n3 + cols_a[0] * n2 + rows_b[0] * n;
+    let ii_term = iisl[ii_base + cols_b[0]];
 
     // Assemble the complete electronic and nuclear Hamiltonian before applying the common overlap
     // prefactor.
@@ -5266,21 +5241,15 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm256_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_add_pd(replacement_a, values);
@@ -5335,21 +5304,15 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm256_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_add_pd(replacement_b, values);
@@ -5361,12 +5324,12 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
         let iisl = std::slice::from_raw_parts(iisl_t.as_ptr().cast::<f64>(), iisl_t.len());
         let n = w.ab.n();
+        let n2 = n * n;
+        let n3 = n2 * n;
         let mut lane_values = [0.0f64; 4];
         for lane in 0..4 {
-            lane_values[lane] = *iisl.get_unchecked(
-                (((rows_a[lane][0] * n + cols_a[lane][0]) * n + rows_b[lane][0]) * n)
-                    + cols_b[lane][0],
-            );
+            let ii_base = rows_a[lane][0] * n3 + cols_a[lane][0] * n2 + rows_b[lane][0] * n;
+            lane_values[lane] = *iisl.get_unchecked(ii_base + cols_b[lane][0]);
         }
         let ii_term = _mm256_loadu_pd(lane_values.as_ptr());
 
@@ -5475,21 +5438,15 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm512_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_add_pd(replacement_a, values);
@@ -5544,21 +5501,15 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm512_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_add_pd(replacement_b, values);
@@ -5570,12 +5521,12 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
         let iisl = std::slice::from_raw_parts(iisl_t.as_ptr().cast::<f64>(), iisl_t.len());
         let n = w.ab.n();
+        let n2 = n * n;
+        let n3 = n2 * n;
         let mut lane_values = [0.0f64; 8];
         for lane in 0..8 {
-            lane_values[lane] = *iisl.get_unchecked(
-                (((rows_a[lane][0] * n + cols_a[lane][0]) * n + rows_b[lane][0]) * n)
-                    + cols_b[lane][0],
-            );
+            let ii_base = rows_a[lane][0] * n3 + cols_a[lane][0] * n2 + rows_b[lane][0] * n;
+            lane_values[lane] = *iisl.get_unchecked(ii_base + cols_b[lane][0]);
         }
         let ii_term = _mm512_loadu_pd(lane_values.as_ptr());
 
@@ -5670,15 +5621,13 @@ fn xw_hamiltonian_overlap_m0_12_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..1 {
         let base = cols_a[z] * n_a;
         for eta in 0..1 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += value;
         }
     }
@@ -5726,21 +5675,25 @@ fn xw_hamiltonian_overlap_m0_12_prepared<T: NOCIScalar>(
     let r1 = rows_b[1];
     let c0 = cols_b[0];
     let c1 = cols_b[1];
-    let direct = jsl_b[(((r0 * n_b + c0) * n_b + r1) * n_b) + c1];
-    let exchange = jsl_b[(((r0 * n_b + c1) * n_b + r1) * n_b) + c0];
+    let n_b2 = n_b * n_b;
+    let n_b3 = n_b2 * n_b;
+    let r0_n3 = r0 * n_b3;
+    let r1_n = r1 * n_b;
+    let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+    let direct = jsl_b[direct_base + c1];
+    let exchange = jsl_b[exchange_base + c0];
     let j_b = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..2 {
         let base = cols_b[z] * n_b;
         for eta in 0..2 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 2 + z] * value;
         }
     }
@@ -5750,10 +5703,13 @@ fn xw_hamiltonian_overlap_m0_12_prepared<T: NOCIScalar>(
     let iisl = w.ab.iiab_slice(0, 0, 0, 0);
     let n = w.ab.n();
     let mut ii_term = zero;
-    let base_a = (rows_a[0] * n + cols_a[0]) * n * n;
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let base_a = rows_a[0] * n3 + cols_a[0] * n2;
     for y in 0..2 {
         for xi in 0..2 {
-            let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+            let suffix_b = rows_b[xi] * n + cols_b[y];
+            let value = iisl[base_a + suffix_b];
             ii_term += cof_b[xi * 2 + y] * value;
         }
     }
@@ -5860,21 +5816,15 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm256_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_add_pd(replacement_a, values);
@@ -5943,28 +5893,28 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -6099,21 +6049,15 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm512_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_add_pd(replacement_a, values);
@@ -6182,28 +6126,28 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -6324,15 +6268,13 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..1 {
         let base = cols_a[z] * n_a;
         for eta in 0..1 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += value;
         }
     }
@@ -6405,8 +6347,14 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -6452,15 +6400,13 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..3 {
         let base = cols_b[z] * n_b;
         for eta in 0..3 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 3 + z] * value;
         }
     }
@@ -6470,10 +6416,13 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
     let iisl = w.ab.iiab_slice(0, 0, 0, 0);
     let n = w.ab.n();
     let mut ii_term = zero;
-    let base_a = (rows_a[0] * n + cols_a[0]) * n * n;
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let base_a = rows_a[0] * n3 + cols_a[0] * n2;
     for y in 0..3 {
         for xi in 0..3 {
-            let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+            let suffix_b = rows_b[xi] * n + cols_b[y];
+            let value = iisl[base_a + suffix_b];
             ii_term += cof_b[xi * 3 + y] * value;
         }
     }
@@ -6580,21 +6529,15 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm256_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_add_pd(replacement_a, values);
@@ -6682,10 +6625,14 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -6736,21 +6683,15 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -6885,21 +6826,15 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm512_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_add_pd(replacement_a, values);
@@ -6987,10 +6922,14 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -7041,21 +6980,15 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -7176,15 +7109,13 @@ fn xw_hamiltonian_overlap_m0_14_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..1 {
         let base = cols_a[z] * n_a;
         for eta in 0..1 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += value;
         }
     }
@@ -7257,8 +7188,14 @@ fn xw_hamiltonian_overlap_m0_14_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -7304,15 +7241,13 @@ fn xw_hamiltonian_overlap_m0_14_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..4 {
         let base = cols_b[z] * n_b;
         for eta in 0..4 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 4 + z] * value;
         }
     }
@@ -7322,10 +7257,13 @@ fn xw_hamiltonian_overlap_m0_14_prepared<T: NOCIScalar>(
     let iisl = w.ab.iiab_slice(0, 0, 0, 0);
     let n = w.ab.n();
     let mut ii_term = zero;
-    let base_a = (rows_a[0] * n + cols_a[0]) * n * n;
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let base_a = rows_a[0] * n3 + cols_a[0] * n2;
     for y in 0..4 {
         for xi in 0..4 {
-            let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+            let suffix_b = rows_b[xi] * n + cols_b[y];
+            let value = iisl[base_a + suffix_b];
             ii_term += cof_b[xi * 4 + y] * value;
         }
     }
@@ -7432,21 +7370,15 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm256_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_add_pd(replacement_a, values);
@@ -7535,10 +7467,14 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -7589,21 +7525,15 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x4<T: NOCIScalar>(
         for z in 1..4 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 4 + z], values, replacement_b);
@@ -7738,21 +7668,15 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm512_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_add_pd(replacement_a, values);
@@ -7841,10 +7765,14 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -7895,21 +7823,15 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x8<T: NOCIScalar>(
         for z in 1..4 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 4 + z], values, replacement_b);
@@ -8030,15 +7952,13 @@ fn xw_hamiltonian_overlap_m0_15_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..1 {
         let base = cols_a[z] * n_a;
         for eta in 0..1 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += value;
         }
     }
@@ -8140,8 +8060,14 @@ fn xw_hamiltonian_overlap_m0_15_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -8187,15 +8113,13 @@ fn xw_hamiltonian_overlap_m0_15_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..5 {
         let base = cols_b[z] * n_b;
         for eta in 0..5 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 5 + z] * value;
         }
     }
@@ -8205,10 +8129,13 @@ fn xw_hamiltonian_overlap_m0_15_prepared<T: NOCIScalar>(
     let iisl = w.ab.iiab_slice(0, 0, 0, 0);
     let n = w.ab.n();
     let mut ii_term = zero;
-    let base_a = (rows_a[0] * n + cols_a[0]) * n * n;
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let base_a = rows_a[0] * n3 + cols_a[0] * n2;
     for y in 0..5 {
         for xi in 0..5 {
-            let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+            let suffix_b = rows_b[xi] * n + cols_b[y];
+            let value = iisl[base_a + suffix_b];
             ii_term += cof_b[xi * 5 + y] * value;
         }
     }
@@ -8315,21 +8242,15 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm256_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_add_pd(replacement_a, values);
@@ -8449,10 +8370,14 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -8503,21 +8428,15 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x4<T: NOCIScalar>(
         for z in 1..5 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 5 + z], values, replacement_b);
@@ -8652,21 +8571,15 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_a = d_a[0];
         let j_a = _mm512_setzero_pd();
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_add_pd(replacement_a, values);
@@ -8786,10 +8699,14 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -8840,21 +8757,15 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x8<T: NOCIScalar>(
         for z in 1..5 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 5 + z], values, replacement_b);
@@ -8978,21 +8889,25 @@ fn xw_hamiltonian_overlap_m0_20_prepared<T: NOCIScalar>(
     let r1 = rows_a[1];
     let c0 = cols_a[0];
     let c1 = cols_a[1];
-    let direct = jsl_a[(((r0 * n_a + c0) * n_a + r1) * n_a) + c1];
-    let exchange = jsl_a[(((r0 * n_a + c1) * n_a + r1) * n_a) + c0];
+    let n_a2 = n_a * n_a;
+    let n_a3 = n_a2 * n_a;
+    let r0_n3 = r0 * n_a3;
+    let r1_n = r1 * n_a;
+    let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+    let direct = jsl_a[direct_base + c1];
+    let exchange = jsl_a[exchange_base + c0];
     let j_a = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..2 {
         let base = cols_a[z] * n_a;
         for eta in 0..2 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 2 + z] * value;
         }
     }
@@ -9117,28 +9032,28 @@ unsafe fn xw_hamiltonian_overlap_m0_20_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -9268,28 +9183,28 @@ unsafe fn xw_hamiltonian_overlap_m0_20_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -9394,21 +9309,25 @@ fn xw_hamiltonian_overlap_m0_21_prepared<T: NOCIScalar>(
     let r1 = rows_a[1];
     let c0 = cols_a[0];
     let c1 = cols_a[1];
-    let direct = jsl_a[(((r0 * n_a + c0) * n_a + r1) * n_a) + c1];
-    let exchange = jsl_a[(((r0 * n_a + c1) * n_a + r1) * n_a) + c0];
+    let n_a2 = n_a * n_a;
+    let n_a3 = n_a2 * n_a;
+    let r0_n3 = r0 * n_a3;
+    let r1_n = r1 * n_a;
+    let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+    let direct = jsl_a[direct_base + c1];
+    let exchange = jsl_a[exchange_base + c0];
     let j_a = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..2 {
         let base = cols_a[z] * n_a;
         for eta in 0..2 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 2 + z] * value;
         }
     }
@@ -9453,15 +9372,13 @@ fn xw_hamiltonian_overlap_m0_21_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..1 {
         let base = cols_b[z] * n_b;
         for eta in 0..1 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += value;
         }
     }
@@ -9474,7 +9391,9 @@ fn xw_hamiltonian_overlap_m0_21_prepared<T: NOCIScalar>(
     let suffix_b = rows_b[0] * n + cols_b[0];
     for z in 0..2 {
         for eta in 0..2 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let value = iisl[base_a + suffix_b];
             ii_term += cof_a[eta * 2 + z] * value;
         }
@@ -9596,28 +9515,28 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -9672,21 +9591,15 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm256_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_add_pd(replacement_b, values);
@@ -9835,28 +9748,28 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -9911,21 +9824,15 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm512_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_add_pd(replacement_b, values);
@@ -10049,21 +9956,25 @@ fn xw_hamiltonian_overlap_m0_22_prepared<T: NOCIScalar>(
     let r1 = rows_a[1];
     let c0 = cols_a[0];
     let c1 = cols_a[1];
-    let direct = jsl_a[(((r0 * n_a + c0) * n_a + r1) * n_a) + c1];
-    let exchange = jsl_a[(((r0 * n_a + c1) * n_a + r1) * n_a) + c0];
+    let n_a2 = n_a * n_a;
+    let n_a3 = n_a2 * n_a;
+    let r0_n3 = r0 * n_a3;
+    let r1_n = r1 * n_a;
+    let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+    let direct = jsl_a[direct_base + c1];
+    let exchange = jsl_a[exchange_base + c0];
     let j_a = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..2 {
         let base = cols_a[z] * n_a;
         for eta in 0..2 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 2 + z] * value;
         }
     }
@@ -10111,21 +10022,25 @@ fn xw_hamiltonian_overlap_m0_22_prepared<T: NOCIScalar>(
     let r1 = rows_b[1];
     let c0 = cols_b[0];
     let c1 = cols_b[1];
-    let direct = jsl_b[(((r0 * n_b + c0) * n_b + r1) * n_b) + c1];
-    let exchange = jsl_b[(((r0 * n_b + c1) * n_b + r1) * n_b) + c0];
+    let n_b2 = n_b * n_b;
+    let n_b3 = n_b2 * n_b;
+    let r0_n3 = r0 * n_b3;
+    let r1_n = r1 * n_b;
+    let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+    let direct = jsl_b[direct_base + c1];
+    let exchange = jsl_b[exchange_base + c0];
     let j_b = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..2 {
         let base = cols_b[z] * n_b;
         for eta in 0..2 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 2 + z] * value;
         }
     }
@@ -10137,11 +10052,14 @@ fn xw_hamiltonian_overlap_m0_22_prepared<T: NOCIScalar>(
     let mut ii_term = zero;
     for z in 0..2 {
         for eta in 0..2 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let mut inner = zero;
             for y in 0..2 {
                 for xi in 0..2 {
-                    let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+                    let suffix_b = rows_b[xi] * n + cols_b[y];
+                    let value = iisl[base_a + suffix_b];
                     inner += cof_b[xi * 2 + y] * value;
                 }
             }
@@ -10265,28 +10183,28 @@ unsafe fn xw_hamiltonian_overlap_m0_22_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -10355,28 +10273,28 @@ unsafe fn xw_hamiltonian_overlap_m0_22_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -10532,28 +10450,28 @@ unsafe fn xw_hamiltonian_overlap_m0_22_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -10622,28 +10540,28 @@ unsafe fn xw_hamiltonian_overlap_m0_22_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -10774,21 +10692,25 @@ fn xw_hamiltonian_overlap_m0_23_prepared<T: NOCIScalar>(
     let r1 = rows_a[1];
     let c0 = cols_a[0];
     let c1 = cols_a[1];
-    let direct = jsl_a[(((r0 * n_a + c0) * n_a + r1) * n_a) + c1];
-    let exchange = jsl_a[(((r0 * n_a + c1) * n_a + r1) * n_a) + c0];
+    let n_a2 = n_a * n_a;
+    let n_a3 = n_a2 * n_a;
+    let r0_n3 = r0 * n_a3;
+    let r1_n = r1 * n_a;
+    let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+    let direct = jsl_a[direct_base + c1];
+    let exchange = jsl_a[exchange_base + c0];
     let j_a = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..2 {
         let base = cols_a[z] * n_a;
         for eta in 0..2 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 2 + z] * value;
         }
     }
@@ -10861,8 +10783,14 @@ fn xw_hamiltonian_overlap_m0_23_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -10908,15 +10836,13 @@ fn xw_hamiltonian_overlap_m0_23_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..3 {
         let base = cols_b[z] * n_b;
         for eta in 0..3 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 3 + z] * value;
         }
     }
@@ -10928,11 +10854,14 @@ fn xw_hamiltonian_overlap_m0_23_prepared<T: NOCIScalar>(
     let mut ii_term = zero;
     for z in 0..2 {
         for eta in 0..2 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let mut inner = zero;
             for y in 0..3 {
                 for xi in 0..3 {
-                    let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+                    let suffix_b = rows_b[xi] * n + cols_b[y];
+                    let value = iisl[base_a + suffix_b];
                     inner += cof_b[xi * 3 + y] * value;
                 }
             }
@@ -11056,28 +10985,28 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -11165,10 +11094,14 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -11219,21 +11152,15 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -11389,28 +11316,28 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -11498,10 +11425,14 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -11552,21 +11483,15 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -11697,21 +11622,25 @@ fn xw_hamiltonian_overlap_m0_24_prepared<T: NOCIScalar>(
     let r1 = rows_a[1];
     let c0 = cols_a[0];
     let c1 = cols_a[1];
-    let direct = jsl_a[(((r0 * n_a + c0) * n_a + r1) * n_a) + c1];
-    let exchange = jsl_a[(((r0 * n_a + c1) * n_a + r1) * n_a) + c0];
+    let n_a2 = n_a * n_a;
+    let n_a3 = n_a2 * n_a;
+    let r0_n3 = r0 * n_a3;
+    let r1_n = r1 * n_a;
+    let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+    let direct = jsl_a[direct_base + c1];
+    let exchange = jsl_a[exchange_base + c0];
     let j_a = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..2 {
         let base = cols_a[z] * n_a;
         for eta in 0..2 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 2 + z] * value;
         }
     }
@@ -11784,8 +11713,14 @@ fn xw_hamiltonian_overlap_m0_24_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -11831,15 +11766,13 @@ fn xw_hamiltonian_overlap_m0_24_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..4 {
         let base = cols_b[z] * n_b;
         for eta in 0..4 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 4 + z] * value;
         }
     }
@@ -11851,11 +11784,14 @@ fn xw_hamiltonian_overlap_m0_24_prepared<T: NOCIScalar>(
     let mut ii_term = zero;
     for z in 0..2 {
         for eta in 0..2 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let mut inner = zero;
             for y in 0..4 {
                 for xi in 0..4 {
-                    let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+                    let suffix_b = rows_b[xi] * n + cols_b[y];
+                    let value = iisl[base_a + suffix_b];
                     inner += cof_b[xi * 4 + y] * value;
                 }
             }
@@ -11979,28 +11915,28 @@ unsafe fn xw_hamiltonian_overlap_m0_24_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -12089,10 +12025,14 @@ unsafe fn xw_hamiltonian_overlap_m0_24_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -12143,21 +12083,15 @@ unsafe fn xw_hamiltonian_overlap_m0_24_prepared_f64x4<T: NOCIScalar>(
         for z in 1..4 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 4 + z], values, replacement_b);
@@ -12313,28 +12247,28 @@ unsafe fn xw_hamiltonian_overlap_m0_24_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_a[lane][1];
             let c0 = cols_a[lane][0];
             let c1 = cols_a[lane][1];
-            direct_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c0) * n_a + r1) * n_a) + c1);
-            exchange_lane[lane] = *jsl_a.get_unchecked((((r0 * n_a + c1) * n_a + r1) * n_a) + c0);
+            let n_a2 = n_a * n_a;
+            let n_a3 = n_a2 * n_a;
+            let r0_n3 = r0 * n_a3;
+            let r1_n = r1 * n_a;
+            let direct_base = r0_n3 + c0 * n_a2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_a2 + r1_n;
+            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c0);
         }
         let j_a = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 2 + z], values, replacement_a);
@@ -12423,10 +12357,14 @@ unsafe fn xw_hamiltonian_overlap_m0_24_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -12477,21 +12415,15 @@ unsafe fn xw_hamiltonian_overlap_m0_24_prepared_f64x8<T: NOCIScalar>(
         for z in 1..4 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 4 + z], values, replacement_b);
@@ -12647,8 +12579,14 @@ fn xw_hamiltonian_overlap_m0_30_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -12694,15 +12632,13 @@ fn xw_hamiltonian_overlap_m0_30_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..3 {
         let base = cols_a[z] * n_a;
         for eta in 0..3 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 3 + z] * value;
         }
     }
@@ -12846,10 +12782,14 @@ unsafe fn xw_hamiltonian_overlap_m0_30_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -12900,21 +12840,15 @@ unsafe fn xw_hamiltonian_overlap_m0_30_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -13063,10 +12997,14 @@ unsafe fn xw_hamiltonian_overlap_m0_30_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -13117,21 +13055,15 @@ unsafe fn xw_hamiltonian_overlap_m0_30_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -13261,8 +13193,14 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -13308,15 +13246,13 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..3 {
         let base = cols_a[z] * n_a;
         for eta in 0..3 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 3 + z] * value;
         }
     }
@@ -13361,15 +13297,13 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..1 {
         let base = cols_b[z] * n_b;
         for eta in 0..1 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += value;
         }
     }
@@ -13382,7 +13316,9 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
     let suffix_b = rows_b[0] * n + cols_b[0];
     for z in 0..3 {
         for eta in 0..3 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let value = iisl[base_a + suffix_b];
             ii_term += cof_a[eta * 3 + z] * value;
         }
@@ -13523,10 +13459,14 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -13577,21 +13517,15 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -13646,21 +13580,15 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm256_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_add_pd(replacement_b, values);
@@ -13828,10 +13756,14 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -13882,21 +13814,15 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -13951,21 +13877,15 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm512_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_add_pd(replacement_b, values);
@@ -14114,8 +14034,14 @@ fn xw_hamiltonian_overlap_m0_32_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -14161,15 +14087,13 @@ fn xw_hamiltonian_overlap_m0_32_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..3 {
         let base = cols_a[z] * n_a;
         for eta in 0..3 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 3 + z] * value;
         }
     }
@@ -14217,21 +14141,25 @@ fn xw_hamiltonian_overlap_m0_32_prepared<T: NOCIScalar>(
     let r1 = rows_b[1];
     let c0 = cols_b[0];
     let c1 = cols_b[1];
-    let direct = jsl_b[(((r0 * n_b + c0) * n_b + r1) * n_b) + c1];
-    let exchange = jsl_b[(((r0 * n_b + c1) * n_b + r1) * n_b) + c0];
+    let n_b2 = n_b * n_b;
+    let n_b3 = n_b2 * n_b;
+    let r0_n3 = r0 * n_b3;
+    let r1_n = r1 * n_b;
+    let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+    let direct = jsl_b[direct_base + c1];
+    let exchange = jsl_b[exchange_base + c0];
     let j_b = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..2 {
         let base = cols_b[z] * n_b;
         for eta in 0..2 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 2 + z] * value;
         }
     }
@@ -14247,7 +14175,9 @@ fn xw_hamiltonian_overlap_m0_32_prepared<T: NOCIScalar>(
             let mut inner = zero;
             for z in 0..3 {
                 for eta in 0..3 {
-                    let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+                    let n2 = n * n;
+                    let n3 = n2 * n;
+                    let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
                     inner += cof_a[eta * 3 + z] * iisl[base_a + suffix_b];
                 }
             }
@@ -14390,10 +14320,14 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -14444,21 +14378,15 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -14527,28 +14455,28 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -14723,10 +14651,14 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -14777,21 +14709,15 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -14860,28 +14786,28 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -15037,8 +14963,14 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -15084,15 +15016,13 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..3 {
         let base = cols_a[z] * n_a;
         for eta in 0..3 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 3 + z] * value;
         }
     }
@@ -15165,8 +15095,14 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
                     let r_xi = rows_b[xi];
                     let c_z = cols_b[z];
                     let c_y = cols_b[y];
-                    let direct = jsl_b[(((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y];
-                    let exchange = jsl_b[(((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z];
+                    let n_b2 = n_b * n_b;
+                    let n_b3 = n_b2 * n_b;
+                    let r_eta_n3 = r_eta * n_b3;
+                    let r_xi_n = r_xi * n_b;
+                    let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                    let direct = jsl_b[direct_base + c_y];
+                    let exchange = jsl_b[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_b += term;
@@ -15212,15 +15148,13 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..3 {
         let base = cols_b[z] * n_b;
         for eta in 0..3 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 3 + z] * value;
         }
     }
@@ -15232,11 +15166,14 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
     let mut ii_term = zero;
     for z in 0..3 {
         for eta in 0..3 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let mut inner = zero;
             for y in 0..3 {
                 for xi in 0..3 {
-                    let value = iisl[base_a + rows_b[xi] * n + cols_b[y]];
+                    let suffix_b = rows_b[xi] * n + cols_b[y];
+                    let value = iisl[base_a + suffix_b];
                     inner += cof_b[xi * 3 + y] * value;
                 }
             }
@@ -15379,10 +15316,14 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -15433,21 +15374,15 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -15535,10 +15470,14 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -15589,21 +15528,15 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x4<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -15778,10 +15711,14 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -15832,21 +15769,15 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 3 + z], values, replacement_a);
@@ -15934,10 +15865,14 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_b[lane][xi];
                             let c_z = cols_b[lane][z];
                             let c_y = cols_b[lane][y];
-                            direct_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_z) * n_b + r_xi) * n_b) + c_y);
-                            exchange_lane[lane] = *jsl_b
-                                .get_unchecked((((r_eta * n_b + c_y) * n_b + r_xi) * n_b) + c_z);
+                            let n_b2 = n_b * n_b;
+                            let n_b3 = n_b2 * n_b;
+                            let r_eta_n3 = r_eta * n_b3;
+                            let r_xi_n = r_xi * n_b;
+                            let direct_base = r_eta_n3 + c_z * n_b2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_b2 + r_xi_n;
+                            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -15988,21 +15923,15 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x8<T: NOCIScalar>(
         for z in 1..3 {
             det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
         }
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..3 {
             for eta in 0..3 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 3 + z], values, replacement_b);
@@ -16158,8 +16087,14 @@ fn xw_hamiltonian_overlap_m0_40_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -16205,15 +16140,13 @@ fn xw_hamiltonian_overlap_m0_40_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..4 {
         let base = cols_a[z] * n_a;
         for eta in 0..4 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 4 + z] * value;
         }
     }
@@ -16358,10 +16291,14 @@ unsafe fn xw_hamiltonian_overlap_m0_40_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -16412,21 +16349,15 @@ unsafe fn xw_hamiltonian_overlap_m0_40_prepared_f64x4<T: NOCIScalar>(
         for z in 1..4 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 4 + z], values, replacement_a);
@@ -16576,10 +16507,14 @@ unsafe fn xw_hamiltonian_overlap_m0_40_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -16630,21 +16565,15 @@ unsafe fn xw_hamiltonian_overlap_m0_40_prepared_f64x8<T: NOCIScalar>(
         for z in 1..4 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 4 + z], values, replacement_a);
@@ -16774,8 +16703,14 @@ fn xw_hamiltonian_overlap_m0_41_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -16821,15 +16756,13 @@ fn xw_hamiltonian_overlap_m0_41_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..4 {
         let base = cols_a[z] * n_a;
         for eta in 0..4 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 4 + z] * value;
         }
     }
@@ -16874,15 +16807,13 @@ fn xw_hamiltonian_overlap_m0_41_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..1 {
         let base = cols_b[z] * n_b;
         for eta in 0..1 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += value;
         }
     }
@@ -16895,7 +16826,9 @@ fn xw_hamiltonian_overlap_m0_41_prepared<T: NOCIScalar>(
     let suffix_b = rows_b[0] * n + cols_b[0];
     for z in 0..4 {
         for eta in 0..4 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let value = iisl[base_a + suffix_b];
             ii_term += cof_a[eta * 4 + z] * value;
         }
@@ -17037,10 +16970,14 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -17091,21 +17028,15 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x4<T: NOCIScalar>(
         for z in 1..4 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 4 + z], values, replacement_a);
@@ -17160,21 +17091,15 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm256_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_add_pd(replacement_b, values);
@@ -17343,10 +17268,14 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -17397,21 +17326,15 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x8<T: NOCIScalar>(
         for z in 1..4 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 4 + z], values, replacement_a);
@@ -17466,21 +17389,15 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm512_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_add_pd(replacement_b, values);
@@ -17629,8 +17546,14 @@ fn xw_hamiltonian_overlap_m0_42_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -17676,15 +17599,13 @@ fn xw_hamiltonian_overlap_m0_42_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..4 {
         let base = cols_a[z] * n_a;
         for eta in 0..4 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 4 + z] * value;
         }
     }
@@ -17732,21 +17653,25 @@ fn xw_hamiltonian_overlap_m0_42_prepared<T: NOCIScalar>(
     let r1 = rows_b[1];
     let c0 = cols_b[0];
     let c1 = cols_b[1];
-    let direct = jsl_b[(((r0 * n_b + c0) * n_b + r1) * n_b) + c1];
-    let exchange = jsl_b[(((r0 * n_b + c1) * n_b + r1) * n_b) + c0];
+    let n_b2 = n_b * n_b;
+    let n_b3 = n_b2 * n_b;
+    let r0_n3 = r0 * n_b3;
+    let r1_n = r1 * n_b;
+    let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+    let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+    let direct = jsl_b[direct_base + c1];
+    let exchange = jsl_b[exchange_base + c0];
     let j_b = direct - exchange;
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..2 {
         let base = cols_b[z] * n_b;
         for eta in 0..2 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += cof_b[eta * 2 + z] * value;
         }
     }
@@ -17762,7 +17687,9 @@ fn xw_hamiltonian_overlap_m0_42_prepared<T: NOCIScalar>(
             let mut inner = zero;
             for z in 0..4 {
                 for eta in 0..4 {
-                    let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+                    let n2 = n * n;
+                    let n3 = n2 * n;
+                    let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
                     inner += cof_a[eta * 4 + z] * iisl[base_a + suffix_b];
                 }
             }
@@ -17906,10 +17833,14 @@ unsafe fn xw_hamiltonian_overlap_m0_42_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -17960,21 +17891,15 @@ unsafe fn xw_hamiltonian_overlap_m0_42_prepared_f64x4<T: NOCIScalar>(
         for z in 1..4 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 4 + z], values, replacement_a);
@@ -18043,28 +17968,28 @@ unsafe fn xw_hamiltonian_overlap_m0_42_prepared_f64x4<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm256_sub_pd(
             _mm256_loadu_pd(direct_lane.as_ptr()),
             _mm256_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -18240,10 +18165,14 @@ unsafe fn xw_hamiltonian_overlap_m0_42_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -18294,21 +18223,15 @@ unsafe fn xw_hamiltonian_overlap_m0_42_prepared_f64x8<T: NOCIScalar>(
         for z in 1..4 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..4 {
             for eta in 0..4 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 4 + z], values, replacement_a);
@@ -18377,28 +18300,28 @@ unsafe fn xw_hamiltonian_overlap_m0_42_prepared_f64x8<T: NOCIScalar>(
             let r1 = rows_b[lane][1];
             let c0 = cols_b[lane][0];
             let c1 = cols_b[lane][1];
-            direct_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c0) * n_b + r1) * n_b) + c1);
-            exchange_lane[lane] = *jsl_b.get_unchecked((((r0 * n_b + c1) * n_b + r1) * n_b) + c0);
+            let n_b2 = n_b * n_b;
+            let n_b3 = n_b2 * n_b;
+            let r0_n3 = r0 * n_b3;
+            let r1_n = r1 * n_b;
+            let direct_base = r0_n3 + c0 * n_b2 + r1_n;
+            let exchange_base = r0_n3 + c1 * n_b2 + r1_n;
+            direct_lane[lane] = *jsl_b.get_unchecked(direct_base + c1);
+            exchange_lane[lane] = *jsl_b.get_unchecked(exchange_base + c0);
         }
         let j_b = _mm512_sub_pd(
             _mm512_loadu_pd(direct_lane.as_ptr()),
             _mm512_loadu_pd(exchange_lane.as_ptr()),
         );
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..2 {
             for eta in 0..2 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_fmadd_pd(cof_b[eta * 2 + z], values, replacement_b);
@@ -18583,8 +18506,14 @@ fn xw_hamiltonian_overlap_m0_50_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -18630,15 +18559,13 @@ fn xw_hamiltonian_overlap_m0_50_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..5 {
         let base = cols_a[z] * n_a;
         for eta in 0..5 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 5 + z] * value;
         }
     }
@@ -18814,10 +18741,14 @@ unsafe fn xw_hamiltonian_overlap_m0_50_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -18868,21 +18799,15 @@ unsafe fn xw_hamiltonian_overlap_m0_50_prepared_f64x4<T: NOCIScalar>(
         for z in 1..5 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 5 + z], values, replacement_a);
@@ -19063,10 +18988,14 @@ unsafe fn xw_hamiltonian_overlap_m0_50_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -19117,21 +19046,15 @@ unsafe fn xw_hamiltonian_overlap_m0_50_prepared_f64x8<T: NOCIScalar>(
         for z in 1..5 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 5 + z], values, replacement_a);
@@ -19290,8 +19213,14 @@ fn xw_hamiltonian_overlap_m0_51_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -19337,15 +19266,13 @@ fn xw_hamiltonian_overlap_m0_51_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..5 {
         let base = cols_a[z] * n_a;
         for eta in 0..5 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 5 + z] * value;
         }
     }
@@ -19390,15 +19317,13 @@ fn xw_hamiltonian_overlap_m0_51_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_b = w.bb.fh_t_slice(0, 0);
-    let vv_b = w.bb.v_t_slice(0, 0, 0);
-    let vm_b = w.ab.vba_t_slice(0, 0, 0);
+    let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
     for z in 0..1 {
         let base = cols_b[z] * n_b;
         for eta in 0..1 {
             let index = base + rows_b[eta];
-            let value = fh_b[index] + vv_b[index] + vm_b[index];
+            let value = hcol0_b[index];
             replacement_b += value;
         }
     }
@@ -19411,7 +19336,9 @@ fn xw_hamiltonian_overlap_m0_51_prepared<T: NOCIScalar>(
     let suffix_b = rows_b[0] * n + cols_b[0];
     for z in 0..5 {
         for eta in 0..5 {
-            let base_a = (rows_a[eta] * n + cols_a[z]) * n * n;
+            let n2 = n * n;
+            let n3 = n2 * n;
+            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
             let value = iisl[base_a + suffix_b];
             ii_term += cof_a[eta * 5 + z] * value;
         }
@@ -19584,10 +19511,14 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -19638,21 +19569,15 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x4<T: NOCIScalar>(
         for z in 1..5 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 5 + z], values, replacement_a);
@@ -19707,21 +19632,15 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x4<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm256_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm256_add_pd(replacement_b, values);
@@ -19921,10 +19840,14 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -19975,21 +19898,15 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x8<T: NOCIScalar>(
         for z in 1..5 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..5 {
             for eta in 0..5 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 5 + z], values, replacement_a);
@@ -20044,21 +19961,15 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x8<T: NOCIScalar>(
         // multiplication.
         let det_b = d_b[0];
         let j_b = _mm512_setzero_pd();
-        let fh_b_t = w.bb.fh_t_slice(0, 0);
-        let vv_b_t = w.bb.v_t_slice(0, 0, 0);
-        let vm_b_t = w.ab.vba_t_slice(0, 0, 0);
-        let fh_b = std::slice::from_raw_parts(fh_b_t.as_ptr().cast::<f64>(), fh_b_t.len());
-        let vv_b = std::slice::from_raw_parts(vv_b_t.as_ptr().cast::<f64>(), vv_b_t.len());
-        let vm_b = std::slice::from_raw_parts(vm_b_t.as_ptr().cast::<f64>(), vm_b_t.len());
+        let hcol0_b_t = w.bb.hcol0_t_slice();
+        let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
         for z in 0..1 {
             for eta in 0..1 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *fh_b.get_unchecked(index)
-                        + *vv_b.get_unchecked(index)
-                        + *vm_b.get_unchecked(index);
+                    lane_values[lane] = *hcol0_b.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_b = _mm512_add_pd(replacement_b, values);
@@ -20253,8 +20164,14 @@ fn xw_hamiltonian_overlap_m0_60_prepared<T: NOCIScalar>(
                     let r_xi = rows_a[xi];
                     let c_z = cols_a[z];
                     let c_y = cols_a[y];
-                    let direct = jsl_a[(((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y];
-                    let exchange = jsl_a[(((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z];
+                    let n_a2 = n_a * n_a;
+                    let n_a3 = n_a2 * n_a;
+                    let r_eta_n3 = r_eta * n_a3;
+                    let r_xi_n = r_xi * n_a;
+                    let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                    let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                    let direct = jsl_a[direct_base + c_y];
+                    let exchange = jsl_a[exchange_base + c_z];
                     let term = second * (direct - exchange);
                     if ((eta + xi + z + y) & 1) == 0 {
                         j_a += term;
@@ -20300,15 +20217,13 @@ fn xw_hamiltonian_overlap_m0_60_prepared<T: NOCIScalar>(
 
     // Contract each cofactor once with the sum of the one-electron, same-spin and mixed-spin
     // one-column intermediates.
-    let fh_a = w.aa.fh_t_slice(0, 0);
-    let vv_a = w.aa.v_t_slice(0, 0, 0);
-    let vm_a = w.ab.vab_t_slice(0, 0, 0);
+    let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
     for z in 0..6 {
         let base = cols_a[z] * n_a;
         for eta in 0..6 {
             let index = base + rows_a[eta];
-            let value = fh_a[index] + vv_a[index] + vm_a[index];
+            let value = hcol0_a[index];
             replacement_a += cof_a[eta * 6 + z] * value;
         }
     }
@@ -20500,10 +20415,14 @@ unsafe fn xw_hamiltonian_overlap_m0_60_prepared_f64x4<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm256_sub_pd(
                             _mm256_loadu_pd(direct_lane.as_ptr()),
@@ -20554,21 +20473,15 @@ unsafe fn xw_hamiltonian_overlap_m0_60_prepared_f64x4<T: NOCIScalar>(
         for z in 1..6 {
             det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
         for z in 0..6 {
             for eta in 0..6 {
                 let mut lane_values = [0.0f64; 4];
                 for lane in 0..4 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm256_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm256_fmadd_pd(cof_a[eta * 6 + z], values, replacement_a);
@@ -20765,10 +20678,14 @@ unsafe fn xw_hamiltonian_overlap_m0_60_prepared_f64x8<T: NOCIScalar>(
                             let r_xi = rows_a[lane][xi];
                             let c_z = cols_a[lane][z];
                             let c_y = cols_a[lane][y];
-                            direct_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_z) * n_a + r_xi) * n_a) + c_y);
-                            exchange_lane[lane] = *jsl_a
-                                .get_unchecked((((r_eta * n_a + c_y) * n_a + r_xi) * n_a) + c_z);
+                            let n_a2 = n_a * n_a;
+                            let n_a3 = n_a2 * n_a;
+                            let r_eta_n3 = r_eta * n_a3;
+                            let r_xi_n = r_xi * n_a;
+                            let direct_base = r_eta_n3 + c_z * n_a2 + r_xi_n;
+                            let exchange_base = r_eta_n3 + c_y * n_a2 + r_xi_n;
+                            direct_lane[lane] = *jsl_a.get_unchecked(direct_base + c_y);
+                            exchange_lane[lane] = *jsl_a.get_unchecked(exchange_base + c_z);
                         }
                         let jdiff = _mm512_sub_pd(
                             _mm512_loadu_pd(direct_lane.as_ptr()),
@@ -20819,21 +20736,15 @@ unsafe fn xw_hamiltonian_overlap_m0_60_prepared_f64x8<T: NOCIScalar>(
         for z in 1..6 {
             det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
         }
-        let fh_a_t = w.aa.fh_t_slice(0, 0);
-        let vv_a_t = w.aa.v_t_slice(0, 0, 0);
-        let vm_a_t = w.ab.vab_t_slice(0, 0, 0);
-        let fh_a = std::slice::from_raw_parts(fh_a_t.as_ptr().cast::<f64>(), fh_a_t.len());
-        let vv_a = std::slice::from_raw_parts(vv_a_t.as_ptr().cast::<f64>(), vv_a_t.len());
-        let vm_a = std::slice::from_raw_parts(vm_a_t.as_ptr().cast::<f64>(), vm_a_t.len());
+        let hcol0_a_t = w.aa.hcol0_t_slice();
+        let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
         for z in 0..6 {
             for eta in 0..6 {
                 let mut lane_values = [0.0f64; 8];
                 for lane in 0..8 {
                     let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *fh_a.get_unchecked(index)
-                        + *vv_a.get_unchecked(index)
-                        + *vm_a.get_unchecked(index);
+                    lane_values[lane] = *hcol0_a.get_unchecked(index);
                 }
                 let values = _mm512_loadu_pd(lane_values.as_ptr());
                 replacement_a = _mm512_fmadd_pd(cof_a[eta * 6 + z], values, replacement_a);
@@ -20941,15 +20852,25 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
     if have_a {
         same_a = (w.aa.f0h[0] + half * w.aa.v0[0]) * det_a;
         if la > 0 {
-            let fh = w.aa.fh_t_slice(0, 0);
-            let vv = w.aa.v_t_slice(0, 0, 0);
             let cof = scratch.aa.adjt_det.as_slice();
             let n = w.aa.n();
-            for z in 0..la {
-                let base = scratch.aa.cols[z] * n;
-                for eta in 0..la {
-                    same_a -= cof[eta * la + z]
-                        * (fh[base + scratch.aa.rows[eta]] + vv[base + scratch.aa.rows[eta]]);
+            if have_b {
+                let hcol0 = w.aa.hcol0_t_slice();
+                for z in 0..la {
+                    let base = scratch.aa.cols[z] * n;
+                    for eta in 0..la {
+                        same_a -= cof[eta * la + z] * hcol0[base + scratch.aa.rows[eta]];
+                    }
+                }
+            } else {
+                let fh = w.aa.fh_t_slice(0, 0);
+                let vv = w.aa.v_t_slice(0, 0, 0);
+                for z in 0..la {
+                    let base = scratch.aa.cols[z] * n;
+                    for eta in 0..la {
+                        same_a -= cof[eta * la + z]
+                            * (fh[base + scratch.aa.rows[eta]] + vv[base + scratch.aa.rows[eta]]);
+                    }
                 }
             }
         }
@@ -20980,10 +20901,14 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                                 ii += 1;
                             }
                             let second = det(&minor, la - 2).unwrap_or(zero);
-                            let direct =
-                                jsl[(((rows[eta] * n + cols[z]) * n + rows[xi]) * n) + cols[y]];
-                            let exchange =
-                                jsl[(((rows[eta] * n + cols[y]) * n + rows[xi]) * n) + cols[z]];
+                            let n2 = n * n;
+                            let n3 = n2 * n;
+                            let row_eta_n3 = rows[eta] * n3;
+                            let row_xi_n = rows[xi] * n;
+                            let direct_base = row_eta_n3 + cols[z] * n2 + row_xi_n;
+                            let exchange_base = row_eta_n3 + cols[y] * n2 + row_xi_n;
+                            let direct = jsl[direct_base + cols[y]];
+                            let exchange = jsl[exchange_base + cols[z]];
                             let term = second * (direct - exchange);
                             if ((eta + xi + z + y) & 1) == 0 {
                                 same_a += term;
@@ -21000,15 +20925,25 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
     if have_b {
         same_b = (w.bb.f0h[0] + half * w.bb.v0[0]) * det_b;
         if lb > 0 {
-            let fh = w.bb.fh_t_slice(0, 0);
-            let vv = w.bb.v_t_slice(0, 0, 0);
             let cof = scratch.bb.adjt_det.as_slice();
             let n = w.bb.n();
-            for z in 0..lb {
-                let base = scratch.bb.cols[z] * n;
-                for eta in 0..lb {
-                    same_b -= cof[eta * lb + z]
-                        * (fh[base + scratch.bb.rows[eta]] + vv[base + scratch.bb.rows[eta]]);
+            if have_a {
+                let hcol0 = w.bb.hcol0_t_slice();
+                for z in 0..lb {
+                    let base = scratch.bb.cols[z] * n;
+                    for eta in 0..lb {
+                        same_b -= cof[eta * lb + z] * hcol0[base + scratch.bb.rows[eta]];
+                    }
+                }
+            } else {
+                let fh = w.bb.fh_t_slice(0, 0);
+                let vv = w.bb.v_t_slice(0, 0, 0);
+                for z in 0..lb {
+                    let base = scratch.bb.cols[z] * n;
+                    for eta in 0..lb {
+                        same_b -= cof[eta * lb + z]
+                            * (fh[base + scratch.bb.rows[eta]] + vv[base + scratch.bb.rows[eta]]);
+                    }
                 }
             }
         }
@@ -21039,10 +20974,14 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                                 ii += 1;
                             }
                             let second = det(&minor, lb - 2).unwrap_or(zero);
-                            let direct =
-                                jsl[(((rows[eta] * n + cols[z]) * n + rows[xi]) * n) + cols[y]];
-                            let exchange =
-                                jsl[(((rows[eta] * n + cols[y]) * n + rows[xi]) * n) + cols[z]];
+                            let n2 = n * n;
+                            let n3 = n2 * n;
+                            let row_eta_n3 = rows[eta] * n3;
+                            let row_xi_n = rows[xi] * n;
+                            let direct_base = row_eta_n3 + cols[z] * n2 + row_xi_n;
+                            let exchange_base = row_eta_n3 + cols[y] * n2 + row_xi_n;
+                            let direct = jsl[direct_base + cols[y]];
+                            let exchange = jsl[exchange_base + cols[z]];
                             let term = second * (direct - exchange);
                             if ((eta + xi + z + y) & 1) == 0 {
                                 same_b += term;
@@ -21059,37 +20998,15 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
     if have_a && have_b {
         h2ab = w.ab.vab0[0][0] * det_a * det_b;
         let n = w.ab.n();
-        if la > 0 {
-            let va = w.ab.vab_t_slice(0, 0, 0);
-            let cofa = scratch.aa.adjt_det.as_slice();
-            let mut replacement = zero;
-            for z in 0..la {
-                let base = scratch.aa.cols[z] * n;
-                for eta in 0..la {
-                    replacement += cofa[eta * la + z] * va[base + scratch.aa.rows[eta]];
-                }
-            }
-            h2ab -= replacement * det_b;
-        }
-        if lb > 0 {
-            let vb = w.ab.vba_t_slice(0, 0, 0);
-            let cofb = scratch.bb.adjt_det.as_slice();
-            let mut replacement = zero;
-            for y in 0..lb {
-                let base = scratch.bb.cols[y] * n;
-                for xi in 0..lb {
-                    replacement += cofb[xi * lb + y] * vb[base + scratch.bb.rows[xi]];
-                }
-            }
-            h2ab -= replacement * det_a;
-        }
         if la > 0 && lb > 0 {
             let iisl = w.ab.iiab_slice(0, 0, 0, 0);
             let cofa = scratch.aa.adjt_det.as_slice();
             let cofb = scratch.bb.adjt_det.as_slice();
             for z in 0..la {
                 for eta in 0..la {
-                    let base_a = (scratch.aa.rows[eta] * n + scratch.aa.cols[z]) * n * n;
+                    let n2 = n * n;
+                    let n3 = n2 * n;
+                    let base_a = scratch.aa.rows[eta] * n3 + scratch.aa.cols[z] * n2;
                     let mut inner = zero;
                     for y in 0..lb {
                         for xi in 0..lb {

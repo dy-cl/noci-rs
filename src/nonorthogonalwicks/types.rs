@@ -104,6 +104,9 @@ pub(crate) struct SameSpinOffset {
     /// Offsets to the transposed same-spin one-column intermediates
     /// `\mathcal V^{(m_1,m_2,m_3)}, stored as v[m_1][m_3][m_2].`
     pub(in crate::nonorthogonalwicks) v: [[[usize; 2]; 2]; 2],
+    /// Offset to the transposed precombined `m_\alpha = m_\beta = 0` Hamiltonian
+    /// one-column intermediate for this spin sector.
+    pub(in crate::nonorthogonalwicks) hcol0: usize,
     /// Offsets to the ten symmetry-unique same-spin
     /// `\mathcal J^{(m_1,m_2,m_3,m_4)} tensors stored in evaluator axis order.`
     pub(in crate::nonorthogonalwicks) j: [usize; 10],
