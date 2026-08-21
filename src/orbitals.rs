@@ -160,6 +160,7 @@ pub(crate) fn transform_ao_data(
     c: &Array2<f64>,
 ) -> AoData {
     let s = c.t().dot(&ao.s).dot(c);
+    let x = crate::maths::loewdin_x(&s, false, 1e-12);
     let h = c.t().dot(&ao.h).dot(c);
     let dm = c.t().dot(&ao.s).dot(&ao.dm).dot(&ao.s).dot(c);
 
@@ -175,6 +176,7 @@ pub(crate) fn transform_ao_data(
 
     AoData {
         s,
+        x,
         h,
         dm,
         eri_coul,

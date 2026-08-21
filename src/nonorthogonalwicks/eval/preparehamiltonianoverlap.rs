@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-
 // nonorthogonalwicks/eval/preparehamiltonianoverlap.rs
 
 // Standard library imports.
@@ -54,15 +52,16 @@ use super::prepare::prepare_same;
 #[inline(always)]
 pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    x_ex: &Excitation,
-    w_ex: &Excitation,
-    x_cache: &ExcitationCache,
-    w_cache: &ExcitationCache,
+    ex: (&Excitation, &Excitation),
+    cache: (&ExcitationCache, &ExcitationCache),
     excitation_phase: f64,
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
     tol: f64,
 ) -> (T, T) {
+    let (x_ex, w_ex) = ex;
+    let (x_cache, w_cache) = cache;
+
     if w.aa.m == 0 && w.bb.m == 0 {
         let fixed = x_cache.alpha.rank <= 4
             && x_cache.beta.rank <= 4
@@ -121,14 +120,15 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
     w: &WicksPairView<'_, f64>,
-    basis: &[DetState<f64>],
-    reduced_basis: &[ReducedTwoSpinDetState],
+    basis: (&[DetState<f64>], &[ReducedTwoSpinDetState]),
     requests: &[(usize, usize, usize)],
     enuc: f64,
     scratch: &mut WickScratchSpin<f64>,
     tol: f64,
     out: &mut [(f64, f64)],
 ) {
+    let (basis, reduced_basis) = basis;
+
     #[cfg(target_arch = "x86_64")]
     if w.aa.m == 0 && w.bb.m == 0 {
         if std::arch::is_x86_feature_detected!("avx512f") {
@@ -167,14 +167,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
                         unsafe {
                             xw_hamiltonian_overlap_m0_prepared_f64x8(
                                 w,
-                                la,
-                                lb,
-                                &x_bins[bin],
-                                &w_bins[bin],
+                                (la, lb),
+                                (&x_bins[bin], &w_bins[bin]),
                                 &phases[bin],
                                 enuc,
-                                &mut h,
-                                &mut s,
+                                (&mut h, &mut s),
                             );
                         }
 
@@ -189,10 +186,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
 
                     out[output] = xw_hamiltonian_overlap_prepared(
                         w,
-                        &x_state.excitation,
-                        &w_state.excitation,
-                        &x_cache,
-                        &w_cache,
+                        (&x_state.excitation, &w_state.excitation),
+                        (&x_cache, &w_cache),
                         x_det.phase * w_det.phase,
                         enuc,
                         scratch,
@@ -225,14 +220,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
                     unsafe {
                         xw_hamiltonian_overlap_m0_prepared_f64x8(
                             w,
-                            la,
-                            lb,
-                            &x_bins[bin],
-                            &w_bins[bin],
+                            (la, lb),
+                            (&x_bins[bin], &w_bins[bin]),
                             &phases[bin],
                             enuc,
-                            &mut h,
-                            &mut s,
+                            (&mut h, &mut s),
                         );
                     }
 
@@ -281,14 +273,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
                         unsafe {
                             xw_hamiltonian_overlap_m0_prepared_f64x4(
                                 w,
-                                la,
-                                lb,
-                                &x_bins[bin],
-                                &w_bins[bin],
+                                (la, lb),
+                                (&x_bins[bin], &w_bins[bin]),
                                 &phases[bin],
                                 enuc,
-                                &mut h,
-                                &mut s,
+                                (&mut h, &mut s),
                             );
                         }
 
@@ -303,10 +292,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
 
                     out[output] = xw_hamiltonian_overlap_prepared(
                         w,
-                        &x_state.excitation,
-                        &w_state.excitation,
-                        &x_cache,
-                        &w_cache,
+                        (&x_state.excitation, &w_state.excitation),
+                        (&x_cache, &w_cache),
                         x_det.phase * w_det.phase,
                         enuc,
                         scratch,
@@ -339,14 +326,11 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
                     unsafe {
                         xw_hamiltonian_overlap_m0_prepared_f64x4(
                             w,
-                            la,
-                            lb,
-                            &x_bins[bin],
-                            &w_bins[bin],
+                            (la, lb),
+                            (&x_bins[bin], &w_bins[bin]),
                             &phases[bin],
                             enuc,
-                            &mut h,
-                            &mut s,
+                            (&mut h, &mut s),
                         );
                     }
 
@@ -367,10 +351,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
 
         out[output] = xw_hamiltonian_overlap_prepared(
             w,
-            &x_state.excitation,
-            &w_state.excitation,
-            &x_det.excitation_cache,
-            &w_det.excitation_cache,
+            (&x_state.excitation, &w_state.excitation),
+            (&x_det.excitation_cache, &w_det.excitation_cache),
             x_det.phase * w_det.phase,
             enuc,
             scratch,
@@ -461,16 +443,16 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    la: usize,
-    lb: usize,
-    x_ex: &[ExcitationCache; 4],
-    w_ex: &[ExcitationCache; 4],
+    rank: (usize, usize),
+    ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
     excitation_phase: &[f64; 4],
     enuc: f64,
-    h: &mut [f64],
-    s: &mut [f64],
+    out: (&mut [f64], &mut [f64]),
 ) {
     unsafe {
+        let (la, lb) = rank;
+        let (x_ex, w_ex) = ex;
+        let (h, s) = out;
         match (la, lb) {
             (0, 0) => xw_hamiltonian_overlap_m0_00_prepared_f64x4(w, excitation_phase, enuc, h, s),
             (0, 1) => xw_hamiltonian_overlap_m0_01_prepared_f64x4(
@@ -745,16 +727,16 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4<T: NOCIScalar>(
 #[target_feature(enable = "avx512f")]
 pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    la: usize,
-    lb: usize,
-    x_ex: &[ExcitationCache; 8],
-    w_ex: &[ExcitationCache; 8],
+    rank: (usize, usize),
+    ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
     excitation_phase: &[f64; 8],
     enuc: f64,
-    h: &mut [f64],
-    s: &mut [f64],
+    out: (&mut [f64], &mut [f64]),
 ) {
     unsafe {
+        let (la, lb) = rank;
+        let (x_ex, w_ex) = ex;
+        let (h, s) = out;
         match (la, lb) {
             (0, 0) => xw_hamiltonian_overlap_m0_00_prepared_f64x8(w, excitation_phase, enuc, h, s),
             (0, 1) => xw_hamiltonian_overlap_m0_01_prepared_f64x8(
@@ -1223,20 +1205,12 @@ fn xw_hamiltonian_overlap_m0_01_prepared<T: NOCIScalar>(
     }
     let n_b = w.bb.n();
     let x0_b = w.bb.x_slice(0);
-    let y0_b = w.bb.y_slice(0);
+    let _y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; 1];
 
-    // Load each entry of \mathbf D_b exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_b[i] * n_b;
-        for j in 0..1 {
-            d_b[i * 1 + j] = if i >= j {
-                x0_b[row + cols_b[j]]
-            } else {
-                y0_b[row + cols_b[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_b from the fundamental contractions.
+    let row = rows_b[0] * n_b;
+    d_b[0] = x0_b[row + cols_b[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_b = d_b[0];
@@ -1246,14 +1220,10 @@ fn xw_hamiltonian_overlap_m0_01_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
-    for z in 0..1 {
-        let base = cols_b[z] * n_b;
-        for eta in 0..1 {
-            let index = base + rows_b[eta];
-            let value = hcol0_b[index];
-            replacement_b += value;
-        }
-    }
+    let base = cols_b[0] * n_b;
+    let index = base + rows_b[0];
+    let value = hcol0_b[index];
+    replacement_b += value;
     let ii_term = zero;
 
     // Assemble the complete electronic and nuclear Hamiltonian before applying the common overlap
@@ -1338,25 +1308,17 @@ unsafe fn xw_hamiltonian_overlap_m0_01_prepared_f64x4<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -1365,17 +1327,13 @@ unsafe fn xw_hamiltonian_overlap_m0_01_prepared_f64x4<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm256_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm256_add_pd(replacement_b, values);
         let ii_term = _mm256_setzero_pd();
 
         // Combine the scalar Hamiltonian intermediates once before the determinant product.
@@ -1463,25 +1421,17 @@ unsafe fn xw_hamiltonian_overlap_m0_01_prepared_f64x8<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -1490,17 +1440,13 @@ unsafe fn xw_hamiltonian_overlap_m0_01_prepared_f64x8<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm512_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm512_add_pd(replacement_b, values);
         let ii_term = _mm512_setzero_pd();
 
         // Combine the scalar Hamiltonian intermediates once before the determinant product.
@@ -2031,13 +1977,11 @@ fn xw_hamiltonian_overlap_m0_03_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_b[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_b[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -2232,13 +2176,11 @@ unsafe fn xw_hamiltonian_overlap_m0_03_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -2448,13 +2390,11 @@ unsafe fn xw_hamiltonian_overlap_m0_03_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -4696,20 +4636,12 @@ fn xw_hamiltonian_overlap_m0_10_prepared<T: NOCIScalar>(
     }
     let n_a = w.aa.n();
     let x0_a = w.aa.x_slice(0);
-    let y0_a = w.aa.y_slice(0);
+    let _y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; 1];
 
-    // Load each entry of \mathbf D_a exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_a[i] * n_a;
-        for j in 0..1 {
-            d_a[i * 1 + j] = if i >= j {
-                x0_a[row + cols_a[j]]
-            } else {
-                y0_a[row + cols_a[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_a from the fundamental contractions.
+    let row = rows_a[0] * n_a;
+    d_a[0] = x0_a[row + cols_a[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_a = d_a[0];
@@ -4719,14 +4651,10 @@ fn xw_hamiltonian_overlap_m0_10_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
-    for z in 0..1 {
-        let base = cols_a[z] * n_a;
-        for eta in 0..1 {
-            let index = base + rows_a[eta];
-            let value = hcol0_a[index];
-            replacement_a += value;
-        }
-    }
+    let base = cols_a[0] * n_a;
+    let index = base + rows_a[0];
+    let value = hcol0_a[index];
+    replacement_a += value;
     let det_b = <T as From<f64>>::from(1.0);
     let j_b = zero;
     let replacement_b = zero;
@@ -4810,25 +4738,17 @@ unsafe fn xw_hamiltonian_overlap_m0_10_prepared_f64x4<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -4837,17 +4757,13 @@ unsafe fn xw_hamiltonian_overlap_m0_10_prepared_f64x4<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm256_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm256_add_pd(replacement_a, values);
         let det_b = _mm256_set1_pd(1.0);
         let j_b = _mm256_setzero_pd();
         let replacement_b = _mm256_setzero_pd();
@@ -4934,25 +4850,17 @@ unsafe fn xw_hamiltonian_overlap_m0_10_prepared_f64x8<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -4961,17 +4869,13 @@ unsafe fn xw_hamiltonian_overlap_m0_10_prepared_f64x8<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm512_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm512_add_pd(replacement_a, values);
         let det_b = _mm512_set1_pd(1.0);
         let j_b = _mm512_setzero_pd();
         let replacement_b = _mm512_setzero_pd();
@@ -5047,20 +4951,12 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
     }
     let n_a = w.aa.n();
     let x0_a = w.aa.x_slice(0);
-    let y0_a = w.aa.y_slice(0);
+    let _y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; 1];
 
-    // Load each entry of \mathbf D_a exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_a[i] * n_a;
-        for j in 0..1 {
-            d_a[i * 1 + j] = if i >= j {
-                x0_a[row + cols_a[j]]
-            } else {
-                y0_a[row + cols_a[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_a from the fundamental contractions.
+    let row = rows_a[0] * n_a;
+    d_a[0] = x0_a[row + cols_a[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_a = d_a[0];
@@ -5070,14 +4966,10 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
-    for z in 0..1 {
-        let base = cols_a[z] * n_a;
-        for eta in 0..1 {
-            let index = base + rows_a[eta];
-            let value = hcol0_a[index];
-            replacement_a += value;
-        }
-    }
+    let base = cols_a[0] * n_a;
+    let index = base + rows_a[0];
+    let value = hcol0_a[index];
+    replacement_a += value;
 
     // Construct the b-spin contraction labels directly from the cached excitation metadata.
     let nocc_b = w.bb.nocc;
@@ -5098,20 +4990,12 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
     }
     let n_b = w.bb.n();
     let x0_b = w.bb.x_slice(0);
-    let y0_b = w.bb.y_slice(0);
+    let _y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; 1];
 
-    // Load each entry of \mathbf D_b exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_b[i] * n_b;
-        for j in 0..1 {
-            d_b[i * 1 + j] = if i >= j {
-                x0_b[row + cols_b[j]]
-            } else {
-                y0_b[row + cols_b[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_b from the fundamental contractions.
+    let row = rows_b[0] * n_b;
+    d_b[0] = x0_b[row + cols_b[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_b = d_b[0];
@@ -5121,14 +5005,10 @@ fn xw_hamiltonian_overlap_m0_11_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
-    for z in 0..1 {
-        let base = cols_b[z] * n_b;
-        for eta in 0..1 {
-            let index = base + rows_b[eta];
-            let value = hcol0_b[index];
-            replacement_b += value;
-        }
-    }
+    let base = cols_b[0] * n_b;
+    let index = base + rows_b[0];
+    let value = hcol0_b[index];
+    replacement_b += value;
 
     // Contract \mathcal{II} in the orientation that adds only `min(L_\alpha^2, L_\beta^2)` outer
     // cofactor multiplications.
@@ -5217,25 +5097,17 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -5244,17 +5116,13 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm256_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm256_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -5280,25 +5148,17 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -5307,17 +5167,13 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x4<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm256_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm256_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -5414,25 +5270,17 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -5441,17 +5289,13 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm512_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm512_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -5477,25 +5321,17 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -5504,17 +5340,13 @@ unsafe fn xw_hamiltonian_overlap_m0_11_prepared_f64x8<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm512_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm512_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -5600,20 +5432,12 @@ fn xw_hamiltonian_overlap_m0_12_prepared<T: NOCIScalar>(
     }
     let n_a = w.aa.n();
     let x0_a = w.aa.x_slice(0);
-    let y0_a = w.aa.y_slice(0);
+    let _y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; 1];
 
-    // Load each entry of \mathbf D_a exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_a[i] * n_a;
-        for j in 0..1 {
-            d_a[i * 1 + j] = if i >= j {
-                x0_a[row + cols_a[j]]
-            } else {
-                y0_a[row + cols_a[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_a from the fundamental contractions.
+    let row = rows_a[0] * n_a;
+    d_a[0] = x0_a[row + cols_a[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_a = d_a[0];
@@ -5623,14 +5447,10 @@ fn xw_hamiltonian_overlap_m0_12_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
-    for z in 0..1 {
-        let base = cols_a[z] * n_a;
-        for eta in 0..1 {
-            let index = base + rows_a[eta];
-            let value = hcol0_a[index];
-            replacement_a += value;
-        }
-    }
+    let base = cols_a[0] * n_a;
+    let index = base + rows_a[0];
+    let value = hcol0_a[index];
+    replacement_a += value;
 
     // Construct the b-spin contraction labels directly from the cached excitation metadata.
     let nocc_b = w.bb.nocc;
@@ -5792,25 +5612,17 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x4<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -5819,17 +5631,13 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x4<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm256_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm256_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -6025,25 +5833,17 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x8<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -6052,17 +5852,13 @@ unsafe fn xw_hamiltonian_overlap_m0_12_prepared_f64x8<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm512_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm512_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -6247,20 +6043,12 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
     }
     let n_a = w.aa.n();
     let x0_a = w.aa.x_slice(0);
-    let y0_a = w.aa.y_slice(0);
+    let _y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; 1];
 
-    // Load each entry of \mathbf D_a exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_a[i] * n_a;
-        for j in 0..1 {
-            d_a[i * 1 + j] = if i >= j {
-                x0_a[row + cols_a[j]]
-            } else {
-                y0_a[row + cols_a[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_a from the fundamental contractions.
+    let row = rows_a[0] * n_a;
+    d_a[0] = x0_a[row + cols_a[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_a = d_a[0];
@@ -6270,14 +6058,10 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
-    for z in 0..1 {
-        let base = cols_a[z] * n_a;
-        for eta in 0..1 {
-            let index = base + rows_a[eta];
-            let value = hcol0_a[index];
-            replacement_a += value;
-        }
-    }
+    let base = cols_a[0] * n_a;
+    let index = base + rows_a[0];
+    let value = hcol0_a[index];
+    replacement_a += value;
 
     // Construct the b-spin contraction labels directly from the cached excitation metadata.
     let nocc_b = w.bb.nocc;
@@ -6331,13 +6115,11 @@ fn xw_hamiltonian_overlap_m0_13_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_b[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_b[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -6505,25 +6287,17 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x4<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -6532,17 +6306,13 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x4<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm256_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm256_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -6606,13 +6376,11 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -6802,25 +6570,17 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x8<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -6829,17 +6589,13 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x8<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm512_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm512_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -6903,13 +6659,11 @@ unsafe fn xw_hamiltonian_overlap_m0_13_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -7088,20 +6842,12 @@ fn xw_hamiltonian_overlap_m0_14_prepared<T: NOCIScalar>(
     }
     let n_a = w.aa.n();
     let x0_a = w.aa.x_slice(0);
-    let y0_a = w.aa.y_slice(0);
+    let _y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; 1];
 
-    // Load each entry of \mathbf D_a exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_a[i] * n_a;
-        for j in 0..1 {
-            d_a[i * 1 + j] = if i >= j {
-                x0_a[row + cols_a[j]]
-            } else {
-                y0_a[row + cols_a[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_a from the fundamental contractions.
+    let row = rows_a[0] * n_a;
+    d_a[0] = x0_a[row + cols_a[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_a = d_a[0];
@@ -7111,14 +6857,10 @@ fn xw_hamiltonian_overlap_m0_14_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
-    for z in 0..1 {
-        let base = cols_a[z] * n_a;
-        for eta in 0..1 {
-            let index = base + rows_a[eta];
-            let value = hcol0_a[index];
-            replacement_a += value;
-        }
-    }
+    let base = cols_a[0] * n_a;
+    let index = base + rows_a[0];
+    let value = hcol0_a[index];
+    replacement_a += value;
 
     // Construct the b-spin contraction labels directly from the cached excitation metadata.
     let nocc_b = w.bb.nocc;
@@ -7346,25 +7088,17 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x4<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -7373,17 +7107,13 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x4<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm256_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm256_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -7644,25 +7374,17 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x8<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -7671,17 +7393,13 @@ unsafe fn xw_hamiltonian_overlap_m0_14_prepared_f64x8<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm512_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm512_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -7931,20 +7649,12 @@ fn xw_hamiltonian_overlap_m0_15_prepared<T: NOCIScalar>(
     }
     let n_a = w.aa.n();
     let x0_a = w.aa.x_slice(0);
-    let y0_a = w.aa.y_slice(0);
+    let _y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; 1];
 
-    // Load each entry of \mathbf D_a exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_a[i] * n_a;
-        for j in 0..1 {
-            d_a[i * 1 + j] = if i >= j {
-                x0_a[row + cols_a[j]]
-            } else {
-                y0_a[row + cols_a[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_a from the fundamental contractions.
+    let row = rows_a[0] * n_a;
+    d_a[0] = x0_a[row + cols_a[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_a = d_a[0];
@@ -7954,14 +7664,10 @@ fn xw_hamiltonian_overlap_m0_15_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
-    for z in 0..1 {
-        let base = cols_a[z] * n_a;
-        for eta in 0..1 {
-            let index = base + rows_a[eta];
-            let value = hcol0_a[index];
-            replacement_a += value;
-        }
-    }
+    let base = cols_a[0] * n_a;
+    let index = base + rows_a[0];
+    let value = hcol0_a[index];
+    replacement_a += value;
 
     // Construct the b-spin contraction labels directly from the cached excitation metadata.
     let nocc_b = w.bb.nocc;
@@ -8218,25 +7924,17 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x4<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -8245,17 +7943,13 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x4<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm256_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm256_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -8547,25 +8241,17 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x8<T: NOCIScalar>(
         let x0_a_t = w.aa.x_slice(0);
         let y0_a_t = w.aa.y_slice(0);
         let x0_a = std::slice::from_raw_parts(x0_a_t.as_ptr().cast::<f64>(), x0_a_t.len());
-        let y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
+        let _y0_a = std::slice::from_raw_parts(y0_a_t.as_ptr().cast::<f64>(), y0_a_t.len());
         let mut d_a: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_a[lane][i] * n_a + cols_a[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_a.get_unchecked(index)
-                    } else {
-                        *y0_a.get_unchecked(index)
-                    };
-                }
-                d_a[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_a[lane][0] * n_a + cols_a[lane][0];
+            values[lane] = *x0_a.get_unchecked(index);
         }
+        d_a[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -8574,17 +8260,13 @@ unsafe fn xw_hamiltonian_overlap_m0_15_prepared_f64x8<T: NOCIScalar>(
         let hcol0_a_t = w.aa.hcol0_t_slice();
         let hcol0_a = std::slice::from_raw_parts(hcol0_a_t.as_ptr().cast::<f64>(), hcol0_a_t.len());
         let mut replacement_a = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
-                    lane_values[lane] = *hcol0_a.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_a = _mm512_add_pd(replacement_a, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_a[lane][0] * n_a + rows_a[lane][0];
+            lane_values[lane] = *hcol0_a.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_a = _mm512_add_pd(replacement_a, values);
 
         // Construct the b-spin contraction labels for every SIMD lane without touching full
         // determinant states.
@@ -9351,20 +9033,12 @@ fn xw_hamiltonian_overlap_m0_21_prepared<T: NOCIScalar>(
     }
     let n_b = w.bb.n();
     let x0_b = w.bb.x_slice(0);
-    let y0_b = w.bb.y_slice(0);
+    let _y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; 1];
 
-    // Load each entry of \mathbf D_b exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_b[i] * n_b;
-        for j in 0..1 {
-            d_b[i * 1 + j] = if i >= j {
-                x0_b[row + cols_b[j]]
-            } else {
-                y0_b[row + cols_b[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_b from the fundamental contractions.
+    let row = rows_b[0] * n_b;
+    d_b[0] = x0_b[row + cols_b[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_b = d_b[0];
@@ -9374,14 +9048,10 @@ fn xw_hamiltonian_overlap_m0_21_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
-    for z in 0..1 {
-        let base = cols_b[z] * n_b;
-        for eta in 0..1 {
-            let index = base + rows_b[eta];
-            let value = hcol0_b[index];
-            replacement_b += value;
-        }
-    }
+    let base = cols_b[0] * n_b;
+    let index = base + rows_b[0];
+    let value = hcol0_b[index];
+    replacement_b += value;
 
     // Contract \mathcal{II} in the orientation that adds only `min(L_\alpha^2, L_\beta^2)` outer
     // cofactor multiplications.
@@ -9567,25 +9237,17 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x4<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -9594,17 +9256,13 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x4<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm256_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm256_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -9800,25 +9458,17 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x8<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -9827,17 +9477,13 @@ unsafe fn xw_hamiltonian_overlap_m0_21_prepared_f64x8<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm512_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm512_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -10767,13 +10413,11 @@ fn xw_hamiltonian_overlap_m0_23_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_b[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_b[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -11075,13 +10719,11 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -11406,13 +11048,11 @@ unsafe fn xw_hamiltonian_overlap_m0_23_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -12563,13 +12203,11 @@ fn xw_hamiltonian_overlap_m0_30_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_a[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_a[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -12763,13 +12401,11 @@ unsafe fn xw_hamiltonian_overlap_m0_30_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -12978,13 +12614,11 @@ unsafe fn xw_hamiltonian_overlap_m0_30_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -13177,13 +12811,11 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_a[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_a[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -13276,20 +12908,12 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
     }
     let n_b = w.bb.n();
     let x0_b = w.bb.x_slice(0);
-    let y0_b = w.bb.y_slice(0);
+    let _y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; 1];
 
-    // Load each entry of \mathbf D_b exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_b[i] * n_b;
-        for j in 0..1 {
-            d_b[i * 1 + j] = if i >= j {
-                x0_b[row + cols_b[j]]
-            } else {
-                y0_b[row + cols_b[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_b from the fundamental contractions.
+    let row = rows_b[0] * n_b;
+    d_b[0] = x0_b[row + cols_b[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_b = d_b[0];
@@ -13299,14 +12923,10 @@ fn xw_hamiltonian_overlap_m0_31_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
-    for z in 0..1 {
-        let base = cols_b[z] * n_b;
-        for eta in 0..1 {
-            let index = base + rows_b[eta];
-            let value = hcol0_b[index];
-            replacement_b += value;
-        }
-    }
+    let base = cols_b[0] * n_b;
+    let index = base + rows_b[0];
+    let value = hcol0_b[index];
+    replacement_b += value;
 
     // Contract \mathcal{II} in the orientation that adds only `min(L_\alpha^2, L_\beta^2)` outer
     // cofactor multiplications.
@@ -13440,13 +13060,11 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -13556,25 +13174,17 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x4<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -13583,17 +13193,13 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x4<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm256_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm256_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -13737,13 +13343,11 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -13853,25 +13457,17 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x8<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -13880,17 +13476,13 @@ unsafe fn xw_hamiltonian_overlap_m0_31_prepared_f64x8<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm512_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm512_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -14018,13 +13610,11 @@ fn xw_hamiltonian_overlap_m0_32_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_a[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_a[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -14301,13 +13891,11 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -14632,13 +14220,11 @@ unsafe fn xw_hamiltonian_overlap_m0_32_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -14947,13 +14533,11 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_a[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_a[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -15079,13 +14663,11 @@ fn xw_hamiltonian_overlap_m0_33_prepared<T: NOCIScalar>(
                         if r == eta || r == xi {
                             continue;
                         }
-                        let mut jj = 0usize;
                         for c in 0..3 {
                             if c == z || c == y {
                                 continue;
                             }
-                            minor[ii * 1 + jj] = d_b[r * 3 + c];
-                            jj += 1;
+                            minor[ii] = d_b[r * 3 + c];
                         }
                         ii += 1;
                     }
@@ -15297,13 +14879,11 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -15451,13 +15031,11 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x4<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -15692,13 +15270,11 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_a[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_a[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -15846,13 +15422,11 @@ unsafe fn xw_hamiltonian_overlap_m0_33_prepared_f64x8<T: NOCIScalar>(
                             if r == eta || r == xi {
                                 continue;
                             }
-                            let mut jj = 0usize;
                             for c in 0..3 {
                                 if c == z || c == y {
                                     continue;
                                 }
-                                minor[ii * 1 + jj] = d_b[r * 3 + c];
-                                jj += 1;
+                                minor[ii] = d_b[r * 3 + c];
                             }
                             ii += 1;
                         }
@@ -16786,20 +16360,12 @@ fn xw_hamiltonian_overlap_m0_41_prepared<T: NOCIScalar>(
     }
     let n_b = w.bb.n();
     let x0_b = w.bb.x_slice(0);
-    let y0_b = w.bb.y_slice(0);
+    let _y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; 1];
 
-    // Load each entry of \mathbf D_b exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_b[i] * n_b;
-        for j in 0..1 {
-            d_b[i * 1 + j] = if i >= j {
-                x0_b[row + cols_b[j]]
-            } else {
-                y0_b[row + cols_b[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_b from the fundamental contractions.
+    let row = rows_b[0] * n_b;
+    d_b[0] = x0_b[row + cols_b[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_b = d_b[0];
@@ -16809,14 +16375,10 @@ fn xw_hamiltonian_overlap_m0_41_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
-    for z in 0..1 {
-        let base = cols_b[z] * n_b;
-        for eta in 0..1 {
-            let index = base + rows_b[eta];
-            let value = hcol0_b[index];
-            replacement_b += value;
-        }
-    }
+    let base = cols_b[0] * n_b;
+    let index = base + rows_b[0];
+    let value = hcol0_b[index];
+    replacement_b += value;
 
     // Contract \mathcal{II} in the orientation that adds only `min(L_\alpha^2, L_\beta^2)` outer
     // cofactor multiplications.
@@ -17067,25 +16629,17 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x4<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -17094,17 +16648,13 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x4<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm256_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm256_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -17365,25 +16915,17 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x8<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -17392,17 +16934,13 @@ unsafe fn xw_hamiltonian_overlap_m0_41_prepared_f64x8<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm512_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm512_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -19296,20 +18834,12 @@ fn xw_hamiltonian_overlap_m0_51_prepared<T: NOCIScalar>(
     }
     let n_b = w.bb.n();
     let x0_b = w.bb.x_slice(0);
-    let y0_b = w.bb.y_slice(0);
+    let _y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; 1];
 
-    // Load each entry of \mathbf D_b exactly once from the fundamental contractions.
-    for i in 0..1 {
-        let row = rows_b[i] * n_b;
-        for j in 0..1 {
-            d_b[i * 1 + j] = if i >= j {
-                x0_b[row + cols_b[j]]
-            } else {
-                y0_b[row + cols_b[j]]
-            };
-        }
-    }
+    // Load the rank-one entry of \mathbf D_b from the fundamental contractions.
+    let row = rows_b[0] * n_b;
+    d_b[0] = x0_b[row + cols_b[0]];
 
     // For `L = 1`, the only cofactor is the empty determinant with value one.
     let det_b = d_b[0];
@@ -19319,14 +18849,10 @@ fn xw_hamiltonian_overlap_m0_51_prepared<T: NOCIScalar>(
     // one-column intermediates.
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
-    for z in 0..1 {
-        let base = cols_b[z] * n_b;
-        for eta in 0..1 {
-            let index = base + rows_b[eta];
-            let value = hcol0_b[index];
-            replacement_b += value;
-        }
-    }
+    let base = cols_b[0] * n_b;
+    let index = base + rows_b[0];
+    let value = hcol0_b[index];
+    replacement_b += value;
 
     // Contract \mathcal{II} in the orientation that adds only `min(L_\alpha^2, L_\beta^2)` outer
     // cofactor multiplications.
@@ -19608,25 +19134,17 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x4<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m256d; 1] = [_mm256_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm256_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm256_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -19635,17 +19153,13 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x4<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm256_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 4];
-                for lane in 0..4 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm256_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm256_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 4];
+        for lane in 0..4 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm256_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm256_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -19937,25 +19451,17 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x8<T: NOCIScalar>(
         let x0_b_t = w.bb.x_slice(0);
         let y0_b_t = w.bb.y_slice(0);
         let x0_b = std::slice::from_raw_parts(x0_b_t.as_ptr().cast::<f64>(), x0_b_t.len());
-        let y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
+        let _y0_b = std::slice::from_raw_parts(y0_b_t.as_ptr().cast::<f64>(), y0_b_t.len());
         let mut d_b: [__m512d; 1] = [_mm512_setzero_pd(); 1];
 
         // Gather one contraction-determinant entry across independent pairs, then perform all
         // determinant algebra vertically across SIMD lanes.
-        for i in 0..1 {
-            for j in 0..1 {
-                let mut values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = rows_b[lane][i] * n_b + cols_b[lane][j];
-                    values[lane] = if i >= j {
-                        *x0_b.get_unchecked(index)
-                    } else {
-                        *y0_b.get_unchecked(index)
-                    };
-                }
-                d_b[i * 1 + j] = _mm512_loadu_pd(values.as_ptr());
-            }
+        let mut values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = rows_b[lane][0] * n_b + cols_b[lane][0];
+            values[lane] = *x0_b.get_unchecked(index);
         }
+        d_b[0] = _mm512_loadu_pd(values.as_ptr());
 
         // The rank-one cofactor is exactly one, so the replacement contraction needs no cofactor
         // multiplication.
@@ -19964,17 +19470,13 @@ unsafe fn xw_hamiltonian_overlap_m0_51_prepared_f64x8<T: NOCIScalar>(
         let hcol0_b_t = w.bb.hcol0_t_slice();
         let hcol0_b = std::slice::from_raw_parts(hcol0_b_t.as_ptr().cast::<f64>(), hcol0_b_t.len());
         let mut replacement_b = _mm512_setzero_pd();
-        for z in 0..1 {
-            for eta in 0..1 {
-                let mut lane_values = [0.0f64; 8];
-                for lane in 0..8 {
-                    let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
-                    lane_values[lane] = *hcol0_b.get_unchecked(index);
-                }
-                let values = _mm512_loadu_pd(lane_values.as_ptr());
-                replacement_b = _mm512_add_pd(replacement_b, values);
-            }
+        let mut lane_values = [0.0f64; 8];
+        for lane in 0..8 {
+            let index = cols_b[lane][0] * n_b + rows_b[lane][0];
+            lane_values[lane] = *hcol0_b.get_unchecked(index);
         }
+        let values = _mm512_loadu_pd(lane_values.as_ptr());
+        replacement_b = _mm512_add_pd(replacement_b, values);
 
         // Contract \mathcal{II} with the smaller cofactor space on the outside to minimise vector
         // multiplications.
@@ -20890,13 +20392,13 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                                 if r == eta || r == xi {
                                     continue;
                                 }
-                                let mut jj = 0usize;
+                                let mut minor_col = 0usize;
                                 for c in 0..la {
                                     if c == z || c == y {
                                         continue;
                                     }
-                                    minor[ii * (la - 2) + jj] = d[r * la + c];
-                                    jj += 1;
+                                    minor[ii * (la - 2) + minor_col] = d[r * la + c];
+                                    minor_col += 1;
                                 }
                                 ii += 1;
                             }
@@ -20963,13 +20465,13 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                                 if r == eta || r == xi {
                                     continue;
                                 }
-                                let mut jj = 0usize;
+                                let mut minor_col = 0usize;
                                 for c in 0..lb {
                                     if c == z || c == y {
                                         continue;
                                     }
-                                    minor[ii * (lb - 2) + jj] = d[r * lb + c];
-                                    jj += 1;
+                                    minor[ii * (lb - 2) + minor_col] = d[r * lb + c];
+                                    minor_col += 1;
                                 }
                                 ii += 1;
                             }
@@ -21154,8 +20656,10 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                 // Evaluate the two-column `\mathcal J` contribution from first minors of the
                 // same mixed determinant. The existing replacement helpers preserve the stored
                 // pair-exchange symmetry and assignment ordering of the original evaluator.
-                for i in 0..la {
-                    for j in 0..la {
+                let mut i = 0usize;
+                while i < la {
+                    let mut j = 0usize;
+                    while j < la {
                         let phase = if ((i + j) & 1) == 0 { one } else { -one };
                         let ri = scratch.rows[i];
                         let cj = scratch.cols[j];
@@ -21194,7 +20698,9 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                                 }
                             },
                         );
+                        j += 1;
                     }
+                    i += 1;
                 }
             }
 
@@ -21285,8 +20791,10 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                     cols: scratch.cols.as_slice(),
                 };
 
-                for i in 0..lb {
-                    for j in 0..lb {
+                let mut i = 0usize;
+                while i < lb {
+                    let mut j = 0usize;
+                    while j < lb {
                         let phase = if ((i + j) & 1) == 0 { one } else { -one };
                         let ri = scratch.rows[i];
                         let cj = scratch.cols[j];
@@ -21325,7 +20833,9 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                                 }
                             },
                         );
+                        j += 1;
                     }
+                    i += 1;
                 }
             }
 
@@ -21409,10 +20919,12 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
             // Contract the alpha cofactor with a beta-column replacement of `\mathcal{II}`.
             // This reproduces the existing assignment ordering while avoiding a separate tensor
             // pass.
-            for i in 0..la {
+            let mut i = 0usize;
+            while i < la {
                 let ra = rows_a[i];
 
-                for j in 0..la {
+                let mut j = 0usize;
+                while j < la {
                     let ca = cols_a[j];
                     let cofa = scratch.adjt_deta.as_slice()[i * la + j];
                     let ma1 = bit(bits_a, j + 1);
@@ -21434,7 +20946,9 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
 
                         contrib += cofa * det_repl;
                     }
+                    j += 1;
                 }
+                i += 1;
             }
 
             h2ab += contrib;

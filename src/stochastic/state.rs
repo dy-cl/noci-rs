@@ -539,11 +539,15 @@ impl ThreadPropagation {
         shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
-        overlap_factors: Option<&OverlapFactors>,
-        overlap_generator: Option<&OverlapWeightedGenerator>,
-        overlap_weight: f64,
-        optimise_overlap_weight: bool,
+        overlap: (
+            Option<&OverlapFactors>,
+            Option<&OverlapWeightedGenerator>,
+            f64,
+            bool,
+        ),
     ) {
+        let (overlap_factors, overlap_generator, overlap_weight, optimise_overlap_weight) = overlap;
+
         if self.spawn_requests.is_empty() {
             return;
         }
@@ -681,10 +685,14 @@ impl ThreadPropagation {
         shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
         run: &QMCRunInfo,
-        overlap_factors: Option<&OverlapFactors>,
-        overlap_generator: Option<&OverlapWeightedGenerator>,
-        overlap_weight: f64,
+        overlap: (
+            Option<&OverlapFactors>,
+            Option<&OverlapWeightedGenerator>,
+            f64,
+        ),
     ) {
+        let (overlap_factors, overlap_generator, overlap_weight) = overlap;
+
         if population == 0.0 {
             return;
         }

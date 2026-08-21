@@ -19,7 +19,7 @@ pub use prepare::prepare_same;
 
 // Crate-visible function re-exports.
 pub(crate) use onebody::xw_f;
-pub(crate) use overlap::{xw_overlap_same_f64, xw_overlap_same_f64_batched};
+pub(crate) use overlap::{SameSpinOverlapBatch, xw_overlap_same_f64_batched};
 pub(crate) use preparehamiltonianoverlap::{
     xw_hamiltonian_overlap_prepared, xw_hamiltonian_overlap_prepared_batched,
 };

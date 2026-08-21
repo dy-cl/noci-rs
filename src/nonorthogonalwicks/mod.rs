@@ -53,8 +53,8 @@ pub(crate) use view::WicksPairView;
 
 // Crate-visible function re-exports.
 pub(crate) use eval::{
-    prepare_same, xw_f, xw_f_overlap_prepared, xw_hamiltonian_overlap_prepared,
-    xw_hamiltonian_overlap_prepared_batched, xw_overlap, xw_overlap_same_f64,
+    SameSpinOverlapBatch, prepare_same, xw_f, xw_f_overlap_prepared,
+    xw_hamiltonian_overlap_prepared, xw_hamiltonian_overlap_prepared_batched, xw_overlap,
     xw_overlap_same_f64_batched,
 };
 #[cfg(target_arch = "x86_64")]

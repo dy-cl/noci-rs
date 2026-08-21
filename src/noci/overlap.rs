@@ -3,7 +3,7 @@
 // Crate-root imports.
 use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
-use crate::nonorthogonalwicks::{prepare_same, xw_overlap, xw_overlap_same_f64};
+use crate::nonorthogonalwicks::{prepare_same, xw_overlap};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -124,20 +124,14 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
             return <T as From<f64>>::from(0.0);
         }
 
-        let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
-        let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
         let zero = <T as From<f64>>::from(0.0);
 
-        prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        let sa = pha * xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-
+        let sa = calculate_s_alpha_pair_wicks(ldet, gdet, &w, scratch);
         if sa == zero {
             return zero;
         }
 
-        prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        let sb = phb * xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-
+        let sb = calculate_s_beta_pair_wicks(ldet, gdet, &w, scratch);
         if sb == zero {
             return zero;
         }
@@ -153,17 +147,20 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
 /// - `w`: Wick intermediates for the ordered parent pair.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `f64`: Alpha same-spin overlap including determinant phases.
+/// - `T`: Alpha same-spin overlap including determinant phases.
 #[inline(always)]
-pub(in crate::noci) fn calculate_s_alpha_pair_wicks(
-    ldet: &DetState<f64>,
-    gdet: &DetState<f64>,
-    w: &WicksPairView<'_, f64>,
-    scratch: &mut WickScratchSpin<f64>,
-) -> f64 {
+pub(in crate::noci) fn calculate_s_alpha_pair_wicks<T: NOCIScalar>(
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    w: &WicksPairView<'_, T>,
+    scratch: &mut WickScratchSpin<T>,
+) -> T {
     let l_ex = &ldet.excitation.alpha;
     let g_ex = &gdet.excitation.alpha;
-    ldet.pha * gdet.pha * xw_overlap_same_f64(&w.aa, l_ex, g_ex, &mut scratch.aa)
+    let phase = <T as From<f64>>::from(ldet.pha * gdet.pha);
+
+    prepare_same(&w.aa, l_ex, g_ex, &mut scratch.aa);
+    phase * xw_overlap(&w.aa, l_ex, g_ex, &mut scratch.aa)
 }
 
 /// Calculate the beta same-spin overlap for an ordered Wick pair.
@@ -173,15 +170,18 @@ pub(in crate::noci) fn calculate_s_alpha_pair_wicks(
 /// - `w`: Wick intermediates for the ordered parent pair.
 /// - `scratch`: Scratch space for Wick's calculations.
 /// # Returns:
-/// - `f64`: Beta same-spin overlap including determinant phases.
+/// - `T`: Beta same-spin overlap including determinant phases.
 #[inline(always)]
-pub(in crate::noci) fn calculate_s_beta_pair_wicks(
-    ldet: &DetState<f64>,
-    gdet: &DetState<f64>,
-    w: &WicksPairView<'_, f64>,
-    scratch: &mut WickScratchSpin<f64>,
-) -> f64 {
+pub(in crate::noci) fn calculate_s_beta_pair_wicks<T: NOCIScalar>(
+    ldet: &DetState<T>,
+    gdet: &DetState<T>,
+    w: &WicksPairView<'_, T>,
+    scratch: &mut WickScratchSpin<T>,
+) -> T {
     let l_ex = &ldet.excitation.beta;
     let g_ex = &gdet.excitation.beta;
-    ldet.phb * gdet.phb * xw_overlap_same_f64(&w.bb, l_ex, g_ex, &mut scratch.bb)
+    let phase = <T as From<f64>>::from(ldet.phb * gdet.phb);
+
+    prepare_same(&w.bb, l_ex, g_ex, &mut scratch.bb);
+    phase * xw_overlap(&w.bb, l_ex, g_ex, &mut scratch.bb)
 }

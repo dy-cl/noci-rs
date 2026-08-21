@@ -78,7 +78,7 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
 ) {
     let wicks = data.wicks.unwrap();
     let ngroups = wicks.nref * wicks.nref;
-    let group_capacity = (pairs.len() + ngroups - 1) / ngroups;
+    let group_capacity = pairs.len().div_ceil(ngroups);
     let mut groups: Vec<Vec<(usize, usize, usize)>> = (0..ngroups)
         .map(|_| Vec::with_capacity(group_capacity))
         .collect();
@@ -119,8 +119,7 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
         let w = wicks.pair(lp, gp);
         xw_hamiltonian_overlap_prepared_batched(
             &w,
-            data.basis,
-            reduced_basis,
+            (data.basis, reduced_basis),
             requests,
             data.ao.enuc,
             scratch,
@@ -432,10 +431,8 @@ pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
 
         xw_hamiltonian_overlap_prepared(
             &w,
-            &ldet.excitation,
-            &gdet.excitation,
-            &ldet.excitation_cache,
-            &gdet.excitation_cache,
+            (&ldet.excitation, &gdet.excitation),
+            (&ldet.excitation_cache, &gdet.excitation_cache),
             excitation_phase,
             ao.enuc,
             scratch,

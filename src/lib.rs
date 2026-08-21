@@ -230,8 +230,6 @@ impl ReducedOneSpinDetState {
 /// Reduced determinant metadata for fixed-rank two-spin contractions.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ReducedTwoSpinDetState {
-    /// Global determinant index used to recover the full `DetState` when required.
-    pub(crate) det: usize,
     /// Product of alpha- and beta-spin fermionic phases relative to the parent determinant.
     pub(crate) phase: f64,
     /// Cached excitation ranks and orbital labels for both spin sectors.
@@ -241,19 +239,16 @@ pub(crate) struct ReducedTwoSpinDetState {
 impl ReducedTwoSpinDetState {
     /// Construct reduced determinant metadata for both spin sectors.
     /// # Arguments:
-    /// - `det`: Global determinant index `I`.
     /// - `phase`: Product of alpha- and beta-spin fermionic phases for determinant `I`.
     /// - `excitation_cache`: Cached excitation ranks and orbital labels for both spin sectors.
     /// # Returns
     /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
     #[inline(always)]
     pub(crate) fn new(
-        det: usize,
         phase: f64,
         excitation_cache: ExcitationCache,
     ) -> Self {
         Self {
-            det,
             phase,
             excitation_cache,
         }
@@ -261,16 +256,12 @@ impl ReducedTwoSpinDetState {
 
     /// Construct reduced two-spin metadata from a full determinant state.
     /// # Arguments:
-    /// - `det`: Global determinant index `I`.
     /// - `state`: Full determinant state containing both spin phases and excitation metadata.
     /// # Returns
     /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
     #[inline(always)]
-    pub(crate) fn from_state<T: StateScalar>(
-        det: usize,
-        state: &DetState<T>,
-    ) -> Self {
-        Self::new(det, state.pha * state.phb, state.excitation_cache)
+    pub(crate) fn from_state<T: StateScalar>(state: &DetState<T>) -> Self {
+        Self::new(state.pha * state.phb, state.excitation_cache)
     }
 }
 

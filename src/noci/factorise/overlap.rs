@@ -5,7 +5,9 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::maths::dot_f64;
-use crate::nonorthogonalwicks::{WickScratchSpin, xw_overlap_same_f64_batched};
+use crate::nonorthogonalwicks::{
+    SameSpinOverlapBatch, WickScratchSpin, xw_overlap_same_f64_batched,
+};
 
 // Crate-root imports.
 use crate::noci::overlap::{calculate_s_pair, calculate_s_pair_naive};
@@ -301,8 +303,8 @@ impl SpinFactorisation {
                     let nsb = source.breps.len();
                     let (lp, gp, target_left) =
                         ordered_parent_pair(self, target_parent, source_parent);
-                    let mut afac = vec![0.0; nta * nsa];
-                    let mut bfac = vec![0.0; ntb * nsb];
+                    let mut afac = vec![0.0f64; nta * nsa];
+                    let mut bfac = vec![0.0f64; ntb * nsb];
 
                     afac.par_chunks_mut(nsa)
                         .zip(target.areps.par_iter())
@@ -310,13 +312,15 @@ impl SpinFactorisation {
                             let pair = wicks.pair(lp, gp);
                             xw_overlap_same_f64_batched(
                                 &pair.aa,
-                                data.basis,
-                                *target_rep,
-                                &source.areps,
-                                target_left,
-                                true,
+                                SameSpinOverlapBatch {
+                                    basis: data.basis,
+                                    target: *target_rep,
+                                    sources: &source.areps,
+                                    target_left,
+                                    alpha: true,
+                                    out: row,
+                                },
                                 &mut scratch.aa,
-                                row,
                             );
                         });
 
@@ -326,13 +330,15 @@ impl SpinFactorisation {
                             let pair = wicks.pair(lp, gp);
                             xw_overlap_same_f64_batched(
                                 &pair.bb,
-                                data.basis,
-                                *target_rep,
-                                &source.breps,
-                                target_left,
-                                false,
+                                SameSpinOverlapBatch {
+                                    basis: data.basis,
+                                    target: *target_rep,
+                                    sources: &source.breps,
+                                    target_left,
+                                    alpha: false,
+                                    out: row,
+                                },
                                 &mut scratch.bb,
-                                row,
                             );
                         });
 

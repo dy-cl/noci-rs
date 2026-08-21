@@ -210,8 +210,7 @@ pub fn qmc_step(
     let reduced_basis = data
         .basis
         .iter()
-        .enumerate()
-        .map(|(det, state)| ReducedTwoSpinDetState::from_state(det, state))
+        .map(ReducedTwoSpinDetState::from_state)
         .collect::<Vec<_>>();
 
     let run = QMCRunInfo {
@@ -352,8 +351,7 @@ pub fn qmc_step(
             );
 
             super::metric::propagate_iteration(
-                iter,
-                &state.mc.sampled,
+                (iter, &state.mc.sampled),
                 data,
                 &run,
                 ShiftSpec {
@@ -361,10 +359,12 @@ pub fn qmc_step(
                     es_s: *es,
                     propagator: data.input.prop_ref().propagator,
                 },
-                overlap_generation.as_ref().map(|(factors, _)| factors),
-                overlap_generation.as_ref().map(|(_, generator)| generator),
-                state.overlap_weight,
-                qmc.optimise_overlap_weight,
+                (
+                    overlap_generation.as_ref().map(|(factors, _)| factors),
+                    overlap_generation.as_ref().map(|(_, generator)| generator),
+                    state.overlap_weight,
+                    qmc.optimise_overlap_weight,
+                ),
                 &mut workers,
                 &mut propagation_result,
             );

@@ -105,6 +105,22 @@ pub(crate) fn xw_overlap_same_f64(
     xw_overlap(w, l_ex, g_ex, scratch)
 }
 
+/// Inputs and outputs for one row of real same-spin overlap factors.
+pub(crate) struct SameSpinOverlapBatch<'a> {
+    /// Determinant basis used only by generic fallback evaluation.
+    pub(crate) basis: &'a [DetState<f64>],
+    /// Reduced target spin representative shared by the row.
+    pub(crate) target: ReducedOneSpinDetState,
+    /// Reduced source spin representatives in output-column order.
+    pub(crate) sources: &'a [ReducedOneSpinDetState],
+    /// Whether the target belongs to the left reference in `w`.
+    pub(crate) target_left: bool,
+    /// Whether to evaluate alpha-spin rather than beta-spin overlap factors.
+    pub(crate) alpha: bool,
+    /// Output same-spin overlap factors in source-representative order.
+    pub(crate) out: &'a mut [f64],
+}
+
 /// Evaluate one row of real same-spin overlaps for one ordered reference pair.
 /// The target representative is paired with every source representative. Requests with `m = 0`,
 /// `L = 1,\ldots,6`, and individual excitation ranks at most four are grouped by fixed contraction
@@ -113,25 +129,23 @@ pub(crate) fn xw_overlap_same_f64(
 /// Excitation phases are applied here so each output is the complete alpha- or beta-spin factor.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `basis`: Determinant basis used only by generic fallback evaluation.
-/// - `target`: Reduced target spin representative shared by the row.
-/// - `sources`: Reduced source spin representatives in output-column order.
-/// - `target_left`: Whether the target belongs to the left reference in `w`.
-/// - `alpha`: Whether to evaluate alpha-spin rather than beta-spin overlap factors.
+/// - `batch`: One row of same-spin overlap-factor work.
 /// - `scratch`: Reusable Wick workspace for scalar fallback evaluation.
-/// - `out`: Output same-spin overlap factors in source-representative order.
 /// # Returns
-/// - `()`: Writes one complete same-spin overlap-factor row into `out`.
+/// - `()`: Writes one complete same-spin overlap-factor row into `batch.out`.
 pub(crate) fn xw_overlap_same_f64_batched(
     w: &SameSpinView<'_, f64>,
-    basis: &[DetState<f64>],
-    target: ReducedOneSpinDetState,
-    sources: &[ReducedOneSpinDetState],
-    target_left: bool,
-    alpha: bool,
+    batch: SameSpinOverlapBatch<'_>,
     scratch: &mut WickScratch<f64>,
-    out: &mut [f64],
 ) {
+    let SameSpinOverlapBatch {
+        basis,
+        target,
+        sources,
+        target_left,
+        alpha,
+        out,
+    } = batch;
     let target_cache = target.excitation_cache;
     let target_phase = target.phase;
 
@@ -195,8 +209,7 @@ pub(crate) fn xw_overlap_same_f64_batched(
             }
 
             for l in 1..=6 {
-                for lane in 0..counts[l] {
-                    let col = outputs[l][lane];
+                for &col in outputs[l][..counts[l]].iter() {
                     let source = sources[col];
                     let target_state = &basis[target.det];
                     let source_state = &basis[source.det];
@@ -279,8 +292,7 @@ pub(crate) fn xw_overlap_same_f64_batched(
             }
 
             for l in 1..=6 {
-                for lane in 0..counts[l] {
-                    let col = outputs[l][lane];
+                for &col in outputs[l][..counts[l]].iter() {
                     let source = sources[col];
                     let target_state = &basis[target.det];
                     let source_state = &basis[source.det];
@@ -424,7 +436,9 @@ unsafe fn xw_overlap_m0_l1_prepared_f64x4(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 4]; 1];
-        for lane in 0..4 {
+        let mut lane = 0;
+
+        while lane < 4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 1];
@@ -443,6 +457,7 @@ unsafe fn xw_overlap_m0_l1_prepared_f64x4(
 
             // Read exactly one contraction entry, the `L^2` input lower bound.
             d[0][lane] = x0[rows[0] * n + cols[0]];
+            lane += 1;
         }
 
         let det_v = _mm256_loadu_pd(d[0].as_ptr());
@@ -481,7 +496,9 @@ unsafe fn xw_overlap_m0_l1_prepared_f64x8(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 8]; 1];
-        for lane in 0..8 {
+        let mut lane = 0;
+
+        while lane < 8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 1];
@@ -500,6 +517,7 @@ unsafe fn xw_overlap_m0_l1_prepared_f64x8(
 
             // Read exactly one contraction entry, the `L^2` input lower bound.
             d[0][lane] = x0[rows[0] * n + cols[0]];
+            lane += 1;
         }
 
         let det_v = _mm512_loadu_pd(d[0].as_ptr());
@@ -539,7 +557,9 @@ unsafe fn xw_overlap_m0_l2_prepared_f64x4(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 4]; 4];
-        for lane in 0..4 {
+        let mut lane = 0;
+
+        while lane < 4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 2];
@@ -562,6 +582,7 @@ unsafe fn xw_overlap_m0_l2_prepared_f64x4(
 
             d[2][lane] = x0[rows[1] * n + cols[0]];
             d[3][lane] = x0[rows[1] * n + cols[1]];
+            lane += 1;
         }
 
         // The two products in `D_{00} D_{11} - D_{01} D_{10}` are both required.
@@ -609,7 +630,9 @@ unsafe fn xw_overlap_m0_l2_prepared_f64x8(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 8]; 4];
-        for lane in 0..8 {
+        let mut lane = 0;
+
+        while lane < 8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 2];
@@ -632,6 +655,7 @@ unsafe fn xw_overlap_m0_l2_prepared_f64x8(
 
             d[2][lane] = x0[rows[1] * n + cols[0]];
             d[3][lane] = x0[rows[1] * n + cols[1]];
+            lane += 1;
         }
 
         // The two products in `D_{00} D_{11} - D_{01} D_{10}` are both required.
@@ -679,7 +703,9 @@ unsafe fn xw_overlap_m0_l3_prepared_f64x4(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 4]; 9];
-        for lane in 0..4 {
+        let mut lane = 0;
+
+        while lane < 4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 3];
@@ -708,6 +734,7 @@ unsafe fn xw_overlap_m0_l3_prepared_f64x4(
             d[6][lane] = x0[rows[2] * n + cols[0]];
             d[7][lane] = x0[rows[2] * n + cols[1]];
             d[8][lane] = x0[rows[2] * n + cols[2]];
+            lane += 1;
         }
 
         // The three distinct `2 \\times 2` minors require six products and the first-row
@@ -775,7 +802,9 @@ unsafe fn xw_overlap_m0_l3_prepared_f64x8(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 8]; 9];
-        for lane in 0..8 {
+        let mut lane = 0;
+
+        while lane < 8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 3];
@@ -804,6 +833,7 @@ unsafe fn xw_overlap_m0_l3_prepared_f64x8(
             d[6][lane] = x0[rows[2] * n + cols[0]];
             d[7][lane] = x0[rows[2] * n + cols[1]];
             d[8][lane] = x0[rows[2] * n + cols[2]];
+            lane += 1;
         }
 
         // The three distinct `2 \\times 2` minors require six products and the first-row
@@ -871,7 +901,9 @@ unsafe fn xw_overlap_m0_l4_prepared_f64x4(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 4]; 16];
-        for lane in 0..4 {
+        let mut lane = 0;
+
+        while lane < 4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 4];
@@ -908,6 +940,7 @@ unsafe fn xw_overlap_m0_l4_prepared_f64x4(
             d[13][lane] = x0[rows[3] * n + cols[1]];
             d[14][lane] = x0[rows[3] * n + cols[2]];
             d[15][lane] = x0[rows[3] * n + cols[3]];
+            lane += 1;
         }
 
         // The six distinct `2 \\times 2` minors of the final two rows require 12 products.
@@ -1027,7 +1060,9 @@ unsafe fn xw_overlap_m0_l4_prepared_f64x8(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 8]; 16];
-        for lane in 0..8 {
+        let mut lane = 0;
+
+        while lane < 8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 4];
@@ -1064,6 +1099,7 @@ unsafe fn xw_overlap_m0_l4_prepared_f64x8(
             d[13][lane] = x0[rows[3] * n + cols[1]];
             d[14][lane] = x0[rows[3] * n + cols[2]];
             d[15][lane] = x0[rows[3] * n + cols[3]];
+            lane += 1;
         }
 
         // The six distinct `2 \\times 2` minors of the final two rows require 12 products.
@@ -1186,7 +1222,9 @@ unsafe fn xw_overlap_m0_l5_prepared_f64x4(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 4]; 25];
-        for lane in 0..4 {
+        let mut lane = 0;
+
+        while lane < 4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 5];
@@ -1233,6 +1271,7 @@ unsafe fn xw_overlap_m0_l5_prepared_f64x4(
             d[22][lane] = x0[rows[4] * n + cols[2]];
             d[23][lane] = x0[rows[4] * n + cols[3]];
             d[24][lane] = x0[rows[4] * n + cols[4]];
+            lane += 1;
         }
 
         let m2_01 = _mm256_fmsub_pd(
@@ -1412,7 +1451,9 @@ unsafe fn xw_overlap_m0_l5_prepared_f64x8(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 8]; 25];
-        for lane in 0..8 {
+        let mut lane = 0;
+
+        while lane < 8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 5];
@@ -1459,6 +1500,7 @@ unsafe fn xw_overlap_m0_l5_prepared_f64x8(
             d[22][lane] = x0[rows[4] * n + cols[2]];
             d[23][lane] = x0[rows[4] * n + cols[3]];
             d[24][lane] = x0[rows[4] * n + cols[4]];
+            lane += 1;
         }
 
         let m2_01 = _mm512_fmsub_pd(
@@ -1639,7 +1681,9 @@ unsafe fn xw_overlap_m0_l6_prepared_f64x4(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 4]; 36];
-        for lane in 0..4 {
+        let mut lane = 0;
+
+        while lane < 4 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 6];
@@ -1698,6 +1742,7 @@ unsafe fn xw_overlap_m0_l6_prepared_f64x4(
             d[33][lane] = x0[rows[5] * n + cols[3]];
             d[34][lane] = x0[rows[5] * n + cols[4]];
             d[35][lane] = x0[rows[5] * n + cols[5]];
+            lane += 1;
         }
 
         let m2_01 = _mm256_fmsub_pd(
@@ -2020,7 +2065,9 @@ unsafe fn xw_overlap_m0_l6_prepared_f64x8(
         let nvirt = w.nmo - nocc;
 
         let mut d = [[0.0f64; 8]; 36];
-        for lane in 0..8 {
+        let mut lane = 0;
+
+        while lane < 8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
             let mut rows = [0usize; 6];
@@ -2079,6 +2126,7 @@ unsafe fn xw_overlap_m0_l6_prepared_f64x8(
             d[33][lane] = x0[rows[5] * n + cols[3]];
             d[34][lane] = x0[rows[5] * n + cols[4]];
             d[35][lane] = x0[rows[5] * n + cols[5]];
+            lane += 1;
         }
 
         let m2_01 = _mm512_fmsub_pd(
