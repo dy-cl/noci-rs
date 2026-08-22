@@ -960,6 +960,7 @@ pub fn qmc_step(
         state.start_report * qmc.ncycles,
         &state,
         data.basis[0].e,
+        *es,
         propagator,
     );
 

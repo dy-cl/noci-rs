@@ -43,6 +43,7 @@ pub(in crate::stochastic) fn print_header(
 /// - `iter`: Iteration number to print.
 /// - `state`: Propagation state containing QMC statistics.
 /// - `e0`: Energy of the first basis determinant.
+/// - `shift`: Population-control shift.
 /// - `propagator`: Propagator used by the stochastic calculation.
 /// # Returns:
 /// - `()`: Writes the initial iteration line to stdout on rank zero.
@@ -51,9 +52,12 @@ pub(in crate::stochastic) fn print_initial_row(
     iter: usize,
     state: &PropagationState,
     e0: f64,
+    shift: f64,
     propagator: Propagator,
 ) {
     if irank == 0 {
+        let shift = if state.reached { shift } else { 0.0 };
+
         match propagator {
             Propagator::DirectOverlap => println!(
                 "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
@@ -62,7 +66,7 @@ pub(in crate::stochastic) fn print_initial_row(
                 state.pe.den,
                 state.eprojcur,
                 state.eprojcur - e0,
-                0.0,
+                shift,
                 state.prev_pop.nw,
                 state.prev_pop.nref,
                 state.prev_pop.nsampled,
@@ -75,7 +79,7 @@ pub(in crate::stochastic) fn print_initial_row(
                 state.pe.den,
                 state.eprojcur,
                 state.eprojcur - e0,
-                0.0,
+                shift,
                 state.prev_pop.nw,
                 state.prev_pop.nref,
                 "-",
@@ -106,6 +110,8 @@ pub(in crate::stochastic) fn print_row(
     propagator: Propagator,
 ) {
     if irank == 0 {
+        let shift = if state.reached { shift } else { 0.0 };
+
         match propagator {
             Propagator::DirectOverlap => println!(
                 "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
@@ -114,7 +120,7 @@ pub(in crate::stochastic) fn print_row(
                 state.pe.den,
                 state.eprojcur,
                 state.eprojcur - e0,
-                if state.reached { shift } else { 0.0 },
+                shift,
                 stats.nw,
                 stats.nref,
                 stats.nsampled,
@@ -127,7 +133,7 @@ pub(in crate::stochastic) fn print_row(
                 state.pe.den,
                 state.eprojcur,
                 state.eprojcur - e0,
-                if state.reached { shift } else { 0.0 },
+                shift,
                 stats.nw,
                 stats.nref,
                 "-",
