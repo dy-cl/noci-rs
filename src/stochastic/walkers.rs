@@ -1,5 +1,7 @@
 // stochastic/walkers.rs
+
 // Standard library imports.
+use std::path::Path;
 use std::sync::Mutex;
 
 // External crate imports.
@@ -228,7 +230,14 @@ pub fn qmc_step(
 
     let overlap_generation = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
         let overlap_factor = SpinFactorisation::new(data);
-        let overlap_factors = overlap_factor.build_overlap_factors(data, true);
+        let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
+        let overlap_factors = overlap_factor.build_overlap_factors(
+            data,
+            Path::new(factor_cache),
+            world.rank(),
+            qmc.factor_tables,
+            true,
+        );
         let overlap_generator =
             OverlapWeightedGenerator::new(data, &overlap_factor, &overlap_factors);
         Some((overlap_factors, overlap_generator))

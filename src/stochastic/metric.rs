@@ -1,5 +1,7 @@
 // stochastic/metric.rs
+
 // Standard library imports.
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -884,7 +886,14 @@ pub fn qmc_step(
 
     let overlap_factor = SpinFactorisation::new(data);
     let build_overlap_cdfs = matches!(qmc.excitation_gen, ExcitationGen::OverlapWeighted);
-    let overlap_factors = overlap_factor.build_overlap_factors(data, build_overlap_cdfs);
+    let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
+    let overlap_factors = overlap_factor.build_overlap_factors(
+        data,
+        Path::new(factor_cache),
+        world.rank(),
+        qmc.factor_tables,
+        build_overlap_cdfs,
+    );
     let overlap_generator = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
         Some(OverlapWeightedGenerator::new(
             data,

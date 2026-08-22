@@ -414,6 +414,19 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             eprintln!("{msg}");
             std::process::exit(1);
         });
+        let factor_tables = read_snoci_storage(
+            "qmc.factor_tables",
+            qmc_tbl.get::<_, Value>("factor_tables"),
+            defaults.factor_tables,
+        );
+        if matches!(factor_tables, SNOCIStorage::None)
+            && excitation_gen == ExcitationGen::OverlapWeighted
+        {
+            eprintln!(
+                "qmc.factor_tables must be 'ram' or 'disk' with excitation_gen = \"overlap-weighted\""
+            );
+            std::process::exit(1);
+        }
         let overlap_weight = qmc_tbl
             .get("overlap_weight")
             .unwrap_or(defaults.overlap_weight);
@@ -453,6 +466,7 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
             nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,
+            factor_tables,
             overlap_weight,
             optimise_overlap_weight,
             seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),

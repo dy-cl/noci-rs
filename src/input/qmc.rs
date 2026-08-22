@@ -3,6 +3,9 @@
 // Standard library imports.
 use std::str::FromStr;
 
+// Parent/sibling imports.
+use super::SNOCIStorage;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum ExcitationGen {
     Uniform,
@@ -58,6 +61,8 @@ pub struct QMCOptions {
     pub nreports: usize,
     /// Excitation generator choice.
     pub excitation_gen: ExcitationGen,
+    /// Storage strategy for persistent overlap factor tables.
+    pub factor_tables: SNOCIStorage,
     /// Mixture weight for the factorised-overlap excitation proposal.
     pub overlap_weight: f64,
     /// Whether to optimise the overlap mixture weight during propagation.
@@ -78,6 +83,7 @@ impl Default for QMCOptions {
             ncycles: 10,
             nreports: 1000,
             excitation_gen: ExcitationGen::default(),
+            factor_tables: SNOCIStorage::RAM,
             overlap_weight: 0.0,
             optimise_overlap_weight: false,
             seed: None,

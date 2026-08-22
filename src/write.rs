@@ -204,6 +204,7 @@ pub fn print_input(input: &Input) {
                 ExcitationGen::OverlapWeighted => "overlap-weighted",
             };
             println!("EXCITATION_GEN: {}", excitation_gen);
+            println!("FACTOR_TABLES: {}", q.factor_tables.as_str());
             println!("OVERLAP_WEIGHT: {}", q.overlap_weight);
             println!("OPTIMISE_OVERLAP_WEIGHT: {}", q.optimise_overlap_weight);
             println!("SEED: {:?}", q.seed);
