@@ -27,10 +27,10 @@ pub fn fixture_dir(name: &str) -> PathBuf {
 /// - `(Input, AoData, Expected)`: Parsed input, generated AO data, and expected energies.
 pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
     let dir = fixture_dir(name);
-    let input = load_input(dir.join("input.lua").to_str().unwrap());
+    let input = load_input(dir.join("input.lua")).unwrap();
     generate_data_h5_for_geometry(&dir, &input, 0, "data.h5");
-    let input = load_input(dir.join("input.lua").to_str().unwrap());
-    let ao = read_integrals(dir.join("data.h5").to_str().unwrap());
+    let input = load_input(dir.join("input.lua")).unwrap();
+    let ao = read_integrals(dir.join("data.h5")).unwrap();
     let expected: T =
         serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, ao, expected)

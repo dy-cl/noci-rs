@@ -25,7 +25,7 @@ impl Default for WicksOptions {
             compare: false,
             enabled: true,
             storage: WicksStorage::RAM,
-            cachedir: Some(".".to_string()),
+            cachedir: None,
         }
     }
 }

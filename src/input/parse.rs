@@ -2,6 +2,7 @@
 
 // Standard library imports.
 use std::fs;
+use std::path::Path;
 
 // External crate imports.
 use rlua::{Lua, Table, Value};
@@ -13,6 +14,7 @@ use super::{
     SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
     SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
+use crate::{Error, Result};
 
 /// Read required table from Lua globals.
 /// # Arguments:
@@ -665,16 +667,21 @@ fn read_wicks(wicks_tbl: Option<Table>) -> WicksOptions {
 /// - `path`: File path to input file.
 /// # Returns:
 /// - `Input`: Parsed input options.
-pub fn load_input(path: &str) -> Input {
-    let src = fs::read_to_string(path).unwrap();
+pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
+    let path = path.as_ref();
+    let src = fs::read_to_string(path)
+        .map_err(|source| Error::io("failed to read input", path, source))?;
+
     let lua = Lua::new();
 
     let ctx = lua;
-    ctx.load(&src).exec().unwrap();
+    ctx.load(&src).exec()?;
+
     let globals = ctx.globals();
 
     let mol_tbl = required_table(&globals, "mol");
     let state_tbl = required_table(&globals, "states");
+
     let scf_tbl: Option<Table> = globals.get::<_, Option<Table>>("scf").unwrap_or(None);
     let write_tbl: Option<Table> = globals.get::<_, Option<Table>>("write").unwrap_or(None);
     let excit_tbl: Option<Table> = globals.get::<_, Option<Table>>("excit").unwrap_or(None);
@@ -685,7 +692,7 @@ pub fn load_input(path: &str) -> Input {
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
     let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
 
-    Input {
+    Ok(Input {
         mol: read_mol(mol_tbl),
         scf: read_scf(scf_tbl),
         write: read_write(write_tbl),
@@ -697,5 +704,5 @@ pub fn load_input(path: &str) -> Input {
         excit: read_excit(excit_tbl),
         prop: read_prop(prop_tbl),
         wicks: read_wicks(wicks_tbl),
-    }
+    })
 }

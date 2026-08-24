@@ -15,8 +15,9 @@ use crate::driver::scf::{
 use crate::driver::types::{Atoms, GeometryResults};
 use crate::input::{Input, StateType};
 use crate::mpiutils::broadcast;
+use crate::paths::RunPaths;
 use crate::read::read_integrals;
-use crate::{AoData, HSCFState, SCFState, timers};
+use crate::{AoData, HSCFState, Result, SCFState, timers};
 
 /// Decide whether this geometry needs holomorphic references.
 /// # Arguments:
@@ -46,17 +47,18 @@ pub fn run_geometry(
     input: &mut Input,
     prev_states: &[SCFState],
     prev_htracks: &[HSCFState],
+    paths: &RunPaths,
     world: &impl Communicator,
-) -> GeometryResults {
+) -> Result<GeometryResults> {
     let tol = 1e-8;
     timers::reset_all();
 
     if world.rank() == 0 {
-        run_pyscf(atoms, input);
+        run_pyscf(atoms, input, &paths.integral_file)?;
     }
     world.barrier();
 
-    let ao: AoData = read_integrals("data.h5");
+    let ao: AoData = read_integrals(&paths.integral_file)?;
 
     if should_run_holomorphic(input) {
         let mut prep = if world.rank() == 0 {
@@ -83,7 +85,7 @@ pub fn run_geometry(
             let post =
                 run_holomorphic_post_reference(&ao, &mut reference, input, tol, holomorphic, world);
             let timings = timers::snapshot_all_mpi(world);
-            GeometryResults::from_holomorphic(
+            Ok(GeometryResults::from_holomorphic(
                 r,
                 (prep.states, prep.hstates, prep.htracks),
                 reference,
@@ -91,7 +93,7 @@ pub fn run_geometry(
                 ao.e_fci,
                 world.size() as usize,
                 timings,
-            )
+            ))
         } else {
             let mut reference = run_reference_space(
                 &ao,
@@ -115,7 +117,7 @@ pub fn run_geometry(
             );
             results.hstates = prep.hstates;
             results.htracks = prep.htracks;
-            results
+            Ok(results)
         }
     } else {
         let mut prep = if world.rank() == 0 {
@@ -133,7 +135,7 @@ pub fn run_geometry(
             run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Real, world);
         let post = run_real_post_reference(&ao, &prep.states, &mut reference, input, tol, world);
         let timings = timers::snapshot_all_mpi(world);
-        GeometryResults::from_real(
+        Ok(GeometryResults::from_real(
             r,
             prep.states,
             reference,
@@ -141,6 +143,6 @@ pub fn run_geometry(
             ao.e_fci,
             world.size() as usize,
             timings,
-        )
+        ))
     }
 }

@@ -56,16 +56,16 @@ struct ExpectedHolomorphicReferenceNoci {
 ///   expected energies.
 fn load_scan_test<T: DeserializeOwned>(name: &str) -> (Input, Vec<AoData>, T) {
     let dir = fixture_dir(name);
-    let input = load_input(dir.join("input.lua").to_str().unwrap());
+    let input = load_input(dir.join("input.lua")).unwrap();
 
     let mut aos = Vec::with_capacity(input.mol.geoms.len());
     for i in 0..input.mol.geoms.len() {
         let fname = format!("data_{i}.h5");
         generate_data_h5_for_geometry(&dir, &input, i, &fname);
-        aos.push(read_integrals(dir.join(fname).to_str().unwrap()));
+        aos.push(read_integrals(dir.join(fname)).unwrap());
     }
 
-    let input = load_input(dir.join("input.lua").to_str().unwrap());
+    let input = load_input(dir.join("input.lua")).unwrap();
     let expected: T =
         serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, aos, expected)

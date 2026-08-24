@@ -22,6 +22,7 @@
 pub mod basis;
 pub mod deterministic;
 pub mod driver;
+pub mod error;
 pub mod input;
 pub mod maths;
 pub mod mpiutils;
@@ -31,6 +32,7 @@ pub mod noci;
 pub mod nonorthogonalwicks;
 #[cfg(feature = "nocc")]
 pub mod orbitals;
+pub mod paths;
 pub mod read;
 pub mod scalar;
 pub mod scf;
@@ -47,6 +49,7 @@ use serde::{Deserialize, Serialize};
 // Crate-root imports.
 use crate::noci::{MOCache, NOCIScalar};
 
+pub use error::{Error, Result};
 pub use scalar::{DetState, HSCFState, SCFState, StateScalar};
 
 pub struct AoData {

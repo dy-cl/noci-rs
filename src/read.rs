@@ -5,8 +5,8 @@ use hdf5::types::VarLenUnicode;
 use ndarray::{Array1, Array2, Array4};
 
 // Crate-root imports.
-use crate::AoData;
 use crate::maths::loewdin_x;
+use crate::{AoData, Result};
 
 /// Antisymmetrise the ERIs as:
 ///     `t[a, b, c, d] = (ab|cd) --> (ab||cd) = (ab|cd) - (ac|bd)`.
@@ -25,27 +25,33 @@ fn antisymmetrise(eri_coul: &Array4<f64>) -> Array4<f64> {
 /// - `path`: Path to data file.
 /// # Returns
 /// - `AoData`: AO integrals and associated metadata read from the HDF5 file.
-pub fn read_integrals(path: &str) -> AoData {
-    let f = File::open(path).unwrap();
-    let n: usize = f.dataset("nao").unwrap().read_scalar().unwrap();
-    let eri_coul: Array4<f64> = f.dataset("eri").unwrap().read().unwrap();
+pub fn read_integrals(path: impl AsRef<std::path::Path>) -> Result<AoData> {
+    let f = File::open(path)?;
+
+    let n: usize = f.dataset("nao")?.read_scalar()?;
+
+    let eri_coul: Array4<f64> = f.dataset("eri")?.read()?;
     let eri_asym = antisymmetrise(&eri_coul);
-    let s: Array2<f64> = f.dataset("S").unwrap().read().unwrap();
+
+    let s: Array2<f64> = f.dataset("S")?.read()?;
     let x = loewdin_x(&s, false, 1e-12);
-    let h: Array2<f64> = f.dataset("h").unwrap().read().unwrap();
-    let enuc: f64 = f.dataset("Enuc").unwrap().read_scalar().unwrap();
-    let nelec: Array1<i64> = f.dataset("nelec").unwrap().read().unwrap();
-    let dm: Array2<f64> = f.dataset("dm").unwrap().read().unwrap();
-    let ds = f.dataset("aolabels").unwrap();
-    let arr = ds.read_1d::<VarLenUnicode>().unwrap();
+
+    let h: Array2<f64> = f.dataset("h")?.read()?;
+    let enuc: f64 = f.dataset("Enuc")?.read_scalar()?;
+    let nelec: Array1<i64> = f.dataset("nelec")?.read()?;
+    let dm: Array2<f64> = f.dataset("dm")?.read()?;
+
+    let ds = f.dataset("aolabels")?;
+    let arr = ds.read_1d::<VarLenUnicode>()?;
     let labels: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+
     let e_fci: Option<f64> = if f.link_exists("E_fci") {
-        Some(f.dataset("E_fci").unwrap().read_scalar::<f64>().unwrap())
+        Some(f.dataset("E_fci")?.read_scalar::<f64>()?)
     } else {
         None
     };
 
-    AoData {
+    Ok(AoData {
         s,
         x,
         h,
@@ -57,5 +63,5 @@ pub fn read_integrals(path: &str) -> AoData {
         dm,
         labels,
         e_fci,
-    }
+    })
 }

@@ -32,7 +32,7 @@ impl Default for WriteOptions {
             write_orbitals: false,
             write_excitation_hist: false,
             write_matrices: false,
-            write_dir: "outputs/".to_string(),
+            write_dir: "data".to_string(),
             write_restart: None,
             write_restart_interval: None,
             read_restart: None,

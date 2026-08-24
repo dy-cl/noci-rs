@@ -1,6 +1,7 @@
 // driver/config.rs
 
 // Crate-root imports.
+use crate::Result;
 use crate::input::{Input, load_input};
 
 /// Load user configuration from the command line.
@@ -8,7 +9,7 @@ use crate::input::{Input, load_input};
 /// - None.
 /// # Returns:
 /// - `Input`: Parsed user input specifications.
-pub fn load_config() -> Input {
+pub fn load_config() -> Result<Input> {
     let input_path = match std::env::args().nth(1) {
         Some(p) => p,
         None => {

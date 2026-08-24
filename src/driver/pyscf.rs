@@ -1,12 +1,13 @@
 // driver/pyscf.rs
 
 // Standard library imports.
+use std::path::Path;
 use std::process::Command;
 
 // Crate-root imports.
 use crate::driver::types::Atoms;
 use crate::input::Input;
-use crate::time_call;
+use crate::{Error, Result, time_call};
 
 /// Call PySCF script to get the two electron integrals and core hamiltonian.
 /// # Arguments:
@@ -17,7 +18,9 @@ use crate::time_call;
 pub fn run_pyscf(
     atoms: &Atoms,
     input: &Input,
-) {
+    out: impl AsRef<Path>,
+) -> Result<()> {
+    let out = out.as_ref();
     time_call!(crate::timers::general::add_run_pyscf, {
         let atomsj = serde_json::to_string(atoms).unwrap();
 
@@ -30,15 +33,16 @@ pub fn run_pyscf(
             .arg("--unit")
             .arg(&input.mol.unit)
             .arg("--out")
-            .arg("data.h5")
+            .arg(out)
             .arg("--fci")
             .arg(if input.scf.do_fci { "true" } else { "false" })
             .status()
-            .unwrap();
+            .map_err(|source| Error::io("failed to spawn PySCF", "scripts/generate.py", source))?;
 
         if !status.success() {
-            eprintln!("Failed to generate mol with status {status}");
-            std::process::exit(1);
+            return Err(Error::PyscfFailed(status));
         }
+
+        Ok(())
     })
 }
