@@ -93,6 +93,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
     let label: String = t.get("label").unwrap_or(defaults.label);
     let noci: bool = t.get("noci").unwrap_or(defaults.noci);
     let holomorphic: bool = t.get("holomorphic").unwrap_or(defaults.holomorphic);
+    let mom: bool = t.get("mom").unwrap_or(defaults.mom);
     let partner: Option<String> = t.get("partner").unwrap_or(defaults.partner);
 
     let spin_bias = t
@@ -141,6 +142,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
         spin_bias,
         spatial_bias,
         scfexcitation,
+        mom,
         partner,
         noci,
         holomorphic,

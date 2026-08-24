@@ -30,6 +30,7 @@ use super::excit::update_overlap_weight;
 use super::init::initialise_qmc_state;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
+use super::restart::basis_hash;
 use super::state::owner;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats, PopulationUpdate,
@@ -907,6 +908,7 @@ pub fn qmc_step(
         irank,
         nranks,
         ndets,
+        basis_hash: basis_hash(data.basis),
         reduced_basis,
         det_owner,
         owned,

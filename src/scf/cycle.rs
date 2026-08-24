@@ -39,30 +39,24 @@ pub(in crate::scf) fn spin_label(spin: &Spin) -> &str {
 
 /// Determine which spin channels should use MOM occupation selection.
 /// # Arguments
-/// - `input`: User input specifying the SCF state-search method.
+/// - `use_mom`: Whether to use MOM for non-excited SCF occupation tracking.
 /// - `scfexcitation`: Optional excited SCF occupation request.
 /// # Returns
 /// - `(bool, bool)`: Whether alpha and beta occupations should use MOM.
 fn mom_flags(
-    input: &Input,
+    use_mom: bool,
     scfexcitation: Option<&SCFExcitation>,
 ) -> (bool, bool) {
-    // If no MOM is requested neither spin channel has true.
-    if !matches!(&input.states, StateType::Mom(_)) {
-        return (false, false);
-    }
-
-    // If excitations are specified require MOM flags for
-    // the specified spin type.
     if let Some(ex) = scfexcitation {
         match ex.spin {
             Spin::Alpha => (true, false),
             Spin::Beta => (false, true),
             Spin::Both => (true, true),
         }
-    // If no excitation is specified use MOM for both.
-    } else {
+    } else if use_mom {
         (true, true)
+    } else {
+        (false, false)
     }
 }
 
@@ -212,9 +206,8 @@ fn finalise(
 /// - `input`: Contains user specified input data.
 /// - `label`: Label for current scf state.
 /// - `noci_basis`: Whether or not to use this state in the NOCI basis.
-/// - `scfexcitation`: Use requested excited states.
 /// - `i`: Index of the SCF state.
-/// - `biases`: Previously found states when using metadynamics.
+/// - `controls`: Explicit MOM flag, requested excited state, and metadynamics bias states.
 /// # Returns
 /// - `Option<SCFState>`: Converged SCF state if the SCF cycle succeeds, otherwise `None`.
 pub fn scf_cycle(
@@ -224,10 +217,10 @@ pub fn scf_cycle(
     label: &str,
     noci_basis: bool,
     i: usize,
-    controls: (Option<&SCFExcitation>, Option<&[SCFState]>),
+    controls: (bool, Option<&SCFExcitation>, Option<&[SCFState]>),
 ) -> Option<SCFState> {
     let (da0, db0) = d0;
-    let (scfexcitation, biases) = controls;
+    let (use_mom, scfexcitation, biases) = controls;
 
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
@@ -249,7 +242,7 @@ pub fn scf_cycle(
         _ => None,
     };
 
-    let (mom_a, mom_b) = mom_flags(input, scfexcitation);
+    let (mom_a, mom_b) = mom_flags(use_mom, scfexcitation);
 
     let (mut fa_phys, mut fb_phys) = fock(&ao.h, &ao.eri_coul, &da, &db);
 

@@ -118,6 +118,8 @@ pub struct StateRecipe {
     pub spatial_bias: Option<SpatialBias>,
     /// Optional MOM excitation.
     pub scfexcitation: Option<SCFExcitation>,
+    /// Whether to use MOM for non-excited SCF occupation tracking.
+    pub mom: bool,
     /// Real partner label used for h-SCF gating.
     pub partner: Option<String>,
     /// Whether state enters NOCI basis.
@@ -137,6 +139,7 @@ impl Default for StateRecipe {
             spin_bias: None,
             spatial_bias: None,
             scfexcitation: None,
+            mom: false,
             partner: None,
             noci: true,
             holomorphic: false,

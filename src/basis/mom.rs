@@ -74,7 +74,7 @@ pub(crate) fn run_mom_scf_state(
         &recipe.label,
         recipe.noci,
         i,
-        (scfexcitation, None),
+        (recipe.mom, scfexcitation, None),
     )
     .expect("SCF did not converge")
 }

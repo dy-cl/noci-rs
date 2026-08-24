@@ -27,7 +27,7 @@ use super::metric::{
 };
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::restart::read_restart_hdf5;
+use super::restart::{basis_hash, read_restart_hdf5};
 use super::state::{
     ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats,
     ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec,
@@ -219,6 +219,7 @@ pub fn qmc_step(
         irank,
         nranks,
         ndets,
+        basis_hash: basis_hash(data.basis),
         reduced_basis,
         det_owner,
         owned,
@@ -268,7 +269,15 @@ pub fn qmc_step(
             println!("Reading restart from {path}");
         }
 
-        let restart = read_restart_hdf5(path, world).unwrap();
+        let restart = read_restart_hdf5(path, world, run.ndets, run.basis_hash).unwrap();
+        if restart.populations.len() != run.owned.len() {
+            panic!(
+                "Restart population length mismatch on rank {}: saved {}, current {}.",
+                run.irank,
+                restart.populations.len(),
+                run.owned.len()
+            );
+        }
         *es = restart.shift;
 
         let excitation_hist =

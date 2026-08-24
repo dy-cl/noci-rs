@@ -110,7 +110,15 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             println!("Reading restart from {path}");
         }
 
-        let restart = read_restart_hdf5(path, world).unwrap();
+        let restart = read_restart_hdf5(path, world, run.ndets, run.basis_hash).unwrap();
+        if restart.populations.len() != run.owned.len() {
+            panic!(
+                "Restart population length mismatch on rank {}: saved {}, current {}.",
+                run.irank,
+                restart.populations.len(),
+                run.owned.len()
+            );
+        }
 
         *es = restart.shift;
 

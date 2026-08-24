@@ -49,6 +49,8 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) nranks: usize,
     /// Total number of determinants in the stochastic basis.
     pub(in crate::stochastic) ndets: usize,
+    /// Deterministic compatibility hash of the ordered stochastic determinant basis.
+    pub(in crate::stochastic) basis_hash: [u64; 2],
     /// Compact two-spin metadata keyed by global determinant index.
     pub(in crate::stochastic) reduced_basis: Vec<ReducedTwoSpinDetState>,
     /// MPI owner rank for each global determinant.
