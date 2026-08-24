@@ -21,26 +21,32 @@ pub struct Totals {
     pub xw_overlap: Counter,
     /// Total time spent in `xw_overlap_m0`.
     pub xw_overlap_m0: Counter,
-    /// Total time spent in `xw_overlap_m0_l1`.
-    pub xw_overlap_m0_l1: Counter,
-    /// Total time spent in `xw_overlap_m0_l2`.
-    pub xw_overlap_m0_l2: Counter,
-    /// Total time spent in `xw_overlap_m0_l3`.
-    pub xw_overlap_m0_l3: Counter,
-    /// Total time spent in `xw_overlap_m0_l4`.
-    pub xw_overlap_m0_l4: Counter,
+    /// Total time spent in `xw_overlap_m0_const`.
+    pub xw_overlap_m0_const: Counter,
     /// Total time spent in `xw_overlap_ml`.
     pub xw_overlap_ml: Counter,
-    /// Total time spent in `xw_overlap_ml_l1`.
-    pub xw_overlap_ml_l1: Counter,
-    /// Total time spent in `xw_overlap_ml_l2`.
-    pub xw_overlap_ml_l2: Counter,
-    /// Total time spent in `xw_overlap_ml_l3`.
-    pub xw_overlap_ml_l3: Counter,
+    /// Total time spent in `xw_overlap_ml_const`.
+    pub xw_overlap_ml_const: Counter,
     /// Total time spent in `xw_overlap_gen`.
     pub xw_overlap_gen: Counter,
     /// Total time spent in `xw_h1`.
     pub xw_h1: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_prepared`.
+    pub xw_hamiltonian_overlap_prepared: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_prepared_batched`.
+    pub xw_hamiltonian_overlap_prepared_batched: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_prepared`.
+    pub xw_hamiltonian_overlap_m0_prepared: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_const`.
+    pub xw_hamiltonian_overlap_m0_prepared_const: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_f64x4_const`.
+    pub xw_hamiltonian_overlap_m0_prepared_f64x4_const: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_f64x8_const`.
+    pub xw_hamiltonian_overlap_m0_prepared_f64x8_const: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_gen_prepared`.
+    pub xw_hamiltonian_overlap_m0_gen_prepared: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_gen_prepared`.
+    pub xw_hamiltonian_overlap_gen_prepared: Counter,
     /// Total time spent in `xw_f`.
     pub xw_f: Counter,
     /// Total time spent in `xw_rdm1`.
@@ -53,18 +59,6 @@ pub struct Totals {
     pub xw_one_body_gen: Counter,
     /// Total time spent in `xw_one_body_m0`.
     pub xw_one_body_m0: Counter,
-    /// Total time spent in `xw_h2_same`.
-    pub xw_h2_same: Counter,
-    /// Total time spent in `xw_h2_same_gen`.
-    pub xw_h2_same_gen: Counter,
-    /// Total time spent in `xw_h2_same_m0`.
-    pub xw_h2_same_m0: Counter,
-    /// Total time spent in `xw_h2_diff`.
-    pub xw_h2_diff: Counter,
-    /// Total time spent in `xw_h2_diff_gen`.
-    pub xw_h2_diff_gen: Counter,
-    /// Total time spent in `xw_h2_diff_m0`.
-    pub xw_h2_diff_m0: Counter,
     /// Total time spent in `xw_rdm2_same`.
     pub xw_rdm2_same: Counter,
     /// Total time spent in `xw_rdm2_same_gen`.
@@ -73,24 +67,12 @@ pub struct Totals {
     pub xw_rdm2_same_m0: Counter,
     /// Total time spent in `xw_rdm2_diff`.
     pub xw_rdm2_diff: Counter,
-    /// Total time spent in `prepare_same_m0_l1`.
-    pub prepare_same_m0_l1: Counter,
-    /// Total time spent in `prepare_same_m0_l2`.
-    pub prepare_same_m0_l2: Counter,
-    /// Total time spent in `prepare_same_m0_l3`.
-    pub prepare_same_m0_l3: Counter,
-    /// Total time spent in `prepare_same_m0_l4`.
-    pub prepare_same_m0_l4: Counter,
+    /// Total time spent in `prepare_same_m0_const`.
+    pub prepare_same_m0_const: Counter,
     /// Total time spent in `xw_one_body_m0_gen`.
     pub xw_one_body_m0_gen: Counter,
-    /// Total time spent in `xw_one_body_m0_l1`.
-    pub xw_one_body_m0_l1: Counter,
-    /// Total time spent in `xw_one_body_m0_l2`.
-    pub xw_one_body_m0_l2: Counter,
-    /// Total time spent in `xw_one_body_m0_l3`.
-    pub xw_one_body_m0_l3: Counter,
-    /// Total time spent in `xw_one_body_m0_l4`.
-    pub xw_one_body_m0_l4: Counter,
+    /// Total time spent in `xw_one_body_m0_const`.
+    pub xw_one_body_m0_const: Counter,
     /// Total time spent in `xw_f_overlap`.
     pub xw_f_overlap: Counter,
     /// Total time spent in `xw_f_overlap_gen`.
@@ -99,74 +81,8 @@ pub struct Totals {
     pub xw_f_overlap_m0: Counter,
     /// Total time spent in `xw_f_overlap_m0_gen`.
     pub xw_f_overlap_m0_gen: Counter,
-    /// Total time spent in `xw_f_overlap_m0_l1`.
-    pub xw_f_overlap_m0_l1: Counter,
-    /// Total time spent in `xw_f_overlap_m0_l2`.
-    pub xw_f_overlap_m0_l2: Counter,
-    /// Total time spent in `xw_f_overlap_m0_l3`.
-    pub xw_f_overlap_m0_l3: Counter,
-    /// Total time spent in `xw_f_overlap_m0_l4`.
-    pub xw_f_overlap_m0_l4: Counter,
-    /// Total time spent in `xw_h2_same_m0_gen`.
-    pub xw_h2_same_m0_gen: Counter,
-    /// Total time spent in `xw_h2_same_m0_l1`.
-    pub xw_h2_same_m0_l1: Counter,
-    /// Total time spent in `xw_h2_same_m0_l2`.
-    pub xw_h2_same_m0_l2: Counter,
-    /// Total time spent in `xw_h2_diff_m0_gen`.
-    pub xw_h2_diff_m0_gen: Counter,
-    /// Total time spent in `xw_h2_diff_m0_01`.
-    pub xw_h2_diff_m0_01: Counter,
-    /// Total time spent in `xw_h2_diff_m0_02`.
-    pub xw_h2_diff_m0_02: Counter,
-    /// Total time spent in `xw_h2_diff_m0_03`.
-    pub xw_h2_diff_m0_03: Counter,
-    /// Total time spent in `xw_h2_diff_m0_04`.
-    pub xw_h2_diff_m0_04: Counter,
-    /// Total time spent in `xw_h2_diff_m0_10`.
-    pub xw_h2_diff_m0_10: Counter,
-    /// Total time spent in `xw_h2_diff_m0_11`.
-    pub xw_h2_diff_m0_11: Counter,
-    /// Total time spent in `xw_h2_diff_m0_12`.
-    pub xw_h2_diff_m0_12: Counter,
-    /// Total time spent in `xw_h2_diff_m0_14`.
-    pub xw_h2_diff_m0_14: Counter,
-    /// Total time spent in `xw_h2_diff_m0_20`.
-    pub xw_h2_diff_m0_20: Counter,
-    /// Total time spent in `xw_h2_diff_m0_21`.
-    pub xw_h2_diff_m0_21: Counter,
-    /// Total time spent in `xw_h2_diff_m0_22`.
-    pub xw_h2_diff_m0_22: Counter,
-    /// Total time spent in `xw_h2_diff_m0_23`.
-    pub xw_h2_diff_m0_23: Counter,
-    /// Total time spent in `xw_h2_diff_m0_24`.
-    pub xw_h2_diff_m0_24: Counter,
-    /// Total time spent in `xw_h2_diff_m0_30`.
-    pub xw_h2_diff_m0_30: Counter,
-    /// Total time spent in `xw_h2_same_m0_l3`.
-    pub xw_h2_same_m0_l3: Counter,
-    /// Total time spent in `xw_h2_same_m0_l4`.
-    pub xw_h2_same_m0_l4: Counter,
-    /// Total time spent in `xw_h2_diff_m0_13`.
-    pub xw_h2_diff_m0_13: Counter,
-    /// Total time spent in `xw_h2_diff_m0_31`.
-    pub xw_h2_diff_m0_31: Counter,
-    /// Total time spent in `xw_h2_diff_m0_32`.
-    pub xw_h2_diff_m0_32: Counter,
-    /// Total time spent in `xw_h2_diff_m0_33`.
-    pub xw_h2_diff_m0_33: Counter,
-    /// Total time spent in `xw_h2_diff_m0_34`.
-    pub xw_h2_diff_m0_34: Counter,
-    /// Total time spent in `xw_h2_diff_m0_40`.
-    pub xw_h2_diff_m0_40: Counter,
-    /// Total time spent in `xw_h2_diff_m0_41`.
-    pub xw_h2_diff_m0_41: Counter,
-    /// Total time spent in `xw_h2_diff_m0_42`.
-    pub xw_h2_diff_m0_42: Counter,
-    /// Total time spent in `xw_h2_diff_m0_43`.
-    pub xw_h2_diff_m0_43: Counter,
-    /// Total time spent in `xw_h2_diff_m0_44`.
-    pub xw_h2_diff_m0_44: Counter,
+    /// Total time spent in `xw_f_overlap_m0_const`.
+    pub xw_f_overlap_m0_const: Counter,
 }
 
 impl Totals {
@@ -189,89 +105,52 @@ impl Totals {
             .merge_from(&other.construct_determinant_indices);
         self.xw_overlap.merge_from(&other.xw_overlap);
         self.xw_overlap_m0.merge_from(&other.xw_overlap_m0);
-        self.xw_overlap_m0_l1.merge_from(&other.xw_overlap_m0_l1);
-        self.xw_overlap_m0_l2.merge_from(&other.xw_overlap_m0_l2);
-        self.xw_overlap_m0_l3.merge_from(&other.xw_overlap_m0_l3);
-        self.xw_overlap_m0_l4.merge_from(&other.xw_overlap_m0_l4);
+        self.xw_overlap_m0_const
+            .merge_from(&other.xw_overlap_m0_const);
         self.xw_overlap_ml.merge_from(&other.xw_overlap_ml);
-        self.xw_overlap_ml_l1.merge_from(&other.xw_overlap_ml_l1);
-        self.xw_overlap_ml_l2.merge_from(&other.xw_overlap_ml_l2);
-        self.xw_overlap_ml_l3.merge_from(&other.xw_overlap_ml_l3);
+        self.xw_overlap_ml_const
+            .merge_from(&other.xw_overlap_ml_const);
         self.xw_overlap_gen.merge_from(&other.xw_overlap_gen);
         self.xw_h1.merge_from(&other.xw_h1);
+        self.xw_hamiltonian_overlap_prepared
+            .merge_from(&other.xw_hamiltonian_overlap_prepared);
+        self.xw_hamiltonian_overlap_prepared_batched
+            .merge_from(&other.xw_hamiltonian_overlap_prepared_batched);
+        self.xw_hamiltonian_overlap_m0_prepared
+            .merge_from(&other.xw_hamiltonian_overlap_m0_prepared);
+        self.xw_hamiltonian_overlap_m0_prepared_const
+            .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_const);
+        self.xw_hamiltonian_overlap_m0_prepared_f64x4_const
+            .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_f64x4_const);
+        self.xw_hamiltonian_overlap_m0_prepared_f64x8_const
+            .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_f64x8_const);
+        self.xw_hamiltonian_overlap_m0_gen_prepared
+            .merge_from(&other.xw_hamiltonian_overlap_m0_gen_prepared);
+        self.xw_hamiltonian_overlap_gen_prepared
+            .merge_from(&other.xw_hamiltonian_overlap_gen_prepared);
         self.xw_f.merge_from(&other.xw_f);
         self.xw_rdm1.merge_from(&other.xw_rdm1);
         self.xw_rdm1_m0.merge_from(&other.xw_rdm1_m0);
         self.xw_rdm1_gen.merge_from(&other.xw_rdm1_gen);
         self.xw_one_body_gen.merge_from(&other.xw_one_body_gen);
         self.xw_one_body_m0.merge_from(&other.xw_one_body_m0);
-        self.xw_h2_same.merge_from(&other.xw_h2_same);
-        self.xw_h2_same_gen.merge_from(&other.xw_h2_same_gen);
-        self.xw_h2_same_m0.merge_from(&other.xw_h2_same_m0);
-        self.xw_h2_diff.merge_from(&other.xw_h2_diff);
-        self.xw_h2_diff_gen.merge_from(&other.xw_h2_diff_gen);
-        self.xw_h2_diff_m0.merge_from(&other.xw_h2_diff_m0);
         self.xw_rdm2_same.merge_from(&other.xw_rdm2_same);
         self.xw_rdm2_same_gen.merge_from(&other.xw_rdm2_same_gen);
         self.xw_rdm2_same_m0.merge_from(&other.xw_rdm2_same_m0);
         self.xw_rdm2_diff.merge_from(&other.xw_rdm2_diff);
-        self.prepare_same_m0_l1
-            .merge_from(&other.prepare_same_m0_l1);
-        self.prepare_same_m0_l2
-            .merge_from(&other.prepare_same_m0_l2);
-        self.prepare_same_m0_l3
-            .merge_from(&other.prepare_same_m0_l3);
-        self.prepare_same_m0_l4
-            .merge_from(&other.prepare_same_m0_l4);
+        self.prepare_same_m0_const
+            .merge_from(&other.prepare_same_m0_const);
         self.xw_one_body_m0_gen
             .merge_from(&other.xw_one_body_m0_gen);
-        self.xw_one_body_m0_l1.merge_from(&other.xw_one_body_m0_l1);
-        self.xw_one_body_m0_l2.merge_from(&other.xw_one_body_m0_l2);
-        self.xw_one_body_m0_l3.merge_from(&other.xw_one_body_m0_l3);
-        self.xw_one_body_m0_l4.merge_from(&other.xw_one_body_m0_l4);
+        self.xw_one_body_m0_const
+            .merge_from(&other.xw_one_body_m0_const);
         self.xw_f_overlap.merge_from(&other.xw_f_overlap);
         self.xw_f_overlap_gen.merge_from(&other.xw_f_overlap_gen);
         self.xw_f_overlap_m0.merge_from(&other.xw_f_overlap_m0);
         self.xw_f_overlap_m0_gen
             .merge_from(&other.xw_f_overlap_m0_gen);
-        self.xw_f_overlap_m0_l1
-            .merge_from(&other.xw_f_overlap_m0_l1);
-        self.xw_f_overlap_m0_l2
-            .merge_from(&other.xw_f_overlap_m0_l2);
-        self.xw_f_overlap_m0_l3
-            .merge_from(&other.xw_f_overlap_m0_l3);
-        self.xw_f_overlap_m0_l4
-            .merge_from(&other.xw_f_overlap_m0_l4);
-        self.xw_h2_same_m0_gen.merge_from(&other.xw_h2_same_m0_gen);
-        self.xw_h2_same_m0_l1.merge_from(&other.xw_h2_same_m0_l1);
-        self.xw_h2_same_m0_l2.merge_from(&other.xw_h2_same_m0_l2);
-        self.xw_h2_diff_m0_gen.merge_from(&other.xw_h2_diff_m0_gen);
-        self.xw_h2_diff_m0_01.merge_from(&other.xw_h2_diff_m0_01);
-        self.xw_h2_diff_m0_02.merge_from(&other.xw_h2_diff_m0_02);
-        self.xw_h2_diff_m0_03.merge_from(&other.xw_h2_diff_m0_03);
-        self.xw_h2_diff_m0_04.merge_from(&other.xw_h2_diff_m0_04);
-        self.xw_h2_diff_m0_10.merge_from(&other.xw_h2_diff_m0_10);
-        self.xw_h2_diff_m0_11.merge_from(&other.xw_h2_diff_m0_11);
-        self.xw_h2_diff_m0_12.merge_from(&other.xw_h2_diff_m0_12);
-        self.xw_h2_diff_m0_14.merge_from(&other.xw_h2_diff_m0_14);
-        self.xw_h2_diff_m0_20.merge_from(&other.xw_h2_diff_m0_20);
-        self.xw_h2_diff_m0_21.merge_from(&other.xw_h2_diff_m0_21);
-        self.xw_h2_diff_m0_22.merge_from(&other.xw_h2_diff_m0_22);
-        self.xw_h2_diff_m0_23.merge_from(&other.xw_h2_diff_m0_23);
-        self.xw_h2_diff_m0_24.merge_from(&other.xw_h2_diff_m0_24);
-        self.xw_h2_diff_m0_30.merge_from(&other.xw_h2_diff_m0_30);
-        self.xw_h2_same_m0_l3.merge_from(&other.xw_h2_same_m0_l3);
-        self.xw_h2_same_m0_l4.merge_from(&other.xw_h2_same_m0_l4);
-        self.xw_h2_diff_m0_13.merge_from(&other.xw_h2_diff_m0_13);
-        self.xw_h2_diff_m0_31.merge_from(&other.xw_h2_diff_m0_31);
-        self.xw_h2_diff_m0_32.merge_from(&other.xw_h2_diff_m0_32);
-        self.xw_h2_diff_m0_33.merge_from(&other.xw_h2_diff_m0_33);
-        self.xw_h2_diff_m0_34.merge_from(&other.xw_h2_diff_m0_34);
-        self.xw_h2_diff_m0_40.merge_from(&other.xw_h2_diff_m0_40);
-        self.xw_h2_diff_m0_41.merge_from(&other.xw_h2_diff_m0_41);
-        self.xw_h2_diff_m0_42.merge_from(&other.xw_h2_diff_m0_42);
-        self.xw_h2_diff_m0_43.merge_from(&other.xw_h2_diff_m0_43);
-        self.xw_h2_diff_m0_44.merge_from(&other.xw_h2_diff_m0_44);
+        self.xw_f_overlap_m0_const
+            .merge_from(&other.xw_f_overlap_m0_const);
     }
 }
 
@@ -359,44 +238,14 @@ pub fn add_xw_overlap_m0(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_overlap_m0.add_ns(ns));
 }
 
-/// Add one timed call to the `xw_overlap_m0_l1` counter.
+/// Add one timed call to the `xw_overlap_m0_const` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_m0_l1`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_m0_const`.
 /// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_m0_l1` counter.
+/// - `()`: Updates the current thread local `xw_overlap_m0_const` counter.
 #[inline(always)]
-pub fn add_xw_overlap_m0_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_m0_l1.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_overlap_m0_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_m0_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_m0_l2` counter.
-#[inline(always)]
-pub fn add_xw_overlap_m0_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_m0_l2.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_overlap_m0_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_m0_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_m0_l3` counter.
-#[inline(always)]
-pub fn add_xw_overlap_m0_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_m0_l3.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_overlap_m0_l4` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_m0_l4`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_m0_l4` counter.
-#[inline(always)]
-pub fn add_xw_overlap_m0_l4(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_m0_l4.add_ns(ns));
+pub fn add_xw_overlap_m0_const(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_overlap_m0_const.add_ns(ns));
 }
 
 /// Add one timed call to the `xw_overlap_ml` counter.
@@ -409,34 +258,14 @@ pub fn add_xw_overlap_ml(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_overlap_ml.add_ns(ns));
 }
 
-/// Add one timed call to the `xw_overlap_ml_l1` counter.
+/// Add one timed call to the `xw_overlap_ml_const` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_ml_l1`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_ml_const`.
 /// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_ml_l1` counter.
+/// - `()`: Updates the current thread local `xw_overlap_ml_const` counter.
 #[inline(always)]
-pub fn add_xw_overlap_ml_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_ml_l1.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_overlap_ml_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_ml_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_ml_l2` counter.
-#[inline(always)]
-pub fn add_xw_overlap_ml_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_ml_l2.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_overlap_ml_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_overlap_ml_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_overlap_ml_l3` counter.
-#[inline(always)]
-pub fn add_xw_overlap_ml_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_overlap_ml_l3.add_ns(ns));
+pub fn add_xw_overlap_ml_const(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_overlap_ml_const.add_ns(ns));
 }
 
 /// Add one timed call to the `xw_overlap_gen` counter.
@@ -457,6 +286,118 @@ pub fn add_xw_overlap_gen(ns: u64) {
 #[inline(always)]
 pub fn add_xw_h1(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_h1.add_ns(ns));
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_prepared` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_prepared`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_prepared` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_prepared(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_prepared
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_prepared_batched` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_prepared_batched`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_prepared_batched` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_prepared_batched(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_prepared_batched
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_prepared` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_prepared(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared_const` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared_const`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_prepared_const` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_prepared_const(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_const
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared_f64x4_const` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared_f64x4_const`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_prepared_f64x4_const` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_prepared_f64x4_const(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_f64x4_const
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared_f64x8_const` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared_f64x8_const`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_prepared_f64x8_const` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_prepared_f64x8_const(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_f64x8_const
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_gen_prepared` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_gen_prepared`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_gen_prepared` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_gen_prepared(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_gen_prepared
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_gen_prepared` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_gen_prepared`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_gen_prepared` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_gen_prepared(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_gen_prepared
+            .add_ns(ns)
+    });
 }
 
 /// Add one timed call to the `xw_f` counter.
@@ -519,66 +460,6 @@ pub fn add_xw_one_body_m0(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0.add_ns(ns));
 }
 
-/// Add one timed call to the `xw_h2_same` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same` counter.
-#[inline(always)]
-pub fn add_xw_h2_same(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_gen` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_gen`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_gen` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_gen(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_gen.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_m0` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_m0`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_m0` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_m0(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_m0.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_gen` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_gen`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_gen` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_gen(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_gen.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0.add_ns(ns));
-}
-
 /// Add one timed call to the `xw_rdm2_same` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `xw_rdm2_same`.
@@ -619,44 +500,14 @@ pub fn add_xw_rdm2_diff(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_rdm2_diff.add_ns(ns));
 }
 
-/// Add one timed call to the `prepare_same_m0_l1` counter.
+/// Add one timed call to the `prepare_same_m0_const` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l1`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_const`.
 /// # Returns:
-/// - `()`: Updates the current thread local `prepare_same_m0_l1` counter.
+/// - `()`: Updates the current thread local `prepare_same_m0_const` counter.
 #[inline(always)]
-pub fn add_prepare_same_m0_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l1.add_ns(ns));
-}
-
-/// Add one timed call to the `prepare_same_m0_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `prepare_same_m0_l2` counter.
-#[inline(always)]
-pub fn add_prepare_same_m0_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l2.add_ns(ns));
-}
-
-/// Add one timed call to the `prepare_same_m0_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `prepare_same_m0_l3` counter.
-#[inline(always)]
-pub fn add_prepare_same_m0_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l3.add_ns(ns));
-}
-
-/// Add one timed call to the `prepare_same_m0_l4` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `prepare_same_m0_l4`.
-/// # Returns:
-/// - `()`: Updates the current thread local `prepare_same_m0_l4` counter.
-#[inline(always)]
-pub fn add_prepare_same_m0_l4(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_l4.add_ns(ns));
+pub fn add_prepare_same_m0_const(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.prepare_same_m0_const.add_ns(ns));
 }
 
 /// Add one timed call to the `xw_one_body_m0_gen` counter.
@@ -669,44 +520,14 @@ pub fn add_xw_one_body_m0_gen(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_gen.add_ns(ns));
 }
 
-/// Add one timed call to the `xw_one_body_m0_l1` counter.
+/// Add one timed call to the `xw_one_body_m0_const` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_one_body_m0_l1`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_one_body_m0_const`.
 /// # Returns:
-/// - `()`: Updates the current thread local `xw_one_body_m0_l1` counter.
+/// - `()`: Updates the current thread local `xw_one_body_m0_const` counter.
 #[inline(always)]
-pub fn add_xw_one_body_m0_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_l1.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_one_body_m0_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_one_body_m0_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_one_body_m0_l2` counter.
-#[inline(always)]
-pub fn add_xw_one_body_m0_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_l2.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_one_body_m0_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_one_body_m0_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_one_body_m0_l3` counter.
-#[inline(always)]
-pub fn add_xw_one_body_m0_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_l3.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_one_body_m0_l4` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_one_body_m0_l4`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_one_body_m0_l4` counter.
-#[inline(always)]
-pub fn add_xw_one_body_m0_l4(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_l4.add_ns(ns));
+pub fn add_xw_one_body_m0_const(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_one_body_m0_const.add_ns(ns));
 }
 
 /// Add one timed call to the `xw_f_overlap` counter.
@@ -749,342 +570,12 @@ pub fn add_xw_f_overlap_m0_gen(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_gen.add_ns(ns));
 }
 
-/// Add one timed call to the `xw_f_overlap_m0_l1` counter.
+/// Add one timed call to the `xw_f_overlap_m0_const` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l1`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_const`.
 /// # Returns:
-/// - `()`: Updates the current thread local `xw_f_overlap_m0_l1` counter.
+/// - `()`: Updates the current thread local `xw_f_overlap_m0_const` counter.
 #[inline(always)]
-pub fn add_xw_f_overlap_m0_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l1.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_f_overlap_m0_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_f_overlap_m0_l2` counter.
-#[inline(always)]
-pub fn add_xw_f_overlap_m0_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l2.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_f_overlap_m0_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_f_overlap_m0_l3` counter.
-#[inline(always)]
-pub fn add_xw_f_overlap_m0_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l3.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_f_overlap_m0_l4` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_f_overlap_m0_l4`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_f_overlap_m0_l4` counter.
-#[inline(always)]
-pub fn add_xw_f_overlap_m0_l4(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_l4.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_m0_gen` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_m0_gen`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_m0_gen` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_m0_gen(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_m0_gen.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_m0_l1` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_m0_l1`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_m0_l1` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_m0_l1(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_m0_l1.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_m0_l2` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_m0_l2`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_m0_l2` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_m0_l2(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_m0_l2.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_gen` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_gen`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_gen` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_gen(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_gen.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_01` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_01`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_01` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_01(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_01.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_02` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_02`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_02` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_02(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_02.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_03` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_03`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_03` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_03(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_03.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_04` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_04`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_04` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_04(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_04.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_10` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_10`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_10` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_10(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_10.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_11` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_11`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_11` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_11(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_11.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_12` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_12`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_12` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_12(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_12.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_14` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_14`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_14` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_14(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_14.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_20` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_20`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_20` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_20(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_20.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_21` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_21`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_21` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_21(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_21.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_22` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_22`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_22` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_22(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_22.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_23` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_23`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_23` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_23(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_23.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_24` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_24`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_24` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_24(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_24.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_30` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_30`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_30` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_30(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_30.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_m0_l3` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_m0_l3`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_m0_l3` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_m0_l3(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_m0_l3.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_same_m0_l4` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_same_m0_l4`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_same_m0_l4` counter.
-#[inline(always)]
-pub fn add_xw_h2_same_m0_l4(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_same_m0_l4.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_13` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_13`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_13` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_13(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_13.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_31` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_31`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_31` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_31(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_31.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_32` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_32`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_32` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_32(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_32.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_33` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_33`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_33` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_33(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_33.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_34` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_34`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_34` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_34(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_34.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_40` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_40`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_40` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_40(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_40.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_41` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_41`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_41` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_41(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_41.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_42` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_42`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_42` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_42(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_42.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_43` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_43`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_43` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_43(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_43.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_h2_diff_m0_44` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_h2_diff_m0_44`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_h2_diff_m0_44` counter.
-#[inline(always)]
-pub fn add_xw_h2_diff_m0_44(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_h2_diff_m0_44.add_ns(ns));
+pub fn add_xw_f_overlap_m0_const(ns: u64) {
+    with_totals(|t| t.nonorthogonalwicks.xw_f_overlap_m0_const.add_ns(ns));
 }

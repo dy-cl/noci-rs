@@ -3,15 +3,15 @@
 // Standard library imports.
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_fnmadd_pd, _mm256_loadu_pd, _mm256_mul_pd,
-    _mm256_set1_pd, _mm256_storeu_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_fnmadd_pd,
-    _mm512_loadu_pd, _mm512_mul_pd, _mm512_set1_pd, _mm512_storeu_pd,
+    _mm256_fmadd_pd, _mm256_fnmadd_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set1_pd,
+    _mm256_setzero_pd, _mm256_storeu_pd, _mm512_fmadd_pd, _mm512_fnmadd_pd, _mm512_loadu_pd,
+    _mm512_mul_pd, _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd,
 };
 
 // Crate-root imports.
 #[cfg(target_arch = "x86_64")]
 use crate::ExcitationSpinCache;
-use crate::maths::{det, det_lu_l5, det_lu_l6};
+use crate::maths::{det, det_const};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 use crate::{DetState, ExcitationSpin, ReducedOneSpinDetState};
@@ -20,7 +20,9 @@ use crate::{DetState, ExcitationSpin, ReducedOneSpinDetState};
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
 use super::helpers::mix_dets_same;
-use super::prepare::{construct_determinant_indices, prepare_same};
+use super::prepare::{
+    construct_determinant_indices, construct_determinant_indices_const, prepare_same,
+};
 
 /// Evaluate the same-spin overlap between excited determinants generated from the reference pair
 /// `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
@@ -152,6 +154,8 @@ pub(crate) fn xw_overlap_same_f64_batched(
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 {
         if std::arch::is_x86_feature_detected!("avx512f") {
+            // Group same-rank overlap requests so each SIMD packet evaluates the same
+            // S_tilde det D_ov(0,...,0) formula with lane-local excitation labels.
             let mut bins = [[ExcitationSpinCache::default(); 8]; 7];
             let mut phases = [[1.0f64; 8]; 7];
             let mut outputs = [[0usize; 8]; 7];
@@ -361,15 +365,121 @@ unsafe fn xw_overlap_m0_prepared_f64x4(
     overlap: &mut [f64; 4],
 ) {
     unsafe {
+        // Dispatch to the AVX2 compile-time rank that matches this packet's shared L.
         match l {
-            1 => xw_overlap_m0_l1_prepared_f64x4(w, x_ex, w_ex, overlap),
-            2 => xw_overlap_m0_l2_prepared_f64x4(w, x_ex, w_ex, overlap),
-            3 => xw_overlap_m0_l3_prepared_f64x4(w, x_ex, w_ex, overlap),
-            4 => xw_overlap_m0_l4_prepared_f64x4(w, x_ex, w_ex, overlap),
-            5 => xw_overlap_m0_l5_prepared_f64x4(w, x_ex, w_ex, overlap),
-            6 => xw_overlap_m0_l6_prepared_f64x4(w, x_ex, w_ex, overlap),
+            1 => xw_overlap_m0_prepared_f64x4_const::<1>(w, x_ex, w_ex, overlap),
+            2 => xw_overlap_m0_prepared_f64x4_const::<2>(w, x_ex, w_ex, overlap),
+            3 => xw_overlap_m0_prepared_f64x4_const::<3>(w, x_ex, w_ex, overlap),
+            4 => xw_overlap_m0_prepared_f64x4_const::<4>(w, x_ex, w_ex, overlap),
+            5 => xw_overlap_m0_prepared_f64x4_const::<5>(w, x_ex, w_ex, overlap),
+            6 => xw_overlap_m0_prepared_f64x4_const::<6>(w, x_ex, w_ex, overlap),
             _ => unreachable!(),
         }
+    }
+}
+
+/// Dispatch 4 real fixed-rank `m = 0` overlaps using compile-time `L`.
+/// Each SIMD lane evaluates
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with the same
+/// contraction rank `L` and lane-local excitation labels.
+/// # Safety
+/// - The caller must ensure CPU support for `AVX2/FMA`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn xw_overlap_m0_prepared_f64x4_const<const L: usize>(
+    w: &SameSpinView<'_, f64>,
+    x_ex: &[ExcitationSpinCache; 4],
+    w_ex: &[ExcitationSpinCache; 4],
+    overlap: &mut [f64; 4],
+) {
+    unsafe {
+        let n = w.n();
+        let x0 = w.x_slice(0);
+        let y0 = w.y_slice(0);
+        let pref = w.phase * w.tilde_s_prod;
+        let full = (1usize << L) - 1;
+        let mut d_lanes = [[0.0f64; 4]; 36];
+
+        for lane in 0..4 {
+            let x_data = x_ex.get_unchecked(lane);
+            let w_data = w_ex.get_unchecked(lane);
+            let mut rows = [0usize; L];
+            let mut cols = [0usize; L];
+
+            construct_determinant_indices_const::<f64, L>(
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
+            );
+
+            // Pack corresponding D_ov entries from four independent Wick pairs into
+            // one AVX2 vector lane group: X fills eta >= z and Y fills eta < z.
+            for eta in 0..L {
+                let base = eta * L;
+
+                for z in 0..L {
+                    let src = rows[eta] * n + cols[z];
+                    d_lanes[base + z][lane] = if eta >= z { x0[src] } else { y0[src] };
+                }
+            }
+        }
+
+        let mut d = [_mm256_setzero_pd(); 36];
+        for idx in 0..L * L {
+            d[idx] = _mm256_loadu_pd(d_lanes[idx].as_ptr());
+        }
+
+        let mut minors = [_mm256_setzero_pd(); 64];
+        for c in 0..L {
+            minors[1usize << c] = d[(L - 1) * L + c];
+        }
+
+        // Compile-time L selects one monomorphised determinant expansion. The subset minors
+        // are the same Laplace cofactors as the old fixed-rank kernels, but generated by
+        // the single const body and evaluated as packed SIMD values.
+        let mut size = 2usize;
+        while size <= L {
+            let row = L - size;
+            let mut next = [_mm256_setzero_pd(); 64];
+            let mut mask = full;
+
+            loop {
+                if mask.count_ones() as usize == size {
+                    let mut acc = _mm256_setzero_pd();
+                    let mut pos = 0usize;
+
+                    for c in 0..L {
+                        let bit = 1usize << c;
+
+                        if (mask & bit) != 0 {
+                            let term = minors[mask ^ bit];
+                            acc = if (pos & 1) == 0 {
+                                _mm256_fmadd_pd(d[row * L + c], term, acc)
+                            } else {
+                                _mm256_fnmadd_pd(d[row * L + c], term, acc)
+                            };
+                            pos += 1;
+                        }
+                    }
+
+                    next[mask] = acc;
+                }
+
+                if mask == 0 {
+                    break;
+                }
+                mask = (mask - 1) & full;
+            }
+
+            minors = next;
+            size += 1;
+        }
+
+        let overlap_v = _mm256_mul_pd(minors[full], _mm256_set1_pd(pref));
+        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
     }
 }
 
@@ -394,228 +504,28 @@ unsafe fn xw_overlap_m0_prepared_f64x8(
     overlap: &mut [f64; 8],
 ) {
     unsafe {
+        // Dispatch to the AVX-512 compile-time rank that matches this packet's shared L.
         match l {
-            1 => xw_overlap_m0_l1_prepared_f64x8(w, x_ex, w_ex, overlap),
-            2 => xw_overlap_m0_l2_prepared_f64x8(w, x_ex, w_ex, overlap),
-            3 => xw_overlap_m0_l3_prepared_f64x8(w, x_ex, w_ex, overlap),
-            4 => xw_overlap_m0_l4_prepared_f64x8(w, x_ex, w_ex, overlap),
-            5 => xw_overlap_m0_l5_prepared_f64x8(w, x_ex, w_ex, overlap),
-            6 => xw_overlap_m0_l6_prepared_f64x8(w, x_ex, w_ex, overlap),
+            1 => xw_overlap_m0_prepared_f64x8_const::<1>(w, x_ex, w_ex, overlap),
+            2 => xw_overlap_m0_prepared_f64x8_const::<2>(w, x_ex, w_ex, overlap),
+            3 => xw_overlap_m0_prepared_f64x8_const::<3>(w, x_ex, w_ex, overlap),
+            4 => xw_overlap_m0_prepared_f64x8_const::<4>(w, x_ex, w_ex, overlap),
+            5 => xw_overlap_m0_prepared_f64x8_const::<5>(w, x_ex, w_ex, overlap),
+            6 => xw_overlap_m0_prepared_f64x8_const::<6>(w, x_ex, w_ex, overlap),
             _ => unreachable!(),
         }
     }
 }
 
-/// Prepare and evaluate 4 independent real fixed-rank `L = 1` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates 4
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 1` contraction entry is loaded per lane, and the explicit minor/cofactor
-/// formulation uses zero determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 4 x-reference excitation caches.
-/// - `w_ex`: 4 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 4 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX2/FMA`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_l1_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 4],
-    w_ex: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 4]; 1];
-        let mut lane = 0;
-
-        while lane < 4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 1];
-            let mut cols = [0usize; 1];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..1 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly one contraction entry, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            lane += 1;
-        }
-
-        let det_v = _mm256_loadu_pd(d[0].as_ptr());
-        let overlap_v = _mm256_mul_pd(det_v, _mm256_set1_pd(pref));
-        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 8 independent real fixed-rank `L = 1` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates 8
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 1` contraction entry is loaded per lane, and the explicit minor/cofactor
-/// formulation uses zero determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 8 x-reference excitation caches.
-/// - `w_ex`: 8 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 8 same-spin Wick overlaps into `overlap`.
+/// Dispatch 8 real fixed-rank `m = 0` overlaps using compile-time `L`.
+/// Each SIMD lane evaluates
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with the same
+/// contraction rank `L` and lane-local excitation labels.
 /// # Safety
 /// - The caller must ensure CPU support for `AVX-512`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_l1_prepared_f64x8(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 8],
-    w_ex: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 8]; 1];
-        let mut lane = 0;
-
-        while lane < 8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 1];
-            let mut cols = [0usize; 1];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..1 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly one contraction entry, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            lane += 1;
-        }
-
-        let det_v = _mm512_loadu_pd(d[0].as_ptr());
-        let overlap_v = _mm512_mul_pd(det_v, _mm512_set1_pd(pref));
-        _mm512_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 4 independent real fixed-rank `L = 2` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates 4
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 4` contraction entries are loaded per lane, and the explicit minor/cofactor
-/// formulation uses two determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 4 x-reference excitation caches.
-/// - `w_ex`: 4 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 4 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX2/FMA`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_l2_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 4],
-    w_ex: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 4]; 4];
-        let mut lane = 0;
-
-        while lane < 4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 2];
-            let mut cols = [0usize; 2];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..2 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `4` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-
-            d[2][lane] = x0[rows[1] * n + cols[0]];
-            d[3][lane] = x0[rows[1] * n + cols[1]];
-            lane += 1;
-        }
-
-        // The two products in `D_{00} D_{11} - D_{01} D_{10}` are both required.
-        let det_v = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[0].as_ptr()),
-            _mm256_loadu_pd(d[3].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[1].as_ptr()),
-                _mm256_loadu_pd(d[2].as_ptr()),
-            ),
-        );
-        let overlap_v = _mm256_mul_pd(det_v, _mm256_set1_pd(pref));
-        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 8 independent real fixed-rank `L = 2` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates 8
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 4` contraction entries are loaded per lane, and the explicit minor/cofactor
-/// formulation uses two determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 8 x-reference excitation caches.
-/// - `w_ex`: 8 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 8 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX-512`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_l2_prepared_f64x8(
+unsafe fn xw_overlap_m0_prepared_f64x8_const<const L: usize>(
     w: &SameSpinView<'_, f64>,
     x_ex: &[ExcitationSpinCache; 8],
     w_ex: &[ExcitationSpinCache; 8],
@@ -626,1790 +536,88 @@ unsafe fn xw_overlap_m0_l2_prepared_f64x8(
         let x0 = w.x_slice(0);
         let y0 = w.y_slice(0);
         let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
+        let full = (1usize << L) - 1;
+        let mut d_lanes = [[0.0f64; 8]; 36];
 
-        let mut d = [[0.0f64; 8]; 4];
-        let mut lane = 0;
-
-        while lane < 8 {
+        for lane in 0..8 {
             let x_data = x_ex.get_unchecked(lane);
             let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 2];
-            let mut cols = [0usize; 2];
-            let x_rank = usize::from(x_data.rank);
+            let mut rows = [0usize; L];
+            let mut cols = [0usize; L];
 
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
+            construct_determinant_indices_const::<f64, L>(
+                x_data.rank,
+                &x_data.indices,
+                &w_data.indices,
+                w,
+                &mut rows,
+                &mut cols,
+            );
+
+            // Pack corresponding D_ov entries from eight independent Wick pairs into
+            // one AVX-512 vector lane group: X fills eta >= z and Y fills eta < z.
+            for eta in 0..L {
+                let base = eta * L;
+
+                for z in 0..L {
+                    let src = rows[eta] * n + cols[z];
+                    d_lanes[base + z][lane] = if eta >= z { x0[src] } else { y0[src] };
+                }
             }
-            for i in x_rank..2 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `4` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-
-            d[2][lane] = x0[rows[1] * n + cols[0]];
-            d[3][lane] = x0[rows[1] * n + cols[1]];
-            lane += 1;
         }
 
-        // The two products in `D_{00} D_{11} - D_{01} D_{10}` are both required.
-        let det_v = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[0].as_ptr()),
-            _mm512_loadu_pd(d[3].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[1].as_ptr()),
-                _mm512_loadu_pd(d[2].as_ptr()),
-            ),
-        );
-        let overlap_v = _mm512_mul_pd(det_v, _mm512_set1_pd(pref));
-        _mm512_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 4 independent real fixed-rank `L = 3` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates 4
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 9` contraction entries are loaded per lane, and the explicit minor/cofactor
-/// formulation uses nine determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 4 x-reference excitation caches.
-/// - `w_ex`: 4 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 4 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX2/FMA`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_l3_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 4],
-    w_ex: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 4]; 9];
-        let mut lane = 0;
-
-        while lane < 4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 3];
-            let mut cols = [0usize; 3];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..3 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `9` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-
-            d[3][lane] = x0[rows[1] * n + cols[0]];
-            d[4][lane] = x0[rows[1] * n + cols[1]];
-            d[5][lane] = y0[rows[1] * n + cols[2]];
-
-            d[6][lane] = x0[rows[2] * n + cols[0]];
-            d[7][lane] = x0[rows[2] * n + cols[1]];
-            d[8][lane] = x0[rows[2] * n + cols[2]];
-            lane += 1;
+        let mut d = [_mm512_setzero_pd(); 36];
+        for idx in 0..L * L {
+            d[idx] = _mm512_loadu_pd(d_lanes[idx].as_ptr());
         }
 
-        // The three distinct `2 \\times 2` minors require six products and the first-row
-        // expansion requires three. No determinant product is recomputed.
-        let m0 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[4].as_ptr()),
-            _mm256_loadu_pd(d[8].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[7].as_ptr()),
-            ),
-        );
-        let m1 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[3].as_ptr()),
-            _mm256_loadu_pd(d[8].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[5].as_ptr()),
-                _mm256_loadu_pd(d[6].as_ptr()),
-            ),
-        );
-        let m2 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[3].as_ptr()),
-            _mm256_loadu_pd(d[7].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[4].as_ptr()),
-                _mm256_loadu_pd(d[6].as_ptr()),
-            ),
-        );
-        let det_v = _mm256_mul_pd(_mm256_loadu_pd(d[0].as_ptr()), m0);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[1].as_ptr()), m1, det_v);
-        let det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), m2, det_v);
-        let overlap_v = _mm256_mul_pd(det_v, _mm256_set1_pd(pref));
-        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 8 independent real fixed-rank `L = 3` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates 8
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 9` contraction entries are loaded per lane, and the explicit minor/cofactor
-/// formulation uses nine determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 8 x-reference excitation caches.
-/// - `w_ex`: 8 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 8 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX-512`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_l3_prepared_f64x8(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 8],
-    w_ex: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 8]; 9];
-        let mut lane = 0;
-
-        while lane < 8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 3];
-            let mut cols = [0usize; 3];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..3 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `9` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-
-            d[3][lane] = x0[rows[1] * n + cols[0]];
-            d[4][lane] = x0[rows[1] * n + cols[1]];
-            d[5][lane] = y0[rows[1] * n + cols[2]];
-
-            d[6][lane] = x0[rows[2] * n + cols[0]];
-            d[7][lane] = x0[rows[2] * n + cols[1]];
-            d[8][lane] = x0[rows[2] * n + cols[2]];
-            lane += 1;
+        let mut minors = [_mm512_setzero_pd(); 64];
+        for c in 0..L {
+            minors[1usize << c] = d[(L - 1) * L + c];
         }
 
-        // The three distinct `2 \\times 2` minors require six products and the first-row
-        // expansion requires three. No determinant product is recomputed.
-        let m0 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[4].as_ptr()),
-            _mm512_loadu_pd(d[8].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[7].as_ptr()),
-            ),
-        );
-        let m1 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[3].as_ptr()),
-            _mm512_loadu_pd(d[8].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[5].as_ptr()),
-                _mm512_loadu_pd(d[6].as_ptr()),
-            ),
-        );
-        let m2 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[3].as_ptr()),
-            _mm512_loadu_pd(d[7].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[4].as_ptr()),
-                _mm512_loadu_pd(d[6].as_ptr()),
-            ),
-        );
-        let det_v = _mm512_mul_pd(_mm512_loadu_pd(d[0].as_ptr()), m0);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), m1, det_v);
-        let det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m2, det_v);
-        let overlap_v = _mm512_mul_pd(det_v, _mm512_set1_pd(pref));
-        _mm512_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
+        // Compile-time L selects one monomorphised determinant expansion. The subset minors
+        // are the same Laplace cofactors as the old fixed-rank kernels, but generated by
+        // the single const body and evaluated as packed SIMD values.
+        let mut size = 2usize;
+        while size <= L {
+            let row = L - size;
+            let mut next = [_mm512_setzero_pd(); 64];
+            let mut mask = full;
 
-/// Prepare and evaluate 4 independent real fixed-rank `L = 4` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates 4
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 16` contraction entries are loaded per lane, and the explicit minor/cofactor
-/// formulation uses 28 determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 4 x-reference excitation caches.
-/// - `w_ex`: 4 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 4 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX2/FMA`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_l4_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 4],
-    w_ex: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
+            loop {
+                if mask.count_ones() as usize == size {
+                    let mut acc = _mm512_setzero_pd();
+                    let mut pos = 0usize;
 
-        let mut d = [[0.0f64; 4]; 16];
-        let mut lane = 0;
+                    for c in 0..L {
+                        let bit = 1usize << c;
 
-        while lane < 4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 4];
-            let mut cols = [0usize; 4];
-            let x_rank = usize::from(x_data.rank);
+                        if (mask & bit) != 0 {
+                            let term = minors[mask ^ bit];
+                            acc = if (pos & 1) == 0 {
+                                _mm512_fmadd_pd(d[row * L + c], term, acc)
+                            } else {
+                                _mm512_fnmadd_pd(d[row * L + c], term, acc)
+                            };
+                            pos += 1;
+                        }
+                    }
 
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..4 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
+                    next[mask] = acc;
+                }
+
+                if mask == 0 {
+                    break;
+                }
+                mask = (mask - 1) & full;
             }
 
-            // Read exactly `16` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-
-            d[4][lane] = x0[rows[1] * n + cols[0]];
-            d[5][lane] = x0[rows[1] * n + cols[1]];
-            d[6][lane] = y0[rows[1] * n + cols[2]];
-            d[7][lane] = y0[rows[1] * n + cols[3]];
-
-            d[8][lane] = x0[rows[2] * n + cols[0]];
-            d[9][lane] = x0[rows[2] * n + cols[1]];
-            d[10][lane] = x0[rows[2] * n + cols[2]];
-            d[11][lane] = y0[rows[2] * n + cols[3]];
-
-            d[12][lane] = x0[rows[3] * n + cols[0]];
-            d[13][lane] = x0[rows[3] * n + cols[1]];
-            d[14][lane] = x0[rows[3] * n + cols[2]];
-            d[15][lane] = x0[rows[3] * n + cols[3]];
-            lane += 1;
+            minors = next;
+            size += 1;
         }
 
-        // The six distinct `2 \\times 2` minors of the final two rows require 12 products.
-        // Reusing them in all four `3 \\times 3` cofactors requires 12 more products, and the
-        // first-row expansion requires four. No determinant product is recomputed.
-        let s0 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[10].as_ptr()),
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_loadu_pd(d[14].as_ptr()),
-            ),
-        );
-        let s1 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[9].as_ptr()),
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-            ),
-        );
-        let s2 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[9].as_ptr()),
-            _mm256_loadu_pd(d[14].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_loadu_pd(d[13].as_ptr()),
-            ),
-        );
-        let s3 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[8].as_ptr()),
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[11].as_ptr()),
-                _mm256_loadu_pd(d[12].as_ptr()),
-            ),
-        );
-        let s4 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[8].as_ptr()),
-            _mm256_loadu_pd(d[14].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[10].as_ptr()),
-                _mm256_loadu_pd(d[12].as_ptr()),
-            ),
-        );
-        let s5 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[8].as_ptr()),
-            _mm256_loadu_pd(d[13].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[9].as_ptr()),
-                _mm256_loadu_pd(d[12].as_ptr()),
-            ),
-        );
-
-        let c0 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[5].as_ptr()),
-            s0,
-            _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), s1),
-        );
-        let c0 = _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), s2, c0);
-        let c1 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[4].as_ptr()),
-            s0,
-            _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), s3),
-        );
-        let c1 = _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), s4, c1);
-        let c2 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[4].as_ptr()),
-            s1,
-            _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), s3),
-        );
-        let c2 = _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), s5, c2);
-        let c3 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[4].as_ptr()),
-            s2,
-            _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), s4),
-        );
-        let c3 = _mm256_fmadd_pd(_mm256_loadu_pd(d[6].as_ptr()), s5, c3);
-
-        let det_v = _mm256_mul_pd(_mm256_loadu_pd(d[0].as_ptr()), c0);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[1].as_ptr()), c1, det_v);
-        let det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), c2, det_v);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), c3, det_v);
-        let overlap_v = _mm256_mul_pd(det_v, _mm256_set1_pd(pref));
-        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 8 independent real fixed-rank `L = 4` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates 8
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 16` contraction entries are loaded per lane, and the explicit minor/cofactor
-/// formulation uses 28 determinant multiplications without recomputing a determinant product.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 8 x-reference excitation caches.
-/// - `w_ex`: 8 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 8 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX-512`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_l4_prepared_f64x8(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 8],
-    w_ex: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 8]; 16];
-        let mut lane = 0;
-
-        while lane < 8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 4];
-            let mut cols = [0usize; 4];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..4 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `16` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-
-            d[4][lane] = x0[rows[1] * n + cols[0]];
-            d[5][lane] = x0[rows[1] * n + cols[1]];
-            d[6][lane] = y0[rows[1] * n + cols[2]];
-            d[7][lane] = y0[rows[1] * n + cols[3]];
-
-            d[8][lane] = x0[rows[2] * n + cols[0]];
-            d[9][lane] = x0[rows[2] * n + cols[1]];
-            d[10][lane] = x0[rows[2] * n + cols[2]];
-            d[11][lane] = y0[rows[2] * n + cols[3]];
-
-            d[12][lane] = x0[rows[3] * n + cols[0]];
-            d[13][lane] = x0[rows[3] * n + cols[1]];
-            d[14][lane] = x0[rows[3] * n + cols[2]];
-            d[15][lane] = x0[rows[3] * n + cols[3]];
-            lane += 1;
-        }
-
-        // The six distinct `2 \\times 2` minors of the final two rows require 12 products.
-        // Reusing them in all four `3 \\times 3` cofactors requires 12 more products, and the
-        // first-row expansion requires four. No determinant product is recomputed.
-        let s0 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[10].as_ptr()),
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_loadu_pd(d[14].as_ptr()),
-            ),
-        );
-        let s1 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[9].as_ptr()),
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-            ),
-        );
-        let s2 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[9].as_ptr()),
-            _mm512_loadu_pd(d[14].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_loadu_pd(d[13].as_ptr()),
-            ),
-        );
-        let s3 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[8].as_ptr()),
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[11].as_ptr()),
-                _mm512_loadu_pd(d[12].as_ptr()),
-            ),
-        );
-        let s4 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[8].as_ptr()),
-            _mm512_loadu_pd(d[14].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[10].as_ptr()),
-                _mm512_loadu_pd(d[12].as_ptr()),
-            ),
-        );
-        let s5 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[8].as_ptr()),
-            _mm512_loadu_pd(d[13].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[9].as_ptr()),
-                _mm512_loadu_pd(d[12].as_ptr()),
-            ),
-        );
-
-        let c0 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[5].as_ptr()),
-            s0,
-            _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), s1),
-        );
-        let c0 = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), s2, c0);
-        let c1 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[4].as_ptr()),
-            s0,
-            _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), s3),
-        );
-        let c1 = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), s4, c1);
-        let c2 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[4].as_ptr()),
-            s1,
-            _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), s3),
-        );
-        let c2 = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), s5, c2);
-        let c3 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[4].as_ptr()),
-            s2,
-            _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), s4),
-        );
-        let c3 = _mm512_fmadd_pd(_mm512_loadu_pd(d[6].as_ptr()), s5, c3);
-
-        let det_v = _mm512_mul_pd(_mm512_loadu_pd(d[0].as_ptr()), c0);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), c1, det_v);
-        let det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), c2, det_v);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), c3, det_v);
-        let overlap_v = _mm512_mul_pd(det_v, _mm512_set1_pd(pref));
-        _mm512_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 4 independent real fixed-rank `L = 5` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates 4
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 25` contraction entries are loaded per lane. Within the explicit
-/// minor/cofactor hierarchy, every distinct column-subset minor is formed exactly once:
-/// `10` rank-2 minors require `20` products, `10` rank-3 minors require `30` products,
-/// `5` rank-4 minors require `20` products, and the first-row expansion requires `5`.
-/// This gives `75` determinant multiplications with no determinant product recomputed.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 4 x-reference excitation caches.
-/// - `w_ex`: 4 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 4 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX2/FMA`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_l5_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 4],
-    w_ex: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 4]; 25];
-        let mut lane = 0;
-
-        while lane < 4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 5];
-            let mut cols = [0usize; 5];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..5 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `25` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-            d[4][lane] = y0[rows[0] * n + cols[4]];
-
-            d[5][lane] = x0[rows[1] * n + cols[0]];
-            d[6][lane] = x0[rows[1] * n + cols[1]];
-            d[7][lane] = y0[rows[1] * n + cols[2]];
-            d[8][lane] = y0[rows[1] * n + cols[3]];
-            d[9][lane] = y0[rows[1] * n + cols[4]];
-
-            d[10][lane] = x0[rows[2] * n + cols[0]];
-            d[11][lane] = x0[rows[2] * n + cols[1]];
-            d[12][lane] = x0[rows[2] * n + cols[2]];
-            d[13][lane] = y0[rows[2] * n + cols[3]];
-            d[14][lane] = y0[rows[2] * n + cols[4]];
-
-            d[15][lane] = x0[rows[3] * n + cols[0]];
-            d[16][lane] = x0[rows[3] * n + cols[1]];
-            d[17][lane] = x0[rows[3] * n + cols[2]];
-            d[18][lane] = x0[rows[3] * n + cols[3]];
-            d[19][lane] = y0[rows[3] * n + cols[4]];
-
-            d[20][lane] = x0[rows[4] * n + cols[0]];
-            d[21][lane] = x0[rows[4] * n + cols[1]];
-            d[22][lane] = x0[rows[4] * n + cols[2]];
-            d[23][lane] = x0[rows[4] * n + cols[3]];
-            d[24][lane] = x0[rows[4] * n + cols[4]];
-            lane += 1;
-        }
-
-        let m2_01 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_loadu_pd(d[21].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[16].as_ptr()),
-                _mm256_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_02 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_loadu_pd(d[22].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[17].as_ptr()),
-                _mm256_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_03 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_loadu_pd(d[23].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[18].as_ptr()),
-                _mm256_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_04 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[15].as_ptr()),
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[19].as_ptr()),
-                _mm256_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_12 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[16].as_ptr()),
-            _mm256_loadu_pd(d[22].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[17].as_ptr()),
-                _mm256_loadu_pd(d[21].as_ptr()),
-            ),
-        );
-        let m2_13 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[16].as_ptr()),
-            _mm256_loadu_pd(d[23].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[18].as_ptr()),
-                _mm256_loadu_pd(d[21].as_ptr()),
-            ),
-        );
-        let m2_14 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[16].as_ptr()),
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[19].as_ptr()),
-                _mm256_loadu_pd(d[21].as_ptr()),
-            ),
-        );
-        let m2_23 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[17].as_ptr()),
-            _mm256_loadu_pd(d[23].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[18].as_ptr()),
-                _mm256_loadu_pd(d[22].as_ptr()),
-            ),
-        );
-        let m2_24 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[17].as_ptr()),
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[19].as_ptr()),
-                _mm256_loadu_pd(d[22].as_ptr()),
-            ),
-        );
-        let m2_34 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[18].as_ptr()),
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[19].as_ptr()),
-                _mm256_loadu_pd(d[23].as_ptr()),
-            ),
-        );
-
-        let m3_012 = _mm256_mul_pd(_mm256_loadu_pd(d[10].as_ptr()), m2_12);
-        let m3_012 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m2_02, m3_012);
-        let m3_012 = _mm256_fmadd_pd(_mm256_loadu_pd(d[12].as_ptr()), m2_01, m3_012);
-        let m3_013 = _mm256_mul_pd(_mm256_loadu_pd(d[10].as_ptr()), m2_13);
-        let m3_013 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m2_03, m3_013);
-        let m3_013 = _mm256_fmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m2_01, m3_013);
-        let m3_014 = _mm256_mul_pd(_mm256_loadu_pd(d[10].as_ptr()), m2_14);
-        let m3_014 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m2_04, m3_014);
-        let m3_014 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m2_01, m3_014);
-        let m3_023 = _mm256_mul_pd(_mm256_loadu_pd(d[10].as_ptr()), m2_23);
-        let m3_023 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[12].as_ptr()), m2_03, m3_023);
-        let m3_023 = _mm256_fmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m2_02, m3_023);
-        let m3_024 = _mm256_mul_pd(_mm256_loadu_pd(d[10].as_ptr()), m2_24);
-        let m3_024 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[12].as_ptr()), m2_04, m3_024);
-        let m3_024 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m2_02, m3_024);
-        let m3_034 = _mm256_mul_pd(_mm256_loadu_pd(d[10].as_ptr()), m2_34);
-        let m3_034 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m2_04, m3_034);
-        let m3_034 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m2_03, m3_034);
-        let m3_123 = _mm256_mul_pd(_mm256_loadu_pd(d[11].as_ptr()), m2_23);
-        let m3_123 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[12].as_ptr()), m2_13, m3_123);
-        let m3_123 = _mm256_fmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m2_12, m3_123);
-        let m3_124 = _mm256_mul_pd(_mm256_loadu_pd(d[11].as_ptr()), m2_24);
-        let m3_124 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[12].as_ptr()), m2_14, m3_124);
-        let m3_124 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m2_12, m3_124);
-        let m3_134 = _mm256_mul_pd(_mm256_loadu_pd(d[11].as_ptr()), m2_34);
-        let m3_134 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m2_14, m3_134);
-        let m3_134 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m2_13, m3_134);
-        let m3_234 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m2_34);
-        let m3_234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m2_24, m3_234);
-        let m3_234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m2_23, m3_234);
-
-        let m4_0123 = _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), m3_123);
-        let m4_0123 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[6].as_ptr()), m3_023, m4_0123);
-        let m4_0123 = _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m3_013, m4_0123);
-        let m4_0123 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m3_012, m4_0123);
-        let m4_0124 = _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), m3_124);
-        let m4_0124 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[6].as_ptr()), m3_024, m4_0124);
-        let m4_0124 = _mm256_fmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m3_014, m4_0124);
-        let m4_0124 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m3_012, m4_0124);
-        let m4_0134 = _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), m3_134);
-        let m4_0134 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[6].as_ptr()), m3_034, m4_0134);
-        let m4_0134 = _mm256_fmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m3_014, m4_0134);
-        let m4_0134 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m3_013, m4_0134);
-        let m4_0234 = _mm256_mul_pd(_mm256_loadu_pd(d[5].as_ptr()), m3_234);
-        let m4_0234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m3_034, m4_0234);
-        let m4_0234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m3_024, m4_0234);
-        let m4_0234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m3_023, m4_0234);
-        let m4_1234 = _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m3_234);
-        let m4_1234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m3_134, m4_1234);
-        let m4_1234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m3_124, m4_1234);
-        let m4_1234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m3_123, m4_1234);
-
-        let det_v = _mm256_mul_pd(_mm256_loadu_pd(d[0].as_ptr()), m4_1234);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[1].as_ptr()), m4_0234, det_v);
-        let det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), m4_0134, det_v);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m4_0124, det_v);
-        let det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[4].as_ptr()), m4_0123, det_v);
-        let overlap_v = _mm256_mul_pd(det_v, _mm256_set1_pd(pref));
-        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 8 independent real fixed-rank `L = 5` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates 8
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 25` contraction entries are loaded per lane. Within the explicit
-/// minor/cofactor hierarchy, every distinct column-subset minor is formed exactly once:
-/// `10` rank-2 minors require `20` products, `10` rank-3 minors require `30` products,
-/// `5` rank-4 minors require `20` products, and the first-row expansion requires `5`.
-/// This gives `75` determinant multiplications with no determinant product recomputed.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 8 x-reference excitation caches.
-/// - `w_ex`: 8 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 8 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX-512`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_l5_prepared_f64x8(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 8],
-    w_ex: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 8]; 25];
-        let mut lane = 0;
-
-        while lane < 8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 5];
-            let mut cols = [0usize; 5];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..5 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `25` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-            d[4][lane] = y0[rows[0] * n + cols[4]];
-
-            d[5][lane] = x0[rows[1] * n + cols[0]];
-            d[6][lane] = x0[rows[1] * n + cols[1]];
-            d[7][lane] = y0[rows[1] * n + cols[2]];
-            d[8][lane] = y0[rows[1] * n + cols[3]];
-            d[9][lane] = y0[rows[1] * n + cols[4]];
-
-            d[10][lane] = x0[rows[2] * n + cols[0]];
-            d[11][lane] = x0[rows[2] * n + cols[1]];
-            d[12][lane] = x0[rows[2] * n + cols[2]];
-            d[13][lane] = y0[rows[2] * n + cols[3]];
-            d[14][lane] = y0[rows[2] * n + cols[4]];
-
-            d[15][lane] = x0[rows[3] * n + cols[0]];
-            d[16][lane] = x0[rows[3] * n + cols[1]];
-            d[17][lane] = x0[rows[3] * n + cols[2]];
-            d[18][lane] = x0[rows[3] * n + cols[3]];
-            d[19][lane] = y0[rows[3] * n + cols[4]];
-
-            d[20][lane] = x0[rows[4] * n + cols[0]];
-            d[21][lane] = x0[rows[4] * n + cols[1]];
-            d[22][lane] = x0[rows[4] * n + cols[2]];
-            d[23][lane] = x0[rows[4] * n + cols[3]];
-            d[24][lane] = x0[rows[4] * n + cols[4]];
-            lane += 1;
-        }
-
-        let m2_01 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_loadu_pd(d[21].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[16].as_ptr()),
-                _mm512_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_02 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_loadu_pd(d[22].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[17].as_ptr()),
-                _mm512_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_03 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_loadu_pd(d[23].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[18].as_ptr()),
-                _mm512_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_04 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[15].as_ptr()),
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[19].as_ptr()),
-                _mm512_loadu_pd(d[20].as_ptr()),
-            ),
-        );
-        let m2_12 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[16].as_ptr()),
-            _mm512_loadu_pd(d[22].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[17].as_ptr()),
-                _mm512_loadu_pd(d[21].as_ptr()),
-            ),
-        );
-        let m2_13 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[16].as_ptr()),
-            _mm512_loadu_pd(d[23].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[18].as_ptr()),
-                _mm512_loadu_pd(d[21].as_ptr()),
-            ),
-        );
-        let m2_14 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[16].as_ptr()),
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[19].as_ptr()),
-                _mm512_loadu_pd(d[21].as_ptr()),
-            ),
-        );
-        let m2_23 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[17].as_ptr()),
-            _mm512_loadu_pd(d[23].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[18].as_ptr()),
-                _mm512_loadu_pd(d[22].as_ptr()),
-            ),
-        );
-        let m2_24 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[17].as_ptr()),
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[19].as_ptr()),
-                _mm512_loadu_pd(d[22].as_ptr()),
-            ),
-        );
-        let m2_34 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[18].as_ptr()),
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[19].as_ptr()),
-                _mm512_loadu_pd(d[23].as_ptr()),
-            ),
-        );
-
-        let m3_012 = _mm512_mul_pd(_mm512_loadu_pd(d[10].as_ptr()), m2_12);
-        let m3_012 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m2_02, m3_012);
-        let m3_012 = _mm512_fmadd_pd(_mm512_loadu_pd(d[12].as_ptr()), m2_01, m3_012);
-        let m3_013 = _mm512_mul_pd(_mm512_loadu_pd(d[10].as_ptr()), m2_13);
-        let m3_013 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m2_03, m3_013);
-        let m3_013 = _mm512_fmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m2_01, m3_013);
-        let m3_014 = _mm512_mul_pd(_mm512_loadu_pd(d[10].as_ptr()), m2_14);
-        let m3_014 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m2_04, m3_014);
-        let m3_014 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m2_01, m3_014);
-        let m3_023 = _mm512_mul_pd(_mm512_loadu_pd(d[10].as_ptr()), m2_23);
-        let m3_023 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[12].as_ptr()), m2_03, m3_023);
-        let m3_023 = _mm512_fmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m2_02, m3_023);
-        let m3_024 = _mm512_mul_pd(_mm512_loadu_pd(d[10].as_ptr()), m2_24);
-        let m3_024 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[12].as_ptr()), m2_04, m3_024);
-        let m3_024 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m2_02, m3_024);
-        let m3_034 = _mm512_mul_pd(_mm512_loadu_pd(d[10].as_ptr()), m2_34);
-        let m3_034 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m2_04, m3_034);
-        let m3_034 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m2_03, m3_034);
-        let m3_123 = _mm512_mul_pd(_mm512_loadu_pd(d[11].as_ptr()), m2_23);
-        let m3_123 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[12].as_ptr()), m2_13, m3_123);
-        let m3_123 = _mm512_fmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m2_12, m3_123);
-        let m3_124 = _mm512_mul_pd(_mm512_loadu_pd(d[11].as_ptr()), m2_24);
-        let m3_124 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[12].as_ptr()), m2_14, m3_124);
-        let m3_124 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m2_12, m3_124);
-        let m3_134 = _mm512_mul_pd(_mm512_loadu_pd(d[11].as_ptr()), m2_34);
-        let m3_134 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m2_14, m3_134);
-        let m3_134 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m2_13, m3_134);
-        let m3_234 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m2_34);
-        let m3_234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m2_24, m3_234);
-        let m3_234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m2_23, m3_234);
-
-        let m4_0123 = _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m3_123);
-        let m4_0123 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[6].as_ptr()), m3_023, m4_0123);
-        let m4_0123 = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m3_013, m4_0123);
-        let m4_0123 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m3_012, m4_0123);
-        let m4_0124 = _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m3_124);
-        let m4_0124 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[6].as_ptr()), m3_024, m4_0124);
-        let m4_0124 = _mm512_fmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m3_014, m4_0124);
-        let m4_0124 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m3_012, m4_0124);
-        let m4_0134 = _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m3_134);
-        let m4_0134 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[6].as_ptr()), m3_034, m4_0134);
-        let m4_0134 = _mm512_fmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m3_014, m4_0134);
-        let m4_0134 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m3_013, m4_0134);
-        let m4_0234 = _mm512_mul_pd(_mm512_loadu_pd(d[5].as_ptr()), m3_234);
-        let m4_0234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m3_034, m4_0234);
-        let m4_0234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m3_024, m4_0234);
-        let m4_0234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m3_023, m4_0234);
-        let m4_1234 = _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m3_234);
-        let m4_1234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m3_134, m4_1234);
-        let m4_1234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m3_124, m4_1234);
-        let m4_1234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m3_123, m4_1234);
-
-        let det_v = _mm512_mul_pd(_mm512_loadu_pd(d[0].as_ptr()), m4_1234);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), m4_0234, det_v);
-        let det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m4_0134, det_v);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m4_0124, det_v);
-        let det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[4].as_ptr()), m4_0123, det_v);
-        let overlap_v = _mm512_mul_pd(det_v, _mm512_set1_pd(pref));
-        _mm512_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 4 independent real fixed-rank `L = 6` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX2/FMA` arithmetic evaluates 4
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 36` contraction entries are loaded per lane. Within the explicit
-/// minor/cofactor hierarchy, every distinct column-subset minor is formed exactly once:
-/// `15` rank-2 minors require `30` products, `20` rank-3 minors require `60` products,
-/// `15` rank-4 minors require `60` products and `6` rank-5 minors require `30` products,
-/// while the first-row expansion requires `6`.
-/// This gives `186` determinant multiplications with no determinant product recomputed.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 4 x-reference excitation caches.
-/// - `w_ex`: 4 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 4 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX2/FMA`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_overlap_m0_l6_prepared_f64x4(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 4],
-    w_ex: &[ExcitationSpinCache; 4],
-    overlap: &mut [f64; 4],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 4]; 36];
-        let mut lane = 0;
-
-        while lane < 4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 6];
-            let mut cols = [0usize; 6];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..6 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `36` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-            d[4][lane] = y0[rows[0] * n + cols[4]];
-            d[5][lane] = y0[rows[0] * n + cols[5]];
-
-            d[6][lane] = x0[rows[1] * n + cols[0]];
-            d[7][lane] = x0[rows[1] * n + cols[1]];
-            d[8][lane] = y0[rows[1] * n + cols[2]];
-            d[9][lane] = y0[rows[1] * n + cols[3]];
-            d[10][lane] = y0[rows[1] * n + cols[4]];
-            d[11][lane] = y0[rows[1] * n + cols[5]];
-
-            d[12][lane] = x0[rows[2] * n + cols[0]];
-            d[13][lane] = x0[rows[2] * n + cols[1]];
-            d[14][lane] = x0[rows[2] * n + cols[2]];
-            d[15][lane] = y0[rows[2] * n + cols[3]];
-            d[16][lane] = y0[rows[2] * n + cols[4]];
-            d[17][lane] = y0[rows[2] * n + cols[5]];
-
-            d[18][lane] = x0[rows[3] * n + cols[0]];
-            d[19][lane] = x0[rows[3] * n + cols[1]];
-            d[20][lane] = x0[rows[3] * n + cols[2]];
-            d[21][lane] = x0[rows[3] * n + cols[3]];
-            d[22][lane] = y0[rows[3] * n + cols[4]];
-            d[23][lane] = y0[rows[3] * n + cols[5]];
-
-            d[24][lane] = x0[rows[4] * n + cols[0]];
-            d[25][lane] = x0[rows[4] * n + cols[1]];
-            d[26][lane] = x0[rows[4] * n + cols[2]];
-            d[27][lane] = x0[rows[4] * n + cols[3]];
-            d[28][lane] = x0[rows[4] * n + cols[4]];
-            d[29][lane] = y0[rows[4] * n + cols[5]];
-
-            d[30][lane] = x0[rows[5] * n + cols[0]];
-            d[31][lane] = x0[rows[5] * n + cols[1]];
-            d[32][lane] = x0[rows[5] * n + cols[2]];
-            d[33][lane] = x0[rows[5] * n + cols[3]];
-            d[34][lane] = x0[rows[5] * n + cols[4]];
-            d[35][lane] = x0[rows[5] * n + cols[5]];
-            lane += 1;
-        }
-
-        let m2_01 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_loadu_pd(d[31].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[25].as_ptr()),
-                _mm256_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_02 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_loadu_pd(d[32].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[26].as_ptr()),
-                _mm256_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_03 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_loadu_pd(d[33].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[27].as_ptr()),
-                _mm256_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_04 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_loadu_pd(d[34].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[28].as_ptr()),
-                _mm256_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_05 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[24].as_ptr()),
-            _mm256_loadu_pd(d[35].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[29].as_ptr()),
-                _mm256_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_12 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[25].as_ptr()),
-            _mm256_loadu_pd(d[32].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[26].as_ptr()),
-                _mm256_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_13 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[25].as_ptr()),
-            _mm256_loadu_pd(d[33].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[27].as_ptr()),
-                _mm256_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_14 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[25].as_ptr()),
-            _mm256_loadu_pd(d[34].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[28].as_ptr()),
-                _mm256_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_15 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[25].as_ptr()),
-            _mm256_loadu_pd(d[35].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[29].as_ptr()),
-                _mm256_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_23 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[26].as_ptr()),
-            _mm256_loadu_pd(d[33].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[27].as_ptr()),
-                _mm256_loadu_pd(d[32].as_ptr()),
-            ),
-        );
-        let m2_24 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[26].as_ptr()),
-            _mm256_loadu_pd(d[34].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[28].as_ptr()),
-                _mm256_loadu_pd(d[32].as_ptr()),
-            ),
-        );
-        let m2_25 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[26].as_ptr()),
-            _mm256_loadu_pd(d[35].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[29].as_ptr()),
-                _mm256_loadu_pd(d[32].as_ptr()),
-            ),
-        );
-        let m2_34 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[27].as_ptr()),
-            _mm256_loadu_pd(d[34].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[28].as_ptr()),
-                _mm256_loadu_pd(d[33].as_ptr()),
-            ),
-        );
-        let m2_35 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[27].as_ptr()),
-            _mm256_loadu_pd(d[35].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[29].as_ptr()),
-                _mm256_loadu_pd(d[33].as_ptr()),
-            ),
-        );
-        let m2_45 = _mm256_fmsub_pd(
-            _mm256_loadu_pd(d[28].as_ptr()),
-            _mm256_loadu_pd(d[35].as_ptr()),
-            _mm256_mul_pd(
-                _mm256_loadu_pd(d[29].as_ptr()),
-                _mm256_loadu_pd(d[34].as_ptr()),
-            ),
-        );
-
-        let m3_012 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_12);
-        let m3_012 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_02, m3_012);
-        let m3_012 = _mm256_fmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_01, m3_012);
-        let m3_013 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_13);
-        let m3_013 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_03, m3_013);
-        let m3_013 = _mm256_fmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_01, m3_013);
-        let m3_014 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_14);
-        let m3_014 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_04, m3_014);
-        let m3_014 = _mm256_fmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_01, m3_014);
-        let m3_015 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_15);
-        let m3_015 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_05, m3_015);
-        let m3_015 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_01, m3_015);
-        let m3_023 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_23);
-        let m3_023 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_03, m3_023);
-        let m3_023 = _mm256_fmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_02, m3_023);
-        let m3_024 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_24);
-        let m3_024 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_04, m3_024);
-        let m3_024 = _mm256_fmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_02, m3_024);
-        let m3_025 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_25);
-        let m3_025 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_05, m3_025);
-        let m3_025 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_02, m3_025);
-        let m3_034 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_34);
-        let m3_034 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_04, m3_034);
-        let m3_034 = _mm256_fmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_03, m3_034);
-        let m3_035 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_35);
-        let m3_035 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_05, m3_035);
-        let m3_035 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_03, m3_035);
-        let m3_045 = _mm256_mul_pd(_mm256_loadu_pd(d[18].as_ptr()), m2_45);
-        let m3_045 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_05, m3_045);
-        let m3_045 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_04, m3_045);
-        let m3_123 = _mm256_mul_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_23);
-        let m3_123 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_13, m3_123);
-        let m3_123 = _mm256_fmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_12, m3_123);
-        let m3_124 = _mm256_mul_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_24);
-        let m3_124 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_14, m3_124);
-        let m3_124 = _mm256_fmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_12, m3_124);
-        let m3_125 = _mm256_mul_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_25);
-        let m3_125 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_15, m3_125);
-        let m3_125 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_12, m3_125);
-        let m3_134 = _mm256_mul_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_34);
-        let m3_134 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_14, m3_134);
-        let m3_134 = _mm256_fmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_13, m3_134);
-        let m3_135 = _mm256_mul_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_35);
-        let m3_135 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_15, m3_135);
-        let m3_135 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_13, m3_135);
-        let m3_145 = _mm256_mul_pd(_mm256_loadu_pd(d[19].as_ptr()), m2_45);
-        let m3_145 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_15, m3_145);
-        let m3_145 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_14, m3_145);
-        let m3_234 = _mm256_mul_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_34);
-        let m3_234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_24, m3_234);
-        let m3_234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_23, m3_234);
-        let m3_235 = _mm256_mul_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_35);
-        let m3_235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_25, m3_235);
-        let m3_235 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_23, m3_235);
-        let m3_245 = _mm256_mul_pd(_mm256_loadu_pd(d[20].as_ptr()), m2_45);
-        let m3_245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_25, m3_245);
-        let m3_245 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_24, m3_245);
-        let m3_345 = _mm256_mul_pd(_mm256_loadu_pd(d[21].as_ptr()), m2_45);
-        let m3_345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[22].as_ptr()), m2_35, m3_345);
-        let m3_345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[23].as_ptr()), m2_34, m3_345);
-
-        let m4_0123 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_123);
-        let m4_0123 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_023, m4_0123);
-        let m4_0123 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_013, m4_0123);
-        let m4_0123 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_012, m4_0123);
-        let m4_0124 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_124);
-        let m4_0124 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_024, m4_0124);
-        let m4_0124 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_014, m4_0124);
-        let m4_0124 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_012, m4_0124);
-        let m4_0125 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_125);
-        let m4_0125 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_025, m4_0125);
-        let m4_0125 = _mm256_fmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_015, m4_0125);
-        let m4_0125 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_012, m4_0125);
-        let m4_0134 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_134);
-        let m4_0134 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_034, m4_0134);
-        let m4_0134 = _mm256_fmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_014, m4_0134);
-        let m4_0134 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_013, m4_0134);
-        let m4_0135 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_135);
-        let m4_0135 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_035, m4_0135);
-        let m4_0135 = _mm256_fmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_015, m4_0135);
-        let m4_0135 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_013, m4_0135);
-        let m4_0145 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_145);
-        let m4_0145 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_045, m4_0145);
-        let m4_0145 = _mm256_fmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_015, m4_0145);
-        let m4_0145 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_014, m4_0145);
-        let m4_0234 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_234);
-        let m4_0234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_034, m4_0234);
-        let m4_0234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_024, m4_0234);
-        let m4_0234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_023, m4_0234);
-        let m4_0235 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_235);
-        let m4_0235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_035, m4_0235);
-        let m4_0235 = _mm256_fmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_025, m4_0235);
-        let m4_0235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_023, m4_0235);
-        let m4_0245 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_245);
-        let m4_0245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_045, m4_0245);
-        let m4_0245 = _mm256_fmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_025, m4_0245);
-        let m4_0245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_024, m4_0245);
-        let m4_0345 = _mm256_mul_pd(_mm256_loadu_pd(d[12].as_ptr()), m3_345);
-        let m4_0345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_045, m4_0345);
-        let m4_0345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_035, m4_0345);
-        let m4_0345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_034, m4_0345);
-        let m4_1234 = _mm256_mul_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_234);
-        let m4_1234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_134, m4_1234);
-        let m4_1234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_124, m4_1234);
-        let m4_1234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_123, m4_1234);
-        let m4_1235 = _mm256_mul_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_235);
-        let m4_1235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_135, m4_1235);
-        let m4_1235 = _mm256_fmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_125, m4_1235);
-        let m4_1235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_123, m4_1235);
-        let m4_1245 = _mm256_mul_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_245);
-        let m4_1245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_145, m4_1245);
-        let m4_1245 = _mm256_fmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_125, m4_1245);
-        let m4_1245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_124, m4_1245);
-        let m4_1345 = _mm256_mul_pd(_mm256_loadu_pd(d[13].as_ptr()), m3_345);
-        let m4_1345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_145, m4_1345);
-        let m4_1345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_135, m4_1345);
-        let m4_1345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_134, m4_1345);
-        let m4_2345 = _mm256_mul_pd(_mm256_loadu_pd(d[14].as_ptr()), m3_345);
-        let m4_2345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[15].as_ptr()), m3_245, m4_2345);
-        let m4_2345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[16].as_ptr()), m3_235, m4_2345);
-        let m4_2345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[17].as_ptr()), m3_234, m4_2345);
-
-        let m5_01234 = _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m4_1234);
-        let m5_01234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m4_0234, m5_01234);
-        let m5_01234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m4_0134, m5_01234);
-        let m5_01234 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m4_0124, m5_01234);
-        let m5_01234 = _mm256_fmadd_pd(_mm256_loadu_pd(d[10].as_ptr()), m4_0123, m5_01234);
-        let m5_01235 = _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m4_1235);
-        let m5_01235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m4_0235, m5_01235);
-        let m5_01235 = _mm256_fmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m4_0135, m5_01235);
-        let m5_01235 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m4_0125, m5_01235);
-        let m5_01235 = _mm256_fmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m4_0123, m5_01235);
-        let m5_01245 = _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m4_1245);
-        let m5_01245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m4_0245, m5_01245);
-        let m5_01245 = _mm256_fmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m4_0145, m5_01245);
-        let m5_01245 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[10].as_ptr()), m4_0125, m5_01245);
-        let m5_01245 = _mm256_fmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m4_0124, m5_01245);
-        let m5_01345 = _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m4_1345);
-        let m5_01345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[7].as_ptr()), m4_0345, m5_01345);
-        let m5_01345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m4_0145, m5_01345);
-        let m5_01345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[10].as_ptr()), m4_0135, m5_01345);
-        let m5_01345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m4_0134, m5_01345);
-        let m5_02345 = _mm256_mul_pd(_mm256_loadu_pd(d[6].as_ptr()), m4_2345);
-        let m5_02345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m4_0345, m5_02345);
-        let m5_02345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m4_0245, m5_02345);
-        let m5_02345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[10].as_ptr()), m4_0235, m5_02345);
-        let m5_02345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m4_0234, m5_02345);
-        let m5_12345 = _mm256_mul_pd(_mm256_loadu_pd(d[7].as_ptr()), m4_2345);
-        let m5_12345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[8].as_ptr()), m4_1345, m5_12345);
-        let m5_12345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[9].as_ptr()), m4_1245, m5_12345);
-        let m5_12345 = _mm256_fnmadd_pd(_mm256_loadu_pd(d[10].as_ptr()), m4_1235, m5_12345);
-        let m5_12345 = _mm256_fmadd_pd(_mm256_loadu_pd(d[11].as_ptr()), m4_1234, m5_12345);
-
-        let det_v = _mm256_mul_pd(_mm256_loadu_pd(d[0].as_ptr()), m5_12345);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[1].as_ptr()), m5_02345, det_v);
-        let det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[2].as_ptr()), m5_01345, det_v);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[3].as_ptr()), m5_01245, det_v);
-        let det_v = _mm256_fmadd_pd(_mm256_loadu_pd(d[4].as_ptr()), m5_01235, det_v);
-        let det_v = _mm256_fnmadd_pd(_mm256_loadu_pd(d[5].as_ptr()), m5_01234, det_v);
-        let overlap_v = _mm256_mul_pd(det_v, _mm256_set1_pd(pref));
-        _mm256_storeu_pd(overlap.as_mut_ptr(), overlap_v);
-    }
-}
-
-/// Prepare and evaluate 8 independent real fixed-rank `L = 6` overlaps for `m = 0`.
-/// Each SIMD lane is one complete Wick pair, so the `AVX-512` arithmetic evaluates 8
-/// independent contraction determinants without horizontal reductions between pairs.
-/// Exactly `L^2 = 36` contraction entries are loaded per lane. Within the explicit
-/// minor/cofactor hierarchy, every distinct column-subset minor is formed exactly once:
-/// `15` rank-2 minors require `30` products, `20` rank-3 minors require `60` products,
-/// `15` rank-4 minors require `60` products and `6` rank-5 minors require `30` products,
-/// while the first-row expansion requires `6`.
-/// This gives `186` determinant multiplications with no determinant product recomputed.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `x_ex`: 8 x-reference excitation caches.
-/// - `w_ex`: 8 w-reference excitation caches.
-/// - `overlap`: Real overlap outputs in SIMD-lane order, excluding excitation phases.
-/// # Returns
-/// - `()`: Writes 8 same-spin Wick overlaps into `overlap`.
-/// # Safety
-/// - The caller must ensure CPU support for `AVX-512`.
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-unsafe fn xw_overlap_m0_l6_prepared_f64x8(
-    w: &SameSpinView<'_, f64>,
-    x_ex: &[ExcitationSpinCache; 8],
-    w_ex: &[ExcitationSpinCache; 8],
-    overlap: &mut [f64; 8],
-) {
-    unsafe {
-        let n = w.n();
-        let x0 = w.x_slice(0);
-        let y0 = w.y_slice(0);
-        let pref = w.phase * w.tilde_s_prod;
-        let nocc = w.nocc;
-        let nvirt = w.nmo - nocc;
-
-        let mut d = [[0.0f64; 8]; 36];
-        let mut lane = 0;
-
-        while lane < 8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
-            let mut rows = [0usize; 6];
-            let mut cols = [0usize; 6];
-            let x_rank = usize::from(x_data.rank);
-
-            for i in 0..x_rank {
-                rows[i] = usize::from(x_data.indices[4 + i]) - nocc;
-                cols[i] = usize::from(x_data.indices[i]);
-            }
-            for i in x_rank..6 {
-                let j = i - x_rank;
-                rows[i] = nvirt + usize::from(w_data.indices[j]);
-                cols[i] = usize::from(w_data.indices[4 + j]);
-            }
-
-            // Read exactly `36` contraction entries, the `L^2` input lower bound.
-            d[0][lane] = x0[rows[0] * n + cols[0]];
-            d[1][lane] = y0[rows[0] * n + cols[1]];
-            d[2][lane] = y0[rows[0] * n + cols[2]];
-            d[3][lane] = y0[rows[0] * n + cols[3]];
-            d[4][lane] = y0[rows[0] * n + cols[4]];
-            d[5][lane] = y0[rows[0] * n + cols[5]];
-
-            d[6][lane] = x0[rows[1] * n + cols[0]];
-            d[7][lane] = x0[rows[1] * n + cols[1]];
-            d[8][lane] = y0[rows[1] * n + cols[2]];
-            d[9][lane] = y0[rows[1] * n + cols[3]];
-            d[10][lane] = y0[rows[1] * n + cols[4]];
-            d[11][lane] = y0[rows[1] * n + cols[5]];
-
-            d[12][lane] = x0[rows[2] * n + cols[0]];
-            d[13][lane] = x0[rows[2] * n + cols[1]];
-            d[14][lane] = x0[rows[2] * n + cols[2]];
-            d[15][lane] = y0[rows[2] * n + cols[3]];
-            d[16][lane] = y0[rows[2] * n + cols[4]];
-            d[17][lane] = y0[rows[2] * n + cols[5]];
-
-            d[18][lane] = x0[rows[3] * n + cols[0]];
-            d[19][lane] = x0[rows[3] * n + cols[1]];
-            d[20][lane] = x0[rows[3] * n + cols[2]];
-            d[21][lane] = x0[rows[3] * n + cols[3]];
-            d[22][lane] = y0[rows[3] * n + cols[4]];
-            d[23][lane] = y0[rows[3] * n + cols[5]];
-
-            d[24][lane] = x0[rows[4] * n + cols[0]];
-            d[25][lane] = x0[rows[4] * n + cols[1]];
-            d[26][lane] = x0[rows[4] * n + cols[2]];
-            d[27][lane] = x0[rows[4] * n + cols[3]];
-            d[28][lane] = x0[rows[4] * n + cols[4]];
-            d[29][lane] = y0[rows[4] * n + cols[5]];
-
-            d[30][lane] = x0[rows[5] * n + cols[0]];
-            d[31][lane] = x0[rows[5] * n + cols[1]];
-            d[32][lane] = x0[rows[5] * n + cols[2]];
-            d[33][lane] = x0[rows[5] * n + cols[3]];
-            d[34][lane] = x0[rows[5] * n + cols[4]];
-            d[35][lane] = x0[rows[5] * n + cols[5]];
-            lane += 1;
-        }
-
-        let m2_01 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_loadu_pd(d[31].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[25].as_ptr()),
-                _mm512_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_02 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_loadu_pd(d[32].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[26].as_ptr()),
-                _mm512_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_03 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_loadu_pd(d[33].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[27].as_ptr()),
-                _mm512_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_04 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_loadu_pd(d[34].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[28].as_ptr()),
-                _mm512_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_05 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[24].as_ptr()),
-            _mm512_loadu_pd(d[35].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[29].as_ptr()),
-                _mm512_loadu_pd(d[30].as_ptr()),
-            ),
-        );
-        let m2_12 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[25].as_ptr()),
-            _mm512_loadu_pd(d[32].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[26].as_ptr()),
-                _mm512_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_13 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[25].as_ptr()),
-            _mm512_loadu_pd(d[33].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[27].as_ptr()),
-                _mm512_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_14 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[25].as_ptr()),
-            _mm512_loadu_pd(d[34].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[28].as_ptr()),
-                _mm512_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_15 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[25].as_ptr()),
-            _mm512_loadu_pd(d[35].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[29].as_ptr()),
-                _mm512_loadu_pd(d[31].as_ptr()),
-            ),
-        );
-        let m2_23 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[26].as_ptr()),
-            _mm512_loadu_pd(d[33].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[27].as_ptr()),
-                _mm512_loadu_pd(d[32].as_ptr()),
-            ),
-        );
-        let m2_24 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[26].as_ptr()),
-            _mm512_loadu_pd(d[34].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[28].as_ptr()),
-                _mm512_loadu_pd(d[32].as_ptr()),
-            ),
-        );
-        let m2_25 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[26].as_ptr()),
-            _mm512_loadu_pd(d[35].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[29].as_ptr()),
-                _mm512_loadu_pd(d[32].as_ptr()),
-            ),
-        );
-        let m2_34 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[27].as_ptr()),
-            _mm512_loadu_pd(d[34].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[28].as_ptr()),
-                _mm512_loadu_pd(d[33].as_ptr()),
-            ),
-        );
-        let m2_35 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[27].as_ptr()),
-            _mm512_loadu_pd(d[35].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[29].as_ptr()),
-                _mm512_loadu_pd(d[33].as_ptr()),
-            ),
-        );
-        let m2_45 = _mm512_fmsub_pd(
-            _mm512_loadu_pd(d[28].as_ptr()),
-            _mm512_loadu_pd(d[35].as_ptr()),
-            _mm512_mul_pd(
-                _mm512_loadu_pd(d[29].as_ptr()),
-                _mm512_loadu_pd(d[34].as_ptr()),
-            ),
-        );
-
-        let m3_012 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_12);
-        let m3_012 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_02, m3_012);
-        let m3_012 = _mm512_fmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_01, m3_012);
-        let m3_013 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_13);
-        let m3_013 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_03, m3_013);
-        let m3_013 = _mm512_fmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_01, m3_013);
-        let m3_014 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_14);
-        let m3_014 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_04, m3_014);
-        let m3_014 = _mm512_fmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_01, m3_014);
-        let m3_015 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_15);
-        let m3_015 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_05, m3_015);
-        let m3_015 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_01, m3_015);
-        let m3_023 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_23);
-        let m3_023 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_03, m3_023);
-        let m3_023 = _mm512_fmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_02, m3_023);
-        let m3_024 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_24);
-        let m3_024 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_04, m3_024);
-        let m3_024 = _mm512_fmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_02, m3_024);
-        let m3_025 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_25);
-        let m3_025 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_05, m3_025);
-        let m3_025 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_02, m3_025);
-        let m3_034 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_34);
-        let m3_034 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_04, m3_034);
-        let m3_034 = _mm512_fmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_03, m3_034);
-        let m3_035 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_35);
-        let m3_035 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_05, m3_035);
-        let m3_035 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_03, m3_035);
-        let m3_045 = _mm512_mul_pd(_mm512_loadu_pd(d[18].as_ptr()), m2_45);
-        let m3_045 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_05, m3_045);
-        let m3_045 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_04, m3_045);
-        let m3_123 = _mm512_mul_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_23);
-        let m3_123 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_13, m3_123);
-        let m3_123 = _mm512_fmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_12, m3_123);
-        let m3_124 = _mm512_mul_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_24);
-        let m3_124 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_14, m3_124);
-        let m3_124 = _mm512_fmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_12, m3_124);
-        let m3_125 = _mm512_mul_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_25);
-        let m3_125 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_15, m3_125);
-        let m3_125 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_12, m3_125);
-        let m3_134 = _mm512_mul_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_34);
-        let m3_134 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_14, m3_134);
-        let m3_134 = _mm512_fmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_13, m3_134);
-        let m3_135 = _mm512_mul_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_35);
-        let m3_135 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_15, m3_135);
-        let m3_135 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_13, m3_135);
-        let m3_145 = _mm512_mul_pd(_mm512_loadu_pd(d[19].as_ptr()), m2_45);
-        let m3_145 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_15, m3_145);
-        let m3_145 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_14, m3_145);
-        let m3_234 = _mm512_mul_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_34);
-        let m3_234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_24, m3_234);
-        let m3_234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_23, m3_234);
-        let m3_235 = _mm512_mul_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_35);
-        let m3_235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_25, m3_235);
-        let m3_235 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_23, m3_235);
-        let m3_245 = _mm512_mul_pd(_mm512_loadu_pd(d[20].as_ptr()), m2_45);
-        let m3_245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_25, m3_245);
-        let m3_245 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_24, m3_245);
-        let m3_345 = _mm512_mul_pd(_mm512_loadu_pd(d[21].as_ptr()), m2_45);
-        let m3_345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[22].as_ptr()), m2_35, m3_345);
-        let m3_345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[23].as_ptr()), m2_34, m3_345);
-
-        let m4_0123 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_123);
-        let m4_0123 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_023, m4_0123);
-        let m4_0123 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_013, m4_0123);
-        let m4_0123 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_012, m4_0123);
-        let m4_0124 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_124);
-        let m4_0124 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_024, m4_0124);
-        let m4_0124 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_014, m4_0124);
-        let m4_0124 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_012, m4_0124);
-        let m4_0125 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_125);
-        let m4_0125 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_025, m4_0125);
-        let m4_0125 = _mm512_fmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_015, m4_0125);
-        let m4_0125 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_012, m4_0125);
-        let m4_0134 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_134);
-        let m4_0134 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_034, m4_0134);
-        let m4_0134 = _mm512_fmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_014, m4_0134);
-        let m4_0134 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_013, m4_0134);
-        let m4_0135 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_135);
-        let m4_0135 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_035, m4_0135);
-        let m4_0135 = _mm512_fmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_015, m4_0135);
-        let m4_0135 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_013, m4_0135);
-        let m4_0145 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_145);
-        let m4_0145 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_045, m4_0145);
-        let m4_0145 = _mm512_fmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_015, m4_0145);
-        let m4_0145 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_014, m4_0145);
-        let m4_0234 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_234);
-        let m4_0234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_034, m4_0234);
-        let m4_0234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_024, m4_0234);
-        let m4_0234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_023, m4_0234);
-        let m4_0235 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_235);
-        let m4_0235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_035, m4_0235);
-        let m4_0235 = _mm512_fmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_025, m4_0235);
-        let m4_0235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_023, m4_0235);
-        let m4_0245 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_245);
-        let m4_0245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_045, m4_0245);
-        let m4_0245 = _mm512_fmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_025, m4_0245);
-        let m4_0245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_024, m4_0245);
-        let m4_0345 = _mm512_mul_pd(_mm512_loadu_pd(d[12].as_ptr()), m3_345);
-        let m4_0345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_045, m4_0345);
-        let m4_0345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_035, m4_0345);
-        let m4_0345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_034, m4_0345);
-        let m4_1234 = _mm512_mul_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_234);
-        let m4_1234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_134, m4_1234);
-        let m4_1234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_124, m4_1234);
-        let m4_1234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_123, m4_1234);
-        let m4_1235 = _mm512_mul_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_235);
-        let m4_1235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_135, m4_1235);
-        let m4_1235 = _mm512_fmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_125, m4_1235);
-        let m4_1235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_123, m4_1235);
-        let m4_1245 = _mm512_mul_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_245);
-        let m4_1245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_145, m4_1245);
-        let m4_1245 = _mm512_fmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_125, m4_1245);
-        let m4_1245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_124, m4_1245);
-        let m4_1345 = _mm512_mul_pd(_mm512_loadu_pd(d[13].as_ptr()), m3_345);
-        let m4_1345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_145, m4_1345);
-        let m4_1345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_135, m4_1345);
-        let m4_1345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_134, m4_1345);
-        let m4_2345 = _mm512_mul_pd(_mm512_loadu_pd(d[14].as_ptr()), m3_345);
-        let m4_2345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[15].as_ptr()), m3_245, m4_2345);
-        let m4_2345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[16].as_ptr()), m3_235, m4_2345);
-        let m4_2345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[17].as_ptr()), m3_234, m4_2345);
-
-        let m5_01234 = _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m4_1234);
-        let m5_01234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m4_0234, m5_01234);
-        let m5_01234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m4_0134, m5_01234);
-        let m5_01234 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m4_0124, m5_01234);
-        let m5_01234 = _mm512_fmadd_pd(_mm512_loadu_pd(d[10].as_ptr()), m4_0123, m5_01234);
-        let m5_01235 = _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m4_1235);
-        let m5_01235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m4_0235, m5_01235);
-        let m5_01235 = _mm512_fmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m4_0135, m5_01235);
-        let m5_01235 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m4_0125, m5_01235);
-        let m5_01235 = _mm512_fmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m4_0123, m5_01235);
-        let m5_01245 = _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m4_1245);
-        let m5_01245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m4_0245, m5_01245);
-        let m5_01245 = _mm512_fmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m4_0145, m5_01245);
-        let m5_01245 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[10].as_ptr()), m4_0125, m5_01245);
-        let m5_01245 = _mm512_fmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m4_0124, m5_01245);
-        let m5_01345 = _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m4_1345);
-        let m5_01345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[7].as_ptr()), m4_0345, m5_01345);
-        let m5_01345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m4_0145, m5_01345);
-        let m5_01345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[10].as_ptr()), m4_0135, m5_01345);
-        let m5_01345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m4_0134, m5_01345);
-        let m5_02345 = _mm512_mul_pd(_mm512_loadu_pd(d[6].as_ptr()), m4_2345);
-        let m5_02345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m4_0345, m5_02345);
-        let m5_02345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m4_0245, m5_02345);
-        let m5_02345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[10].as_ptr()), m4_0235, m5_02345);
-        let m5_02345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m4_0234, m5_02345);
-        let m5_12345 = _mm512_mul_pd(_mm512_loadu_pd(d[7].as_ptr()), m4_2345);
-        let m5_12345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[8].as_ptr()), m4_1345, m5_12345);
-        let m5_12345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[9].as_ptr()), m4_1245, m5_12345);
-        let m5_12345 = _mm512_fnmadd_pd(_mm512_loadu_pd(d[10].as_ptr()), m4_1235, m5_12345);
-        let m5_12345 = _mm512_fmadd_pd(_mm512_loadu_pd(d[11].as_ptr()), m4_1234, m5_12345);
-
-        let det_v = _mm512_mul_pd(_mm512_loadu_pd(d[0].as_ptr()), m5_12345);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[1].as_ptr()), m5_02345, det_v);
-        let det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[2].as_ptr()), m5_01345, det_v);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[3].as_ptr()), m5_01245, det_v);
-        let det_v = _mm512_fmadd_pd(_mm512_loadu_pd(d[4].as_ptr()), m5_01235, det_v);
-        let det_v = _mm512_fnmadd_pd(_mm512_loadu_pd(d[5].as_ptr()), m5_01234, det_v);
-        let overlap_v = _mm512_mul_pd(det_v, _mm512_set1_pd(pref));
+        let overlap_v = _mm512_mul_pd(minors[full], _mm512_set1_pd(pref));
         _mm512_storeu_pd(overlap.as_mut_ptr(), overlap_v);
     }
 }
@@ -2452,109 +660,58 @@ pub(crate) fn xw_overlap_m0_direct_f64(
 
     construct_determinant_indices(l_ex, g_ex, w, &mut rows[..l], &mut cols[..l]);
 
-    // Evaluate {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0) using a
-    // fixed-rank determinant expression.
     match l {
-        // \det\mathbf D_{\mathrm{ov}}(0) = X_{r_0c_0}^{(0)}.
-        1 => pref * x0[rows[0] * n + cols[0]],
-        2 => {
-            // \mathbf D_{\mathrm{ov}} = [[X_{r_0c_0},Y_{r_0c_1}],
-            //                            [X_{r_1c_0},X_{r_1c_1}]].
-            let d0 = x0[rows[0] * n + cols[0]];
-            let d1 = y0[rows[0] * n + cols[1]];
-            let d2 = x0[rows[1] * n + cols[0]];
-            let d3 = x0[rows[1] * n + cols[1]];
+        1 => xw_overlap_m0_direct_f64_const::<1>(pref, n, x0, y0, &rows, &cols),
+        2 => xw_overlap_m0_direct_f64_const::<2>(pref, n, x0, y0, &rows, &cols),
+        3 => xw_overlap_m0_direct_f64_const::<3>(pref, n, x0, y0, &rows, &cols),
+        4 => xw_overlap_m0_direct_f64_const::<4>(pref, n, x0, y0, &rows, &cols),
+        5 => xw_overlap_m0_direct_f64_const::<5>(pref, n, x0, y0, &rows, &cols),
+        6 => xw_overlap_m0_direct_f64_const::<6>(pref, n, x0, y0, &rows, &cols),
+        _ => unreachable!(),
+    }
+}
 
-            pref * (d0 * d3 - d1 * d2)
-        }
-        3 => {
-            // Build the rank-three X/Y contraction determinant explicitly.
-            let d0 = x0[rows[0] * n + cols[0]];
-            let d1 = y0[rows[0] * n + cols[1]];
-            let d2 = y0[rows[0] * n + cols[2]];
-            let d3 = x0[rows[1] * n + cols[0]];
-            let d4 = x0[rows[1] * n + cols[1]];
-            let d5 = y0[rows[1] * n + cols[2]];
-            let d6 = x0[rows[2] * n + cols[0]];
-            let d7 = x0[rows[2] * n + cols[1]];
-            let d8 = x0[rows[2] * n + cols[2]];
+/// Evaluate one real direct all-`m_i = 0` overlap with compile-time contraction rank:
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
+/// The direct path constructs
+/// `D_{ij}^{(0)} = X_{r_i c_j}^{(0)}` for `i >= j` and
+/// `D_{ij}^{(0)} = Y_{r_i c_j}^{(0)}` for `i < j` from the supplied row and column
+/// orbital labels, then evaluates the fixed-rank determinant.
+/// # Arguments:
+/// - `pref`: Reduced reference-overlap prefactor `{}^{xw}\tilde S`.
+/// - `n`: Fundamental-contraction matrix dimension.
+/// - `x0`: Lower-triangle and diagonal contraction source.
+/// - `y0`: Upper-triangle contraction source.
+/// - `rows`: Row orbital labels `r_i`.
+/// - `cols`: Column orbital labels `c_j`.
+/// # Returns:
+/// - `f64`: Same-spin overlap contribution.
+#[inline(always)]
+fn xw_overlap_m0_direct_f64_const<const L: usize>(
+    pref: f64,
+    n: usize,
+    x0: &[f64],
+    y0: &[f64],
+    rows: &[usize; 6],
+    cols: &[usize; 6],
+) -> f64 {
+    let mut d = [0.0; 36];
 
-            pref * (d0 * (d4 * d8 - d5 * d7) - d1 * (d3 * d8 - d5 * d6) + d2 * (d3 * d7 - d4 * d6))
-        }
-        4 => {
-            // Build \mathbf D_{\mathrm{ov}} with X on and below the diagonal and Y above it.
-            let mut d = [0.0; 16];
+    // Build D_ov(0,...,0) from the fixed contraction labels, then evaluate
+    // the direct overlap factor S_tilde det D_ov.
+    for i in 0..L {
+        let row = rows[i] * n;
 
-            for i in 0..4 {
-                let row = rows[i] * n;
-
-                for j in 0..4 {
-                    d[i * 4 + j] = if i >= j {
-                        x0[row + cols[j]]
-                    } else {
-                        y0[row + cols[j]]
-                    };
-                }
-            }
-
-            pref * det(&d, 4).unwrap_or(0.0)
-        }
-        5 => {
-            // Build the rank-five contraction determinant before evaluating it by LU factorisation.
-            let mut lu = [0.0; 25];
-
-            for i in 0..5 {
-                let row = rows[i] * n;
-
-                for j in 0..5 {
-                    lu[i * 5 + j] = if i >= j {
-                        x0[row + cols[j]]
-                    } else {
-                        y0[row + cols[j]]
-                    };
-                }
-            }
-
-            pref * det_lu_l5(&mut lu).unwrap_or(0.0)
-        }
-        6 => {
-            // Build the rank-six contraction determinant before evaluating it by LU factorisation.
-            let mut lu = [0.0; 36];
-
-            for i in 0..6 {
-                let row = rows[i] * n;
-
-                for j in 0..6 {
-                    lu[i * 6 + j] = if i >= j {
-                        x0[row + cols[j]]
-                    } else {
-                        y0[row + cols[j]]
-                    };
-                }
-            }
-
-            pref * det_lu_l6(&mut lu).unwrap_or(0.0)
-        }
-        _ => {
-            // Retain the general determinant path for completeness; the direct API currently calls
-            // this function only for L \leq 6.
-            let mut d = [0.0; 36];
-
-            for i in 0..l {
-                let row = rows[i] * n;
-
-                for j in 0..l {
-                    d[i * l + j] = if i >= j {
-                        x0[row + cols[j]]
-                    } else {
-                        y0[row + cols[j]]
-                    };
-                }
-            }
-
-            pref * det(&d[..l * l], l).unwrap_or(0.0)
+        for j in 0..L {
+            d[i * L + j] = if i >= j {
+                x0[row + cols[j]]
+            } else {
+                y0[row + cols[j]]
+            };
         }
     }
+
+    pref * det_const::<f64, L>(&d[..L * L]).unwrap_or(0.0)
 }
 
 /// Evaluate the same-spin overlap when m = 0:
@@ -2579,13 +736,13 @@ fn xw_overlap_m0<T: NOCIScalar>(
         // fixed-rank kernel where available.
         match l {
             // The empty contraction determinant has determinant one.
-            0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod),
-            1 => xw_overlap_m0_l1(w, scratch),
-            2 => xw_overlap_m0_l2(w, scratch),
-            3 => xw_overlap_m0_l3(w, scratch),
-            4 => xw_overlap_m0_l4(w, scratch),
-            5 => xw_overlap_m0_l5(w, scratch),
-            6 => xw_overlap_m0_l6(w, scratch),
+            0 => xw_overlap_m0_const::<T, 0>(w, scratch),
+            1 => xw_overlap_m0_const::<T, 1>(w, scratch),
+            2 => xw_overlap_m0_const::<T, 2>(w, scratch),
+            3 => xw_overlap_m0_const::<T, 3>(w, scratch),
+            4 => xw_overlap_m0_const::<T, 4>(w, scratch),
+            5 => xw_overlap_m0_const::<T, 5>(w, scratch),
+            6 => xw_overlap_m0_const::<T, 6>(w, scratch),
             _ => {
                 // Evaluate the prepared arbitrary-rank contraction determinant directly.
                 w.phase
@@ -2596,121 +753,32 @@ fn xw_overlap_m0<T: NOCIScalar>(
     })
 }
 
-/// `Evaluate the fixed-rank L = 1 overlap when m = 0:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0) = {}^{xw}\tilde S D_{00}^{(0)}.`
+/// Evaluate the fixed-rank all-`m_i = 0` overlap with compile-time contraction rank:
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
+/// For `L = 0`, this returns the empty determinant contribution
+/// `{}^{xw}\tilde S`. For `L = 1,\ldots,6`, the determinant helper uses the
+/// same fixed-rank formula previously implemented by the rank-specific kernels.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-one contraction determinant.
+/// - `scratch`: Prepared `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
 /// # Returns
-/// - `T`: `Same-spin overlap for L = 1 and m = 0.`
+/// - `T`: Same-spin overlap for fixed `L` and `m = 0`.
 #[inline(always)]
-fn xw_overlap_m0_l1<T: NOCIScalar>(
+fn xw_overlap_m0_const<T: NOCIScalar, const L: usize>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l1, {
-        // \det\mathbf D_{\mathrm{ov}}(0) = D_{00}^{(0)}.
-        let d = scratch.det0.as_slice();
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * d[0]
-    })
-}
-
-/// `Evaluate the fixed-rank L = 2 overlap when m = 0:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0).`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-two contraction determinant.
-/// # Returns
-/// - `T`: `Same-spin overlap for L = 2 and m = 0.`
-#[inline(always)]
-fn xw_overlap_m0_l2<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l2, {
-        // \det\mathbf D_{\mathrm{ov}}(0,0) = D_{00}D_{11} - D_{01}D_{10}.
-        let d = scratch.det0.as_slice();
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * d[3] - d[1] * d[2])
-    })
-}
-
-/// `Evaluate the fixed-rank L = 3 overlap when m = 0:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0).`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-three contraction determinant.
-/// # Returns
-/// - `T`: `Same-spin overlap for L = 3 and m = 0.`
-#[inline(always)]
-fn xw_overlap_m0_l3<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l3, {
-        // Expand \det\mathbf D_{\mathrm{ov}}(0,0,0) along its first row.
-        let d = scratch.det0.as_slice();
-        w.phase
-            * <T as From<f64>>::from(w.tilde_s_prod)
-            * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
-                + d[2] * (d[3] * d[7] - d[4] * d[6]))
-    })
-}
-
-/// `Evaluate the fixed-rank L = 4 overlap when m = 0:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0).`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-four contraction determinant.
-/// # Returns
-/// - `T`: `Same-spin overlap for L = 4 and m = 0.`
-#[inline(always)]
-fn xw_overlap_m0_l4<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0_l4, {
-        // Evaluate the prepared rank-four contraction determinant by first-row cofactor expansion.
-        let det = det(&scratch.det0.as_slice()[..16], 4).unwrap_or(<T as From<f64>>::from(0.0));
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
-    })
-}
-
-/// `Evaluate the fixed-rank L = 5 overlap when m = 0:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0,0).`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-five contraction determinant.
-/// # Returns
-/// - `T`: `Same-spin overlap for L = 5 and m = 0.`
-#[inline(always)]
-fn xw_overlap_m0_l5<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    // Copy \mathbf D_{\mathrm{ov}}(0,0,0,0,0) because the LU determinant routine overwrites its input.
-    let mut lu = [T::from_real(0.0); 25];
-    lu.copy_from_slice(&scratch.det0.as_slice()[..25]);
-    let det = det_lu_l5(&mut lu).unwrap_or(<T as From<f64>>::from(0.0));
-    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
-}
-
-/// `Evaluate the fixed-rank L = 6 overlap when m = 0:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,0,0,0,0,0).`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-six contraction determinant.
-/// # Returns
-/// - `T`: `Same-spin overlap for L = 6 and m = 0.`
-#[inline(always)]
-fn xw_overlap_m0_l6<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    // Copy \mathbf D_{\mathrm{ov}}(0,0,0,0,0,0) because the LU determinant routine overwrites its input.
-    let mut lu = [T::from_real(0.0); 36];
-    lu.copy_from_slice(&scratch.det0.as_slice()[..36]);
-    let det = det_lu_l6(&mut lu).unwrap_or(<T as From<f64>>::from(0.0));
-    w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_xw_overlap_m0_const,
+        {
+            let d = scratch.det0.as_slice();
+            // For `m = 0`, the GNME zero-overlap distribution sum contains only the all-zero
+            // assignment, giving {}^{xw}\tilde S det D_ov(0,...,0).
+            w.phase
+                * <T as From<f64>>::from(w.tilde_s_prod)
+                * det_const::<T, L>(&d[..L * L]).unwrap_or(<T as From<f64>>::from(0.0))
+        }
+    )
 }
 
 /// Evaluate the same-spin overlap when m = L. The only allowed distribution is
@@ -2735,10 +803,10 @@ fn xw_overlap_ml<T: NOCIScalar>(
         // fixed-rank kernel where available.
         match l {
             // This branch is retained for completeness; xw_overlap dispatches L = m = 0 to the m = 0 path.
-            0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod),
-            1 => xw_overlap_ml_l1(w, scratch),
-            2 => xw_overlap_ml_l2(w, scratch),
-            3 => xw_overlap_ml_l3(w, scratch),
+            0 => xw_overlap_ml_const::<T, 0>(w, scratch),
+            1 => xw_overlap_ml_const::<T, 1>(w, scratch),
+            2 => xw_overlap_ml_const::<T, 2>(w, scratch),
+            3 => xw_overlap_ml_const::<T, 3>(w, scratch),
             _ => {
                 // Evaluate the prepared arbitrary-rank all-m_i = 1 determinant directly.
                 w.phase
@@ -2749,64 +817,31 @@ fn xw_overlap_ml<T: NOCIScalar>(
     })
 }
 
-/// `Evaluate the fixed-rank L = m = 1 overlap:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1) = {}^{xw}\tilde S D_{00}^{(1)}.`
+/// Evaluate the fixed-rank all-`m_i = 1` overlap with compile-time contraction rank:
+/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
+/// For this path `L = m`; every column of `\mathbf D_{\mathrm{ov}}` is selected from
+/// the prepared all-`m_i = 1` determinant.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `scratch`: `Prepared rank-one m_1 = 1 contraction determinant.`
+/// - `scratch`: Prepared `\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
 /// # Returns
-/// - `T`: `Same-spin overlap for L = m = 1.`
+/// - `T`: Same-spin overlap for fixed `L = m`.
 #[inline(always)]
-fn xw_overlap_ml_l1<T: NOCIScalar>(
+fn xw_overlap_ml_const<T: NOCIScalar, const L: usize>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml_l1, {
-        // \det\mathbf D_{\mathrm{ov}}(1) = D_{00}^{(1)}.
-        let d = scratch.det1.as_slice();
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * d[0]
-    })
-}
-
-/// `Evaluate the fixed-rank L = m = 2 overlap:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,1).`
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `scratch`: `Prepared rank-two all-m_i = 1 contraction determinant.`
-/// # Returns
-/// - `T`: `Same-spin overlap for L = m = 2.`
-#[inline(always)]
-fn xw_overlap_ml_l2<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml_l2, {
-        // \det\mathbf D_{\mathrm{ov}}(1,1) = D_{00}D_{11} - D_{01}D_{10}.
-        let d = scratch.det1.as_slice();
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (d[0] * d[3] - d[1] * d[2])
-    })
-}
-
-/// `Evaluate the fixed-rank L = m = 3 overlap:`
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,1,1).`
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `scratch`: `Prepared rank-three all-m_i = 1 contraction determinant.`
-/// # Returns
-/// - `T`: `Same-spin overlap for L = m = 3.`
-#[inline(always)]
-fn xw_overlap_ml_l3<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml_l3, {
-        // Expand \det\mathbf D_{\mathrm{ov}}(1,1,1) along its first row.
-        let d = scratch.det1.as_slice();
-        w.phase
-            * <T as From<f64>>::from(w.tilde_s_prod)
-            * (d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
-                + d[2] * (d[3] * d[7] - d[4] * d[6]))
-    })
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_xw_overlap_ml_const,
+        {
+            let d = scratch.det1.as_slice();
+            // For `m = L`, every contraction receives one zero-overlap index, so the only
+            // surviving term is {}^{xw}\tilde S det D_ov(1,...,1).
+            w.phase
+                * <T as From<f64>>::from(w.tilde_s_prod)
+                * det_const::<T, L>(&d[..L * L]).unwrap_or(<T as From<f64>>::from(0.0))
+        }
+    )
 }
 
 /// Evaluate the same-spin overlap for 0 < m < L by summing every allowed distribution:
@@ -2832,25 +867,47 @@ fn xw_overlap_gen<T: NOCIScalar>(
 
         // Enumerate the \binom{L}{m} distributions satisfying \sum_i m_i = m and construct
         // each \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L) by selecting its columns from `det0` or `det1`.
-        mix_dets_same(w, l, 0, scratch, |_, scratch| {
-            let d = scratch.det_mix.as_slice();
-
-            // Evaluate the determinant using direct low-rank expressions where available.
-            let contrib = match l {
-                1 => d[0],
-                2 => d[0] * d[3] - d[1] * d[2],
-                3 => {
-                    d[0] * (d[4] * d[8] - d[5] * d[7]) - d[1] * (d[3] * d[8] - d[5] * d[6])
-                        + d[2] * (d[3] * d[7] - d[4] * d[6])
-                }
-                _ => det(d, l).unwrap_or(<T as From<f64>>::from(0.0)),
-            };
-            // Add \det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L) to the constrained sum.
-            acc += contrib;
-        });
+        match l {
+            1 => xw_overlap_gen_const::<T, 1>(w, scratch, &mut acc),
+            2 => xw_overlap_gen_const::<T, 2>(w, scratch, &mut acc),
+            3 => xw_overlap_gen_const::<T, 3>(w, scratch, &mut acc),
+            _ => {
+                mix_dets_same(w, l, 0, scratch, |_, scratch| {
+                    let d = scratch.det_mix.as_slice();
+                    acc += det(d, l).unwrap_or(<T as From<f64>>::from(0.0));
+                });
+            }
+        }
 
         // Apply the orbital-pairing phase to the product of non-zero singular values to recover
         // {}^{xw}\tilde S\sum_{\{m_i\}}\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })
+}
+
+/// Sum fixed-rank mixed-distribution determinants for `0 < m < L`:
+/// `\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`, with `m_i \in \{0,1\}`.
+/// Each distribution is constructed by selecting each column from the prepared
+/// all-`m_i = 0` or all-`m_i = 1` determinant before evaluating the fixed-rank
+/// determinant.
+/// # Arguments:
+/// - `w`: Same-spin reference-pair Wick intermediates.
+/// - `scratch`: Prepared determinant buffers `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`,
+///   `\mathbf D_{\mathrm{ov}}(1,\ldots,1)`, and mixed storage.
+/// - `acc`: Accumulated determinant sum.
+/// # Returns:
+/// - `()`: Adds every constrained-distribution determinant to `acc`.
+#[inline(always)]
+fn xw_overlap_gen_const<T: NOCIScalar, const L: usize>(
+    w: &SameSpinView<'_, T>,
+    scratch: &mut WickScratch<T>,
+    acc: &mut T,
+) {
+    mix_dets_same(w, L, 0, scratch, |_, scratch| {
+        let d = scratch.det_mix.as_slice();
+        // Each mixed determinant is one term in the constrained GNME sum over
+        // m_i in {0,1} with \sum_i m_i = m.
+        *acc += det_const::<T, L>(&d[..L * L]).unwrap_or(<T as From<f64>>::from(0.0));
+    });
 }

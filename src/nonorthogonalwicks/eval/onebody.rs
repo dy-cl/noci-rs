@@ -1,7 +1,7 @@
 // nonorthogonalwicks/eval/onebody.rs
 // Crate-root imports.
 use crate::ExcitationSpin;
-use crate::maths::adjugate_transpose;
+use crate::maths::{adjugate_transpose, adjugate_transpose_const};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -22,6 +22,7 @@ fn one_body_scalar<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     mi: usize,
 ) -> T {
+    // This is the scalar intermediate F_0^{(m_i)} from the one-body GNME expansion.
     w.f0f[mi]
 }
 
@@ -45,6 +46,8 @@ pub(crate) fn xw_f<T: NOCIScalar>(
     tol: f64,
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f, {
+        // Evaluate the same-spin one-body GNME expression through the m = 0 or mixed
+        // zero-overlap distribution path selected in `xw_one_body`.
         xw_one_body(w, l_ex, g_ex, scratch, tol)
     })
 }
@@ -107,265 +110,79 @@ fn xw_one_body_m0<T: NOCIScalar>(
         // Determine the total excitation rank L = L_x + L_w.
         let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         // Dispatch to direct fixed-rank forms of
-        // {}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}} - \sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}.
+        // {}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}
+        // - \sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}.
         match l {
             // For L = 0, \det\mathbf D_{\mathrm{ov}} = 1 and there are no replacement columns.
             0 => w.phase * <T as From<f64>>::from(w.tilde_s_prod) * one_body_scalar(w, 0),
-            1 => xw_one_body_m0_l1(w, scratch),
-            2 => xw_one_body_m0_l2(w, scratch),
-            3 => xw_one_body_m0_l3(w, scratch, tol),
-            4 => xw_one_body_m0_l4(w, scratch, tol),
+            1 => xw_one_body_m0_const::<T, 1>(w, scratch, tol),
+            2 => xw_one_body_m0_const::<T, 2>(w, scratch, tol),
+            3 => xw_one_body_m0_const::<T, 3>(w, scratch, tol),
+            4 => xw_one_body_m0_const::<T, 4>(w, scratch, tol),
             _ => xw_one_body_m0_gen(w, l_ex, g_ex, scratch, tol),
         }
     })
 }
 
-/// `Evaluate the fixed-rank L = 1 one-body matrix element for m = 0.`
-/// The scalar term and the sole one-column replacement are evaluated directly.
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-one contraction determinant and its row and column labels.
-/// # Returns:
-/// - `T`: `One-body matrix element for L = 1 and m = 0.`
-#[inline(always)]
-fn xw_one_body_m0_l1<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l1, {
-        // For L = 1, \mathbf D_{\mathrm{ov}} = [D_{00}] and
-        // \det\mathbf D_{\mathrm{ov}}^{0\rightarrow\mathcal F_0} = \mathcal F_{r_0c_0}^{(0,0)}.
-        let n = w.n();
-        let det0 = scratch.det0.as_slice();
-        let det = det0[0];
-        let r0 = scratch.rows[0];
-        let c0 = scratch.cols[0];
-        let fsl = w.ff_t_slice(0, 0);
-        let repl = fsl[c0 * n + r0];
-
-        // \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-        // = {}^{xw}\tilde S[{}^x F_0^{(0)}D_{00} - \mathcal F_{r_0c_0}^{(0,0)}].
-        w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (det * one_body_scalar(w, 0) - repl)
-    })
-}
-
-/// `Evaluate the fixed-rank L = 2 one-body matrix element for m = 0.`
-/// The scalar term and both one-column replacements are evaluated directly.
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-two contraction determinant and its row and column labels.
-/// # Returns:
-/// - `T`: `One-body matrix element for L = 2 and m = 0.`
-#[inline(always)]
-fn xw_one_body_m0_l2<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l2, {
-        // Evaluate \det\mathbf D_{\mathrm{ov}} = D_{00}D_{11} - D_{01}D_{10}.
-        let n = w.n();
-        let d = scratch.det0.as_slice();
-        let a00 = d[0];
-        let a01 = d[1];
-        let a10 = d[2];
-        let a11 = d[3];
-        let det = a00 * a11 - a01 * a10;
-
-        let r0 = scratch.rows[0];
-        let r1 = scratch.rows[1];
-        let c0 = scratch.cols[0];
-        let c1 = scratch.cols[1];
-
-        let fsl = w.ff_t_slice(0, 0);
-
-        // Form the two replacement columns:
-        // (\mathcal F_{r_0c_0}^{(0,0)},\mathcal F_{r_1c_0}^{(0,0)})^T and
-        // (\mathcal F_{r_0c_1}^{(0,0)},\mathcal F_{r_1c_1}^{(0,0)})^T.
-        let u0 = fsl[c0 * n + r0];
-        let u1 = fsl[c0 * n + r1];
-        let v0 = fsl[c1 * n + r0];
-        let v1 = fsl[c1 * n + r1];
-
-        // Evaluate \det\mathbf D_{\mathrm{ov}}^{0\rightarrow\mathcal F_0} and
-        // \det\mathbf D_{\mathrm{ov}}^{1\rightarrow\mathcal F_1}.
-        let det_c0 = u0 * a11 - a01 * u1;
-        let det_c1 = a00 * v1 - v0 * a10;
-
-        // \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-        // = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}} - \det\mathbf D_{\mathrm{ov}}^{0\rightarrow\mathcal F_0}
-        // - \det\mathbf D_{\mathrm{ov}}^{1\rightarrow\mathcal F_1}].
-        w.phase
-            * <T as From<f64>>::from(w.tilde_s_prod)
-            * (det * one_body_scalar(w, 0) - det_c0 - det_c1)
-    })
-}
-
-/// `Evaluate the fixed-rank L = 3 one-body matrix element for m = 0.`
+/// `Evaluate the fixed-rank L one-body matrix element for m = 0.`
 /// `The sum of column-replacement determinants is evaluated by contracting the \mathcal F entries`
-/// `with \operatorname{cof}[\mathbf D_{\mathrm{ov}}].`
+/// `with \operatorname{cof}[\mathbf D_{\mathrm{ov}}]:`
+/// `\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}`
+/// `= \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}.`
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-three contraction determinant and scratch storage for its cofactors.
+/// - `scratch`: Prepared rank-L contraction determinant and scratch storage for its cofactors.
 /// - `tol`: Numerical tolerance used when evaluating the determinant and adjugate-transpose matrix.
 /// # Returns:
-/// - `T`: `One-body matrix element for L = 3 and m = 0.`
+/// - `T`: `One-body matrix element for fixed L and m = 0.`
 #[inline(always)]
-fn xw_one_body_m0_l3<T: NOCIScalar>(
+fn xw_one_body_m0_const<T: NOCIScalar, const L: usize>(
     w: &SameSpinView<'_, T>,
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l3, {
-        // Select the rank-three contraction determinant \mathbf D_{\mathrm{ov}}(0,0,0).
-        let n = w.n();
-        let det0 = &scratch.det0.as_slice()[..9];
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_xw_one_body_m0_const,
+        {
+            let n = w.n();
+            let det0 = &scratch.det0.as_slice()[..L * L];
+            scratch.adjt_det.ensure(L, L);
 
-        // Evaluate \det\mathbf D_{\mathrm{ov}} and
-        // \operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}.
-        if let Some(det) = adjugate_transpose(
-            scratch.adjt_det.as_mut_slice(),
-            scratch.invs.as_mut_slice(),
-            scratch.lu.as_mut_slice(),
-            det0,
-            3,
-            tol,
-        ) {
-            let cof = scratch.adjt_det.as_slice();
-            let rows = scratch.rows.as_slice();
-            let cols = scratch.cols.as_slice();
+            // Evaluate det D_ov and cof[D_ov]_{eta z}=(-1)^{eta+z} det D_ov[eta|z]
+            // for the m_i = 0 overlap contraction determinant.
+            if let Some(det) = adjugate_transpose_const::<T, L>(
+                scratch.adjt_det.as_mut_slice(),
+                scratch.invs.as_mut_slice(),
+                scratch.lu.as_mut_slice(),
+                det0,
+                tol,
+            ) {
+                let cof = scratch.adjt_det.as_slice();
+                let rows = scratch.rows.as_slice();
+                let cols = scratch.cols.as_slice();
+                let fsl = w.ff_t_slice(0, 0);
+                let mut repl = <T as From<f64>>::from(0.0);
 
-            let r0 = rows[0];
-            let r1 = rows[1];
-            let r2 = rows[2];
-            let c0 = cols[0];
-            let c1 = cols[1];
-            let c2 = cols[2];
+                // Laplace expansion of the inserted one-body row gives
+                // sum_z det D_ov^{z -> F_z} = sum_{eta,z} cof[D_ov]_{eta z} F_{eta z}.
+                for z in 0..L {
+                    let base = cols[z] * n;
 
-            let fsl = w.ff_t_slice(0, 0);
+                    for eta in 0..L {
+                        repl += cof[eta * L + z] * fsl[base + rows[eta]];
+                    }
+                }
 
-            // Read \mathcal F_{\eta z}^{(0,0)} for every row \eta and column z.
-            let f00 = fsl[c0 * n + r0];
-            let f10 = fsl[c0 * n + r1];
-            let f20 = fsl[c0 * n + r2];
-            let f01 = fsl[c1 * n + r0];
-            let f11 = fsl[c1 * n + r1];
-            let f21 = fsl[c1 * n + r2];
-            let f02 = fsl[c2 * n + r0];
-            let f12 = fsl[c2 * n + r1];
-            let f22 = fsl[c2 * n + r2];
-
-            // \sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}
-            // = \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}.
-            let repl = cof[0] * f00
-                + cof[3] * f10
-                + cof[6] * f20
-                + cof[1] * f01
-                + cof[4] * f11
-                + cof[7] * f21
-                + cof[2] * f02
-                + cof[5] * f12
-                + cof[8] * f22;
-
-            // \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-            // = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}
-            // - \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}].
-            w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (det * one_body_scalar(w, 0) - repl)
-        } else {
-            <T as From<f64>>::from(0.0)
+                // <x Psi_i...^a...|f|w Psi_j...^b...>
+                // = S_tilde [F_0 det D_ov - sum_{eta,z} cof[D_ov]_{eta z} F_{eta z}].
+                w.phase
+                    * <T as From<f64>>::from(w.tilde_s_prod)
+                    * (det * one_body_scalar(w, 0) - repl)
+            } else {
+                <T as From<f64>>::from(0.0)
+            }
         }
-    })
-}
-
-/// `Evaluate the fixed-rank L = 4 one-body matrix element for m = 0.`
-/// `The sum of column-replacement determinants is evaluated by contracting the \mathcal F entries`
-/// `with \operatorname{cof}[\mathbf D_{\mathrm{ov}}].`
-/// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `scratch`: Prepared rank-four contraction determinant and scratch storage for its cofactors.
-/// - `tol`: Numerical tolerance used when evaluating the determinant and adjugate-transpose matrix.
-/// # Returns:
-/// - `T`: `One-body matrix element for L = 4 and m = 0.`
-#[inline(always)]
-fn xw_one_body_m0_l4<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-) -> T {
-    time_call!(crate::timers::nonorthogonalwicks::add_xw_one_body_m0_l4, {
-        // Select the rank-four contraction determinant \mathbf D_{\mathrm{ov}}(0,0,0,0).
-        let n = w.n();
-        let det0 = &scratch.det0.as_slice()[..16];
-
-        // Evaluate \det\mathbf D_{\mathrm{ov}} and
-        // \operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}.
-        if let Some(det) = adjugate_transpose(
-            scratch.adjt_det.as_mut_slice(),
-            scratch.invs.as_mut_slice(),
-            scratch.lu.as_mut_slice(),
-            det0,
-            4,
-            tol,
-        ) {
-            let cof = scratch.adjt_det.as_slice();
-            let rows = scratch.rows.as_slice();
-            let cols = scratch.cols.as_slice();
-
-            let r0 = rows[0];
-            let r1 = rows[1];
-            let r2 = rows[2];
-            let r3 = rows[3];
-            let c0 = cols[0];
-            let c1 = cols[1];
-            let c2 = cols[2];
-            let c3 = cols[3];
-
-            let fsl = w.ff_t_slice(0, 0);
-
-            // Read \mathcal F_{\eta z}^{(0,0)} for every row \eta and column z.
-            let f00 = fsl[c0 * n + r0];
-            let f10 = fsl[c0 * n + r1];
-            let f20 = fsl[c0 * n + r2];
-            let f30 = fsl[c0 * n + r3];
-            let f01 = fsl[c1 * n + r0];
-            let f11 = fsl[c1 * n + r1];
-            let f21 = fsl[c1 * n + r2];
-            let f31 = fsl[c1 * n + r3];
-            let f02 = fsl[c2 * n + r0];
-            let f12 = fsl[c2 * n + r1];
-            let f22 = fsl[c2 * n + r2];
-            let f32 = fsl[c2 * n + r3];
-            let f03 = fsl[c3 * n + r0];
-            let f13 = fsl[c3 * n + r1];
-            let f23 = fsl[c3 * n + r2];
-            let f33 = fsl[c3 * n + r3];
-
-            // \sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}
-            // = \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}.
-            let repl = cof[0] * f00
-                + cof[4] * f10
-                + cof[8] * f20
-                + cof[12] * f30
-                + cof[1] * f01
-                + cof[5] * f11
-                + cof[9] * f21
-                + cof[13] * f31
-                + cof[2] * f02
-                + cof[6] * f12
-                + cof[10] * f22
-                + cof[14] * f32
-                + cof[3] * f03
-                + cof[7] * f13
-                + cof[11] * f23
-                + cof[15] * f33;
-
-            // \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat f|{}^w\Psi_{j\cdots}^{b\cdots}\rangle
-            // = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}
-            // - \sum_{\eta,z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}\mathcal F_{\eta z}^{(0,0)}].
-            w.phase * <T as From<f64>>::from(w.tilde_s_prod) * (det * one_body_scalar(w, 0) - repl)
-        } else {
-            <T as From<f64>>::from(0.0)
-        }
-    })
+    )
 }
 
 /// Evaluate the one-body matrix element for arbitrary L when m = 0:

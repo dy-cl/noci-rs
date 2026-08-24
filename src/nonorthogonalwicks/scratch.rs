@@ -464,25 +464,6 @@ impl<T: NOCIScalar> WickScratch<T> {
         self.adjt_det2.ensure(lm1, lm1);
     }
 
-    /// Ensure the minimal determinant storage required by the specialised m = 0 evaluators for
-    /// `L \leq 2. Only \mathbf D_{\mathrm{ov}}(0,\ldots,0) is required by these kernels.`
-    /// # Arguments:
-    /// - `self`: Reusable Wick workspace.
-    /// - `l`: `Same-spin contraction-determinant dimension L, restricted to L \leq 2.`
-    /// # Returns
-    /// - `()`: Resizes `det0` and invalidates incompatible full-workspace readiness.
-    #[inline(always)]
-    pub fn ensure_same_m0(
-        &mut self,
-        l: usize,
-    ) {
-        if self.same_rank != Some(l) {
-            self.same_rank = None;
-        }
-
-        self.det0.ensure(l, l);
-    }
-
     /// Resize the different-spin workspace for independent alpha- and beta-spin contraction
     /// `determinants of dimensions L_\alpha and L_\beta. This prepares the mixed determinants,`
     /// cofactor matrices and determinant-factorisation workspaces used by the factorised
