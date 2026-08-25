@@ -5,10 +5,25 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  SDE_VERSION: sde-external-10.8.0-2026-03-15-lin
+  RUSTFLAGS: -Ctarget-cpu=x86-64
+
 jobs:
   coverage:
-    name: cargo llvm-cov
+    name: Coverage (${{ matrix.cpu_type }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cpu_type: scalar
+            sde_cpu: nhm
+          - cpu_type: avx2
+            sde_cpu: hsw
+          - cpu_type: avx512
+            sde_cpu: spr
 
     env:
       CARGO_TERM_COLOR: always
@@ -17,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.90.0
         with:
           components: llvm-tools-preview
 
@@ -27,31 +42,41 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libopenmpi-dev \
-            openmpi-bin \
-            libopenblas-dev \
-            liblapack-dev \
-            libhdf5-dev \
-            pkg-config \
-            python3-pip
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapack-dev libhdf5-dev pkg-config python3-pip
 
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install --prefer-binary pyscf h5py numpy
 
-      - name: Generate coverage
+      - name: Cache Intel SDE
+        id: cache-sde
+        uses: actions/cache@v4
+        with:
+          path: intel-sde
+          key: intel-${{ env.SDE_VERSION }}
+
+      - name: Download Intel SDE
+        if: steps.cache-sde.outputs.cache-hit != 'true'
         run: |
-          cargo llvm-cov \
-            --workspace \
-            --no-default-features \
-            --lcov \
-            --output-path lcov.info
+          wget -qO intel-sde.tar.xz "https://downloadmirror.intel.com/915934/${SDE_VERSION}.tar.xz"
+          mkdir -p intel-sde
+          tar xf intel-sde.tar.xz --strip-components=1 -C intel-sde
+          rm intel-sde.tar.xz
+
+      - name: Verify Intel SDE
+        run: ./intel-sde/sde64 --version
+
+      - name: Generate coverage
+        env:
+          OPENBLAS_NUM_THREADS: 1
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} --
+        run: cargo llvm-cov --release --workspace --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
+          files: lcov-${{ matrix.cpu_type }}.info
+          flags: cpu-${{ matrix.cpu_type }}
           fail_ci_if_error: false

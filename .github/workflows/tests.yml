@@ -1,4 +1,4 @@
-name: tests
+name: Tests
 
 on:
   push:
@@ -6,30 +6,41 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  SDE_VERSION: sde-external-10.8.0-2026-03-15-lin
+  RUSTFLAGS: -Ctarget-cpu=x86-64
+
 jobs:
   test:
+    name: Tests (${{ matrix.cpu_type }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cpu_type: scalar
+            sde_cpu: nhm
+          - cpu_type: avx2
+            sde_cpu: hsw
+          - cpu_type: avx512
+            sde_cpu: spr
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libopenmpi-dev \
-            openmpi-bin \
-            libopenblas-dev \
-            liblapacke-dev \
-            libhdf5-dev \
-            pkg-config \
-            python3 \
-            python3-pip
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapacke-dev libhdf5-dev pkg-config python3 python3-pip
 
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          pip3 install pyscf h5py numpy
+          python3 -m pip install --prefer-binary pyscf h5py numpy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -38,9 +49,28 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Intel SDE
+        id: cache-sde
+        uses: actions/cache@v4
+        with:
+          path: intel-sde
+          key: intel-${{ env.SDE_VERSION }}
+
+      - name: Download Intel SDE
+        if: steps.cache-sde.outputs.cache-hit != 'true'
+        run: |
+          wget -qO intel-sde.tar.xz "https://downloadmirror.intel.com/915934/${SDE_VERSION}.tar.xz"
+          mkdir -p intel-sde
+          tar xf intel-sde.tar.xz --strip-components=1 -C intel-sde
+          rm intel-sde.tar.xz
+
+      - name: Verify Intel SDE
+        run: ./intel-sde/sde64 --version
 
       - name: Run tests
         env:
           OPENBLAS_NUM_THREADS: 1
-        run: cargo test --all --verbose
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} --
+        run: cargo test --release --all --target x86_64-unknown-linux-gnu --verbose

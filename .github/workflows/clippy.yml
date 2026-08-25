@@ -20,14 +20,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libopenmpi-dev \
-            openmpi-bin \
-            libopenblas-dev \
-            liblapacke-dev \
-            libhdf5-dev \
-            pkg-config \
-            python3-pip
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapacke-dev libhdf5-dev pkg-config python3-pip
 
       - name: Install Python dependencies
         run: |
