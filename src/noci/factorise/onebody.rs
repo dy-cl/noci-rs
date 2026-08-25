@@ -2,11 +2,6 @@
 //! Spin-factorised one-body NOCI operator contractions.
 
 // Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::any::TypeId;
-#[cfg(target_arch = "x86_64")]
-use std::arch::is_x86_feature_detected;
-
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
@@ -16,15 +11,14 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::ReducedOneSpinDetState;
 use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, xw_f_overlap_prepared};
-use crate::{ExcitationSpinCache, ReducedOneSpinDetState};
-
-#[cfg(target_arch = "x86_64")]
-use crate::nonorthogonalwicks::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};
+use crate::nonorthogonalwicks::{
+    SameSpinOneBodyBatch, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batched,
+};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -1279,7 +1273,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
                     target_left,
                     alpha,
                     scratch,
-                    (srow, frow),
+                    (&mut *srow, &mut *frow),
                 );
             },
         );
@@ -1306,8 +1300,8 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
     scratch: &mut WickScratchSpin<T>,
     out: (&mut [T], &mut [T]),
 ) {
-    let (target_rep, source_reps) = reps;
-    let (srow, frow) = out;
+    let (target, sources) = reps;
+    let (overlap, fock) = out;
 
     let (w, scratch) = if alpha {
         (&pair.aa, &mut scratch.aa)
@@ -1315,259 +1309,20 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
         (&pair.bb, &mut scratch.bb)
     };
 
-    let target_cache = target_rep.excitation_cache;
-    let target_phase = target_rep.phase;
-
-    #[cfg(target_arch = "x86_64")]
-    if TypeId::of::<T>() == TypeId::of::<f64>() && w.m == 0 {
-        unsafe {
-            let srow_f64 =
-                std::slice::from_raw_parts_mut(srow.as_mut_ptr().cast::<f64>(), srow.len());
-            let frow_f64 =
-                std::slice::from_raw_parts_mut(frow.as_mut_ptr().cast::<f64>(), frow.len());
-
-            if is_x86_feature_detected!("avx512f") {
-                let mut bins = [[ExcitationSpinCache::default(); 8]; 5];
-                let mut phases = [[1.0f64; 8]; 5];
-                let mut outputs = [[0usize; 8]; 5];
-                let mut counts = [0usize; 5];
-
-                for (col, source_rep) in source_reps.iter().enumerate() {
-                    let source_cache = source_rep.excitation_cache;
-                    let source_phase = source_rep.phase;
-                    let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
-
-                    if (1..=4).contains(&l) {
-                        let count = counts[l];
-
-                        bins[l][count] = source_cache;
-                        phases[l][count] = source_phase;
-                        outputs[l][count] = col;
-                        counts[l] += 1;
-
-                        if counts[l] == 8 {
-                            let target_batch = [target_cache; 8];
-                            let source_batch = bins[l];
-
-                            let (x_ex, w_ex) = if target_left {
-                                (&target_batch, &source_batch)
-                            } else {
-                                (&source_batch, &target_batch)
-                            };
-
-                            let mut s = [0.0f64; 8];
-                            let mut f = [0.0f64; 8];
-
-                            xw_f_overlap_m0_prepared_f64x8(w, l, x_ex, w_ex, &mut s, &mut f);
-
-                            for lane in 0..8 {
-                                let output = outputs[l][lane];
-                                let phase = target_phase * phases[l][lane];
-
-                                srow_f64[output] = phase * s[lane];
-                                frow_f64[output] = phase * f[lane];
-                            }
-
-                            counts[l] = 0;
-                        }
-                    } else {
-                        let target = &data.basis[target_rep.det];
-                        let source = &data.basis[source_rep.det];
-
-                        let (target_ex, source_ex) = if alpha {
-                            (&target.excitation.alpha, &source.excitation.alpha)
-                        } else {
-                            (&target.excitation.beta, &source.excitation.beta)
-                        };
-
-                        let (x_ex, w_ex) = if target_left {
-                            (target_ex, source_ex)
-                        } else {
-                            (source_ex, target_ex)
-                        };
-
-                        let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
-                        let phase = target_phase * source_phase;
-
-                        srow_f64[col] = phase * *std::ptr::from_ref::<T>(&s).cast::<f64>();
-                        frow_f64[col] = phase * *std::ptr::from_ref::<T>(&f).cast::<f64>();
-                    }
-                }
-
-                for l in 1..=4 {
-                    let count = counts[l];
-
-                    if count == 0 {
-                        continue;
-                    }
-
-                    let fill = bins[l][0];
-                    for slot in bins[l].iter_mut().skip(count) {
-                        *slot = fill;
-                    }
-
-                    let target_batch = [target_cache; 8];
-                    let source_batch = bins[l];
-
-                    let (x_ex, w_ex) = if target_left {
-                        (&target_batch, &source_batch)
-                    } else {
-                        (&source_batch, &target_batch)
-                    };
-
-                    let mut s = [0.0f64; 8];
-                    let mut f = [0.0f64; 8];
-
-                    xw_f_overlap_m0_prepared_f64x8(w, l, x_ex, w_ex, &mut s, &mut f);
-
-                    for lane in 0..count {
-                        let output = outputs[l][lane];
-                        let phase = target_phase * phases[l][lane];
-
-                        srow_f64[output] = phase * s[lane];
-                        frow_f64[output] = phase * f[lane];
-                    }
-                }
-
-                return;
-            }
-
-            if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-                let mut bins = [[ExcitationSpinCache::default(); 4]; 5];
-                let mut phases = [[1.0f64; 4]; 5];
-                let mut outputs = [[0usize; 4]; 5];
-                let mut counts = [0usize; 5];
-
-                for (col, source_rep) in source_reps.iter().enumerate() {
-                    let source_cache = source_rep.excitation_cache;
-                    let source_phase = source_rep.phase;
-                    let l = usize::from(target_cache.rank) + usize::from(source_cache.rank);
-
-                    if (1..=4).contains(&l) {
-                        let count = counts[l];
-
-                        bins[l][count] = source_cache;
-                        phases[l][count] = source_phase;
-                        outputs[l][count] = col;
-                        counts[l] += 1;
-
-                        if counts[l] == 4 {
-                            let target_batch = [target_cache; 4];
-                            let source_batch = bins[l];
-
-                            let (x_ex, w_ex) = if target_left {
-                                (&target_batch, &source_batch)
-                            } else {
-                                (&source_batch, &target_batch)
-                            };
-
-                            let mut s = [0.0f64; 4];
-                            let mut f = [0.0f64; 4];
-
-                            xw_f_overlap_m0_prepared_f64x4(w, l, x_ex, w_ex, &mut s, &mut f);
-
-                            for lane in 0..4 {
-                                let output = outputs[l][lane];
-                                let phase = target_phase * phases[l][lane];
-
-                                srow_f64[output] = phase * s[lane];
-                                frow_f64[output] = phase * f[lane];
-                            }
-
-                            counts[l] = 0;
-                        }
-                    } else {
-                        let target = &data.basis[target_rep.det];
-                        let source = &data.basis[source_rep.det];
-
-                        let (target_ex, source_ex) = if alpha {
-                            (&target.excitation.alpha, &source.excitation.alpha)
-                        } else {
-                            (&target.excitation.beta, &source.excitation.beta)
-                        };
-
-                        let (x_ex, w_ex) = if target_left {
-                            (target_ex, source_ex)
-                        } else {
-                            (source_ex, target_ex)
-                        };
-
-                        let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
-                        let phase = target_phase * source_phase;
-
-                        srow_f64[col] = phase * *std::ptr::from_ref::<T>(&s).cast::<f64>();
-                        frow_f64[col] = phase * *std::ptr::from_ref::<T>(&f).cast::<f64>();
-                    }
-                }
-
-                for l in 1..=4 {
-                    let count = counts[l];
-
-                    if count == 0 {
-                        continue;
-                    }
-
-                    let fill = bins[l][0];
-                    for slot in bins[l].iter_mut().skip(count) {
-                        *slot = fill;
-                    }
-
-                    let target_batch = [target_cache; 4];
-                    let source_batch = bins[l];
-
-                    let (x_ex, w_ex) = if target_left {
-                        (&target_batch, &source_batch)
-                    } else {
-                        (&source_batch, &target_batch)
-                    };
-
-                    let mut s = [0.0f64; 4];
-                    let mut f = [0.0f64; 4];
-
-                    xw_f_overlap_m0_prepared_f64x4(w, l, x_ex, w_ex, &mut s, &mut f);
-
-                    for lane in 0..count {
-                        let output = outputs[l][lane];
-                        let phase = target_phase * phases[l][lane];
-
-                        srow_f64[output] = phase * s[lane];
-                        frow_f64[output] = phase * f[lane];
-                    }
-                }
-
-                return;
-            }
-        }
-    }
-
-    // The generic path requires the full excitation bit masks rather than only the fixed-rank cache.
-    let target = &data.basis[target_rep.det];
-    let target_ex = if alpha {
-        &target.excitation.alpha
-    } else {
-        &target.excitation.beta
-    };
-
-    for (col, source_rep) in source_reps.iter().enumerate() {
-        let source = &data.basis[source_rep.det];
-        let source_ex = if alpha {
-            &source.excitation.alpha
-        } else {
-            &source.excitation.beta
-        };
-
-        let (x_ex, w_ex) = if target_left {
-            (target_ex, source_ex)
-        } else {
-            (source_ex, target_ex)
-        };
-
-        let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, data.tol);
-        let phase = T::from_real(target_phase * source_rep.phase);
-
-        srow[col] = phase * s;
-        frow[col] = phase * f;
-    }
+    xw_f_overlap_prepared_batched(
+        w,
+        SameSpinOneBodyBatch {
+            basis: data.basis,
+            target,
+            sources,
+            target_left,
+            alpha,
+            overlap,
+            fock,
+        },
+        scratch,
+        data.tol,
+    );
 }
 
 /// Select alpha-first or beta-first contraction from dense structural costs.

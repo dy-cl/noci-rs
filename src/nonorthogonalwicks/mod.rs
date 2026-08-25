@@ -46,6 +46,7 @@ pub use view::WicksView;
 
 // Crate-visible type re-exports.
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
+pub(crate) use eval::{SameSpinOneBodyBatch, SameSpinOverlapBatch};
 pub(crate) use scratch::WickScratchSpin;
 pub(crate) use storage::{WICKS_DISK_CACHE_VERSION, WicksDiskMeta, WicksRma};
 pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
@@ -53,12 +54,9 @@ pub(crate) use view::WicksPairView;
 
 // Crate-visible function re-exports.
 pub(crate) use eval::{
-    SameSpinOverlapBatch, prepare_same, xw_f, xw_f_overlap_prepared,
-    xw_hamiltonian_overlap_prepared, xw_hamiltonian_overlap_prepared_batched, xw_overlap,
-    xw_overlap_same_f64_batched,
+    prepare_same, xw_f, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared,
+    xw_hamiltonian_overlap_prepared_batched, xw_overlap, xw_overlap_same_f64_batched,
 };
-#[cfg(target_arch = "x86_64")]
-pub(crate) use eval::{xw_f_overlap_m0_prepared_f64x4, xw_f_overlap_m0_prepared_f64x8};
 #[cfg(feature = "nocc")]
 pub(crate) use eval::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};
 pub(crate) use layout::{assign_offsets, write_diff_spin, write_hcol0, write_same_spin, write2t};

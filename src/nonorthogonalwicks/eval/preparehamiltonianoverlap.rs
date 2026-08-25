@@ -1,15 +1,5 @@
 // nonorthogonalwicks/eval/preparehamiltonianoverlap.rs
 
-// Standard library imports.
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::{
-    __m256d, __m512d, _mm256_add_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_fnmadd_pd,
-    _mm256_loadu_pd, _mm256_mul_pd, _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd,
-    _mm256_sub_pd, _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_fnmadd_pd,
-    _mm512_loadu_pd, _mm512_mul_pd, _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd,
-    _mm512_sub_pd,
-};
-
 // Crate-root imports.
 use crate::maths::{adjugate_transpose, det};
 use crate::noci::NOCIScalar;
@@ -25,6 +15,8 @@ use super::helpers::{
     get_det_adjt_diff, ii_replacement, j_replacement, jslot, minor_adjt, mix_dets_same,
 };
 use super::prepare::prepare_same;
+#[cfg(target_arch = "x86_64")]
+use super::simd::{F64x4, F64x8};
 
 /// Evaluate the Hamiltonian and overlap matrix elements between two determinants generated from
 /// one ordered pair of nonorthogonal references.
@@ -1717,19 +1709,19 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_f64x4_const,
         {
             unsafe {
-                let zero_v = _mm256_setzero_pd();
-                let one_v = _mm256_set1_pd(1.0);
+                let zero_v = F64x4::zero();
+                let one_v = F64x4::splat(1.0);
 
                 // SIMD determinant helpers for the second-minor ranks.
-                let det3 = |m: &[__m256d; 16]| -> __m256d {
-                    let t0 = _mm256_fmsub_pd(m[4], m[8], _mm256_mul_pd(m[5], m[7]));
-                    let mut out = _mm256_mul_pd(m[0], t0);
-                    let t1 = _mm256_fmsub_pd(m[3], m[8], _mm256_mul_pd(m[5], m[6]));
-                    out = _mm256_fnmadd_pd(m[1], t1, out);
-                    let t2 = _mm256_fmsub_pd(m[3], m[7], _mm256_mul_pd(m[4], m[6]));
-                    _mm256_fmadd_pd(m[2], t2, out)
+                let det3 = |m: &[F64x4; 16]| -> F64x4 {
+                    let t0 = F64x4::minor(m[4], m[8], m[5], m[7]);
+                    let mut out = F64x4::mul(m[0], t0);
+                    let t1 = F64x4::minor(m[3], m[8], m[5], m[6]);
+                    out = F64x4::msub(out, m[1], t1);
+                    let t2 = F64x4::minor(m[3], m[7], m[4], m[6]);
+                    F64x4::madd(out, m[2], t2)
                 };
-                let det4 = |m: &[__m256d; 16]| -> __m256d {
+                let det4 = |m: &[F64x4; 16]| -> F64x4 {
                     let mut out = zero_v;
                     for col in 0..4 {
                         let mut subm = [zero_v; 16];
@@ -1745,20 +1737,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                             }
                             ii += 1;
                         }
-                        let term = _mm256_mul_pd(m[col], det3(&subm));
+                        let term = F64x4::mul(m[col], det3(&subm));
                         if (col & 1) == 0 {
-                            out = _mm256_add_pd(out, term);
+                            out = F64x4::add(out, term);
                         } else {
-                            out = _mm256_sub_pd(out, term);
+                            out = F64x4::sub(out, term);
                         }
                     }
                     out
                 };
-                let det_small = |minor: &[__m256d; 16], n: usize| -> __m256d {
+                let det_small = |minor: &[F64x4; 16], n: usize| -> F64x4 {
                     match n {
                         0 => one_v,
                         1 => minor[0],
-                        2 => _mm256_fmsub_pd(minor[0], minor[3], _mm256_mul_pd(minor[1], minor[2])),
+                        2 => F64x4::minor(minor[0], minor[3], minor[1], minor[2]),
                         3 => det3(minor),
                         4 => det4(minor),
                         _ => unreachable!(),
@@ -1809,7 +1801,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                     *y0.get_unchecked(index)
                                 };
                             }
-                            d_a[i * LA + j] = _mm256_loadu_pd(values.as_ptr());
+                            d_a[i * LA + j] = F64x4::load(&values);
                         }
                     }
                     if LA == 1 {
@@ -1862,14 +1854,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                             exchange_lane[lane] =
                                                 *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
                                         }
-                                        let jdiff = _mm256_sub_pd(
-                                            _mm256_loadu_pd(direct_lane.as_ptr()),
-                                            _mm256_loadu_pd(exchange_lane.as_ptr()),
+                                        let jdiff = F64x4::sub(
+                                            F64x4::load(&direct_lane),
+                                            F64x4::load(&exchange_lane),
                                         );
                                         if ((eta + xi + z + y) & 1) == 0 {
-                                            j_a = _mm256_fmadd_pd(second, jdiff, j_a);
+                                            j_a = F64x4::madd(j_a, second, jdiff);
                                         } else {
-                                            j_a = _mm256_fnmadd_pd(second, jdiff, j_a);
+                                            j_a = F64x4::msub(j_a, second, jdiff);
                                         }
                                     }
                                 }
@@ -1894,26 +1886,26 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                         row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
                                     let col_pair =
                                         col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = _mm256_mul_pd(
+                                    let term = F64x4::mul(
                                         d_a[r * LA + c],
                                         second_a[row_pair * pairs_a + col_pair],
                                     );
                                     if ((r_minor + c_minor) & 1) == 0 {
-                                        value = _mm256_add_pd(value, term);
+                                        value = F64x4::add(value, term);
                                     } else {
-                                        value = _mm256_sub_pd(value, term);
+                                        value = F64x4::sub(value, term);
                                     }
                                 }
                                 cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
                                     value
                                 } else {
-                                    _mm256_sub_pd(zero_v, value)
+                                    F64x4::sub(zero_v, value)
                                 };
                             }
                         }
-                        det_a = _mm256_mul_pd(d_a[0], cof_a[0]);
+                        det_a = F64x4::mul(d_a[0], cof_a[0]);
                         for z in 1..LA {
-                            det_a = _mm256_fmadd_pd(d_a[z], cof_a[z], det_a);
+                            det_a = F64x4::madd(det_a, d_a[z], cof_a[z]);
                         }
                     }
 
@@ -1928,10 +1920,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                 values[lane] =
                                     *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
                             }
-                            replacement_a = _mm256_fmadd_pd(
-                                cof_a[eta * LA + z],
-                                _mm256_loadu_pd(values.as_ptr()),
+                            replacement_a = F64x4::madd(
                                 replacement_a,
+                                cof_a[eta * LA + z],
+                                F64x4::load(&values),
                             );
                         }
                     }
@@ -1981,7 +1973,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                     *y0.get_unchecked(index)
                                 };
                             }
-                            d_b[i * LB + j] = _mm256_loadu_pd(values.as_ptr());
+                            d_b[i * LB + j] = F64x4::load(&values);
                         }
                     }
                     if LB == 1 {
@@ -2034,14 +2026,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                             exchange_lane[lane] =
                                                 *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
                                         }
-                                        let jdiff = _mm256_sub_pd(
-                                            _mm256_loadu_pd(direct_lane.as_ptr()),
-                                            _mm256_loadu_pd(exchange_lane.as_ptr()),
+                                        let jdiff = F64x4::sub(
+                                            F64x4::load(&direct_lane),
+                                            F64x4::load(&exchange_lane),
                                         );
                                         if ((eta + xi + z + y) & 1) == 0 {
-                                            j_b = _mm256_fmadd_pd(second, jdiff, j_b);
+                                            j_b = F64x4::madd(j_b, second, jdiff);
                                         } else {
-                                            j_b = _mm256_fnmadd_pd(second, jdiff, j_b);
+                                            j_b = F64x4::msub(j_b, second, jdiff);
                                         }
                                     }
                                 }
@@ -2066,26 +2058,26 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                         row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
                                     let col_pair =
                                         col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = _mm256_mul_pd(
+                                    let term = F64x4::mul(
                                         d_b[r * LB + c],
                                         second_b[row_pair * pairs_b + col_pair],
                                     );
                                     if ((r_minor + c_minor) & 1) == 0 {
-                                        value = _mm256_add_pd(value, term);
+                                        value = F64x4::add(value, term);
                                     } else {
-                                        value = _mm256_sub_pd(value, term);
+                                        value = F64x4::sub(value, term);
                                     }
                                 }
                                 cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
                                     value
                                 } else {
-                                    _mm256_sub_pd(zero_v, value)
+                                    F64x4::sub(zero_v, value)
                                 };
                             }
                         }
-                        det_b = _mm256_mul_pd(d_b[0], cof_b[0]);
+                        det_b = F64x4::mul(d_b[0], cof_b[0]);
                         for z in 1..LB {
-                            det_b = _mm256_fmadd_pd(d_b[z], cof_b[z], det_b);
+                            det_b = F64x4::madd(det_b, d_b[z], cof_b[z]);
                         }
                     }
 
@@ -2100,10 +2092,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                 values[lane] =
                                     *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
                             }
-                            replacement_b = _mm256_fmadd_pd(
-                                cof_b[eta * LB + z],
-                                _mm256_loadu_pd(values.as_ptr()),
+                            replacement_b = F64x4::madd(
                                 replacement_b,
+                                cof_b[eta * LB + z],
+                                F64x4::load(&values),
                             );
                         }
                     }
@@ -2133,14 +2125,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                                 base_a + rows_b[lane][xi] * n + cols_b[lane][y],
                                             );
                                         }
-                                        inner = _mm256_fmadd_pd(
-                                            cof_b[xi * LB + y],
-                                            _mm256_loadu_pd(values.as_ptr()),
+                                        inner = F64x4::madd(
                                             inner,
+                                            cof_b[xi * LB + y],
+                                            F64x4::load(&values),
                                         );
                                     }
                                 }
-                                ii_term = _mm256_fmadd_pd(cof_a[eta * LA + z], inner, ii_term);
+                                ii_term = F64x4::madd(ii_term, cof_a[eta * LA + z], inner);
                             }
                         }
                     } else {
@@ -2157,14 +2149,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                                 base_a + rows_b[lane][xi] * n + cols_b[lane][y],
                                             );
                                         }
-                                        inner = _mm256_fmadd_pd(
-                                            cof_a[eta * LA + z],
-                                            _mm256_loadu_pd(values.as_ptr()),
+                                        inner = F64x4::madd(
                                             inner,
+                                            cof_a[eta * LA + z],
+                                            F64x4::load(&values),
                                         );
                                     }
                                 }
-                                ii_term = _mm256_fmadd_pd(cof_b[xi * LB + y], inner, ii_term);
+                                ii_term = F64x4::madd(ii_term, cof_b[xi * LB + y], inner);
                             }
                         }
                     }
@@ -2177,23 +2169,24 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                 let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<f64>();
                 let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<f64>();
                 let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<f64>();
-                let g0 = _mm256_set1_pd(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
-                let det_ab = _mm256_mul_pd(det_a, det_b);
-                let mut core = _mm256_mul_pd(g0, det_ab);
-                core = _mm256_fnmadd_pd(det_b, replacement_a, core);
-                core = _mm256_fnmadd_pd(det_a, replacement_b, core);
-                core = _mm256_fmadd_pd(j_a, det_b, core);
-                core = _mm256_fmadd_pd(j_b, det_a, core);
-                core = _mm256_add_pd(core, ii_term);
+                let g0 = F64x4::splat(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
+                let det_ab = F64x4::mul(det_a, det_b);
+                let mut core = F64x4::mul(g0, det_ab);
+                core = F64x4::msub(core, det_b, replacement_a);
+                core = F64x4::msub(core, det_a, replacement_b);
+                core = F64x4::madd(core, j_a, det_b);
+                core = F64x4::madd(core, j_b, det_a);
+                core = F64x4::add(core, ii_term);
                 let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<f64>();
                 let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<f64>();
                 let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
-                let pref = _mm256_mul_pd(
-                    _mm256_loadu_pd(excitation_phase.as_ptr()),
-                    _mm256_set1_pd(ref_pref),
-                );
-                _mm256_storeu_pd(h.as_mut_ptr(), _mm256_mul_pd(core, pref));
-                _mm256_storeu_pd(s.as_mut_ptr(), _mm256_mul_pd(det_ab, pref));
+                let pref = F64x4::mul(F64x4::load(excitation_phase), F64x4::splat(ref_pref));
+                let mut h_lane = [0.0f64; 4];
+                let mut s_lane = [0.0f64; 4];
+                F64x4::mul(core, pref).store(&mut h_lane);
+                F64x4::mul(det_ab, pref).store(&mut s_lane);
+                h[..4].copy_from_slice(&h_lane);
+                s[..4].copy_from_slice(&s_lane);
             }
         }
     )
@@ -2243,19 +2236,19 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_f64x8_const,
         {
             unsafe {
-                let zero_v = _mm512_setzero_pd();
-                let one_v = _mm512_set1_pd(1.0);
+                let zero_v = F64x8::zero();
+                let one_v = F64x8::splat(1.0);
 
                 // SIMD determinant helpers for the second-minor ranks.
-                let det3 = |m: &[__m512d; 16]| -> __m512d {
-                    let t0 = _mm512_fmsub_pd(m[4], m[8], _mm512_mul_pd(m[5], m[7]));
-                    let mut out = _mm512_mul_pd(m[0], t0);
-                    let t1 = _mm512_fmsub_pd(m[3], m[8], _mm512_mul_pd(m[5], m[6]));
-                    out = _mm512_fnmadd_pd(m[1], t1, out);
-                    let t2 = _mm512_fmsub_pd(m[3], m[7], _mm512_mul_pd(m[4], m[6]));
-                    _mm512_fmadd_pd(m[2], t2, out)
+                let det3 = |m: &[F64x8; 16]| -> F64x8 {
+                    let t0 = F64x8::minor(m[4], m[8], m[5], m[7]);
+                    let mut out = F64x8::mul(m[0], t0);
+                    let t1 = F64x8::minor(m[3], m[8], m[5], m[6]);
+                    out = F64x8::msub(out, m[1], t1);
+                    let t2 = F64x8::minor(m[3], m[7], m[4], m[6]);
+                    F64x8::madd(out, m[2], t2)
                 };
-                let det4 = |m: &[__m512d; 16]| -> __m512d {
+                let det4 = |m: &[F64x8; 16]| -> F64x8 {
                     let mut out = zero_v;
                     for col in 0..4 {
                         let mut subm = [zero_v; 16];
@@ -2271,20 +2264,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                             }
                             ii += 1;
                         }
-                        let term = _mm512_mul_pd(m[col], det3(&subm));
+                        let term = F64x8::mul(m[col], det3(&subm));
                         if (col & 1) == 0 {
-                            out = _mm512_add_pd(out, term);
+                            out = F64x8::add(out, term);
                         } else {
-                            out = _mm512_sub_pd(out, term);
+                            out = F64x8::sub(out, term);
                         }
                     }
                     out
                 };
-                let det_small = |minor: &[__m512d; 16], n: usize| -> __m512d {
+                let det_small = |minor: &[F64x8; 16], n: usize| -> F64x8 {
                     match n {
                         0 => one_v,
                         1 => minor[0],
-                        2 => _mm512_fmsub_pd(minor[0], minor[3], _mm512_mul_pd(minor[1], minor[2])),
+                        2 => F64x8::minor(minor[0], minor[3], minor[1], minor[2]),
                         3 => det3(minor),
                         4 => det4(minor),
                         _ => unreachable!(),
@@ -2335,7 +2328,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                     *y0.get_unchecked(index)
                                 };
                             }
-                            d_a[i * LA + j] = _mm512_loadu_pd(values.as_ptr());
+                            d_a[i * LA + j] = F64x8::load(&values);
                         }
                     }
                     if LA == 1 {
@@ -2388,14 +2381,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                             exchange_lane[lane] =
                                                 *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
                                         }
-                                        let jdiff = _mm512_sub_pd(
-                                            _mm512_loadu_pd(direct_lane.as_ptr()),
-                                            _mm512_loadu_pd(exchange_lane.as_ptr()),
+                                        let jdiff = F64x8::sub(
+                                            F64x8::load(&direct_lane),
+                                            F64x8::load(&exchange_lane),
                                         );
                                         if ((eta + xi + z + y) & 1) == 0 {
-                                            j_a = _mm512_fmadd_pd(second, jdiff, j_a);
+                                            j_a = F64x8::madd(j_a, second, jdiff);
                                         } else {
-                                            j_a = _mm512_fnmadd_pd(second, jdiff, j_a);
+                                            j_a = F64x8::msub(j_a, second, jdiff);
                                         }
                                     }
                                 }
@@ -2420,26 +2413,26 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                         row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
                                     let col_pair =
                                         col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = _mm512_mul_pd(
+                                    let term = F64x8::mul(
                                         d_a[r * LA + c],
                                         second_a[row_pair * pairs_a + col_pair],
                                     );
                                     if ((r_minor + c_minor) & 1) == 0 {
-                                        value = _mm512_add_pd(value, term);
+                                        value = F64x8::add(value, term);
                                     } else {
-                                        value = _mm512_sub_pd(value, term);
+                                        value = F64x8::sub(value, term);
                                     }
                                 }
                                 cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
                                     value
                                 } else {
-                                    _mm512_sub_pd(zero_v, value)
+                                    F64x8::sub(zero_v, value)
                                 };
                             }
                         }
-                        det_a = _mm512_mul_pd(d_a[0], cof_a[0]);
+                        det_a = F64x8::mul(d_a[0], cof_a[0]);
                         for z in 1..LA {
-                            det_a = _mm512_fmadd_pd(d_a[z], cof_a[z], det_a);
+                            det_a = F64x8::madd(det_a, d_a[z], cof_a[z]);
                         }
                     }
 
@@ -2454,10 +2447,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                 values[lane] =
                                     *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
                             }
-                            replacement_a = _mm512_fmadd_pd(
-                                cof_a[eta * LA + z],
-                                _mm512_loadu_pd(values.as_ptr()),
+                            replacement_a = F64x8::madd(
                                 replacement_a,
+                                cof_a[eta * LA + z],
+                                F64x8::load(&values),
                             );
                         }
                     }
@@ -2507,7 +2500,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                     *y0.get_unchecked(index)
                                 };
                             }
-                            d_b[i * LB + j] = _mm512_loadu_pd(values.as_ptr());
+                            d_b[i * LB + j] = F64x8::load(&values);
                         }
                     }
                     if LB == 1 {
@@ -2560,14 +2553,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                             exchange_lane[lane] =
                                                 *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
                                         }
-                                        let jdiff = _mm512_sub_pd(
-                                            _mm512_loadu_pd(direct_lane.as_ptr()),
-                                            _mm512_loadu_pd(exchange_lane.as_ptr()),
+                                        let jdiff = F64x8::sub(
+                                            F64x8::load(&direct_lane),
+                                            F64x8::load(&exchange_lane),
                                         );
                                         if ((eta + xi + z + y) & 1) == 0 {
-                                            j_b = _mm512_fmadd_pd(second, jdiff, j_b);
+                                            j_b = F64x8::madd(j_b, second, jdiff);
                                         } else {
-                                            j_b = _mm512_fnmadd_pd(second, jdiff, j_b);
+                                            j_b = F64x8::msub(j_b, second, jdiff);
                                         }
                                     }
                                 }
@@ -2592,26 +2585,26 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                         row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
                                     let col_pair =
                                         col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = _mm512_mul_pd(
+                                    let term = F64x8::mul(
                                         d_b[r * LB + c],
                                         second_b[row_pair * pairs_b + col_pair],
                                     );
                                     if ((r_minor + c_minor) & 1) == 0 {
-                                        value = _mm512_add_pd(value, term);
+                                        value = F64x8::add(value, term);
                                     } else {
-                                        value = _mm512_sub_pd(value, term);
+                                        value = F64x8::sub(value, term);
                                     }
                                 }
                                 cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
                                     value
                                 } else {
-                                    _mm512_sub_pd(zero_v, value)
+                                    F64x8::sub(zero_v, value)
                                 };
                             }
                         }
-                        det_b = _mm512_mul_pd(d_b[0], cof_b[0]);
+                        det_b = F64x8::mul(d_b[0], cof_b[0]);
                         for z in 1..LB {
-                            det_b = _mm512_fmadd_pd(d_b[z], cof_b[z], det_b);
+                            det_b = F64x8::madd(det_b, d_b[z], cof_b[z]);
                         }
                     }
 
@@ -2626,10 +2619,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                 values[lane] =
                                     *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
                             }
-                            replacement_b = _mm512_fmadd_pd(
-                                cof_b[eta * LB + z],
-                                _mm512_loadu_pd(values.as_ptr()),
+                            replacement_b = F64x8::madd(
                                 replacement_b,
+                                cof_b[eta * LB + z],
+                                F64x8::load(&values),
                             );
                         }
                     }
@@ -2659,14 +2652,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                                 base_a + rows_b[lane][xi] * n + cols_b[lane][y],
                                             );
                                         }
-                                        inner = _mm512_fmadd_pd(
-                                            cof_b[xi * LB + y],
-                                            _mm512_loadu_pd(values.as_ptr()),
+                                        inner = F64x8::madd(
                                             inner,
+                                            cof_b[xi * LB + y],
+                                            F64x8::load(&values),
                                         );
                                     }
                                 }
-                                ii_term = _mm512_fmadd_pd(cof_a[eta * LA + z], inner, ii_term);
+                                ii_term = F64x8::madd(ii_term, cof_a[eta * LA + z], inner);
                             }
                         }
                     } else {
@@ -2683,14 +2676,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                                 base_a + rows_b[lane][xi] * n + cols_b[lane][y],
                                             );
                                         }
-                                        inner = _mm512_fmadd_pd(
-                                            cof_a[eta * LA + z],
-                                            _mm512_loadu_pd(values.as_ptr()),
+                                        inner = F64x8::madd(
                                             inner,
+                                            cof_a[eta * LA + z],
+                                            F64x8::load(&values),
                                         );
                                     }
                                 }
-                                ii_term = _mm512_fmadd_pd(cof_b[xi * LB + y], inner, ii_term);
+                                ii_term = F64x8::madd(ii_term, cof_b[xi * LB + y], inner);
                             }
                         }
                     }
@@ -2703,23 +2696,24 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                 let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<f64>();
                 let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<f64>();
                 let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<f64>();
-                let g0 = _mm512_set1_pd(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
-                let det_ab = _mm512_mul_pd(det_a, det_b);
-                let mut core = _mm512_mul_pd(g0, det_ab);
-                core = _mm512_fnmadd_pd(det_b, replacement_a, core);
-                core = _mm512_fnmadd_pd(det_a, replacement_b, core);
-                core = _mm512_fmadd_pd(j_a, det_b, core);
-                core = _mm512_fmadd_pd(j_b, det_a, core);
-                core = _mm512_add_pd(core, ii_term);
+                let g0 = F64x8::splat(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
+                let det_ab = F64x8::mul(det_a, det_b);
+                let mut core = F64x8::mul(g0, det_ab);
+                core = F64x8::msub(core, det_b, replacement_a);
+                core = F64x8::msub(core, det_a, replacement_b);
+                core = F64x8::madd(core, j_a, det_b);
+                core = F64x8::madd(core, j_b, det_a);
+                core = F64x8::add(core, ii_term);
                 let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<f64>();
                 let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<f64>();
                 let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
-                let pref = _mm512_mul_pd(
-                    _mm512_loadu_pd(excitation_phase.as_ptr()),
-                    _mm512_set1_pd(ref_pref),
-                );
-                _mm512_storeu_pd(h.as_mut_ptr(), _mm512_mul_pd(core, pref));
-                _mm512_storeu_pd(s.as_mut_ptr(), _mm512_mul_pd(det_ab, pref));
+                let pref = F64x8::mul(F64x8::load(excitation_phase), F64x8::splat(ref_pref));
+                let mut h_lane = [0.0f64; 8];
+                let mut s_lane = [0.0f64; 8];
+                F64x8::mul(core, pref).store(&mut h_lane);
+                F64x8::mul(det_ab, pref).store(&mut s_lane);
+                h[..8].copy_from_slice(&h_lane);
+                s[..8].copy_from_slice(&s_lane);
             }
         }
     )
