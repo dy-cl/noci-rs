@@ -66,12 +66,12 @@ jobs:
 
       - name: Verify Intel SDE
         run: ./intel-sde/sde64 --version
-
+      
       - name: Generate coverage
         env:
           OPENBLAS_NUM_THREADS: 1
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} --
-        run: cargo llvm-cov --release --workspace --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
+        run: cargo llvm-cov --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

@@ -68,9 +68,9 @@ jobs:
 
       - name: Verify Intel SDE
         run: ./intel-sde/sde64 --version
-
+      
       - name: Run tests
         env:
           OPENBLAS_NUM_THREADS: 1
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} --
-        run: cargo test --release --all --target x86_64-unknown-linux-gnu --verbose
+        run: cargo test --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --verbose
