@@ -24,7 +24,7 @@ jobs:
             libopenmpi-dev \
             openmpi-bin \
             libopenblas-dev \
-            liblapack-dev \
+            liblapacke-dev \
             libhdf5-dev \
             pkg-config \
             python3-pip

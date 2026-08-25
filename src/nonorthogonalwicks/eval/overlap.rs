@@ -400,9 +400,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<const L: usize>(
         let full = (1usize << L) - 1;
         let mut d_lanes = [[0.0f64; 4]; 36];
 
-        for lane in 0..4 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
+        for (lane, (x_data, w_data)) in x_ex.iter().zip(w_ex.iter()).enumerate() {
             let mut rows = [0usize; L];
             let mut cols = [0usize; L];
 
@@ -417,11 +415,11 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<const L: usize>(
 
             // Pack corresponding D_ov entries from four independent Wick pairs into
             // one AVX2 vector lane group: X fills eta >= z and Y fills eta < z.
-            for eta in 0..L {
+            for (eta, &row) in rows.iter().enumerate() {
                 let base = eta * L;
 
-                for z in 0..L {
-                    let src = rows[eta] * n + cols[z];
+                for (z, &col) in cols.iter().enumerate() {
+                    let src = row * n + col;
                     d_lanes[base + z][lane] = if eta >= z { x0[src] } else { y0[src] };
                 }
             }
@@ -539,9 +537,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<const L: usize>(
         let full = (1usize << L) - 1;
         let mut d_lanes = [[0.0f64; 8]; 36];
 
-        for lane in 0..8 {
-            let x_data = x_ex.get_unchecked(lane);
-            let w_data = w_ex.get_unchecked(lane);
+        for (lane, (x_data, w_data)) in x_ex.iter().zip(w_ex.iter()).enumerate() {
             let mut rows = [0usize; L];
             let mut cols = [0usize; L];
 
@@ -556,11 +552,11 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<const L: usize>(
 
             // Pack corresponding D_ov entries from eight independent Wick pairs into
             // one AVX-512 vector lane group: X fills eta >= z and Y fills eta < z.
-            for eta in 0..L {
+            for (eta, &row) in rows.iter().enumerate() {
                 let base = eta * L;
 
-                for z in 0..L {
-                    let src = rows[eta] * n + cols[z];
+                for (z, &col) in cols.iter().enumerate() {
+                    let src = row * n + col;
                     d_lanes[base + z][lane] = if eta >= z { x0[src] } else { y0[src] };
                 }
             }

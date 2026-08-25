@@ -695,8 +695,7 @@ impl SpinFactorisation {
                 OverlapContraction::FactorisedRows => {
                     self.apply_overlap_factorised_rows_transient(
                         output,
-                        target,
-                        source,
+                        (target, source),
                         data,
                         &pair,
                         target_left,
@@ -813,8 +812,7 @@ impl SpinFactorisation {
     /// `S\Delta` application and are discarded after the target row is contracted.
     /// # Arguments:
     /// - `output`: Rank-local persistent population increment.
-    /// - `target`: Rank-local target parent block `Q`.
-    /// - `source`: Source parent `P` sparse updates and active component IDs.
+    /// - `blocks`: Rank-local target block `Q` and source-parent sparse updates `P`.
     /// - `data`: Shared NOCI determinant data.
     /// - `pair`: Wick intermediates for the ordered parent pair.
     /// - `target_left`: Whether target determinants belong to the left Wick reference.
@@ -824,13 +822,13 @@ impl SpinFactorisation {
     fn apply_overlap_factorised_rows_transient(
         &self,
         output: &mut [f64],
-        target: &LocalParentBlock,
-        source: &ParentUpdates,
+        blocks: (&LocalParentBlock, &ParentUpdates),
         data: &NOCIData<'_, f64>,
         pair: &WicksPairView<'_, f64>,
         target_left: bool,
         scratch: &mut OverlapScratch,
     ) {
+        let (target, source) = blocks;
         let nsa = source.aids.len();
         let nsb = source.bids.len();
         let source_areps = source
