@@ -320,6 +320,280 @@ fn snoci_h4_sto_3g_1_5_ang_energies_wicks() {
     );
 }
 
+/// Test that the H4 STO-3G 1.5 Angstrom disk-backed full M fixture reproduces the
+/// expected SCF state energies, reference NOCI energy and selected NOCI energy.
+/// # Panics
+/// - If the number of SCF states differs from the stored reference.
+/// - If SCF, reference NOCI or selected NOCI energy differs from the known good value
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_energies_wicks_full_m_disk() {
+    let (_input, _ao, expected): (_, _, ExpectedSNOCI) =
+        load_test("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_DISK");
+    let (got_scf, got_ref, got_snoci) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_DISK");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H4 SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "H4 reference NOCI energy",
+    );
+    assert_close(
+        got_snoci,
+        expected.snoci_energy,
+        1e-8,
+        "H4 selected NOCI energy",
+    );
+}
+
+/// Test that the H4 STO-3G 1.5 Angstrom transient factor tables fixture reproduces the
+/// expected SCF state energies, reference NOCI energy and selected NOCI energy.
+/// # Panics
+/// - If the number of SCF states differs from the stored reference.
+/// - If SCF, reference NOCI or selected NOCI energy differs from the known good value
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_energies_wicks_factor_tables_none() {
+    let (_input, _ao, expected): (_, _, ExpectedSNOCI) =
+        load_test("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+    let (got_scf, got_ref, got_snoci) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H4 SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "H4 reference NOCI energy",
+    );
+    assert_close(
+        got_snoci,
+        expected.snoci_energy,
+        1e-8,
+        "H4 selected NOCI energy",
+    );
+}
+
+/// Test that the H4 STO-3G 1.5 Angstrom RAM-backed factor tables fixture reproduces the
+/// expected SCF state energies, reference NOCI energy and selected NOCI energy.
+/// # Panics
+/// - If the number of SCF states differs from the stored reference.
+/// - If SCF, reference NOCI or selected NOCI energy differs from the known good value
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_energies_wicks_factor_tables_ram() {
+    let (_input, _ao, expected): (_, _, ExpectedSNOCI) =
+        load_test("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_RAM");
+    let (got_scf, got_ref, got_snoci) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_RAM");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H4 SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "H4 reference NOCI energy",
+    );
+    assert_close(
+        got_snoci,
+        expected.snoci_energy,
+        1e-8,
+        "H4 selected NOCI energy",
+    );
+}
+
+/// Test that the H4 STO-3G 1.5 Angstrom disk-backed factor tables fixture reproduces the
+/// expected SCF state energies, reference NOCI energy and selected NOCI energy.
+/// # Panics
+/// - If the number of SCF states differs from the stored reference.
+/// - If SCF, reference NOCI or selected NOCI energy differs from the known good value
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_energies_wicks_factor_tables_disk() {
+    let (_input, _ao, expected): (_, _, ExpectedSNOCI) =
+        load_test("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_DISK");
+    let (got_scf, got_ref, got_snoci) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_DISK");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H4 SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "H4 reference NOCI energy",
+    );
+    assert_close(
+        got_snoci,
+        expected.snoci_energy,
+        1e-8,
+        "H4 selected NOCI energy",
+    );
+}
+
+/// Test that the H4 STO-3G 1.5 Angstrom storage backends agree with the full-M RAM
+/// Wick's fixture.
+/// # Panics
+/// - If the number of SCF states differs between storage backends.
+/// - If SCF, reference NOCI or selected NOCI energy differs between storage backends
+///   outside tolerance.
+/// - If the NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_storage_backends_agree() {
+    let (got_scf_ram, got_ref_ram, got_snoci_ram) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS");
+    let (got_scf_full_m_disk, got_ref_full_m_disk, got_snoci_full_m_disk) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_DISK");
+    let (got_scf_factor_tables_none, got_ref_factor_tables_none, got_snoci_factor_tables_none) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+    let (got_scf_factor_tables_ram, got_ref_factor_tables_ram, got_snoci_factor_tables_ram) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_RAM");
+    let (got_scf_factor_tables_disk, got_ref_factor_tables_disk, got_snoci_factor_tables_disk) =
+        run_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_DISK");
+
+    assert_eq!(got_scf_ram.len(), got_scf_full_m_disk.len());
+    for (i, (&x, &y)) in got_scf_ram
+        .iter()
+        .zip(got_scf_full_m_disk.iter())
+        .enumerate()
+    {
+        assert_close(
+            x,
+            y,
+            1e-8,
+            &format!("H4 SCF state {i} disk-backed full M agreement"),
+        );
+    }
+    assert_close(
+        got_ref_ram,
+        got_ref_full_m_disk,
+        1e-8,
+        "H4 reference NOCI disk-backed full M agreement",
+    );
+    assert_close(
+        got_snoci_ram,
+        got_snoci_full_m_disk,
+        1e-8,
+        "H4 selected NOCI disk-backed full M agreement",
+    );
+
+    assert_eq!(got_scf_ram.len(), got_scf_factor_tables_none.len());
+    for (i, (&x, &y)) in got_scf_ram
+        .iter()
+        .zip(got_scf_factor_tables_none.iter())
+        .enumerate()
+    {
+        assert_close(
+            x,
+            y,
+            1e-8,
+            &format!("H4 SCF state {i} transient factor tables agreement"),
+        );
+    }
+    assert_close(
+        got_ref_ram,
+        got_ref_factor_tables_none,
+        1e-8,
+        "H4 reference NOCI transient factor tables agreement",
+    );
+    assert_close(
+        got_snoci_ram,
+        got_snoci_factor_tables_none,
+        1e-8,
+        "H4 selected NOCI transient factor tables agreement",
+    );
+
+    assert_eq!(got_scf_ram.len(), got_scf_factor_tables_ram.len());
+    for (i, (&x, &y)) in got_scf_ram
+        .iter()
+        .zip(got_scf_factor_tables_ram.iter())
+        .enumerate()
+    {
+        assert_close(
+            x,
+            y,
+            1e-8,
+            &format!("H4 SCF state {i} RAM-backed factor tables agreement"),
+        );
+    }
+    assert_close(
+        got_ref_ram,
+        got_ref_factor_tables_ram,
+        1e-8,
+        "H4 reference NOCI RAM-backed factor tables agreement",
+    );
+    assert_close(
+        got_snoci_ram,
+        got_snoci_factor_tables_ram,
+        1e-8,
+        "H4 selected NOCI RAM-backed factor tables agreement",
+    );
+
+    assert_eq!(got_scf_ram.len(), got_scf_factor_tables_disk.len());
+    for (i, (&x, &y)) in got_scf_ram
+        .iter()
+        .zip(got_scf_factor_tables_disk.iter())
+        .enumerate()
+    {
+        assert_close(
+            x,
+            y,
+            1e-8,
+            &format!("H4 SCF state {i} disk-backed factor tables agreement"),
+        );
+    }
+    assert_close(
+        got_ref_ram,
+        got_ref_factor_tables_disk,
+        1e-8,
+        "H4 reference NOCI disk-backed factor tables agreement",
+    );
+    assert_close(
+        got_snoci_ram,
+        got_snoci_factor_tables_disk,
+        1e-8,
+        "H4 selected NOCI disk-backed factor tables agreement",
+    );
+}
+
 /// Test that the H4 STO-3G 1.5 Angstrom reference space agrees with and without Wick's intermediates.
 /// # Panics
 /// - If the number of SCF states differs between implementations.
