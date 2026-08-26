@@ -1,7 +1,6 @@
 // stochastic/state.rs
 // External crate imports.
 use mpi::traits::*;
-use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 // Crate-root imports.
@@ -15,6 +14,9 @@ use super::common::find_hs_batched;
 use super::excit::{init_heat_bath, pgen_heat_bath};
 use super::metric::fri;
 use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
+
+/// Stable RNG used by seeded QMC streams.
+pub(crate) type QmcRng = rand_xoshiro::Xoshiro256PlusPlus;
 
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
@@ -471,7 +473,7 @@ pub(in crate::stochastic) struct ThreadPropagation {
     /// Excitation generation samples.
     pub(in crate::stochastic) samples: Vec<f64>,
     /// Thread local RNG.
-    pub(in crate::stochastic) rng: SmallRng,
+    pub(in crate::stochastic) rng: QmcRng,
     /// Batched off-diagonal spawn requests accumulated over one worker propagation iteration.
     spawn_requests: Vec<BatchedSpawnRequest>,
     /// Canonically ordered determinant pairs corresponding to `spawn_requests`.
@@ -503,7 +505,7 @@ impl ThreadPropagation {
             local: Vec::new(),
             remote: Vec::new(),
             samples: Vec::new(),
-            rng: SmallRng::seed_from_u64(seed),
+            rng: QmcRng::seed_from_u64(seed),
             spawn_requests: Vec::new(),
             spawn_pairs: Vec::new(),
             spawn_hs: Vec::new(),

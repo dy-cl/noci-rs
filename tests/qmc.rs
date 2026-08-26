@@ -29,16 +29,8 @@ struct ExpectedQMC {
 /// Expected trajectory checks for a QMC fixture.
 #[derive(Deserialize)]
 struct ExpectedQMCTrajectory {
-    /// Minimum allowed reported QMC energy.
-    min_energy: f64,
-    /// Maximum allowed reported QMC energy.
-    max_energy: f64,
-    /// Minimum number of QMC report energies.
-    min_samples: usize,
-    /// Minimum difference between the largest and smallest reported QMC energies.
-    min_energy_span: f64,
-    /// Minimum decrease from the first to final reported QMC energy.
-    min_final_drop: f64,
+    /// Expected reported QMC energies.
+    report_energies: Vec<f64>,
 }
 
 /// Initialise the global Rayon pool used by QMC tests.
@@ -153,9 +145,20 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
 
     let output = Command::new(exe)
         .env("RAYON_NUM_THREADS", "1")
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("OMP_NUM_THREADS", "1")
+        .env("MKL_NUM_THREADS", "1")
         .arg(input_path)
         .output()
         .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{fixture}: QMC binary exited with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
 
@@ -189,57 +192,31 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     energies
 }
 
-/// Check that a short QMC trajectory is finite, bounded and moving downward.
+/// Check that a short QMC trajectory matches the stored reported energies.
 /// # Arguments:
 /// - `fixture`: Name of the trajectory fixture to run.
 /// # Returns
-/// - `()`: The fixture satisfies its stored trajectory bounds.
+/// - `()`: The fixture satisfies its stored trajectory.
 /// # Panics
 /// - If the fixture `expected.json` cannot be read or parsed.
-/// - If too few report energies are printed.
-/// - If any report energy is non-finite or outside the fixture bounds.
-/// - If the report energies do not span or drop by the fixture minima.
-fn assert_qmc_trajectory_bounds(fixture: &str) {
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+fn assert_qmc_trajectory(fixture: &str) {
     let expected: ExpectedQMCTrajectory = serde_json::from_str(
         &std::fs::read_to_string(fixture_dir(fixture).join("expected.json")).unwrap(),
     )
     .unwrap();
-    let energies = qmc_report_energies(fixture);
+    let got = qmc_report_energies(fixture);
 
-    assert!(
-        energies.len() >= expected.min_samples,
-        "{fixture} produced {} report energies, expected at least {}",
-        energies.len(),
-        expected.min_samples
+    assert_eq!(
+        got.len(),
+        expected.report_energies.len(),
+        "{fixture}: QMC trajectory length"
     );
-    for (i, &energy) in energies.iter().enumerate() {
-        assert!(
-            energy.is_finite(),
-            "{fixture} report energy {i} is non-finite: {energy}"
-        );
-        assert!(
-            (expected.min_energy..=expected.max_energy).contains(&energy),
-            "{fixture} report energy {i} out of bounds: {energy}, expected [{}, {}]",
-            expected.min_energy,
-            expected.max_energy
-        );
+
+    for (i, (&got, &expected)) in got.iter().zip(expected.report_energies.iter()).enumerate() {
+        assert_close(got, expected, 1e-9, &format!("{fixture} QMC report {i}"));
     }
-
-    let min_energy = energies.iter().copied().reduce(f64::min).unwrap();
-    let max_energy = energies.iter().copied().reduce(f64::max).unwrap();
-    let energy_span = max_energy - min_energy;
-    assert!(
-        energy_span >= expected.min_energy_span,
-        "{fixture} report energies changed by {energy_span}, expected at least {}",
-        expected.min_energy_span
-    );
-
-    let final_drop = energies.first().unwrap() - energies.last().unwrap();
-    assert!(
-        final_drop >= expected.min_final_drop,
-        "{fixture} final report energy dropped by {final_drop}, expected at least {}",
-        expected.min_final_drop
-    );
 }
 
 /// Test that the H2 STO-3G 1.5 Angstrom fixture reproduces the expected SCF state energies,
@@ -254,7 +231,6 @@ fn assert_qmc_trajectory_bounds(fixture: &str) {
 ///   outside tolerance.
 #[test]
 #[serial]
-#[ignore = "non-deterministic"]
 fn qmc_h2_sto_3g_1_5_ang_energies() {
     init_qmc_thread_pool();
 
@@ -295,7 +271,6 @@ fn qmc_h2_sto_3g_1_5_ang_energies() {
 ///   outside tolerance.
 #[test]
 #[serial]
-#[ignore = "non-deterministic"]
 fn qmc_h2_sto_3g_1_5_ang_energies_wicks() {
     init_qmc_thread_pool();
 
@@ -335,7 +310,6 @@ fn qmc_h2_sto_3g_1_5_ang_energies_wicks() {
 ///   outside tolerance.
 #[test]
 #[serial]
-#[ignore = "non-deterministic"]
 fn qmc_h2_sto_3g_1_5_ang_energies_agree() {
     init_qmc_thread_pool();
 
@@ -373,7 +347,6 @@ fn qmc_h2_sto_3g_1_5_ang_energies_agree() {
 ///   outside tolerance.
 #[test]
 #[serial]
-#[ignore = "non-deterministic"]
 fn qmc_h2_3_21g_1_5_ang_energies() {
     init_qmc_thread_pool();
 
@@ -414,7 +387,6 @@ fn qmc_h2_3_21g_1_5_ang_energies() {
 ///   outside tolerance.
 #[test]
 #[serial]
-#[ignore = "non-deterministic"]
 fn qmc_h2_3_21g_1_5_ang_energies_wicks() {
     init_qmc_thread_pool();
 
@@ -454,7 +426,6 @@ fn qmc_h2_3_21g_1_5_ang_energies_wicks() {
 ///   outside tolerance.
 #[test]
 #[serial]
-#[ignore = "non-deterministic"]
 fn qmc_h2_3_21g_1_5_ang_energies_agree() {
     init_qmc_thread_pool();
 
@@ -480,66 +451,77 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
     );
 }
 
-/// Test that a short LiH STO-3G DirectOverlap QMC trajectory stays in a physical energy window.
+/// Test that a short LiH STO-3G DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
-/// - `()`: The trajectory satisfies the stored bounds.
+/// - `()`: The trajectory matches the stored report energies.
 /// # Panics
 /// - If the binary run fails.
-/// - If too few QMC report energies are printed.
-/// - If any report energy is non-finite or outside the fixture bounds.
-/// - If the trajectory does not move downward by the fixture minimum.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds_direct_overlap() {
-    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_direct_overlap() {
+    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DIRECT_OVERLAP");
 }
 
-/// Test that a short LiH STO-3G DDS2 QMC trajectory stays in a physical energy window.
+/// Test that a short LiH STO-3G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
-/// - `()`: The trajectory satisfies the stored bounds.
+/// - `()`: The trajectory matches the stored report energies.
 /// # Panics
 /// - If the binary run fails.
-/// - If too few QMC report energies are printed.
-/// - If any report energy is non-finite or outside the fixture bounds.
-/// - If the trajectory does not move downward by the fixture minimum.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_bounds_dds2() {
-    assert_qmc_trajectory_bounds("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
+    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
 }
 
-/// Test that a short LiH 6-31G DirectOverlap QMC trajectory stays in a physical energy window.
+/// Test that a short LiH 6-31G DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
-/// - `()`: The trajectory satisfies the stored bounds.
+/// - `()`: The trajectory matches the stored report energies.
 /// # Panics
 /// - If the binary run fails.
-/// - If too few QMC report energies are printed.
-/// - If any report energy is non-finite or outside the fixture bounds.
-/// - If the trajectory does not move downward by the fixture minimum.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_bounds_direct_overlap() {
-    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+fn qmc_lih_6_31g_2_8_ang_trajectory_direct_overlap() {
+    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DIRECT_OVERLAP");
 }
 
-/// Test that a short LiH 6-31G DDS2 QMC trajectory stays in a physical energy window.
+/// Test that a short LiH 6-31G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
-/// - `()`: The trajectory satisfies the stored bounds.
+/// - `()`: The trajectory matches the stored report energies.
 /// # Panics
 /// - If the binary run fails.
-/// - If too few QMC report energies are printed.
-/// - If any report energy is non-finite or outside the fixture bounds.
-/// - If the trajectory does not move downward by the fixture minimum.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_bounds_dds2() {
-    assert_qmc_trajectory_bounds("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
+fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
+    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
+}
+
+/// Test that an H6 STO-3G SDT Wick DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory matches the stored report energies.
+/// # Panics
+/// - If the binary run fails.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
+    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_DIRECT_OVERLAP_WICKS_SDT");
 }

@@ -4,7 +4,6 @@ use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 use rand::Rng;
-use rand::rngs::SmallRng;
 
 // Crate-root imports.
 use crate::input::{ExcitationGen, Input};
@@ -13,7 +12,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::find_hs;
-use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo};
+use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo, QmcRng};
 
 /// Evaluate the shifted off-diagonal coupling
 /// `T_{xw}(\Delta\tau) = H_{xw} - E_s(\Delta \tau) S_{xw}.`
@@ -117,7 +116,7 @@ pub(in crate::stochastic) fn pgen_heat_bath(
     gamma: usize,
     shift: f64,
     data: &NOCIData<'_, f64>,
-    rng: &mut SmallRng,
+    rng: &mut QmcRng,
     hb: &HeatBath,
     scratch: &mut WickScratchSpin<f64>,
 ) -> (f64, f64, usize) {

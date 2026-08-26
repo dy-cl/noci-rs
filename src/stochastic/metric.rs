@@ -12,7 +12,6 @@ use mpi::topology::Communicator;
 use mpi::traits::*;
 use rand::Rng;
 use rand::SeedableRng;
-use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
@@ -34,8 +33,8 @@ use super::restart::basis_hash;
 use super::state::owner;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats, PopulationUpdate,
-    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec,
-    SparsePopulations, ThreadPropagation,
+    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, QmcRng, ScratchSize,
+    ShiftSpec, SparsePopulations, ThreadPropagation,
 };
 
 /// Accumulate a real population change on determinant `i`.
@@ -410,7 +409,7 @@ pub(in crate::stochastic) fn propagate_iteration(
                     let mut worker = workers_shared[tid].lock().unwrap();
 
                     worker.clear();
-                    worker.rng = SmallRng::seed_from_u64(
+                    worker.rng = QmcRng::seed_from_u64(
                         run.rank_seed ^ tid as u64 ^ (it as u64).wrapping_mul(0x9E3779B97F4A7C15),
                     );
 
@@ -582,7 +581,7 @@ pub(in crate::stochastic) fn sample_populations(
     sampled: &mut SparsePopulations,
     cutoff: f64,
     run: &QMCRunInfo,
-    rng: &mut SmallRng,
+    rng: &mut QmcRng,
     chunks: &mut Vec<Vec<(usize, f64)>>,
 ) {
     time_call!(crate::timers::stochastic::add_sample_populations, {
@@ -629,7 +628,7 @@ pub(in crate::stochastic) fn sample_populations(
             .enumerate()
             .for_each(|(chunk, entries)| {
                 let mut rng =
-                    SmallRng::seed_from_u64(seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                    QmcRng::seed_from_u64(seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15));
                 let start = chunk * chunk_size;
                 let end = (start + chunk_size).min(populations.len());
                 let populations = &populations[start..end];
@@ -676,7 +675,7 @@ pub(in crate::stochastic) fn sample_populations(
 pub(in crate::stochastic) fn fri(
     value: f64,
     cutoff: f64,
-    rng: &mut SmallRng,
+    rng: &mut QmcRng,
 ) -> f64 {
     if value == 0.0 || cutoff <= 0.0 || value.abs() >= cutoff {
         return value;
@@ -702,7 +701,7 @@ pub(in crate::stochastic) fn fri(
 pub(in crate::stochastic) fn fri_population_updates(
     updates: &mut Vec<PopulationUpdate>,
     cutoff: f64,
-    rng: &mut SmallRng,
+    rng: &mut QmcRng,
 ) {
     let mut out = 0usize;
 
@@ -955,7 +954,7 @@ pub fn qmc_step(
             Vec<(usize, f64)>,
             Vec<PopulationUpdate>,
             Vec<f64>,
-            SmallRng,
+            QmcRng,
             WickScratchSpin<f64>,
         );
         println!(
@@ -983,7 +982,7 @@ pub fn qmc_step(
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
 
-            let mut rng = SmallRng::seed_from_u64(
+            let mut rng = QmcRng::seed_from_u64(
                 run.rank_seed ^ 0xD1B54A32D192ED03 ^ (iter as u64).wrapping_mul(0x9E3779B97F4A7C15),
             );
 
@@ -1026,7 +1025,7 @@ pub fn qmc_step(
 
         population_changes.sort_unstable_by_key(|update| update.det);
 
-        let mut fri_rng = SmallRng::seed_from_u64(
+        let mut fri_rng = QmcRng::seed_from_u64(
             run.rank_seed ^ 0xA0761D6478BD642F ^ (report as u64).wrapping_mul(0xE7037ED1A0B428DB),
         );
         fri_population_updates(&mut population_changes, qmc.sampling_cutoff2, &mut fri_rng);

@@ -12,7 +12,8 @@ serde_json = {version = "1", features = ["std"], default-features = false}
 
 [dependencies]
 rlua = {version = "0.20.1"}
-rand = {version = "0.8", features = ["small_rng"], default-features = false}
+rand = {version = "0.8", default-features = false}
+rand_xoshiro = {version = "0.6"}
 mpi = {version = "0.7", features = ["derive"]}
 ndarray-linalg = {version = "0.15", features = ["openblas-system"], default-features = false}
 ndarray = {version = "0.15",   features = ["rayon", "serde"], default-features = false}

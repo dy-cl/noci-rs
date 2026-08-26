@@ -9,7 +9,6 @@ use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 use rand::SeedableRng;
-use rand::rngs::SmallRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
@@ -30,8 +29,8 @@ use super::report::{check_stop, print_header, print_initial_row, print_row, writ
 use super::restart::{basis_hash, read_restart_hdf5};
 use super::state::{
     ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats,
-    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, ScratchSize, ShiftSpec,
-    SparsePopulations, ThreadPropagation, owner,
+    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, QmcRng, ScratchSize,
+    ShiftSpec, SparsePopulations, ThreadPropagation, owner,
 };
 
 /// Initialise rank-local walker populations from the initial coefficient vector.
@@ -356,7 +355,7 @@ pub fn qmc_step(
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
 
-            let mut rng = SmallRng::seed_from_u64(
+            let mut rng = QmcRng::seed_from_u64(
                 run.rank_seed ^ 0xD1B54A32D192ED03 ^ (iter as u64).wrapping_mul(0x9E3779B97F4A7C15),
             );
 

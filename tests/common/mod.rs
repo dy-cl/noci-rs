@@ -74,6 +74,10 @@ fn generate_data_h5_for_geometry(
     let atomsj = serde_json::to_string(&atoms).unwrap();
 
     Command::new("python3")
+        .env("RAYON_NUM_THREADS", "1")
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("OMP_NUM_THREADS", "1")
+        .env("MKL_NUM_THREADS", "1")
         .arg(&generate_py)
         .arg("--atoms")
         .arg(&atomsj)
