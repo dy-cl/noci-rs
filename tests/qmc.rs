@@ -1,6 +1,7 @@
 mod common;
 
 // Standard library imports.
+use std::env;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -143,7 +144,8 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     let exe = env!("CARGO_BIN_EXE_noci-rs");
     let input_path = fixture_dir(fixture).join("input.lua");
 
-    let output = Command::new(exe)
+    let mut command = qmc_binary_command(exe);
+    let output = command
         .env("RAYON_NUM_THREADS", "1")
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("OMP_NUM_THREADS", "1")
@@ -190,6 +192,33 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     }
 
     energies
+}
+
+/// Construct a command for the test binary, honouring Cargo's target runner when CI executes the
+/// test harness under Intel SDE.
+/// # Arguments:
+/// - `exe`: Path to the compiled `noci-rs` binary.
+/// # Returns:
+/// - `Command`: Command that executes `exe` directly or through `CARGO_TARGET_*_RUNNER`.
+fn qmc_binary_command(exe: &str) -> Command {
+    let runner = env::vars()
+        .filter(|(key, _)| key.starts_with("CARGO_TARGET_") && key.ends_with("_RUNNER"))
+        .map(|(_, value)| value)
+        .next();
+
+    let Some(runner) = runner else {
+        return Command::new(exe);
+    };
+
+    let mut parts = runner.split_whitespace();
+    let Some(program) = parts.next() else {
+        return Command::new(exe);
+    };
+
+    let mut command = Command::new(program);
+    command.args(parts);
+    command.arg(exe);
+    command
 }
 
 /// Check that a short QMC trajectory matches the stored reported energies.
