@@ -368,15 +368,19 @@ pub(in crate::snoci) fn build_factorised_candidate_diags<T: NOCIScalar>(
 /// Uses a cached packed matrix if provided, otherwise evaluates matrix elements on the fly.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Vector to apply `M` to.
+/// - `x`: Krylov vector to apply `M` to.
 /// - `m`: Optional packed candidate-candidate shifted Fock matrix.
 /// # Returns:
-/// - `Array1<T>`: Matrix-vector product `M x`.
-pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
+/// - `Array1<R>`: Matrix-vector product `M x`.
+pub(in crate::snoci) fn apply_candidate_m<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    x: &Array1<R>,
     m: Option<&[T]>,
-) -> Array1<T> {
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
     time_call!(crate::timers::snoci::add_apply_candidate_m, {
         let n = op.candidates.len();
 
@@ -387,8 +391,10 @@ pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
         let xs = x.as_slice_memory_order().unwrap();
 
         let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
-        let zero = T::from_real(0.0);
+        let zero = R::from_real(0.0);
 
+        // `y_a = \sum_b M_{ab} x_b`: `M_{ab}` uses chemistry scalar `T`
+        // and the Krylov vector `x_b` uses scalar `R`.
         if let Some(m) = m {
             let y = (0..n)
                 .into_par_iter()
@@ -401,6 +407,7 @@ pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
 
                         for (db, &m_ab) in m[row_start..row_start + n - a].iter().enumerate() {
                             let b = a + db;
+                            let m_ab = <R as From<T>>::from(m_ab);
                             let xb = xs[b];
 
                             if xb != zero {
@@ -451,6 +458,7 @@ pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
                             op.projection.e0,
                             Some(&mut scratch),
                         );
+                        let m_ab = <R as From<T>>::from(m_ab);
 
                         if xb != zero {
                             y[a] += m_ab * xb;
@@ -482,19 +490,20 @@ pub(in crate::snoci) fn apply_candidate_m<T: NOCIScalar>(
 /// Uses a replicated input vector and returns the globally reduced output vector on every rank.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Replicated vector to apply `M` to.
+/// - `x`: Replicated Krylov vector to apply `M` to.
 /// - `m`: Optional packed candidate-candidate shifted Fock matrix.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `Array1<T>`: Globally reduced matrix-vector product `M x`.
-pub(in crate::snoci) fn apply_candidate_m_mpi<T>(
+/// - `Array1<R>`: Globally reduced matrix-vector product `M x`.
+pub(in crate::snoci) fn apply_candidate_m_mpi<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    x: &Array1<R>,
     m: Option<&[T]>,
     world: &impl Communicator,
-) -> Array1<T>
+) -> Array1<R>
 where
-    T: NOCIScalar + Into<Complex64>,
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
     time_call!(crate::timers::snoci::add_apply_candidate_m, {
         let n = op.candidates.len();
@@ -505,7 +514,7 @@ where
         let irank = world.rank() as usize;
         let nranks = world.size() as usize;
         let xs = x.as_slice_memory_order().unwrap();
-        let zero = T::from_real(0.0);
+        let zero = R::from_real(0.0);
 
         let mut y = vec![zero; n];
 
@@ -515,13 +524,13 @@ where
 
                 for (b, &xb) in xs.iter().enumerate().take(a) {
                     let k = b * (2 * n - b + 1) / 2 + (a - b);
-                    ya += m[k].conj() * xb;
+                    ya += <R as From<T>>::from(m[k]).conj() * xb;
                 }
 
                 let row = a * (2 * n - a + 1) / 2;
                 for (b, &xb) in xs.iter().enumerate().skip(a) {
                     let k = row + (b - a);
-                    ya += m[k] * xb;
+                    ya += <R as From<T>>::from(m[k]) * xb;
                 }
 
                 y[a] = ya;
@@ -550,6 +559,7 @@ where
                     op.projection.e0,
                     Some(&mut scratch),
                 );
+                let m_ab = <R as From<T>>::from(m_ab);
 
                 if xb != zero {
                     y[a] += m_ab * xb;
@@ -567,13 +577,17 @@ where
 /// Apply the unprojected candidate-candidate overlap matrix `S`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Vector to apply `S` to.
+/// - `x`: Krylov vector to apply `S` to.
 /// # Returns:
-/// - `Array1<T>`: Matrix-vector product `S x`.
-pub(in crate::snoci) fn apply_candidate_s<T: NOCIScalar>(
+/// - `Array1<R>`: Matrix-vector product `S x`.
+pub(in crate::snoci) fn apply_candidate_s<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
-) -> Array1<T> {
+    x: &Array1<R>,
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
     let n = op.candidates.len();
 
     if n == 0 {
@@ -582,8 +596,10 @@ pub(in crate::snoci) fn apply_candidate_s<T: NOCIScalar>(
 
     let xs = x.as_slice_memory_order().unwrap();
     let min_len = (n / (rayon::current_num_threads() * 8)).max(1);
-    let zero = T::from_real(0.0);
+    let zero = R::from_real(0.0);
 
+    // `y_a = \sum_b S_{ab} x_b`: `S_{ab}` uses chemistry scalar `T`
+    // and the Krylov vector `x_b` uses scalar `R`.
     let y = (0..n)
         .into_par_iter()
         .with_min_len(min_len)
@@ -603,6 +619,7 @@ pub(in crate::snoci) fn apply_candidate_s<T: NOCIScalar>(
                     let gdet = &op.candidates[b];
                     let s_ab =
                         calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
+                    let s_ab = <R as From<T>>::from(s_ab);
 
                     if xb != zero {
                         y[a] += s_ab * xb;
@@ -634,17 +651,18 @@ pub(in crate::snoci) fn apply_candidate_s<T: NOCIScalar>(
 /// Uses a replicated input vector and returns the globally reduced output vector on every rank.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Replicated vector to apply `S` to.
+/// - `x`: Replicated Krylov vector to apply `S` to.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `Array1<T>`: Globally reduced matrix-vector product `S x`.
-pub(in crate::snoci) fn apply_candidate_s_mpi<T>(
+/// - `Array1<R>`: Globally reduced matrix-vector product `S x`.
+pub(in crate::snoci) fn apply_candidate_s_mpi<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    x: &Array1<R>,
     world: &impl Communicator,
-) -> Array1<T>
+) -> Array1<R>
 where
-    T: NOCIScalar + Into<Complex64>,
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
     let n = op.candidates.len();
     if n == 0 {
@@ -654,7 +672,7 @@ where
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
     let xs = x.as_slice_memory_order().unwrap();
-    let zero = T::from_real(0.0);
+    let zero = R::from_real(0.0);
 
     let mut y = vec![zero; n];
     let mut scratch = WickScratchSpin::new();
@@ -671,6 +689,7 @@ where
 
             let gdet = &op.candidates[b];
             let s_ab = calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
+            let s_ab = <R as From<T>>::from(s_ab);
 
             if xb != zero {
                 y[a] += s_ab * xb;
@@ -689,30 +708,28 @@ where
 /// otherwise applies `M` without materialising it.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Vector to apply `M^Omega` to.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `x`: Krylov vector to apply `M^Omega` to.
 /// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
 /// # Returns:
-/// - `Array1<T>`: Matrix-vector product `M^Omega x`.
-pub(in crate::snoci) fn apply_omega_m<T: NOCIScalar>(
+/// - `Array1<R>`: Matrix-vector product `M^Omega x`.
+pub(in crate::snoci) fn apply_omega_m<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    p: &PT2Projection<R>,
+    x: &Array1<R>,
     m: Option<&[T]>,
-) -> Array1<T> {
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
     time_call!(crate::timers::snoci::add_apply_omega_m, {
-        let p = op.projection;
-
-        // Projected matrix elements are defined as:
-        // M_{ab}^\Omega = \langle \Omega_a | \hat F - E^{(0)} | \Omega_b \rangle.
-        // Expanding the projected states gives:
-        // M_{ab}^\Omega = M_{ab} - F_{a0} S_{0b} - S_{a0} F_{0b} + 2 E^{(0)} S_{a0} S_{0b},
-        // where M_{ab} = F_{ab} - E^{(0)} S_{ab}.
-        // The following contractions apply the final three terms to `x`.
+        // `M^Omega_{ab} = M_{ab} - F_{a0} S_{0b} - S_{a0} F_{0b}
+        //                  + 2 E_0 S_{a0} S_{0b}`.
         let sx = p.s_0a.dot(x);
         let fx = p.f_0a.dot(x);
-
-        // Get the action of unprojected M_{ab} = F_{ab} - E^{(0)} S_{ab} on a vector `x`.
         let mut y = apply_candidate_m(op, x, m);
-        apply_projection_correction(&mut y, p, sx, fx, T::from_real(0.0));
+        apply_projection_correction(&mut y, p, sx, fx, R::from_real(0.0));
 
         y
     })
@@ -721,28 +738,31 @@ pub(in crate::snoci) fn apply_omega_m<T: NOCIScalar>(
 /// Apply the projected NOCI-PT2 shifted Fock matrix `M^Omega` across MPI ranks.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Replicated vector to apply `M^Omega` to.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `x`: Replicated Krylov vector to apply `M^Omega` to.
 /// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `Array1<T>`: Globally reduced matrix-vector product `M^Omega x`.
-pub(in crate::snoci) fn apply_omega_m_mpi<T>(
+/// - `Array1<R>`: Globally reduced matrix-vector product `M^Omega x`.
+pub(in crate::snoci) fn apply_omega_m_mpi<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    p: &PT2Projection<R>,
+    x: &Array1<R>,
     m: Option<&[T]>,
     world: &impl Communicator,
-) -> Array1<T>
+) -> Array1<R>
 where
-    T: NOCIScalar + Into<Complex64>,
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
     time_call!(crate::timers::snoci::add_apply_omega_m, {
-        let p = op.projection;
-
+        // `M^Omega_{ab} = M_{ab} - F_{a0} S_{0b} - S_{a0} F_{0b}
+        //                  + 2 E_0 S_{a0} S_{0b}`.
         let sx = p.s_0a.dot(x);
         let fx = p.f_0a.dot(x);
 
         let mut y = apply_candidate_m_mpi(op, x, m, world);
-        apply_projection_correction(&mut y, p, sx, fx, T::from_real(0.0));
+        apply_projection_correction(&mut y, p, sx, fx, R::from_real(0.0));
 
         y
     })
@@ -751,59 +771,72 @@ where
 /// Apply factorised projected `(F - E0 S + i epsilon Q)x`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
 /// - `one_body`: Cached spin-factorised one-body operator.
-/// - `scratch`: Reusable one-body contraction buffers.
-/// - `x`: Vector to apply shifted operator to.
+/// - `scratch`: Reusable one-body contraction buffers in scalar `R`.
+/// - `x`: Krylov vector to apply shifted operator to.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
 /// # Returns:
-/// - `Array1<T>`: Matrix-vector product `(M^Omega + i epsilon Q)x`.
-pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T: NOCIScalar>(
+/// - `Array1<R>`: Matrix-vector product `(M^Omega + i epsilon Q)x`.
+pub(in crate::snoci) fn apply_factorised_shifted_omega_m<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    p: &PT2Projection<R>,
     one_body: &OneBodyFactorisation<T>,
-    scratch: &mut OneBodyScratch<T>,
-    x: &Array1<T>,
+    scratch: &mut OneBodyScratch<R>,
+    x: &Array1<R>,
     imag_shift: f64,
-) -> Array1<T> {
-    if x.iter().all(|&xi| xi == T::from_real(0.0)) {
-        return Array1::from_elem(x.len(), T::from_real(0.0));
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    if x.iter().all(|&xi| xi == R::from_real(0.0)) {
+        return Array1::from_elem(x.len(), R::from_real(0.0));
     }
-    let p = op.projection;
+    // `M^Omega(epsilon) = F - E_0 S + i epsilon S
+    //                     - F_{a0} S_{0b} - S_{a0} F_{0b}
+    //                     + (2 E_0 - i epsilon) S_{a0} S_{0b}`.
     let sx = p.s_0a.dot(x);
     let fx = p.f_0a.dot(x);
-    let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
+    let lambda = R::from_real(-p.e0) + R::from_imag(imag_shift);
     let mut y = one_body.apply_one_body(x, op.data, op.fock, lambda, scratch, (0, 1));
-    apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
+    apply_projection_correction(&mut y, p, sx, fx, R::from_imag(imag_shift));
     y
 }
 
 /// Apply factorised projected `(F - E0 S + i epsilon Q)x` across MPI ranks.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
 /// - `one_body`: Cached spin-factorised one-body operator.
-/// - `scratch`: Reusable one-body contraction buffers.
-/// - `x`: Replicated vector to apply shifted operator to.
+/// - `scratch`: Reusable one-body contraction buffers in scalar `R`.
+/// - `x`: Replicated Krylov vector to apply shifted operator to.
 /// - `world`: MPI communicator.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
 /// # Returns:
-/// - `Array1<T>`: Globally reduced matrix-vector product `(M^Omega + i epsilon Q)x`.
-pub(in crate::snoci) fn apply_factorised_shifted_omega_m_mpi<T>(
+/// - `Array1<R>`: Globally reduced matrix-vector product `(M^Omega + i epsilon Q)x`.
+pub(in crate::snoci) fn apply_factorised_shifted_omega_m_mpi<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
+    p: &PT2Projection<R>,
     one_body: &OneBodyFactorisation<T>,
-    scratch: &mut OneBodyScratch<T>,
-    x: &Array1<T>,
+    scratch: &mut OneBodyScratch<R>,
+    x: &Array1<R>,
     world: &impl Communicator,
     imag_shift: f64,
-) -> Array1<T>
+) -> Array1<R>
 where
-    T: NOCIScalar + Into<Complex64>,
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
-    if x.iter().all(|&xi| xi == T::from_real(0.0)) {
-        return Array1::from_elem(x.len(), T::from_real(0.0));
+    if x.iter().all(|&xi| xi == R::from_real(0.0)) {
+        return Array1::from_elem(x.len(), R::from_real(0.0));
     }
-    let p = op.projection;
+    // `M^Omega(epsilon) = F - E_0 S + i epsilon S
+    //                     - F_{a0} S_{0b} - S_{a0} F_{0b}
+    //                     + (2 E_0 - i epsilon) S_{a0} S_{0b}`.
     let sx = p.s_0a.dot(x);
     let fx = p.f_0a.dot(x);
-    let lambda = T::from_real(-p.e0) + T::from_imag(imag_shift);
+    let lambda = R::from_real(-p.e0) + R::from_imag(imag_shift);
     let partial = one_body.apply_one_body(
         x,
         op.data,
@@ -813,21 +846,27 @@ where
         (world.rank() as usize, world.size() as usize),
     );
     let mut y = all_reduce_array1(world, partial);
-    apply_projection_correction(&mut y, p, sx, fx, T::from_imag(imag_shift));
+    apply_projection_correction(&mut y, p, sx, fx, R::from_imag(imag_shift));
     y
 }
 
 /// Apply the projected first-order-space overlap matrix `Q`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Vector to apply `Q` to.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `x`: Krylov vector to apply `Q` to.
 /// # Returns:
-/// - `Array1<T>`: Matrix-vector product `Q x`.
-pub(in crate::snoci) fn apply_omega_s<T: NOCIScalar>(
+/// - `Array1<R>`: Matrix-vector product `Q x`.
+pub(in crate::snoci) fn apply_omega_s<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
-) -> Array1<T> {
-    let p = op.projection;
+    p: &PT2Projection<R>,
+    x: &Array1<R>,
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    // `Q_{ab} = S_{ab} - S_{a0} S_{0b}`.
     let sx = p.s_0a.dot(x);
     let mut y = apply_candidate_s(op, x);
 
@@ -841,19 +880,22 @@ pub(in crate::snoci) fn apply_omega_s<T: NOCIScalar>(
 /// Apply the projected first-order-space overlap matrix `Q` across MPI ranks.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Replicated vector to apply `Q` to.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `x`: Replicated Krylov vector to apply `Q` to.
 /// - `world`: MPI communicator.
 /// # Returns:
-/// - `Array1<T>`: Globally reduced matrix-vector product `Q x`.
-pub(in crate::snoci) fn apply_omega_s_mpi<T>(
+/// - `Array1<R>`: Globally reduced matrix-vector product `Q x`.
+pub(in crate::snoci) fn apply_omega_s_mpi<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    p: &PT2Projection<R>,
+    x: &Array1<R>,
     world: &impl Communicator,
-) -> Array1<T>
+) -> Array1<R>
 where
-    T: NOCIScalar + Into<Complex64>,
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
-    let p = op.projection;
+    // `Q_{ab} = S_{ab} - S_{a0} S_{0b}`.
     let sx = p.s_0a.dot(x);
 
     let mut y = apply_candidate_s_mpi(op, x, world);
@@ -867,22 +909,28 @@ where
 /// Apply the explicit imaginary-shifted NOCI-PT2 matrix `M + i epsilon Q`.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Vector to apply the shifted matrix to.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `x`: Krylov vector to apply the shifted matrix to.
 /// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
 /// # Returns:
-/// - `Array1<T>`: Matrix-vector product `(M + i epsilon Q) x`.
-pub(in crate::snoci) fn apply_shifted_omega_m<T: NOCIScalar>(
+/// - `Array1<R>`: Matrix-vector product `(M + i epsilon Q) x`.
+pub(in crate::snoci) fn apply_shifted_omega_m<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    p: &PT2Projection<R>,
+    x: &Array1<R>,
     m: Option<&[T]>,
     imag_shift: f64,
-) -> Array1<T> {
-    let mut y = apply_omega_m(op, x, m);
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    let mut y = apply_omega_m(op, p, x, m);
 
     if imag_shift != 0.0 {
-        let iq = T::from_imag(imag_shift);
-        let qx = apply_omega_s(op, x);
+        let iq = R::from_imag(imag_shift);
+        let qx = apply_omega_s(op, p, x);
         for a in 0..y.len() {
             y[a] += iq * qx[a];
         }
@@ -894,27 +942,30 @@ pub(in crate::snoci) fn apply_shifted_omega_m<T: NOCIScalar>(
 /// Apply the explicit imaginary-shifted NOCI-PT2 matrix `M + i epsilon Q` across MPI ranks.
 /// # Arguments:
 /// - `op`: Matrix-free projected NOCI-PT2 operator data.
-/// - `x`: Replicated vector to apply the shifted matrix to.
+/// - `p`: Projection contractions represented in Krylov scalar `R`.
+/// - `x`: Replicated Krylov vector to apply the shifted matrix to.
 /// - `m`: Optional packed unprojected candidate-candidate shifted Fock matrix `M`.
 /// - `world`: MPI communicator.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
 /// # Returns:
-/// - `Array1<T>`: Globally reduced matrix-vector product `(M + i epsilon Q) x`.
-pub(in crate::snoci) fn apply_shifted_omega_m_mpi<T>(
+/// - `Array1<R>`: Globally reduced matrix-vector product `(M + i epsilon Q) x`.
+pub(in crate::snoci) fn apply_shifted_omega_m_mpi<T, R>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
-    x: &Array1<T>,
+    p: &PT2Projection<R>,
+    x: &Array1<R>,
     m: Option<&[T]>,
     world: &impl Communicator,
     imag_shift: f64,
-) -> Array1<T>
+) -> Array1<R>
 where
-    T: NOCIScalar + Into<Complex64>,
+    T: NOCIScalar,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
-    let mut y = apply_omega_m_mpi(op, x, m, world);
+    let mut y = apply_omega_m_mpi(op, p, x, m, world);
 
     if imag_shift != 0.0 {
-        let iq = T::from_imag(imag_shift);
-        let qx = apply_omega_s_mpi(op, x, world);
+        let iq = R::from_imag(imag_shift);
+        let qx = apply_omega_s_mpi(op, p, x, world);
         for a in 0..y.len() {
             y[a] += iq * qx[a];
         }
@@ -932,14 +983,14 @@ where
 /// - `imag_shift`: Imaginary scalar `i epsilon`.
 /// # Returns:
 /// - `()`: Applies projection terms in place.
-fn apply_projection_correction<T: NOCIScalar>(
-    y: &mut Array1<T>,
-    p: &PT2Projection<T>,
-    sx: T,
-    fx: T,
-    imag_shift: T,
+fn apply_projection_correction<R: NOCIScalar>(
+    y: &mut Array1<R>,
+    p: &PT2Projection<R>,
+    sx: R,
+    fx: R,
+    imag_shift: R,
 ) {
-    let scalar = T::from_real(2.0 * p.e0) - imag_shift;
+    let scalar = R::from_real(2.0 * p.e0) - imag_shift;
     for a in 0..y.len() {
         y[a] += -p.f_a0[a] * sx - p.s_a0[a] * fx + scalar * p.s_a0[a] * sx;
     }
@@ -953,22 +1004,32 @@ fn apply_projection_correction<T: NOCIScalar>(
 /// - `kind`: Requested SNOCI preconditioner type.
 /// - `imag_shift`: Imaginary shift strength `epsilon`.
 /// # Returns:
-/// - `Preconditioner`: Preconditioner for applying an approximate inverse of `M^Omega`.
-pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
+/// - `Preconditioner<R>`: Preconditioner for applying an approximate inverse of `M^Omega`.
+pub(in crate::snoci) fn build_preconditioner<T, R>(
     m_diag: &Array1<T>,
     s_diag: Option<&Array1<T>>,
-    p: &PT2Projection<T>,
+    p: &PT2Projection<R>,
     kind: crate::input::SNOCIPreconditioner,
     imag_shift: f64,
-) -> Preconditioner<T> {
+) -> Preconditioner<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
     if imag_shift != 0.0 {
+        // `diag[M^Omega(epsilon)] = diag[M^Omega] + i epsilon diag[Q]`.
         let s_diag = s_diag.expect("shifted preconditioner requires S diagonal");
-        let iq = T::from_imag(imag_shift);
+        let iq = R::from_imag(imag_shift);
         let diag = if matches!(kind, crate::input::SNOCIPreconditioner::Diag) {
             let q_diag = build_omega_s_diag(s_diag, p);
             build_omega_m_diag(m_diag, p) + q_diag.mapv(|q| iq * q)
         } else {
-            m_diag + &s_diag.mapv(|s| iq * s)
+            Array1::from_iter(
+                m_diag
+                    .iter()
+                    .zip(s_diag.iter())
+                    .map(|(&m, &s)| <R as From<T>>::from(m) + iq * <R as From<T>>::from(s)),
+            )
         };
         return Preconditioner::new(&diag, p, kind, imag_shift);
     }
@@ -976,7 +1037,7 @@ pub(in crate::snoci) fn build_preconditioner<T: NOCIScalar>(
     let diag = if matches!(kind, crate::input::SNOCIPreconditioner::Diag) {
         build_omega_m_diag(m_diag, p)
     } else {
-        m_diag.clone()
+        m_diag.mapv(<R as From<T>>::from)
     };
 
     Preconditioner::new(&diag, p, kind, 0.0)
@@ -1028,15 +1089,20 @@ pub(in crate::snoci) fn build_omega_v<T: NOCIScalar>(
 /// - `p`: Projection contractions used to form `M^Omega`.
 ///
 /// # Returns:
-/// - `Array1`: Diagonal entries of `M^Omega`.
-pub(in crate::snoci) fn build_omega_m_diag<T: NOCIScalar>(
+/// - `Array1<R>`: Diagonal entries of `M^Omega`.
+pub(in crate::snoci) fn build_omega_m_diag<T, R>(
     m_diag: &Array1<T>,
-    p: &PT2Projection<T>,
-) -> Array1<T> {
-    let two_e0 = T::from_real(2.0 * p.e0);
+    p: &PT2Projection<R>,
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    let two_e0 = R::from_real(2.0 * p.e0);
 
     Array1::from_iter((0..m_diag.len()).map(|a| {
-        m_diag[a] - p.f_a0[a] * p.s_0a[a] - p.s_a0[a] * p.f_0a[a] + two_e0 * p.s_a0[a] * p.s_0a[a]
+        <R as From<T>>::from(m_diag[a]) - p.f_a0[a] * p.s_0a[a] - p.s_a0[a] * p.f_0a[a]
+            + two_e0 * p.s_a0[a] * p.s_0a[a]
     }))
 }
 
@@ -1045,12 +1111,18 @@ pub(in crate::snoci) fn build_omega_m_diag<T: NOCIScalar>(
 /// - `s_diag`: Diagonal of the unprojected candidate-candidate overlap matrix `S`.
 /// - `p`: Projection contractions used to form `Q`.
 /// # Returns:
-/// - `Array1<T>`: Diagonal entries of `Q`.
-pub(in crate::snoci) fn build_omega_s_diag<T: NOCIScalar>(
+/// - `Array1<R>`: Diagonal entries of `Q`.
+pub(in crate::snoci) fn build_omega_s_diag<T, R>(
     s_diag: &Array1<T>,
-    p: &PT2Projection<T>,
-) -> Array1<T> {
-    Array1::from_iter((0..s_diag.len()).map(|a| s_diag[a] - p.s_a0[a] * p.s_0a[a]))
+    p: &PT2Projection<R>,
+) -> Array1<R>
+where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    Array1::from_iter(
+        (0..s_diag.len()).map(|a| <R as From<T>>::from(s_diag[a]) - p.s_a0[a] * p.s_0a[a]),
+    )
 }
 
 /// Select the highest-scoring candidates above the selection threshold.

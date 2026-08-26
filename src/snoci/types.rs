@@ -96,6 +96,27 @@ pub(in crate::snoci) struct PT2Projection<T: NOCIScalar> {
     pub(in crate::snoci) f_0a: Array1<T>,
 }
 
+impl<T: NOCIScalar> PT2Projection<T> {
+    /// Represent the projection contractions in scalar `R`.
+    /// The quantities `S_{a0}`, `S_{0a}`, `F_{a0}` and `F_{0a}` are unchanged mathematically.
+    /// # Arguments:
+    /// - `self`: Projection contractions represented by scalar `T`.
+    /// # Returns:
+    /// - `PT2Projection<R>`: The same projection contractions represented by scalar `R`.
+    pub(in crate::snoci) fn cast<R>(&self) -> PT2Projection<R>
+    where
+        R: NOCIScalar + From<T>,
+    {
+        PT2Projection {
+            e0: self.e0,
+            s_a0: self.s_a0.mapv(<R as From<T>>::from),
+            s_0a: self.s_0a.mapv(<R as From<T>>::from),
+            f_a0: self.f_a0.mapv(<R as From<T>>::from),
+            f_0a: self.f_0a.mapv(<R as From<T>>::from),
+        }
+    }
+}
+
 /// Matrix-free projected NOCI-PT2 operator.
 pub(in crate::snoci) struct PT2ProjectedOperator<'a, 'data, 'fock, T: NOCIScalar> {
     /// Shared NOCI matrix-element data.
@@ -158,7 +179,7 @@ pub(in crate::snoci) struct Preconditioner<T: NOCIScalar> {
     active: bool,
 }
 
-impl<T: NOCIScalar> Preconditioner<T> {
+impl<R: NOCIScalar> Preconditioner<R> {
     /// Build a preconditioner from an unprojected diagonal and projection contractions.
     /// # Arguments:
     /// - `m_diag`: Diagonal of the unprojected candidate-candidate matrix `M`.
@@ -168,8 +189,8 @@ impl<T: NOCIScalar> Preconditioner<T> {
     /// # Returns:
     /// - `Preconditioner`: Diagonal or rank-2 Woodbury preconditioner.
     pub(in crate::snoci) fn new(
-        m_diag: &Array1<T>,
-        p: &PT2Projection<T>,
+        m_diag: &Array1<R>,
+        p: &PT2Projection<R>,
         kind: SNOCIPreconditioner,
         imag_shift: f64,
     ) -> Self {
@@ -179,9 +200,9 @@ impl<T: NOCIScalar> Preconditioner<T> {
         let dinv = Array1::from_iter(m_diag.iter().map(|&x| {
             let ax = x.abs();
             if ax > dfloor {
-                T::from_real(1.0) / x
+                R::from_real(1.0) / x
             } else {
-                x.conj() / T::from_real(dfloor * dfloor)
+                x.conj() / R::from_real(dfloor * dfloor)
             }
         }));
 
@@ -190,14 +211,14 @@ impl<T: NOCIScalar> Preconditioner<T> {
         if matches!(kind, SNOCIPreconditioner::Diag) {
             return Preconditioner {
                 dinv,
-                z0: Array1::from_elem(n, T::from_real(0.0)),
-                z1: Array1::from_elem(n, T::from_real(0.0)),
-                v0: Array1::from_elem(n, T::from_real(0.0)),
-                v1: Array1::from_elem(n, T::from_real(0.0)),
-                w00: T::from_real(1.0),
-                w01: T::from_real(0.0),
-                w10: T::from_real(0.0),
-                w11: T::from_real(1.0),
+                z0: Array1::from_elem(n, R::from_real(0.0)),
+                z1: Array1::from_elem(n, R::from_real(0.0)),
+                v0: Array1::from_elem(n, R::from_real(0.0)),
+                v1: Array1::from_elem(n, R::from_real(0.0)),
+                w00: R::from_real(1.0),
+                w01: R::from_real(0.0),
+                w10: R::from_real(0.0),
+                w11: R::from_real(1.0),
                 active: false,
             };
         }
@@ -206,7 +227,7 @@ impl<T: NOCIScalar> Preconditioner<T> {
             p.f_a0
                 .iter()
                 .zip(p.s_a0.iter())
-                .map(|(&f, &s)| -f + (T::from_real(2.0 * p.e0) - T::from_imag(imag_shift)) * s),
+                .map(|(&f, &s)| -f + (R::from_real(2.0 * p.e0) - R::from_imag(imag_shift)) * s),
         );
         let u1 = p.s_a0.mapv(|s| -s);
         let v0 = p.s_0a.clone();
@@ -215,10 +236,10 @@ impl<T: NOCIScalar> Preconditioner<T> {
         let z0 = Array1::from_iter(dinv.iter().zip(u0.iter()).map(|(&d, &u)| d * u));
         let z1 = Array1::from_iter(dinv.iter().zip(u1.iter()).map(|(&d, &u)| d * u));
 
-        let c00 = T::from_real(1.0) + bilinear_dot(&v0, &z0);
+        let c00 = R::from_real(1.0) + bilinear_dot(&v0, &z0);
         let c01 = bilinear_dot(&v0, &z1);
         let c10 = bilinear_dot(&v1, &z0);
-        let c11 = T::from_real(1.0) + bilinear_dot(&v1, &z1);
+        let c11 = R::from_real(1.0) + bilinear_dot(&v1, &z1);
 
         let det = c00 * c11 - c01 * c10;
         let active = det.abs() > 1e-14_f64;
@@ -227,10 +248,10 @@ impl<T: NOCIScalar> Preconditioner<T> {
             (c11 / det, -c01 / det, -c10 / det, c00 / det)
         } else {
             (
-                T::from_real(1.0),
-                T::from_real(0.0),
-                T::from_real(0.0),
-                T::from_real(1.0),
+                R::from_real(1.0),
+                R::from_real(0.0),
+                R::from_real(0.0),
+                R::from_real(1.0),
             )
         };
 
@@ -252,11 +273,11 @@ impl<T: NOCIScalar> Preconditioner<T> {
     /// # Arguments:
     /// - `v`: Vector to precondition.
     /// # Returns:
-    /// - `Array1<f64>`: Approximate action of `(M^Omega)^{-1} v`.
+    /// - `Array1<R>`: Approximate action of `(M^Omega)^{-1} v`.
     pub(in crate::snoci) fn apply(
         &self,
-        v: &Array1<T>,
-    ) -> Array1<T> {
+        v: &Array1<R>,
+    ) -> Array1<R> {
         let mut y = Array1::from_iter(v.iter().zip(self.dinv.iter()).map(|(&vi, &di)| vi * di));
 
         if !self.active {

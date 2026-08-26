@@ -11,7 +11,10 @@ use crate::snoci::snoci_step;
 use crate::time_call;
 use crate::{DetState, PostSCFData};
 
-/// Run SNOCI starting from the current determinant space.
+/// Run SNOCI and solve the projected NOCI-PT2 equation
+/// `M^Omega(epsilon) a(epsilon) = -V^Omega`.
+/// Chemistry quantities are represented by `T`; Krylov vectors and shifted linear algebra are
+/// represented by `R`.
 /// # Arguments:
 /// - `post`: Data shared by post-SCF methods.
 /// - `initial_space`: Current determinant space used as the starting point for SNOCI.
@@ -20,7 +23,7 @@ use crate::{DetState, PostSCFData};
 /// - `world`: MPI communicator object.
 /// # Returns:
 /// - `(f64, Vec<(f64, f64)>)`: Current SNOCI energy and NOCI-PT2 corrections stored as `(imag_shift, ept2)`.
-pub fn run_snoci<T>(
+pub fn run_snoci<T, R>(
     post: &PostSCFData<'_, T>,
     initial_space: &[DetState<T>],
     input: &crate::input::Input,
@@ -29,6 +32,7 @@ pub fn run_snoci<T>(
 ) -> (f64, Vec<(f64, f64)>)
 where
     T: NOCIScalar + Into<Complex64>,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
     time_call!(crate::timers::snoci::add_run_snoci, {
         let current_space = initial_space.to_vec();
@@ -37,7 +41,7 @@ where
             println!("{}", "=".repeat(100));
         }
 
-        let state = snoci_step(post, &current_space, input, wicks, world);
+        let state = snoci_step::<T, R>(post, &current_space, input, wicks, world);
 
         let ept2 = state
             .pt2

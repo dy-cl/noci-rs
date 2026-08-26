@@ -5,6 +5,7 @@ use noci_rs::PostSCFData;
 use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::noci::{build_mo_cache, build_wicks_shared, calculate_noci_energy};
 use noci_rs::snoci::snoci_step;
+use num_complex::Complex64;
 use serde::Deserialize;
 use serial_test::serial;
 
@@ -59,7 +60,12 @@ fn run_pt2_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
 
-    let result = snoci_step(&post, &noci_reference_basis, &input, None, &world);
+    let snoci = input.snoci.as_ref().unwrap();
+    let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
+        snoci_step::<f64, Complex64>(&post, &noci_reference_basis, &input, None, &world)
+    } else {
+        snoci_step::<f64, f64>(&post, &noci_reference_basis, &input, None, &world)
+    };
 
     let pt2 = result
         .pt2
@@ -124,13 +130,24 @@ fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
         tol: 1e-12,
     };
 
-    let result = snoci_step(
-        &post,
-        &noci_reference_basis,
-        &input,
-        Some(&mut wicks),
-        &world,
-    );
+    let snoci = input.snoci.as_ref().unwrap();
+    let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
+        snoci_step::<f64, Complex64>(
+            &post,
+            &noci_reference_basis,
+            &input,
+            Some(&mut wicks),
+            &world,
+        )
+    } else {
+        snoci_step::<f64, f64>(
+            &post,
+            &noci_reference_basis,
+            &input,
+            Some(&mut wicks),
+            &world,
+        )
+    };
 
     let pt2 = result
         .pt2

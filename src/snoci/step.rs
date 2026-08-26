@@ -7,7 +7,7 @@ use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::input::SNOCIStorage;
-use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyFactorisation};
+use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyFactorisation, OneBodyScratch};
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::nonorthogonalwicks::WicksShared;
 use crate::scf::fock;
@@ -166,7 +166,10 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
     }
 }
 
-/// Perform selected NOCI with selection from excitations of the current space.
+/// Perform selected NOCI and solve
+/// `M^Omega(epsilon) a(epsilon) = -V^Omega`.
+/// Determinants, matrix elements, Fock data and Wick intermediates use chemistry scalar `T`.
+/// The shifted linear system and Krylov vectors use scalar `R`.
 /// # Arguments:
 /// - `post`: Data shared by post-SCF methods.
 /// - `current_space`: Current selected nonorthogonal determinant space.
@@ -175,7 +178,7 @@ fn print_snoci_iteration_result<T: NOCIScalar>(
 /// - `world`: MPI communicator used to distribute NOCI-PT2 matrix-vector products.
 /// # Returns:
 /// - `SNOCIState`: Final SNOCI state from the last completed iteration.
-pub fn snoci_step<T>(
+pub fn snoci_step<T, R>(
     post: &PostSCFData<'_, T>,
     current_space: &[DetState<T>],
     input: &Input,
@@ -184,12 +187,10 @@ pub fn snoci_step<T>(
 ) -> SNOCIState<T>
 where
     T: NOCIScalar + Into<Complex64>,
+    R: NOCIScalar + From<T> + Into<Complex64>,
 {
     time_call!(crate::timers::snoci::add_snoci_step, {
-        let opts = input
-            .snoci
-            .as_ref()
-            .expect("snoci_step called without input.snoci.");
+        let opts = input.snoci.as_ref().unwrap();
 
         let mut selected_space = current_space.to_vec();
 
@@ -277,6 +278,11 @@ where
             let v_a = build_candidate_v(&h_ai, &coeffs);
             let v_omega = build_omega_v(&overlaps.s_ai, &coeffs, v_a, ecurrent);
 
+            // `M^Omega(epsilon) a(epsilon) = -V^Omega` is solved in scalar `R`.
+            // Chemistry-derived projection vectors and `V^Omega` cross the scalar boundary only here.
+            let krylov_projection = projection.cast::<R>();
+            let v_omega_krylov = v_omega.mapv(<R as From<T>>::from);
+
             let op = PT2ProjectedOperator {
                 data: &candidate_data,
                 fock: &fock,
@@ -356,8 +362,8 @@ where
             } else {
                 None
             };
-            let rhs = v_omega.mapv(|x| -x);
-            let mut one_body_scratch = one_body
+            let rhs = v_omega_krylov.mapv(|x| -x);
+            let mut one_body_scratch: Option<OneBodyScratch<R>> = one_body
                 .as_ref()
                 .map(|factorisation| factorisation.scratch());
 
@@ -367,7 +373,7 @@ where
                 let prec = build_preconditioner(
                     &m_diag,
                     s_diag.as_ref(),
-                    op.projection,
+                    &krylov_projection,
                     opts.preconditioner,
                     imag_shift,
                 );
@@ -379,17 +385,35 @@ where
                         {
                             if world.size() > 1 {
                                 apply_factorised_shifted_omega_m_mpi(
-                                    &op, one_body, scratch, x, world, imag_shift,
+                                    &op,
+                                    &krylov_projection,
+                                    one_body,
+                                    scratch,
+                                    x,
+                                    world,
+                                    imag_shift,
                                 )
                             } else {
                                 apply_factorised_shifted_omega_m(
-                                    &op, one_body, scratch, x, imag_shift,
+                                    &op,
+                                    &krylov_projection,
+                                    one_body,
+                                    scratch,
+                                    x,
+                                    imag_shift,
                                 )
                             }
                         } else if world.size() > 1 {
-                            apply_shifted_omega_m_mpi(&op, x, m_slice, world, imag_shift)
+                            apply_shifted_omega_m_mpi(
+                                &op,
+                                &krylov_projection,
+                                x,
+                                m_slice,
+                                world,
+                                imag_shift,
+                            )
                         } else {
-                            apply_shifted_omega_m(&op, x, m_slice, imag_shift)
+                            apply_shifted_omega_m(&op, &krylov_projection, x, m_slice, imag_shift)
                         }
                     },
                     |x| prec.apply(x),
@@ -403,39 +427,61 @@ where
                 {
                     if world.size() > 1 {
                         apply_factorised_shifted_omega_m_mpi(
-                            &op, one_body, scratch, &a.x, world, imag_shift,
+                            &op,
+                            &krylov_projection,
+                            one_body,
+                            scratch,
+                            &a.x,
+                            world,
+                            imag_shift,
                         )
                     } else {
-                        apply_factorised_shifted_omega_m(&op, one_body, scratch, &a.x, imag_shift)
+                        apply_factorised_shifted_omega_m(
+                            &op,
+                            &krylov_projection,
+                            one_body,
+                            scratch,
+                            &a.x,
+                            imag_shift,
+                        )
                     }
                 } else if world.size() > 1 {
-                    apply_shifted_omega_m_mpi(&op, &a.x, m_slice, world, imag_shift)
+                    apply_shifted_omega_m_mpi(
+                        &op,
+                        &krylov_projection,
+                        &a.x,
+                        m_slice,
+                        world,
+                        imag_shift,
+                    )
                 } else {
-                    apply_shifted_omega_m(&op, &a.x, m_slice, imag_shift)
+                    apply_shifted_omega_m(&op, &krylov_projection, &a.x, m_slice, imag_shift)
                 };
 
                 let ama =
                     a.x.iter()
                         .zip(ma.iter())
-                        .fold(T::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
+                        .fold(R::from_real(0.0), |acc, (&aa, &maa)| acc + aa.conj() * maa);
+
                 let av =
                     a.x.iter()
-                        .zip(v_omega.iter())
-                        .fold(T::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
-                let va = v_omega
+                        .zip(v_omega_krylov.iter())
+                        .fold(R::from_real(0.0), |acc, (&aa, &v)| acc + aa.conj() * v);
+
+                let va = v_omega_krylov
                     .iter()
                     .zip(a.x.iter())
-                    .fold(T::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
+                    .fold(R::from_real(0.0), |acc, (&v, &aa)| acc + v.conj() * aa);
                 let ept2 = scalar_real(ama + av + va);
 
                 let candidate_scores: Vec<f64> =
                     a.x.iter()
-                        .zip(v_omega.iter())
+                        .zip(v_omega_krylov.iter())
                         .map(|(&a, &v)| (a * v).abs())
                         .collect();
 
                 let max_abs_a = a.x.iter().map(|x| x.abs()).fold(0.0, f64::max);
-                let max_abs_v = v_omega.iter().map(|x| x.abs()).fold(0.0, f64::max);
+                let max_abs_v = v_omega_krylov.iter().map(|x| x.abs()).fold(0.0, f64::max);
                 let max_abs_av = candidate_scores.iter().copied().fold(0.0, f64::max);
 
                 pt2.push(SNOCIPT2Result {

@@ -11,7 +11,6 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::ReducedOneSpinDetState;
 use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
@@ -19,6 +18,7 @@ use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{
     SameSpinOneBodyBatch, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batched,
 };
+use crate::{DetState, ReducedOneSpinDetState};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -90,19 +90,6 @@ struct OrthogonalOneBodyBlock {
     opos: HashMap<(u128, u128), usize>,
     /// Determinants grouped by occupation pair.
     groups: Vec<OrthogonalOccupationGroup>,
-}
-
-/// Shared data for same-parent orthogonal one-body application.
-struct OrthogonalApplyContext<'a, T: NOCIScalar> {
-    /// Shared NOCI data used to read determinant states.
-    data: &'a NOCIData<'a, T>,
-    /// MO-basis Fock cache for the parent.
-    cache: &'a FockMOCache<T>,
-
-    /// Scalar overlap shift in `F + \lambda S`.
-    lambda: T,
-    /// Worker index and worker count for target rows.
-    partition: (usize, usize),
 }
 
 /// Reusable dense one-body contraction buffers.
@@ -203,12 +190,12 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         }
     }
 
-    /// Construct reusable storage for dense one-body applications.
+    /// Construct reusable storage for a one-body application in scalar `R`.
     /// # Arguments:
     /// - `self`: Cached one-body factorisation.
-    /// # Returns
-    /// - `OneBodyScratch<T>`: Empty reusable contraction buffers.
-    pub(crate) fn scratch(&self) -> OneBodyScratch<T> {
+    /// # Returns:
+    /// - `OneBodyScratch<R>`: Empty reusable contraction buffers.
+    pub(crate) fn scratch<R: NOCIScalar>(&self) -> OneBodyScratch<R> {
         OneBodyScratch {
             first_f: Vec::new(),
             first_s: Vec::new(),
@@ -277,20 +264,23 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `data`: Shared NOCI data used by same-parent orthogonal blocks.
     /// - `fock`: Current generalised-Fock data used by same-parent orthogonal blocks.
     /// - `lambda`: Scalar shift multiplying the overlap operator.
-    /// - `scratch`: Reusable dense contraction buffers.
+    /// - `scratch`: Reusable dense contraction buffers in scalar `R`.
     /// - `partition`: Worker index and worker count for first-stage target rows.
-    /// # Returns
-    /// - `Array1<T>`: Partial or complete determinant-space result vector.
-    pub(crate) fn apply_one_body(
+    /// # Returns:
+    /// - `Array1<R>`: Partial or complete determinant-space result vector.
+    pub(crate) fn apply_one_body<R>(
         &self,
-        x: &Array1<T>,
+        x: &Array1<R>,
         data: &NOCIData<'_, T>,
         fock: &FockData<'_, T>,
-        lambda: T,
-        scratch: &mut OneBodyScratch<T>,
+        lambda: R,
+        scratch: &mut OneBodyScratch<R>,
         partition: (usize, usize),
-    ) -> Array1<T> {
-        let zero = T::from_real(0.0);
+    ) -> Array1<R>
+    where
+        R: NOCIScalar + From<T>,
+    {
+        let zero = R::from_real(0.0);
         let mut y = vec![zero; x.len()];
 
         let xs = x
@@ -299,17 +289,18 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
 
         let (worker, nworker) = partition;
 
+        // `Y = (F + lambda S)x`: `F` and `S` use chemistry scalar `T`,
+        // while `x`, `lambda` and `Y` use Krylov scalar `R`.
         for block in &self.blocks {
             match block {
-                OneBodyBlock::Orthogonal(block) => {
-                    let context = OrthogonalApplyContext {
-                        data,
-                        cache: &fock.fock_mocache[block.parent],
-                        lambda,
-                        partition,
-                    };
-                    self.apply_one_body_orthogonal(block, xs, &mut y, &context)
-                }
+                OneBodyBlock::Orthogonal(block) => self.apply_one_body_orthogonal(
+                    block,
+                    (xs, &mut y),
+                    data.basis,
+                    &fock.fock_mocache[block.parent],
+                    lambda,
+                    partition,
+                ),
                 OneBodyBlock::Factorised(block) => self.apply_one_body_factorised(
                     block,
                     xs,
@@ -416,19 +407,21 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `x`: Source determinant vector.
     /// - `y`: Output determinant vector to accumulate.
     /// - `lambda`: Scalar overlap shift.
-    /// - `scratch`: Reusable dense contraction buffers.
+    /// - `scratch`: Reusable dense contraction buffers in scalar `R`.
     /// - `partition`: Worker index and worker count for target rows.
     /// # Returns
     /// - `()`: Adds this parent-pair contribution into `y`.
-    fn apply_one_body_factorised(
+    fn apply_one_body_factorised<R>(
         &self,
         block: &FactorisedOneBodyBlock<T>,
-        x: &[T],
-        y: &mut [T],
-        lambda: T,
-        scratch: &mut OneBodyScratch<T>,
+        x: &[R],
+        y: &mut [R],
+        lambda: R,
+        scratch: &mut OneBodyScratch<R>,
         partition: (usize, usize),
-    ) {
+    ) where
+        R: NOCIScalar + From<T>,
+    {
         match block.contraction {
             OneBodyContraction::AFirst => {
                 self.apply_one_body_a_first(block, x, y, lambda, scratch, partition)
@@ -442,32 +435,50 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// Apply same-parent orthogonal `Y^P += (F^{PP}+\lambda S^{PP})D^P`.
     /// # Arguments:
     /// - `block`: Same-parent orthogonal action data.
-    /// - `x`: Source determinant vector.
-    /// - `y`: Output determinant vector to accumulate.
-    /// - `context`: Shared determinant, Fock, shift and worker data.
+    /// - `vectors`: Source determinant vector and output determinant vector to accumulate.
+    /// - `basis`: Candidate determinant basis.
+    /// - `cache`: MO-basis Fock cache for the parent.
+    /// - `lambda`: Scalar overlap shift.
+    /// - `partition`: Worker index and worker count for target rows.
     /// # Returns
     /// - `()`: Adds this same-parent contribution into `y`.
-    fn apply_one_body_orthogonal(
+    fn apply_one_body_orthogonal<R>(
         &self,
         block: &OrthogonalOneBodyBlock,
-        x: &[T],
-        y: &mut [T],
-        context: &OrthogonalApplyContext<'_, T>,
-    ) {
-        let zero = T::from_real(0.0);
-        let source = &self.spin.parents[block.parent];
+        vectors: (&[R], &mut [R]),
+        basis: &[DetState<T>],
+        cache: &FockMOCache<T>,
+        lambda: R,
+        partition: (usize, usize),
+    ) where
+        R: NOCIScalar + From<T>,
+    {
+        let (x, y) = vectors;
+        let zero = R::from_real(0.0);
+        let source_parent = &self.spin.parents[block.parent];
+        let (worker, nworker) = partition;
 
-        for entry in &source.entries {
+        for entry in &source_parent.entries {
             let xe = x[entry.det];
             if xe == zero {
                 continue;
             }
-            let sdet = &context.data.basis[entry.det];
-            let oid = source.oids[entry.det - source.first_det];
-            scatter_orthogonal_group(&block.groups[oid], entry.det, xe, y, context);
+            let source = &basis[entry.det];
+            let oid = source_parent.oids[entry.det - source_parent.first_det];
+            let group = &block.groups[oid];
+            for target in &group.targets {
+                if target.a % nworker == worker {
+                    let target_det = &basis[target.det];
+                    let f = <R as From<T>>::from(calculate_f_pair_orthogonal(
+                        cache, target_det, source,
+                    ));
+                    let s = <R as From<T>>::from(calculate_s_pair_orthogonal(target_det, source));
+                    y[target.det] += (f + lambda * s) * xe;
+                }
+            }
 
-            apply_orthogonal_alpha_singles(block, entry.det, sdet.oa, sdet.ob, xe, y, context);
-            apply_orthogonal_beta_singles(block, entry.det, sdet.oa, sdet.ob, xe, y, context);
+            apply_orthogonal_alpha_singles(block, source, xe, y, basis, cache, partition);
+            apply_orthogonal_beta_singles(block, source, xe, y, basis, cache, partition);
         }
     }
 
@@ -478,20 +489,22 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `x`: Source determinant vector.
     /// - `y`: Output determinant vector to accumulate.
     /// - `lambda`: Scalar overlap shift.
-    /// - `scratch`: Reusable dense contraction buffers.
+    /// - `scratch`: Reusable dense contraction buffers in scalar `R`.
     /// - `partition`: Worker index and worker count for target alpha rows.
     /// # Returns
     /// - `()`: Adds this parent-pair contribution into `y`.
-    fn apply_one_body_a_first(
+    fn apply_one_body_a_first<R>(
         &self,
         block: &FactorisedOneBodyBlock<T>,
-        x: &[T],
-        y: &mut [T],
-        lambda: T,
-        scratch: &mut OneBodyScratch<T>,
+        x: &[R],
+        y: &mut [R],
+        lambda: R,
+        scratch: &mut OneBodyScratch<R>,
         partition: (usize, usize),
-    ) {
-        let zero = T::from_real(0.0);
+    ) where
+        R: NOCIScalar + From<T>,
+    {
+        let zero = R::from_real(0.0);
         let source = &self.spin.parents[block.source_parent];
         let target = &self.spin.parents[block.target_parent];
         let (worker, nworker) = partition;
@@ -515,17 +528,19 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 let frow = &fa[ta * block.nsa..(ta + 1) * block.nsa];
                 let srow = &sa[ta * block.nsa..(ta + 1) * block.nsa];
 
+                // `T^F_{\bar a b} = \sum_a F^\alpha_{\bar a a} D_{ab}`,
+                // `T^S_{\bar a b} = \sum_a S^\alpha_{\bar a a} D_{ab}`.
                 for entry in &source.entries {
                     let xe = x[entry.det];
 
                     if xe != zero {
-                        tf[entry.b] += frow[entry.a] * xe;
-                        ts[entry.b] += srow[entry.a] * xe;
+                        tf[entry.b] += <R as From<T>>::from(frow[entry.a]) * xe;
+                        ts[entry.b] += <R as From<T>>::from(srow[entry.a]) * xe;
                     }
                 }
             });
 
-        let updates: Vec<(usize, T)> = target
+        let updates: Vec<(usize, R)> = target
             .entries
             .par_iter()
             .filter(|entry| entry.a % nworker == worker)
@@ -537,8 +552,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
 
                 let mut value = zero;
 
+                // `Y^Q = T^F (S^\beta)^T + T^S (F^\beta + lambda S^\beta)^T`.
                 for b in 0..block.nsb {
-                    value += tf[b] * sbrow[b] + ts[b] * (fbrow[b] + lambda * sbrow[b]);
+                    let s = <R as From<T>>::from(sbrow[b]);
+                    let f = <R as From<T>>::from(fbrow[b]);
+                    value += tf[b] * s + ts[b] * (f + lambda * s);
                 }
 
                 (entry.det, value)
@@ -557,20 +575,22 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `x`: Source determinant vector.
     /// - `y`: Output determinant vector to accumulate.
     /// - `lambda`: Scalar overlap shift.
-    /// - `scratch`: Reusable dense contraction buffers.
+    /// - `scratch`: Reusable dense contraction buffers in scalar `R`.
     /// - `partition`: Worker index and worker count for target beta rows.
     /// # Returns
     /// - `()`: Adds this parent-pair contribution into `y`.
-    fn apply_one_body_b_first(
+    fn apply_one_body_b_first<R>(
         &self,
         block: &FactorisedOneBodyBlock<T>,
-        x: &[T],
-        y: &mut [T],
-        lambda: T,
-        scratch: &mut OneBodyScratch<T>,
+        x: &[R],
+        y: &mut [R],
+        lambda: R,
+        scratch: &mut OneBodyScratch<R>,
         partition: (usize, usize),
-    ) {
-        let zero = T::from_real(0.0);
+    ) where
+        R: NOCIScalar + From<T>,
+    {
+        let zero = R::from_real(0.0);
         let source = &self.spin.parents[block.source_parent];
         let target = &self.spin.parents[block.target_parent];
         let (worker, nworker) = partition;
@@ -594,17 +614,19 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 let frow = &fb[tb * block.nsb..(tb + 1) * block.nsb];
                 let srow = &sb[tb * block.nsb..(tb + 1) * block.nsb];
 
+                // `U^F_{a\bar b} = \sum_b D_{ab} F^\beta_{\bar b b}`,
+                // `U^S_{a\bar b} = \sum_b D_{ab} S^\beta_{\bar b b}`.
                 for entry in &source.entries {
                     let xe = x[entry.det];
 
                     if xe != zero {
-                        uf[entry.a] += xe * frow[entry.b];
-                        us[entry.a] += xe * srow[entry.b];
+                        uf[entry.a] += xe * <R as From<T>>::from(frow[entry.b]);
+                        us[entry.a] += xe * <R as From<T>>::from(srow[entry.b]);
                     }
                 }
             });
 
-        let updates: Vec<(usize, T)> = target
+        let updates: Vec<(usize, R)> = target
             .entries
             .par_iter()
             .filter(|entry| entry.b % nworker == worker)
@@ -616,8 +638,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
 
                 let mut value = zero;
 
+                // `Y^Q = S^\alpha U^F + (F^\alpha + lambda S^\alpha) U^S`.
                 for a in 0..block.nsa {
-                    value += sarow[a] * uf[a] + (farow[a] + lambda * sarow[a]) * us[a];
+                    let s = <R as From<T>>::from(sarow[a]);
+                    let f = <R as From<T>>::from(farow[a]);
+                    value += s * uf[a] + (f + lambda * s) * us[a];
                 }
 
                 (entry.det, value)
@@ -638,21 +663,24 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `vectors`: Source determinant vector and output determinant vector to accumulate.
     /// - `data`: Shared NOCI data containing Wick intermediates.
     /// - `lambda`: Scalar overlap shift.
-    /// - `scratch`: Reusable dense first-stage contraction buffers.
+    /// - `scratch`: Reusable dense first-stage contraction buffers in scalar `R`.
     /// - `partition`: Worker index and worker count for target alpha rows.
     /// # Returns
     /// - `()`: Adds this parent-pair contribution into `y`.
-    fn apply_one_body_transient_a_first(
+    fn apply_one_body_transient_a_first<R>(
         &self,
         block: &TransientOneBodyBlock,
-        vectors: (&[T], &mut [T]),
+        vectors: (&[R], &mut [R]),
         data: &NOCIData<'_, T>,
-        lambda: T,
-        scratch: &mut OneBodyScratch<T>,
+        lambda: R,
+        scratch: &mut OneBodyScratch<R>,
         partition: (usize, usize),
-    ) {
+    ) where
+        R: NOCIScalar + From<T>,
+    {
         let (x, y) = vectors;
-        let zero = T::from_real(0.0);
+        let zero = R::from_real(0.0);
+        let factor_zero = T::from_real(0.0);
 
         let source = &self.spin.parents[block.source_parent];
         let target = &self.spin.parents[block.target_parent];
@@ -695,7 +723,13 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             .zip(scratch.first_s.par_chunks_mut(nsb))
             .enumerate()
             .for_each_init(
-                || (WickScratchSpin::new(), vec![zero; nsa], vec![zero; nsa]),
+                || {
+                    (
+                        WickScratchSpin::new(),
+                        vec![factor_zero; nsa],
+                        vec![factor_zero; nsa],
+                    )
+                },
                 |state, (ta, (tf, ts))| {
                     if ta % nworker != worker {
                         return;
@@ -715,12 +749,14 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
+                    // `T^F_{\bar a b} = \sum_a F^\alpha_{\bar a a} D_{ab}`,
+                    // `T^S_{\bar a b} = \sum_a S^\alpha_{\bar a a} D_{ab}`.
                     for entry in &source.entries {
                         let xe = x[entry.det];
 
                         if xe != zero {
-                            tf[entry.b] += frow[entry.a] * xe;
-                            ts[entry.b] += srow[entry.a] * xe;
+                            tf[entry.b] += <R as From<T>>::from(frow[entry.a]) * xe;
+                            ts[entry.b] += <R as From<T>>::from(srow[entry.a]) * xe;
                         }
                     }
                 },
@@ -732,7 +768,13 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let update_groups = (0..ntb)
             .into_par_iter()
             .map_init(
-                || (WickScratchSpin::new(), vec![zero; nsb], vec![zero; nsb]),
+                || {
+                    (
+                        WickScratchSpin::new(),
+                        vec![factor_zero; nsb],
+                        vec![factor_zero; nsb],
+                    )
+                },
                 |state, tb| {
                     let (wick, srow, frow) = state;
                     build_spin_one_body_factor_row(
@@ -757,8 +799,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         let ts = &scratch.first_s[ta * nsb..(ta + 1) * nsb];
                         let mut value = zero;
 
+                        // `Y^Q = T^F (S^\beta)^T + T^S (F^\beta + lambda S^\beta)^T`.
                         for b in 0..nsb {
-                            value += tf[b] * srow[b] + ts[b] * (frow[b] + lambda * srow[b]);
+                            let s = <R as From<T>>::from(srow[b]);
+                            let f = <R as From<T>>::from(frow[b]);
+                            value += tf[b] * s + ts[b] * (f + lambda * s);
                         }
 
                         updates.push((det, value));
@@ -785,21 +830,24 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `vectors`: Source determinant vector and output determinant vector to accumulate.
     /// - `data`: Shared NOCI data containing Wick intermediates.
     /// - `lambda`: Scalar overlap shift.
-    /// - `scratch`: Reusable dense first-stage contraction buffers.
+    /// - `scratch`: Reusable dense first-stage contraction buffers in scalar `R`.
     /// - `partition`: Worker index and worker count for target beta rows.
     /// # Returns
     /// - `()`: Adds this parent-pair contribution into `y`.
-    fn apply_one_body_transient_b_first(
+    fn apply_one_body_transient_b_first<R>(
         &self,
         block: &TransientOneBodyBlock,
-        vectors: (&[T], &mut [T]),
+        vectors: (&[R], &mut [R]),
         data: &NOCIData<'_, T>,
-        lambda: T,
-        scratch: &mut OneBodyScratch<T>,
+        lambda: R,
+        scratch: &mut OneBodyScratch<R>,
         partition: (usize, usize),
-    ) {
+    ) where
+        R: NOCIScalar + From<T>,
+    {
         let (x, y) = vectors;
-        let zero = T::from_real(0.0);
+        let zero = R::from_real(0.0);
+        let factor_zero = T::from_real(0.0);
 
         let source = &self.spin.parents[block.source_parent];
         let target = &self.spin.parents[block.target_parent];
@@ -840,7 +888,13 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             .zip(scratch.first_s.par_chunks_mut(nsa))
             .enumerate()
             .for_each_init(
-                || (WickScratchSpin::new(), vec![zero; nsb], vec![zero; nsb]),
+                || {
+                    (
+                        WickScratchSpin::new(),
+                        vec![factor_zero; nsb],
+                        vec![factor_zero; nsb],
+                    )
+                },
                 |state, (tb, (uf, us))| {
                     if tb % nworker != worker {
                         return;
@@ -860,12 +914,14 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (srow.as_mut_slice(), frow.as_mut_slice()),
                     );
 
+                    // `U^F_{a\bar b} = \sum_b D_{ab} F^\beta_{\bar b b}`,
+                    // `U^S_{a\bar b} = \sum_b D_{ab} S^\beta_{\bar b b}`.
                     for entry in &source.entries {
                         let xe = x[entry.det];
 
                         if xe != zero {
-                            uf[entry.a] += xe * frow[entry.b];
-                            us[entry.a] += xe * srow[entry.b];
+                            uf[entry.a] += xe * <R as From<T>>::from(frow[entry.b]);
+                            us[entry.a] += xe * <R as From<T>>::from(srow[entry.b]);
                         }
                     }
                 },
@@ -876,7 +932,13 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let update_groups = (0..nta)
             .into_par_iter()
             .map_init(
-                || (WickScratchSpin::new(), vec![zero; nsa], vec![zero; nsa]),
+                || {
+                    (
+                        WickScratchSpin::new(),
+                        vec![factor_zero; nsa],
+                        vec![factor_zero; nsa],
+                    )
+                },
                 |state, ta| {
                     let (wick, srow, frow) = state;
                     build_spin_one_body_factor_row(
@@ -901,8 +963,11 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         let us = &scratch.first_s[tb * nsa..(tb + 1) * nsa];
                         let mut value = zero;
 
+                        // `Y^Q = S^\alpha U^F + (F^\alpha + lambda S^\alpha) U^S`.
                         for a in 0..nsa {
-                            value += srow[a] * uf[a] + (frow[a] + lambda * srow[a]) * us[a];
+                            let s = <R as From<T>>::from(srow[a]);
+                            let f = <R as From<T>>::from(frow[a]);
+                            value += s * uf[a] + (f + lambda * s) * us[a];
                         }
 
                         updates.push((det, value));
@@ -1107,77 +1172,52 @@ fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
     }
 }
 
-/// Scatter one same-occupation orthogonal contribution to assigned target rows.
-/// # Arguments:
-/// - `group`: Target determinants with the same occupation pair.
-/// - `source_det`: Source determinant index.
-/// - `xe`: Source vector coefficient.
-/// - `y`: Output determinant vector to accumulate.
-/// - `context`: Shared determinant, Fock, shift and worker data.
-/// # Returns
-/// - `()`: Adds same-occupation contributions into `y`.
-fn scatter_orthogonal_group<T: NOCIScalar>(
-    group: &OrthogonalOccupationGroup,
-    source_det: usize,
-    xe: T,
-    y: &mut [T],
-    context: &OrthogonalApplyContext<'_, T>,
-) {
-    let source = &context.data.basis[source_det];
-    let (worker, nworker) = context.partition;
-    for target in &group.targets {
-        if target.a % nworker == worker {
-            let target_det = &context.data.basis[target.det];
-            let f = calculate_f_pair_orthogonal(context.cache, target_det, source);
-            let s = calculate_s_pair_orthogonal(target_det, source);
-            y[target.det] += (f + context.lambda * s) * xe;
-        }
-    }
-}
-
 /// Apply all alpha single-excitation orthogonal Fock couplings from one source determinant.
 /// # Arguments:
 /// - `orthogonal`: Parent-local occupation lookup.
-/// - `source_det`: Source determinant index.
-/// - `oa`: Source alpha occupation bitstring.
-/// - `ob`: Source beta occupation bitstring.
+/// - `source`: Source determinant.
 /// - `xe`: Source vector coefficient.
 /// - `y`: Output determinant vector to accumulate.
-/// - `context`: Shared determinant, Fock and worker data.
+/// - `basis`: Candidate determinant basis.
+/// - `cache`: MO-basis Fock cache for the parent.
+/// - `partition`: Worker index and worker count for target rows.
 /// # Returns
 /// - `()`: Adds alpha single-excitation Fock contributions into `y`.
-fn apply_orthogonal_alpha_singles<T: NOCIScalar>(
+fn apply_orthogonal_alpha_singles<T, R>(
     orthogonal: &OrthogonalOneBodyBlock,
-    source_det: usize,
-    oa: u128,
-    ob: u128,
-    xe: T,
-    y: &mut [T],
-    context: &OrthogonalApplyContext<'_, T>,
-) {
-    let (worker, nworker) = context.partition;
-    let source = &context.data.basis[source_det];
-    let nmo = context.cache.fa.nrows();
-    let mut holes = oa;
+    source: &DetState<T>,
+    xe: R,
+    y: &mut [R],
+    basis: &[DetState<T>],
+    cache: &FockMOCache<T>,
+    partition: (usize, usize),
+) where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    let (worker, nworker) = partition;
+    let nmo = cache.fa.nrows();
+    let mut holes = source.oa;
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
         holes &= holes - 1;
 
         for part in 0..nmo {
-            if ((oa >> part) & 1) == 1 {
+            if ((source.oa >> part) & 1) == 1 {
                 continue;
             }
-            let target_oa = (oa & !(1u128 << hole)) | (1u128 << part);
+            let target_oa = (source.oa & !(1u128 << hole)) | (1u128 << part);
 
-            let Some(&opos) = orthogonal.opos.get(&(target_oa, ob)) else {
+            let Some(&opos) = orthogonal.opos.get(&(target_oa, source.ob)) else {
                 continue;
             };
 
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
-                    let target_det = &context.data.basis[target.det];
-                    y[target.det] +=
-                        calculate_f_pair_orthogonal(context.cache, target_det, source) * xe;
+                    let target_det = &basis[target.det];
+                    y[target.det] += <R as From<T>>::from(calculate_f_pair_orthogonal(
+                        cache, target_det, source,
+                    )) * xe;
                 }
             }
         }
@@ -1187,46 +1227,49 @@ fn apply_orthogonal_alpha_singles<T: NOCIScalar>(
 /// Apply all beta single-excitation orthogonal Fock couplings from one source determinant.
 /// # Arguments:
 /// - `orthogonal`: Parent-local occupation lookup.
-/// - `source_det`: Source determinant index.
-/// - `oa`: Source alpha occupation bitstring.
-/// - `ob`: Source beta occupation bitstring.
+/// - `source`: Source determinant.
 /// - `xe`: Source vector coefficient.
 /// - `y`: Output determinant vector to accumulate.
-/// - `context`: Shared determinant, Fock and worker data.
+/// - `basis`: Candidate determinant basis.
+/// - `cache`: MO-basis Fock cache for the parent.
+/// - `partition`: Worker index and worker count for target rows.
 /// # Returns
 /// - `()`: Adds beta single-excitation Fock contributions into `y`.
-fn apply_orthogonal_beta_singles<T: NOCIScalar>(
+fn apply_orthogonal_beta_singles<T, R>(
     orthogonal: &OrthogonalOneBodyBlock,
-    source_det: usize,
-    oa: u128,
-    ob: u128,
-    xe: T,
-    y: &mut [T],
-    context: &OrthogonalApplyContext<'_, T>,
-) {
-    let (worker, nworker) = context.partition;
-    let source = &context.data.basis[source_det];
-    let nmo = context.cache.fb.nrows();
-    let mut holes = ob;
+    source: &DetState<T>,
+    xe: R,
+    y: &mut [R],
+    basis: &[DetState<T>],
+    cache: &FockMOCache<T>,
+    partition: (usize, usize),
+) where
+    T: NOCIScalar,
+    R: NOCIScalar + From<T>,
+{
+    let (worker, nworker) = partition;
+    let nmo = cache.fb.nrows();
+    let mut holes = source.ob;
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
         holes &= holes - 1;
 
         for part in 0..nmo {
-            if ((ob >> part) & 1) == 1 {
+            if ((source.ob >> part) & 1) == 1 {
                 continue;
             }
-            let target_ob = (ob & !(1u128 << hole)) | (1u128 << part);
+            let target_ob = (source.ob & !(1u128 << hole)) | (1u128 << part);
 
-            let Some(&opos) = orthogonal.opos.get(&(oa, target_ob)) else {
+            let Some(&opos) = orthogonal.opos.get(&(source.oa, target_ob)) else {
                 continue;
             };
 
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
-                    let target_det = &context.data.basis[target.det];
-                    y[target.det] +=
-                        calculate_f_pair_orthogonal(context.cache, target_det, source) * xe;
+                    let target_det = &basis[target.det];
+                    y[target.det] += <R as From<T>>::from(calculate_f_pair_orthogonal(
+                        cache, target_det, source,
+                    )) * xe;
                 }
             }
         }

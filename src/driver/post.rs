@@ -16,11 +16,9 @@ use crate::input::Input;
 use crate::nocc::run_noccmc;
 #[cfg(feature = "nocc")]
 use crate::noci::NOCIData;
-use crate::noci::{build_mo_cache, build_wicks_shared};
-use crate::nonorthogonalwicks::WicksShared;
 #[cfg(feature = "nocc")]
 use crate::orbitals::noci_natural_orbitals;
-use crate::{AoData, HSCFState, PostSCFData, SCFState};
+use crate::{AoData, PostSCFData, SCFState};
 
 /// Results from optional post-reference calculations.
 pub struct PostReferenceResults {
@@ -103,26 +101,30 @@ pub fn run_real_post_reference(
         run_noccmc(&post, input, &reference.c0, &no, world);
     }
 
-    if let Some(snoci) = input.snoci.as_ref() {
-        if snoci.imag_shifts.iter().all(|&x| x == 0.0) {
-            let (e_snoci, e_pt2) = run_snoci(
+    if input.snoci.is_some() {
+        let snoci = input.snoci.as_ref().unwrap();
+
+        let (e_snoci, e_pt2) = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
+            run_snoci::<f64, Complex64>(
                 &post,
                 &reference.basis,
                 input,
                 reference.wicks.as_mut(),
                 world,
-            );
-            if world.rank() == 0 {
-                out.e_snoci = Some(e_snoci);
-                out.e_pt2 = Some(e_pt2);
-            }
+            )
         } else {
-            let (e_snoci, e_pt2) = run_imag_shifted_complex_snoci(ao, reference, input, tol, world);
+            run_snoci::<f64, f64>(
+                &post,
+                &reference.basis,
+                input,
+                reference.wicks.as_mut(),
+                world,
+            )
+        };
 
-            if world.rank() == 0 {
-                out.e_snoci = Some(e_snoci);
-                out.e_pt2 = Some(e_pt2);
-            }
+        if world.rank() == 0 {
+            out.e_snoci = Some(e_snoci);
+            out.e_pt2 = Some(e_pt2);
         }
     }
 
@@ -138,60 +140,6 @@ pub fn run_real_post_reference(
     }
 
     out
-}
-
-/// Run imaginary-shifted SNOCI/NOCI-PT2 in complex arithmetic.
-/// # Arguments:
-/// - `ao`: Contains AO integrals and other system data.
-/// - `reference`: Real reference-space intermediates and solution.
-/// - `input`: User input specifications.
-/// - `tol`: Tolerance up to which a number is considered zero.
-/// - `world`: MPI communicator object.
-/// # Returns:
-/// - `(f64, Vec<(f64, f64)>)`: Current SNOCI energy and NOCI-PT2 corrections.
-fn run_imag_shifted_complex_snoci(
-    ao: &AoData,
-    reference: &ReferenceRun<f64>,
-    input: &Input,
-    tol: f64,
-    world: &impl Communicator,
-) -> (f64, Vec<(f64, f64)>) {
-    if world.rank() == 0 {
-        println!("Running imaginary-shifted SNOCI/NOCI-PT2 in complex arithmetic....");
-    }
-
-    let complex_reference_basis: Vec<HSCFState> =
-        reference.basis.iter().map(HSCFState::from_real).collect();
-
-    let mut complex_wicks_shared: Option<WicksShared<Complex64>> =
-        if input.wicks.enabled || input.wicks.compare {
-            Some(build_wicks_shared(
-                world,
-                ao,
-                &complex_reference_basis,
-                tol,
-                input,
-            ))
-        } else {
-            None
-        };
-
-    let complex_mocache = build_mo_cache(ao, &complex_reference_basis, tol);
-    let complex_post = PostSCFData {
-        ao,
-        states: &complex_reference_basis,
-        noci_reference_basis: &complex_reference_basis,
-        mocache: &complex_mocache,
-        tol,
-    };
-
-    run_snoci(
-        &complex_post,
-        &complex_reference_basis,
-        input,
-        complex_wicks_shared.as_mut(),
-        world,
-    )
 }
 
 /// Run optional holomorphic-reference post-reference calculations.
@@ -240,7 +188,7 @@ pub fn run_holomorphic_post_reference(
     }
 
     if input.snoci.is_some() {
-        let (e_snoci, e_pt2) = run_snoci(
+        let (e_snoci, e_pt2) = run_snoci::<Complex64, Complex64>(
             &post,
             &reference.basis,
             input,
