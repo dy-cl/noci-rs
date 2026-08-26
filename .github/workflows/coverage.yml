@@ -71,7 +71,7 @@ jobs:
         run: |
           echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
           cat /proc/sys/kernel/yama/ptrace_scope
-
+      
       - name: Generate coverage
         env:
           OPENBLAS_NUM_THREADS: 1

@@ -78,4 +78,4 @@ jobs:
         env:
           OPENBLAS_NUM_THREADS: 1
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} -no-follow-child --
-        run: cargo test --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --verbose
+        run: cargo +1.90.0 test --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --verbose
