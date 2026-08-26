@@ -148,6 +148,7 @@ fn qmc_report_energies(fixture: &str) -> Vec<f64> {
     let output = command
         .env("RAYON_NUM_THREADS", "1")
         .env("OPENBLAS_NUM_THREADS", "1")
+        .env("OPENBLAS_CORETYPE", "CORE2")
         .env("OMP_NUM_THREADS", "1")
         .env("MKL_NUM_THREADS", "1")
         .arg(input_path)

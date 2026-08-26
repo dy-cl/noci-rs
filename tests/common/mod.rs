@@ -76,6 +76,7 @@ fn generate_data_h5_for_geometry(
     Command::new("python3")
         .env("RAYON_NUM_THREADS", "1")
         .env("OPENBLAS_NUM_THREADS", "1")
+        .env("OPENBLAS_CORETYPE", "CORE2")
         .env("OMP_NUM_THREADS", "1")
         .env("MKL_NUM_THREADS", "1")
         .arg(&generate_py)

@@ -45,9 +45,8 @@ qmc = {
     target_population = 500,
     ncycles = 1,
     nreports = 15,
-    sampling_cutoff1 = 0.0,
-    sampling_cutoff2 = 0.0,
-    spawn_cutoff = 0.0,
+    sampling_cutoff = 1.0,
+    spawn_cutoff = 0.25,
     excitation_gen = "uniform",
     seed = 1,
 }

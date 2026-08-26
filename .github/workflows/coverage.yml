@@ -75,6 +75,7 @@ jobs:
       - name: Generate coverage
         env:
           OPENBLAS_NUM_THREADS: 1
+          OPENBLAS_CORETYPE: CORE2
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} -no-follow-child --
         run: cargo llvm-cov --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
 
