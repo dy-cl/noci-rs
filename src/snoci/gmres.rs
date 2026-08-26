@@ -6,6 +6,7 @@ use std::time::Instant;
 // External crate imports.
 use mpi::topology::Communicator;
 use ndarray::{Array1, Array2};
+use num_complex::Complex64;
 
 // Crate-root imports.
 use crate::noci::NOCIScalar;
@@ -25,10 +26,17 @@ const PRINT_STRIDE: usize = 1usize;
 fn print_gmres_header() {
     println!();
     println!("  GMRES solve");
-    println!("  {}", "-".repeat(98));
+    println!("  {}", "-".repeat(148));
     println!(
-        "  {:>8} {:>8} {:>16} {:>16} {:>16} {:>16}",
-        "restart", "iter", "Res (est.)", "Res (true)", "Apply / s", "Elapsed / s"
+        "  {:>8} {:>8} {:>16} {:>16} {:>18} {:>18} {:>16} {:>16}",
+        "restart",
+        "iter",
+        "Res (est.)",
+        "Res (true)",
+        "E2 (Hyl)",
+        "dE (Hyl-Proj)",
+        "Apply / s",
+        "Elapsed / s"
     );
 }
 
@@ -45,12 +53,14 @@ fn print_gmres_iteration(
     restart_id: usize,
     iter: usize,
     residual_est: f64,
+    e2_hyl: f64,
+    delta_hyl_proj: f64,
     apply_secs: f64,
     elapsed_secs: f64,
 ) {
     println!(
-        "  {:>8} {:>8} {:>16.8e} {:>16} {:>16.6} {:>16.6}",
-        restart_id, iter, residual_est, "-", apply_secs, elapsed_secs
+        "  {:>8} {:>8} {:>16.8e} {:>16} {:>18.10e} {:>18.10e} {:>16.6} {:>16.6}",
+        restart_id, iter, residual_est, "-", e2_hyl, delta_hyl_proj, apply_secs, elapsed_secs
     );
 }
 
@@ -69,8 +79,8 @@ fn print_gmres_restart_summary(
     elapsed_secs: f64,
 ) {
     println!(
-        "  {:>8} {:>8} {:>16} {:>16.8e} {:>16} {:>16.6}",
-        restart_id, iter, "-", residual_true, "-", elapsed_secs
+        "  {:>8} {:>8} {:>16} {:>16.8e} {:>18} {:>18} {:>16} {:>16.6}",
+        restart_id, iter, "-", residual_true, "-", "-", "-", elapsed_secs
     );
 }
 
@@ -186,6 +196,60 @@ fn extend_arnoldi_basis<T: NOCIScalar>(
     h_next
 }
 
+/// Compute current GMRES Hylleraas diagnostics using Arnoldi data already generated this iteration.
+/// # Arguments:
+/// - `b`: Right-hand side vector.
+/// - `x_start`: Solution at the start of the restart cycle.
+/// - `q`: Arnoldi basis.
+/// - `z_basis`: Cached right-preconditioned Krylov basis.
+/// - `h_raw`: Raw Arnoldi Hessenberg matrix.
+/// - `h_rot`: Rotated Hessenberg matrix.
+/// - `g`: Rotated residual right-hand side.
+/// - `kfinal`: Number of completed Arnoldi iterations in the current cycle.
+/// - `beta`: Norm of the restart-cycle initial residual.
+/// # Returns:
+/// - `(f64, f64)`: `E2_Hyl` and `E2_Hyl - E2_Proj`.
+fn hylleraas_diagnostic<T: NOCIScalar + Into<Complex64>>(
+    params: &ArnoldiParams<'_, T>,
+    q: &[Array1<T>],
+    z_basis: &[Array1<T>],
+    h_raw: &Array2<T>,
+    h_rot: &Array2<T>,
+    g: &Array1<T>,
+    beta: f64,
+) -> (f64, f64) {
+    let kfinal = z_basis.len();
+    let y = back_solve(h_rot, g, kfinal);
+
+    let mut a = params.x_start.clone();
+    for j in 0..kfinal {
+        for i in 0..a.len() {
+            a[i] += y[j] * z_basis[j][i];
+        }
+    }
+
+    let mut rho = Array1::<T>::from_elem(kfinal + 1, T::from_real(0.0));
+    rho[0] = T::from_real(beta);
+    for j in 0..kfinal {
+        for i in 0..=kfinal {
+            rho[i] -= h_raw[(i, j)] * y[j];
+        }
+    }
+
+    let mut r = Array1::<T>::from_elem(q[0].len(), T::from_real(0.0));
+    for i in 0..=kfinal {
+        for n in 0..r.len() {
+            r[n] += rho[i] * q[i][n];
+        }
+    }
+
+    let b_dot_a: Complex64 = inner_product(params.b, &a).into();
+    let a_dot_r: Complex64 = inner_product(&a, &r).into();
+    let e2_proj = -b_dot_a.re;
+    let delta_hyl_proj = -a_dot_r.re;
+    (e2_proj + delta_hyl_proj, delta_hyl_proj)
+}
+
 /// Apply all previous Givens rotations to the current Hessenberg column.
 /// # Arguments:
 /// - `h`: Hessenberg matrix to update.
@@ -269,21 +333,25 @@ fn run_arnoldi_cycle<F, P, T>(
     apply: &mut F,
     precondition: &P,
     rtrue: &Array1<T>,
-    params: &ArnoldiParams<'_>,
+    params: &ArnoldiParams<'_, T>,
     opts: &GMRESOptions,
-    world: &impl Communicator,
+    print_iterations: bool,
 ) -> ArnoldiCycle<T>
 where
     F: FnMut(&Array1<T>) -> Array1<T>,
     P: Fn(&Array1<T>) -> Array1<T>,
-    T: NOCIScalar,
+    T: NOCIScalar + Into<Complex64>,
 {
     let beta = vector_norm(rtrue);
 
     let mut q: Vec<Array1<T>> = Vec::with_capacity(params.inner_max + 1);
     q.push(rtrue.mapv(|ri| ri / T::from_real(beta)));
 
-    let mut h = Array2::<T>::from_elem((params.inner_max + 1, params.inner_max), T::from_real(0.0));
+    let mut z_basis: Vec<Array1<T>> = Vec::with_capacity(params.inner_max);
+    let mut h_raw =
+        Array2::<T>::from_elem((params.inner_max + 1, params.inner_max), T::from_real(0.0));
+    let mut h_rot =
+        Array2::<T>::from_elem((params.inner_max + 1, params.inner_max), T::from_real(0.0));
     let mut cs = vec![0.0; params.inner_max];
     let mut sn = vec![T::from_real(0.0); params.inner_max];
     let mut g = Array1::<T>::from_elem(params.inner_max + 1, T::from_real(0.0));
@@ -294,6 +362,7 @@ where
     for k in 0..params.inner_max {
         // Apply the right preconditioner first so Arnoldi sees A P^{-1}.
         let z = precondition(&q[k]);
+        z_basis.push(z.clone());
 
         // Apply the expensive matrix-free operator.
         let t_apply = Instant::now();
@@ -303,14 +372,18 @@ where
         let mut w = aq;
 
         // Modified Gram-Schmidt: orthogonalise A P^{-1} q_k against previous q vectors.
-        orthogonalise_arnoldi_vector(&q, &mut h, &mut w, k);
+        orthogonalise_arnoldi_vector(&q, &mut h_raw, &mut w, k);
 
         // Normalise the new direction and append it to the Krylov basis if non-zero.
-        let h_next = extend_arnoldi_basis(&mut q, &mut h, w, k);
+        let h_next = extend_arnoldi_basis(&mut q, &mut h_raw, w, k);
+
+        for i in 0..=(k + 1) {
+            h_rot[(i, k)] = h_raw[(i, k)];
+        }
 
         // Update the small least-squares problem with Givens rotations.
-        apply_previous_givens(&mut h, &cs, &sn, k);
-        apply_current_givens(&mut h, &mut cs, &mut sn, &mut g, k);
+        apply_previous_givens(&mut h_rot, &cs, &sn, k);
+        apply_current_givens(&mut h_rot, &mut cs, &mut sn, &mut g, k);
 
         kfinal = k + 1;
 
@@ -318,13 +391,17 @@ where
         let residual_est = g[k + 1].abs() / params.rms;
         let iter = params.total_iter + k + 1;
 
-        if world.rank() == 0
+        if print_iterations
             && (k == 0 || iter.is_multiple_of(PRINT_STRIDE) || residual_est <= opts.res_tol)
         {
+            let (e2_hyl, delta_hyl_proj) =
+                hylleraas_diagnostic(params, &q, &z_basis, &h_raw, &h_rot, &g, beta);
             print_gmres_iteration(
                 params.restart_id,
                 iter,
                 residual_est,
+                e2_hyl,
+                delta_hyl_proj,
                 apply_secs,
                 params.gmres_start.elapsed().as_secs_f64(),
             );
@@ -334,30 +411,31 @@ where
             break;
         }
     }
-    ArnoldiCycle { q, h, g, kfinal }
+    ArnoldiCycle {
+        z: z_basis,
+        h: h_rot,
+        g,
+        kfinal,
+    }
 }
 
-/// Update the solution vector using a callback-defined right-preconditioned Krylov basis.
+/// Update the solution vector using the cached right-preconditioned Krylov basis.
 /// # Arguments:
 /// - `x`: Solution vector to update in place.
-/// - `q`: Krylov basis vectors.
+/// - `z_basis`: Cached right-preconditioned Krylov basis vectors.
 /// - `y`: Krylov expansion coefficients.
-/// - `precondition`: Right-preconditioner callback.
 /// # Returns:
 /// - `()`: Updates `x` in place.
-fn update_solution<P, T>(
+fn update_solution<T>(
     x: &mut Array1<T>,
-    q: &[Array1<T>],
+    z_basis: &[Array1<T>],
     y: &Array1<T>,
-    precondition: &P,
 ) where
-    P: Fn(&Array1<T>) -> Array1<T>,
     T: NOCIScalar,
 {
     for j in 0..y.len() {
-        let z = precondition(&q[j]);
         for i in 0..x.len() {
-            x[i] += y[j] * z[i];
+            x[i] += y[j] * z_basis[j][i];
         }
     }
 }
@@ -413,7 +491,7 @@ pub(in crate::snoci) fn gmres<F, P, T>(
 where
     F: FnMut(&Array1<T>) -> Array1<T>,
     P: Fn(&Array1<T>) -> Array1<T>,
-    T: NOCIScalar,
+    T: NOCIScalar + Into<Complex64>,
 {
     time_call!(crate::timers::snoci::add_gmres, {
         let gmres_start = Instant::now();
@@ -485,6 +563,8 @@ where
             let inner_max = opts.restart.min(opts.max_iter - total_iter);
             let arnoldi_params = ArnoldiParams {
                 inner_max,
+                b,
+                x_start: &x,
                 restart_id,
                 total_iter,
                 rms,
@@ -497,14 +577,14 @@ where
                 &rtrue,
                 &arnoldi_params,
                 opts,
-                world,
+                world.rank() == 0,
             );
 
             // Solve the small least-squares problem in the Krylov basis.
             let y = back_solve(&cycle.h, &cycle.g, cycle.kfinal);
 
             // Apply the right-preconditioned Krylov correction.
-            update_solution(&mut x, &cycle.q, &y, &precondition);
+            update_solution(&mut x, &cycle.z, &y);
 
             total_iter += cycle.kfinal;
 

@@ -131,8 +131,8 @@ pub(in crate::snoci) struct PT2ProjectedOperator<'a, 'data, 'fock, T: NOCIScalar
 
 /// Storage for a single restarted Arnoldi cycle.
 pub(in crate::snoci) struct ArnoldiCycle<T: NOCIScalar> {
-    /// Orthonormal Krylov vectors.
-    pub(in crate::snoci) q: Vec<Array1<T>>,
+    /// Right-preconditioned Krylov vectors used in the Arnoldi operator application.
+    pub(in crate::snoci) z: Vec<Array1<T>>,
     /// Upper Hessenberg matrix after Givens rotations.
     pub(in crate::snoci) h: Array2<T>,
     /// Rotated residual right-hand side.
@@ -142,9 +142,13 @@ pub(in crate::snoci) struct ArnoldiCycle<T: NOCIScalar> {
 }
 
 /// Parameters for a single restarted Arnoldi cycle.
-pub(in crate::snoci) struct ArnoldiParams<'a> {
+pub(in crate::snoci) struct ArnoldiParams<'a, T: NOCIScalar> {
     /// Maximum number of Arnoldi iterations in this restart cycle.
     pub(in crate::snoci) inner_max: usize,
+    /// Right-hand side vector.
+    pub(in crate::snoci) b: &'a Array1<T>,
+    /// Solution vector at the start of the restart cycle.
+    pub(in crate::snoci) x_start: &'a Array1<T>,
     /// GMRES restart cycle index.
     pub(in crate::snoci) restart_id: usize,
     /// Total number of GMRES iterations before this cycle.
