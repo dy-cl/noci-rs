@@ -40,10 +40,6 @@ pub fn run(mut input: Input) -> Result<()> {
             source,
         )
     })?;
-    if let Some(parent) = paths.integral_file.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|source| Error::io("failed to create integral directory", parent, source))?;
-    }
 
     let t_total = Instant::now();
     let mut prev_states: Vec<SCFState> = Vec::new();
@@ -65,15 +61,7 @@ pub fn run(mut input: Input) -> Result<()> {
         println!("\n");
 
         let atoms: &Atoms = &geoms[i];
-        let res = run_geometry(
-            r,
-            atoms,
-            &mut input,
-            &prev_states,
-            &prev_htracks,
-            &paths,
-            &world,
-        )?;
+        let res = run_geometry(r, atoms, &mut input, &prev_states, &prev_htracks, &world)?;
 
         if irank == 0 {
             print_report(&res, &input);

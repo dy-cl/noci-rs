@@ -34,8 +34,6 @@ pub struct GeometryResults {
     pub e_snoci: Option<f64>,
     /// NOCI-PT2 energy if calculated.
     pub e_pt2: Option<Vec<(f64, f64)>>,
-    /// FCI energy if available.
-    pub e_fci: Option<f64>,
     /// Number of MPI ranks for printing.
     pub nranks: usize,
     /// Total timings associated with this geometry.
@@ -49,7 +47,6 @@ impl GeometryResults {
     /// - `states`: Real SCF states generated for this geometry.
     /// - `reference`: Finished reference-space calculation.
     /// - `post`: Optional post-reference calculation results.
-    /// - `e_fci`: Optional FCI energy.
     /// - `nranks`: Number of MPI ranks for printing.
     /// - `timings`: Total timings associated with this geometry.
     /// # Returns:
@@ -59,7 +56,6 @@ impl GeometryResults {
         states: Vec<SCFState>,
         reference: ReferenceRun<f64>,
         post: PostReferenceResults,
-        e_fci: Option<f64>,
         nranks: usize,
         timings: timers::Totals,
     ) -> Self {
@@ -75,7 +71,6 @@ impl GeometryResults {
             e_noci_qmc_stoch: post.e_noci_qmc_stoch,
             e_snoci: post.e_snoci,
             e_pt2: post.e_pt2,
-            e_fci,
             nranks,
             timings,
         }
@@ -87,7 +82,6 @@ impl GeometryResults {
     /// - `state_sets`: Real SCF states and complex h-SCF states generated for this geometry.
     /// - `reference`: Finished reference-space calculation.
     /// - `post`: Optional post-reference calculation results.
-    /// - `e_fci`: Optional FCI energy.
     /// - `nranks`: Number of MPI ranks for printing.
     /// - `timings`: Total timings associated with this geometry.
     /// # Returns:
@@ -97,7 +91,6 @@ impl GeometryResults {
         state_sets: (Vec<SCFState>, Vec<HSCFState>, Vec<HSCFState>),
         reference: ReferenceRun<Complex64>,
         post: PostReferenceResults,
-        e_fci: Option<f64>,
         nranks: usize,
         timings: timers::Totals,
     ) -> Self {
@@ -114,7 +107,6 @@ impl GeometryResults {
             e_noci_qmc_stoch: post.e_noci_qmc_stoch,
             e_snoci: post.e_snoci,
             e_pt2: post.e_pt2,
-            e_fci,
             nranks,
             timings,
         }

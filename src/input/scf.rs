@@ -25,8 +25,6 @@ pub struct SCFInfo {
     pub d_tol: f64,
     /// DIIS acceleration options.
     pub diis: DiisOptions,
-    /// Whether PySCF should run FCI.
-    pub do_fci: bool,
 }
 
 impl Default for SCFInfo {
@@ -40,7 +38,6 @@ impl Default for SCFInfo {
             fds_sdf_tol: 1e-8,
             d_tol: 1e-4,
             diis: DiisOptions::default(),
-            do_fci: false,
         }
     }
 }

@@ -122,7 +122,11 @@ pub fn print_report(
 
     println!("{}", "-".repeat(100));
 
-    print_counter("Total PySCF time", res.timings.general.run_pyscf, 0);
+    print_counter(
+        "Total integral generation time",
+        res.timings.general.generate_integrals,
+        0,
+    );
     print_counter("Total SCF time", res.timings.general.run_scf, 0);
     print_counter(
         "Total Reference NOCI time",
@@ -701,10 +705,6 @@ pub fn print_report(
             }
         }
 
-        if let Some(e_fci) = res.e_fci {
-            println!("State(FCI): E: {}, [E - {}]: {}", e_fci, label, e_fci - e0);
-        }
-
         println!("{}", "=".repeat(100));
         return;
     }
@@ -733,10 +733,6 @@ pub fn print_report(
                 e_noci_pt2 - e0
             );
         }
-    }
-
-    if let Some(e_fci) = res.e_fci {
-        println!("State(FCI): E: {},  [E - {}]: {}", e_fci, label, e_fci - e0);
     }
 
     println!("{}", "=".repeat(100));

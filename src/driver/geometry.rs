@@ -6,7 +6,6 @@ use mpi::topology::Communicator;
 
 // Crate-root imports.
 use crate::driver::post::{run_holomorphic_post_reference, run_real_post_reference};
-use crate::driver::pyscf::run_pyscf;
 use crate::driver::reference::{ReferenceKind, run_reference_space};
 use crate::driver::scf::{
     HolomorphicReferencePrep, RealReferencePrep, generate_holomorphic_references,
@@ -14,10 +13,9 @@ use crate::driver::scf::{
 };
 use crate::driver::types::{Atoms, GeometryResults};
 use crate::input::{Input, StateType};
+use crate::integrals::generate_ao_data;
 use crate::mpiutils::broadcast;
-use crate::paths::RunPaths;
-use crate::read::read_integrals;
-use crate::{AoData, HSCFState, Result, SCFState, timers};
+use crate::{AoData, HSCFState, Result, SCFState, time_call, timers};
 
 /// Decide whether this geometry needs holomorphic references.
 /// # Arguments:
@@ -47,18 +45,21 @@ pub fn run_geometry(
     input: &mut Input,
     prev_states: &[SCFState],
     prev_htracks: &[HSCFState],
-    paths: &RunPaths,
     world: &impl Communicator,
 ) -> Result<GeometryResults> {
     let tol = 1e-8;
     timers::reset_all();
 
-    if world.rank() == 0 {
-        run_pyscf(atoms, input, &paths.integral_file)?;
-    }
-    world.barrier();
-
-    let ao: AoData = read_integrals(&paths.integral_file)?;
+    let mut ao = if world.rank() == 0 {
+        Some(time_call!(
+            crate::timers::general::add_generate_integrals,
+            { generate_ao_data(atoms, &input.mol.basis, &input.mol.unit) }
+        ))
+    } else {
+        None
+    };
+    broadcast(world, &mut ao);
+    let ao: AoData = ao.unwrap();
 
     if should_run_holomorphic(input) {
         let mut prep = if world.rank() == 0 {
@@ -90,7 +91,6 @@ pub fn run_geometry(
                 (prep.states, prep.hstates, prep.htracks),
                 reference,
                 post,
-                ao.e_fci,
                 world.size() as usize,
                 timings,
             ))
@@ -111,7 +111,6 @@ pub fn run_geometry(
                 prep.states,
                 reference,
                 post,
-                ao.e_fci,
                 world.size() as usize,
                 timings,
             );
@@ -140,7 +139,6 @@ pub fn run_geometry(
             prep.states,
             reference,
             post,
-            ao.e_fci,
             world.size() as usize,
             timings,
         ))

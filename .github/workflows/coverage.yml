@@ -8,6 +8,7 @@ on:
 env:
   SDE_VERSION: sde-external-10.8.0-2026-03-15-lin
   RUSTFLAGS: -Ctarget-cpu=x86-64
+  BSE_DATA_DIR: ${{ github.workspace }}/basis_set_exchange/basis_set_exchange/data
 
 jobs:
   coverage:
@@ -42,12 +43,10 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapack-dev libhdf5-dev pkg-config python3-pip
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapack-dev libhdf5-dev pkg-config
 
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --prefer-binary pyscf h5py numpy
+      - name: Install basis set data
+        run: git clone https://github.com/MolSSI-BSE/basis_set_exchange.git basis_set_exchange && git -C basis_set_exchange checkout 4adaf1372c7101620ca1a9f3130be9ae97fb8f30
 
       - name: Cache Intel SDE
         id: cache-sde
@@ -71,13 +70,14 @@ jobs:
         run: |
           echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
           cat /proc/sys/kernel/yama/ptrace_scope
-      
+
       - name: Generate coverage
         env:
           OPENBLAS_NUM_THREADS: 1
           OPENBLAS_CORETYPE: CORE2
+          BSE_DATA_DIR: ${{ env.BSE_DATA_DIR }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} -no-follow-child --
-        run: cargo llvm-cov --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
+        run: cargo llvm-cov --locked --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

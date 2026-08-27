@@ -85,7 +85,6 @@ pub fn print_input(input: &Input) {
     println!("FDS_SDF_TOL: {}", input.scf.fds_sdf_tol);
     println!("DTOL: {}", input.scf.d_tol);
     println!("DIIS SPACE DIM: {}", input.scf.diis.space);
-    println!("DO_FCI: {}", input.scf.do_fci);
     println!();
 
     if let StateType::Mom(recipes) = &input.states {

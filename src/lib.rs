@@ -8,7 +8,7 @@
 //! in extended NOCI spaces, NOCI-PT2, selected NOCI and feature-gated experimental NOCCMC
 //! support.
 //!
-//! A calculation proceeds from user-defined Lua input and PySCF atomic-orbital data through
+//! A calculation proceeds from user-defined Lua input and libcint atomic-orbital data through
 //! SCF-state generation, reference-basis selection, molecular-orbital and nonorthogonal Wick
 //! preparation, and the requested post-SCF method. The common [`PostSCFData`] structure
 //! provides the atomic-orbital data, converged states, selected reference basis, molecular-
@@ -24,6 +24,7 @@ pub mod deterministic;
 pub mod driver;
 pub mod error;
 pub mod input;
+pub mod integrals;
 pub mod maths;
 pub mod mpiutils;
 #[cfg(feature = "nocc")]
@@ -33,7 +34,6 @@ pub mod nonorthogonalwicks;
 #[cfg(feature = "nocc")]
 pub mod orbitals;
 pub mod paths;
-pub mod read;
 pub mod scalar;
 pub mod scf;
 pub mod snoci;
@@ -52,6 +52,7 @@ use crate::noci::{MOCache, NOCIScalar};
 pub use error::{Error, Result};
 pub use scalar::{DetState, HSCFState, SCFState, StateScalar};
 
+#[derive(Serialize, Deserialize)]
 pub struct AoData {
     /// AO overlap matrix, (nao, nao).
     pub s: Array2<f64>,
@@ -72,10 +73,8 @@ pub struct AoData {
     pub n: usize,
     /// Number of spin alpha and spin beta electrons, (2,).
     pub nelec: Array1<i64>,
-    /// AO label strings from PySCF e.g. "0 H 1s"
+    /// AO label strings, with the atom index as the first whitespace-separated field.
     pub labels: Vec<String>,
-    /// Optional FCI calculation energy from PySCF.
-    pub e_fci: Option<f64>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

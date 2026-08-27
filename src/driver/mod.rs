@@ -8,7 +8,7 @@
 //!
 //! For each molecular geometry, the driver:
 //!
-//! 1. Obtains atomic-orbital integrals and initial data from PySCF;
+//! 1. Generates atomic-orbital integrals and initial data;
 //! 2. Converges the requested real and holomorphic SCF states;
 //! 3. Constructs and reports the selected reference NOCI basis;
 //! 4. Prepares molecular-orbital caches and nonorthogonal Wick intermediates;
@@ -23,7 +23,6 @@ mod config;
 mod deterministic;
 mod geometry;
 mod post;
-mod pyscf;
 mod reference;
 mod report;
 mod run;

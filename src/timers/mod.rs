@@ -39,7 +39,7 @@ use mpi::traits::*;
 #[allow(unused_macros)]
 macro_rules! for_each_counter {
     ($tot:ident, $f:ident) => {
-        $f!($tot.general.run_pyscf);
+        $f!($tot.general.generate_integrals);
         $f!($tot.general.run_scf);
         $f!($tot.general.run_reference_noci);
         $f!($tot.general.calculate_noci_energy);

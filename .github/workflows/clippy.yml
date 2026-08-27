@@ -20,12 +20,12 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapacke-dev libhdf5-dev pkg-config python3-pip
+          sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapacke-dev libhdf5-dev pkg-config
 
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --prefer-binary pyscf h5py numpy
+      - name: Install basis set data
+        run: git clone https://github.com/MolSSI-BSE/basis_set_exchange.git basis_set_exchange && git -C basis_set_exchange checkout 4adaf1372c7101620ca1a9f3130be9ae97fb8f30
 
       - name: Run clippy
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        env:
+          BSE_DATA_DIR: ${{ github.workspace }}/basis_set_exchange/basis_set_exchange/data
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings

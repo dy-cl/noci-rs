@@ -2,13 +2,12 @@
 // Standard library imports.
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // External crate imports.
 use noci_rs::AoData;
 use noci_rs::input::{Input, load_input};
-use noci_rs::read::read_integrals;
+use noci_rs::integrals::generate_ao_data;
 use serde::de::DeserializeOwned;
 
 /// Return name of a directory containing a test fixture.
@@ -28,9 +27,7 @@ pub fn fixture_dir(name: &str) -> PathBuf {
 pub fn load_test<T: DeserializeOwned>(name: &str) -> (Input, AoData, T) {
     let dir = fixture_dir(name);
     let input = load_input(dir.join("input.lua")).unwrap();
-    generate_data_h5_for_geometry(&dir, &input, 0, "data.h5");
-    let input = load_input(dir.join("input.lua")).unwrap();
-    let ao = read_integrals(dir.join("data.h5")).unwrap();
+    let ao = generate_ao_data(&input.mol.geoms[0], &input.mol.basis, &input.mol.unit);
     let expected: T =
         serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, ao, expected)
@@ -52,47 +49,6 @@ pub fn mpi_universe() -> (MutexGuard<'static, ()>, &'static mpi::environment::Un
         MPI_UNIVERSE.get_or_init(|| mpi::initialize().expect("MPI initialisation failed"));
 
     (lock, universe)
-}
-
-/// Generate an HDF5 data file for one fixture geometry.
-/// # Arguments:
-/// - `dir`: Fixture directory from which to run `generate.py`.
-/// - `input`: User input specifications for this fixture.
-/// - `geometry`: Geometry index to generate.
-/// - `out`: Output HDF5 file name.
-/// # Returns
-/// - `()`: Writes the requested HDF5 data file.
-fn generate_data_h5_for_geometry(
-    dir: &std::path::Path,
-    input: &Input,
-    geometry: usize,
-    out: &str,
-) {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let generate_py = root.join("scripts/generate.py");
-    let atoms: Vec<String> = input.mol.geoms[geometry].clone();
-    let atomsj = serde_json::to_string(&atoms).unwrap();
-
-    Command::new("python3")
-        .env("RAYON_NUM_THREADS", "1")
-        .env("OPENBLAS_NUM_THREADS", "1")
-        .env("OPENBLAS_CORETYPE", "CORE2")
-        .env("OMP_NUM_THREADS", "1")
-        .env("MKL_NUM_THREADS", "1")
-        .arg(&generate_py)
-        .arg("--atoms")
-        .arg(&atomsj)
-        .arg("--basis")
-        .arg(&input.mol.basis)
-        .arg("--unit")
-        .arg(&input.mol.unit)
-        .arg("--out")
-        .arg(out)
-        .arg("--fci")
-        .arg(if input.scf.do_fci { "true" } else { "false" })
-        .current_dir(dir)
-        .status()
-        .unwrap();
 }
 
 /// Assert that two floating point numbers agree within tolerance

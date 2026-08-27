@@ -42,7 +42,7 @@
 
 `noci-rs` is an electronic-structure package for calculations in nonorthogonal determinant spaces. It supports reference nonorthogonal configuration interaction calculations, NOCI-PT2 corrections, selected NOCI calculations, and stochastic NOCI-QMC propagation. Experimental nonorthogonal coupled-cluster and NOCCMC methods are also under development.
 
-The package uses PySCF to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Nonorthogonal matrix elements are evaluated using the generalised Slater–Condon rules, the extended nonorthogonal Wick's theorem, or orthogonal shortcuts where possible. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCI-QMC and SNOCI/NOCI-PT2.
+The package uses libcint to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Nonorthogonal matrix elements are evaluated using the generalised Slater–Condon rules, the extended nonorthogonal Wick's theorem, or orthogonal shortcuts where possible. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCI-QMC and SNOCI/NOCI-PT2.
 
 ## Example Results
 
@@ -98,10 +98,17 @@ The corresponding input files are available in [`inputs/examples/`](inputs/examp
 
 - Rust 1.90.0 with Cargo. The repository's `rust-toolchain.toml`
   automatically selects this toolchain when using `rustup`.
-- Python 3 with PySCF, NumPy, and h5py.
 - HDF5 development libraries compatible with the `hdf5` Rust crate.
 - OpenBLAS and LAPACK.
 - An MPI compiler and runtime.
+- MolSSI Basis Set Exchange data for named basis sets used by libcint. The
+  tested data version is `4adaf1372c7101620ca1a9f3130be9ae97fb8f30`. Set
+  `BSE_DATA_DIR` to the `basis_set_exchange/data` directory, for example:
+
+```bash
+git clone https://github.com/MolSSI-BSE/basis_set_exchange.git basis_set_exchange && git -C basis_set_exchange checkout 4adaf1372c7101620ca1a9f3130be9ae97fb8f30
+export BSE_DATA_DIR="$PWD/basis_set_exchange/basis_set_exchange/data"
+```
 
 ### Build
 
@@ -286,7 +293,6 @@ scf = {
     e_tol = 1e-12,
     fds_sdf_tol = 1e-8,
     d_tol = 1e-4,
-    do_fci = false,
 
     diis = {
         space = 8,

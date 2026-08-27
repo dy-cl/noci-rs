@@ -4,7 +4,6 @@ scf = {
     diis = {
         space = 8,
     },
-    do_fci = false,
 }
 
 mol = {

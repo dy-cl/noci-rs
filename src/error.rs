@@ -2,7 +2,6 @@
 
 // Standard library imports.
 use std::path::PathBuf;
-use std::process::ExitStatus;
 
 /// Crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -29,10 +28,6 @@ pub enum Error {
     /// HDF5 read/write failed.
     #[error("HDF5 error: {0}")]
     Hdf5(#[from] hdf5::Error),
-
-    /// PySCF process exited unsuccessfully.
-    #[error("PySCF failed with status {0}")]
-    PyscfFailed(ExitStatus),
 }
 
 impl Error {

@@ -6,8 +6,8 @@ use super::{Counter, with_totals};
 /// Timing counters for general high level workflow stages.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Totals {
-    /// Total time spent in `run_pyscf`.
-    pub run_pyscf: Counter,
+    /// Total time spent in `generate_integrals`.
+    pub generate_integrals: Counter,
     /// Total time spent in `run_scf`.
     pub run_scf: Counter,
     /// Total time spent in `run_reference_noci`.
@@ -29,7 +29,8 @@ impl Totals {
         &mut self,
         other: &Totals,
     ) {
-        self.run_pyscf.merge_from(&other.run_pyscf);
+        self.generate_integrals
+            .merge_from(&other.generate_integrals);
         self.run_scf.merge_from(&other.run_scf);
         self.run_reference_noci
             .merge_from(&other.run_reference_noci);
@@ -40,14 +41,14 @@ impl Totals {
     }
 }
 
-/// Add one timed call to the `run_pyscf` counter.
+/// Add one timed call to the `generate_integrals` counter.
 /// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `run_pyscf`.
+/// - `ns`: Elapsed time in nanoseconds for one call to `generate_integrals`.
 /// # Returns:
-/// - `()`: Updates the current thread local `run_pyscf` counter.
+/// - `()`: Updates the current thread local `generate_integrals` counter.
 #[inline(always)]
-pub fn add_run_pyscf(ns: u64) {
-    with_totals(|t| t.general.run_pyscf.add_ns(ns));
+pub fn add_generate_integrals(ns: u64) {
+    with_totals(|t| t.general.generate_integrals.add_ns(ns));
 }
 
 /// Add one timed call to the `run_scf` counter.

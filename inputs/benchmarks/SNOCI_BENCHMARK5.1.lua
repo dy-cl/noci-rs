@@ -3,7 +3,6 @@ scf = {
     e_tol = 1e-12,
     fds_sdf_tol = 1e-8,
     d_tol = 1e-6,
-    do_fci = false,
 
     diis = {
         space = 15,

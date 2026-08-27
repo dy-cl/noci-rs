@@ -185,7 +185,6 @@ pub(crate) fn transform_ao_data(
         n: c.ncols(),
         nelec: ao.nelec.clone(),
         labels,
-        e_fci: ao.e_fci,
     }
 }
 

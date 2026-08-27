@@ -2,14 +2,12 @@ mod common;
 
 // Standard library imports.
 use std::fs;
-use std::path::Path;
-use std::process::Command;
 
 // External crate imports.
 use noci_rs::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
 use noci_rs::input::{Input, load_input};
+use noci_rs::integrals::generate_ao_data;
 use noci_rs::noci::{build_mo_cache, build_wicks_shared, calculate_noci_energy};
-use noci_rs::read::read_integrals;
 use noci_rs::{AoData, HSCFState, SCFState};
 use num_complex::Complex64;
 use serde::Deserialize;
@@ -59,57 +57,13 @@ fn load_scan_test<T: DeserializeOwned>(name: &str) -> (Input, Vec<AoData>, T) {
     let input = load_input(dir.join("input.lua")).unwrap();
 
     let mut aos = Vec::with_capacity(input.mol.geoms.len());
-    for i in 0..input.mol.geoms.len() {
-        let fname = format!("data_{i}.h5");
-        generate_data_h5_for_geometry(&dir, &input, i, &fname);
-        aos.push(read_integrals(dir.join(fname)).unwrap());
+    for atoms in input.mol.geoms.iter() {
+        aos.push(generate_ao_data(atoms, &input.mol.basis, &input.mol.unit));
     }
 
-    let input = load_input(dir.join("input.lua")).unwrap();
     let expected: T =
         serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     (input, aos, expected)
-}
-
-/// Generate an HDF5 data file for one fixture geometry.
-/// # Arguments:
-/// - `dir`: Fixture directory from which to run `generate.py`.
-/// - `input`: User input specifications for this fixture.
-/// - `geometry`: Geometry index to generate.
-/// - `out`: Output HDF5 file name.
-/// # Returns
-/// - `()`: Writes the requested HDF5 data file.
-fn generate_data_h5_for_geometry(
-    dir: &Path,
-    input: &Input,
-    geometry: usize,
-    out: &str,
-) {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let generate_py = root.join("scripts/generate.py");
-    let atoms: Vec<String> = input.mol.geoms[geometry].clone();
-    let atomsj = serde_json::to_string(&atoms).unwrap();
-
-    Command::new("python3")
-        .env("RAYON_NUM_THREADS", "1")
-        .env("OPENBLAS_NUM_THREADS", "1")
-        .env("OPENBLAS_CORETYPE", "CORE2")
-        .env("OMP_NUM_THREADS", "1")
-        .env("MKL_NUM_THREADS", "1")
-        .arg(&generate_py)
-        .arg("--atoms")
-        .arg(&atomsj)
-        .arg("--basis")
-        .arg(&input.mol.basis)
-        .arg("--unit")
-        .arg(&input.mol.unit)
-        .arg("--out")
-        .arg(out)
-        .arg("--fci")
-        .arg(if input.scf.do_fci { "true" } else { "false" })
-        .current_dir(dir)
-        .status()
-        .unwrap();
 }
 
 /// Run SCF and reference NOCI and compare energies with known good energies.
