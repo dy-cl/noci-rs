@@ -77,7 +77,7 @@ jobs:
           OPENBLAS_CORETYPE: CORE2
           BSE_DATA_DIR: ${{ env.BSE_DATA_DIR }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} -no-follow-child --
-        run: cargo llvm-cov --locked --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
+        run: ./scripts/test.sh cargo llvm-cov --locked --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --lcov --output-path lcov-${{ matrix.cpu_type }}.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

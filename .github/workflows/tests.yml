@@ -48,7 +48,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-release-test-v2-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache Intel SDE
         id: cache-sde
@@ -79,4 +79,4 @@ jobs:
           OPENBLAS_CORETYPE: CORE2
           BSE_DATA_DIR: ${{ env.BSE_DATA_DIR }}
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/intel-sde/sde64 -${{ matrix.sde_cpu }} -no-follow-child --
-        run: cargo +1.90.0 test --locked --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --verbose
+        run: ./scripts/test.sh cargo +1.90.0 test --locked --release -p noci-rs --no-default-features --target x86_64-unknown-linux-gnu --verbose
