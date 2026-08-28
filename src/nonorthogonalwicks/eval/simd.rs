@@ -4,11 +4,14 @@
 // Standard library imports.
 use std::arch::x86_64::{
     __m256d, __m512d, _mm256_add_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_fnmadd_pd,
-    _mm256_loadu_pd, _mm256_mul_pd, _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd,
-    _mm256_sub_pd, _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_fnmadd_pd,
-    _mm512_loadu_pd, _mm512_mul_pd, _mm512_set1_pd, _mm512_setzero_pd, _mm512_storeu_pd,
-    _mm512_sub_pd,
+    _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_pd, _mm256_set1_pd, _mm256_setzero_pd,
+    _mm256_storeu_pd, _mm256_sub_pd, _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd,
+    _mm512_fnmadd_pd, _mm512_loadu_pd, _mm512_mul_pd, _mm512_set_pd, _mm512_set1_pd,
+    _mm512_setzero_pd, _mm512_storeu_pd, _mm512_sub_pd,
 };
+
+// External crate imports.
+use num_complex::Complex64;
 
 /// Four packed `f64` values in one AVX2 register.
 #[derive(Clone, Copy)]
@@ -49,6 +52,24 @@ impl F64x4 {
     #[inline(always)]
     pub(super) fn splat(value: f64) -> Self {
         unsafe { Self(_mm256_set1_pd(value)) }
+    }
+
+    /// Construct four packed real values from independent scalar lanes.
+    /// # Arguments:
+    /// - `v0`: Lane 0 value.
+    /// - `v1`: Lane 1 value.
+    /// - `v2`: Lane 2 value.
+    /// - `v3`: Lane 3 value.
+    /// # Returns
+    /// - `F64x4`: Packed values `[v0,v1,v2,v3]`.
+    #[inline(always)]
+    pub(super) fn from_values(
+        v0: f64,
+        v1: f64,
+        v2: f64,
+        v3: f64,
+    ) -> Self {
+        unsafe { Self(_mm256_set_pd(v3, v2, v1, v0)) }
     }
 
     /// Load four real lane values.
@@ -266,21 +287,25 @@ impl C64x4 {
         }
     }
 
-    /// Load four split complex lane values.
+    /// Construct four packed complex values from independent scalar lanes.
     /// # Arguments:
-    /// - `re`: Real lane values.
-    /// - `im`: Imaginary lane values.
+    /// - `v0`: Lane 0 value.
+    /// - `v1`: Lane 1 value.
+    /// - `v2`: Lane 2 value.
+    /// - `v3`: Lane 3 value.
     /// # Returns
-    /// - `C64x4`: Packed complex values.
+    /// - `C64x4`: Packed complex values `[v0,v1,v2,v3]`.
     #[inline(always)]
-    pub(super) fn load(
-        re: &[f64; 4],
-        im: &[f64; 4],
+    pub(super) fn from_values(
+        v0: Complex64,
+        v1: Complex64,
+        v2: Complex64,
+        v3: Complex64,
     ) -> Self {
         unsafe {
             Self {
-                re: _mm256_loadu_pd(re.as_ptr()),
-                im: _mm256_loadu_pd(im.as_ptr()),
+                re: _mm256_set_pd(v3.re, v2.re, v1.re, v0.re),
+                im: _mm256_set_pd(v3.im, v2.im, v1.im, v0.im),
             }
         }
     }
@@ -510,6 +535,25 @@ impl F64x8 {
         unsafe { Self(_mm512_set1_pd(value)) }
     }
 
+    /// Construct eight packed real values from independent scalar lanes.
+    /// # Arguments:
+    /// - `v0` through `v7`: Independent scalar lane values.
+    /// # Returns
+    /// - `F64x8`: Packed values in array order.
+    #[inline(always)]
+    pub(super) fn from_values(
+        v0: f64,
+        v1: f64,
+        v2: f64,
+        v3: f64,
+        v4: f64,
+        v5: f64,
+        v6: f64,
+        v7: f64,
+    ) -> Self {
+        unsafe { Self(_mm512_set_pd(v7, v6, v5, v4, v3, v2, v1, v0)) }
+    }
+
     /// Load eight real lane values.
     /// # Arguments:
     /// - `values`: Real lane values.
@@ -725,21 +769,26 @@ impl C64x8 {
         }
     }
 
-    /// Load eight split complex lane values.
+    /// Construct eight packed complex values from independent scalar lanes.
     /// # Arguments:
-    /// - `re`: Real lane values.
-    /// - `im`: Imaginary lane values.
+    /// - `v0` through `v7`: Independent scalar lane values.
     /// # Returns
-    /// - `C64x8`: Packed complex values.
+    /// - `C64x8`: Packed complex values in array order.
     #[inline(always)]
-    pub(super) fn load(
-        re: &[f64; 8],
-        im: &[f64; 8],
+    pub(super) fn from_values(
+        v0: Complex64,
+        v1: Complex64,
+        v2: Complex64,
+        v3: Complex64,
+        v4: Complex64,
+        v5: Complex64,
+        v6: Complex64,
+        v7: Complex64,
     ) -> Self {
         unsafe {
             Self {
-                re: _mm512_loadu_pd(re.as_ptr()),
-                im: _mm512_loadu_pd(im.as_ptr()),
+                re: _mm512_set_pd(v7.re, v6.re, v5.re, v4.re, v3.re, v2.re, v1.re, v0.re),
+                im: _mm512_set_pd(v7.im, v6.im, v5.im, v4.im, v3.im, v2.im, v1.im, v0.im),
             }
         }
     }

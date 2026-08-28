@@ -743,6 +743,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         (target.areps[ta], source.areps.as_slice()),
+                        source.a_eval_order.as_slice(),
+                        source.a_eval_groups.as_slice(),
                         target_left,
                         true,
                         wick,
@@ -781,6 +783,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         (target.breps[tb], source.breps.as_slice()),
+                        source.b_eval_order.as_slice(),
+                        source.b_eval_groups.as_slice(),
                         target_left,
                         false,
                         wick,
@@ -908,6 +912,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         (target.breps[tb], source.breps.as_slice()),
+                        source.b_eval_order.as_slice(),
+                        source.b_eval_groups.as_slice(),
                         target_left,
                         false,
                         wick,
@@ -945,6 +951,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         &pair,
                         data,
                         (target.areps[ta], source.areps.as_slice()),
+                        source.a_eval_order.as_slice(),
+                        source.a_eval_groups.as_slice(),
                         target_left,
                         true,
                         wick,
@@ -1033,6 +1041,8 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             &pair,
             data,
             (target.areps.as_slice(), source.areps.as_slice()),
+            source.a_eval_order.as_slice(),
+            source.a_eval_groups.as_slice(),
             0..nta,
             target_left,
             true,
@@ -1047,6 +1057,8 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             &pair,
             data,
             (target.breps.as_slice(), source.breps.as_slice()),
+            source.b_eval_order.as_slice(),
+            source.b_eval_groups.as_slice(),
             0..ntb,
             target_left,
             false,
@@ -1282,6 +1294,8 @@ fn apply_orthogonal_beta_singles<T, R>(
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data.
 /// - `reps`: Reduced target and source spin representatives.
+/// - `source_order`: Source component IDs in fixed-rank Wick evaluation order.
+/// - `source_groups`: Boundaries of equal-rank, common-hole source groups in `source_order`.
 /// - `rows`: Target-row range to fill.
 /// - `target_left`: Whether target determinants are left determinants in `pair`.
 /// - `alpha`: Whether to build alpha or beta factors.
@@ -1292,6 +1306,8 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
     reps: (&[ReducedOneSpinDetState], &[ReducedOneSpinDetState]),
+    source_order: &[usize],
+    source_groups: &[usize],
     rows: Range<usize>,
     target_left: bool,
     alpha: bool,
@@ -1313,6 +1329,8 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
                     pair,
                     data,
                     (target_rep, source_reps),
+                    source_order,
+                    source_groups,
                     target_left,
                     alpha,
                     scratch,
@@ -1328,6 +1346,8 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data used by the generic fallback.
 /// - `reps`: Reduced target representative and source representatives.
+/// - `source_order`: Source component IDs in fixed-rank Wick evaluation order.
+/// - `source_groups`: Boundaries of equal-rank, common-hole source groups in `source_order`.
 /// - `target_left`: Whether the target determinant belongs to the left Wick reference.
 /// - `alpha`: Whether to evaluate alpha-alpha or beta-beta factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
@@ -1338,6 +1358,8 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
     reps: (ReducedOneSpinDetState, &[ReducedOneSpinDetState]),
+    source_order: &[usize],
+    source_groups: &[usize],
     target_left: bool,
     alpha: bool,
     scratch: &mut WickScratchSpin<T>,
@@ -1358,6 +1380,8 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
             basis: data.basis,
             target,
             sources,
+            source_order,
+            source_groups,
             target_left,
             alpha,
             overlap,

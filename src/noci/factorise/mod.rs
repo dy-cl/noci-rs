@@ -34,8 +34,16 @@ pub(crate) struct FactorEntry {
 pub(super) struct ParentSpinSpace {
     /// Reduced representative for each parent-local alpha component.
     pub(super) areps: Vec<ReducedOneSpinDetState>,
+    /// Alpha component IDs in fixed-rank Wick evaluation order.
+    pub(super) a_eval_order: Vec<usize>,
+    /// Boundaries of equal-rank, common-hole alpha evaluation groups.
+    pub(super) a_eval_groups: Vec<usize>,
     /// Reduced representative for each parent-local beta component.
     pub(super) breps: Vec<ReducedOneSpinDetState>,
+    /// Beta component IDs in fixed-rank Wick evaluation order.
+    pub(super) b_eval_order: Vec<usize>,
+    /// Boundaries of equal-rank, common-hole beta evaluation groups.
+    pub(super) b_eval_groups: Vec<usize>,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
     pub(super) entries: Vec<FactorEntry>,
     /// Determinant indices grouped by parent-local alpha component.
@@ -191,6 +199,7 @@ fn assign_aids<T: NOCIScalar>(
     indices.sort_unstable_by(|&i, &j| {
         let id = &basis[i];
         let jd = &basis[j];
+
         id.parent
             .cmp(&jd.parent)
             .then_with(|| id.oa.cmp(&jd.oa))
@@ -217,6 +226,7 @@ fn assign_bids<T: NOCIScalar>(
     indices.sort_unstable_by(|&i, &j| {
         let id = &basis[i];
         let jd = &basis[j];
+
         id.parent
             .cmp(&jd.parent)
             .then_with(|| id.ob.cmp(&jd.ob))
@@ -327,7 +337,11 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
     let mut parents = (0..nparents)
         .map(|_| ParentSpinSpace {
             areps: Vec::new(),
+            a_eval_order: Vec::new(),
+            a_eval_groups: Vec::new(),
             breps: Vec::new(),
+            b_eval_order: Vec::new(),
+            b_eval_groups: Vec::new(),
             entries: Vec::new(),
             entries_by_a: Vec::new(),
             entries_by_b: Vec::new(),
@@ -382,6 +396,52 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
     }
 
     for parent in &mut parents {
+        parent.a_eval_order = (0..parent.areps.len()).collect();
+        parent.a_eval_order.sort_unstable_by(|&i, &j| {
+            let ic = parent.areps[i].excitation_cache;
+            let jc = parent.areps[j].excitation_cache;
+            ic.rank
+                .cmp(&jc.rank)
+                .then_with(|| ic.indices.cmp(&jc.indices))
+                .then_with(|| i.cmp(&j))
+        });
+
+        parent.a_eval_groups.clear();
+        parent.a_eval_groups.push(0);
+        for position in 1..parent.a_eval_order.len() {
+            let previous = parent.areps[parent.a_eval_order[position - 1]].excitation_cache;
+            let current = parent.areps[parent.a_eval_order[position]].excitation_cache;
+            if current.rank != previous.rank || current.indices[..4] != previous.indices[..4] {
+                parent.a_eval_groups.push(position);
+            }
+        }
+        if !parent.a_eval_order.is_empty() {
+            parent.a_eval_groups.push(parent.a_eval_order.len());
+        }
+
+        parent.b_eval_order = (0..parent.breps.len()).collect();
+        parent.b_eval_order.sort_unstable_by(|&i, &j| {
+            let ic = parent.breps[i].excitation_cache;
+            let jc = parent.breps[j].excitation_cache;
+            ic.rank
+                .cmp(&jc.rank)
+                .then_with(|| ic.indices.cmp(&jc.indices))
+                .then_with(|| i.cmp(&j))
+        });
+
+        parent.b_eval_groups.clear();
+        parent.b_eval_groups.push(0);
+        for position in 1..parent.b_eval_order.len() {
+            let previous = parent.breps[parent.b_eval_order[position - 1]].excitation_cache;
+            let current = parent.breps[parent.b_eval_order[position]].excitation_cache;
+            if current.rank != previous.rank || current.indices[..4] != previous.indices[..4] {
+                parent.b_eval_groups.push(position);
+            }
+        }
+        if !parent.b_eval_order.is_empty() {
+            parent.b_eval_groups.push(parent.b_eval_order.len());
+        }
+
         if parent.first_det != usize::MAX {
             parent
                 .oids
