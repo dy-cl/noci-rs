@@ -18,7 +18,7 @@ use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
 use crate::nonorthogonalwicks::{
     SameSpinOneBodyBatch, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batched,
 };
-use crate::{DetState, ReducedOneSpinDetState};
+use crate::{DetState, ExcitationSpinCache, ReducedOneSpinDetState};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -745,6 +745,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (target.areps[ta], source.areps.as_slice()),
                         source.a_eval_order.as_slice(),
                         source.a_eval_groups.as_slice(),
+                        source.a_eval_caches.as_slice(),
+                        source.a_eval_phases.as_slice(),
                         target_left,
                         true,
                         wick,
@@ -785,6 +787,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (target.breps[tb], source.breps.as_slice()),
                         source.b_eval_order.as_slice(),
                         source.b_eval_groups.as_slice(),
+                        source.b_eval_caches.as_slice(),
+                        source.b_eval_phases.as_slice(),
                         target_left,
                         false,
                         wick,
@@ -914,6 +918,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (target.breps[tb], source.breps.as_slice()),
                         source.b_eval_order.as_slice(),
                         source.b_eval_groups.as_slice(),
+                        source.b_eval_caches.as_slice(),
+                        source.b_eval_phases.as_slice(),
                         target_left,
                         false,
                         wick,
@@ -953,6 +959,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                         (target.areps[ta], source.areps.as_slice()),
                         source.a_eval_order.as_slice(),
                         source.a_eval_groups.as_slice(),
+                        source.a_eval_caches.as_slice(),
+                        source.a_eval_phases.as_slice(),
                         target_left,
                         true,
                         wick,
@@ -1043,6 +1051,8 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             (target.areps.as_slice(), source.areps.as_slice()),
             source.a_eval_order.as_slice(),
             source.a_eval_groups.as_slice(),
+            source.a_eval_caches.as_slice(),
+            source.a_eval_phases.as_slice(),
             0..nta,
             target_left,
             true,
@@ -1059,6 +1069,8 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
             (target.breps.as_slice(), source.breps.as_slice()),
             source.b_eval_order.as_slice(),
             source.b_eval_groups.as_slice(),
+            source.b_eval_caches.as_slice(),
+            source.b_eval_phases.as_slice(),
             0..ntb,
             target_left,
             false,
@@ -1296,6 +1308,8 @@ fn apply_orthogonal_beta_singles<T, R>(
 /// - `reps`: Reduced target and source spin representatives.
 /// - `source_order`: Source component IDs in fixed-rank Wick evaluation order.
 /// - `source_groups`: Boundaries of equal-rank, common-hole source groups in `source_order`.
+/// - `source_caches`: Source excitation caches in fixed-rank Wick evaluation order.
+/// - `source_phases`: Source excitation phases in fixed-rank Wick evaluation order.
 /// - `rows`: Target-row range to fill.
 /// - `target_left`: Whether target determinants are left determinants in `pair`.
 /// - `alpha`: Whether to build alpha or beta factors.
@@ -1308,6 +1322,8 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
     reps: (&[ReducedOneSpinDetState], &[ReducedOneSpinDetState]),
     source_order: &[usize],
     source_groups: &[usize],
+    source_caches: &[ExcitationSpinCache],
+    source_phases: &[f64],
     rows: Range<usize>,
     target_left: bool,
     alpha: bool,
@@ -1331,6 +1347,8 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
                     (target_rep, source_reps),
                     source_order,
                     source_groups,
+                    source_caches,
+                    source_phases,
                     target_left,
                     alpha,
                     scratch,
@@ -1341,13 +1359,15 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 }
 
 /// Build one same-spin `S` and `F` factor row from prepared Wick pair batches.
-/// Fixed-rank paths read phase and excitation metadata directly from `ReducedOneSpinDetState`.
+/// Fixed-rank paths read precomputed phase and excitation metadata in evaluation order.
 /// # Arguments:
 /// - `pair`: Wick intermediates for the ordered parent pair.
 /// - `data`: Shared NOCI determinant data used by the generic fallback.
 /// - `reps`: Reduced target representative and source representatives.
 /// - `source_order`: Source component IDs in fixed-rank Wick evaluation order.
 /// - `source_groups`: Boundaries of equal-rank, common-hole source groups in `source_order`.
+/// - `source_caches`: Source excitation caches in fixed-rank Wick evaluation order.
+/// - `source_phases`: Source excitation phases in fixed-rank Wick evaluation order.
 /// - `target_left`: Whether the target determinant belongs to the left Wick reference.
 /// - `alpha`: Whether to evaluate alpha-alpha or beta-beta factors.
 /// - `scratch`: Reusable spin-resolved Wick evaluator workspace.
@@ -1360,6 +1380,8 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
     reps: (ReducedOneSpinDetState, &[ReducedOneSpinDetState]),
     source_order: &[usize],
     source_groups: &[usize],
+    source_caches: &[ExcitationSpinCache],
+    source_phases: &[f64],
     target_left: bool,
     alpha: bool,
     scratch: &mut WickScratchSpin<T>,
@@ -1382,6 +1404,8 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
             sources,
             source_order,
             source_groups,
+            source_caches,
+            source_phases,
             target_left,
             alpha,
             overlap,

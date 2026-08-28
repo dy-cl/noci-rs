@@ -37,6 +37,10 @@ pub(crate) struct SameSpinOneBodyBatch<'a, T: NOCIScalar> {
     pub(crate) source_order: &'a [usize],
     /// Boundaries of equal-rank, common-hole source groups in `source_order`.
     pub(crate) source_groups: &'a [usize],
+    /// Source excitation caches in fixed-rank Wick evaluation order.
+    pub(crate) source_caches: &'a [ExcitationSpinCache],
+    /// Source excitation phases in fixed-rank Wick evaluation order.
+    pub(crate) source_phases: &'a [f64],
     /// Whether the target determinant belongs to the left Wick reference.
     pub(crate) target_left: bool,
     /// Whether alpha-spin rather than beta-spin factors are being evaluated.
@@ -70,6 +74,8 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
         sources,
         source_order,
         source_groups,
+        source_caches,
+        source_phases,
         target_left,
         alpha,
         overlap,
@@ -89,7 +95,14 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
             if try_xw_f_overlap_prepared_f64_simd(
                 w,
                 basis,
-                (target, sources, source_order, source_groups),
+                (
+                    target,
+                    sources,
+                    source_order,
+                    source_groups,
+                    source_caches,
+                    source_phases,
+                ),
                 (target_left, alpha),
                 scratch,
                 tol,
@@ -115,7 +128,14 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
             if try_xw_f_overlap_prepared_c64_simd(
                 w,
                 basis,
-                (target, sources, source_order, source_groups),
+                (
+                    target,
+                    sources,
+                    source_order,
+                    source_groups,
+                    source_caches,
+                    source_phases,
+                ),
                 (target_left, alpha),
                 scratch,
                 tol,
@@ -230,7 +250,7 @@ fn xw_f_overlap_prepared_scalar_value<T: NOCIScalar>(
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
 /// - `basis`: Determinant basis containing full excitation masks.
-/// - `reps`: Target representative, source representatives and source evaluation order.
+/// - `reps`: Target representative, source representatives and source evaluation metadata.
 /// - `flags`: Whether the target is left, and whether alpha-spin factors are being evaluated.
 /// - `scratch`: Reusable same-spin Wick evaluator workspace.
 /// - `tol`: Numerical tolerance used by scalar fallback evaluation.
@@ -248,13 +268,15 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
         &[ReducedOneSpinDetState],
         &[usize],
         &[usize],
+        &[ExcitationSpinCache],
+        &[f64],
     ),
     flags: (bool, bool),
     scratch: &mut WickScratch<T>,
     tol: f64,
     out: (&mut [f64], &mut [f64]),
 ) -> bool {
-    let (target_rep, sources, source_order, source_groups) = reps;
+    let (target_rep, sources, source_order, source_groups, source_caches, source_phases) = reps;
     let (target_left, alpha) = flags;
     let (overlap, fock) = out;
     let target_cache = target_rep.excitation_cache;
@@ -267,9 +289,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
             for bounds in source_groups.windows(2) {
                 let group_start = *bounds.get_unchecked(0);
                 let group_end = *bounds.get_unchecked(1);
-                let first_id = *source_order.get_unchecked(group_start);
-                let source_rank =
-                    usize::from(sources.get_unchecked(first_id).excitation_cache.rank);
+                let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
                 if (1..=4).contains(&l) {
@@ -323,20 +343,33 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                     };
                     let mut packet_start = group_start;
 
-                    while packet_start < group_end {
-                        let count = (group_end - packet_start).min(8);
-                        let fill_id = *source_order.get_unchecked(packet_start);
-                        let fill_cache = sources.get_unchecked(fill_id).excitation_cache;
+                    while group_end - packet_start >= 8 {
+                        let packet = &*source_caches
+                            .as_ptr()
+                            .add(packet_start)
+                            .cast::<[ExcitationSpinCache; 8]>();
+                        let mut s = [0.0f64; 8];
+                        let mut f = [0.0f64; 8];
+                        kernel(w, &target_cache, packet, &mut s, &mut f);
+
+                        for lane in 0..8 {
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
+                            *overlap.get_unchecked_mut(output) = s[lane] * phase;
+                            *fock.get_unchecked_mut(output) = f[lane] * phase;
+                        }
+
+                        packet_start += 8;
+                    }
+
+                    if packet_start < group_end {
+                        let count = group_end - packet_start;
+                        let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 8];
-                        let mut phases = [1.0f64; 8];
-                        let mut outputs = [fill_id; 8];
 
                         for lane in 0..count {
-                            let source_id = *source_order.get_unchecked(packet_start + lane);
-                            let source_rep = sources.get_unchecked(source_id);
-                            packet[lane] = source_rep.excitation_cache;
-                            phases[lane] = source_rep.phase;
-                            outputs[lane] = source_id;
+                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [0.0f64; 8];
@@ -344,13 +377,12 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                         kernel(w, &target_cache, &packet, &mut s, &mut f);
 
                         for lane in 0..count {
-                            let output = outputs[lane];
-                            let phase = target_phase * phases[lane];
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
                             *overlap.get_unchecked_mut(output) = s[lane] * phase;
                             *fock.get_unchecked_mut(output) = f[lane] * phase;
                         }
-
-                        packet_start += count;
                     }
                 } else {
                     for position in group_start..group_end {
@@ -381,9 +413,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
             for bounds in source_groups.windows(2) {
                 let group_start = *bounds.get_unchecked(0);
                 let group_end = *bounds.get_unchecked(1);
-                let first_id = *source_order.get_unchecked(group_start);
-                let source_rank =
-                    usize::from(sources.get_unchecked(first_id).excitation_cache.rank);
+                let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
                 if (1..=4).contains(&l) {
@@ -437,20 +467,33 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                     };
                     let mut packet_start = group_start;
 
-                    while packet_start < group_end {
-                        let count = (group_end - packet_start).min(4);
-                        let fill_id = *source_order.get_unchecked(packet_start);
-                        let fill_cache = sources.get_unchecked(fill_id).excitation_cache;
+                    while group_end - packet_start >= 4 {
+                        let packet = &*source_caches
+                            .as_ptr()
+                            .add(packet_start)
+                            .cast::<[ExcitationSpinCache; 4]>();
+                        let mut s = [0.0f64; 4];
+                        let mut f = [0.0f64; 4];
+                        kernel(w, &target_cache, packet, &mut s, &mut f);
+
+                        for lane in 0..4 {
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
+                            *overlap.get_unchecked_mut(output) = s[lane] * phase;
+                            *fock.get_unchecked_mut(output) = f[lane] * phase;
+                        }
+
+                        packet_start += 4;
+                    }
+
+                    if packet_start < group_end {
+                        let count = group_end - packet_start;
+                        let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 4];
-                        let mut phases = [1.0f64; 4];
-                        let mut outputs = [fill_id; 4];
 
                         for lane in 0..count {
-                            let source_id = *source_order.get_unchecked(packet_start + lane);
-                            let source_rep = sources.get_unchecked(source_id);
-                            packet[lane] = source_rep.excitation_cache;
-                            phases[lane] = source_rep.phase;
-                            outputs[lane] = source_id;
+                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [0.0f64; 4];
@@ -458,13 +501,12 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                         kernel(w, &target_cache, &packet, &mut s, &mut f);
 
                         for lane in 0..count {
-                            let output = outputs[lane];
-                            let phase = target_phase * phases[lane];
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
                             *overlap.get_unchecked_mut(output) = s[lane] * phase;
                             *fock.get_unchecked_mut(output) = f[lane] * phase;
                         }
-
-                        packet_start += count;
                     }
                 } else {
                     for position in group_start..group_end {
@@ -499,7 +541,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = Complex64` and `m = 0`.
 /// - `basis`: Determinant basis containing full excitation masks.
-/// - `reps`: Target representative and source representatives in output-column order.
+/// - `reps`: Target representative, source representatives and source evaluation metadata.
 /// - `flags`: Whether the target is left, and whether alpha-spin factors are being evaluated.
 /// - `scratch`: Reusable same-spin Wick evaluator workspace.
 /// - `tol`: Numerical tolerance used by scalar fallback evaluation.
@@ -517,13 +559,15 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
         &[ReducedOneSpinDetState],
         &[usize],
         &[usize],
+        &[ExcitationSpinCache],
+        &[f64],
     ),
     flags: (bool, bool),
     scratch: &mut WickScratch<T>,
     tol: f64,
     out: (&mut [Complex64], &mut [Complex64]),
 ) -> bool {
-    let (target_rep, sources, source_order, source_groups) = reps;
+    let (target_rep, sources, source_order, source_groups, source_caches, source_phases) = reps;
     let (target_left, alpha) = flags;
     let (overlap, fock) = out;
     let target_cache = target_rep.excitation_cache;
@@ -536,9 +580,7 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
             for bounds in source_groups.windows(2) {
                 let group_start = *bounds.get_unchecked(0);
                 let group_end = *bounds.get_unchecked(1);
-                let first_id = *source_order.get_unchecked(group_start);
-                let source_rank =
-                    usize::from(sources.get_unchecked(first_id).excitation_cache.rank);
+                let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
                 if (1..=4).contains(&l) {
@@ -592,20 +634,33 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                     };
                     let mut packet_start = group_start;
 
-                    while packet_start < group_end {
-                        let count = (group_end - packet_start).min(8);
-                        let fill_id = *source_order.get_unchecked(packet_start);
-                        let fill_cache = sources.get_unchecked(fill_id).excitation_cache;
+                    while group_end - packet_start >= 8 {
+                        let packet = &*source_caches
+                            .as_ptr()
+                            .add(packet_start)
+                            .cast::<[ExcitationSpinCache; 8]>();
+                        let mut s = [Complex64::new(0.0, 0.0); 8];
+                        let mut f = [Complex64::new(0.0, 0.0); 8];
+                        kernel(w, &target_cache, packet, &mut s, &mut f);
+
+                        for lane in 0..8 {
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
+                            *overlap.get_unchecked_mut(output) = s[lane] * phase;
+                            *fock.get_unchecked_mut(output) = f[lane] * phase;
+                        }
+
+                        packet_start += 8;
+                    }
+
+                    if packet_start < group_end {
+                        let count = group_end - packet_start;
+                        let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 8];
-                        let mut phases = [1.0f64; 8];
-                        let mut outputs = [fill_id; 8];
 
                         for lane in 0..count {
-                            let source_id = *source_order.get_unchecked(packet_start + lane);
-                            let source_rep = sources.get_unchecked(source_id);
-                            packet[lane] = source_rep.excitation_cache;
-                            phases[lane] = source_rep.phase;
-                            outputs[lane] = source_id;
+                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [Complex64::new(0.0, 0.0); 8];
@@ -613,13 +668,12 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                         kernel(w, &target_cache, &packet, &mut s, &mut f);
 
                         for lane in 0..count {
-                            let output = outputs[lane];
-                            let phase = target_phase * phases[lane];
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
                             *overlap.get_unchecked_mut(output) = s[lane] * phase;
                             *fock.get_unchecked_mut(output) = f[lane] * phase;
                         }
-
-                        packet_start += count;
                     }
                 } else {
                     for position in group_start..group_end {
@@ -650,9 +704,7 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
             for bounds in source_groups.windows(2) {
                 let group_start = *bounds.get_unchecked(0);
                 let group_end = *bounds.get_unchecked(1);
-                let first_id = *source_order.get_unchecked(group_start);
-                let source_rank =
-                    usize::from(sources.get_unchecked(first_id).excitation_cache.rank);
+                let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
                 if (1..=4).contains(&l) {
@@ -706,20 +758,33 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                     };
                     let mut packet_start = group_start;
 
-                    while packet_start < group_end {
-                        let count = (group_end - packet_start).min(4);
-                        let fill_id = *source_order.get_unchecked(packet_start);
-                        let fill_cache = sources.get_unchecked(fill_id).excitation_cache;
+                    while group_end - packet_start >= 4 {
+                        let packet = &*source_caches
+                            .as_ptr()
+                            .add(packet_start)
+                            .cast::<[ExcitationSpinCache; 4]>();
+                        let mut s = [Complex64::new(0.0, 0.0); 4];
+                        let mut f = [Complex64::new(0.0, 0.0); 4];
+                        kernel(w, &target_cache, packet, &mut s, &mut f);
+
+                        for lane in 0..4 {
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
+                            *overlap.get_unchecked_mut(output) = s[lane] * phase;
+                            *fock.get_unchecked_mut(output) = f[lane] * phase;
+                        }
+
+                        packet_start += 4;
+                    }
+
+                    if packet_start < group_end {
+                        let count = group_end - packet_start;
+                        let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 4];
-                        let mut phases = [1.0f64; 4];
-                        let mut outputs = [fill_id; 4];
 
                         for lane in 0..count {
-                            let source_id = *source_order.get_unchecked(packet_start + lane);
-                            let source_rep = sources.get_unchecked(source_id);
-                            packet[lane] = source_rep.excitation_cache;
-                            phases[lane] = source_rep.phase;
-                            outputs[lane] = source_id;
+                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [Complex64::new(0.0, 0.0); 4];
@@ -727,13 +792,12 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                         kernel(w, &target_cache, &packet, &mut s, &mut f);
 
                         for lane in 0..count {
-                            let output = outputs[lane];
-                            let phase = target_phase * phases[lane];
+                            let position = packet_start + lane;
+                            let output = *source_order.get_unchecked(position);
+                            let phase = target_phase * *source_phases.get_unchecked(position);
                             *overlap.get_unchecked_mut(output) = s[lane] * phase;
                             *fock.get_unchecked_mut(output) = f[lane] * phase;
                         }
-
-                        packet_start += count;
                     }
                 } else {
                     for position in group_start..group_end {

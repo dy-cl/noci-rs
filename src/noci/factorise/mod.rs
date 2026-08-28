@@ -36,12 +36,20 @@ pub(super) struct ParentSpinSpace {
     pub(super) areps: Vec<ReducedOneSpinDetState>,
     /// Alpha component IDs in fixed-rank Wick evaluation order.
     pub(super) a_eval_order: Vec<usize>,
+    /// Alpha excitation caches in fixed-rank Wick evaluation order.
+    pub(super) a_eval_caches: Vec<ExcitationSpinCache>,
+    /// Alpha excitation phases in fixed-rank Wick evaluation order.
+    pub(super) a_eval_phases: Vec<f64>,
     /// Boundaries of equal-rank, common-hole alpha evaluation groups.
     pub(super) a_eval_groups: Vec<usize>,
     /// Reduced representative for each parent-local beta component.
     pub(super) breps: Vec<ReducedOneSpinDetState>,
     /// Beta component IDs in fixed-rank Wick evaluation order.
     pub(super) b_eval_order: Vec<usize>,
+    /// Beta excitation caches in fixed-rank Wick evaluation order.
+    pub(super) b_eval_caches: Vec<ExcitationSpinCache>,
+    /// Beta excitation phases in fixed-rank Wick evaluation order.
+    pub(super) b_eval_phases: Vec<f64>,
     /// Boundaries of equal-rank, common-hole beta evaluation groups.
     pub(super) b_eval_groups: Vec<usize>,
     /// Actual determinants belonging to this parent as `(I,a_I,b_I)`.
@@ -338,9 +346,13 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         .map(|_| ParentSpinSpace {
             areps: Vec::new(),
             a_eval_order: Vec::new(),
+            a_eval_caches: Vec::new(),
+            a_eval_phases: Vec::new(),
             a_eval_groups: Vec::new(),
             breps: Vec::new(),
             b_eval_order: Vec::new(),
+            b_eval_caches: Vec::new(),
+            b_eval_phases: Vec::new(),
             b_eval_groups: Vec::new(),
             entries: Vec::new(),
             entries_by_a: Vec::new(),
@@ -418,6 +430,16 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         if !parent.a_eval_order.is_empty() {
             parent.a_eval_groups.push(parent.a_eval_order.len());
         }
+        parent.a_eval_caches = parent
+            .a_eval_order
+            .iter()
+            .map(|&id| parent.areps[id].excitation_cache)
+            .collect();
+        parent.a_eval_phases = parent
+            .a_eval_order
+            .iter()
+            .map(|&id| parent.areps[id].phase)
+            .collect();
 
         parent.b_eval_order = (0..parent.breps.len()).collect();
         parent.b_eval_order.sort_unstable_by(|&i, &j| {
@@ -441,6 +463,16 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         if !parent.b_eval_order.is_empty() {
             parent.b_eval_groups.push(parent.b_eval_order.len());
         }
+        parent.b_eval_caches = parent
+            .b_eval_order
+            .iter()
+            .map(|&id| parent.breps[id].excitation_cache)
+            .collect();
+        parent.b_eval_phases = parent
+            .b_eval_order
+            .iter()
+            .map(|&id| parent.breps[id].phase)
+            .collect();
 
         if parent.first_det != usize::MAX {
             parent
