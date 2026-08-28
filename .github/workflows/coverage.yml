@@ -13,7 +13,10 @@ env:
 jobs:
   coverage:
     name: Coverage (${{ matrix.cpu_type }})
-    runs-on: ubuntu-latest
+
+    # Pin Ubuntu 22.04 so CI uses OpenBLAS 0.3.20.
+    # Newer OpenBLAS versions give slightly different seeded QMC trajectories.
+    runs-on: ubuntu-22.04
 
     strategy:
       fail-fast: false
@@ -44,6 +47,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapack-dev libhdf5-dev pkg-config
+
+          # Ubuntu 22.04 provides OpenBLAS 0.3.20. Newer OpenBLAS versions
+          # give slightly different seeded QMC trajectories.
+          OPENBLAS_VERSION="$(dpkg-query -W -f='${Version}' libopenblas-dev)"
+          echo "OpenBLAS version: ${OPENBLAS_VERSION}"
+          test "${OPENBLAS_VERSION}" = "0.3.20+ds-1"
 
       - name: Install basis set data
         run: git clone https://github.com/MolSSI-BSE/basis_set_exchange.git basis_set_exchange && git -C basis_set_exchange checkout 4adaf1372c7101620ca1a9f3130be9ae97fb8f30
