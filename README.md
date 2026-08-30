@@ -40,9 +40,9 @@
 
 ---
 
-`noci-rs` is an electronic-structure package for calculations in nonorthogonal determinant spaces. It supports reference nonorthogonal configuration interaction calculations, NOCI-PT2 corrections, selected NOCI calculations, and stochastic NOCI-QMC propagation. Experimental nonorthogonal coupled-cluster and NOCCMC methods are also under development.
+`noci-rs` is an electronic-structure package for calculations in nonorthogonal determinant spaces. It supports reference nonorthogonal configuration interaction calculations, NOCI-PT2 corrections, selected NOCI calculations, and stochastic NOCI-QMC propagation. Experimental nonorthogonal coupled-cluster and NOCCMC methods are also under development [19–21].
 
-The package uses libcint to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Nonorthogonal matrix elements are evaluated using the generalised Slater–Condon rules, the extended nonorthogonal Wick's theorem, or orthogonal shortcuts where possible. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCI-QMC and SNOCI/NOCI-PT2.
+The package uses libcint [S1] to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Nonorthogonal matrix elements are evaluated using the generalised Slater–Condon rules, the extended nonorthogonal Wick's theorem, or orthogonal shortcuts where possible. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCI-QMC and SNOCI/NOCI-PT2.
 
 ## Example Results
 
@@ -101,7 +101,7 @@ The corresponding input files are available in [`inputs/examples/`](inputs/examp
 - HDF5 development libraries compatible with the `hdf5` Rust crate.
 - OpenBLAS and LAPACK.
 - An MPI compiler and runtime.
-- MolSSI Basis Set Exchange data for named basis sets used by libcint. The
+- MolSSI Basis Set Exchange data [S2] for named basis sets used by libcint. The
   tested data version is `4adaf1372c7101620ca1a9f3130be9ae97fb8f30`. Set
   `BSE_DATA_DIR` to the `basis_set_exchange/data` directory, for example:
 
@@ -196,37 +196,45 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 
 ### SCF-State Generation
 
-- RHF and UHF SCF solutions with DIIS acceleration.
-- MOM state recipes using spin-density bias, spatial-density bias, and occupied–virtual excitation seeds.
-- SCF metadynamics for discovering multiple RHF and UHF solutions.
-- Holomorphic SCF optimisation for complex continuations of selected MOM states.
-- Geometry scans that reuse converged states as guesses at subsequent geometries.
+- RHF and UHF SCF solutions with DIIS acceleration [1].
+- Superposition-of-atomic-densities initial guesses [15].
+- MOM-guided SCF state generation [3], with spin-density bias, spatial-density bias, and occupied–virtual excitation recipes.
+- SCF metadynamics for discovering multiple RHF and UHF solutions [2].
+- Holomorphic SCF \(\lambda\) tracking through complex electron–electron interaction scaling, initialised from selected real MOM states [10, 11, 16].
+- Geometry scans that reuse converged states as guesses at subsequent geometries [11].
 
 ### Nonorthogonal Configuration Interaction
 
-- Reference NOCI using selected real or holomorphic SCF states.
+- Reference NOCI using selected real or holomorphic SCF states [9, 11].
 - Hamiltonian, overlap, and generalised Fock matrix construction.
-- Generalised Slater–Condon, extended nonorthogonal Wick's theorem, and orthogonal matrix-element implementations.
+- Generalised Slater–Condon matrix elements [4].
+- Extended nonorthogonal Wick's theorem matrix elements for arbitrary excitations [5, 12], with orthogonal shortcuts where applicable.
 - Wick's intermediates stored in memory or using a disk-backed cache.
 
 ### Selected NOCI and NOCI-PT2
 
 - Iterative candidate generation and determinant selection.
-- NOCI-PT2 candidate scoring and perturbative energy corrections.
-- GMRES solution of projected candidate-space equations.
+- NOCI-PT2 candidate scoring and perturbative energy corrections [8].
+- GMRES solution of projected candidate-space equations [14].
 - Diagonal and Woodbury preconditioners.
-- Optional imaginary shifts.
+- Optional NOCI-PT2 imaginary shifts [8].
 - Can use holomorphic SCF states.
 
 ### NOCI-QMC
 
 - Deterministic imaginary-time propagation with an optional dynamic shift.
-- Signed-walker stochastic propagation for shifted and difference-doubly-shifted propagators.
+- Signed-walker stochastic propagation [13].
+- Unshifted, shifted, doubly-shifted, and difference-doubly-shifted propagators for nonorthogonal and overcomplete spaces [17].
 - Direct-overlap stochastic propagation using a real metric population \(N_w = S_{wx}c_x\).
-- Uniform and heat-bath excitation generators.
-- Various propagators for nonorthogonal and overcomplete spaces.
+- Uniform and overlap-weighted excitation generators.
+- Exact heat-bath sampling [6].
 - MPI and Rayon parallelism.
 - Currently only supports real SCF states.
+
+### Experimental NOCC and NOCCMC
+
+- Generalised-normal-ordered, spin-free coupled cluster over a correlated NOCI reference [19, 21].
+- Stochastic NOCCMC propagation under active development [20].
 
 ### Parallelism
 
@@ -243,6 +251,7 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 - Optional plain-text Hamiltonian and overlap matrices.
 - Deterministic coefficient and excitation-histogram output.
 - Stochastic restart input and output.
+- Flyvbjerg–Petersen blocking analysis through [`scripts/blocking.py`](scripts/blocking.py) [18].
 
 
 ## Input Reference
@@ -285,7 +294,7 @@ mol = {
 
 ### SCF
 
-The optional `scf` table controls convergence of conventional RHF and UHF calculations together with the quasi-Newton optimisation used for holomorphic SCF states.
+The optional `scf` table controls convergence of conventional RHF and UHF calculations together with the inner optimisation used at each step of holomorphic SCF \(\lambda\) tracking [16].
 
 ```lua
 scf = {
@@ -311,7 +320,7 @@ scf = {
 }
 ```
 
-The outer entries control conventional SCF convergence. The nested `scf.h` table controls holomorphic SCF optimisation, including the gradient threshold, SR1 updates, maximum orbital-rotation step, backtracking line search, and optimisation history.
+The outer entries control conventional SCF convergence. The nested `scf.h` table controls the inner holomorphic SCF solve at each \(\lambda\) step, including the gradient threshold, SR1 updates, maximum orbital-rotation step, backtracking line search, and optimisation history.
 
 ### States
 
@@ -434,7 +443,7 @@ These options control the maximum number of propagation steps, convergence thres
 
 ### Stochastic Propagation
 
-The `qmc` table enables stochastic imaginary-time propagation. Shifted and difference-doubly-shifted propagators use the signed-walker population representation. The `direct-overlap` propagator uses a real metric population \(N_w = S_{wx}c_x\) and Fast Randomized Iteration-style compression to sample sparse spawning populations.
+The `qmc` table enables stochastic imaginary-time propagation. Shifted and difference-doubly-shifted propagators use the signed-walker population representation. The `direct-overlap` propagator uses a real metric population \(N_w = S_{wx}c_x\) and Fast Randomized Iteration-style compression [7] to sample sparse spawning populations.
 
 ```lua
 qmc = {
@@ -443,9 +452,13 @@ qmc = {
     shift_damping = 5e-4,
     ncycles = 1e1,
     nreports = 1e3,
-    sampling_cutoff = 1.0,
+    sampling_cutoff1 = 1.0,
+    sampling_cutoff2 = 0.0,
     spawn_cutoff = 0.25,
     excitation_gen = "uniform",
+    factor_tables = "ram",
+    overlap_weight = 0.0,
+    optimise_overlap_weight = false,
     seed = 92774801300236626,
 }
 ```
@@ -454,10 +467,13 @@ Available excitation generators are:
 
 - `uniform`
 - `heat-bath`
+- `overlap-weighted`
 
 Exact heat-bath sampling is very expensive.
 
-For `direct-overlap`, `sampling_cutoff` controls the stochastic compression threshold used to sample the persistent metric population, and `spawn_cutoff` controls the stochastic compression threshold for generated population changes.
+The `overlap-weighted` generator mixes uniform sampling with a factorised proposal proportional to the absolute determinant overlap, \(|S_{wx}|\). `overlap_weight` sets the overlap branch probability in the range \(0 \le p < 1\), while `optimise_overlap_weight = true` adapts it between report blocks using the sampled second moment. The required overlap factor tables may use `factor_tables = "ram"` or `factor_tables = "disk"`.
+
+For `direct-overlap`, `sampling_cutoff1` controls the stochastic compression threshold used to sample the persistent metric population, `sampling_cutoff2` controls compression before applying the overlap, and `spawn_cutoff` controls compression of generated population changes.
 
 ### Selected NOCI and NOCI-PT2
 
@@ -533,23 +549,57 @@ Defaults are defined by the input structures under
 
 `noci-rs` is not yet associated with a dedicated software publication. Until one is available, cite the repository and the relevant method publications listed below.
 
+Markers [1]–[21] refer to method publications; [S1]–[S2] refer to software and data publications.
+
 ### Method References
 
-1. Tracy P. Hamilton and Peter Pulay. Direct inversion in the iterative subspace optimisation of open-shell, excited-state, and small multiconfiguration SCF wave functions. *The Journal of Chemical Physics* **84**, 5728–5734 (1986).
+1. Tracy P. Hamilton and Peter Pulay. Direct inversion in the iterative subspace (DIIS) optimization of open-shell, excited-state, and small multiconfiguration SCF wave functions. *The Journal of Chemical Physics* **84**, 5728–5734 (1986).
 
 2. Alex J. W. Thom and Martin Head-Gordon. Locating multiple self-consistent field solutions: An approach inspired by metadynamics. *Physical Review Letters* **101**, 193001 (2008).
 
-3. Andrew T. B. Gilbert, Nicholas A. Besley, and Peter M. W. Gill. Self-consistent field calculations of excited states using the maximum overlap method. *The Journal of Physical Chemistry A* **112**, 13164–13171 (2008).
+3. Andrew T. B. Gilbert, Nicholas A. Besley, and Peter M. W. Gill. Self-consistent field calculations of excited states using the maximum overlap method (MOM). *The Journal of Physical Chemistry A* **112**, 13164–13171 (2008).
 
 4. István Mayer. *Simple Theorems, Proofs, and Derivations in Quantum Chemistry*. Springer (2003).
 
-5. Hugh G. A. Burton. Generalized nonorthogonal matrix elements II: Extension to arbitrary excitations. *The Journal of Chemical Physics* **157**, 204109 (2022).
+5. Hugh G. A. Burton. Generalized nonorthogonal matrix elements. II: Extension to arbitrary excitations. *The Journal of Chemical Physics* **157**, 204109 (2022).
 
 6. Adam A. Holmes, Hitesh J. Changlani, and C. J. Umrigar. Efficient heat-bath sampling in Fock space. *Journal of Chemical Theory and Computation* **12**, 1561–1571 (2016).
 
 7. Samuel M. Greene, Robert J. Webber, Jonathan Weare, and Timothy C. Berkelbach. Beyond walkers in stochastic quantum chemistry: Reducing error using fast randomized iteration. *Journal of Chemical Theory and Computation* **15**, 4834–4850 (2019).
 
 8. Hugh G. A. Burton and Alex J. W. Thom. Reaching full correlation through nonorthogonal configuration interaction: A second-order perturbative approach. *Journal of Chemical Theory and Computation* **16**, 5586–5600 (2020).
+
+9. Alex J. W. Thom and Martin Head-Gordon. Hartree–Fock solutions as a quasidiabatic basis for nonorthogonal configuration interaction. *The Journal of Chemical Physics* **131**, 124113 (2009).
+
+10. Hugh G. A. Burton and Alex J. W. Thom. Holomorphic Hartree–Fock theory: An inherently multireference approach. *Journal of Chemical Theory and Computation* **12**, 167–173 (2016).
+
+11. Hugh G. A. Burton and Alex J. W. Thom. General approach for multireference ground and excited states using nonorthogonal configuration interaction. *Journal of Chemical Theory and Computation* **15**, 4851–4861 (2019).
+
+12. Hugh G. A. Burton. Generalized nonorthogonal matrix elements: Unifying Wick's theorem and the Slater–Condon rules. *The Journal of Chemical Physics* **154**, 144109 (2021).
+
+13. George H. Booth, Alex J. W. Thom, and Ali Alavi. Fermion Monte Carlo without fixed nodes: A game of life, death, and annihilation in Slater determinant space. *The Journal of Chemical Physics* **131**, 054106 (2009).
+
+14. Youcef Saad and Martin H. Schultz. GMRES: A generalized minimal residual algorithm for solving nonsymmetric linear systems. *SIAM Journal on Scientific and Statistical Computing* **7**, 856–869 (1986).
+
+15. J. H. van Lenthe, Renate Zwaans, Huub J. J. van Dam, and M. F. Guest. Starting SCF calculations by superposition of atomic densities. *Journal of Computational Chemistry* **27**, 926–932 (2006).
+
+16. Hugh G. A. Burton, Alex J. W. Thom, and Pierre-François Loos. Complex adiabatic connection: A hidden non-Hermitian path from ground to excited states. *The Journal of Chemical Physics* **150**, 041103 (2019).
+
+17. Moritz K. A. Baumgarten. *Nonorthogonal and Overcomplete Hilbert Spaces for Quantum Monte Carlo Methods*. Master's thesis, University of Cambridge (2023).
+
+18. Henrik Flyvbjerg and Henrik Gordon Petersen. Error estimates on averages of correlated data. *The Journal of Chemical Physics* **91**, 461–466 (1989).
+
+19. Werner Kutzelnigg and Debashis Mukherjee. Normal order and extended Wick theorem for a multiconfiguration reference wave function. *The Journal of Chemical Physics* **107**, 432–449 (1997).
+
+20. Alex J. W. Thom. Stochastic coupled cluster theory. *Physical Review Letters* **105**, 263004 (2010).
+
+21. Nicholas Lee and David P. Tew. Spin-free generalized normal ordered coupled cluster. *The Journal of Chemical Physics* **164**, 134118 (2026).
+
+### Software and Data References
+
+- **S1.** Qiming Sun. Libcint: An efficient general integral library for Gaussian basis functions. *Journal of Computational Chemistry* **36**, 1664–1671 (2015).
+
+- **S2.** Benjamin P. Pritchard, Doaa Altarawy, Brett Didier, Tara D. Gibson, and Theresa L. Windus. New Basis Set Exchange: An open, up-to-date resource for the molecular sciences community. *Journal of Chemical Information and Modeling* **59**, 4814–4820 (2019).
 
 ## Licence
 

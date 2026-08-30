@@ -537,21 +537,12 @@ impl F64x8 {
 
     /// Construct eight packed real values from independent scalar lanes.
     /// # Arguments:
-    /// - `v0` through `v7`: Independent scalar lane values.
+    /// - `values`: Independent scalar lane values.
     /// # Returns
     /// - `F64x8`: Packed values in array order.
     #[inline(always)]
-    pub(super) fn from_values(
-        v0: f64,
-        v1: f64,
-        v2: f64,
-        v3: f64,
-        v4: f64,
-        v5: f64,
-        v6: f64,
-        v7: f64,
-    ) -> Self {
-        unsafe { Self(_mm512_set_pd(v7, v6, v5, v4, v3, v2, v1, v0)) }
+    pub(super) fn from_values(values: [f64; 8]) -> Self {
+        unsafe { Self(_mm512_loadu_pd(values.as_ptr())) }
     }
 
     /// Load eight real lane values.
@@ -771,20 +762,12 @@ impl C64x8 {
 
     /// Construct eight packed complex values from independent scalar lanes.
     /// # Arguments:
-    /// - `v0` through `v7`: Independent scalar lane values.
+    /// - `values`: Independent scalar lane values.
     /// # Returns
     /// - `C64x8`: Packed complex values in array order.
     #[inline(always)]
-    pub(super) fn from_values(
-        v0: Complex64,
-        v1: Complex64,
-        v2: Complex64,
-        v3: Complex64,
-        v4: Complex64,
-        v5: Complex64,
-        v6: Complex64,
-        v7: Complex64,
-    ) -> Self {
+    pub(super) fn from_values(values: [Complex64; 8]) -> Self {
+        let [v0, v1, v2, v3, v4, v5, v6, v7] = values;
         unsafe {
             Self {
                 re: _mm512_set_pd(v7.re, v6.re, v5.re, v4.re, v3.re, v2.re, v1.re, v0.re),

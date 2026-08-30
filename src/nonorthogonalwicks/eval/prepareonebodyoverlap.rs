@@ -25,6 +25,36 @@ use super::prepare::construct_determinant_indices;
 #[cfg(target_arch = "x86_64")]
 use super::simd::{C64x4, C64x8, F64x4, F64x8};
 
+#[cfg(target_arch = "x86_64")]
+type PreparedSimdKernel<T, R, const N: usize> = for<'a> unsafe fn(
+    &SameSpinView<'a, T>,
+    &ExcitationSpinCache,
+    &[ExcitationSpinCache; N],
+    &mut [R],
+    &mut [R],
+);
+
+/// Immutable determinant and excitation metadata shared by same-spin SIMD paths.
+#[cfg(target_arch = "x86_64")]
+struct SameSpinSimdInput<'a> {
+    /// Reduced target spin representative shared by this factor row.
+    target: ReducedOneSpinDetState,
+    /// Reduced source spin representatives in output-column order.
+    sources: &'a [ReducedOneSpinDetState],
+    /// Logical source component IDs in fixed-rank Wick evaluation order.
+    source_order: &'a [usize],
+    /// Boundaries of equal-rank, common-hole source groups in `source_order`.
+    source_groups: &'a [usize],
+    /// Source excitation caches in fixed-rank Wick evaluation order.
+    source_caches: &'a [ExcitationSpinCache],
+    /// Source excitation phases in fixed-rank Wick evaluation order.
+    source_phases: &'a [f64],
+    /// Whether target determinant belongs to left Wick reference.
+    target_left: bool,
+    /// Whether alpha-spin rather than beta-spin factors are being evaluated.
+    alpha: bool,
+}
+
 /// Inputs and outputs for one row of same-spin one-body factors.
 pub(crate) struct SameSpinOneBodyBatch<'a, T: NOCIScalar> {
     /// Determinant basis used by scalar fallback evaluation.
@@ -95,15 +125,16 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
             if try_xw_f_overlap_prepared_f64_simd(
                 w,
                 basis,
-                (
+                SameSpinSimdInput {
                     target,
                     sources,
                     source_order,
                     source_groups,
                     source_caches,
                     source_phases,
-                ),
-                (target_left, alpha),
+                    target_left,
+                    alpha,
+                },
                 scratch,
                 tol,
                 (overlap_f64, fock_f64),
@@ -128,15 +159,16 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
             if try_xw_f_overlap_prepared_c64_simd(
                 w,
                 basis,
-                (
+                SameSpinSimdInput {
                     target,
                     sources,
                     source_order,
                     source_groups,
                     source_caches,
                     source_phases,
-                ),
-                (target_left, alpha),
+                    target_left,
+                    alpha,
+                },
                 scratch,
                 tol,
                 (overlap_c64, fock_c64),
@@ -250,8 +282,7 @@ fn xw_f_overlap_prepared_scalar_value<T: NOCIScalar>(
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
 /// - `basis`: Determinant basis containing full excitation masks.
-/// - `reps`: Target representative, source representatives and source evaluation metadata.
-/// - `flags`: Whether the target is left, and whether alpha-spin factors are being evaluated.
+/// - `input`: Target/source representatives, evaluation metadata, and spin/orientation flags.
 /// - `scratch`: Reusable same-spin Wick evaluator workspace.
 /// - `tol`: Numerical tolerance used by scalar fallback evaluation.
 /// - `out`: Real overlap and generalised-Fock output rows.
@@ -263,21 +294,21 @@ fn xw_f_overlap_prepared_scalar_value<T: NOCIScalar>(
 unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     basis: &[DetState<T>],
-    reps: (
-        ReducedOneSpinDetState,
-        &[ReducedOneSpinDetState],
-        &[usize],
-        &[usize],
-        &[ExcitationSpinCache],
-        &[f64],
-    ),
-    flags: (bool, bool),
+    input: SameSpinSimdInput<'_>,
     scratch: &mut WickScratch<T>,
     tol: f64,
     out: (&mut [f64], &mut [f64]),
 ) -> bool {
-    let (target_rep, sources, source_order, source_groups, source_caches, source_phases) = reps;
-    let (target_left, alpha) = flags;
+    let SameSpinSimdInput {
+        target: target_rep,
+        sources,
+        source_order,
+        source_groups,
+        source_caches,
+        source_phases,
+        target_left,
+        alpha,
+    } = input;
     let (overlap, fock) = out;
     let target_cache = target_rep.excitation_cache;
     let target_phase = target_rep.phase;
@@ -298,13 +329,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                     } else {
                         (source_rank, target_rank)
                     };
-                    let kernel: for<'a> unsafe fn(
-                        &SameSpinView<'a, T>,
-                        &ExcitationSpinCache,
-                        &[ExcitationSpinCache; 8],
-                        &mut [f64],
-                        &mut [f64],
-                    ) = if target_left {
+                    let kernel: PreparedSimdKernel<T, f64, 8> = if target_left {
                         match ranks {
                             (0, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 1, 1, true>,
                             (1, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 0, 1, true>,
@@ -368,8 +393,8 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                         let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 8];
 
-                        for lane in 0..count {
-                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
+                        for (lane, value) in packet.iter_mut().enumerate().take(count) {
+                            *value = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [0.0f64; 8];
@@ -422,13 +447,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                     } else {
                         (source_rank, target_rank)
                     };
-                    let kernel: for<'a> unsafe fn(
-                        &SameSpinView<'a, T>,
-                        &ExcitationSpinCache,
-                        &[ExcitationSpinCache; 4],
-                        &mut [f64],
-                        &mut [f64],
-                    ) = if target_left {
+                    let kernel: PreparedSimdKernel<T, f64, 4> = if target_left {
                         match ranks {
                             (0, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 1, 1, true>,
                             (1, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 0, 1, true>,
@@ -492,8 +511,8 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                         let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 4];
 
-                        for lane in 0..count {
-                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
+                        for (lane, value) in packet.iter_mut().enumerate().take(count) {
+                            *value = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [0.0f64; 4];
@@ -541,8 +560,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `T = Complex64` and `m = 0`.
 /// - `basis`: Determinant basis containing full excitation masks.
-/// - `reps`: Target representative, source representatives and source evaluation metadata.
-/// - `flags`: Whether the target is left, and whether alpha-spin factors are being evaluated.
+/// - `input`: Target/source representatives, evaluation metadata, and spin/orientation flags.
 /// - `scratch`: Reusable same-spin Wick evaluator workspace.
 /// - `tol`: Numerical tolerance used by scalar fallback evaluation.
 /// - `out`: Complex overlap and generalised-Fock output rows.
@@ -554,21 +572,21 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
 unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     basis: &[DetState<T>],
-    reps: (
-        ReducedOneSpinDetState,
-        &[ReducedOneSpinDetState],
-        &[usize],
-        &[usize],
-        &[ExcitationSpinCache],
-        &[f64],
-    ),
-    flags: (bool, bool),
+    input: SameSpinSimdInput<'_>,
     scratch: &mut WickScratch<T>,
     tol: f64,
     out: (&mut [Complex64], &mut [Complex64]),
 ) -> bool {
-    let (target_rep, sources, source_order, source_groups, source_caches, source_phases) = reps;
-    let (target_left, alpha) = flags;
+    let SameSpinSimdInput {
+        target: target_rep,
+        sources,
+        source_order,
+        source_groups,
+        source_caches,
+        source_phases,
+        target_left,
+        alpha,
+    } = input;
     let (overlap, fock) = out;
     let target_cache = target_rep.excitation_cache;
     let target_phase = target_rep.phase;
@@ -589,13 +607,7 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                     } else {
                         (source_rank, target_rank)
                     };
-                    let kernel: for<'a> unsafe fn(
-                        &SameSpinView<'a, T>,
-                        &ExcitationSpinCache,
-                        &[ExcitationSpinCache; 8],
-                        &mut [Complex64],
-                        &mut [Complex64],
-                    ) = if target_left {
+                    let kernel: PreparedSimdKernel<T, Complex64, 8> = if target_left {
                         match ranks {
                             (0, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 1, 1, true>,
                             (1, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 0, 1, true>,
@@ -659,8 +671,8 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                         let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 8];
 
-                        for lane in 0..count {
-                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
+                        for (lane, value) in packet.iter_mut().enumerate().take(count) {
+                            *value = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [Complex64::new(0.0, 0.0); 8];
@@ -713,13 +725,7 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                     } else {
                         (source_rank, target_rank)
                     };
-                    let kernel: for<'a> unsafe fn(
-                        &SameSpinView<'a, T>,
-                        &ExcitationSpinCache,
-                        &[ExcitationSpinCache; 4],
-                        &mut [Complex64],
-                        &mut [Complex64],
-                    ) = if target_left {
+                    let kernel: PreparedSimdKernel<T, Complex64, 4> = if target_left {
                         match ranks {
                             (0, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 1, 1, true>,
                             (1, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 0, 1, true>,
@@ -783,8 +789,8 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                         let fill_cache = *source_caches.get_unchecked(packet_start);
                         let mut packet = [fill_cache; 4];
 
-                        for lane in 0..count {
-                            packet[lane] = *source_caches.get_unchecked(packet_start + lane);
+                        for (lane, value) in packet.iter_mut().enumerate().take(count) {
+                            *value = *source_caches.get_unchecked(packet_start + lane);
                         }
 
                         let mut s = [Complex64::new(0.0, 0.0); 4];
@@ -1927,7 +1933,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         let col5 = col_index(z, 5);
                         let col6 = col_index(z, 6);
                         let col7 = col_index(z, 7);
-                        F64x8::from_values(
+                        F64x8::from_values([
                             *matrix.add(row_base + col0),
                             *matrix.add(row_base + col1),
                             *matrix.add(row_base + col2),
@@ -1936,7 +1942,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             *matrix.add(row_base + col5),
                             *matrix.add(row_base + col6),
                             *matrix.add(row_base + col7),
-                        )
+                        ])
                     } else {
                         let col = col_index(z, 0);
                         let row0 = row_index(eta, 0);
@@ -1947,7 +1953,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         let row5 = row_index(eta, 5);
                         let row6 = row_index(eta, 6);
                         let row7 = row_index(eta, 7);
-                        F64x8::from_values(
+                        F64x8::from_values([
                             *matrix.add(row0 * n + col),
                             *matrix.add(row1 * n + col),
                             *matrix.add(row2 * n + col),
@@ -1956,7 +1962,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             *matrix.add(row5 * n + col),
                             *matrix.add(row6 * n + col),
                             *matrix.add(row7 * n + col),
-                        )
+                        ])
                     }
                 };
                 let fvec = |eta: usize, z: usize| -> F64x8 {
@@ -1976,7 +1982,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         let col5 = col_index(z, 5);
                         let col6 = col_index(z, 6);
                         let col7 = col_index(z, 7);
-                        F64x8::from_values(
+                        F64x8::from_values([
                             *fsl.add(col0 * n + row),
                             *fsl.add(col1 * n + row),
                             *fsl.add(col2 * n + row),
@@ -1985,7 +1991,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             *fsl.add(col5 * n + row),
                             *fsl.add(col6 * n + row),
                             *fsl.add(col7 * n + row),
-                        )
+                        ])
                     } else {
                         let col_base = col_index(z, 0) * n;
                         let row0 = row_index(eta, 0);
@@ -1996,7 +2002,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         let row5 = row_index(eta, 5);
                         let row6 = row_index(eta, 6);
                         let row7 = row_index(eta, 7);
-                        F64x8::from_values(
+                        F64x8::from_values([
                             *fsl.add(col_base + row0),
                             *fsl.add(col_base + row1),
                             *fsl.add(col_base + row2),
@@ -2005,7 +2011,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             *fsl.add(col_base + row5),
                             *fsl.add(col_base + row6),
                             *fsl.add(col_base + row7),
-                        )
+                        ])
                     }
                 };
                 let zero = F64x8::zero();
@@ -2375,7 +2381,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         let col5 = col_index(z, 5);
                         let col6 = col_index(z, 6);
                         let col7 = col_index(z, 7);
-                        C64x8::from_values(
+                        C64x8::from_values([
                             *matrix.add(row_base + col0),
                             *matrix.add(row_base + col1),
                             *matrix.add(row_base + col2),
@@ -2384,7 +2390,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             *matrix.add(row_base + col5),
                             *matrix.add(row_base + col6),
                             *matrix.add(row_base + col7),
-                        )
+                        ])
                     } else {
                         let col = col_index(z, 0);
                         let row0 = row_index(eta, 0);
@@ -2395,7 +2401,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         let row5 = row_index(eta, 5);
                         let row6 = row_index(eta, 6);
                         let row7 = row_index(eta, 7);
-                        C64x8::from_values(
+                        C64x8::from_values([
                             *matrix.add(row0 * n + col),
                             *matrix.add(row1 * n + col),
                             *matrix.add(row2 * n + col),
@@ -2404,7 +2410,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             *matrix.add(row5 * n + col),
                             *matrix.add(row6 * n + col),
                             *matrix.add(row7 * n + col),
-                        )
+                        ])
                     }
                 };
                 let load_f = |eta: usize, z: usize| -> C64x8 {
@@ -2427,7 +2433,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         let col5 = col_index(z, 5);
                         let col6 = col_index(z, 6);
                         let col7 = col_index(z, 7);
-                        C64x8::from_values(
+                        C64x8::from_values([
                             *fsl.add(col0 * n + row),
                             *fsl.add(col1 * n + row),
                             *fsl.add(col2 * n + row),
@@ -2436,7 +2442,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             *fsl.add(col5 * n + row),
                             *fsl.add(col6 * n + row),
                             *fsl.add(col7 * n + row),
-                        )
+                        ])
                     } else {
                         let col_base = col_index(z, 0) * n;
                         let row0 = row_index(eta, 0);
@@ -2447,7 +2453,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         let row5 = row_index(eta, 5);
                         let row6 = row_index(eta, 6);
                         let row7 = row_index(eta, 7);
-                        C64x8::from_values(
+                        C64x8::from_values([
                             *fsl.add(col_base + row0),
                             *fsl.add(col_base + row1),
                             *fsl.add(col_base + row2),
@@ -2456,7 +2462,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             *fsl.add(col_base + row5),
                             *fsl.add(col_base + row6),
                             *fsl.add(col_base + row7),
-                        )
+                        ])
                     }
                 };
                 let zero = C64x8::zero();
