@@ -1,12 +1,12 @@
 mod common;
 
 // External crate imports.
-use noci_rs::PostSCFData;
 use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
 use noci_rs::noci::{
     NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
 };
 use noci_rs::snoci::snoci_step;
+use noci_rs::{HSCFState, PostSCFData};
 use num_complex::Complex64;
 use serde::Deserialize;
 use serial_test::serial;
@@ -158,6 +158,72 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
         assert!(
             pt2.gmres_converged,
             "SNOCI GMRES failed to converge: residual {}",
+            pt2.gmres_residual,
+        );
+    }
+
+    (scf_energies, e_ref, result.ecurrent)
+}
+
+/// Run selected NOCI with real SCF references promoted to complex arithmetic and complex Wick's
+/// intermediates. This exercises the complex scalar and SIMD factor-table paths while retaining a
+/// real-valued reference result for direct comparison with the corresponding real fixture.
+/// # Arguments:
+/// - `fixture`: Name of the real-valued Wick's fixture to load.
+/// # Returns:
+/// - `(Vec<f64>, f64, f64)`: Sorted SCF state energies, the complex reference NOCI energy and the
+///   selected NOCI energy.
+fn run_complex_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
+    let (mut input, ao, _expected): (_, _, ExpectedSNOCI) = load_test(fixture);
+
+    let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
+    let mut scf_energies: Vec<f64> = basis.states.iter().map(|s| s.e).collect();
+    scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let states: Vec<HSCFState> = basis.states.iter().map(HSCFState::from_real).collect();
+    let mut noci_reference_basis: Vec<_> =
+        states.iter().filter(|s| s.noci_basis).cloned().collect();
+    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
+        st.parent = i;
+    }
+
+    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let (_mpi_lock, universe) = mpi_universe();
+    let world = universe.world();
+    let mut wicks =
+        build_wicks_shared::<Complex64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+    let (e_ref, _c0, _dt_hs_ref) = calculate_noci_energy(
+        &ao,
+        &input,
+        &noci_reference_basis,
+        1e-12,
+        &mocache,
+        Some(wicks.view()),
+    );
+
+    let post = PostSCFData {
+        ao: &ao,
+        states: &states,
+        noci_reference_basis: &noci_reference_basis,
+        mocache: &mocache,
+        tol: 1e-12,
+    };
+    let result = snoci_step::<Complex64, Complex64>(
+        &post,
+        &noci_reference_basis,
+        &input,
+        Some(&mut wicks),
+        &world,
+    );
+
+    assert!(
+        !result.pt2.is_empty(),
+        "complex SNOCI did not produce a NOCI-PT2 result"
+    );
+    for pt2 in &result.pt2 {
+        assert!(
+            pt2.gmres_converged,
+            "complex SNOCI GMRES failed to converge: residual {}",
             pt2.gmres_residual,
         );
     }
@@ -408,6 +474,41 @@ fn snoci_h4_sto_3g_1_5_ang_energies_wicks_factor_tables_none() {
         expected.snoci_energy,
         1e-8,
         "H4 selected NOCI energy",
+    );
+}
+
+/// Test factorised selected NOCI with complex-valued Wick's intermediates. The real references are
+/// promoted exactly, so complex scalar, AVX2 and AVX-512 runs must reproduce the real fixture.
+/// # Panics
+/// - If SCF, reference NOCI or selected NOCI energies differ from the real fixture.
+/// - If the complex NOCI-PT2 GMRES solve does not converge.
+#[test]
+#[serial]
+fn snoci_h4_sto_3g_1_5_ang_energies_complex_wicks_factor_tables_none() {
+    let (_input, _ao, expected): (_, _, ExpectedSNOCI) =
+        load_test("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+    let (got_scf, got_ref, got_snoci) =
+        run_complex_snoci_fixture_wicks("SNOCI_H4_STO-3G_1_5_WICKS_FULL_M_NONE_FACTOR_TABLES_NONE");
+
+    let mut want_scf = expected.scf_energies;
+    want_scf.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    assert_eq!(got_scf.len(), want_scf.len());
+    for (i, (&x, &y)) in got_scf.iter().zip(want_scf.iter()).enumerate() {
+        assert_close(x, y, 1e-8, &format!("H4 complex-path SCF state {i}"));
+    }
+
+    assert_close(
+        got_ref,
+        expected.reference_noci_energy,
+        1e-8,
+        "H4 complex-path reference NOCI energy",
+    );
+    assert_close(
+        got_snoci,
+        expected.snoci_energy,
+        1e-8,
+        "H4 complex-path selected NOCI energy",
     );
 }
 

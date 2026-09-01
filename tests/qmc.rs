@@ -555,3 +555,19 @@ fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
 fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
     assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_DIRECT_OVERLAP_WICKS_SDT");
 }
+
+/// Test that a short H6 STO-3G overlap-weighted Wick QMC trajectory reproduces the stored
+/// deterministic QMC trajectory.
+/// # Arguments:
+/// - None.
+/// # Returns
+/// - `()`: The trajectory matches the stored report energies.
+/// # Panics
+/// - If the binary run fails.
+/// - If the report trajectory length differs from the stored trajectory.
+/// - If any report energy differs from the stored trajectory outside tolerance.
+#[test]
+#[serial]
+fn qmc_h6_sto_3g_1_5_ang_overlap_weighted_wicks_trajectory() {
+    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_OVERLAP_WEIGHTED_WICKS");
+}
