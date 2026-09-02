@@ -18,6 +18,7 @@ use crate::{DetState, ExcitationSpin, ExcitationSpinCache, ReducedOneSpinDetStat
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
+use super::dispatch::dispatch_onebody_ranks;
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, mix_dets_same,
 };
@@ -330,41 +331,17 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                         (source_rank, target_rank)
                     };
                     let kernel: PreparedSimdKernel<T, f64, 8> = if target_left {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 1, 1, true>,
-                            (1, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 0, 1, true>,
-                            (0, 2) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 2, 2, true>,
-                            (1, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 1, 2, true>,
-                            (2, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 2, 0, 2, true>,
-                            (0, 3) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 3, 3, true>,
-                            (1, 2) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 2, 3, true>,
-                            (2, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 2, 1, 3, true>,
-                            (3, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 3, 0, 3, true>,
-                            (0, 4) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 4, 4, true>,
-                            (1, 3) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 3, 4, true>,
-                            (2, 2) => xw_f_overlap_m0_prepared_f64x8_const::<T, 2, 2, 4, true>,
-                            (3, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 3, 1, 4, true>,
-                            (4, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 4, 0, 4, true>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_f64x8_const::<T, RX, RW, L, true>,
+                            unreachable!(),
+                        )
                     } else {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 1, 1, false>,
-                            (1, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 0, 1, false>,
-                            (0, 2) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 2, 2, false>,
-                            (1, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 1, 2, false>,
-                            (2, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 2, 0, 2, false>,
-                            (0, 3) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 3, 3, false>,
-                            (1, 2) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 2, 3, false>,
-                            (2, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 2, 1, 3, false>,
-                            (3, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 3, 0, 3, false>,
-                            (0, 4) => xw_f_overlap_m0_prepared_f64x8_const::<T, 0, 4, 4, false>,
-                            (1, 3) => xw_f_overlap_m0_prepared_f64x8_const::<T, 1, 3, 4, false>,
-                            (2, 2) => xw_f_overlap_m0_prepared_f64x8_const::<T, 2, 2, 4, false>,
-                            (3, 1) => xw_f_overlap_m0_prepared_f64x8_const::<T, 3, 1, 4, false>,
-                            (4, 0) => xw_f_overlap_m0_prepared_f64x8_const::<T, 4, 0, 4, false>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_f64x8_const::<T, RX, RW, L, false>,
+                            unreachable!(),
+                        )
                     };
                     let mut packet_start = group_start;
 
@@ -448,41 +425,17 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                         (source_rank, target_rank)
                     };
                     let kernel: PreparedSimdKernel<T, f64, 4> = if target_left {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 1, 1, true>,
-                            (1, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 0, 1, true>,
-                            (0, 2) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 2, 2, true>,
-                            (1, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 1, 2, true>,
-                            (2, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 2, 0, 2, true>,
-                            (0, 3) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 3, 3, true>,
-                            (1, 2) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 2, 3, true>,
-                            (2, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 2, 1, 3, true>,
-                            (3, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 3, 0, 3, true>,
-                            (0, 4) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 4, 4, true>,
-                            (1, 3) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 3, 4, true>,
-                            (2, 2) => xw_f_overlap_m0_prepared_f64x4_const::<T, 2, 2, 4, true>,
-                            (3, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 3, 1, 4, true>,
-                            (4, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 4, 0, 4, true>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_f64x4_const::<T, RX, RW, L, true>,
+                            unreachable!(),
+                        )
                     } else {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 1, 1, false>,
-                            (1, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 0, 1, false>,
-                            (0, 2) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 2, 2, false>,
-                            (1, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 1, 2, false>,
-                            (2, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 2, 0, 2, false>,
-                            (0, 3) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 3, 3, false>,
-                            (1, 2) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 2, 3, false>,
-                            (2, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 2, 1, 3, false>,
-                            (3, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 3, 0, 3, false>,
-                            (0, 4) => xw_f_overlap_m0_prepared_f64x4_const::<T, 0, 4, 4, false>,
-                            (1, 3) => xw_f_overlap_m0_prepared_f64x4_const::<T, 1, 3, 4, false>,
-                            (2, 2) => xw_f_overlap_m0_prepared_f64x4_const::<T, 2, 2, 4, false>,
-                            (3, 1) => xw_f_overlap_m0_prepared_f64x4_const::<T, 3, 1, 4, false>,
-                            (4, 0) => xw_f_overlap_m0_prepared_f64x4_const::<T, 4, 0, 4, false>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_f64x4_const::<T, RX, RW, L, false>,
+                            unreachable!(),
+                        )
                     };
                     let mut packet_start = group_start;
 
@@ -608,41 +561,17 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                         (source_rank, target_rank)
                     };
                     let kernel: PreparedSimdKernel<T, Complex64, 8> = if target_left {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 1, 1, true>,
-                            (1, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 0, 1, true>,
-                            (0, 2) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 2, 2, true>,
-                            (1, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 1, 2, true>,
-                            (2, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 2, 0, 2, true>,
-                            (0, 3) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 3, 3, true>,
-                            (1, 2) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 2, 3, true>,
-                            (2, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 2, 1, 3, true>,
-                            (3, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 3, 0, 3, true>,
-                            (0, 4) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 4, 4, true>,
-                            (1, 3) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 3, 4, true>,
-                            (2, 2) => xw_f_overlap_m0_prepared_c64x8_const::<T, 2, 2, 4, true>,
-                            (3, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 3, 1, 4, true>,
-                            (4, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 4, 0, 4, true>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_c64x8_const::<T, RX, RW, L, true>,
+                            unreachable!(),
+                        )
                     } else {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 1, 1, false>,
-                            (1, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 0, 1, false>,
-                            (0, 2) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 2, 2, false>,
-                            (1, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 1, 2, false>,
-                            (2, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 2, 0, 2, false>,
-                            (0, 3) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 3, 3, false>,
-                            (1, 2) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 2, 3, false>,
-                            (2, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 2, 1, 3, false>,
-                            (3, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 3, 0, 3, false>,
-                            (0, 4) => xw_f_overlap_m0_prepared_c64x8_const::<T, 0, 4, 4, false>,
-                            (1, 3) => xw_f_overlap_m0_prepared_c64x8_const::<T, 1, 3, 4, false>,
-                            (2, 2) => xw_f_overlap_m0_prepared_c64x8_const::<T, 2, 2, 4, false>,
-                            (3, 1) => xw_f_overlap_m0_prepared_c64x8_const::<T, 3, 1, 4, false>,
-                            (4, 0) => xw_f_overlap_m0_prepared_c64x8_const::<T, 4, 0, 4, false>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_c64x8_const::<T, RX, RW, L, false>,
+                            unreachable!(),
+                        )
                     };
                     let mut packet_start = group_start;
 
@@ -726,41 +655,17 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                         (source_rank, target_rank)
                     };
                     let kernel: PreparedSimdKernel<T, Complex64, 4> = if target_left {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 1, 1, true>,
-                            (1, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 0, 1, true>,
-                            (0, 2) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 2, 2, true>,
-                            (1, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 1, 2, true>,
-                            (2, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 2, 0, 2, true>,
-                            (0, 3) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 3, 3, true>,
-                            (1, 2) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 2, 3, true>,
-                            (2, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 2, 1, 3, true>,
-                            (3, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 3, 0, 3, true>,
-                            (0, 4) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 4, 4, true>,
-                            (1, 3) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 3, 4, true>,
-                            (2, 2) => xw_f_overlap_m0_prepared_c64x4_const::<T, 2, 2, 4, true>,
-                            (3, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 3, 1, 4, true>,
-                            (4, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 4, 0, 4, true>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_c64x4_const::<T, RX, RW, L, true>,
+                            unreachable!(),
+                        )
                     } else {
-                        match ranks {
-                            (0, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 1, 1, false>,
-                            (1, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 0, 1, false>,
-                            (0, 2) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 2, 2, false>,
-                            (1, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 1, 2, false>,
-                            (2, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 2, 0, 2, false>,
-                            (0, 3) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 3, 3, false>,
-                            (1, 2) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 2, 3, false>,
-                            (2, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 2, 1, 3, false>,
-                            (3, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 3, 0, 3, false>,
-                            (0, 4) => xw_f_overlap_m0_prepared_c64x4_const::<T, 0, 4, 4, false>,
-                            (1, 3) => xw_f_overlap_m0_prepared_c64x4_const::<T, 1, 3, 4, false>,
-                            (2, 2) => xw_f_overlap_m0_prepared_c64x4_const::<T, 2, 2, 4, false>,
-                            (3, 1) => xw_f_overlap_m0_prepared_c64x4_const::<T, 3, 1, 4, false>,
-                            (4, 0) => xw_f_overlap_m0_prepared_c64x4_const::<T, 4, 0, 4, false>,
-                            _ => unreachable!(),
-                        }
+                        dispatch_onebody_ranks!(
+                            ranks,
+                            |RX, RW, L| xw_f_overlap_m0_prepared_c64x4_const::<T, RX, RW, L, false>,
+                            unreachable!(),
+                        )
                     };
                     let mut packet_start = group_start;
 
@@ -898,26 +803,17 @@ fn xw_f_overlap_m0_prepared<T: NOCIScalar>(
         let rx = x_ex.holes.count_ones() as usize;
         let rw = w_ex.holes.count_ones() as usize;
 
-        match (rx, rw) {
-            (0, 0) => {
-                let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
-                (pref, pref * w.f0f[0])
-            }
-            (0, 1) => xw_f_overlap_m0_prepared_const::<T, 0, 1, 1>(w, x_ex, w_ex, scratch, tol),
-            (1, 0) => xw_f_overlap_m0_prepared_const::<T, 1, 0, 1>(w, x_ex, w_ex, scratch, tol),
-            (0, 2) => xw_f_overlap_m0_prepared_const::<T, 0, 2, 2>(w, x_ex, w_ex, scratch, tol),
-            (1, 1) => xw_f_overlap_m0_prepared_const::<T, 1, 1, 2>(w, x_ex, w_ex, scratch, tol),
-            (2, 0) => xw_f_overlap_m0_prepared_const::<T, 2, 0, 2>(w, x_ex, w_ex, scratch, tol),
-            (0, 3) => xw_f_overlap_m0_prepared_const::<T, 0, 3, 3>(w, x_ex, w_ex, scratch, tol),
-            (1, 2) => xw_f_overlap_m0_prepared_const::<T, 1, 2, 3>(w, x_ex, w_ex, scratch, tol),
-            (2, 1) => xw_f_overlap_m0_prepared_const::<T, 2, 1, 3>(w, x_ex, w_ex, scratch, tol),
-            (3, 0) => xw_f_overlap_m0_prepared_const::<T, 3, 0, 3>(w, x_ex, w_ex, scratch, tol),
-            (0, 4) => xw_f_overlap_m0_prepared_const::<T, 0, 4, 4>(w, x_ex, w_ex, scratch, tol),
-            (1, 3) => xw_f_overlap_m0_prepared_const::<T, 1, 3, 4>(w, x_ex, w_ex, scratch, tol),
-            (2, 2) => xw_f_overlap_m0_prepared_const::<T, 2, 2, 4>(w, x_ex, w_ex, scratch, tol),
-            (3, 1) => xw_f_overlap_m0_prepared_const::<T, 3, 1, 4>(w, x_ex, w_ex, scratch, tol),
-            (4, 0) => xw_f_overlap_m0_prepared_const::<T, 4, 0, 4>(w, x_ex, w_ex, scratch, tol),
-            _ => xw_f_overlap_m0_gen_prepared(w, x_ex, w_ex, scratch, rx + rw, tol),
+        if rx == 0 && rw == 0 {
+            let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
+            (pref, pref * w.f0f[0])
+        } else {
+            dispatch_onebody_ranks!(
+                (rx, rw),
+                |RX, RW, L| xw_f_overlap_m0_prepared_const::<T, RX, RW, L>(
+                    w, x_ex, w_ex, scratch, tol,
+                ),
+                xw_f_overlap_m0_gen_prepared(w, x_ex, w_ex, scratch, rx + rw, tol),
+            )
         }
     })
 }

@@ -135,7 +135,13 @@ macro_rules! for_each_counter {
             .xw_hamiltonian_overlap_m0_prepared_f64x4_const);
         $f!($tot
             .nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_c64x4_const);
+        $f!($tot
+            .nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_prepared_f64x8_const);
+        $f!($tot
+            .nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_c64x8_const);
         $f!($tot
             .nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_gen_prepared);

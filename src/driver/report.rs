@@ -579,10 +579,30 @@ pub fn print_report(
         8,
     );
     print_relative_counter(
+        "Fused Hamiltonian-overlap AVX2 complex const m = 0",
+        res.timings
+            .nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_c64x4_const,
+        res.timings
+            .nonorthogonalwicks
+            .xw_hamiltonian_overlap_prepared_batched,
+        8,
+    );
+    print_relative_counter(
         "Fused Hamiltonian-overlap AVX-512 const m = 0",
         res.timings
             .nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_prepared_f64x8_const,
+        res.timings
+            .nonorthogonalwicks
+            .xw_hamiltonian_overlap_prepared_batched,
+        8,
+    );
+    print_relative_counter(
+        "Fused Hamiltonian-overlap AVX-512 complex const m = 0",
+        res.timings
+            .nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_c64x8_const,
         res.timings
             .nonorthogonalwicks
             .xw_hamiltonian_overlap_prepared_batched,

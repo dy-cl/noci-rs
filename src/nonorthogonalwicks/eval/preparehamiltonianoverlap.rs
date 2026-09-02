@@ -1,5 +1,14 @@
 // nonorthogonalwicks/eval/preparehamiltonianoverlap.rs
 
+// Standard library imports.
+#[cfg(target_arch = "x86_64")]
+use std::any::TypeId;
+#[cfg(target_arch = "x86_64")]
+use std::arch::is_x86_feature_detected;
+
+// External crate imports.
+use num_complex::Complex64;
+
 // Crate-root imports.
 use crate::maths::{adjugate_transpose, det};
 use crate::noci::NOCIScalar;
@@ -9,6 +18,7 @@ use crate::{DetState, Excitation, ExcitationCache, ReducedTwoSpinDetState};
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
 use super::super::view::WicksPairView;
+use super::dispatch::dispatch_hamiltonian_ranks;
 use super::helpers::{DetBranches, DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, column_replacement_det,
@@ -16,7 +26,7 @@ use super::helpers::{
 };
 use super::prepare::prepare_same;
 #[cfg(target_arch = "x86_64")]
-use super::simd::{F64x4, F64x8};
+use super::simd::{C64x4, C64x8, F64x4, F64x8};
 
 /// Evaluate the Hamiltonian and overlap matrix elements between two determinants generated from
 /// one ordered pair of nonorthogonal references.
@@ -67,14 +77,17 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 if fixed {
                     // The fixed path reads only predecoded ranks and orbital labels.
                     // Raw excitation masks are touched only by the arbitrary-rank fallback below.
-                    let la = usize::from(x_cache.alpha.rank) + usize::from(w_cache.alpha.rank);
-                    let lb = usize::from(x_cache.beta.rank) + usize::from(w_cache.beta.rank);
+                    let ranks = (
+                        usize::from(x_cache.alpha.rank),
+                        usize::from(w_cache.alpha.rank),
+                        usize::from(x_cache.beta.rank),
+                        usize::from(w_cache.beta.rank),
+                    );
 
-                    if la + lb <= 6 {
+                    if ranks.0 + ranks.1 + ranks.2 + ranks.3 <= 6 {
                         return xw_hamiltonian_overlap_m0_prepared(
                             w,
-                            la,
-                            lb,
+                            ranks,
                             x_cache,
                             w_cache,
                             excitation_phase,
@@ -101,8 +114,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 
 /// Evaluate batched Hamiltonian and overlap matrix elements for one ordered reference pair.
 /// Every request supplied to this routine already belongs to that reference pair. Requests are
-/// streamed through the 28 fixed `(L_\alpha, L_\beta)` bins when
-/// `m_\alpha = m_\beta = 0`. The widest supported real SIMD kernel is selected internally,
+/// streamed through the 190 fixed `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
+/// `m_\alpha = m_\beta = 0`. The widest matching real or complex SIMD kernel is selected internally,
 /// incomplete bins are padded with one valid request, and unsupported requests use the existing
 /// prepared scalar evaluator.
 /// # Arguments:
@@ -116,257 +129,91 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `out`: Hamiltonian and overlap results aligned with the original request order.
 /// # Returns:
 /// - `()`: Writes every matrix element in `requests` into `out`.
-pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
-    w: &WicksPairView<'_, f64>,
-    basis: (&[DetState<f64>], &[ReducedTwoSpinDetState]),
+pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    basis: (&[DetState<T>], &[ReducedTwoSpinDetState]),
     requests: &[(usize, usize, usize)],
     enuc: f64,
-    scratch: &mut WickScratchSpin<f64>,
+    scratch: &mut WickScratchSpin<T>,
     tol: f64,
-    out: &mut [(f64, f64)],
+    out: &mut [(T, T)],
 ) {
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_prepared_batched,
         {
-            let (basis, reduced_basis) = basis;
-
             #[cfg(target_arch = "x86_64")]
             if w.aa.m == 0 && w.bb.m == 0 {
-                if std::arch::is_x86_feature_detected!("avx512f") {
-                    // Bin requests by fixed `(L_alpha,L_beta)` so each SIMD packet evaluates the same
-                    // GNME determinant/cofactor algebra with lane-local excitation labels and phases.
-                    let mut x_bins = [[ExcitationCache::default(); 8]; 28];
-                    let mut w_bins = [[ExcitationCache::default(); 8]; 28];
-                    let mut phases = [[1.0f64; 8]; 28];
-                    let mut outputs = [[0usize; 8]; 28];
-                    let mut counts = [0usize; 28];
+                unsafe {
+                    if TypeId::of::<T>() == TypeId::of::<f64>() {
+                        let out_f64 = std::slice::from_raw_parts_mut(
+                            out.as_mut_ptr().cast::<(f64, f64)>(),
+                            out.len(),
+                        );
 
-                    for &(output, a, b) in requests {
-                        let x_det = &reduced_basis[a];
-                        let w_det = &reduced_basis[b];
-                        let x_cache = x_det.excitation_cache;
-                        let w_cache = w_det.excitation_cache;
-                        let fixed = x_cache.alpha.rank <= 4
-                            && x_cache.beta.rank <= 4
-                            && w_cache.alpha.rank <= 4
-                            && w_cache.beta.rank <= 4;
-                        let la = usize::from(x_cache.alpha.rank) + usize::from(w_cache.alpha.rank);
-                        let lb = usize::from(x_cache.beta.rank) + usize::from(w_cache.beta.rank);
-
-                        if fixed && la + lb <= 6 {
-                            // Triangular indexing stores every supported rank pair with
-                            // L_alpha + L_beta <= 6 in a compact 28-bin table.
-                            let bin = la * (15 - la) / 2 + lb;
-                            let count = counts[bin];
-
-                            x_bins[bin][count] = x_cache;
-                            w_bins[bin][count] = w_cache;
-                            phases[bin][count] = x_det.phase * w_det.phase;
-                            outputs[bin][count] = output;
-                            counts[bin] += 1;
-
-                            if counts[bin] == 8 {
-                                // A full AVX-512 packet evaluates eight independent determinant pairs
-                                // using the same constant-rank Hamiltonian formula.
-                                let mut h = [0.0f64; 8];
-                                let mut s = [0.0f64; 8];
-
-                                unsafe {
-                                    xw_hamiltonian_overlap_m0_prepared_f64x8(
-                                        w,
-                                        (la, lb),
-                                        (&x_bins[bin], &w_bins[bin]),
-                                        &phases[bin],
-                                        enuc,
-                                        (&mut h, &mut s),
-                                    );
-                                }
-
-                                for lane in 0..8 {
-                                    out[outputs[bin][lane]] = (h[lane], s[lane]);
-                                }
-                                counts[bin] = 0;
-                            }
-                        } else {
-                            // Unsupported rank pairs keep the scalar prepared path, which evaluates
-                            // the same GNME expression without fixed-width SIMD batching.
-                            let x_state = &basis[a];
-                            let w_state = &basis[b];
-
-                            out[output] = xw_hamiltonian_overlap_prepared(
+                        if is_x86_feature_detected!("avx512f") {
+                            xw_hamiltonian_overlap_prepared_simd(
                                 w,
-                                (&x_state.excitation, &w_state.excitation),
-                                (&x_cache, &w_cache),
-                                x_det.phase * w_det.phase,
-                                enuc,
+                                basis,
+                                requests,
+                                (enuc, tol),
                                 scratch,
-                                tol,
+                                out_f64,
+                                xw_hamiltonian_overlap_m0_prepared_f64x8::<T>,
                             );
+                            return;
                         }
-                    }
 
-                    for la in 0..=6 {
-                        for lb in 0..=(6 - la) {
-                            let bin = la * (15 - la) / 2 + lb;
-                            let count = counts[bin];
-                            if count == 0 {
-                                continue;
-                            }
-
-                            // Pad incomplete SIMD packets with a valid lane; only the original `count`
-                            // outputs are copied back, so padding contributes no matrix elements.
-                            let fill_x = x_bins[bin][0];
-                            let fill_w = w_bins[bin][0];
-                            let fill_phase = phases[bin][0];
-
-                            for lane in count..8 {
-                                x_bins[bin][lane] = fill_x;
-                                w_bins[bin][lane] = fill_w;
-                                phases[bin][lane] = fill_phase;
-                            }
-
-                            let mut h = [0.0f64; 8];
-                            let mut s = [0.0f64; 8];
-
-                            unsafe {
-                                xw_hamiltonian_overlap_m0_prepared_f64x8(
-                                    w,
-                                    (la, lb),
-                                    (&x_bins[bin], &w_bins[bin]),
-                                    &phases[bin],
-                                    enuc,
-                                    (&mut h, &mut s),
-                                );
-                            }
-
-                            for lane in 0..count {
-                                out[outputs[bin][lane]] = (h[lane], s[lane]);
-                            }
-                        }
-                    }
-                    return;
-                }
-
-                if std::arch::is_x86_feature_detected!("avx2")
-                    && std::arch::is_x86_feature_detected!("fma")
-                {
-                    // AVX2 follows the same fixed-rank binning as AVX-512, with four determinant
-                    // pairs per packet instead of eight.
-                    let mut x_bins = [[ExcitationCache::default(); 4]; 28];
-                    let mut w_bins = [[ExcitationCache::default(); 4]; 28];
-                    let mut phases = [[1.0f64; 4]; 28];
-                    let mut outputs = [[0usize; 4]; 28];
-                    let mut counts = [0usize; 28];
-
-                    for &(output, a, b) in requests {
-                        let x_det = &reduced_basis[a];
-                        let w_det = &reduced_basis[b];
-                        let x_cache = x_det.excitation_cache;
-                        let w_cache = w_det.excitation_cache;
-                        let fixed = x_cache.alpha.rank <= 4
-                            && x_cache.beta.rank <= 4
-                            && w_cache.alpha.rank <= 4
-                            && w_cache.beta.rank <= 4;
-                        let la = usize::from(x_cache.alpha.rank) + usize::from(w_cache.alpha.rank);
-                        let lb = usize::from(x_cache.beta.rank) + usize::from(w_cache.beta.rank);
-
-                        if fixed && la + lb <= 6 {
-                            // The bin index depends only on the compile-time Hamiltonian ranks, not
-                            // on the lane-local orbital labels.
-                            let bin = la * (15 - la) / 2 + lb;
-                            let count = counts[bin];
-
-                            x_bins[bin][count] = x_cache;
-                            w_bins[bin][count] = w_cache;
-                            phases[bin][count] = x_det.phase * w_det.phase;
-                            outputs[bin][count] = output;
-                            counts[bin] += 1;
-
-                            if counts[bin] == 4 {
-                                // A full AVX2 packet evaluates four independent fixed-rank GNME pairs.
-                                let mut h = [0.0f64; 4];
-                                let mut s = [0.0f64; 4];
-
-                                unsafe {
-                                    xw_hamiltonian_overlap_m0_prepared_f64x4(
-                                        w,
-                                        (la, lb),
-                                        (&x_bins[bin], &w_bins[bin]),
-                                        &phases[bin],
-                                        enuc,
-                                        (&mut h, &mut s),
-                                    );
-                                }
-
-                                for lane in 0..4 {
-                                    out[outputs[bin][lane]] = (h[lane], s[lane]);
-                                }
-                                counts[bin] = 0;
-                            }
-                        } else {
-                            // Fall back to the prepared scalar evaluator when fixed-rank SIMD does not
-                            // cover the determinant pair.
-                            let x_state = &basis[a];
-                            let w_state = &basis[b];
-
-                            out[output] = xw_hamiltonian_overlap_prepared(
+                        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                            xw_hamiltonian_overlap_prepared_simd(
                                 w,
-                                (&x_state.excitation, &w_state.excitation),
-                                (&x_cache, &w_cache),
-                                x_det.phase * w_det.phase,
-                                enuc,
+                                basis,
+                                requests,
+                                (enuc, tol),
                                 scratch,
-                                tol,
+                                out_f64,
+                                xw_hamiltonian_overlap_m0_prepared_f64x4::<T>,
                             );
+                            return;
                         }
                     }
 
-                    for la in 0..=6 {
-                        for lb in 0..=(6 - la) {
-                            let bin = la * (15 - la) / 2 + lb;
-                            let count = counts[bin];
-                            if count == 0 {
-                                continue;
-                            }
+                    if TypeId::of::<T>() == TypeId::of::<Complex64>() {
+                        let out_c64 = std::slice::from_raw_parts_mut(
+                            out.as_mut_ptr().cast::<(Complex64, Complex64)>(),
+                            out.len(),
+                        );
 
-                            // Pad the tail packet so the SIMD kernel can run at fixed width; only the
-                            // requested lanes are written back.
-                            let fill_x = x_bins[bin][0];
-                            let fill_w = w_bins[bin][0];
-                            let fill_phase = phases[bin][0];
+                        if is_x86_feature_detected!("avx512f") {
+                            xw_hamiltonian_overlap_prepared_simd(
+                                w,
+                                basis,
+                                requests,
+                                (enuc, tol),
+                                scratch,
+                                out_c64,
+                                xw_hamiltonian_overlap_m0_prepared_c64x8::<T>,
+                            );
+                            return;
+                        }
 
-                            for lane in count..4 {
-                                x_bins[bin][lane] = fill_x;
-                                w_bins[bin][lane] = fill_w;
-                                phases[bin][lane] = fill_phase;
-                            }
-
-                            let mut h = [0.0f64; 4];
-                            let mut s = [0.0f64; 4];
-
-                            unsafe {
-                                xw_hamiltonian_overlap_m0_prepared_f64x4(
-                                    w,
-                                    (la, lb),
-                                    (&x_bins[bin], &w_bins[bin]),
-                                    &phases[bin],
-                                    enuc,
-                                    (&mut h, &mut s),
-                                );
-                            }
-
-                            for lane in 0..count {
-                                out[outputs[bin][lane]] = (h[lane], s[lane]);
-                            }
+                        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+                            xw_hamiltonian_overlap_prepared_simd(
+                                w,
+                                basis,
+                                requests,
+                                (enuc, tol),
+                                scratch,
+                                out_c64,
+                                xw_hamiltonian_overlap_m0_prepared_c64x4::<T>,
+                            );
+                            return;
                         }
                     }
-                    return;
                 }
             }
 
+            let (basis, reduced_basis) = basis;
             for &(output, a, b) in requests {
-                // Baseline path for nonzero zero-overlap counts or machines without the required SIMD:
-                // evaluate the full prepared Hamiltonian/overlap expression one determinant pair at a time.
                 let x_det = &reduced_basis[a];
                 let w_det = &reduced_basis[b];
                 let x_state = &basis[a];
@@ -386,6 +233,166 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
     )
 }
 
+/// Evaluate one real or complex SIMD Hamiltonian/overlap request group.
+/// Requests are separated by all four reference-resolved spin ranks, so every packet uses one
+/// fixed-rank determinant, cofactor, same-spin second-minor and mixed-spin cofactor expression.
+/// Incomplete packets are padded with a valid lane and unsupported ranks use the scalar evaluator.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
+/// - `basis`: Full determinant data and compact determinant metadata.
+/// - `requests`: Output positions and determinant pairs belonging to this reference pair.
+/// - `parameters`: Nuclear repulsion energy and scalar-fallback numerical tolerance.
+/// - `scratch`: Reusable scalar fallback workspace.
+/// - `out`: Real or complex Hamiltonian and overlap outputs.
+/// - `kernel`: Fixed-width real or complex SIMD rank dispatcher.
+/// # Returns:
+/// - `()`: Writes every request into `out`.
+/// # Safety:
+/// - The caller must prove `T = R` and support for the target features required by `kernel`.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::type_complexity)]
+unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, const N: usize>(
+    w: &WicksPairView<'_, T>,
+    basis: (&[DetState<T>], &[ReducedTwoSpinDetState]),
+    requests: &[(usize, usize, usize)],
+    parameters: (f64, f64),
+    scratch: &mut WickScratchSpin<T>,
+    out: &mut [(R, R)],
+    kernel: for<'a> unsafe fn(
+        &WicksPairView<'a, T>,
+        (usize, usize, usize, usize),
+        (&[ExcitationCache; N], &[ExcitationCache; N]),
+        &[f64; N],
+        f64,
+        (&mut [R; N], &mut [R; N]),
+    ),
+) {
+    let (enuc, tol) = parameters;
+    let (basis, reduced_basis) = basis;
+
+    // Map the sparse base-5 rank key to the 190 supported tuples whose total rank is at most six.
+    // This is batching state rather than part of the kernel hierarchy, so it remains local here.
+    let mut rank_bins = [usize::MAX; 625];
+    let mut next_bin = 0usize;
+    for rxa in 0..=4 {
+        for rwa in 0..=4 {
+            for rxb in 0..=4 {
+                for rwb in 0..=4 {
+                    if rxa + rwa + rxb + rwb <= 6 {
+                        let key = ((rxa * 5 + rwa) * 5 + rxb) * 5 + rwb;
+                        rank_bins[key] = next_bin;
+                        next_bin += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut x_bins = [[ExcitationCache::default(); N]; 190];
+    let mut w_bins = [[ExcitationCache::default(); N]; 190];
+    let mut phases = [[1.0f64; N]; 190];
+    let mut outputs = [[0usize; N]; 190];
+    let mut counts = [0usize; 190];
+    let mut bin_ranks = [(0usize, 0usize, 0usize, 0usize); 190];
+
+    unsafe {
+        for &(output, a, b) in requests {
+            let x_det = &reduced_basis[a];
+            let w_det = &reduced_basis[b];
+            let x_cache = x_det.excitation_cache;
+            let w_cache = w_det.excitation_cache;
+            let ranks = (
+                usize::from(x_cache.alpha.rank),
+                usize::from(w_cache.alpha.rank),
+                usize::from(x_cache.beta.rank),
+                usize::from(w_cache.beta.rank),
+            );
+            let fixed = ranks.0 <= 4
+                && ranks.1 <= 4
+                && ranks.2 <= 4
+                && ranks.3 <= 4
+                && ranks.0 + ranks.1 + ranks.2 + ranks.3 <= 6;
+
+            if fixed {
+                let key = ((ranks.0 * 5 + ranks.1) * 5 + ranks.2) * 5 + ranks.3;
+                let bin = rank_bins[key];
+                let count = counts[bin];
+                x_bins[bin][count] = x_cache;
+                w_bins[bin][count] = w_cache;
+                phases[bin][count] = x_det.phase * w_det.phase;
+                outputs[bin][count] = output;
+                bin_ranks[bin] = ranks;
+                counts[bin] += 1;
+
+                if counts[bin] == N {
+                    let mut h = [R::from_real(0.0); N];
+                    let mut s = [R::from_real(0.0); N];
+                    kernel(
+                        w,
+                        ranks,
+                        (&x_bins[bin], &w_bins[bin]),
+                        &phases[bin],
+                        enuc,
+                        (&mut h, &mut s),
+                    );
+
+                    for lane in 0..N {
+                        out[outputs[bin][lane]] = (h[lane], s[lane]);
+                    }
+                    counts[bin] = 0;
+                }
+            } else {
+                let x_state = &basis[a];
+                let w_state = &basis[b];
+                let value = xw_hamiltonian_overlap_prepared(
+                    w,
+                    (&x_state.excitation, &w_state.excitation),
+                    (&x_cache, &w_cache),
+                    x_det.phase * w_det.phase,
+                    enuc,
+                    scratch,
+                    tol,
+                );
+                out[output] = (
+                    *std::ptr::from_ref(&value.0).cast::<R>(),
+                    *std::ptr::from_ref(&value.1).cast::<R>(),
+                );
+            }
+        }
+
+        for bin in 0..counts.len() {
+            let count = counts[bin];
+            if count == 0 {
+                continue;
+            }
+
+            let fill_x = x_bins[bin][0];
+            let fill_w = w_bins[bin][0];
+            let fill_phase = phases[bin][0];
+            for lane in count..N {
+                x_bins[bin][lane] = fill_x;
+                w_bins[bin][lane] = fill_w;
+                phases[bin][lane] = fill_phase;
+            }
+
+            let mut h = [R::from_real(0.0); N];
+            let mut s = [R::from_real(0.0); N];
+            kernel(
+                w,
+                bin_ranks[bin],
+                (&x_bins[bin], &w_bins[bin]),
+                &phases[bin],
+                enuc,
+                (&mut h, &mut s),
+            );
+
+            for lane in 0..count {
+                out[outputs[bin][lane]] = (h[lane], s[lane]);
+            }
+        }
+    }
+}
+
 /// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to a fixed
 /// contraction-rank kernel.
 /// The specialised region contains all `(L_\alpha, L_\beta)` pairs with
@@ -393,19 +400,17 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched(
 /// predecoded spin excitation has rank at most four.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `la`: Total alpha-spin contraction rank `L_\alpha = L_{x,\alpha} + L_{w,\alpha}`.
-/// - `lb`: Total beta-spin contraction rank `L_\beta = L_{x,\beta} + L_{w,\beta}`.
+/// - `ranks`: Bra/ket alpha and beta ranks `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})`.
 /// - `x_ex`: Predecoded bra excitation ranks and orbital labels.
 /// - `w_ex`: Predecoded ket excitation ranks and orbital labels.
 /// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
-#[inline(always)]
+#[inline(never)]
 fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    la: usize,
-    lb: usize,
+    ranks: (usize, usize, usize, usize),
     x_ex: &ExcitationCache,
     w_ex: &ExcitationCache,
     excitation_phase: f64,
@@ -414,223 +419,30 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared,
         {
-            // Dispatch by `(L_alpha,L_beta)` so each fixed rank is monomorphised into the same
-            // constant-time Hamiltonian/cofactor formula with stack storage sized to that rank.
-            match (la, lb) {
-                (0, 0) => xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 0, 1, 1, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (0, 1) => xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 1, 1, 1, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (0, 2) => xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 2, 1, 4, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (0, 3) => xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 3, 1, 9, 1, 3, 1, 9>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (0, 4) => xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 4, 1, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (0, 5) => {
-                    xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 5, 1, 25, 1, 10, 1, 100>(
-                        w,
-                        x_ex,
-                        w_ex,
-                        excitation_phase,
-                        enuc,
-                    )
-                }
-                (0, 6) => {
-                    xw_hamiltonian_overlap_m0_prepared_const::<T, 0, 6, 1, 36, 1, 15, 1, 225>(
-                        w,
-                        x_ex,
-                        w_ex,
-                        excitation_phase,
-                        enuc,
-                    )
-                }
-                (1, 0) => xw_hamiltonian_overlap_m0_prepared_const::<T, 1, 0, 1, 1, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (1, 1) => xw_hamiltonian_overlap_m0_prepared_const::<T, 1, 1, 1, 1, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (1, 2) => xw_hamiltonian_overlap_m0_prepared_const::<T, 1, 2, 1, 4, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (1, 3) => xw_hamiltonian_overlap_m0_prepared_const::<T, 1, 3, 1, 9, 1, 3, 1, 9>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (1, 4) => xw_hamiltonian_overlap_m0_prepared_const::<T, 1, 4, 1, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (1, 5) => {
-                    xw_hamiltonian_overlap_m0_prepared_const::<T, 1, 5, 1, 25, 1, 10, 1, 100>(
-                        w,
-                        x_ex,
-                        w_ex,
-                        excitation_phase,
-                        enuc,
-                    )
-                }
-                (2, 0) => xw_hamiltonian_overlap_m0_prepared_const::<T, 2, 0, 4, 1, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (2, 1) => xw_hamiltonian_overlap_m0_prepared_const::<T, 2, 1, 4, 1, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (2, 2) => xw_hamiltonian_overlap_m0_prepared_const::<T, 2, 2, 4, 4, 1, 1, 1, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (2, 3) => xw_hamiltonian_overlap_m0_prepared_const::<T, 2, 3, 4, 9, 1, 3, 1, 9>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (2, 4) => xw_hamiltonian_overlap_m0_prepared_const::<T, 2, 4, 4, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (3, 0) => xw_hamiltonian_overlap_m0_prepared_const::<T, 3, 0, 9, 1, 3, 1, 9, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (3, 1) => xw_hamiltonian_overlap_m0_prepared_const::<T, 3, 1, 9, 1, 3, 1, 9, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (3, 2) => xw_hamiltonian_overlap_m0_prepared_const::<T, 3, 2, 9, 4, 3, 1, 9, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (3, 3) => xw_hamiltonian_overlap_m0_prepared_const::<T, 3, 3, 9, 9, 3, 3, 9, 9>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (4, 0) => xw_hamiltonian_overlap_m0_prepared_const::<T, 4, 0, 16, 1, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (4, 1) => xw_hamiltonian_overlap_m0_prepared_const::<T, 4, 1, 16, 1, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (4, 2) => xw_hamiltonian_overlap_m0_prepared_const::<T, 4, 2, 16, 4, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                ),
-                (5, 0) => {
-                    xw_hamiltonian_overlap_m0_prepared_const::<T, 5, 0, 25, 1, 10, 1, 100, 1>(
-                        w,
-                        x_ex,
-                        w_ex,
-                        excitation_phase,
-                        enuc,
-                    )
-                }
-                (5, 1) => {
-                    xw_hamiltonian_overlap_m0_prepared_const::<T, 5, 1, 25, 1, 10, 1, 100, 1>(
-                        w,
-                        x_ex,
-                        w_ex,
-                        excitation_phase,
-                        enuc,
-                    )
-                }
-                (6, 0) => {
-                    xw_hamiltonian_overlap_m0_prepared_const::<T, 6, 0, 36, 1, 15, 1, 225, 1>(
-                        w,
-                        x_ex,
-                        w_ex,
-                        excitation_phase,
-                        enuc,
-                    )
-                }
-                _ => unreachable!(),
-            }
+            // Dispatch by the four reference-resolved spin ranks so every label boundary and
+            // total contraction rank is compile-time constant in the scalar kernel.
+            dispatch_hamiltonian_ranks!(
+                ranks,
+                |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
+                    xw_hamiltonian_overlap_m0_prepared_const::<
+                        T,
+                        RXA,
+                        RWA,
+                        LA,
+                        RXB,
+                        RWB,
+                        LB,
+                        DA,
+                        DB,
+                        SA,
+                        SB,
+                    >(w, x_ex, w_ex, excitation_phase, enuc)
+                },
+                unreachable!(),
+            )
         }
     )
 }
-
 /// Evaluate the fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap for
 /// `m_\alpha = m_\beta = 0`.
 /// The contraction determinants, cofactors and required second minors are evaluated
@@ -664,15 +476,17 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
 /// - `enuc`: Nuclear repulsion energy.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
-#[inline(always)]
+#[inline(never)]
 fn xw_hamiltonian_overlap_m0_prepared_const<
     T: NOCIScalar,
+    const RXA: usize,
+    const RWA: usize,
     const LA: usize,
+    const RXB: usize,
+    const RWB: usize,
     const LB: usize,
     const DA: usize,
     const DB: usize,
-    const PA: usize,
-    const PB: usize,
     const SA: usize,
     const SB: usize,
 >(
@@ -702,15 +516,14 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             if LA > 0 {
                 let nocc = w.aa.nocc;
                 let nvirt = w.aa.nmo - nocc;
-                let x_rank = usize::from(x_ex.alpha.rank);
                 let x_indices = &x_ex.alpha.indices;
                 let w_indices = &w_ex.alpha.indices;
-                for i in 0..x_rank {
+                for i in 0..RXA {
                     rows_a[i] = usize::from(x_indices[4 + i]) - nocc;
                     cols_a[i] = usize::from(x_indices[i]);
                 }
-                for i in x_rank..LA {
-                    let k = i - x_rank;
+                for i in RXA..LA {
+                    let k = i - RXA;
                     rows_a[i] = nvirt + usize::from(w_indices[k]);
                     cols_a[i] = usize::from(w_indices[4 + k]);
                 }
@@ -841,15 +654,14 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             if LB > 0 {
                 let nocc = w.bb.nocc;
                 let nvirt = w.bb.nmo - nocc;
-                let x_rank = usize::from(x_ex.beta.rank);
                 let x_indices = &x_ex.beta.indices;
                 let w_indices = &w_ex.beta.indices;
-                for i in 0..x_rank {
+                for i in 0..RXB {
                     rows_b[i] = usize::from(x_indices[4 + i]) - nocc;
                     cols_b[i] = usize::from(x_indices[i]);
                 }
-                for i in x_rank..LB {
-                    let k = i - x_rank;
+                for i in RXB..LB {
+                    let k = i - RXB;
                     rows_b[i] = nvirt + usize::from(w_indices[k]);
                     cols_b[i] = usize::from(w_indices[4 + k]);
                 }
@@ -1033,12 +845,11 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 
 /// Dispatch 4 independent real `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
 /// AVX2/FMA kernel.
-/// Every SIMD lane uses the same ordered reference pair and `(L_\alpha, L_\beta)`, while the
-/// orbital labels and excitation phases may differ between lanes.
+/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
+/// while the orbital labels and excitation phases may differ between lanes.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered reference pair with `T = f64`.
-/// - `la`: Alpha-spin contraction rank shared by every lane.
-/// - `lb`: Beta-spin contraction rank shared by every lane.
+/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
 /// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
 /// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
 /// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
@@ -1055,307 +866,96 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 #[target_feature(enable = "avx2,fma")]
 pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    rank: (usize, usize),
+    ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
     excitation_phase: &[f64; 4],
     enuc: f64,
-    out: (&mut [f64], &mut [f64]),
+    out: (&mut [f64; 4], &mut [f64; 4]),
 ) {
     unsafe {
-        // Select the AVX2 const-generic kernel for the shared spin ranks of this four-lane packet.
-        let (la, lb) = rank;
         let (x_ex, w_ex) = ex;
         let (h, s) = out;
-        match (la, lb) {
-            (0, 0) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 0, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 1) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 1, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 2) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 2, 1, 4, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 3) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 3, 1, 9, 1, 3, 1, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 4) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 4, 1, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (0, 5) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 5, 1, 25, 1, 10, 1, 100>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (0, 6) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 0, 6, 1, 36, 1, 15, 1, 225>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (1, 0) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 1, 0, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 1) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 1, 1, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 2) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 1, 2, 1, 4, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 3) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 1, 3, 1, 9, 1, 3, 1, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 4) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 1, 4, 1, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (1, 5) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 1, 5, 1, 25, 1, 10, 1, 100>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (2, 0) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 2, 0, 4, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 1) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 2, 1, 4, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 2) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 2, 2, 4, 4, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 3) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 2, 3, 4, 9, 1, 3, 1, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 4) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 2, 4, 4, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (3, 0) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 3, 0, 9, 1, 3, 1, 9, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (3, 1) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 3, 1, 9, 1, 3, 1, 9, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (3, 2) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 3, 2, 9, 4, 3, 1, 9, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (3, 3) => xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 3, 3, 9, 9, 3, 3, 9, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (4, 0) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 4, 0, 16, 1, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (4, 1) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 4, 1, 16, 1, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (4, 2) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 4, 2, 16, 4, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (5, 0) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 5, 0, 25, 1, 10, 1, 100, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (5, 1) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 5, 1, 25, 1, 10, 1, 100, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (6, 0) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<T, 6, 0, 36, 1, 15, 1, 225, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            _ => unreachable!(),
-        }
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
+                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<
+                    T,
+                    RXA,
+                    RWA,
+                    LA,
+                    RXB,
+                    RWB,
+                    LB,
+                    DA,
+                    DB,
+                    SA,
+                    SB,
+                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+            },
+            unreachable!(),
+        )
     }
 }
 
+/// Dispatch 4 independent complex `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
+/// AVX2/FMA kernel.
+/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
+/// while the orbital labels and excitation phases may differ between lanes.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
+/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
+/// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
+/// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
+/// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
+/// - `enuc`: Nuclear repulsion energy.
+/// - `h`: Hamiltonian output slice in SIMD-lane order.
+/// - `s`: Overlap output slice in SIMD-lane order.
+/// # Returns:
+/// - `()`: Writes 4 Hamiltonian and overlap matrix elements.
+/// # Safety:
+/// - The caller must ensure `T = Complex64`, CPU support for `AVX2/FMA`, individual predecoded
+///   spin ranks no larger than four and total contraction rank no larger than six.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    ranks: (usize, usize, usize, usize),
+    ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
+    excitation_phase: &[f64; 4],
+    enuc: f64,
+    out: (&mut [Complex64; 4], &mut [Complex64; 4]),
+) {
+    unsafe {
+        let (x_ex, w_ex) = ex;
+        let (h, s) = out;
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
+                xw_hamiltonian_overlap_m0_prepared_c64x4_const::<
+                    T,
+                    RXA,
+                    RWA,
+                    LA,
+                    RXB,
+                    RWB,
+                    LB,
+                    DA,
+                    DB,
+                    SA,
+                    SB,
+                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+            },
+            unreachable!(),
+        )
+    }
+}
 /// Dispatch 8 independent real `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
 /// AVX-512 kernel.
-/// Every SIMD lane uses the same ordered reference pair and `(L_\alpha, L_\beta)`, while the
-/// orbital labels and excitation phases may differ between lanes.
+/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
+/// while the orbital labels and excitation phases may differ between lanes.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered reference pair with `T = f64`.
-/// - `la`: Alpha-spin contraction rank shared by every lane.
-/// - `lb`: Beta-spin contraction rank shared by every lane.
+/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
 /// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
 /// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
 /// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
@@ -1372,299 +972,89 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4<T: NOCIScalar>(
 #[target_feature(enable = "avx512f")]
 pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    rank: (usize, usize),
+    ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
     excitation_phase: &[f64; 8],
     enuc: f64,
-    out: (&mut [f64], &mut [f64]),
+    out: (&mut [f64; 8], &mut [f64; 8]),
 ) {
     unsafe {
-        // Select the AVX-512 const-generic kernel for the shared spin ranks of this eight-lane packet.
-        let (la, lb) = rank;
         let (x_ex, w_ex) = ex;
         let (h, s) = out;
-        match (la, lb) {
-            (0, 0) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 0, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 1) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 1, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 2) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 2, 1, 4, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 3) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 3, 1, 9, 1, 3, 1, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (0, 4) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 4, 1, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (0, 5) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 5, 1, 25, 1, 10, 1, 100>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (0, 6) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 0, 6, 1, 36, 1, 15, 1, 225>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (1, 0) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 1, 0, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 1) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 1, 1, 1, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 2) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 1, 2, 1, 4, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 3) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 1, 3, 1, 9, 1, 3, 1, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (1, 4) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 1, 4, 1, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (1, 5) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 1, 5, 1, 25, 1, 10, 1, 100>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (2, 0) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 2, 0, 4, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 1) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 2, 1, 4, 1, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 2) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 2, 2, 4, 4, 1, 1, 1, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 3) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 2, 3, 4, 9, 1, 3, 1, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (2, 4) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 2, 4, 4, 16, 1, 6, 1, 36>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (3, 0) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 3, 0, 9, 1, 3, 1, 9, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (3, 1) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 3, 1, 9, 1, 3, 1, 9, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (3, 2) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 3, 2, 9, 4, 3, 1, 9, 1>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (3, 3) => xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 3, 3, 9, 9, 3, 3, 9, 9>(
-                w,
-                x_ex,
-                w_ex,
-                excitation_phase,
-                enuc,
-                h,
-                s,
-            ),
-            (4, 0) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 4, 0, 16, 1, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (4, 1) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 4, 1, 16, 1, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (4, 2) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 4, 2, 16, 4, 6, 1, 36, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (5, 0) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 5, 0, 25, 1, 10, 1, 100, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (5, 1) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 5, 1, 25, 1, 10, 1, 100, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            (6, 0) => {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<T, 6, 0, 36, 1, 15, 1, 225, 1>(
-                    w,
-                    x_ex,
-                    w_ex,
-                    excitation_phase,
-                    enuc,
-                    h,
-                    s,
-                )
-            }
-            _ => unreachable!(),
-        }
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
+                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<
+                    T,
+                    RXA,
+                    RWA,
+                    LA,
+                    RXB,
+                    RWB,
+                    LB,
+                    DA,
+                    DB,
+                    SA,
+                    SB,
+                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+            },
+            unreachable!(),
+        )
     }
 }
 
+/// Dispatch 8 independent complex `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
+/// AVX-512 kernel.
+/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
+/// while the orbital labels and excitation phases may differ between lanes.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
+/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
+/// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
+/// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
+/// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
+/// - `enuc`: Nuclear repulsion energy.
+/// - `h`: Hamiltonian output slice in SIMD-lane order.
+/// - `s`: Overlap output slice in SIMD-lane order.
+/// # Returns:
+/// - `()`: Writes 8 Hamiltonian and overlap matrix elements.
+/// # Safety:
+/// - The caller must ensure `T = Complex64`, CPU support for `AVX-512`, individual predecoded
+///   spin ranks no larger than four and total contraction rank no larger than six.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8<T: NOCIScalar>(
+    w: &WicksPairView<'_, T>,
+    ranks: (usize, usize, usize, usize),
+    ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
+    excitation_phase: &[f64; 8],
+    enuc: f64,
+    out: (&mut [Complex64; 8], &mut [Complex64; 8]),
+) {
+    unsafe {
+        let (x_ex, w_ex) = ex;
+        let (h, s) = out;
+        dispatch_hamiltonian_ranks!(
+            ranks,
+            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
+                xw_hamiltonian_overlap_m0_prepared_c64x8_const::<
+                    T,
+                    RXA,
+                    RWA,
+                    LA,
+                    RXB,
+                    RWB,
+                    LB,
+                    DA,
+                    DB,
+                    SA,
+                    SB,
+                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+            },
+            unreachable!(),
+        )
+    }
+}
 /// Evaluate 4 independent real fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
 /// matrix elements for `m_\alpha = m_\beta = 0`.
 /// Each SIMD lane is one determinant pair and all lanes share the same reference pair
@@ -1685,15 +1075,18 @@ pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8<T: NOCIScalar>(
 /// - The caller must ensure `T = f64`, CPU support for `AVX2/FMA`, valid predecoded
 ///   excitation labels and output slices of length at least 4.
 #[cfg(target_arch = "x86_64")]
+#[inline(never)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
     T: NOCIScalar,
+    const RXA: usize,
+    const RWA: usize,
     const LA: usize,
+    const RXB: usize,
+    const RWB: usize,
     const LB: usize,
     const DA: usize,
     const DB: usize,
-    const PA: usize,
-    const PB: usize,
     const SA: usize,
     const SB: usize,
 >(
@@ -1770,15 +1163,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
                     for lane in 0..4 {
-                        let x_rank = usize::from(x_ex.get_unchecked(lane).alpha.rank);
                         let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
                         let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
-                        for i in 0..x_rank {
+                        for i in 0..RXA {
                             rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
                             cols_a[lane][i] = usize::from(x_indices[i]);
                         }
-                        for i in x_rank..LA {
-                            let k = i - x_rank;
+                        for i in RXA..LA {
+                            let k = i - RXA;
                             rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
                             cols_a[lane][i] = usize::from(w_indices[4 + k]);
                         }
@@ -1942,15 +1334,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
                     for lane in 0..4 {
-                        let x_rank = usize::from(x_ex.get_unchecked(lane).beta.rank);
                         let x_indices = &x_ex.get_unchecked(lane).beta.indices;
                         let w_indices = &w_ex.get_unchecked(lane).beta.indices;
-                        for i in 0..x_rank {
+                        for i in 0..RXB {
                             rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
                             cols_b[lane][i] = usize::from(x_indices[i]);
                         }
-                        for i in x_rank..LB {
-                            let k = i - x_rank;
+                        for i in RXB..LB {
+                            let k = i - RXB;
                             rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
                             cols_b[lane][i] = usize::from(w_indices[4 + k]);
                         }
@@ -2192,6 +1583,565 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
     )
 }
 
+/// Evaluate 4 independent complex fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
+/// matrix elements for `m_\alpha = m_\beta = 0`.
+/// Each SIMD lane is one determinant pair and all lanes share the same reference pair
+/// and contraction ranks.
+/// This is the packed `c64x4` evaluation of the same determinant, cofactor, same-spin
+/// second-minor and mixed-spin cofactor contractions as `xw_hamiltonian_overlap_m0_prepared_const`.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
+/// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
+/// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
+/// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
+/// - `enuc`: Nuclear repulsion energy.
+/// - `h`: Hamiltonian output slice in SIMD-lane order.
+/// - `s`: Overlap output slice in SIMD-lane order.
+/// # Returns:
+/// - `()`: Writes 4 Hamiltonian and overlap matrix elements.
+/// # Safety:
+/// - The caller must ensure `T = Complex64`, CPU support for `AVX2/FMA`, valid predecoded
+///   excitation labels and output slices of length at least 4.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
+    T: NOCIScalar,
+    const RXA: usize,
+    const RWA: usize,
+    const LA: usize,
+    const RXB: usize,
+    const RWB: usize,
+    const LB: usize,
+    const DA: usize,
+    const DB: usize,
+    const SA: usize,
+    const SB: usize,
+>(
+    w: &WicksPairView<'_, T>,
+    x_ex: &[ExcitationCache; 4],
+    w_ex: &[ExcitationCache; 4],
+    excitation_phase: &[f64; 4],
+    enuc: f64,
+    h: &mut [Complex64],
+    s: &mut [Complex64],
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_c64x4_const,
+        {
+            unsafe {
+                let zero_v = C64x4::zero();
+                let one_v = C64x4::splat(1.0, 0.0);
+                let pack = |values: &[Complex64; 4]| {
+                    C64x4::from_values(values[0], values[1], values[2], values[3])
+                };
+
+                // SIMD determinant helpers for the second-minor ranks.
+                let det3 = |m: &[C64x4; 16]| -> C64x4 {
+                    let t0 = C64x4::minor(m[4], m[8], m[5], m[7]);
+                    let mut out = C64x4::mul(m[0], t0);
+                    let t1 = C64x4::minor(m[3], m[8], m[5], m[6]);
+                    out = C64x4::msub(out, m[1], t1);
+                    let t2 = C64x4::minor(m[3], m[7], m[4], m[6]);
+                    C64x4::madd(out, m[2], t2)
+                };
+                let det4 = |m: &[C64x4; 16]| -> C64x4 {
+                    let mut out = zero_v;
+                    for col in 0..4 {
+                        let mut subm = [zero_v; 16];
+                        let mut ii = 0usize;
+                        for r in 1..4 {
+                            let mut jj = 0usize;
+                            for c in 0..4 {
+                                if c == col {
+                                    continue;
+                                }
+                                subm[ii * 3 + jj] = m[r * 4 + c];
+                                jj += 1;
+                            }
+                            ii += 1;
+                        }
+                        let term = C64x4::mul(m[col], det3(&subm));
+                        if (col & 1) == 0 {
+                            out = C64x4::add(out, term);
+                        } else {
+                            out = C64x4::sub(out, term);
+                        }
+                    }
+                    out
+                };
+                let det_small = |minor: &[C64x4; 16], n: usize| -> C64x4 {
+                    match n {
+                        0 => one_v,
+                        1 => minor[0],
+                        2 => C64x4::minor(minor[0], minor[3], minor[1], minor[2]),
+                        3 => det3(minor),
+                        4 => det4(minor),
+                        _ => unreachable!(),
+                    }
+                };
+                let mut rows_a = [[0usize; 6]; 4];
+                let mut cols_a = [[0usize; 6]; 4];
+                let mut d_a = [zero_v; DA];
+                let mut cof_a = [zero_v; DA];
+                let mut second_a = [zero_v; SA];
+                let mut det_a = one_v;
+                let mut j_a = zero_v;
+                let mut replacement_a = zero_v;
+
+                // Lane-wise alpha D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                if LA > 0 {
+                    let nocc = w.aa.nocc;
+                    let nvirt = w.aa.nmo - nocc;
+                    for lane in 0..4 {
+                        let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
+                        let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
+                        for i in 0..RXA {
+                            rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
+                            cols_a[lane][i] = usize::from(x_indices[i]);
+                        }
+                        for i in RXA..LA {
+                            let k = i - RXA;
+                            rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
+                            cols_a[lane][i] = usize::from(w_indices[4 + k]);
+                        }
+                    }
+
+                    // Gather D_{alpha,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    let n = w.aa.n();
+                    let x0_t = w.aa.x_slice(0);
+                    let y0_t = w.aa.y_slice(0);
+                    let x0 =
+                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
+                    let y0 =
+                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
+                    for i in 0..LA {
+                        for j in 0..LA {
+                            let mut values = [Complex64::new(0.0, 0.0); 4];
+                            for lane in 0..4 {
+                                let index = rows_a[lane][i] * n + cols_a[lane][j];
+                                values[lane] = if i >= j {
+                                    *x0.get_unchecked(index)
+                                } else {
+                                    *y0.get_unchecked(index)
+                                };
+                            }
+                            d_a[i * LA + j] =
+                                C64x4::from_values(values[0], values[1], values[2], values[3]);
+                        }
+                    }
+                    if LA == 1 {
+                        cof_a[0] = one_v;
+                        det_a = d_a[0];
+                    } else {
+                        // Packed same-spin C_3 term:
+                        // sum phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y] in each lane.
+                        let pairs_a = LA * (LA - 1) / 2;
+                        let jsl_t = w.aa.j_slice(0);
+                        let jsl = std::slice::from_raw_parts(
+                            jsl_t.as_ptr().cast::<Complex64>(),
+                            jsl_t.len(),
+                        );
+                        let n2 = n * n;
+                        let n3 = n2 * n;
+                        for eta in 0..LA {
+                            for xi in (eta + 1)..LA {
+                                let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
+                                for z in 0..LA {
+                                    for y in (z + 1)..LA {
+                                        let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
+                                        let mut minor = [zero_v; 16];
+                                        let mut ii = 0usize;
+                                        for r in 0..LA {
+                                            if r == eta || r == xi {
+                                                continue;
+                                            }
+                                            let mut jj = 0usize;
+                                            for c in 0..LA {
+                                                if c == z || c == y {
+                                                    continue;
+                                                }
+                                                minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
+                                                jj += 1;
+                                            }
+                                            ii += 1;
+                                        }
+                                        let second = det_small(&minor, LA - 2);
+                                        second_a[row_pair * pairs_a + col_pair] = second;
+                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 4];
+                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 4];
+                                        for lane in 0..4 {
+                                            let direct_base = rows_a[lane][eta] * n3
+                                                + cols_a[lane][z] * n2
+                                                + rows_a[lane][xi] * n;
+                                            let exchange_base = rows_a[lane][eta] * n3
+                                                + cols_a[lane][y] * n2
+                                                + rows_a[lane][xi] * n;
+                                            direct_lane[lane] =
+                                                *jsl.get_unchecked(direct_base + cols_a[lane][y]);
+                                            exchange_lane[lane] =
+                                                *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
+                                        }
+                                        let jdiff =
+                                            C64x4::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        if ((eta + xi + z + y) & 1) == 0 {
+                                            j_a = C64x4::madd(j_a, second, jdiff);
+                                        } else {
+                                            j_a = C64x4::msub(j_a, second, jdiff);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Packed cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // reconstructed from second minors before expanding det D.
+                        for eta in 0..LA {
+                            let r = if eta == 0 { 1usize } else { 0usize };
+                            let r_minor = if r < eta { r } else { r - 1 };
+                            for z in 0..LA {
+                                let mut value = zero_v;
+                                for c in 0..LA {
+                                    if c == z {
+                                        continue;
+                                    }
+                                    let c_minor = if c < z { c } else { c - 1 };
+                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
+                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
+                                    let row_pair =
+                                        row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
+                                    let col_pair =
+                                        col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
+                                    let term = C64x4::mul(
+                                        d_a[r * LA + c],
+                                        second_a[row_pair * pairs_a + col_pair],
+                                    );
+                                    if ((r_minor + c_minor) & 1) == 0 {
+                                        value = C64x4::add(value, term);
+                                    } else {
+                                        value = C64x4::sub(value, term);
+                                    }
+                                }
+                                cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
+                                    value
+                                } else {
+                                    C64x4::sub(zero_v, value)
+                                };
+                            }
+                        }
+                        det_a = C64x4::mul(d_a[0], cof_a[0]);
+                        for z in 1..LA {
+                            det_a = C64x4::madd(det_a, d_a[z], cof_a[z]);
+                        }
+                    }
+
+                    // Packed one-column replacements sum cof[D_alpha]_{eta z} H^alpha_{eta z}.
+                    let hcol0_t = w.aa.hcol0_t_slice();
+                    let hcol0 = std::slice::from_raw_parts(
+                        hcol0_t.as_ptr().cast::<Complex64>(),
+                        hcol0_t.len(),
+                    );
+                    for z in 0..LA {
+                        for eta in 0..LA {
+                            let mut values = [Complex64::new(0.0, 0.0); 4];
+                            for lane in 0..4 {
+                                values[lane] =
+                                    *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
+                            }
+                            replacement_a = C64x4::madd(
+                                replacement_a,
+                                cof_a[eta * LA + z],
+                                C64x4::from_values(values[0], values[1], values[2], values[3]),
+                            );
+                        }
+                    }
+                }
+                let mut rows_b = [[0usize; 6]; 4];
+                let mut cols_b = [[0usize; 6]; 4];
+                let mut d_b = [zero_v; DB];
+                let mut cof_b = [zero_v; DB];
+                let mut second_b = [zero_v; SB];
+                let mut det_b = one_v;
+                let mut j_b = zero_v;
+                let mut replacement_b = zero_v;
+
+                // Lane-wise beta D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                if LB > 0 {
+                    let nocc = w.bb.nocc;
+                    let nvirt = w.bb.nmo - nocc;
+                    for lane in 0..4 {
+                        let x_indices = &x_ex.get_unchecked(lane).beta.indices;
+                        let w_indices = &w_ex.get_unchecked(lane).beta.indices;
+                        for i in 0..RXB {
+                            rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
+                            cols_b[lane][i] = usize::from(x_indices[i]);
+                        }
+                        for i in RXB..LB {
+                            let k = i - RXB;
+                            rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
+                            cols_b[lane][i] = usize::from(w_indices[4 + k]);
+                        }
+                    }
+
+                    // Gather D_{beta,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    let n = w.bb.n();
+                    let x0_t = w.bb.x_slice(0);
+                    let y0_t = w.bb.y_slice(0);
+                    let x0 =
+                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
+                    let y0 =
+                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
+                    for i in 0..LB {
+                        for j in 0..LB {
+                            let mut values = [Complex64::new(0.0, 0.0); 4];
+                            for lane in 0..4 {
+                                let index = rows_b[lane][i] * n + cols_b[lane][j];
+                                values[lane] = if i >= j {
+                                    *x0.get_unchecked(index)
+                                } else {
+                                    *y0.get_unchecked(index)
+                                };
+                            }
+                            d_b[i * LB + j] =
+                                C64x4::from_values(values[0], values[1], values[2], values[3]);
+                        }
+                    }
+                    if LB == 1 {
+                        cof_b[0] = one_v;
+                        det_b = d_b[0];
+                    } else {
+                        // Packed same-spin C_3 term:
+                        // sum phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y] in each lane.
+                        let pairs_b = LB * (LB - 1) / 2;
+                        let jsl_t = w.bb.j_slice(0);
+                        let jsl = std::slice::from_raw_parts(
+                            jsl_t.as_ptr().cast::<Complex64>(),
+                            jsl_t.len(),
+                        );
+                        let n2 = n * n;
+                        let n3 = n2 * n;
+                        for eta in 0..LB {
+                            for xi in (eta + 1)..LB {
+                                let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
+                                for z in 0..LB {
+                                    for y in (z + 1)..LB {
+                                        let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
+                                        let mut minor = [zero_v; 16];
+                                        let mut ii = 0usize;
+                                        for r in 0..LB {
+                                            if r == eta || r == xi {
+                                                continue;
+                                            }
+                                            let mut jj = 0usize;
+                                            for c in 0..LB {
+                                                if c == z || c == y {
+                                                    continue;
+                                                }
+                                                minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
+                                                jj += 1;
+                                            }
+                                            ii += 1;
+                                        }
+                                        let second = det_small(&minor, LB - 2);
+                                        second_b[row_pair * pairs_b + col_pair] = second;
+                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 4];
+                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 4];
+                                        for lane in 0..4 {
+                                            let direct_base = rows_b[lane][eta] * n3
+                                                + cols_b[lane][z] * n2
+                                                + rows_b[lane][xi] * n;
+                                            let exchange_base = rows_b[lane][eta] * n3
+                                                + cols_b[lane][y] * n2
+                                                + rows_b[lane][xi] * n;
+                                            direct_lane[lane] =
+                                                *jsl.get_unchecked(direct_base + cols_b[lane][y]);
+                                            exchange_lane[lane] =
+                                                *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
+                                        }
+                                        let jdiff =
+                                            C64x4::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        if ((eta + xi + z + y) & 1) == 0 {
+                                            j_b = C64x4::madd(j_b, second, jdiff);
+                                        } else {
+                                            j_b = C64x4::msub(j_b, second, jdiff);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Packed cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // reconstructed from second minors before expanding det D.
+                        for eta in 0..LB {
+                            let r = if eta == 0 { 1usize } else { 0usize };
+                            let r_minor = if r < eta { r } else { r - 1 };
+                            for z in 0..LB {
+                                let mut value = zero_v;
+                                for c in 0..LB {
+                                    if c == z {
+                                        continue;
+                                    }
+                                    let c_minor = if c < z { c } else { c - 1 };
+                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
+                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
+                                    let row_pair =
+                                        row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
+                                    let col_pair =
+                                        col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
+                                    let term = C64x4::mul(
+                                        d_b[r * LB + c],
+                                        second_b[row_pair * pairs_b + col_pair],
+                                    );
+                                    if ((r_minor + c_minor) & 1) == 0 {
+                                        value = C64x4::add(value, term);
+                                    } else {
+                                        value = C64x4::sub(value, term);
+                                    }
+                                }
+                                cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
+                                    value
+                                } else {
+                                    C64x4::sub(zero_v, value)
+                                };
+                            }
+                        }
+                        det_b = C64x4::mul(d_b[0], cof_b[0]);
+                        for z in 1..LB {
+                            det_b = C64x4::madd(det_b, d_b[z], cof_b[z]);
+                        }
+                    }
+
+                    // Packed one-column replacements sum cof[D_beta]_{eta z} H^beta_{eta z}.
+                    let hcol0_t = w.bb.hcol0_t_slice();
+                    let hcol0 = std::slice::from_raw_parts(
+                        hcol0_t.as_ptr().cast::<Complex64>(),
+                        hcol0_t.len(),
+                    );
+                    for z in 0..LB {
+                        for eta in 0..LB {
+                            let mut values = [Complex64::new(0.0, 0.0); 4];
+                            for lane in 0..4 {
+                                values[lane] =
+                                    *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
+                            }
+                            replacement_b = C64x4::madd(
+                                replacement_b,
+                                cof_b[eta * LB + z],
+                                C64x4::from_values(values[0], values[1], values[2], values[3]),
+                            );
+                        }
+                    }
+                }
+
+                // Packed mixed-spin double replacement:
+                // sum cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+                let mut ii_term = zero_v;
+                if LA > 0 && LB > 0 {
+                    let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
+                    let iisl = std::slice::from_raw_parts(
+                        iisl_t.as_ptr().cast::<Complex64>(),
+                        iisl_t.len(),
+                    );
+                    let n = w.ab.n();
+                    let n2 = n * n;
+                    let n3 = n2 * n;
+                    if LA <= LB {
+                        for z in 0..LA {
+                            for eta in 0..LA {
+                                let mut inner = zero_v;
+                                for y in 0..LB {
+                                    for xi in 0..LB {
+                                        let mut values = [Complex64::new(0.0, 0.0); 4];
+                                        for lane in 0..4 {
+                                            let base_a =
+                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
+                                            values[lane] = *iisl.get_unchecked(
+                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
+                                            );
+                                        }
+                                        inner = C64x4::madd(
+                                            inner,
+                                            cof_b[xi * LB + y],
+                                            C64x4::from_values(
+                                                values[0], values[1], values[2], values[3],
+                                            ),
+                                        );
+                                    }
+                                }
+                                ii_term = C64x4::madd(ii_term, cof_a[eta * LA + z], inner);
+                            }
+                        }
+                    } else {
+                        for y in 0..LB {
+                            for xi in 0..LB {
+                                let mut inner = zero_v;
+                                for z in 0..LA {
+                                    for eta in 0..LA {
+                                        let mut values = [Complex64::new(0.0, 0.0); 4];
+                                        for lane in 0..4 {
+                                            let base_a =
+                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
+                                            values[lane] = *iisl.get_unchecked(
+                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
+                                            );
+                                        }
+                                        inner = C64x4::madd(
+                                            inner,
+                                            cof_a[eta * LA + z],
+                                            C64x4::from_values(
+                                                values[0], values[1], values[2], values[3],
+                                            ),
+                                        );
+                                    }
+                                }
+                                ii_term = C64x4::madd(ii_term, cof_b[xi * LB + y], inner);
+                            }
+                        }
+                    }
+                }
+
+                // Packed final GNME assembly: scalar V_0 det_alpha det_beta, one-column
+                // replacements, same-spin J second minors, mixed-spin II, then the common prefactor.
+                let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<Complex64>();
+                let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<Complex64>();
+                let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<Complex64>();
+                let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<Complex64>();
+                let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<Complex64>();
+                let g0_scalar =
+                    Complex64::new(enuc, 0.0) + f0ha + v0a * 0.5 + f0hb + v0b * 0.5 + vab0;
+                let g0 = C64x4::splat(g0_scalar.re, g0_scalar.im);
+                let det_ab = C64x4::mul(det_a, det_b);
+                let mut core = C64x4::mul(g0, det_ab);
+                core = C64x4::msub(core, det_b, replacement_a);
+                core = C64x4::msub(core, det_a, replacement_b);
+                core = C64x4::madd(core, j_a, det_b);
+                core = C64x4::madd(core, j_b, det_a);
+                core = C64x4::add(core, ii_term);
+                let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<Complex64>();
+                let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<Complex64>();
+                let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
+                let phase = C64x4::from_values(
+                    Complex64::new(excitation_phase[0], 0.0),
+                    Complex64::new(excitation_phase[1], 0.0),
+                    Complex64::new(excitation_phase[2], 0.0),
+                    Complex64::new(excitation_phase[3], 0.0),
+                );
+                let pref = C64x4::mul(phase, C64x4::splat(ref_pref.re, ref_pref.im));
+                let mut h_re = [0.0f64; 4];
+                let mut h_im = [0.0f64; 4];
+                let mut s_re = [0.0f64; 4];
+                let mut s_im = [0.0f64; 4];
+                C64x4::mul(core, pref).store(&mut h_re, &mut h_im);
+                C64x4::mul(det_ab, pref).store(&mut s_re, &mut s_im);
+                for lane in 0..4 {
+                    h[lane] = Complex64::new(h_re[lane], h_im[lane]);
+                    s[lane] = Complex64::new(s_re[lane], s_im[lane]);
+                }
+            }
+        }
+    )
+}
+
 /// Evaluate 8 independent real fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
 /// matrix elements for `m_\alpha = m_\beta = 0`.
 /// Each SIMD lane is one determinant pair and all lanes share the same reference pair
@@ -2212,15 +2162,18 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
 /// - The caller must ensure `T = f64`, CPU support for `AVX-512`, valid predecoded
 ///   excitation labels and output slices of length at least 8.
 #[cfg(target_arch = "x86_64")]
+#[inline(never)]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
     T: NOCIScalar,
+    const RXA: usize,
+    const RWA: usize,
     const LA: usize,
+    const RXB: usize,
+    const RWB: usize,
     const LB: usize,
     const DA: usize,
     const DB: usize,
-    const PA: usize,
-    const PB: usize,
     const SA: usize,
     const SB: usize,
 >(
@@ -2297,15 +2250,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
                     for lane in 0..8 {
-                        let x_rank = usize::from(x_ex.get_unchecked(lane).alpha.rank);
                         let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
                         let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
-                        for i in 0..x_rank {
+                        for i in 0..RXA {
                             rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
                             cols_a[lane][i] = usize::from(x_indices[i]);
                         }
-                        for i in x_rank..LA {
-                            let k = i - x_rank;
+                        for i in RXA..LA {
+                            let k = i - RXA;
                             rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
                             cols_a[lane][i] = usize::from(w_indices[4 + k]);
                         }
@@ -2469,15 +2421,14 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
                     for lane in 0..8 {
-                        let x_rank = usize::from(x_ex.get_unchecked(lane).beta.rank);
                         let x_indices = &x_ex.get_unchecked(lane).beta.indices;
                         let w_indices = &w_ex.get_unchecked(lane).beta.indices;
-                        for i in 0..x_rank {
+                        for i in 0..RXB {
                             rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
                             cols_b[lane][i] = usize::from(x_indices[i]);
                         }
-                        for i in x_rank..LB {
-                            let k = i - x_rank;
+                        for i in RXB..LB {
+                            let k = i - RXB;
                             rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
                             cols_b[lane][i] = usize::from(w_indices[4 + k]);
                         }
@@ -2714,6 +2665,544 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                 F64x8::mul(det_ab, pref).store(&mut s_lane);
                 h[..8].copy_from_slice(&h_lane);
                 s[..8].copy_from_slice(&s_lane);
+            }
+        }
+    )
+}
+
+/// Evaluate 8 independent complex fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
+/// matrix elements for `m_\alpha = m_\beta = 0`.
+/// Each SIMD lane is one determinant pair and all lanes share the same reference pair
+/// and contraction ranks.
+/// This is the packed `c64x8` evaluation of the same determinant, cofactor, same-spin
+/// second-minor and mixed-spin cofactor contractions as `xw_hamiltonian_overlap_m0_prepared_const`.
+/// # Arguments:
+/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
+/// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
+/// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
+/// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
+/// - `enuc`: Nuclear repulsion energy.
+/// - `h`: Hamiltonian output slice in SIMD-lane order.
+/// - `s`: Overlap output slice in SIMD-lane order.
+/// # Returns:
+/// - `()`: Writes 8 Hamiltonian and overlap matrix elements.
+/// # Safety:
+/// - The caller must ensure `T = Complex64`, CPU support for `AVX-512`, valid predecoded
+///   excitation labels and output slices of length at least 8.
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+#[target_feature(enable = "avx512f")]
+unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
+    T: NOCIScalar,
+    const RXA: usize,
+    const RWA: usize,
+    const LA: usize,
+    const RXB: usize,
+    const RWB: usize,
+    const LB: usize,
+    const DA: usize,
+    const DB: usize,
+    const SA: usize,
+    const SB: usize,
+>(
+    w: &WicksPairView<'_, T>,
+    x_ex: &[ExcitationCache; 8],
+    w_ex: &[ExcitationCache; 8],
+    excitation_phase: &[f64; 8],
+    enuc: f64,
+    h: &mut [Complex64],
+    s: &mut [Complex64],
+) {
+    time_call!(
+        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_c64x8_const,
+        {
+            unsafe {
+                let zero_v = C64x8::zero();
+                let one_v = C64x8::splat(1.0, 0.0);
+                let pack = |values: &[Complex64; 8]| C64x8::from_values(*values);
+
+                // SIMD determinant helpers for the second-minor ranks.
+                let det3 = |m: &[C64x8; 16]| -> C64x8 {
+                    let t0 = C64x8::minor(m[4], m[8], m[5], m[7]);
+                    let mut out = C64x8::mul(m[0], t0);
+                    let t1 = C64x8::minor(m[3], m[8], m[5], m[6]);
+                    out = C64x8::msub(out, m[1], t1);
+                    let t2 = C64x8::minor(m[3], m[7], m[4], m[6]);
+                    C64x8::madd(out, m[2], t2)
+                };
+                let det4 = |m: &[C64x8; 16]| -> C64x8 {
+                    let mut out = zero_v;
+                    for col in 0..4 {
+                        let mut subm = [zero_v; 16];
+                        let mut ii = 0usize;
+                        for r in 1..4 {
+                            let mut jj = 0usize;
+                            for c in 0..4 {
+                                if c == col {
+                                    continue;
+                                }
+                                subm[ii * 3 + jj] = m[r * 4 + c];
+                                jj += 1;
+                            }
+                            ii += 1;
+                        }
+                        let term = C64x8::mul(m[col], det3(&subm));
+                        if (col & 1) == 0 {
+                            out = C64x8::add(out, term);
+                        } else {
+                            out = C64x8::sub(out, term);
+                        }
+                    }
+                    out
+                };
+                let det_small = |minor: &[C64x8; 16], n: usize| -> C64x8 {
+                    match n {
+                        0 => one_v,
+                        1 => minor[0],
+                        2 => C64x8::minor(minor[0], minor[3], minor[1], minor[2]),
+                        3 => det3(minor),
+                        4 => det4(minor),
+                        _ => unreachable!(),
+                    }
+                };
+                let mut rows_a = [[0usize; 6]; 8];
+                let mut cols_a = [[0usize; 6]; 8];
+                let mut d_a = [zero_v; DA];
+                let mut cof_a = [zero_v; DA];
+                let mut second_a = [zero_v; SA];
+                let mut det_a = one_v;
+                let mut j_a = zero_v;
+                let mut replacement_a = zero_v;
+
+                // Lane-wise alpha D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                if LA > 0 {
+                    let nocc = w.aa.nocc;
+                    let nvirt = w.aa.nmo - nocc;
+                    for lane in 0..8 {
+                        let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
+                        let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
+                        for i in 0..RXA {
+                            rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
+                            cols_a[lane][i] = usize::from(x_indices[i]);
+                        }
+                        for i in RXA..LA {
+                            let k = i - RXA;
+                            rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
+                            cols_a[lane][i] = usize::from(w_indices[4 + k]);
+                        }
+                    }
+
+                    // Gather D_{alpha,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    let n = w.aa.n();
+                    let x0_t = w.aa.x_slice(0);
+                    let y0_t = w.aa.y_slice(0);
+                    let x0 =
+                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
+                    let y0 =
+                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
+                    for i in 0..LA {
+                        for j in 0..LA {
+                            let mut values = [Complex64::new(0.0, 0.0); 8];
+                            for lane in 0..8 {
+                                let index = rows_a[lane][i] * n + cols_a[lane][j];
+                                values[lane] = if i >= j {
+                                    *x0.get_unchecked(index)
+                                } else {
+                                    *y0.get_unchecked(index)
+                                };
+                            }
+                            d_a[i * LA + j] = pack(&values);
+                        }
+                    }
+                    if LA == 1 {
+                        cof_a[0] = one_v;
+                        det_a = d_a[0];
+                    } else {
+                        // Packed same-spin C_3 term:
+                        // sum phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y] in each lane.
+                        let pairs_a = LA * (LA - 1) / 2;
+                        let jsl_t = w.aa.j_slice(0);
+                        let jsl = std::slice::from_raw_parts(
+                            jsl_t.as_ptr().cast::<Complex64>(),
+                            jsl_t.len(),
+                        );
+                        let n2 = n * n;
+                        let n3 = n2 * n;
+                        for eta in 0..LA {
+                            for xi in (eta + 1)..LA {
+                                let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
+                                for z in 0..LA {
+                                    for y in (z + 1)..LA {
+                                        let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
+                                        let mut minor = [zero_v; 16];
+                                        let mut ii = 0usize;
+                                        for r in 0..LA {
+                                            if r == eta || r == xi {
+                                                continue;
+                                            }
+                                            let mut jj = 0usize;
+                                            for c in 0..LA {
+                                                if c == z || c == y {
+                                                    continue;
+                                                }
+                                                minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
+                                                jj += 1;
+                                            }
+                                            ii += 1;
+                                        }
+                                        let second = det_small(&minor, LA - 2);
+                                        second_a[row_pair * pairs_a + col_pair] = second;
+                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 8];
+                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 8];
+                                        for lane in 0..8 {
+                                            let direct_base = rows_a[lane][eta] * n3
+                                                + cols_a[lane][z] * n2
+                                                + rows_a[lane][xi] * n;
+                                            let exchange_base = rows_a[lane][eta] * n3
+                                                + cols_a[lane][y] * n2
+                                                + rows_a[lane][xi] * n;
+                                            direct_lane[lane] =
+                                                *jsl.get_unchecked(direct_base + cols_a[lane][y]);
+                                            exchange_lane[lane] =
+                                                *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
+                                        }
+                                        let jdiff =
+                                            C64x8::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        if ((eta + xi + z + y) & 1) == 0 {
+                                            j_a = C64x8::madd(j_a, second, jdiff);
+                                        } else {
+                                            j_a = C64x8::msub(j_a, second, jdiff);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Packed cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // reconstructed from second minors before expanding det D.
+                        for eta in 0..LA {
+                            let r = if eta == 0 { 1usize } else { 0usize };
+                            let r_minor = if r < eta { r } else { r - 1 };
+                            for z in 0..LA {
+                                let mut value = zero_v;
+                                for c in 0..LA {
+                                    if c == z {
+                                        continue;
+                                    }
+                                    let c_minor = if c < z { c } else { c - 1 };
+                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
+                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
+                                    let row_pair =
+                                        row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
+                                    let col_pair =
+                                        col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
+                                    let term = C64x8::mul(
+                                        d_a[r * LA + c],
+                                        second_a[row_pair * pairs_a + col_pair],
+                                    );
+                                    if ((r_minor + c_minor) & 1) == 0 {
+                                        value = C64x8::add(value, term);
+                                    } else {
+                                        value = C64x8::sub(value, term);
+                                    }
+                                }
+                                cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
+                                    value
+                                } else {
+                                    C64x8::sub(zero_v, value)
+                                };
+                            }
+                        }
+                        det_a = C64x8::mul(d_a[0], cof_a[0]);
+                        for z in 1..LA {
+                            det_a = C64x8::madd(det_a, d_a[z], cof_a[z]);
+                        }
+                    }
+
+                    // Packed one-column replacements sum cof[D_alpha]_{eta z} H^alpha_{eta z}.
+                    let hcol0_t = w.aa.hcol0_t_slice();
+                    let hcol0 = std::slice::from_raw_parts(
+                        hcol0_t.as_ptr().cast::<Complex64>(),
+                        hcol0_t.len(),
+                    );
+                    for z in 0..LA {
+                        for eta in 0..LA {
+                            let mut values = [Complex64::new(0.0, 0.0); 8];
+                            for lane in 0..8 {
+                                values[lane] =
+                                    *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
+                            }
+                            replacement_a =
+                                C64x8::madd(replacement_a, cof_a[eta * LA + z], pack(&values));
+                        }
+                    }
+                }
+                let mut rows_b = [[0usize; 6]; 8];
+                let mut cols_b = [[0usize; 6]; 8];
+                let mut d_b = [zero_v; DB];
+                let mut cof_b = [zero_v; DB];
+                let mut second_b = [zero_v; SB];
+                let mut det_b = one_v;
+                let mut j_b = zero_v;
+                let mut replacement_b = zero_v;
+
+                // Lane-wise beta D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                if LB > 0 {
+                    let nocc = w.bb.nocc;
+                    let nvirt = w.bb.nmo - nocc;
+                    for lane in 0..8 {
+                        let x_indices = &x_ex.get_unchecked(lane).beta.indices;
+                        let w_indices = &w_ex.get_unchecked(lane).beta.indices;
+                        for i in 0..RXB {
+                            rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
+                            cols_b[lane][i] = usize::from(x_indices[i]);
+                        }
+                        for i in RXB..LB {
+                            let k = i - RXB;
+                            rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
+                            cols_b[lane][i] = usize::from(w_indices[4 + k]);
+                        }
+                    }
+
+                    // Gather D_{beta,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    let n = w.bb.n();
+                    let x0_t = w.bb.x_slice(0);
+                    let y0_t = w.bb.y_slice(0);
+                    let x0 =
+                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
+                    let y0 =
+                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
+                    for i in 0..LB {
+                        for j in 0..LB {
+                            let mut values = [Complex64::new(0.0, 0.0); 8];
+                            for lane in 0..8 {
+                                let index = rows_b[lane][i] * n + cols_b[lane][j];
+                                values[lane] = if i >= j {
+                                    *x0.get_unchecked(index)
+                                } else {
+                                    *y0.get_unchecked(index)
+                                };
+                            }
+                            d_b[i * LB + j] = pack(&values);
+                        }
+                    }
+                    if LB == 1 {
+                        cof_b[0] = one_v;
+                        det_b = d_b[0];
+                    } else {
+                        // Packed same-spin C_3 term:
+                        // sum phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y] in each lane.
+                        let pairs_b = LB * (LB - 1) / 2;
+                        let jsl_t = w.bb.j_slice(0);
+                        let jsl = std::slice::from_raw_parts(
+                            jsl_t.as_ptr().cast::<Complex64>(),
+                            jsl_t.len(),
+                        );
+                        let n2 = n * n;
+                        let n3 = n2 * n;
+                        for eta in 0..LB {
+                            for xi in (eta + 1)..LB {
+                                let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
+                                for z in 0..LB {
+                                    for y in (z + 1)..LB {
+                                        let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
+                                        let mut minor = [zero_v; 16];
+                                        let mut ii = 0usize;
+                                        for r in 0..LB {
+                                            if r == eta || r == xi {
+                                                continue;
+                                            }
+                                            let mut jj = 0usize;
+                                            for c in 0..LB {
+                                                if c == z || c == y {
+                                                    continue;
+                                                }
+                                                minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
+                                                jj += 1;
+                                            }
+                                            ii += 1;
+                                        }
+                                        let second = det_small(&minor, LB - 2);
+                                        second_b[row_pair * pairs_b + col_pair] = second;
+                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 8];
+                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 8];
+                                        for lane in 0..8 {
+                                            let direct_base = rows_b[lane][eta] * n3
+                                                + cols_b[lane][z] * n2
+                                                + rows_b[lane][xi] * n;
+                                            let exchange_base = rows_b[lane][eta] * n3
+                                                + cols_b[lane][y] * n2
+                                                + rows_b[lane][xi] * n;
+                                            direct_lane[lane] =
+                                                *jsl.get_unchecked(direct_base + cols_b[lane][y]);
+                                            exchange_lane[lane] =
+                                                *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
+                                        }
+                                        let jdiff =
+                                            C64x8::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        if ((eta + xi + z + y) & 1) == 0 {
+                                            j_b = C64x8::madd(j_b, second, jdiff);
+                                        } else {
+                                            j_b = C64x8::msub(j_b, second, jdiff);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Packed cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // reconstructed from second minors before expanding det D.
+                        for eta in 0..LB {
+                            let r = if eta == 0 { 1usize } else { 0usize };
+                            let r_minor = if r < eta { r } else { r - 1 };
+                            for z in 0..LB {
+                                let mut value = zero_v;
+                                for c in 0..LB {
+                                    if c == z {
+                                        continue;
+                                    }
+                                    let c_minor = if c < z { c } else { c - 1 };
+                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
+                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
+                                    let row_pair =
+                                        row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
+                                    let col_pair =
+                                        col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
+                                    let term = C64x8::mul(
+                                        d_b[r * LB + c],
+                                        second_b[row_pair * pairs_b + col_pair],
+                                    );
+                                    if ((r_minor + c_minor) & 1) == 0 {
+                                        value = C64x8::add(value, term);
+                                    } else {
+                                        value = C64x8::sub(value, term);
+                                    }
+                                }
+                                cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
+                                    value
+                                } else {
+                                    C64x8::sub(zero_v, value)
+                                };
+                            }
+                        }
+                        det_b = C64x8::mul(d_b[0], cof_b[0]);
+                        for z in 1..LB {
+                            det_b = C64x8::madd(det_b, d_b[z], cof_b[z]);
+                        }
+                    }
+
+                    // Packed one-column replacements sum cof[D_beta]_{eta z} H^beta_{eta z}.
+                    let hcol0_t = w.bb.hcol0_t_slice();
+                    let hcol0 = std::slice::from_raw_parts(
+                        hcol0_t.as_ptr().cast::<Complex64>(),
+                        hcol0_t.len(),
+                    );
+                    for z in 0..LB {
+                        for eta in 0..LB {
+                            let mut values = [Complex64::new(0.0, 0.0); 8];
+                            for lane in 0..8 {
+                                values[lane] =
+                                    *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
+                            }
+                            replacement_b =
+                                C64x8::madd(replacement_b, cof_b[eta * LB + z], pack(&values));
+                        }
+                    }
+                }
+
+                // Packed mixed-spin double replacement:
+                // sum cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+                let mut ii_term = zero_v;
+                if LA > 0 && LB > 0 {
+                    let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
+                    let iisl = std::slice::from_raw_parts(
+                        iisl_t.as_ptr().cast::<Complex64>(),
+                        iisl_t.len(),
+                    );
+                    let n = w.ab.n();
+                    let n2 = n * n;
+                    let n3 = n2 * n;
+                    if LA <= LB {
+                        for z in 0..LA {
+                            for eta in 0..LA {
+                                let mut inner = zero_v;
+                                for y in 0..LB {
+                                    for xi in 0..LB {
+                                        let mut values = [Complex64::new(0.0, 0.0); 8];
+                                        for lane in 0..8 {
+                                            let base_a =
+                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
+                                            values[lane] = *iisl.get_unchecked(
+                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
+                                            );
+                                        }
+                                        inner =
+                                            C64x8::madd(inner, cof_b[xi * LB + y], pack(&values));
+                                    }
+                                }
+                                ii_term = C64x8::madd(ii_term, cof_a[eta * LA + z], inner);
+                            }
+                        }
+                    } else {
+                        for y in 0..LB {
+                            for xi in 0..LB {
+                                let mut inner = zero_v;
+                                for z in 0..LA {
+                                    for eta in 0..LA {
+                                        let mut values = [Complex64::new(0.0, 0.0); 8];
+                                        for lane in 0..8 {
+                                            let base_a =
+                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
+                                            values[lane] = *iisl.get_unchecked(
+                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
+                                            );
+                                        }
+                                        inner =
+                                            C64x8::madd(inner, cof_a[eta * LA + z], pack(&values));
+                                    }
+                                }
+                                ii_term = C64x8::madd(ii_term, cof_b[xi * LB + y], inner);
+                            }
+                        }
+                    }
+                }
+
+                // Packed final GNME assembly: scalar V_0 det_alpha det_beta, one-column
+                // replacements, same-spin J second minors, mixed-spin II, then the common prefactor.
+                let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<Complex64>();
+                let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<Complex64>();
+                let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<Complex64>();
+                let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<Complex64>();
+                let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<Complex64>();
+                let g0_scalar =
+                    Complex64::new(enuc, 0.0) + f0ha + v0a * 0.5 + f0hb + v0b * 0.5 + vab0;
+                let g0 = C64x8::splat(g0_scalar.re, g0_scalar.im);
+                let det_ab = C64x8::mul(det_a, det_b);
+                let mut core = C64x8::mul(g0, det_ab);
+                core = C64x8::msub(core, det_b, replacement_a);
+                core = C64x8::msub(core, det_a, replacement_b);
+                core = C64x8::madd(core, j_a, det_b);
+                core = C64x8::madd(core, j_b, det_a);
+                core = C64x8::add(core, ii_term);
+                let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<Complex64>();
+                let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<Complex64>();
+                let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
+                let mut phase_values = [Complex64::new(0.0, 0.0); 8];
+                for lane in 0..8 {
+                    phase_values[lane] = Complex64::new(excitation_phase[lane], 0.0);
+                }
+                let phase = C64x8::from_values(phase_values);
+                let pref = C64x8::mul(phase, C64x8::splat(ref_pref.re, ref_pref.im));
+                let mut h_re = [0.0f64; 8];
+                let mut h_im = [0.0f64; 8];
+                let mut s_re = [0.0f64; 8];
+                let mut s_im = [0.0f64; 8];
+                C64x8::mul(core, pref).store(&mut h_re, &mut h_im);
+                C64x8::mul(det_ab, pref).store(&mut s_re, &mut s_im);
+                for lane in 0..8 {
+                    h[lane] = Complex64::new(h_re[lane], h_im[lane]);
+                    s[lane] = Complex64::new(s_re[lane], s_im[lane]);
+                }
             }
         }
     )

@@ -41,8 +41,12 @@ pub struct Totals {
     pub xw_hamiltonian_overlap_m0_prepared_const: Counter,
     /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_f64x4_const`.
     pub xw_hamiltonian_overlap_m0_prepared_f64x4_const: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_c64x4_const`.
+    pub xw_hamiltonian_overlap_m0_prepared_c64x4_const: Counter,
     /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_f64x8_const`.
     pub xw_hamiltonian_overlap_m0_prepared_f64x8_const: Counter,
+    /// Total time spent in `xw_hamiltonian_overlap_m0_prepared_c64x8_const`.
+    pub xw_hamiltonian_overlap_m0_prepared_c64x8_const: Counter,
     /// Total time spent in `xw_hamiltonian_overlap_m0_gen_prepared`.
     pub xw_hamiltonian_overlap_m0_gen_prepared: Counter,
     /// Total time spent in `xw_hamiltonian_overlap_gen_prepared`.
@@ -122,8 +126,12 @@ impl Totals {
             .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_const);
         self.xw_hamiltonian_overlap_m0_prepared_f64x4_const
             .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_f64x4_const);
+        self.xw_hamiltonian_overlap_m0_prepared_c64x4_const
+            .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_c64x4_const);
         self.xw_hamiltonian_overlap_m0_prepared_f64x8_const
             .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_f64x8_const);
+        self.xw_hamiltonian_overlap_m0_prepared_c64x8_const
+            .merge_from(&other.xw_hamiltonian_overlap_m0_prepared_c64x8_const);
         self.xw_hamiltonian_overlap_m0_gen_prepared
             .merge_from(&other.xw_hamiltonian_overlap_m0_gen_prepared);
         self.xw_hamiltonian_overlap_gen_prepared
@@ -358,6 +366,20 @@ pub fn add_xw_hamiltonian_overlap_m0_prepared_f64x4_const(ns: u64) {
     });
 }
 
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared_c64x4_const` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared_c64x4_const`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_prepared_c64x4_const` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_prepared_c64x4_const(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_c64x4_const
+            .add_ns(ns)
+    });
+}
+
 /// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared_f64x8_const` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared_f64x8_const`.
@@ -368,6 +390,20 @@ pub fn add_xw_hamiltonian_overlap_m0_prepared_f64x8_const(ns: u64) {
     with_totals(|t| {
         t.nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_prepared_f64x8_const
+            .add_ns(ns)
+    });
+}
+
+/// Add one timed call to the `xw_hamiltonian_overlap_m0_prepared_c64x8_const` counter.
+/// # Arguments:
+/// - `ns`: Elapsed time in nanoseconds for one call to `xw_hamiltonian_overlap_m0_prepared_c64x8_const`.
+/// # Returns:
+/// - `()`: Updates the current thread local `xw_hamiltonian_overlap_m0_prepared_c64x8_const` counter.
+#[inline(always)]
+pub fn add_xw_hamiltonian_overlap_m0_prepared_c64x8_const(ns: u64) {
+    with_totals(|t| {
+        t.nonorthogonalwicks
+            .xw_hamiltonian_overlap_m0_prepared_c64x8_const
             .add_ns(ns)
     });
 }
