@@ -4,8 +4,7 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::basis::excitation_phase;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
-use crate::nonorthogonalwicks::{prepare_same, xw_f, xw_overlap};
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksView, xw_f_overlap_prepared};
 use crate::{AoData, DetState};
 
 // Parent/sibling imports.
@@ -177,21 +176,11 @@ fn calculate_m_pair_wicks<T: NOCIScalar>(
     let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
     let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
 
-    prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-    let sa = pha * xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-
-    prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-    let sb = phb * xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-
-    let mut f = <T as From<f64>>::from(0.0);
-
-    if sb.abs() != 0.0 {
-        f += pha * xw_f(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol) * sb;
-    }
-
-    if sa.abs() != 0.0 {
-        f += phb * xw_f(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol) * sa;
-    }
+    let (sa, f1a) = xw_f_overlap_prepared(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
+    let (sb, f1b) = xw_f_overlap_prepared(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
+    let sa = pha * sa;
+    let sb = phb * sb;
+    let f = pha * f1a * sb + phb * f1b * sa;
 
     f - <T as From<f64>>::from(e0) * sa * sb
 }

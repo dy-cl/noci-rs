@@ -759,7 +759,7 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
 /// # Returns
 /// - `(T, T)`: Same-spin `(overlap, generalised-Fock matrix element)`.
 #[inline(always)]
-fn xw_f_overlap_prepared<T: NOCIScalar>(
+pub(crate) fn xw_f_overlap_prepared<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
     x_ex: &ExcitationSpin,
     w_ex: &ExcitationSpin,

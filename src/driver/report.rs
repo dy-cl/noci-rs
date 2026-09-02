@@ -91,19 +91,6 @@ pub fn print_report(
     let s_pair_total = res.timings.noci.calculate_s_pair;
     let f_pair_total = res.timings.noci.calculate_f_pair;
     let hs_pair_total = res.timings.noci.calculate_hs_pair;
-    let one_body_operator_total = crate::timers::Counter {
-        ns: res.timings.nonorthogonalwicks.xw_h1.ns + res.timings.nonorthogonalwicks.xw_f.ns,
-        calls: res.timings.nonorthogonalwicks.xw_h1.calls
-            + res.timings.nonorthogonalwicks.xw_f.calls,
-    };
-
-    let one_body_alg_total = crate::timers::Counter {
-        ns: res.timings.nonorthogonalwicks.xw_one_body_gen.ns
-            + res.timings.nonorthogonalwicks.xw_one_body_m0.ns,
-        calls: res.timings.nonorthogonalwicks.xw_one_body_gen.calls
-            + res.timings.nonorthogonalwicks.xw_one_body_m0.calls,
-    };
-
     let wick_total = crate::timers::Counter {
         ns: res.timings.noci.calculate_s_pair_wicks.ns
             + res.timings.noci.calculate_f_pair_wicks.ns
@@ -389,12 +376,6 @@ pub fn print_report(
 
     println!("Shared nonorthogonal Wick timings");
     print_relative_counter(
-        "Same-spin mix determinants and adjugates",
-        res.timings.nonorthogonalwicks.get_det_adjt_same,
-        wick_total,
-        2,
-    );
-    print_relative_counter(
         "Different-spin mix determinants and adjugates",
         res.timings.nonorthogonalwicks.get_det_adjt_diff,
         wick_total,
@@ -475,62 +456,6 @@ pub fn print_report(
         res.timings.nonorthogonalwicks.xw_overlap,
         5,
     );
-
-    println!("{}", "-".repeat(100));
-
-    println!("One-body operator timings");
-    print_relative_counter(
-        "One-body operator wrappers",
-        one_body_operator_total,
-        wick_total,
-        2,
-    );
-    print_relative_counter(
-        "Hamiltonian one-body matrix elements",
-        res.timings.nonorthogonalwicks.xw_h1,
-        one_body_operator_total,
-        5,
-    );
-    print_relative_counter(
-        "Fock one-body matrix elements",
-        res.timings.nonorthogonalwicks.xw_f,
-        one_body_operator_total,
-        5,
-    );
-
-    println!("One-body algorithmic timings");
-    print_relative_counter(
-        "One-body algorithmic paths",
-        one_body_alg_total,
-        wick_total,
-        2,
-    );
-    print_relative_counter(
-        "One-body matrix elements (generic)",
-        res.timings.nonorthogonalwicks.xw_one_body_gen,
-        one_body_alg_total,
-        5,
-    );
-    print_relative_counter(
-        "One-body matrix elements (m = 0)",
-        res.timings.nonorthogonalwicks.xw_one_body_m0,
-        one_body_alg_total,
-        5,
-    );
-    print_relative_counter(
-        "One-body matrix elements (m = 0, generic)",
-        res.timings.nonorthogonalwicks.xw_one_body_m0_gen,
-        res.timings.nonorthogonalwicks.xw_one_body_m0,
-        8,
-    );
-    print_relative_counter(
-        "One-body matrix elements (m = 0, const)",
-        res.timings.nonorthogonalwicks.xw_one_body_m0_const,
-        res.timings.nonorthogonalwicks.xw_one_body_m0,
-        8,
-    );
-
-    println!("{}", "-".repeat(100));
 
     print_relative_counter(
         "Fused Hamiltonian-overlap batches",

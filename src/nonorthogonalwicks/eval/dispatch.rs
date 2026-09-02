@@ -1,8 +1,5 @@
 // nonorthogonalwicks/eval/dispatch.rs
 
-// Expand one complete rank match rather than individual match arms: Rust macros may produce an
-// expression containing a match, but cannot be used as a list of arms inside another match.
-
 /// Dispatch a supported same-spin one-body rank pair.
 /// The supplied identifiers become arm-local constants, allowing the caller expression to
 /// instantiate any scalar or SIMD kernel with the same `(RX, RW, L)` table.
@@ -55,6 +52,69 @@ macro_rules! dispatch_onebody_ranks {
             (2, 2),
             (3, 1),
             (4, 0),
+        )
+    }};
+}
+
+/// Dispatch a supported same-spin overlap rank pair.
+/// The supplied identifiers become arm-local constants, allowing scalar and SIMD overlap kernels
+/// to share the same `(RX, RW, L)` table for individual ranks up to four and total ranks up to six.
+macro_rules! dispatch_overlap_ranks {
+    (
+        @rank ($rx_value:literal, $rw_value:literal),
+        |$rx:ident, $rw:ident, $l:ident| $kernel:expr
+    ) => {{
+        const $rx: usize = $rx_value;
+        const $rw: usize = $rw_value;
+        const $l: usize = $rx + $rw;
+        $kernel
+    }};
+    (
+        @match $ranks:expr,
+        |$rx:ident, $rw:ident, $l:ident| $kernel:expr,
+        $fallback:expr;
+        $(($rx_value:literal, $rw_value:literal)),+ $(,)?
+    ) => {{
+        match $ranks {
+            $(
+                ($rx_value, $rw_value) => dispatch_overlap_ranks!(
+                    @rank ($rx_value, $rw_value),
+                    |$rx, $rw, $l| $kernel
+                ),
+            )+
+            _ => $fallback,
+        }
+    }};
+    (
+        $ranks:expr,
+        |$rx:ident, $rw:ident, $l:ident| $kernel:expr,
+        $fallback:expr $(,)?
+    ) => {{
+        dispatch_overlap_ranks!(
+            @match $ranks,
+            |$rx, $rw, $l| $kernel,
+            $fallback;
+            (0, 1),
+            (1, 0),
+            (0, 2),
+            (1, 1),
+            (2, 0),
+            (0, 3),
+            (1, 2),
+            (2, 1),
+            (3, 0),
+            (0, 4),
+            (1, 3),
+            (2, 2),
+            (3, 1),
+            (4, 0),
+            (1, 4),
+            (2, 3),
+            (3, 2),
+            (4, 1),
+            (2, 4),
+            (3, 3),
+            (4, 2),
         )
     }};
 }
@@ -342,3 +402,4 @@ macro_rules! dispatch_hamiltonian_ranks {
 
 pub(super) use dispatch_hamiltonian_ranks;
 pub(super) use dispatch_onebody_ranks;
+pub(super) use dispatch_overlap_ranks;

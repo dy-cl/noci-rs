@@ -1,6 +1,5 @@
 mod dispatch;
 mod helpers;
-mod onebody;
 mod overlap;
 mod prepare;
 mod preparehamiltonianoverlap;
@@ -16,21 +15,20 @@ mod rdmksame;
 #[cfg(target_arch = "x86_64")]
 mod simd;
 
-// Public function re-exports.
-pub use overlap::xw_overlap;
-pub use prepare::prepare_same;
-
 // Crate-visible type re-exports.
 pub(crate) use overlap::SameSpinOverlapBatch;
 pub(crate) use prepareonebodyoverlap::SameSpinOneBodyBatch;
 
 // Crate-visible function re-exports.
-pub(crate) use onebody::xw_f;
-pub(crate) use overlap::xw_overlap_same_f64_batched;
+#[cfg(feature = "nocc")]
+pub(crate) use overlap::xw_overlap;
+pub(crate) use overlap::{xw_overlap_prepared, xw_overlap_prepared_batched};
+#[cfg(feature = "nocc")]
+pub(crate) use prepare::prepare_same;
 pub(crate) use preparehamiltonianoverlap::{
     xw_hamiltonian_overlap_prepared, xw_hamiltonian_overlap_prepared_batched,
 };
-pub(crate) use prepareonebodyoverlap::xw_f_overlap_prepared_batched;
+pub(crate) use prepareonebodyoverlap::{xw_f_overlap_prepared, xw_f_overlap_prepared_batched};
 #[cfg(feature = "nocc")]
 pub(crate) use rdm1::xw_rdm1;
 #[cfg(feature = "nocc")]

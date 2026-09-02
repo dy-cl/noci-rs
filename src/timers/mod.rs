@@ -111,7 +111,6 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.prepare_same);
         $f!($tot.nonorthogonalwicks.prepare_same_gen);
         $f!($tot.nonorthogonalwicks.prepare_same_m0);
-        $f!($tot.nonorthogonalwicks.get_det_adjt_same);
         $f!($tot.nonorthogonalwicks.get_det_adjt_diff);
         $f!($tot.nonorthogonalwicks.construct_determinant_indices);
         $f!($tot.nonorthogonalwicks.xw_overlap);
@@ -121,7 +120,6 @@ macro_rules! for_each_counter {
         $f!($tot.nonorthogonalwicks.xw_overlap_ml);
         $f!($tot.nonorthogonalwicks.xw_overlap_ml_const);
         $f!($tot.nonorthogonalwicks.xw_overlap_gen);
-        $f!($tot.nonorthogonalwicks.xw_h1);
         $f!($tot.nonorthogonalwicks.xw_hamiltonian_overlap_prepared);
         $f!($tot
             .nonorthogonalwicks
@@ -146,19 +144,14 @@ macro_rules! for_each_counter {
             .nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_gen_prepared);
         $f!($tot.nonorthogonalwicks.xw_hamiltonian_overlap_gen_prepared);
-        $f!($tot.nonorthogonalwicks.xw_f);
         $f!($tot.nonorthogonalwicks.xw_rdm1);
         $f!($tot.nonorthogonalwicks.xw_rdm1_m0);
         $f!($tot.nonorthogonalwicks.xw_rdm1_gen);
-        $f!($tot.nonorthogonalwicks.xw_one_body_gen);
-        $f!($tot.nonorthogonalwicks.xw_one_body_m0);
         $f!($tot.nonorthogonalwicks.xw_rdm2_same);
         $f!($tot.nonorthogonalwicks.xw_rdm2_same_gen);
         $f!($tot.nonorthogonalwicks.xw_rdm2_same_m0);
         $f!($tot.nonorthogonalwicks.xw_rdm2_diff);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_const);
-        $f!($tot.nonorthogonalwicks.xw_one_body_m0_gen);
-        $f!($tot.nonorthogonalwicks.xw_one_body_m0_const);
         $f!($tot.nonorthogonalwicks.xw_f_overlap);
         $f!($tot.nonorthogonalwicks.xw_f_overlap_gen);
         $f!($tot.nonorthogonalwicks.xw_f_overlap_m0);

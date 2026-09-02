@@ -53,11 +53,13 @@ pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
 pub(crate) use view::WicksPairView;
 
 // Crate-visible function re-exports.
-pub(crate) use eval::{
-    prepare_same, xw_f, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared,
-    xw_hamiltonian_overlap_prepared_batched, xw_overlap, xw_overlap_same_f64_batched,
-};
 #[cfg(feature = "nocc")]
-pub(crate) use eval::{xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same};
+pub(crate) use eval::{
+    prepare_same, xw_overlap, xw_rdm_same_element, xw_rdm1, xw_rdm2_diff, xw_rdm2_same,
+};
+pub(crate) use eval::{
+    xw_f_overlap_prepared, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared,
+    xw_hamiltonian_overlap_prepared_batched, xw_overlap_prepared, xw_overlap_prepared_batched,
+};
 pub(crate) use layout::{assign_offsets, write_diff_spin, write_hcol0, write_same_spin, write2t};
 pub(crate) use storage::{create_wicks_mmap, load_wicks_mmap};

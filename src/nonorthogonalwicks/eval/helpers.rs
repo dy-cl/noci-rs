@@ -505,44 +505,6 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
     });
 }
 
-/// Form each allowed same-spin mixed contraction determinant, evaluate
-/// `\det\mathbf D_{\mathrm{ov}} and \operatorname{cof}[\mathbf D_{\mathrm{ov}}], and pass these`
-/// quantities to the operator-specific evaluator.
-/// # Arguments:
-/// - `w`: Same-spin view containing m.
-/// - `l`: Contraction-determinant dimension L.
-/// - `pbits`: Number of leading operator-specific assignments.
-/// - `scratch`: Mixed determinant, cofactor and work storage.
-/// - `tol`: `Numerical threshold applied to \det\mathbf D_{\mathrm{ov}}.`
-/// - `f`: Receives the complete assignment, scratch storage and determinant value.
-/// # Returns
-/// - `()`: Calls `f` for each mixed determinant whose absolute determinant exceeds `tol`.
-#[inline(always)]
-pub(super) fn get_det_adjt_same<T: NOCIScalar>(
-    w: &SameSpinView<'_, T>,
-    l: usize,
-    pbits: usize,
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-    mut f: impl FnMut(u64, &mut WickScratch<T>, T),
-) {
-    time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_same, {
-        // Build each \mathbf D_{\mathrm{ov}}(m_{p+1},\ldots,m_{p+L}) in the constrained sum.
-        mix_dets_same(w, l, pbits, scratch, |bits, scratch| {
-            // Evaluate its determinant and cofactor matrix; operator-specific scalar,
-            // one-column and two-column terms are formed by the callback.
-            if let Some(det_det) = adjugate_transpose_generic(
-                scratch.adjt_det.as_mut_slice(),
-                scratch.det_mix.as_slice(),
-                l,
-                tol,
-            ) {
-                f(bits, scratch, det_det);
-            }
-        });
-    })
-}
-
 /// Independently enumerate the alpha- and beta-spin distributions required by the different-spin
 /// two-body matrix element:
 /// `m_{\alpha0}+\sum_{z=1}^{L_\alpha}m_{\alpha z}=m_\alpha,\qquad`

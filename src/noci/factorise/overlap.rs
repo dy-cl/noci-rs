@@ -14,7 +14,7 @@ use crate::maths::dot_f64;
 use crate::noci::overlap::{calculate_s_pair, calculate_s_pair_naive};
 use crate::noci::types::{DetPair, NOCIData};
 use crate::nonorthogonalwicks::{
-    SameSpinOverlapBatch, WickScratchSpin, WicksPairView, xw_overlap_same_f64_batched,
+    SameSpinOverlapBatch, WickScratchSpin, WicksPairView, xw_overlap_prepared_batched,
 };
 
 // Parent/sibling imports.
@@ -1415,7 +1415,7 @@ fn build_spin_overlap_factor_row(
         (&pair.bb, &mut scratch.bb)
     };
 
-    xw_overlap_same_f64_batched(
+    xw_overlap_prepared_batched(
         w,
         SameSpinOverlapBatch {
             basis: data.basis,

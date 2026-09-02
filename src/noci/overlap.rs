@@ -2,8 +2,7 @@
 
 // Crate-root imports.
 use crate::DetState;
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView};
-use crate::nonorthogonalwicks::{prepare_same, xw_overlap};
+use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView, xw_overlap_prepared};
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -159,8 +158,7 @@ pub(in crate::noci) fn calculate_s_alpha_pair_wicks<T: NOCIScalar>(
     let g_ex = &gdet.excitation.alpha;
     let phase = <T as From<f64>>::from(ldet.pha * gdet.pha);
 
-    prepare_same(&w.aa, l_ex, g_ex, &mut scratch.aa);
-    phase * xw_overlap(&w.aa, l_ex, g_ex, &mut scratch.aa)
+    phase * xw_overlap_prepared(&w.aa, l_ex, g_ex, &mut scratch.aa)
 }
 
 /// Calculate the beta same-spin overlap for an ordered Wick pair.
@@ -182,6 +180,5 @@ pub(in crate::noci) fn calculate_s_beta_pair_wicks<T: NOCIScalar>(
     let g_ex = &gdet.excitation.beta;
     let phase = <T as From<f64>>::from(ldet.phb * gdet.phb);
 
-    prepare_same(&w.bb, l_ex, g_ex, &mut scratch.bb);
-    phase * xw_overlap(&w.bb, l_ex, g_ex, &mut scratch.bb)
+    phase * xw_overlap_prepared(&w.bb, l_ex, g_ex, &mut scratch.bb)
 }
