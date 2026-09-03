@@ -144,13 +144,12 @@ macro_rules! for_each_counter {
             .nonorthogonalwicks
             .xw_hamiltonian_overlap_m0_gen_prepared);
         $f!($tot.nonorthogonalwicks.xw_hamiltonian_overlap_gen_prepared);
-        $f!($tot.nonorthogonalwicks.xw_rdm1);
-        $f!($tot.nonorthogonalwicks.xw_rdm1_m0);
-        $f!($tot.nonorthogonalwicks.xw_rdm1_gen);
-        $f!($tot.nonorthogonalwicks.xw_rdm2_same);
-        $f!($tot.nonorthogonalwicks.xw_rdm2_same_gen);
-        $f!($tot.nonorthogonalwicks.xw_rdm2_same_m0);
-        $f!($tot.nonorthogonalwicks.xw_rdm2_diff);
+        $f!($tot.nonorthogonalwicks.xw_rdmk_same_prepared);
+        $f!($tot.nonorthogonalwicks.xw_rdmk_same_m0_prepared);
+        $f!($tot.nonorthogonalwicks.xw_rdmk_same_m0_prepared_const);
+        $f!($tot.nonorthogonalwicks.xw_rdmk_same_m0_gen_prepared);
+        $f!($tot.nonorthogonalwicks.xw_rdmk_same_gen_prepared);
+        $f!($tot.nonorthogonalwicks.xw_rdmk_diff_prepared);
         $f!($tot.nonorthogonalwicks.prepare_same_m0_const);
         $f!($tot.nonorthogonalwicks.xw_f_overlap);
         $f!($tot.nonorthogonalwicks.xw_f_overlap_gen);

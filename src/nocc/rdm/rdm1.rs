@@ -5,7 +5,9 @@ use ndarray::Array1;
 
 // Crate-root imports.
 use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs, pair_density};
-use crate::nonorthogonalwicks::{WickScratchSpin, prepare_same, xw_overlap, xw_rdm1};
+use crate::nonorthogonalwicks::{
+    WickScratchSpin, prepare_same, xw_overlap, xw_rdmk_same_prepared_batched,
+};
 
 /// `Spin-free one-body RDM stored as \Gamma[p, q].`
 pub(crate) struct RDM1<T> {
@@ -210,20 +212,14 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
     let mut sa = <T as From<f64>>::from(0.0);
     let mut sb = <T as From<f64>>::from(0.0);
 
-    if dosa || do1a {
+    if dosa {
         prepare_same(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-
-        if dosa {
-            sa = xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
-        }
+        sa = xw_overlap(&w.aa, ex_la, ex_ga, &mut scratch.aa);
     }
 
-    if dosb || do1b {
+    if dosb {
         prepare_same(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-
-        if dosb {
-            sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
-        }
+        sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
     }
 
     let sxw = det_phase * sa * sb;
@@ -231,42 +227,41 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
         n,
         data: vec![<T as From<f64>>::from(0.0); n * n],
     };
+    let requests: Vec<_> = (0..n)
+        .flat_map(|p| (0..n).map(move |q| ([p], [q])))
+        .collect();
 
     if sb.abs() > data.tol && do1a {
-        let g1a = xw_rdm1(
+        let mut g1a = vec![<T as From<f64>>::from(0.0); requests.len()];
+        xw_rdmk_same_prepared_batched::<T, 1>(
             &w.aa,
-            ex_la,
-            ex_ga,
-            ldet.ca.as_ref(),
-            gdet.ca.as_ref(),
+            (ex_la, ex_ga),
+            (ldet.ca.as_ref(), gdet.ca.as_ref()),
+            &requests,
             &mut scratch.aa,
             data.tol,
+            &mut g1a,
         );
 
-        for p in 0..n {
-            for q in 0..n {
-                let i = p * n + q;
-                gamma.data[i] += det_phase * sb * g1a[(p, q)];
-            }
+        for (value, g1) in gamma.data.iter_mut().zip(g1a) {
+            *value += det_phase * sb * g1;
         }
     }
 
     if sa.abs() > data.tol && do1b {
-        let g1b = xw_rdm1(
+        let mut g1b = vec![<T as From<f64>>::from(0.0); requests.len()];
+        xw_rdmk_same_prepared_batched::<T, 1>(
             &w.bb,
-            ex_lb,
-            ex_gb,
-            ldet.cb.as_ref(),
-            gdet.cb.as_ref(),
+            (ex_lb, ex_gb),
+            (ldet.cb.as_ref(), gdet.cb.as_ref()),
+            &requests,
             &mut scratch.bb,
             data.tol,
+            &mut g1b,
         );
 
-        for p in 0..n {
-            for q in 0..n {
-                let i = p * n + q;
-                gamma.data[i] += det_phase * sa * g1b[(p, q)];
-            }
+        for (value, g1) in gamma.data.iter_mut().zip(g1b) {
+            *value += det_phase * sa * g1;
         }
     }
 

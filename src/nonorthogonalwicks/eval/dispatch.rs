@@ -119,6 +119,79 @@ macro_rules! dispatch_overlap_ranks {
     }};
 }
 
+#[cfg(feature = "nocc")]
+/// Dispatch a supported same-spin rank-`K` RDM and excitation-rank tuple.
+/// The RDM operator contributes `K` external contraction pairs, so the augmented determinant has
+/// compile-time dimension `D = K + L`, where `L = RX + RW` is supplied by the overlap rank table.
+macro_rules! dispatch_rdm_ranks {
+    (
+        @operator $k_value:literal,
+        $ranks:expr,
+        |$k:ident, $rx:ident, $rw:ident, $l:ident, $d:ident| $kernel:expr,
+        $fallback:expr
+    ) => {{
+        match $ranks {
+            (0, 0) => {
+                const $k: usize = $k_value;
+                const $rx: usize = 0;
+                const $rw: usize = 0;
+                const $l: usize = 0;
+                const $d: usize = $k;
+                $kernel
+            }
+            ranks => dispatch_overlap_ranks!(
+                ranks,
+                |$rx, $rw, $l| {
+                    const $k: usize = $k_value;
+                    const $d: usize = $k + $l;
+                    $kernel
+                },
+                $fallback,
+            ),
+        }
+    }};
+    (
+        $k_value:expr,
+        $ranks:expr,
+        |$k:ident, $rx:ident, $rw:ident, $l:ident, $d:ident| $kernel:expr,
+        $fallback:expr $(,)?
+    ) => {{
+        match $k_value {
+            0 => dispatch_rdm_ranks!(
+                @operator 0,
+                $ranks,
+                |$k, $rx, $rw, $l, $d| $kernel,
+                $fallback
+            ),
+            1 => dispatch_rdm_ranks!(
+                @operator 1,
+                $ranks,
+                |$k, $rx, $rw, $l, $d| $kernel,
+                $fallback
+            ),
+            2 => dispatch_rdm_ranks!(
+                @operator 2,
+                $ranks,
+                |$k, $rx, $rw, $l, $d| $kernel,
+                $fallback
+            ),
+            3 => dispatch_rdm_ranks!(
+                @operator 3,
+                $ranks,
+                |$k, $rx, $rw, $l, $d| $kernel,
+                $fallback
+            ),
+            4 => dispatch_rdm_ranks!(
+                @operator 4,
+                $ranks,
+                |$k, $rx, $rw, $l, $d| $kernel,
+                $fallback
+            ),
+            _ => $fallback,
+        }
+    }};
+}
+
 /// Dispatch a supported two-spin Hamiltonian rank tuple.
 /// `LA`, `LB`, determinant storage, and second-minor storage are derived as arm-local
 /// constants from the four independent excitation ranks. The caller expression can therefore
@@ -403,3 +476,5 @@ macro_rules! dispatch_hamiltonian_ranks {
 pub(super) use dispatch_hamiltonian_ranks;
 pub(super) use dispatch_onebody_ranks;
 pub(super) use dispatch_overlap_ranks;
+#[cfg(feature = "nocc")]
+pub(super) use dispatch_rdm_ranks;

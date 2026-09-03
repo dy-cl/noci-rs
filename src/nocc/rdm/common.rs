@@ -5,15 +5,14 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::maths::det_occupied_minor;
-use crate::noci::{DetPair, NOCIData, NOCIScalar, occ_coeffs};
-use crate::nonorthogonalwicks::{WickScratchSpin, xw_rdm_same_element};
+use crate::noci::{DetPair, NOCIScalar, occ_coeffs};
 
 /// Split creation and annihilation indices by spin assignment mask.
 /// # Arguments:
 /// - `ps`: Creation indices in the full RDM basis.
 /// - `qs`: Annihilation indices in the full RDM basis.
 /// - `mask`: Spin assignment mask, where bit `i` selects beta for operator `i`.
-/// # Returns:
+/// # Returns
 /// - `(Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>)`: Alpha creation, alpha annihilation,
 ///   beta creation, and beta annihilation indices.
 fn split_spin_assignment(
@@ -39,81 +38,13 @@ fn split_spin_assignment(
     (pa, qa, pb, qb)
 }
 
-/// Calculate one spin-assignment contribution to a spin-free RDM element using Wick's theorem.
-/// # Arguments:
-/// - `data`: Shared data required for NOCI matrix-element evaluation.
-/// - `pair`: Pair of determinants whose transition RDM element is to be evaluated.
-/// - `ps`: Creation indices in the full RDM basis.
-/// - `qs`: Annihilation indices in the full RDM basis.
-/// - `mask`: Spin assignment mask, where bit `i` selects beta for operator `i`.
-/// - `scratch`: Scratch space for Wick's calculations.
-/// # Returns:
-/// - `T`: Spin-assignment contribution to the spin-free RDM element.
-pub(super) fn spin_assignment_rdm_element<T: NOCIScalar>(
-    data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
-    ps: &[usize],
-    qs: &[usize],
-    mask: usize,
-    scratch: &mut WickScratchSpin<T>,
-) -> T {
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
-    let wicks = data.wicks.unwrap();
-    let w = wicks.pair(ldet.parent, gdet.parent);
-    let zero = <T as From<f64>>::from(0.0);
-
-    let (pa, qa, pb, qb) = split_spin_assignment(ps, qs, mask);
-
-    if pa.len() > ldet.oa.count_ones() as usize || pa.len() > gdet.oa.count_ones() as usize {
-        return zero;
-    }
-
-    if pb.len() > ldet.ob.count_ones() as usize || pb.len() > gdet.ob.count_ones() as usize {
-        return zero;
-    }
-
-    let la = ldet.excitation.alpha.holes.count_ones() as usize
-        + gdet.excitation.alpha.holes.count_ones() as usize;
-    let lb = ldet.excitation.beta.holes.count_ones() as usize
-        + gdet.excitation.beta.holes.count_ones() as usize;
-
-    let va = if w.aa.m <= la + pa.len() {
-        xw_rdm_same_element(
-            &w.aa,
-            (&ldet.excitation.alpha, &gdet.excitation.alpha),
-            (ldet.ca.as_ref(), gdet.ca.as_ref()),
-            (&pa, &qa),
-            &mut scratch.aa,
-            data.tol,
-        )
-    } else {
-        zero
-    };
-
-    let vb = if w.bb.m <= lb + pb.len() {
-        xw_rdm_same_element(
-            &w.bb,
-            (&ldet.excitation.beta, &gdet.excitation.beta),
-            (ldet.cb.as_ref(), gdet.cb.as_ref()),
-            (&pb, &qb),
-            &mut scratch.bb,
-            data.tol,
-        )
-    } else {
-        zero
-    };
-
-    va * vb
-}
-
 /// Calculate one spin-assignment contribution to a spin-free RDM element by determinant expansion.
 /// # Arguments:
 /// - `pair`: Pair of determinants whose transition RDM element is to be evaluated.
 /// - `ps`: Creation indices in the full RDM basis.
 /// - `qs`: Annihilation indices in the full RDM basis.
 /// - `mask`: Spin assignment mask, where bit `i` selects beta for operator `i`.
-/// # Returns:
+/// # Returns
 /// - `T`: Spin-assignment contribution to the spin-free RDM element.
 pub(super) fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
     pair: DetPair<'_, T>,
@@ -155,7 +86,7 @@ pub(super) fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
 /// - `nel`: Number of electrons in the spin block.
 /// - `ps`: Creation indices in the RDM basis.
 /// - `qs`: Annihilation indices in the RDM basis.
-/// # Returns:
+/// # Returns
 /// - `T`: Same-spin RDM element for the supplied creation and annihilation indices.
 fn same_spin_rdm_element_naive<T: NOCIScalar>(
     l_c: &Array2<T>,

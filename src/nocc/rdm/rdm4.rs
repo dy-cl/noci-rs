@@ -5,10 +5,12 @@ use ndarray::Array1;
 
 // Crate-root imports.
 use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs};
-use crate::nonorthogonalwicks::{WickScratchSpin, prepare_same, xw_overlap};
+use crate::nonorthogonalwicks::{
+    WickScratchSpin, prepare_same, xw_overlap, xw_rdmk_diff_prepared, xw_rdmk_same_prepared,
+};
 
 // Parent/sibling imports.
-use super::common::{spin_assignment_rdm_element, spin_assignment_rdm_element_naive};
+use super::common::spin_assignment_rdm_element_naive;
 
 /// `Active-space spin-free four-body RDM stored as \Gamma[p, q, r, s, t, u, v, w].`
 pub(crate) struct RDM4<T> {
@@ -147,7 +149,6 @@ fn rdm4_pair_naive<T: NOCIScalar>(
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(8)],
     };
-
     for a in 0..n {
         for b in 0..n {
             for c in 0..n {
@@ -236,6 +237,11 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(8)],
     };
+    let ex = (&ldet.excitation, &gdet.excitation);
+    let coeff = (
+        (ldet.ca.as_ref(), gdet.ca.as_ref()),
+        (ldet.cb.as_ref(), gdet.cb.as_ref()),
+    );
 
     for a in 0..n {
         for b in 0..n {
@@ -249,11 +255,187 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
                                     let qs = [active[e], active[f], active[g], active[h]];
                                     let mut val = <T as From<f64>>::from(0.0);
 
-                                    for mask in 0..16 {
-                                        val += spin_assignment_rdm_element(
-                                            data, pair, &ps, &qs, mask, scratch,
+                                    // Sum the sixteen assignments in
+                                    // `\sum_{\sigma_1\cdots\sigma_4}\Gamma_{\sigma_1\cdots\sigma_4}`;
+                                    // each spin subsequence retains the external-operator order.
+                                    val += sb
+                                        * xw_rdmk_same_prepared::<T, 4>(
+                                            &w.aa,
+                                            (&ldet.excitation.alpha, &gdet.excitation.alpha),
+                                            (ldet.ca.as_ref(), gdet.ca.as_ref()),
+                                            (
+                                                &[ps[0], ps[1], ps[2], ps[3]],
+                                                &[qs[0], qs[1], qs[2], qs[3]],
+                                            ),
+                                            &mut scratch.aa,
+                                            data.tol,
                                         );
-                                    }
+                                    val += xw_rdmk_diff_prepared::<T, 3, 1>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[1], ps[2], ps[3]], &[qs[1], qs[2], qs[3]]),
+                                            (&[ps[0]], &[qs[0]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 3, 1>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0], ps[2], ps[3]], &[qs[0], qs[2], qs[3]]),
+                                            (&[ps[1]], &[qs[1]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 2, 2>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[2], ps[3]], &[qs[2], qs[3]]),
+                                            (&[ps[0], ps[1]], &[qs[0], qs[1]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 3, 1>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0], ps[1], ps[3]], &[qs[0], qs[1], qs[3]]),
+                                            (&[ps[2]], &[qs[2]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 2, 2>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[1], ps[3]], &[qs[1], qs[3]]),
+                                            (&[ps[0], ps[2]], &[qs[0], qs[2]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 2, 2>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0], ps[3]], &[qs[0], qs[3]]),
+                                            (&[ps[1], ps[2]], &[qs[1], qs[2]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 1, 3>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[3]], &[qs[3]]),
+                                            (&[ps[0], ps[1], ps[2]], &[qs[0], qs[1], qs[2]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 3, 1>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0], ps[1], ps[2]], &[qs[0], qs[1], qs[2]]),
+                                            (&[ps[3]], &[qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 2, 2>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[1], ps[2]], &[qs[1], qs[2]]),
+                                            (&[ps[0], ps[3]], &[qs[0], qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 2, 2>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0], ps[2]], &[qs[0], qs[2]]),
+                                            (&[ps[1], ps[3]], &[qs[1], qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 1, 3>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[2]], &[qs[2]]),
+                                            (&[ps[0], ps[1], ps[3]], &[qs[0], qs[1], qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 2, 2>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0], ps[1]], &[qs[0], qs[1]]),
+                                            (&[ps[2], ps[3]], &[qs[2], qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 1, 3>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[1]], &[qs[1]]),
+                                            (&[ps[0], ps[2], ps[3]], &[qs[0], qs[2], qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += xw_rdmk_diff_prepared::<T, 1, 3>(
+                                        &w,
+                                        ex,
+                                        coeff,
+                                        (
+                                            (&[ps[0]], &[qs[0]]),
+                                            (&[ps[1], ps[2], ps[3]], &[qs[1], qs[2], qs[3]]),
+                                        ),
+                                        (&mut scratch.aa, &mut scratch.bb),
+                                        data.tol,
+                                    );
+                                    val += sa
+                                        * xw_rdmk_same_prepared::<T, 4>(
+                                            &w.bb,
+                                            (&ldet.excitation.beta, &gdet.excitation.beta),
+                                            (ldet.cb.as_ref(), gdet.cb.as_ref()),
+                                            (
+                                                &[ps[0], ps[1], ps[2], ps[3]],
+                                                &[qs[0], qs[1], qs[2], qs[3]],
+                                            ),
+                                            &mut scratch.bb,
+                                            data.tol,
+                                        );
 
                                     let i = (((((((a * n + b) * n + c) * n + d) * n + e) * n + f)
                                         * n
