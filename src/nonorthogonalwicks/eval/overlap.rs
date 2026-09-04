@@ -29,7 +29,7 @@ use super::simd::{C64x4, C64x8, F64x4, F64x8};
 /// Evaluate the same-spin overlap between excited determinants generated from the reference pair
 /// `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
 /// `Each m_i is zero or one. The lower triangle of \mathbf D_{\mathrm{ov}}, including its diagonal,`
 /// `contains X^{(m_i)} contractions, while its upper triangle contains Y^{(m_i)} contractions.`
@@ -50,7 +50,7 @@ pub fn xw_overlap<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap, {
-        // The contraction determinant has dimension L = L_x + L_w.
+        // The contraction determinant has dimension `L = L_x + L_w`.
         let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
         // A nonzero term requires one contraction for every zero-overlap orbital pair. The
@@ -70,7 +70,7 @@ pub fn xw_overlap<T: NOCIScalar>(
 
 /// Evaluate the same-spin overlap
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
 /// For `m = 0` and `L \leq 6`, the direct overlap-only path evaluates the single determinant
 /// without preparing reusable Hamiltonian scratch data. Other cases use `prepare_same`
@@ -89,21 +89,22 @@ pub(crate) fn xw_overlap_prepared<T: NOCIScalar>(
     g_ex: &ExcitationSpin,
     scratch: &mut WickScratch<T>,
 ) -> T {
-    // Determine the contraction-determinant dimension L = L_x + L_w.
+    // Determine the contraction-determinant dimension `L = L_x + L_w`.
     let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
-    // No distribution satisfying \sum_i m_i = m exists when m > L.
+    // No distribution satisfying `\sum_i m_i = m` exists when `m > L`.
     if w.m > l {
         return <T as From<f64>>::from(0.0);
     }
 
-    // For m = 0 and L \leq 6, construct and evaluate \mathbf D_{\mathrm{ov}}(0,\ldots,0)
+    // For `m = 0` and `L \leq 6`, construct and evaluate
+    // `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`
     // directly without populating the reusable scratch representation.
     if w.m == 0 && l <= 6 {
         return xw_overlap_m0_direct(w, l_ex, g_ex);
     }
 
-    // Prepare the all-m_i = 0 and, where required, all-m_i = 1 contraction determinants
+    // Prepare the all-`m_i = 0` and, where required, all-`m_i = 1` contraction determinants
     // before applying the standard overlap evaluation.
     prepare_same(w, l_ex, g_ex, scratch);
     xw_overlap(w, l_ex, g_ex, scratch)
@@ -127,7 +128,7 @@ pub(crate) struct SameSpinOverlapBatch<'a, T: NOCIScalar> {
 
 /// Evaluate one row of same-spin overlaps for one ordered reference pair.
 /// Every output is
-/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L=m}`
+/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L = m}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
 /// The target representative is paired with every source representative. Requests with `m = 0`,
 /// scalar type `f64` or `Complex64`, `L = 1,\ldots,6`, and individual excitation ranks at most four
@@ -204,7 +205,7 @@ pub(crate) fn xw_overlap_prepared_batched<T: NOCIScalar>(
 
 /// Evaluate one same-spin overlap row through the scalar overlap-only path.
 /// Every output is
-/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L=m}`
+/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L = m}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
@@ -238,7 +239,7 @@ fn xw_overlap_prepared_scalar_row<T: NOCIScalar>(
 
 /// Evaluate one complete same-spin overlap factor through the scalar overlap-only path.
 /// The returned factor is
-/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L=m}`
+/// `p_x p_w {}^{xw}\tilde S\sum_{m_1+\cdots+m_L = m}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
@@ -766,13 +767,17 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
     overlap: &mut [f64; 4],
 ) {
     let n = w.n();
+    // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
     let x0 = w.x_slice(0).as_ptr().cast::<f64>();
     let y0 = w.y_slice(0).as_ptr().cast::<f64>();
+    // `pref = p\,{}^{xw}\tilde S` contains the reference-pair phase and reduced overlap.
     let phase = unsafe { *std::ptr::from_ref(&w.phase).cast::<f64>() };
     let pref = phase * w.tilde_s_prod;
+    // `full = \{0,\ldots,L-1\}` is the complete contraction-column subset.
     let full = (1usize << L) - 1;
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
+    // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
     let x_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             fixed
@@ -780,6 +785,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
             unsafe { varying.get_unchecked(lane) }
         }
     };
+    // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
     let w_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             unsafe { varying.get_unchecked(lane) }
@@ -787,6 +793,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
             fixed
         }
     };
+    // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
@@ -794,6 +801,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
             nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
         }
     };
+    // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
@@ -801,10 +809,13 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
             usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
         }
     };
+    // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+    // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
     let load_d = |eta: usize, z: usize| -> F64x4 {
         let matrix = if eta >= z { x0 } else { y0 };
         let row_fixed = if eta < RX { XFIX } else { !XFIX };
         let col_fixed = if z < RX { XFIX } else { !XFIX };
+        // A lane-invariant contraction is broadcast; otherwise gather the four `D_{\eta z}` values.
         if row_fixed && col_fixed {
             let src = row_index(eta, 0) * n + col_index(z, 0);
             F64x4::splat(unsafe { *matrix.add(src) })
@@ -817,6 +828,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
             )
         }
     };
+    // Construct the packed overlap contraction matrices `\mathbf D_{\mathrm{ov}}`.
     let mut d = [F64x4::zero(); 36];
     for eta in 0..L {
         for z in 0..L {
@@ -824,14 +836,16 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
         }
     }
 
+    // Initialise `M_{\{c\}} = D_{L-1,c}`, the one-column minors of the final row.
     let mut minors = [F64x4::zero(); 64];
     for c in 0..L {
         minors[1usize << c] = d[(L - 1) * L + c];
     }
 
-    // Compile-time L selects one monomorphised determinant expansion. The subset minors
-    // are the same Laplace cofactors as the old fixed-rank kernels, but generated by
-    // the single const body and evaluated as packed SIMD values.
+    // Compile-time `L` selects one monomorphised subset-minor Laplace expansion whose entries
+    // are evaluated as packed SIMD values.
+    // For each column subset `S`, evaluate
+    // `M_S = \sum_{c\in S}(-1)^{\operatorname{pos}(c,S)}D_{L-|S|,c}M_{S\setminus\{c\}}`.
     let mut size = 2usize;
     while size <= L {
         let row = L - size;
@@ -857,6 +871,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
                     }
                 }
 
+                // Store `M_S` for `S` represented by `mask`.
                 next[mask] = acc;
             }
 
@@ -870,6 +885,7 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
         size += 1;
     }
 
+    // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}` in every SIMD lane.
     let overlap_v = F64x4::mul(minors[full], F64x4::splat(pref));
     overlap_v.store(overlap);
 }
@@ -948,13 +964,17 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
     overlap: &mut [f64; 8],
 ) {
     let n = w.n();
+    // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
     let x0 = w.x_slice(0).as_ptr().cast::<f64>();
     let y0 = w.y_slice(0).as_ptr().cast::<f64>();
+    // `pref = p\,{}^{xw}\tilde S` contains the reference-pair phase and reduced overlap.
     let phase = unsafe { *std::ptr::from_ref(&w.phase).cast::<f64>() };
     let pref = phase * w.tilde_s_prod;
+    // `full = \{0,\ldots,L-1\}` is the complete contraction-column subset.
     let full = (1usize << L) - 1;
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
+    // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
     let x_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             fixed
@@ -962,6 +982,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
             unsafe { varying.get_unchecked(lane) }
         }
     };
+    // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
     let w_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             unsafe { varying.get_unchecked(lane) }
@@ -969,6 +990,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
             fixed
         }
     };
+    // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
@@ -976,6 +998,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
             nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
         }
     };
+    // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
@@ -983,10 +1006,13 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
             usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
         }
     };
+    // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+    // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
     let load_d = |eta: usize, z: usize| -> F64x8 {
         let matrix = if eta >= z { x0 } else { y0 };
         let row_fixed = if eta < RX { XFIX } else { !XFIX };
         let col_fixed = if z < RX { XFIX } else { !XFIX };
+        // A lane-invariant contraction is broadcast; otherwise gather the eight `D_{\eta z}` values.
         if row_fixed && col_fixed {
             let src = row_index(eta, 0) * n + col_index(z, 0);
             F64x8::splat(unsafe { *matrix.add(src) })
@@ -1003,6 +1029,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
             ])
         }
     };
+    // Construct the packed overlap contraction matrices `\mathbf D_{\mathrm{ov}}`.
     let mut d = [F64x8::zero(); 36];
     for eta in 0..L {
         for z in 0..L {
@@ -1010,14 +1037,16 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
         }
     }
 
+    // Initialise `M_{\{c\}} = D_{L-1,c}`, the one-column minors of the final row.
     let mut minors = [F64x8::zero(); 64];
     for c in 0..L {
         minors[1usize << c] = d[(L - 1) * L + c];
     }
 
-    // Compile-time L selects one monomorphised determinant expansion. The subset minors
-    // are the same Laplace cofactors as the old fixed-rank kernels, but generated by
-    // the single const body and evaluated as packed SIMD values.
+    // Compile-time `L` selects one monomorphised subset-minor Laplace expansion whose entries
+    // are evaluated as packed SIMD values.
+    // For each column subset `S`, evaluate
+    // `M_S = \sum_{c\in S}(-1)^{\operatorname{pos}(c,S)}D_{L-|S|,c}M_{S\setminus\{c\}}`.
     let mut size = 2usize;
     while size <= L {
         let row = L - size;
@@ -1043,6 +1072,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
                     }
                 }
 
+                // Store `M_S` for `S` represented by `mask`.
                 next[mask] = acc;
             }
 
@@ -1056,6 +1086,7 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
         size += 1;
     }
 
+    // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}` in every SIMD lane.
     let overlap_v = F64x8::mul(minors[full], F64x8::splat(pref));
     overlap_v.store(overlap);
 }
@@ -1134,13 +1165,17 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
     overlap: &mut [Complex64; 4],
 ) {
     let n = w.n();
+    // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
     let x0 = w.x_slice(0).as_ptr().cast::<Complex64>();
     let y0 = w.y_slice(0).as_ptr().cast::<Complex64>();
+    // `pref = p\,{}^{xw}\tilde S` contains the reference-pair phase and reduced overlap.
     let phase = unsafe { *std::ptr::from_ref(&w.phase).cast::<Complex64>() };
     let pref = phase * w.tilde_s_prod;
+    // `full = \{0,\ldots,L-1\}` is the complete contraction-column subset.
     let full = (1usize << L) - 1;
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
+    // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
     let x_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             fixed
@@ -1148,6 +1183,7 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
             unsafe { varying.get_unchecked(lane) }
         }
     };
+    // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
     let w_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             unsafe { varying.get_unchecked(lane) }
@@ -1155,6 +1191,7 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
             fixed
         }
     };
+    // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
@@ -1162,6 +1199,7 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
             nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
         }
     };
+    // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
@@ -1169,10 +1207,13 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
             usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
         }
     };
+    // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+    // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
     let load_d = |eta: usize, z: usize| -> C64x4 {
         let matrix = if eta >= z { x0 } else { y0 };
         let row_fixed = if eta < RX { XFIX } else { !XFIX };
         let col_fixed = if z < RX { XFIX } else { !XFIX };
+        // A lane-invariant contraction is broadcast; otherwise gather the four `D_{\eta z}` values.
         if row_fixed && col_fixed {
             let value = unsafe { *matrix.add(row_index(eta, 0) * n + col_index(z, 0)) };
             C64x4::splat(value.re, value.im)
@@ -1185,6 +1226,7 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
             )
         }
     };
+    // Construct the packed overlap contraction matrices `\mathbf D_{\mathrm{ov}}`.
     let mut d = [C64x4::zero(); 36];
     for eta in 0..L {
         for z in 0..L {
@@ -1192,12 +1234,16 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
         }
     }
 
+    // Initialise `M_{\{c\}} = D_{L-1,c}`, the one-column minors of the final row.
     let mut minors = [C64x4::zero(); 64];
     for c in 0..L {
         minors[1usize << c] = d[(L - 1) * L + c];
     }
 
-    // Compile-time L selects the same subset-minor Laplace expansion as the real kernel.
+    // Compile-time `L` selects one monomorphised subset-minor Laplace expansion whose entries
+    // are evaluated as packed SIMD values.
+    // For each column subset `S`, evaluate
+    // `M_S = \sum_{c\in S}(-1)^{\operatorname{pos}(c,S)}D_{L-|S|,c}M_{S\setminus\{c\}}`.
     let mut size = 2usize;
     while size <= L {
         let row = L - size;
@@ -1219,6 +1265,7 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
                         pos += 1;
                     }
                 }
+                // Store `M_S` for `S` represented by `mask`.
                 next[mask] = acc;
             }
             if mask == 0 {
@@ -1230,6 +1277,7 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
         size += 1;
     }
 
+    // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}` in every SIMD lane.
     let overlap_v = C64x4::mul(minors[full], C64x4::splat(pref.re, pref.im));
     let mut re = [0.0f64; 4];
     let mut im = [0.0f64; 4];
@@ -1313,13 +1361,17 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
     overlap: &mut [Complex64; 8],
 ) {
     let n = w.n();
+    // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
     let x0 = w.x_slice(0).as_ptr().cast::<Complex64>();
     let y0 = w.y_slice(0).as_ptr().cast::<Complex64>();
+    // `pref = p\,{}^{xw}\tilde S` contains the reference-pair phase and reduced overlap.
     let phase = unsafe { *std::ptr::from_ref(&w.phase).cast::<Complex64>() };
     let pref = phase * w.tilde_s_prod;
+    // `full = \{0,\ldots,L-1\}` is the complete contraction-column subset.
     let full = (1usize << L) - 1;
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
+    // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
     let x_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             fixed
@@ -1327,6 +1379,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
             unsafe { varying.get_unchecked(lane) }
         }
     };
+    // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
     let w_data = |lane: usize| -> &ExcitationSpinCache {
         if XFIX {
             unsafe { varying.get_unchecked(lane) }
@@ -1334,6 +1387,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
             fixed
         }
     };
+    // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
@@ -1341,6 +1395,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
             nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
         }
     };
+    // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
             usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
@@ -1348,10 +1403,13 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
             usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
         }
     };
+    // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+    // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
     let load_d = |eta: usize, z: usize| -> C64x8 {
         let matrix = if eta >= z { x0 } else { y0 };
         let row_fixed = if eta < RX { XFIX } else { !XFIX };
         let col_fixed = if z < RX { XFIX } else { !XFIX };
+        // A lane-invariant contraction is broadcast; otherwise gather the eight `D_{\eta z}` values.
         if row_fixed && col_fixed {
             let value = unsafe { *matrix.add(row_index(eta, 0) * n + col_index(z, 0)) };
             C64x8::splat(value.re, value.im)
@@ -1368,6 +1426,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
             ])
         }
     };
+    // Construct the packed overlap contraction matrices `\mathbf D_{\mathrm{ov}}`.
     let mut d = [C64x8::zero(); 36];
     for eta in 0..L {
         for z in 0..L {
@@ -1375,12 +1434,16 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
         }
     }
 
+    // Initialise `M_{\{c\}} = D_{L-1,c}`, the one-column minors of the final row.
     let mut minors = [C64x8::zero(); 64];
     for c in 0..L {
         minors[1usize << c] = d[(L - 1) * L + c];
     }
 
-    // Compile-time L selects the same subset-minor Laplace expansion as the real kernel.
+    // Compile-time `L` selects one monomorphised subset-minor Laplace expansion whose entries
+    // are evaluated as packed SIMD values.
+    // For each column subset `S`, evaluate
+    // `M_S = \sum_{c\in S}(-1)^{\operatorname{pos}(c,S)}D_{L-|S|,c}M_{S\setminus\{c\}}`.
     let mut size = 2usize;
     while size <= L {
         let row = L - size;
@@ -1402,6 +1465,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
                         pos += 1;
                     }
                 }
+                // Store `M_S` for `S` represented by `mask`.
                 next[mask] = acc;
             }
             if mask == 0 {
@@ -1413,6 +1477,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
         size += 1;
     }
 
+    // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}` in every SIMD lane.
     let overlap_v = C64x8::mul(minors[full], C64x8::splat(pref.re, pref.im));
     let mut re = [0.0f64; 8];
     let mut im = [0.0f64; 8];
@@ -1424,7 +1489,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
 
 /// Evaluate the same-spin overlap directly when `m = 0` and `L \leq 6`:
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0).`
+/// ` = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
 /// The row labels are the x-reference particles followed by the w-reference holes, while the column
 /// labels are the x-reference holes followed by the w-reference particles. The determinant contains
 /// `X^{(0)}` on and below the diagonal and `Y^{(0)}` above the diagonal.
@@ -1440,7 +1505,7 @@ pub(crate) fn xw_overlap_m0_direct<T: NOCIScalar>(
     l_ex: &ExcitationSpin,
     g_ex: &ExcitationSpin,
 ) -> T {
-    // Split L into the bra- and ket-reference excitation ranks and form {}^{xw}\tilde S
+    // Split `L` into the bra- and ket-reference excitation ranks and form `{}^{xw}\tilde S`
     // from the separately stored orbital-pairing phase and non-zero singular-value product.
     let rx = l_ex.holes.count_ones() as usize;
     let rw = g_ex.holes.count_ones() as usize;
@@ -1503,8 +1568,8 @@ fn xw_overlap_m0_direct_const<T: NOCIScalar, const RX: usize, const RW: usize, c
     let zero = <T as From<f64>>::from(0.0);
     let mut d = [zero; 36];
 
-    // Build D_ov(0,...,0) from the fixed contraction labels, then evaluate
-    // the direct overlap factor S_tilde det D_ov.
+    // Build `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` from the fixed contraction labels, then
+    // evaluate `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
     for i in 0..L {
         let row = rows[i] * n;
 
@@ -1563,7 +1628,7 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
 
 /// Evaluate the same-spin overlap when m = 0:
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0).`
+/// ` = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
 /// `Fixed-rank determinant kernels are used for L = 1,\ldots,6; arbitrary ranks use the general`
 /// `determinant routine. For L = 0, the overlap is the reduced reference overlap {}^{xw}\tilde S.`
 /// # Arguments:
@@ -1579,7 +1644,7 @@ fn xw_overlap_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_m0, {
-        // Evaluate {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0) with a
+        // Evaluate `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)` with a
         // fixed-rank kernel where available.
         match l {
             // The empty contraction determinant has determinant one.
@@ -1604,7 +1669,7 @@ fn xw_overlap_m0<T: NOCIScalar>(
 /// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
 /// For `L = 0`, this returns the empty determinant contribution
 /// `{}^{xw}\tilde S`. For `L = 1,\ldots,6`, the determinant helper uses the
-/// same fixed-rank formula previously implemented by the rank-specific kernels.
+/// same fixed-rank determinant formula for each supported rank.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `scratch`: Prepared `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
@@ -1620,7 +1685,7 @@ fn xw_overlap_m0_const<T: NOCIScalar, const L: usize>(
         {
             let d = scratch.det0.as_slice();
             // For `m = 0`, the GNME zero-overlap distribution sum contains only the all-zero
-            // assignment, giving {}^{xw}\tilde S det D_ov(0,...,0).
+            // assignment, giving `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
             w.phase
                 * <T as From<f64>>::from(w.tilde_s_prod)
                 * det_const::<T, L>(&d[..L * L]).unwrap_or(<T as From<f64>>::from(0.0))
@@ -1631,7 +1696,7 @@ fn xw_overlap_m0_const<T: NOCIScalar, const L: usize>(
 /// Evaluate the same-spin overlap when m = L. The only allowed distribution is
 /// `(m_1,\ldots,m_L) = (1,\ldots,1), so:`
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1).`
+/// ` = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
 /// `Fixed-rank determinant kernels are used for L = 1,2,3.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
@@ -1646,7 +1711,7 @@ fn xw_overlap_ml<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) -> T {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_ml, {
-        // Evaluate {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1) with a
+        // Evaluate `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1)` with a
         // fixed-rank kernel where available.
         match l {
             // This branch is retained for completeness; xw_overlap dispatches L = m = 0 to the m = 0 path.
@@ -1655,7 +1720,7 @@ fn xw_overlap_ml<T: NOCIScalar>(
             2 => xw_overlap_ml_const::<T, 2>(w, scratch),
             3 => xw_overlap_ml_const::<T, 3>(w, scratch),
             _ => {
-                // Evaluate the prepared arbitrary-rank all-m_i = 1 determinant directly.
+                // Evaluate the prepared arbitrary-rank all-`m_i = 1` determinant directly.
                 w.phase
                     * <T as From<f64>>::from(w.tilde_s_prod)
                     * det(scratch.det1.as_slice(), l).unwrap_or(<T as From<f64>>::from(0.0))
@@ -1683,7 +1748,7 @@ fn xw_overlap_ml_const<T: NOCIScalar, const L: usize>(
         {
             let d = scratch.det1.as_slice();
             // For `m = L`, every contraction receives one zero-overlap index, so the only
-            // surviving term is {}^{xw}\tilde S det D_ov(1,...,1).
+            // surviving term is `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
             w.phase
                 * <T as From<f64>>::from(w.tilde_s_prod)
                 * det_const::<T, L>(&d[..L * L]).unwrap_or(<T as From<f64>>::from(0.0))
@@ -1693,7 +1758,7 @@ fn xw_overlap_ml_const<T: NOCIScalar, const L: usize>(
 
 /// Evaluate the same-spin overlap for 0 < m < L by summing every allowed distribution:
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L), \qquad m_i \in \{0,1\}.`
 /// `Each distribution selects every column of \mathbf D_{\mathrm{ov}} from the corresponding`
 /// `all-m_i = 0 or all-m_i = 1 contraction determinant.`
@@ -1712,7 +1777,7 @@ fn xw_overlap_gen<T: NOCIScalar>(
     time_call!(crate::timers::nonorthogonalwicks::add_xw_overlap_gen, {
         let mut acc = <T as From<f64>>::from(0.0);
 
-        // Enumerate the \binom{L}{m} distributions satisfying \sum_i m_i = m and construct
+        // Enumerate the `\binom{L}{m}` distributions satisfying `\sum_i m_i = m` and construct
         // each \mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L) by selecting its columns from `det0` or `det1`.
         match l {
             1 => xw_overlap_gen_const::<T, 1>(w, scratch, &mut acc),
@@ -1727,13 +1792,13 @@ fn xw_overlap_gen<T: NOCIScalar>(
         }
 
         // Apply the orbital-pairing phase to the product of non-zero singular values to recover
-        // {}^{xw}\tilde S\sum_{\{m_i\}}\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).
+        // `{}^{xw}\tilde S\sum_{\{m_i\}}\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`.
         w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
     })
 }
 
 /// Sum fixed-rank mixed-distribution determinants for `0 < m < L`:
-/// `\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// `\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L)`, with `m_i \in \{0,1\}`.
 /// Each distribution is constructed by selecting each column from the prepared
 /// all-`m_i = 0` or all-`m_i = 1` determinant before evaluating the fixed-rank
@@ -1754,7 +1819,7 @@ fn xw_overlap_gen_const<T: NOCIScalar, const L: usize>(
     mix_dets_same(w, L, 0, scratch, |_, scratch| {
         let d = scratch.det_mix.as_slice();
         // Each mixed determinant is one term in the constrained GNME sum over
-        // m_i in {0,1} with \sum_i m_i = m.
+        // `m_i \in \{0,1\}` with `\sum_i m_i = m`.
         *acc += det_const::<T, L>(&d[..L * L]).unwrap_or(<T as From<f64>>::from(0.0));
     });
 }

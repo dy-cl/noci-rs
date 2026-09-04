@@ -32,14 +32,14 @@ pub(crate) struct SameSpinMeta<T: NOCIScalar> {
     pub(crate) nmo: usize,
     /// Number of occupied orbitals in this spin sector.
     pub(crate) nocc: usize,
-    /// `Scalar one-body intermediates {}^xF_0^{(m_1)} constructed from the current`
+    /// Scalar one-body intermediates `{}^x F_0^{(m_1)}` constructed from the current
     /// generalised-Fock operator.
     pub(crate) f0f: [T; 2],
-    /// `Scalar one-body intermediates {}^xF_0^{(m_1)} constructed from the one-electron`
+    /// Scalar one-body intermediates `{}^x F_0^{(m_1)}` constructed from the one-electron
     /// Hamiltonian.
     pub(crate) f0h: [T; 2],
-    /// `Scalar same-spin two-body intermediates {}^xV_0^{(m_1,m_2)}, stored by`
-    /// `m_1 + m_2. The middle entry contains the combined (0,1) and (1,0) contribution.`
+    /// Scalar same-spin two-body intermediates `{}^x V_0^{(m_1,m_2)}`, stored by
+    /// `m_1 + m_2`. The middle entry contains the combined `(0,1)` and `(1,0)` contribution.
     pub(crate) v0: [T; 3],
 }
 
@@ -66,10 +66,10 @@ pub(crate) struct DiffSpinMeta<T: NOCIScalar> {
     /// Number of molecular orbitals in one reference orbital set.
     pub(crate) nmo: usize,
     /// Scalar different-spin intermediates
-    /// `{}^xV_{\alpha\beta,0}^{(m_{\alpha0},m_{\beta0})}.`
+    /// `{}^x V_{\alpha\beta,0}^{(m_{\alpha 0},m_{\beta 0})}`.
     pub(crate) vab0: [[T; 2]; 2],
     /// Scalar different-spin intermediates
-    /// `{}^xV_{\beta\alpha,0}^{(m_{\beta0},m_{\alpha0})}.`
+    /// `{}^x V_{\beta\alpha,0}^{(m_{\beta 0},m_{\alpha 0})}`.
     pub(crate) vba0: [[T; 2]; 2],
 }
 
@@ -117,13 +117,13 @@ pub(crate) struct SameSpinOffset {
 #[derive(Clone, Copy, Default, Serialize, Deserialize, Debug)]
 pub(crate) struct DiffSpinOffset {
     /// Offsets to the transposed alpha-spin one-column intermediates
-    /// `\mathcal V^\alpha{}^{(m_{\alpha0},m_{\beta0},m_{\alpha z})}.`
+    /// `\mathcal V^\alpha{}^{(m_{\alpha 0},m_{\beta 0},m_{\alpha z})}`.
     pub(in crate::nonorthogonalwicks) vab: [[[usize; 2]; 2]; 2],
     /// Offsets to the transposed beta-spin one-column intermediates
-    /// `\mathcal V^\beta{}^{(m_{\beta0},m_{\alpha0},m_{\beta y})}.`
+    /// `\mathcal V^\beta{}^{(m_{\beta 0},m_{\alpha 0},m_{\beta y})}`.
     pub(in crate::nonorthogonalwicks) vba: [[[usize; 2]; 2]; 2],
     /// Offsets to the different-spin two-column intermediates
-    /// `\mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})}.`
+    /// `\mathcal{II}^{(m_{\alpha 0},m_{\alpha z},m_{\beta 0},m_{\beta y})}`.
     pub(in crate::nonorthogonalwicks) iiab: [[[[usize; 2]; 2]; 2]; 2],
 }
 

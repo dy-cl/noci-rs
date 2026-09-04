@@ -38,7 +38,7 @@ pub fn assign_offsets(
         p.aa.hcol0 = usize::MAX;
         p.bb.hcol0 = usize::MAX;
 
-        // Allocate the alpha-spin X^{(m_i)} and Y^{(m_i)} fundamental contractions.
+        // Allocate the alpha-spin `X^{(m_i)}` and `Y^{(m_i)}` fundamental contractions.
         for mi in 0..2 {
             p.aa.x[mi] = i;
             i += nn2;
@@ -59,7 +59,7 @@ pub fn assign_offsets(
                 i += nbas2;
             }
         }
-        // Allocate the alpha-spin one-body \mathcal F and one-column \mathcal V intermediates.
+        // Allocate the alpha-spin one-body `\mathcal F` and one-column `\mathcal V` intermediates.
         for mi in 0..2 {
             for mj in 0..2 {
                 p.aa.fh[mi][mj] = i;
@@ -80,8 +80,8 @@ pub fn assign_offsets(
                 }
             }
         }
-        // Allocate only those symmetry-unique alpha-spin \mathcal J tensors whose four
-        // assignments do not already exceed m_\alpha.
+        // Allocate only those symmetry-unique alpha-spin `\mathcal J` tensors whose four
+        // assignments do not already exceed `m_\alpha`.
         p.aa.j.fill(usize::MAX);
         for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
             if branch.0 + branch.1 + branch.2 + branch.3 <= plan.ma {
@@ -90,7 +90,7 @@ pub fn assign_offsets(
             }
         }
 
-        // Allocate the beta-spin X^{(m_i)} and Y^{(m_i)} fundamental contractions.
+        // Allocate the beta-spin `X^{(m_i)}` and `Y^{(m_i)}` fundamental contractions.
         for mi in 0..2 {
             p.bb.x[mi] = i;
             i += nn2;
@@ -111,7 +111,7 @@ pub fn assign_offsets(
                 i += nbas2;
             }
         }
-        // Allocate the beta-spin one-body \mathcal F and one-column \mathcal V intermediates.
+        // Allocate the beta-spin one-body `\mathcal F` and one-column `\mathcal V` intermediates.
         for mi in 0..2 {
             for mj in 0..2 {
                 p.bb.fh[mi][mj] = i;
@@ -132,8 +132,8 @@ pub fn assign_offsets(
                 }
             }
         }
-        // Allocate only those symmetry-unique beta-spin \mathcal J tensors whose four
-        // assignments do not already exceed m_\beta.
+        // Allocate only those symmetry-unique beta-spin `\mathcal J` tensors whose four
+        // assignments do not already exceed `m_\beta`.
         p.bb.j.fill(usize::MAX);
         for (slot, branch) in SAME_SPIN_J_BRANCHES.iter().copied().enumerate() {
             if branch.0 + branch.1 + branch.2 + branch.3 <= plan.mb {
@@ -142,8 +142,8 @@ pub fn assign_offsets(
             }
         }
 
-        // Allocate the different-spin one-column intermediates \mathcal V^\alpha and
-        // \mathcal V^\beta for every binary assignment of their three contractions.
+        // Allocate the different-spin one-column intermediates `\mathcal V^\alpha` and
+        // `\mathcal V^\beta` for every binary assignment of their three contractions.
         for ma0 in 0..2 {
             for mb0 in 0..2 {
                 for mk in 0..2 {
@@ -168,7 +168,7 @@ pub fn assign_offsets(
             p.bb.hcol0 = i;
             i += nn2;
         }
-        // Allocate only those \mathcal{II} tensors whose alpha- and beta-spin assignments
+        // Allocate only those `\mathcal{II}` tensors whose alpha- and beta-spin assignments
         // can satisfy their independent constraints.
         p.ab.iiab = [[[[usize::MAX; 2]; 2]; 2]; 2];
         for ma0 in 0..2 {
@@ -231,7 +231,7 @@ pub fn write_same_spin<T: NOCIScalar>(
             }
         }
     }
-    // Reorder each \mathcal J tensor so the fixed replacement pair precedes the varying pair.
+    // Reorder each `\mathcal J` tensor so the fixed replacement pair precedes the varying pair.
     for (slot, blk) in &w.j {
         write4ijrc(slab, o.j[*slot], blk);
     }
@@ -264,7 +264,7 @@ pub fn write_diff_spin<T: NOCIScalar>(
             }
         }
     }
-    // The constructed and evaluator \mathcal{II} axis orders agree, so no permutation is required.
+    // The constructed and evaluator `\mathcal{II}` axis orders agree, so no permutation is required.
     for ((ma0, maj, mb0, mbj), blk) in &w.iiab {
         write4rcij(slab, o.iiab[*ma0][*maj][*mb0][*mbj], blk);
     }

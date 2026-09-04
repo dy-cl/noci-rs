@@ -383,11 +383,12 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 
     /// Return the transposed alpha-spin one-column intermediate
-    /// `\mathcal V^\alpha{}^{(m_{\alpha0},m_{\beta0},m_{\alpha z})} in stored [z,r] order.`
+    /// `\mathcal V^\alpha{}^{(m_{\alpha 0},m_{\beta 0},m_{\alpha z})}` in stored `[z,r]`
+    /// order.
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
-    /// - `ma0`: `Assignment m_{\alpha0} of the alpha-spin operator contraction.`
-    /// - `mb0`: `Assignment m_{\beta0} of the beta-spin scalar contraction.`
+    /// - `ma0`: Assignment `m_{\alpha 0}` of the alpha-spin operator contraction.
+    /// - `mb0`: Assignment `m_{\beta 0}` of the beta-spin scalar contraction.
     /// - `mak`: `Assignment m_{\alpha z} of the replaced alpha-spin determinant column.`
     /// # Returns
     /// - `&[T]`: `Flat transposed \mathcal V^\alpha matrix.`
@@ -402,11 +403,12 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 
     /// Return the transposed beta-spin one-column intermediate
-    /// `\mathcal V^\beta{}^{(m_{\beta0},m_{\alpha0},m_{\beta y})} in stored [y,r] order.`
+    /// `\mathcal V^\beta{}^{(m_{\beta 0},m_{\alpha 0},m_{\beta y})}` in stored `[y,r]`
+    /// order.
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
-    /// - `mb0`: `Assignment m_{\beta0} of the beta-spin operator contraction.`
-    /// - `ma0`: `Assignment m_{\alpha0} of the alpha-spin scalar contraction.`
+    /// - `mb0`: Assignment `m_{\beta 0}` of the beta-spin operator contraction.
+    /// - `ma0`: Assignment `m_{\alpha 0}` of the alpha-spin scalar contraction.
     /// - `mbk`: `Assignment m_{\beta y} of the replaced beta-spin determinant column.`
     /// # Returns
     /// - `&[T]`: `Flat transposed \mathcal V^\beta matrix.`
@@ -421,13 +423,13 @@ impl<'a, T: NOCIScalar> DiffSpinView<'a, T> {
     }
 
     /// Return the different-spin two-column intermediate
-    /// `\mathcal{II}^{(m_{\alpha0},m_{\alpha z},m_{\beta0},m_{\beta y})} in stored`
+    /// `\mathcal{II}^{(m_{\alpha 0},m_{\alpha z},m_{\beta 0},m_{\beta y})}` in stored
     /// `[r,c,i,j]` order.
     /// # Arguments:
     /// - `self`: Different-spin Wick view.
-    /// - `ma0`: `Assignment m_{\alpha0}.`
+    /// - `ma0`: Assignment `m_{\alpha 0}`.
     /// - `maj`: `Assignment m_{\alpha z}.`
-    /// - `mb0`: `Assignment m_{\beta0}.`
+    /// - `mb0`: Assignment `m_{\beta 0}`.
     /// - `mbj`: `Assignment m_{\beta y}.`
     /// # Returns
     /// - `&[T]`: `Flat rank-four \mathcal{II} tensor.`

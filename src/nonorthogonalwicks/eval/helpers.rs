@@ -94,13 +94,10 @@ pub(super) fn det_or_zero<T: NOCIScalar>(
 }
 
 /// Extend one fundamental-contraction matrix to include the external RDM basis:
-/// `\mathbf D_{\mathrm{ext}}^{(m)}`
-/// `= \begin{pmatrix}\mathbf D^{(m)} & \mathbf C_{\mathrm{row}}^\dagger`
-/// `\mathbf D_{\mathrm{RDM}}^{(m)}\\\mathbf D_{\mathrm{RDM}}^{(m)}`
-/// `\mathbf C_{\mathrm{col}} & \mathbf D_{\mathrm{RDM}}^{(m)}\end{pmatrix}.`
-/// The upper-left block acts in the compact excitation row and column spaces, the lower-right
-/// block contracts two external RDM indices, and the off-diagonal blocks contract one external
-/// index with one excitation-space index.
+/// `\mathbf D_{\mathrm{ext}}^{(m)}` has upper-left block `\mathbf D^{(m)}`, upper-right block
+/// `\mathbf C_{\mathrm{row}}^\dagger\mathbf D_{\mathrm{RDM}}^{(m)}`, lower-left block
+/// `\mathbf D_{\mathrm{RDM}}^{(m)}\mathbf C_{\mathrm{col}}` and lower-right block
+/// `\mathbf D_{\mathrm{RDM}}^{(m)}`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `d`: `Fundamental-contraction matrix \mathbf D^{(m)} in the compact excitation spaces.`
@@ -118,7 +115,7 @@ pub(super) fn extend_rdm_d<T: NOCIScalar>(
     l_c: &Array2<T>,
     g_c: &Array2<T>,
 ) -> Array2<T> {
-    // Append an external block of dimension n_{\mathrm{RDM}} to the compact n_{\mathrm{mo}}
+    // Append an external block of dimension `n_{\mathrm{RDM}}` to the compact `n_{\mathrm{mo}}`
     // contraction matrix.
     let nrdm = l_c.nrows();
     let mut out = Array2::<T>::zeros((w.nmo + nrdm, w.nmo + nrdm));
@@ -128,13 +125,13 @@ pub(super) fn extend_rdm_d<T: NOCIScalar>(
     let (row_c, col_c) = contraction_orbitals(l_c, g_c, w.nocc);
 
     // Form the external-row/compact-column and compact-row/external-column contraction blocks:
-    // \mathbf D_{\mathrm{RDM}}^{(m)}\mathbf C_{\mathrm{col}} and
-    // \mathbf C_{\mathrm{row}}^\dagger\mathbf D_{\mathrm{RDM}}^{(m)}.
+    // `\mathbf D_{\mathrm{RDM}}^{(m)}\mathbf C_{\mathrm{col}}` and
+    // `\mathbf C_{\mathrm{row}}^\dagger\mathbf D_{\mathrm{RDM}}^{(m)}`.
     let rdm_rows = d_rdm.dot(&col_c);
     let rdm_cols = adjoint(&row_c).dot(d_rdm);
 
     // Assemble the compact, cross-contraction and external-basis blocks of
-    // \mathbf D_{\mathrm{ext}}^{(m)}.
+    // `\mathbf D_{\mathrm{ext}}^{(m)}`.
     out.slice_mut(s![0..w.nmo, 0..w.nmo]).assign(d);
 
     out.slice_mut(s![w.nmo..w.nmo + nrdm, 0..w.nmo])
@@ -153,7 +150,7 @@ pub(super) fn extend_rdm_d<T: NOCIScalar>(
 /// `\mathcal J_{\eta z,\xi y}^{(m_i,m_j,m_k,m_l)} to one of the ten stored tensors. Pair-exchange`
 /// symmetry identifies
 /// `\mathcal J_{\eta z,\xi y}^{(m_i,m_j,m_k,m_l)}`
-/// `= \mathcal J_{\xi y,\eta z}^{(m_k,m_l,m_i,m_j)};`
+/// ` = \mathcal J_{\xi y,\eta z}^{(m_k,m_l,m_i,m_j)}`.
 /// the returned flag records whether this exchanged access is required.
 /// # Arguments:
 /// - `mi`: `First assignment associated with the pair (\eta,z).`
@@ -168,7 +165,7 @@ pub(super) fn jslot(
     mk: usize,
     ml: usize,
 ) -> (usize, bool) {
-    // Reduce the sixteen binary assignments to ten symmetry-unique \mathcal J tensors.
+    // Reduce the sixteen binary assignments to ten symmetry-unique `\mathcal J` tensors.
     match (mi, mj, mk, ml) {
         (0, 0, 0, 0) => (0, false),
         (0, 0, 0, 1) => (1, false),
@@ -212,14 +209,14 @@ pub(super) fn j_replacement<T: NOCIScalar>(
     swap: bool,
 ) -> T {
     // Restore the full-determinant row and column positions of the minor entry, then map them
-    // to the corresponding orbital labels (\xi,y).
+    // to the corresponding orbital labels `(\xi,y)`.
     let r_full = minor_to_full(minor.row, removed.row);
     let k_full = minor_to_full(minor.col, removed.col);
     let rr = layout.rows[r_full];
     let cc = layout.cols[k_full];
 
-    // Read \mathcal J_{\eta z,\xi y}, or the pair-exchanged
-    // \mathcal J_{\xi y,\eta z} required by the compressed storage.
+    // Read `\mathcal J_{\eta z,\xi y}`, or the pair-exchanged
+    // `\mathcal J_{\xi y,\eta z}` required by the compressed storage.
     if !swap {
         jsl[idx4(layout.n, fixed.row, fixed.col, rr, cc)]
     } else {
@@ -292,7 +289,7 @@ pub(super) fn bit(
 
 /// `Evaluate the change in a determinant after replacing column c of \mathbf D by \mathbf N:`
 /// `\Delta_c = \det\mathbf D[c\rightarrow\mathbf N]-\det\mathbf D`
-/// `= \sum_r(N_r-D_{rc})\operatorname{cof}[\mathbf D]_{rc}.`
+/// ` = \sum_r(N_r - D_{rc})\operatorname{cof}[\mathbf D]_{rc}`.
 /// `Callers therefore obtain the replacement determinant as \det\mathbf D+\Delta_c.`
 /// # Arguments:
 /// - `n`: `Dimension of \mathbf D.`
@@ -372,7 +369,7 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
 
 /// `Evaluate the determinant obtained by replacing column c of \mathbf D by \mathbf N:`
 /// `\det\mathbf D[c\rightarrow\mathbf N]`
-/// `= \sum_rN_r\operatorname{cof}[\mathbf D]_{rc}.`
+/// ` = \sum_r N_r\operatorname{cof}[\mathbf D]_{rc}`.
 /// `This is equivalent to \det\mathbf D+\sum_r(N_r-D_{rc})\operatorname{cof}[\mathbf D]_{rc},`
 /// but does not require the original column entries.
 /// # Arguments:
@@ -434,7 +431,7 @@ pub(super) fn column_replacement_det<T: NOCIScalar>(
 }
 
 /// Form every mixed same-spin contraction determinant required by
-/// `\sum_{\substack{m_1,\ldots,m_{L+p}\\m_1+\cdots+m_{L+p}=m}}`
+/// `\sum_{\substack{m_1,\ldots,m_{L+p}\\m_1 + \cdots + m_{L+p} = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_{p+1},\ldots,m_{p+L}).`
 /// The first p assignments are operator-specific; the remaining L assignments select each
 /// `determinant column from \mathbf D_{\mathrm{ov}}(0,\ldots,0) or`
@@ -456,14 +453,14 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
     mut f: impl FnMut(u64, &mut WickScratch<T>),
 ) {
     let mut prev_cbits: Option<u64> = None;
-    // Enumerate the assignments satisfying \sum_{i=1}^{L+p}m_i = m, then remove the
+    // Enumerate the assignments satisfying `\sum_{i = 1}^{L+p}m_i = m`, then remove the
     // p operator-specific assignments to obtain the L determinant-column assignments.
     for_each_m_combination(l + pbits, w.m, |bits| {
         let cbits = bits >> pbits;
         match prev_cbits {
             None => {
                 // Construct the first mixed determinant by selecting every column from the
-                // corresponding all-m_i = 0 or all-m_i = 1 endpoint.
+                // corresponding all-`m_i = 0` or all-`m_i = 1` endpoint.
                 mix_columns(
                     scratch.det_mix.as_mut_slice(),
                     scratch.det0.as_slice(),
@@ -474,7 +471,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
             }
             Some(prev) => {
                 // Consecutive complete distributions may change only part of the column assignment.
-                // Update exactly the columns whose m_i values differ from the previous determinant.
+                // Update exactly the columns selected by the assignment delta.
                 let mut changed = prev ^ cbits;
                 while changed != 0 {
                     let col = changed.trailing_zeros() as usize;
@@ -490,7 +487,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
                         let src = scratch.det1.as_slice();
                         let dst = scratch.det_mix.as_mut_slice();
                         // Replace column `col` by the corresponding column of
-                        // \mathbf D_{\mathrm{ov}}(1,\ldots,1).
+                        // `\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
                         for r in 0..l {
                             let i = idx(l, r, col);
                             dst[i] = src[i];
@@ -507,8 +504,8 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
 
 /// Independently enumerate the alpha- and beta-spin distributions required by the different-spin
 /// two-body matrix element:
-/// `m_{\alpha0}+\sum_{z=1}^{L_\alpha}m_{\alpha z}=m_\alpha,\qquad`
-/// `m_{\beta0}+\sum_{y=1}^{L_\beta}m_{\beta y}=m_\beta.`
+/// `m_{\alpha 0} + \sum_{z = 1}^{L_\alpha}m_{\alpha z} = m_\alpha,\qquad`
+/// `m_{\beta 0} + \sum_{y = 1}^{L_\beta}m_{\beta y} = m_\beta`.
 /// The leading assignment in each spin space belongs to the operator contraction; the remaining
 /// `assignments select the columns of \mathbf D_{\alpha,\mathrm{ov}} and`
 /// `\mathbf D_{\beta,\mathrm{ov}}.`
@@ -535,8 +532,8 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
     let (la, lb) = rank;
 
     time_call!(crate::timers::nonorthogonalwicks::add_get_det_adjt_diff, {
-        // Enumerate m_{\alpha0}+\sum_zm_{\alpha z}=m_\alpha. Bit zero is
-        // m_{\alpha0}; the remaining bits select alpha-spin determinant columns.
+        // Enumerate `m_{\alpha 0} + \sum_z m_{\alpha z} = m_\alpha`. Bit zero is
+        // `m_{\alpha 0}`; the remaining bits select alpha-spin determinant columns.
         for_each_m_combination(la + 1, w.aa.m, |bits_a| {
             let inda = bits_a >> 1;
             mix_columns(
@@ -546,7 +543,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                 la,
                 inda,
             );
-            // Evaluate \det\mathbf D_{\alpha,\mathrm{ov}} and its cofactor matrix.
+            // Evaluate `\det\mathbf D_{\alpha,\mathrm{ov}}` and its cofactor matrix.
             if let Some(det_a) = adjugate_transpose_generic(
                 scratch.adjt_deta.as_mut_slice(),
                 scratch.deta_mix.as_slice(),
@@ -554,7 +551,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                 tol,
             ) {
                 // For each retained alpha-spin distribution, independently enumerate
-                // m_{\beta0}+\sum_ym_{\beta y}=m_\beta.
+                // `m_{\beta 0} + \sum_y m_{\beta y} = m_\beta`.
                 for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
                     let indb = bits_b >> 1;
                     mix_columns(
@@ -564,7 +561,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                         lb,
                         indb,
                     );
-                    // Evaluate \det\mathbf D_{\beta,\mathrm{ov}} and its cofactor matrix before
+                    // Evaluate `\det\mathbf D_{\beta,\mathrm{ov}}` and its cofactor matrix before
                     // passing the factorised spin-sector quantities to the different-spin evaluator.
                     if let Some(det_b) = adjugate_transpose_generic(
                         scratch.adjt_detb.as_mut_slice(),
@@ -632,7 +629,8 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
 }
 
 /// `Enumerate every binary distribution (m_1,\ldots,m_L) satisfying`
-/// `\sum_{i=1}^{L}m_i=m, with m_i\in\{0,1\}. Each distribution is represented by an L-bit mask`
+/// `\sum_{i = 1}^{L}m_i = m`, with `m_i \in \{0,1\}`. Each distribution is represented by an
+/// `L`-bit mask
 /// containing exactly m set bits.
 /// # Arguments:
 /// - `l`: Number L of fundamental contractions.
@@ -651,18 +649,18 @@ pub(super) fn for_each_m_combination(
     if m > l {
         return;
     }
-    // The unique m = 0 distribution has every m_i = 0.
+    // The unique `m = 0` distribution has every `m_i = 0`.
     if m == 0 {
         f(0);
         return;
     }
-    // The unique m = L distribution has every m_i = 1.
+    // The unique `m = L` distribution has every `m_i = 1`.
     if m == l {
         f((1u64 << l) - 1);
         return;
     }
 
-    // Enumerate the \binom{L}{m} fixed-population bit masks in increasing integer order.
+    // Enumerate the `\binom{L}{m}` fixed-population bit masks in increasing integer order.
     let limit = 1u64 << l;
     let mut x = (1u64 << m) - 1;
     while x < limit {
@@ -674,9 +672,10 @@ pub(super) fn for_each_m_combination(
 }
 
 /// `Evaluate \det\mathbf D and its cofactor matrix:`
-/// `\operatorname{cof}[\mathbf D]_{rc}=(-1)^{r+c}\det\mathbf D[r|c].`
-/// `Fixed-rank determinant and cofactor kernels are used for n\leq4; larger matrices evaluate the`
-/// `determinant first and then construct every cofactor explicitly from an (n-1)\times(n-1) minor.`
+/// `\operatorname{cof}[\mathbf D]_{rc} = (-1)^{r+c}\det\mathbf D[r|c]`.
+/// Fixed-rank determinant and cofactor kernels are used for `n \leq 4`; larger matrices evaluate
+/// the determinant first and then construct every cofactor explicitly from an
+/// `(n - 1)\times(n - 1)` minor.
 /// # Arguments:
 /// - `adjt`: `Output row-major cofactor matrix \operatorname{cof}[\mathbf D].`
 /// - `full`: `Row-major entries of \mathbf D.`
@@ -691,7 +690,7 @@ pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
     n: usize,
     tol: f64,
 ) -> Option<T> {
-    // Use the specialised low-rank routine for n \leq 4.
+    // Use the specialised low-rank routine for `n \leq 4`.
     if n <= 4 {
         let mut invs = [];
         let mut lu = [];
@@ -709,7 +708,7 @@ pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
         return None;
     }
 
-    // Construct each cofactor as (-1)^{r+c}\det\mathbf D[r|c].
+    // Construct each cofactor as `(-1)^{r+c}\det\mathbf D[r|c]`.
     let mut minor = vec![<T as From<f64>>::from(0.0); (n - 1) * (n - 1)];
     for r in 0..n {
         for c in 0..n {

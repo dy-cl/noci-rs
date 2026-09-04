@@ -32,7 +32,8 @@ pub fn prepare_same<T: NOCIScalar>(
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same, {
         // With no zero-overlap orbital pairs, the constrained sum requires only
-        // \mathbf D_{\mathrm{ov}}(0,\ldots,0). Otherwise prepare both required contraction determinants.
+        // `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`. Otherwise prepare both required contraction
+        // determinants.
         if w.m == 0 {
             prepare_same_m0(w, l_ex, g_ex, scratch)
         } else {
@@ -59,7 +60,8 @@ fn prepare_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
-        // For m = 0, only D_ov(0,...,0) is needed; fixed ranks keep the determinant
+        // For `m = 0`, only `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` is needed; fixed ranks keep the
+        // determinant
         // construction monomorphised while larger ranks use the generic builder.
         let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
 
@@ -100,7 +102,7 @@ fn prepare_same_m0<T: NOCIScalar>(
 
 /// `Prepare the fixed-rank L contraction determinant \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
 /// The determinant labels are constructed directly from the bra and ket excitations, and the
-/// selected compile-time rank preserves the previous fixed-rank determinant fill order.
+/// selected compile-time rank uses the fixed-rank determinant fill order.
 /// # Arguments:
 /// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
 /// - `l_ex`: Excitation defining the bra determinant.
@@ -131,8 +133,9 @@ fn prepare_same_m0_const<T: NOCIScalar, const L: usize>(
             let x0 = w.x(0);
             let y0 = w.y(0);
 
-            // Prepare D_ov(0,...,0) with D_{ij}=X^{(0)}_{r_i c_j} for i >= j and
-            // D_{ij}=Y^{(0)}_{r_i c_j} for i < j, using the fixed-rank fill order.
+            // Prepare `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` with
+            // `D_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j` and
+            // `D_{ij} = Y^{(0)}_{r_i c_j}` for `i < j`, using the fixed-rank fill order.
             build_d_const::<T, L>(
                 scratch.det0.as_mut_slice(),
                 &x0,
@@ -162,7 +165,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_gen, {
         // For m > 0, later GNME sums need both endpoint determinants so each mixed
-        // distribution can choose every column from D_ov(0,...,0) or D_ov(1,...,1).
+        // distribution can choose every column from `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` or
+        // `\mathbf D_{\mathrm{ov}}(1,\ldots,1)`.
         let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
         scratch.ensure_same(l);
 
@@ -222,7 +226,7 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_construct_determinant_indices,
         {
-            // L_x and L_w determine the two ordered blocks of the determinant labels.
+            // `L_x` and `L_w` determine the two ordered blocks of the determinant labels.
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
             let mut xh = x_ex.holes;
@@ -230,7 +234,7 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             let mut wh = w_ex.holes;
             let mut wp = w_ex.parts;
             let mut i = 0usize;
-            // Map the x-reference pairs to the V_x row block and O_x column block.
+            // Map the x-reference pairs to the `V_x` row block and `O_x` column block.
             while xh != 0 {
                 let hole = xh.trailing_zeros() as usize;
                 let part = xp.trailing_zeros() as usize;
@@ -240,7 +244,7 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
                 cols[i] = hole;
                 i += 1;
             }
-            // Append the w-reference pairs in the O_w row block and V_w column block.
+            // Append the w-reference pairs in the `O_w` row block and `V_w` column block.
             while wh != 0 {
                 let hole = wh.trailing_zeros() as usize;
                 let part = wp.trailing_zeros() as usize;

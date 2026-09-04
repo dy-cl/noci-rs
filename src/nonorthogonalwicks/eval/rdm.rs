@@ -29,10 +29,10 @@ use super::simd::{C64x4, C64x8, F64x4, F64x8};
 
 /// Evaluate one unnormalised same-spin rank-`K` transition-density element:
 /// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_K}_{q_1\cdots q_K}`
-/// `= \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p_1\sigma}\cdots`
+/// ` = \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p_1\sigma}\cdots`
 /// `\hat a^\dagger_{p_K\sigma}\hat a_{q_K\sigma}\cdots\hat a_{q_1\sigma}`
 /// `|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+K}\\m_1+\cdots+m_{L+K}=m}}`
+/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+K}\\m_1+\cdots+m_{L+K} = m}}`
 /// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+K}).`
 /// The first `K` contraction columns belong to the external creation-annihilation pairs and the
 /// remaining `L = RX + RW` columns belong to the bra and ket excitations. Expanding the determinant
@@ -104,7 +104,7 @@ pub(crate) fn xw_rdmk_same_prepared<T: NOCIScalar, const K: usize>(
 
 /// Evaluate a batch of unnormalised same-spin rank-`K` transition-density elements.
 /// Every request evaluates
-/// `{}^{xw}\tilde S\sum_{\sum_i m_i=m}`
+/// `{}^{xw}\tilde S\sum_{\sum_i m_i = m}`
 /// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+K})`.
 /// For `m = 0`, supported scalar types and ranks use the widest available fixed-rank SIMD kernel;
 /// other requests use the scalar const-generic or arbitrary-rank path. The fundamental
@@ -450,15 +450,19 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
         {
             unsafe {
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let pref = *std::ptr::from_ref(&w.phase).cast::<f64>() * w.tilde_s_prod;
+                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
                 if D == 0 {
                     out.fill(pref);
                     return;
                 }
 
+                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
                 let (x0, y0, ext_n) = fundamental;
                 let x0 = x0.as_ptr().cast::<f64>();
                 let y0 = y0.as_ptr().cast::<f64>();
+                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
                 let mut excitation_rows = [0usize; L];
                 let mut excitation_cols = [0usize; L];
                 let nocc = w.nocc;
@@ -480,6 +484,7 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
                     w_parts &= w_parts - 1;
                 }
 
+                // Prepend the external creation labels `\mathbf p` to the excitation rows.
                 let row_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).0[position]
@@ -487,6 +492,7 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
                         excitation_rows[position - K]
                     }
                 };
+                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
                 let col_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).1[position]
@@ -494,8 +500,11 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
                         excitation_cols[position - K]
                     }
                 };
+                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
+                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
                 let load_d = |i: usize, j: usize| -> F64x4 {
                     let matrix = if i >= j { x0 } else { y0 };
+                    // Broadcast excitation-only entries and gather entries containing external labels.
                     if i >= K && j >= K {
                         F64x4::splat(*matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)))
                     } else {
@@ -507,6 +516,7 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
                         )
                     }
                 };
+                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                 let mut d = [F64x4::zero(); 100];
                 for i in 0..D {
                     for j in 0..D {
@@ -514,9 +524,9 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
                     }
                 }
 
-                // For every column subset S, store the Laplace minor of the final |S| rows. The recurrence
-                // `M_S = \sum_{c \in S}(-1)^{pos(c,S)}D_{D-|S|,c}M_{S\setminus c}` terminates at
-                // `M_{\{0,\ldots,D-1\}} = det(D)` and applies identically to every packed request lane.
+                // For each column subset `S`, evaluate the final-row Laplace recurrence
+                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
+                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
                 let full = (1usize << D) - 1;
                 let mut minors = [F64x4::zero(); 1024];
                 for c in 0..D {
@@ -554,9 +564,11 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
                     size += 1;
                 }
 
+                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
                 let mut determinant = [0.0f64; 4];
                 minors[full].store(&mut determinant);
                 for lane in 0..4 {
+                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                     out[lane] = if determinant[lane].abs() > tol {
                         pref * determinant[lane]
                     } else {
@@ -606,16 +618,20 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
         {
             unsafe {
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let phase = *std::ptr::from_ref(&w.phase).cast::<Complex64>();
                 let pref = phase * w.tilde_s_prod;
+                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
                 if D == 0 {
                     out.fill(pref);
                     return;
                 }
 
+                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
                 let (x0, y0, ext_n) = fundamental;
                 let x0 = x0.as_ptr().cast::<Complex64>();
                 let y0 = y0.as_ptr().cast::<Complex64>();
+                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
                 let mut excitation_rows = [0usize; L];
                 let mut excitation_cols = [0usize; L];
                 let nocc = w.nocc;
@@ -637,6 +653,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
                     w_parts &= w_parts - 1;
                 }
 
+                // Prepend the external creation labels `\mathbf p` to the excitation rows.
                 let row_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).0[position]
@@ -644,6 +661,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
                         excitation_rows[position - K]
                     }
                 };
+                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
                 let col_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).1[position]
@@ -651,8 +669,11 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
                         excitation_cols[position - K]
                     }
                 };
+                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
+                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
                 let load_d = |i: usize, j: usize| -> C64x4 {
                     let matrix = if i >= j { x0 } else { y0 };
+                    // Broadcast excitation-only entries and gather entries containing external labels.
                     if i >= K && j >= K {
                         let value = *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0));
                         C64x4::splat(value.re, value.im)
@@ -665,6 +686,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
                         )
                     }
                 };
+                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                 let mut d = [C64x4::zero(); 100];
                 for i in 0..D {
                     for j in 0..D {
@@ -672,9 +694,9 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
                     }
                 }
 
-                // For every column subset S, store the Laplace minor of the final |S| rows. The recurrence
-                // `M_S = \sum_{c \in S}(-1)^{pos(c,S)}D_{D-|S|,c}M_{S\setminus c}` terminates at
-                // `M_{\{0,\ldots,D-1\}} = det(D)` and applies identically to every packed request lane.
+                // For each column subset `S`, evaluate the final-row Laplace recurrence
+                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
+                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
                 let full = (1usize << D) - 1;
                 let mut minors = [C64x4::zero(); 1024];
                 for c in 0..D {
@@ -712,11 +734,13 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
                     size += 1;
                 }
 
+                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
                 let mut re = [0.0f64; 4];
                 let mut im = [0.0f64; 4];
                 minors[full].store(&mut re, &mut im);
                 for lane in 0..4 {
                     let determinant = Complex64::new(re[lane], im[lane]);
+                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                     out[lane] = if determinant.norm() > tol {
                         pref * determinant
                     } else {
@@ -766,15 +790,19 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
         {
             unsafe {
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let pref = *std::ptr::from_ref(&w.phase).cast::<f64>() * w.tilde_s_prod;
+                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
                 if D == 0 {
                     out.fill(pref);
                     return;
                 }
 
+                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
                 let (x0, y0, ext_n) = fundamental;
                 let x0 = x0.as_ptr().cast::<f64>();
                 let y0 = y0.as_ptr().cast::<f64>();
+                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
                 let mut excitation_rows = [0usize; L];
                 let mut excitation_cols = [0usize; L];
                 let nocc = w.nocc;
@@ -796,6 +824,7 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
                     w_parts &= w_parts - 1;
                 }
 
+                // Prepend the external creation labels `\mathbf p` to the excitation rows.
                 let row_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).0[position]
@@ -803,6 +832,7 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
                         excitation_rows[position - K]
                     }
                 };
+                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
                 let col_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).1[position]
@@ -810,8 +840,11 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
                         excitation_cols[position - K]
                     }
                 };
+                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
+                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
                 let load_d = |i: usize, j: usize| -> F64x8 {
                     let matrix = if i >= j { x0 } else { y0 };
+                    // Broadcast excitation-only entries and gather entries containing external labels.
                     if i >= K && j >= K {
                         F64x8::splat(*matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)))
                     } else {
@@ -827,6 +860,7 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
                         ])
                     }
                 };
+                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                 let mut d = [F64x8::zero(); 100];
                 for i in 0..D {
                     for j in 0..D {
@@ -834,9 +868,9 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
                     }
                 }
 
-                // For every column subset S, store the Laplace minor of the final |S| rows. The recurrence
-                // `M_S = \sum_{c \in S}(-1)^{pos(c,S)}D_{D-|S|,c}M_{S\setminus c}` terminates at
-                // `M_{\{0,\ldots,D-1\}} = det(D)` and applies identically to every packed request lane.
+                // For each column subset `S`, evaluate the final-row Laplace recurrence
+                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
+                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
                 let full = (1usize << D) - 1;
                 let mut minors = [F64x8::zero(); 1024];
                 for c in 0..D {
@@ -874,9 +908,11 @@ unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
                     size += 1;
                 }
 
+                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
                 let mut determinant = [0.0f64; 8];
                 minors[full].store(&mut determinant);
                 for lane in 0..8 {
+                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                     out[lane] = if determinant[lane].abs() > tol {
                         pref * determinant[lane]
                     } else {
@@ -926,16 +962,20 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
         {
             unsafe {
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let phase = *std::ptr::from_ref(&w.phase).cast::<Complex64>();
                 let pref = phase * w.tilde_s_prod;
+                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
                 if D == 0 {
                     out.fill(pref);
                     return;
                 }
 
+                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
                 let (x0, y0, ext_n) = fundamental;
                 let x0 = x0.as_ptr().cast::<Complex64>();
                 let y0 = y0.as_ptr().cast::<Complex64>();
+                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
                 let mut excitation_rows = [0usize; L];
                 let mut excitation_cols = [0usize; L];
                 let nocc = w.nocc;
@@ -957,6 +997,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
                     w_parts &= w_parts - 1;
                 }
 
+                // Prepend the external creation labels `\mathbf p` to the excitation rows.
                 let row_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).0[position]
@@ -964,6 +1005,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
                         excitation_rows[position - K]
                     }
                 };
+                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
                 let col_index = |position: usize, lane: usize| -> usize {
                     if position < K {
                         w.nmo + requests.get_unchecked(lane).1[position]
@@ -971,8 +1013,11 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
                         excitation_cols[position - K]
                     }
                 };
+                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
+                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
                 let load_d = |i: usize, j: usize| -> C64x8 {
                     let matrix = if i >= j { x0 } else { y0 };
+                    // Broadcast excitation-only entries and gather entries containing external labels.
                     if i >= K && j >= K {
                         let value = *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0));
                         C64x8::splat(value.re, value.im)
@@ -989,6 +1034,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
                         ])
                     }
                 };
+                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                 let mut d = [C64x8::zero(); 100];
                 for i in 0..D {
                     for j in 0..D {
@@ -996,9 +1042,9 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
                     }
                 }
 
-                // For every column subset S, store the Laplace minor of the final |S| rows. The recurrence
-                // `M_S = \sum_{c \in S}(-1)^{pos(c,S)}D_{D-|S|,c}M_{S\setminus c}` terminates at
-                // `M_{\{0,\ldots,D-1\}} = det(D)` and applies identically to every packed request lane.
+                // For each column subset `S`, evaluate the final-row Laplace recurrence
+                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
+                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
                 let full = (1usize << D) - 1;
                 let mut minors = [C64x8::zero(); 1024];
                 for c in 0..D {
@@ -1036,11 +1082,13 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
                     size += 1;
                 }
 
+                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
                 let mut re = [0.0f64; 8];
                 let mut im = [0.0f64; 8];
                 minors[full].store(&mut re, &mut im);
                 for lane in 0..8 {
                     let determinant = Complex64::new(re[lane], im[lane]);
+                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
                     out[lane] = if determinant.norm() > tol {
                         pref * determinant
                     } else {
@@ -1054,7 +1102,7 @@ unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
 
 /// Evaluate a same-spin rank-`K` RDM request batch through the scalar prepared path.
 /// Each request is the constrained determinant sum
-/// `{}^{xw}\tilde S\sum_{\sum_i m_i=m}\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
+/// `{}^{xw}\tilde S\sum_{\sum_i m_i = m}\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `ex`: Excitations defining the bra and ket determinants respectively.
@@ -1082,7 +1130,7 @@ fn xw_rdmk_same_prepared_scalar_batch<T: NOCIScalar, const K: usize>(
 
 /// Evaluate one same-spin rank-`K` RDM request through the scalar prepared path.
 /// The `m = 0` branch dispatches `(K,RX,RW,L,D)` to a const-generic determinant; the general
-/// branch sums all binary contraction-column assignments satisfying `\sum_i m_i=m`.
+/// branch sums all binary contraction-column assignments satisfying `\sum_i m_i = m`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `ex`: Excitations defining the bra and ket determinants respectively.
@@ -1118,7 +1166,7 @@ fn xw_rdmk_same_prepared_scalar_value<T: NOCIScalar, const K: usize>(
 
 /// Evaluate one same-spin rank-`K` RDM element when every contraction carries `m_i = 0`:
 /// `{}^{xw}\Gamma_\sigma{}^{\mathbf p}_{\mathbf q}`
-/// `= {}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`.
+/// ` = {}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`.
 /// Supported `(K,RX,RW)` tuples dispatch to the const-generic determinant of dimension
 /// `D = K + RX + RW`; arbitrary ranks use the scalar generic fallback.
 /// # Arguments:
@@ -1396,7 +1444,7 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
 /// product state separates into spin sectors, giving
 /// `{}^{xw}\Gamma_{\alpha\beta}^{\mathbf p_\alpha\mathbf p_\beta}`
 /// `{}_{\mathbf q_\alpha\mathbf q_\beta}`
-/// `= {}^{xw}\Gamma_\alpha^{\mathbf p_\alpha}{}_{\mathbf q_\alpha}`
+/// ` = {}^{xw}\Gamma_\alpha^{\mathbf p_\alpha}{}_{\mathbf q_\alpha}`
 /// `{}^{xw}\Gamma_\beta^{\mathbf p_\beta}{}_{\mathbf q_\beta}`.
 /// Both factors use the same rank-`K` same-spin determinant evaluator.
 /// The contribution is zero when `KA > N_\alpha` or `KB > N_\beta`.

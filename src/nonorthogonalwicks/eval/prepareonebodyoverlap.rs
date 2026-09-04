@@ -740,12 +740,12 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
 /// Prepare and evaluate the same-spin overlap and generalised-Fock matrix element between excited
 /// determinants generated from the reference pair `\langle{}^x\Psi| and |{}^w\Psi\rangle:`
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L=m}}`
+/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L),`
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat F|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// `= {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+1}\\m_1+\cdots+m_{L+1}=m}}`
+/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+1}\\m_1+\cdots+m_{L+1} = m}}`
 /// `[{}^x F_0^{(m_1)}\det\mathbf D_{\mathrm{ov}}(m_2,\ldots,m_{L+1})`
-/// `- \sum_{z=1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}`
+/// `- \sum_{z = 1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}`
 /// `(m_1,\ldots,m_{L+1})].`
 /// `For m = 0 and L = 1,\ldots,4, the contraction determinant is consumed directly while it is`
 /// `constructed, avoiding the separate prepare-then-evaluate traversal. For arbitrary L and m > 0,`
@@ -875,8 +875,9 @@ fn xw_f_overlap_m0_prepared_const<
                 w_parts &= w_parts - 1;
             }
 
-            // For m = 0, every column uses the m_i = 0 fundamental contractions:
-            // D_ov[eta,z] = X^{(0)}_{r_eta c_z} for eta >= z, otherwise Y^{(0)}_{r_eta c_z}.
+            // For `m = 0`, every column uses the `m_i = 0` fundamental contractions:
+            // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+            // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
             let x0 = w.x(0);
             let y0 = w.y(0);
             build_d_const::<T, L>(
@@ -890,7 +891,9 @@ fn xw_f_overlap_m0_prepared_const<
             let det0 = &scratch.det0.as_slice()[..L * L];
             let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
 
-            // Evaluate det D_ov and cof[D_ov]_{eta z}=(-1)^{eta+z} det D_ov[eta|z]
+            // Evaluate `\det\mathbf D_{\mathrm{ov}}` and
+            // `\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z} = (-1)^{\eta+z}`
+            // `\det\mathbf D_{\mathrm{ov}}[\eta|z]`.
             // for the overlap part and the one-body column replacements.
             if let Some(det) = adjugate_transpose_const::<T, L>(
                 scratch.adjt_det.as_mut_slice(),
@@ -907,7 +910,9 @@ fn xw_f_overlap_m0_prepared_const<
                 let mut repl = <T as From<f64>>::from(0.0);
 
                 // Laplace expansion of the inserted one-body row gives
-                // sum_z det D_ov^{z -> F_z} = sum_{eta,z} cof[D_ov]_{eta z} F_{eta z}.
+                // `\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}`
+                // ` = \sum_{\eta z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}`
+                // `\mathcal F_{\eta z}`.
                 for z in 0..L {
                     let base = cols[z] * n;
 
@@ -916,7 +921,9 @@ fn xw_f_overlap_m0_prepared_const<
                     }
                 }
 
-                // Return S_tilde det D_ov and S_tilde [F_0 det D_ov - C:F].
+                // Return `\tilde S\det\mathbf D_{\mathrm{ov}}` and
+                // `\tilde S(F_0\det\mathbf D_{\mathrm{ov}}`
+                // `- \sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z})`.
                 (pref * det, pref * (det * w.f0f[0] - repl))
             } else {
                 (<T as From<f64>>::from(0.0), <T as From<f64>>::from(0.0))
@@ -961,13 +968,19 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                 let n = w.n();
                 let nocc = w.nocc;
                 let nvirt = w.nmo - nocc;
+                // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
                 let x0 = w.x_slice(0).as_ptr().cast::<f64>();
                 let y0 = w.y_slice(0).as_ptr().cast::<f64>();
+                // `fsl` stores the one-body column intermediate `\mathcal F^{(0,0)}`.
                 let fsl = w.ff_t_slice(0, 0).as_ptr().cast::<f64>();
+                // `phase` is the reference-pair orbital phase.
                 let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
+                // `f0 = {}^x F_0^{(0)}` is the scalar one-body intermediate.
                 let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let pref = phase * w.tilde_s_prod;
 
+                // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
                 let x_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         fixed
@@ -975,6 +988,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         varying.get_unchecked(lane)
                     }
                 };
+                // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
                 let w_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         varying.get_unchecked(lane)
@@ -982,6 +996,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         fixed
                     }
                 };
+                // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
@@ -989,6 +1004,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
                     }
                 };
+                // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(z))
@@ -996,10 +1012,13 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
                     }
                 };
+                // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                 let load_d = |eta: usize, z: usize| -> F64x4 {
                     let matrix = if eta >= z { x0 } else { y0 };
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant entries and gather lane-dependent entries.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -1030,9 +1049,11 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         )
                     }
                 };
+                // `fvec(\eta,z) = \mathcal F_{r_\eta c_z}^{(0,0)}` in each SIMD lane.
                 let fvec = |eta: usize, z: usize| -> F64x4 {
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant intermediates and gather lane-dependent intermediates.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -1064,20 +1085,27 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                     }
                 };
                 let zero = F64x4::zero();
+                // Evaluate `\det\mathbf D_{\mathrm{ov}}` and
+                // `R = \sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                 let (det, repl) = match L {
+                    // For `L = 1`, `\det\mathbf D = D_{00}` and `R = \mathcal F_{00}`.
                     1 => (load_d(0, 0), fvec(0, 0)),
                     2 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
                         let d10 = load_d(1, 0);
                         let d11 = load_d(1, 1);
+                        // `\det\mathbf D = D_{00}D_{11} - D_{01}D_{10}`.
                         let det = F64x4::minor(d00, d11, d01, d10);
+                        // `R = \mathcal F_{00}D_{11} - \mathcal F_{01}D_{10}`
+                        // `- \mathcal F_{10}D_{01} + \mathcal F_{11}D_{00}`.
                         let mut repl = F64x4::mul(fvec(0, 0), d11);
                         repl = F64x4::msub(repl, fvec(0, 1), d10);
                         repl = F64x4::msub(repl, fvec(1, 0), d01);
                         repl = F64x4::madd(repl, fvec(1, 1), d00);
                         (det, repl)
                     }
+                    // For `L = 3`, write `C_{\eta z} = \operatorname{cof}[\mathbf D]_{\eta z}`.
                     3 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
@@ -1089,25 +1117,36 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         let d21 = load_d(2, 1);
                         let d22 = load_d(2, 2);
 
+                        // `C_{00} = D_{11}D_{22} - D_{12}D_{21}`.
                         let c00 = F64x4::minor(d11, d22, d12, d21);
+                        // Begin `\det\mathbf D = \sum_z D_{0z}C_{0z}` and
+                        // `R = \sum_{\eta z}\mathcal F_{\eta z}C_{\eta z}`.
                         let mut det = F64x4::mul(d00, c00);
                         let mut repl = F64x4::mul(fvec(0, 0), c00);
+                        // `C_{01} = -(D_{10}D_{22} - D_{12}D_{20})`.
                         let c01 = F64x4::sub(zero, F64x4::minor(d10, d22, d12, d20));
                         det = F64x4::madd(det, d01, c01);
                         repl = F64x4::madd(repl, fvec(0, 1), c01);
+                        // `C_{02} = D_{10}D_{21} - D_{11}D_{20}`.
                         let c02 = F64x4::minor(d10, d21, d11, d20);
                         det = F64x4::madd(det, d02, c02);
                         repl = F64x4::madd(repl, fvec(0, 2), c02);
+                        // `C_{10} = -(D_{01}D_{22} - D_{02}D_{21})`.
                         let c10 = F64x4::sub(zero, F64x4::minor(d01, d22, d02, d21));
                         repl = F64x4::madd(repl, fvec(1, 0), c10);
+                        // `C_{11} = D_{00}D_{22} - D_{02}D_{20}`.
                         let c11 = F64x4::minor(d00, d22, d02, d20);
                         repl = F64x4::madd(repl, fvec(1, 1), c11);
+                        // `C_{12} = -(D_{00}D_{21} - D_{01}D_{20})`.
                         let c12 = F64x4::sub(zero, F64x4::minor(d00, d21, d01, d20));
                         repl = F64x4::madd(repl, fvec(1, 2), c12);
+                        // `C_{20} = D_{01}D_{12} - D_{02}D_{11}`.
                         let c20 = F64x4::minor(d01, d12, d02, d11);
                         repl = F64x4::madd(repl, fvec(2, 0), c20);
+                        // `C_{21} = -(D_{00}D_{12} - D_{02}D_{10})`.
                         let c21 = F64x4::sub(zero, F64x4::minor(d00, d12, d02, d10));
                         repl = F64x4::madd(repl, fvec(2, 1), c21);
+                        // `C_{22} = D_{00}D_{11} - D_{01}D_{10}`.
                         let c22 = F64x4::minor(d00, d11, d01, d10);
                         repl = F64x4::madd(repl, fvec(2, 2), c22);
                         (det, repl)
@@ -1121,9 +1160,10 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                         }
                         let dvec = |row: usize, col: usize| *d.get_unchecked(row * 4 + col);
 
-                        // The old 16 cofactors contain `16 x 3 = 48` minor occurrences. Preserving their exact
-                        // expansions leaves `6 + 6 + 6 = 18` distinct minors, so 18 is the lower bound for this DAG.
-                        // AVX2 cannot keep all 16 `D_{ij}` plus these intermediates live, so `D_{ij}` is reloaded by group.
+                        // The 16 cofactors contain `16 x 3 = 48` minor occurrences. Factoring their
+                        // expansions leaves `6 + 6 + 6 = 18` distinct minors in this DAG.
+                        // Reload `D_{ij}` by group to keep the 18 minor intermediates within the
+                        // available register budget.
 
                         // `B_{ab} = D_{2a}D_{3b} - D_{2b}D_{3a}` supplies cofactor rows 0 and 1.
                         let (b01, b02, b03, b12, b13, b23) = {
@@ -1151,7 +1191,8 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                             (b01, b02, b03, b12, b13, b23)
                         };
 
-                        // Form `det(\mathbf D) = \sum_j D_{0j}C_{0j}` and row 0 of `C:\mathcal F`.
+                        // Form `\det\mathbf D = \sum_j D_{0j}\operatorname{cof}[\mathbf D]_{0j}` and
+                        // row 0 of `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         let mut det_v = F64x4::zero();
                         let mut repl0 = F64x4::zero();
 
@@ -1161,28 +1202,34 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                             let d12 = dvec(1, 2);
                             let d13 = dvec(1, 3);
 
+                            // `C_{00} = D_{11}B_{23} - D_{12}B_{13} + D_{13}B_{12}`.
                             let cof00 = F64x4::cof_pos(d11, b23, d12, b13, d13, b12);
                             det_v = F64x4::madd(det_v, dvec(0, 0), cof00);
                             repl0 = F64x4::madd(repl0, fvec(0, 0), cof00);
 
+                            // `C_{01} = -D_{10}B_{23} + D_{12}B_{03} - D_{13}B_{02}`.
                             let cof01 = F64x4::cof_neg(d10, b23, d12, b03, d13, b02);
                             det_v = F64x4::madd(det_v, dvec(0, 1), cof01);
                             repl0 = F64x4::madd(repl0, fvec(0, 1), cof01);
 
+                            // `C_{02} = D_{10}B_{13} - D_{11}B_{03} + D_{13}B_{01}`.
                             let cof02 = F64x4::cof_pos(d10, b13, d11, b03, d13, b01);
                             det_v = F64x4::madd(det_v, dvec(0, 2), cof02);
                             repl0 = F64x4::madd(repl0, fvec(0, 2), cof02);
 
+                            // `C_{03} = -D_{10}B_{12} + D_{11}B_{02} - D_{12}B_{01}`.
                             let cof03 = F64x4::cof_neg(d10, b12, d11, b02, d12, b01);
                             det_v = F64x4::madd(det_v, dvec(0, 3), cof03);
                             repl0 = F64x4::madd(repl0, fvec(0, 3), cof03);
                         }
 
-                        // Store `det(\mathbf D)` at its first natural endpoint so it does not remain live across all cofactors.
+                        // Store `\det\mathbf D` early to reduce live registers during the remaining
+                        // cofactor evaluation.
                         let mut det_lane = [0.0f64; 4];
                         det_v.store(&mut det_lane);
 
-                        // Reuse the same six `B_{ab}` values for row 1 of `C:\mathcal F`.
+                        // Reuse the six `B_{ab}` values for row 1 of
+                        // `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         let mut repl1 = F64x4::zero();
 
                         {
@@ -1191,15 +1238,19 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{10} = -D_{01}B_{23} + D_{02}B_{13} - D_{03}B_{12}`.
                             let cof10 = F64x4::cof_neg(d01, b23, d02, b13, d03, b12);
                             repl1 = F64x4::madd(repl1, fvec(1, 0), cof10);
 
+                            // `C_{11} = D_{00}B_{23} - D_{02}B_{03} + D_{03}B_{02}`.
                             let cof11 = F64x4::cof_pos(d00, b23, d02, b03, d03, b02);
                             repl1 = F64x4::madd(repl1, fvec(1, 1), cof11);
 
+                            // `C_{12} = -D_{00}B_{13} + D_{01}B_{03} - D_{03}B_{01}`.
                             let cof12 = F64x4::cof_neg(d00, b13, d01, b03, d03, b01);
                             repl1 = F64x4::madd(repl1, fvec(1, 2), cof12);
 
+                            // `C_{13} = D_{00}B_{12} - D_{01}B_{02} + D_{02}B_{01}`.
                             let cof13 = F64x4::cof_pos(d00, b12, d01, b02, d02, b01);
                             repl1 = F64x4::madd(repl1, fvec(1, 3), cof13);
                         }
@@ -1240,15 +1291,19 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{20} = D_{01}Q_{23} - D_{02}Q_{13} + D_{03}Q_{12}`.
                             let cof20 = F64x4::cof_pos(d01, q23, d02, q13, d03, q12);
                             repl2 = F64x4::madd(repl2, fvec(2, 0), cof20);
 
+                            // `C_{21} = -D_{00}Q_{23} + D_{02}Q_{03} - D_{03}Q_{02}`.
                             let cof21 = F64x4::cof_neg(d00, q23, d02, q03, d03, q02);
                             repl2 = F64x4::madd(repl2, fvec(2, 1), cof21);
 
+                            // `C_{22} = D_{00}Q_{13} - D_{01}Q_{03} + D_{03}Q_{01}`.
                             let cof22 = F64x4::cof_pos(d00, q13, d01, q03, d03, q01);
                             repl2 = F64x4::madd(repl2, fvec(2, 2), cof22);
 
+                            // `C_{23} = -D_{00}Q_{12} + D_{01}Q_{02} - D_{02}Q_{01}`.
                             let cof23 = F64x4::cof_neg(d00, q12, d01, q02, d02, q01);
                             repl2 = F64x4::madd(repl2, fvec(2, 3), cof23);
                         }
@@ -1287,20 +1342,25 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{30} = -D_{01}R_{23} + D_{02}R_{13} - D_{03}R_{12}`.
                             let cof30 = F64x4::cof_neg(d01, r23, d02, r13, d03, r12);
                             repl3 = F64x4::madd(repl3, fvec(3, 0), cof30);
 
+                            // `C_{31} = D_{00}R_{23} - D_{02}R_{03} + D_{03}R_{02}`.
                             let cof31 = F64x4::cof_pos(d00, r23, d02, r03, d03, r02);
                             repl3 = F64x4::madd(repl3, fvec(3, 1), cof31);
 
+                            // `C_{32} = -D_{00}R_{13} + D_{01}R_{03} - D_{03}R_{01}`.
                             let cof32 = F64x4::cof_neg(d00, r13, d01, r03, d03, r01);
                             repl3 = F64x4::madd(repl3, fvec(3, 2), cof32);
 
+                            // `C_{33} = D_{00}R_{12} - D_{01}R_{02} + D_{02}R_{01}`.
                             let cof33 = F64x4::cof_pos(d00, r12, d01, r02, d02, r01);
                             repl3 = F64x4::madd(repl3, fvec(3, 3), cof33);
                         }
 
-                        // Preserve the previous contraction tree `((repl0 + repl1) + (repl2 + repl3))`.
+                        // Evaluate `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}` with
+                        // `((repl0 + repl1) + (repl2 + repl3))`.
                         let repl23 = F64x4::add(repl2, repl3);
                         let repl_v = F64x4::add(repl01, repl23);
                         let det_v = F64x4::load(&det_lane);
@@ -1313,7 +1373,9 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                 let pref_v = F64x4::splat(pref);
                 let f0_v = F64x4::splat(f0);
 
+                // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
                 let overlap_v = F64x4::mul(det, pref_v);
+                // `F = p\,{}^{xw}\tilde S(F_0\det\mathbf D_{\mathrm{ov}} - R)`.
                 let fock_v = F64x4::mul(F64x4::mul_sub(det, f0_v, repl), pref_v);
 
                 let mut det_lane = [0.0f64; 4];
@@ -1375,13 +1437,19 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                 let n = w.n();
                 let nocc = w.nocc;
                 let nvirt = w.nmo - nocc;
+                // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
                 let x0 = w.x_slice(0).as_ptr().cast::<Complex64>();
                 let y0 = w.y_slice(0).as_ptr().cast::<Complex64>();
+                // `fsl` stores the one-body column intermediate `\mathcal F^{(0,0)}`.
                 let fsl = w.ff_t_slice(0, 0).as_ptr().cast::<Complex64>();
+                // `phase` is the reference-pair orbital phase.
                 let phase = *std::ptr::from_ref(&w.phase).cast::<Complex64>();
+                // `f0 = {}^x F_0^{(0)}` is the scalar one-body intermediate.
                 let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<Complex64>();
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let pref = phase * w.tilde_s_prod;
 
+                // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
                 let x_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         fixed
@@ -1389,6 +1457,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         varying.get_unchecked(lane)
                     }
                 };
+                // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
                 let w_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         varying.get_unchecked(lane)
@@ -1396,6 +1465,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         fixed
                     }
                 };
+                // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
@@ -1403,6 +1473,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
                     }
                 };
+                // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(z))
@@ -1410,10 +1481,13 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
                     }
                 };
+                // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                 let load_d = |eta: usize, z: usize| -> C64x4 {
                     let matrix = if eta >= z { x0 } else { y0 };
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant entries and gather lane-dependent entries.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -1447,9 +1521,11 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         )
                     }
                 };
+                // `load_f(\eta,z) = \mathcal F_{r_\eta c_z}^{(0,0)}` in each SIMD lane.
                 let load_f = |eta: usize, z: usize| -> C64x4 {
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant intermediates and gather lane-dependent intermediates.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -1484,20 +1560,27 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                     }
                 };
                 let zero = C64x4::zero();
+                // Evaluate `\det\mathbf D_{\mathrm{ov}}` and
+                // `R = \sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                 let (det, repl) = match L {
+                    // For `L = 1`, `\det\mathbf D = D_{00}` and `R = \mathcal F_{00}`.
                     1 => (load_d(0, 0), load_f(0, 0)),
                     2 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
                         let d10 = load_d(1, 0);
                         let d11 = load_d(1, 1);
+                        // `\det\mathbf D = D_{00}D_{11} - D_{01}D_{10}`.
                         let det = C64x4::minor(d00, d11, d01, d10);
+                        // `R = \mathcal F_{00}D_{11} - \mathcal F_{01}D_{10}`
+                        // `- \mathcal F_{10}D_{01} + \mathcal F_{11}D_{00}`.
                         let mut repl = C64x4::mul(load_f(0, 0), d11);
                         repl = C64x4::msub(repl, load_f(0, 1), d10);
                         repl = C64x4::msub(repl, load_f(1, 0), d01);
                         repl = C64x4::madd(repl, load_f(1, 1), d00);
                         (det, repl)
                     }
+                    // For `L = 3`, write `C_{\eta z} = \operatorname{cof}[\mathbf D]_{\eta z}`.
                     3 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
@@ -1509,25 +1592,36 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         let d21 = load_d(2, 1);
                         let d22 = load_d(2, 2);
 
+                        // `C_{00} = D_{11}D_{22} - D_{12}D_{21}`.
                         let c00 = C64x4::minor(d11, d22, d12, d21);
+                        // Begin `\det\mathbf D = \sum_z D_{0z}C_{0z}` and
+                        // `R = \sum_{\eta z}\mathcal F_{\eta z}C_{\eta z}`.
                         let mut det = C64x4::mul(d00, c00);
                         let mut repl = C64x4::mul(load_f(0, 0), c00);
+                        // `C_{01} = -(D_{10}D_{22} - D_{12}D_{20})`.
                         let c01 = C64x4::sub(zero, C64x4::minor(d10, d22, d12, d20));
                         det = C64x4::madd(det, d01, c01);
                         repl = C64x4::madd(repl, load_f(0, 1), c01);
+                        // `C_{02} = D_{10}D_{21} - D_{11}D_{20}`.
                         let c02 = C64x4::minor(d10, d21, d11, d20);
                         det = C64x4::madd(det, d02, c02);
                         repl = C64x4::madd(repl, load_f(0, 2), c02);
+                        // `C_{10} = -(D_{01}D_{22} - D_{02}D_{21})`.
                         let c10 = C64x4::sub(zero, C64x4::minor(d01, d22, d02, d21));
                         repl = C64x4::madd(repl, load_f(1, 0), c10);
+                        // `C_{11} = D_{00}D_{22} - D_{02}D_{20}`.
                         let c11 = C64x4::minor(d00, d22, d02, d20);
                         repl = C64x4::madd(repl, load_f(1, 1), c11);
+                        // `C_{12} = -(D_{00}D_{21} - D_{01}D_{20})`.
                         let c12 = C64x4::sub(zero, C64x4::minor(d00, d21, d01, d20));
                         repl = C64x4::madd(repl, load_f(1, 2), c12);
+                        // `C_{20} = D_{01}D_{12} - D_{02}D_{11}`.
                         let c20 = C64x4::minor(d01, d12, d02, d11);
                         repl = C64x4::madd(repl, load_f(2, 0), c20);
+                        // `C_{21} = -(D_{00}D_{12} - D_{02}D_{10})`.
                         let c21 = C64x4::sub(zero, C64x4::minor(d00, d12, d02, d10));
                         repl = C64x4::madd(repl, load_f(2, 1), c21);
+                        // `C_{22} = D_{00}D_{11} - D_{01}D_{10}`.
                         let c22 = C64x4::minor(d00, d11, d01, d10);
                         repl = C64x4::madd(repl, load_f(2, 2), c22);
                         (det, repl)
@@ -1540,9 +1634,10 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                             }
                         }
                         let dvec = |row: usize, col: usize| *d.get_unchecked(row * 4 + col);
-                        // The old 16 cofactors contain `16 x 3 = 48` minor occurrences. Preserving their exact
-                        // expansions leaves `6 + 6 + 6 = 18` distinct minors, so 18 is the lower bound for this DAG.
-                        // Complex SIMD values use two registers, so `D_{ij}` is loaded on demand by row-pair group.
+                        // The 16 cofactors contain `16 x 3 = 48` minor occurrences. Factoring their
+                        // expansions leaves `6 + 6 + 6 = 18` distinct minors in this DAG.
+                        // Complex SIMD values use two registers, so `D_{ij}` is loaded on demand
+                        // by row-pair group.
 
                         // `B_{ab} = D_{2a}D_{3b} - D_{2b}D_{3a}` supplies cofactor rows 0 and 1.
                         let (b01, b02, b03, b12, b13, b23) = {
@@ -1568,46 +1663,58 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                         let mut repl0 = C64x4::zero();
                         let mut repl1 = C64x4::zero();
 
-                        // Form `det(\mathbf D) = \sum_j D_{0j}C_{0j}` and row 0 of `C:\mathcal F`.
+                        // Form `\det\mathbf D = \sum_j D_{0j}\operatorname{cof}[\mathbf D]_{0j}` and
+                        // row 0 of `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         {
                             let d10 = dvec(1, 0);
                             let d11 = dvec(1, 1);
                             let d12 = dvec(1, 2);
                             let d13 = dvec(1, 3);
 
+                            // `C_{00} = D_{11}B_{23} - D_{12}B_{13} + D_{13}B_{12}`.
                             let cof00 = C64x4::cof_pos(d11, b23, d12, b13, d13, b12);
                             det = C64x4::madd(det, dvec(0, 0), cof00);
                             repl0 = C64x4::madd(repl0, load_f(0, 0), cof00);
 
+                            // `C_{01} = -D_{10}B_{23} + D_{12}B_{03} - D_{13}B_{02}`.
                             let cof01 = C64x4::cof_neg(d10, b23, d12, b03, d13, b02);
                             det = C64x4::madd(det, dvec(0, 1), cof01);
                             repl0 = C64x4::madd(repl0, load_f(0, 1), cof01);
 
+                            // `C_{02} = D_{10}B_{13} - D_{11}B_{03} + D_{13}B_{01}`.
                             let cof02 = C64x4::cof_pos(d10, b13, d11, b03, d13, b01);
                             det = C64x4::madd(det, dvec(0, 2), cof02);
                             repl0 = C64x4::madd(repl0, load_f(0, 2), cof02);
 
+                            // `C_{03} = -D_{10}B_{12} + D_{11}B_{02} - D_{12}B_{01}`.
                             let cof03 = C64x4::cof_neg(d10, b12, d11, b02, d12, b01);
                             det = C64x4::madd(det, dvec(0, 3), cof03);
                             repl0 = C64x4::madd(repl0, load_f(0, 3), cof03);
                         }
 
-                        // Reuse the same six `B_{ab}` values for row 1 of `C:\mathcal F`.
+                        // Keep `\det\mathbf D` live while evaluating the remaining cofactor
+                        // rows contributing to `R`.
+                        // Reuse the six `B_{ab}` values for row 1 of
+                        // `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         {
                             let d00 = dvec(0, 0);
                             let d01 = dvec(0, 1);
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{10} = -D_{01}B_{23} + D_{02}B_{13} - D_{03}B_{12}`.
                             let cof10 = C64x4::cof_neg(d01, b23, d02, b13, d03, b12);
                             repl1 = C64x4::madd(repl1, load_f(1, 0), cof10);
 
+                            // `C_{11} = D_{00}B_{23} - D_{02}B_{03} + D_{03}B_{02}`.
                             let cof11 = C64x4::cof_pos(d00, b23, d02, b03, d03, b02);
                             repl1 = C64x4::madd(repl1, load_f(1, 1), cof11);
 
+                            // `C_{12} = -D_{00}B_{13} + D_{01}B_{03} - D_{03}B_{01}`.
                             let cof12 = C64x4::cof_neg(d00, b13, d01, b03, d03, b01);
                             repl1 = C64x4::madd(repl1, load_f(1, 2), cof12);
 
+                            // `C_{13} = D_{00}B_{12} - D_{01}B_{02} + D_{02}B_{01}`.
                             let cof13 = C64x4::cof_pos(d00, b12, d01, b02, d02, b01);
                             repl1 = C64x4::madd(repl1, load_f(1, 3), cof13);
                         }
@@ -1642,15 +1749,19 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{20} = D_{01}Q_{23} - D_{02}Q_{13} + D_{03}Q_{12}`.
                             let cof20 = C64x4::cof_pos(d01, q23, d02, q13, d03, q12);
                             repl2 = C64x4::madd(repl2, load_f(2, 0), cof20);
 
+                            // `C_{21} = -D_{00}Q_{23} + D_{02}Q_{03} - D_{03}Q_{02}`.
                             let cof21 = C64x4::cof_neg(d00, q23, d02, q03, d03, q02);
                             repl2 = C64x4::madd(repl2, load_f(2, 1), cof21);
 
+                            // `C_{22} = D_{00}Q_{13} - D_{01}Q_{03} + D_{03}Q_{01}`.
                             let cof22 = C64x4::cof_pos(d00, q13, d01, q03, d03, q01);
                             repl2 = C64x4::madd(repl2, load_f(2, 2), cof22);
 
+                            // `C_{23} = -D_{00}Q_{12} + D_{01}Q_{02} - D_{02}Q_{01}`.
                             let cof23 = C64x4::cof_neg(d00, q12, d01, q02, d02, q01);
                             repl2 = C64x4::madd(repl2, load_f(2, 3), cof23);
                         }
@@ -1683,20 +1794,25 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{30} = -D_{01}R_{23} + D_{02}R_{13} - D_{03}R_{12}`.
                             let cof30 = C64x4::cof_neg(d01, r23, d02, r13, d03, r12);
                             repl3 = C64x4::madd(repl3, load_f(3, 0), cof30);
 
+                            // `C_{31} = D_{00}R_{23} - D_{02}R_{03} + D_{03}R_{02}`.
                             let cof31 = C64x4::cof_pos(d00, r23, d02, r03, d03, r02);
                             repl3 = C64x4::madd(repl3, load_f(3, 1), cof31);
 
+                            // `C_{32} = -D_{00}R_{13} + D_{01}R_{03} - D_{03}R_{01}`.
                             let cof32 = C64x4::cof_neg(d00, r13, d01, r03, d03, r01);
                             repl3 = C64x4::madd(repl3, load_f(3, 2), cof32);
 
+                            // `C_{33} = D_{00}R_{12} - D_{01}R_{02} + D_{02}R_{01}`.
                             let cof33 = C64x4::cof_pos(d00, r12, d01, r02, d02, r01);
                             repl3 = C64x4::madd(repl3, load_f(3, 3), cof33);
                         }
 
-                        // Preserve the previous contraction tree `((repl0 + repl1) + (repl2 + repl3))`.
+                        // Evaluate `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}` with
+                        // `((repl0 + repl1) + (repl2 + repl3))`.
                         let repl23 = C64x4::add(repl2, repl3);
                         (det, C64x4::add(repl01, repl23))
                     }
@@ -1705,7 +1821,9 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
 
                 let pref_v = C64x4::splat(pref.re, pref.im);
                 let f0_v = C64x4::splat(f0.re, f0.im);
+                // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
                 let overlap_v = C64x4::mul(pref_v, det);
+                // `F = p\,{}^{xw}\tilde S(F_0\det\mathbf D_{\mathrm{ov}} - R)`.
                 let fock_v = C64x4::mul(pref_v, C64x4::mul_sub(f0_v, det, repl));
                 let mut det_re = [0.0f64; 4];
                 let mut det_im = [0.0f64; 4];
@@ -1717,6 +1835,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                 overlap_v.store(&mut overlap_re, &mut overlap_im);
                 fock_v.store(&mut fock_re, &mut fock_im);
 
+                // Store four packed overlap and one-body lanes, zeroing non-finite determinant lanes.
                 for lane in 0..4 {
                     if det_re.get_unchecked(lane).is_finite()
                         && det_im.get_unchecked(lane).is_finite()
@@ -1776,13 +1895,19 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                 let n = w.n();
                 let nocc = w.nocc;
                 let nvirt = w.nmo - nocc;
+                // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
                 let x0 = w.x_slice(0).as_ptr().cast::<f64>();
                 let y0 = w.y_slice(0).as_ptr().cast::<f64>();
+                // `fsl` stores the one-body column intermediate `\mathcal F^{(0,0)}`.
                 let fsl = w.ff_t_slice(0, 0).as_ptr().cast::<f64>();
+                // `phase` is the reference-pair orbital phase.
                 let phase = *std::ptr::from_ref(&w.phase).cast::<f64>();
+                // `f0 = {}^x F_0^{(0)}` is the scalar one-body intermediate.
                 let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<f64>();
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let pref = phase * w.tilde_s_prod;
 
+                // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
                 let x_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         fixed
@@ -1790,6 +1915,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         varying.get_unchecked(lane)
                     }
                 };
+                // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
                 let w_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         varying.get_unchecked(lane)
@@ -1797,6 +1923,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         fixed
                     }
                 };
+                // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
@@ -1804,6 +1931,7 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
                     }
                 };
+                // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(z))
@@ -1811,10 +1939,13 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
                     }
                 };
+                // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                 let load_d = |eta: usize, z: usize| -> F64x8 {
                     let matrix = if eta >= z { x0 } else { y0 };
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant entries and gather lane-dependent entries.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -1861,9 +1992,11 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         ])
                     }
                 };
+                // `fvec(\eta,z) = \mathcal F_{r_\eta c_z}^{(0,0)}` in each SIMD lane.
                 let fvec = |eta: usize, z: usize| -> F64x8 {
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant intermediates and gather lane-dependent intermediates.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -1911,20 +2044,27 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                     }
                 };
                 let zero = F64x8::zero();
+                // Evaluate `\det\mathbf D_{\mathrm{ov}}` and
+                // `R = \sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                 let (det, repl) = match L {
+                    // For `L = 1`, `\det\mathbf D = D_{00}` and `R = \mathcal F_{00}`.
                     1 => (load_d(0, 0), fvec(0, 0)),
                     2 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
                         let d10 = load_d(1, 0);
                         let d11 = load_d(1, 1);
+                        // `\det\mathbf D = D_{00}D_{11} - D_{01}D_{10}`.
                         let det = F64x8::minor(d00, d11, d01, d10);
+                        // `R = \mathcal F_{00}D_{11} - \mathcal F_{01}D_{10}`
+                        // `- \mathcal F_{10}D_{01} + \mathcal F_{11}D_{00}`.
                         let mut repl = F64x8::mul(fvec(0, 0), d11);
                         repl = F64x8::msub(repl, fvec(0, 1), d10);
                         repl = F64x8::msub(repl, fvec(1, 0), d01);
                         repl = F64x8::madd(repl, fvec(1, 1), d00);
                         (det, repl)
                     }
+                    // For `L = 3`, write `C_{\eta z} = \operatorname{cof}[\mathbf D]_{\eta z}`.
                     3 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
@@ -1936,25 +2076,36 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         let d21 = load_d(2, 1);
                         let d22 = load_d(2, 2);
 
+                        // `C_{00} = D_{11}D_{22} - D_{12}D_{21}`.
                         let c00 = F64x8::minor(d11, d22, d12, d21);
+                        // Begin `\det\mathbf D = \sum_z D_{0z}C_{0z}` and
+                        // `R = \sum_{\eta z}\mathcal F_{\eta z}C_{\eta z}`.
                         let mut det = F64x8::mul(d00, c00);
                         let mut repl = F64x8::mul(fvec(0, 0), c00);
+                        // `C_{01} = -(D_{10}D_{22} - D_{12}D_{20})`.
                         let c01 = F64x8::sub(zero, F64x8::minor(d10, d22, d12, d20));
                         det = F64x8::madd(det, d01, c01);
                         repl = F64x8::madd(repl, fvec(0, 1), c01);
+                        // `C_{02} = D_{10}D_{21} - D_{11}D_{20}`.
                         let c02 = F64x8::minor(d10, d21, d11, d20);
                         det = F64x8::madd(det, d02, c02);
                         repl = F64x8::madd(repl, fvec(0, 2), c02);
+                        // `C_{10} = -(D_{01}D_{22} - D_{02}D_{21})`.
                         let c10 = F64x8::sub(zero, F64x8::minor(d01, d22, d02, d21));
                         repl = F64x8::madd(repl, fvec(1, 0), c10);
+                        // `C_{11} = D_{00}D_{22} - D_{02}D_{20}`.
                         let c11 = F64x8::minor(d00, d22, d02, d20);
                         repl = F64x8::madd(repl, fvec(1, 1), c11);
+                        // `C_{12} = -(D_{00}D_{21} - D_{01}D_{20})`.
                         let c12 = F64x8::sub(zero, F64x8::minor(d00, d21, d01, d20));
                         repl = F64x8::madd(repl, fvec(1, 2), c12);
+                        // `C_{20} = D_{01}D_{12} - D_{02}D_{11}`.
                         let c20 = F64x8::minor(d01, d12, d02, d11);
                         repl = F64x8::madd(repl, fvec(2, 0), c20);
+                        // `C_{21} = -(D_{00}D_{12} - D_{02}D_{10})`.
                         let c21 = F64x8::sub(zero, F64x8::minor(d00, d12, d02, d10));
                         repl = F64x8::madd(repl, fvec(2, 1), c21);
+                        // `C_{22} = D_{00}D_{11} - D_{01}D_{10}`.
                         let c22 = F64x8::minor(d00, d11, d01, d10);
                         repl = F64x8::madd(repl, fvec(2, 2), c22);
                         (det, repl)
@@ -1968,9 +2119,10 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                         }
                         let dvec = |row: usize, col: usize| *d.get_unchecked(row * 4 + col);
 
-                        // The old 16 cofactors contain `16 x 3 = 48` minor occurrences. Preserving their exact
-                        // expansions leaves `6 + 6 + 6 = 18` distinct minors, so 18 is the lower bound for this DAG.
-                        // AVX2 cannot keep all 16 `D_{ij}` plus these intermediates live, so `D_{ij}` is reloaded by group.
+                        // The 16 cofactors contain `16 x 3 = 48` minor occurrences. Factoring their
+                        // expansions leaves `6 + 6 + 6 = 18` distinct minors in this DAG.
+                        // Reload `D_{ij}` by group to keep the 18 minor intermediates within the
+                        // available register budget.
 
                         // `B_{ab} = D_{2a}D_{3b} - D_{2b}D_{3a}` supplies cofactor rows 0 and 1.
                         let (b01, b02, b03, b12, b13, b23) = {
@@ -1998,7 +2150,8 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             (b01, b02, b03, b12, b13, b23)
                         };
 
-                        // Form `det(\mathbf D) = \sum_j D_{0j}C_{0j}` and row 0 of `C:\mathcal F`.
+                        // Form `\det\mathbf D = \sum_j D_{0j}\operatorname{cof}[\mathbf D]_{0j}` and
+                        // row 0 of `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         let mut det_v = F64x8::zero();
                         let mut repl0 = F64x8::zero();
 
@@ -2008,28 +2161,34 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             let d12 = dvec(1, 2);
                             let d13 = dvec(1, 3);
 
+                            // `C_{00} = D_{11}B_{23} - D_{12}B_{13} + D_{13}B_{12}`.
                             let cof00 = F64x8::cof_pos(d11, b23, d12, b13, d13, b12);
                             det_v = F64x8::madd(det_v, dvec(0, 0), cof00);
                             repl0 = F64x8::madd(repl0, fvec(0, 0), cof00);
 
+                            // `C_{01} = -D_{10}B_{23} + D_{12}B_{03} - D_{13}B_{02}`.
                             let cof01 = F64x8::cof_neg(d10, b23, d12, b03, d13, b02);
                             det_v = F64x8::madd(det_v, dvec(0, 1), cof01);
                             repl0 = F64x8::madd(repl0, fvec(0, 1), cof01);
 
+                            // `C_{02} = D_{10}B_{13} - D_{11}B_{03} + D_{13}B_{01}`.
                             let cof02 = F64x8::cof_pos(d10, b13, d11, b03, d13, b01);
                             det_v = F64x8::madd(det_v, dvec(0, 2), cof02);
                             repl0 = F64x8::madd(repl0, fvec(0, 2), cof02);
 
+                            // `C_{03} = -D_{10}B_{12} + D_{11}B_{02} - D_{12}B_{01}`.
                             let cof03 = F64x8::cof_neg(d10, b12, d11, b02, d12, b01);
                             det_v = F64x8::madd(det_v, dvec(0, 3), cof03);
                             repl0 = F64x8::madd(repl0, fvec(0, 3), cof03);
                         }
 
-                        // Store `det(\mathbf D)` at its first natural endpoint so it does not remain live across all cofactors.
+                        // Store `\det\mathbf D` early to reduce live registers during the remaining
+                        // cofactor evaluation.
                         let mut det_lane = [0.0f64; 8];
                         det_v.store(&mut det_lane);
 
-                        // Reuse the same six `B_{ab}` values for row 1 of `C:\mathcal F`.
+                        // Reuse the six `B_{ab}` values for row 1 of
+                        // `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         let mut repl1 = F64x8::zero();
 
                         {
@@ -2038,15 +2197,19 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{10} = -D_{01}B_{23} + D_{02}B_{13} - D_{03}B_{12}`.
                             let cof10 = F64x8::cof_neg(d01, b23, d02, b13, d03, b12);
                             repl1 = F64x8::madd(repl1, fvec(1, 0), cof10);
 
+                            // `C_{11} = D_{00}B_{23} - D_{02}B_{03} + D_{03}B_{02}`.
                             let cof11 = F64x8::cof_pos(d00, b23, d02, b03, d03, b02);
                             repl1 = F64x8::madd(repl1, fvec(1, 1), cof11);
 
+                            // `C_{12} = -D_{00}B_{13} + D_{01}B_{03} - D_{03}B_{01}`.
                             let cof12 = F64x8::cof_neg(d00, b13, d01, b03, d03, b01);
                             repl1 = F64x8::madd(repl1, fvec(1, 2), cof12);
 
+                            // `C_{13} = D_{00}B_{12} - D_{01}B_{02} + D_{02}B_{01}`.
                             let cof13 = F64x8::cof_pos(d00, b12, d01, b02, d02, b01);
                             repl1 = F64x8::madd(repl1, fvec(1, 3), cof13);
                         }
@@ -2087,15 +2250,19 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{20} = D_{01}Q_{23} - D_{02}Q_{13} + D_{03}Q_{12}`.
                             let cof20 = F64x8::cof_pos(d01, q23, d02, q13, d03, q12);
                             repl2 = F64x8::madd(repl2, fvec(2, 0), cof20);
 
+                            // `C_{21} = -D_{00}Q_{23} + D_{02}Q_{03} - D_{03}Q_{02}`.
                             let cof21 = F64x8::cof_neg(d00, q23, d02, q03, d03, q02);
                             repl2 = F64x8::madd(repl2, fvec(2, 1), cof21);
 
+                            // `C_{22} = D_{00}Q_{13} - D_{01}Q_{03} + D_{03}Q_{01}`.
                             let cof22 = F64x8::cof_pos(d00, q13, d01, q03, d03, q01);
                             repl2 = F64x8::madd(repl2, fvec(2, 2), cof22);
 
+                            // `C_{23} = -D_{00}Q_{12} + D_{01}Q_{02} - D_{02}Q_{01}`.
                             let cof23 = F64x8::cof_neg(d00, q12, d01, q02, d02, q01);
                             repl2 = F64x8::madd(repl2, fvec(2, 3), cof23);
                         }
@@ -2134,20 +2301,25 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{30} = -D_{01}R_{23} + D_{02}R_{13} - D_{03}R_{12}`.
                             let cof30 = F64x8::cof_neg(d01, r23, d02, r13, d03, r12);
                             repl3 = F64x8::madd(repl3, fvec(3, 0), cof30);
 
+                            // `C_{31} = D_{00}R_{23} - D_{02}R_{03} + D_{03}R_{02}`.
                             let cof31 = F64x8::cof_pos(d00, r23, d02, r03, d03, r02);
                             repl3 = F64x8::madd(repl3, fvec(3, 1), cof31);
 
+                            // `C_{32} = -D_{00}R_{13} + D_{01}R_{03} - D_{03}R_{01}`.
                             let cof32 = F64x8::cof_neg(d00, r13, d01, r03, d03, r01);
                             repl3 = F64x8::madd(repl3, fvec(3, 2), cof32);
 
+                            // `C_{33} = D_{00}R_{12} - D_{01}R_{02} + D_{02}R_{01}`.
                             let cof33 = F64x8::cof_pos(d00, r12, d01, r02, d02, r01);
                             repl3 = F64x8::madd(repl3, fvec(3, 3), cof33);
                         }
 
-                        // Preserve the previous contraction tree `((repl0 + repl1) + (repl2 + repl3))`.
+                        // Evaluate `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}` with
+                        // `((repl0 + repl1) + (repl2 + repl3))`.
                         let repl23 = F64x8::add(repl2, repl3);
                         let repl_v = F64x8::add(repl01, repl23);
                         let det_v = F64x8::load(&det_lane);
@@ -2160,7 +2332,9 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                 let pref_v = F64x8::splat(pref);
                 let f0_v = F64x8::splat(f0);
 
+                // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
                 let overlap_v = F64x8::mul(det, pref_v);
+                // `F = p\,{}^{xw}\tilde S(F_0\det\mathbf D_{\mathrm{ov}} - R)`.
                 let fock_v = F64x8::mul(F64x8::mul_sub(det, f0_v, repl), pref_v);
 
                 let mut det_lane = [0.0f64; 8];
@@ -2221,13 +2395,19 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                 let n = w.n();
                 let nocc = w.nocc;
                 let nvirt = w.nmo - nocc;
+                // `x0` and `y0` store the `X^{(0)}` and `Y^{(0)}` fundamental contractions.
                 let x0 = w.x_slice(0).as_ptr().cast::<Complex64>();
                 let y0 = w.y_slice(0).as_ptr().cast::<Complex64>();
+                // `fsl` stores the one-body column intermediate `\mathcal F^{(0,0)}`.
                 let fsl = w.ff_t_slice(0, 0).as_ptr().cast::<Complex64>();
+                // `phase` is the reference-pair orbital phase.
                 let phase = *std::ptr::from_ref(&w.phase).cast::<Complex64>();
+                // `f0 = {}^x F_0^{(0)}` is the scalar one-body intermediate.
                 let f0 = *std::ptr::from_ref(&w.f0f[0]).cast::<Complex64>();
+                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
                 let pref = phase * w.tilde_s_prod;
 
+                // Select the lane-local bra excitation `{}^x\Psi_{i\cdots}^{a\cdots}`.
                 let x_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         fixed
@@ -2235,6 +2415,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         varying.get_unchecked(lane)
                     }
                 };
+                // Select the lane-local ket excitation `{}^w\Psi_{j\cdots}^{b\cdots}`.
                 let w_data = |lane: usize| -> &ExcitationSpinCache {
                     if XFIX {
                         varying.get_unchecked(lane)
@@ -2242,6 +2423,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         fixed
                     }
                 };
+                // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
@@ -2249,6 +2431,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
                     }
                 };
+                // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
                         usize::from(*x_data(lane).indices.get_unchecked(z))
@@ -2256,10 +2439,13 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
                     }
                 };
+                // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                // `D_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                 let load_d = |eta: usize, z: usize| -> C64x8 {
                     let matrix = if eta >= z { x0 } else { y0 };
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant entries and gather lane-dependent entries.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -2309,9 +2495,11 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         ])
                     }
                 };
+                // `load_f(\eta,z) = \mathcal F_{r_\eta c_z}^{(0,0)}` in each SIMD lane.
                 let load_f = |eta: usize, z: usize| -> C64x8 {
                     let invariant = if XFIX { z < RX } else { eta >= RX };
 
+                    // Broadcast lane-invariant intermediates and gather lane-dependent intermediates.
                     if invariant {
                         let row = row_index(eta, 0);
                         let col = col_index(z, 0);
@@ -2362,20 +2550,27 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                     }
                 };
                 let zero = C64x8::zero();
+                // Evaluate `\det\mathbf D_{\mathrm{ov}}` and
+                // `R = \sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                 let (det, repl) = match L {
+                    // For `L = 1`, `\det\mathbf D = D_{00}` and `R = \mathcal F_{00}`.
                     1 => (load_d(0, 0), load_f(0, 0)),
                     2 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
                         let d10 = load_d(1, 0);
                         let d11 = load_d(1, 1);
+                        // `\det\mathbf D = D_{00}D_{11} - D_{01}D_{10}`.
                         let det = C64x8::minor(d00, d11, d01, d10);
+                        // `R = \mathcal F_{00}D_{11} - \mathcal F_{01}D_{10}`
+                        // `- \mathcal F_{10}D_{01} + \mathcal F_{11}D_{00}`.
                         let mut repl = C64x8::mul(load_f(0, 0), d11);
                         repl = C64x8::msub(repl, load_f(0, 1), d10);
                         repl = C64x8::msub(repl, load_f(1, 0), d01);
                         repl = C64x8::madd(repl, load_f(1, 1), d00);
                         (det, repl)
                     }
+                    // For `L = 3`, write `C_{\eta z} = \operatorname{cof}[\mathbf D]_{\eta z}`.
                     3 => {
                         let d00 = load_d(0, 0);
                         let d01 = load_d(0, 1);
@@ -2387,25 +2582,36 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         let d21 = load_d(2, 1);
                         let d22 = load_d(2, 2);
 
+                        // `C_{00} = D_{11}D_{22} - D_{12}D_{21}`.
                         let c00 = C64x8::minor(d11, d22, d12, d21);
+                        // Begin `\det\mathbf D = \sum_z D_{0z}C_{0z}` and
+                        // `R = \sum_{\eta z}\mathcal F_{\eta z}C_{\eta z}`.
                         let mut det = C64x8::mul(d00, c00);
                         let mut repl = C64x8::mul(load_f(0, 0), c00);
+                        // `C_{01} = -(D_{10}D_{22} - D_{12}D_{20})`.
                         let c01 = C64x8::sub(zero, C64x8::minor(d10, d22, d12, d20));
                         det = C64x8::madd(det, d01, c01);
                         repl = C64x8::madd(repl, load_f(0, 1), c01);
+                        // `C_{02} = D_{10}D_{21} - D_{11}D_{20}`.
                         let c02 = C64x8::minor(d10, d21, d11, d20);
                         det = C64x8::madd(det, d02, c02);
                         repl = C64x8::madd(repl, load_f(0, 2), c02);
+                        // `C_{10} = -(D_{01}D_{22} - D_{02}D_{21})`.
                         let c10 = C64x8::sub(zero, C64x8::minor(d01, d22, d02, d21));
                         repl = C64x8::madd(repl, load_f(1, 0), c10);
+                        // `C_{11} = D_{00}D_{22} - D_{02}D_{20}`.
                         let c11 = C64x8::minor(d00, d22, d02, d20);
                         repl = C64x8::madd(repl, load_f(1, 1), c11);
+                        // `C_{12} = -(D_{00}D_{21} - D_{01}D_{20})`.
                         let c12 = C64x8::sub(zero, C64x8::minor(d00, d21, d01, d20));
                         repl = C64x8::madd(repl, load_f(1, 2), c12);
+                        // `C_{20} = D_{01}D_{12} - D_{02}D_{11}`.
                         let c20 = C64x8::minor(d01, d12, d02, d11);
                         repl = C64x8::madd(repl, load_f(2, 0), c20);
+                        // `C_{21} = -(D_{00}D_{12} - D_{02}D_{10})`.
                         let c21 = C64x8::sub(zero, C64x8::minor(d00, d12, d02, d10));
                         repl = C64x8::madd(repl, load_f(2, 1), c21);
+                        // `C_{22} = D_{00}D_{11} - D_{01}D_{10}`.
                         let c22 = C64x8::minor(d00, d11, d01, d10);
                         repl = C64x8::madd(repl, load_f(2, 2), c22);
                         (det, repl)
@@ -2418,9 +2624,10 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             }
                         }
                         let dvec = |row: usize, col: usize| *d.get_unchecked(row * 4 + col);
-                        // The old 16 cofactors contain `16 x 3 = 48` minor occurrences. Preserving their exact
-                        // expansions leaves `6 + 6 + 6 = 18` distinct minors, so 18 is the lower bound for this DAG.
-                        // Complex SIMD values use two registers, so `D_{ij}` is loaded on demand by row-pair group.
+                        // The 16 cofactors contain `16 x 3 = 48` minor occurrences. Factoring their
+                        // expansions leaves `6 + 6 + 6 = 18` distinct minors in this DAG.
+                        // Complex SIMD values use two registers, so `D_{ij}` is loaded on demand
+                        // by row-pair group.
 
                         // `B_{ab} = D_{2a}D_{3b} - D_{2b}D_{3a}` supplies cofactor rows 0 and 1.
                         let (b01, b02, b03, b12, b13, b23) = {
@@ -2446,46 +2653,58 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                         let mut repl0 = C64x8::zero();
                         let mut repl1 = C64x8::zero();
 
-                        // Form `det(\mathbf D) = \sum_j D_{0j}C_{0j}` and row 0 of `C:\mathcal F`.
+                        // Form `\det\mathbf D = \sum_j D_{0j}\operatorname{cof}[\mathbf D]_{0j}` and
+                        // row 0 of `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         {
                             let d10 = dvec(1, 0);
                             let d11 = dvec(1, 1);
                             let d12 = dvec(1, 2);
                             let d13 = dvec(1, 3);
 
+                            // `C_{00} = D_{11}B_{23} - D_{12}B_{13} + D_{13}B_{12}`.
                             let cof00 = C64x8::cof_pos(d11, b23, d12, b13, d13, b12);
                             det = C64x8::madd(det, dvec(0, 0), cof00);
                             repl0 = C64x8::madd(repl0, load_f(0, 0), cof00);
 
+                            // `C_{01} = -D_{10}B_{23} + D_{12}B_{03} - D_{13}B_{02}`.
                             let cof01 = C64x8::cof_neg(d10, b23, d12, b03, d13, b02);
                             det = C64x8::madd(det, dvec(0, 1), cof01);
                             repl0 = C64x8::madd(repl0, load_f(0, 1), cof01);
 
+                            // `C_{02} = D_{10}B_{13} - D_{11}B_{03} + D_{13}B_{01}`.
                             let cof02 = C64x8::cof_pos(d10, b13, d11, b03, d13, b01);
                             det = C64x8::madd(det, dvec(0, 2), cof02);
                             repl0 = C64x8::madd(repl0, load_f(0, 2), cof02);
 
+                            // `C_{03} = -D_{10}B_{12} + D_{11}B_{02} - D_{12}B_{01}`.
                             let cof03 = C64x8::cof_neg(d10, b12, d11, b02, d12, b01);
                             det = C64x8::madd(det, dvec(0, 3), cof03);
                             repl0 = C64x8::madd(repl0, load_f(0, 3), cof03);
                         }
 
-                        // Reuse the same six `B_{ab}` values for row 1 of `C:\mathcal F`.
+                        // Keep `\det\mathbf D` live while evaluating the remaining cofactor
+                        // rows contributing to `R`.
+                        // Reuse the six `B_{ab}` values for row 1 of
+                        // `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}`.
                         {
                             let d00 = dvec(0, 0);
                             let d01 = dvec(0, 1);
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{10} = -D_{01}B_{23} + D_{02}B_{13} - D_{03}B_{12}`.
                             let cof10 = C64x8::cof_neg(d01, b23, d02, b13, d03, b12);
                             repl1 = C64x8::madd(repl1, load_f(1, 0), cof10);
 
+                            // `C_{11} = D_{00}B_{23} - D_{02}B_{03} + D_{03}B_{02}`.
                             let cof11 = C64x8::cof_pos(d00, b23, d02, b03, d03, b02);
                             repl1 = C64x8::madd(repl1, load_f(1, 1), cof11);
 
+                            // `C_{12} = -D_{00}B_{13} + D_{01}B_{03} - D_{03}B_{01}`.
                             let cof12 = C64x8::cof_neg(d00, b13, d01, b03, d03, b01);
                             repl1 = C64x8::madd(repl1, load_f(1, 2), cof12);
 
+                            // `C_{13} = D_{00}B_{12} - D_{01}B_{02} + D_{02}B_{01}`.
                             let cof13 = C64x8::cof_pos(d00, b12, d01, b02, d02, b01);
                             repl1 = C64x8::madd(repl1, load_f(1, 3), cof13);
                         }
@@ -2519,15 +2738,19 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{20} = D_{01}Q_{23} - D_{02}Q_{13} + D_{03}Q_{12}`.
                             let cof20 = C64x8::cof_pos(d01, q23, d02, q13, d03, q12);
                             repl2 = C64x8::madd(repl2, load_f(2, 0), cof20);
 
+                            // `C_{21} = -D_{00}Q_{23} + D_{02}Q_{03} - D_{03}Q_{02}`.
                             let cof21 = C64x8::cof_neg(d00, q23, d02, q03, d03, q02);
                             repl2 = C64x8::madd(repl2, load_f(2, 1), cof21);
 
+                            // `C_{22} = D_{00}Q_{13} - D_{01}Q_{03} + D_{03}Q_{01}`.
                             let cof22 = C64x8::cof_pos(d00, q13, d01, q03, d03, q01);
                             repl2 = C64x8::madd(repl2, load_f(2, 2), cof22);
 
+                            // `C_{23} = -D_{00}Q_{12} + D_{01}Q_{02} - D_{02}Q_{01}`.
                             let cof23 = C64x8::cof_neg(d00, q12, d01, q02, d02, q01);
                             repl2 = C64x8::madd(repl2, load_f(2, 3), cof23);
                         }
@@ -2559,20 +2782,25 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                             let d02 = dvec(0, 2);
                             let d03 = dvec(0, 3);
 
+                            // `C_{30} = -D_{01}R_{23} + D_{02}R_{13} - D_{03}R_{12}`.
                             let cof30 = C64x8::cof_neg(d01, r23, d02, r13, d03, r12);
                             repl3 = C64x8::madd(repl3, load_f(3, 0), cof30);
 
+                            // `C_{31} = D_{00}R_{23} - D_{02}R_{03} + D_{03}R_{02}`.
                             let cof31 = C64x8::cof_pos(d00, r23, d02, r03, d03, r02);
                             repl3 = C64x8::madd(repl3, load_f(3, 1), cof31);
 
+                            // `C_{32} = -D_{00}R_{13} + D_{01}R_{03} - D_{03}R_{01}`.
                             let cof32 = C64x8::cof_neg(d00, r13, d01, r03, d03, r01);
                             repl3 = C64x8::madd(repl3, load_f(3, 2), cof32);
 
+                            // `C_{33} = D_{00}R_{12} - D_{01}R_{02} + D_{02}R_{01}`.
                             let cof33 = C64x8::cof_pos(d00, r12, d01, r02, d02, r01);
                             repl3 = C64x8::madd(repl3, load_f(3, 3), cof33);
                         }
 
-                        // Preserve the previous contraction tree `((repl0 + repl1) + (repl2 + repl3))`.
+                        // Evaluate `\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z}` with
+                        // `((repl0 + repl1) + (repl2 + repl3))`.
                         let repl23 = C64x8::add(repl2, repl3);
                         (det, C64x8::add(repl01, repl23))
                     }
@@ -2581,7 +2809,9 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
 
                 let pref_v = C64x8::splat(pref.re, pref.im);
                 let f0_v = C64x8::splat(f0.re, f0.im);
+                // `S = p\,{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
                 let overlap_v = C64x8::mul(pref_v, det);
+                // `F = p\,{}^{xw}\tilde S(F_0\det\mathbf D_{\mathrm{ov}} - R)`.
                 let fock_v = C64x8::mul(pref_v, C64x8::mul_sub(f0_v, det, repl));
                 let mut det_re = [0.0f64; 8];
                 let mut det_im = [0.0f64; 8];
@@ -2593,6 +2823,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                 overlap_v.store(&mut overlap_re, &mut overlap_im);
                 fock_v.store(&mut fock_re, &mut fock_im);
 
+                // Store eight packed overlap and one-body lanes, zeroing non-finite determinant lanes.
                 for lane in 0..8 {
                     if det_re.get_unchecked(lane).is_finite()
                         && det_im.get_unchecked(lane).is_finite()
@@ -2618,7 +2849,7 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
 /// Prepare and evaluate the generic-rank overlap and generalised-Fock matrix element for `m = 0`.
 /// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}},`
 /// `F = {}^{xw}\tilde S[{}^x F_0^{(0)}\det\mathbf D_{\mathrm{ov}}`
-/// `- \sum_{z=1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}].`
+/// `- \sum_{z = 1}^{L}\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\mathcal F_z}].`
 /// `The determinant labels and \mathbf D_{\mathrm{ov}}(0,\ldots,0) are prepared once before the`
 /// `cofactor evaluation. If the one-body adjugate path rejects the determinant, only the overlap`
 /// `determinant is evaluated separately, preserving the numerical convention of the existing evaluator.`
@@ -2643,7 +2874,8 @@ fn xw_f_overlap_m0_gen_prepared<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0_gen,
         {
-            // Generic m = 0 path: build D_ov once, then use cof[D_ov] for every
+            // Generic `m = 0` path: build `\mathbf D_{\mathrm{ov}}` once, then use
+            // `\operatorname{cof}[\mathbf D_{\mathrm{ov}}]` for every
             // one-column F replacement determinant.
             scratch.ensure_same(l);
 
@@ -2712,7 +2944,7 @@ fn xw_f_overlap_m0_gen_prepared<T: NOCIScalar>(
 /// `The first assignment selects {}^x F_0^{(m_1)} and the operator side of each`
 /// `\mathcal F^{(m_1,m_j)} column; the remaining assignments select the columns of`
 /// `\mathbf D_{\mathrm{ov}}. Terms with m_1 = 0 also satisfy the overlap constraint`
-/// `m_2+\cdots+m_{L+1}=m and are accumulated into the overlap without a second distribution loop.`
+/// `m_2+\cdots+m_{L+1} = m and are accumulated into the overlap without a second distribution loop.`
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `x_ex`: Excitation defining the bra determinant.

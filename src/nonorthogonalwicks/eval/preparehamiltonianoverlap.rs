@@ -448,8 +448,8 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
 /// The contraction determinants, cofactors and required second minors are evaluated
 /// directly for this rank pair and reused by all Hamiltonian contributions.
 /// For each spin sector `\sigma`, the overlap determinant is
-/// `D^\sigma_{ij}=X^{(0)}_{r_i c_j}` for `i >= j` and
-/// `D^\sigma_{ij}=Y^{(0)}_{r_i c_j}` for `i < j`.
+/// `D^\sigma_{ij} = X^{(0)}_{r_i c_j}` for `i >= j` and
+/// `D^\sigma_{ij} = Y^{(0)}_{r_i c_j}` for `i < j`.
 /// The overlap contribution is
 /// `S = p\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`, with
 /// `p` the excitation phase times the two reduced reference-overlap factors.
@@ -466,7 +466,7 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
 /// `V^{\alpha\beta}_0\det\mathbf D_{\alpha,\mathrm{ov}}\det\mathbf D_{\beta,\mathrm{ov}}`
 /// minus the alpha and beta one-column replacements, plus the cofactor contraction
 /// `\sum_{z,y}\sum_{\eta,\xi}\operatorname{cof}[\mathbf D_{\alpha,\mathrm{ov}}]_{\eta z}`
-/// `\mathcal {II}_{\eta z,\xi y}`
+/// `\mathcal{II}_{\eta z,\xi y}`
 /// `\operatorname{cof}[\mathbf D_{\beta,\mathrm{ov}}]_{\xi y}`.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
@@ -511,7 +511,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             let mut j_a = zero;
             let mut replacement_a = zero;
 
-            // Build the alpha rows r_eta and columns c_z for D_{alpha,ov}; x-excitations
+            // Build the alpha rows `r_\eta` and columns `c_z` for
+            // `\mathbf D_{\alpha,\mathrm{ov}}`; x-excitations
             // contribute (a,i) labels and w-excitations contribute (j,b) labels.
             if LA > 0 {
                 let nocc = w.aa.nocc;
@@ -528,8 +529,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                     cols_a[i] = usize::from(w_indices[4 + k]);
                 }
 
-                // Form D_{alpha,ov}[eta,z] from the m_i = 0 fundamental contractions:
-                // X^{(0)}_{r_eta c_z} on and below the diagonal, Y^{(0)}_{r_eta c_z} above it.
+                // Form `D^\alpha_{\eta z}` from the `m_i = 0` fundamental contractions:
+                // `X^{(0)}_{r_\eta c_z}` on and below the diagonal and
+                // `Y^{(0)}_{r_\eta c_z}` above it.
                 let n = w.aa.n();
                 let x0 = w.aa.x_slice(0);
                 let y0 = w.aa.y_slice(0);
@@ -548,7 +550,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                     det_a = d_a[0];
                 } else {
                     // Same-spin double Laplace class C_3:
-                    // sum_{z<y,eta<xi} phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y].
+                    // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
+                    // `\mathcal J^\alpha_{\eta z,\xi y}`
+                    // `\det\mathbf D_{\alpha,\mathrm{ov}}[\eta,\xi|z,y]`.
                     let pairs_a = LA * (LA - 1) / 2;
                     let jsl = w.aa.j_slice(0);
                     let n2 = n * n;
@@ -597,7 +601,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                         }
                     }
 
-                    // Reconstruct cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z]
+                    // Reconstruct the cofactor
+                    // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`
                     // from the second-minor table, then expand det D along the first row.
                     for eta in 0..LA {
                         let r = if eta == 0 { 1usize } else { 0usize };
@@ -631,7 +636,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
 
                 // One-column Hamiltonian replacements:
-                // sum_z det D_{alpha,ov}^{z -> H_z} = sum_{eta,z} cof[D]_{eta z} H_{eta z}.
+                // `\sum_z\det\mathbf D_{\alpha,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal H}_z}`
+                // ` = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+                // `\mathcal H^\alpha_{\eta z}`.
                 let hcol0 = w.aa.hcol0_t_slice();
                 for z in 0..LA {
                     let base = cols_a[z] * n;
@@ -649,7 +656,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             let mut j_b = zero;
             let mut replacement_b = zero;
 
-            // Build the beta rows r_eta and columns c_z for D_{beta,ov}; x-excitations
+            // Build the beta rows `r_\eta` and columns `c_z` for
+            // `\mathbf D_{\beta,\mathrm{ov}}`; x-excitations
             // contribute (a,i) labels and w-excitations contribute (j,b) labels.
             if LB > 0 {
                 let nocc = w.bb.nocc;
@@ -666,8 +674,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                     cols_b[i] = usize::from(w_indices[4 + k]);
                 }
 
-                // Form D_{beta,ov}[eta,z] from the m_i = 0 fundamental contractions:
-                // X^{(0)}_{r_eta c_z} on and below the diagonal, Y^{(0)}_{r_eta c_z} above it.
+                // Form `D^\beta_{\eta z}` from the `m_i = 0` fundamental contractions:
+                // `X^{(0)}_{r_\eta c_z}` on and below the diagonal and
+                // `Y^{(0)}_{r_\eta c_z}` above it.
                 let n = w.bb.n();
                 let x0 = w.bb.x_slice(0);
                 let y0 = w.bb.y_slice(0);
@@ -686,7 +695,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                     det_b = d_b[0];
                 } else {
                     // Same-spin double Laplace class C_3:
-                    // sum_{z<y,eta<xi} phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y].
+                    // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
+                    // `\mathcal J^\beta_{\eta z,\xi y}`
+                    // `\det\mathbf D_{\beta,\mathrm{ov}}[\eta,\xi|z,y]`.
                     let pairs_b = LB * (LB - 1) / 2;
                     let jsl = w.bb.j_slice(0);
                     let n2 = n * n;
@@ -735,7 +746,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                         }
                     }
 
-                    // Reconstruct cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z]
+                    // Reconstruct the cofactor
+                    // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`
                     // from the second-minor table, then expand det D along the first row.
                     for eta in 0..LB {
                         let r = if eta == 0 { 1usize } else { 0usize };
@@ -769,7 +781,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
 
                 // One-column Hamiltonian replacements:
-                // sum_z det D_{beta,ov}^{z -> H_z} = sum_{eta,z} cof[D]_{eta z} H_{eta z}.
+                // `\sum_z\det\mathbf D_{\beta,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal H}_z}`
+                // ` = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
+                // `\mathcal H^\beta_{\eta z}`.
                 let hcol0 = w.bb.hcol0_t_slice();
                 for z in 0..LB {
                     let base = cols_b[z] * n;
@@ -780,7 +794,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             }
 
             // Mixed-spin double replacement:
-            // sum_{z,y,eta,xi} cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+            // `\sum_{z,y}\sum_{\eta,\xi}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+            // `\mathcal{II}_{\eta z,\xi y}`
+            // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
             let mut ii_term = zero;
             if LA > 0 && LB > 0 {
                 let iisl = w.ab.iiab_slice(0, 0, 0, 0);
@@ -818,8 +834,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
-            // Assemble the m_alpha=m_beta=0 Hamiltonian classes:
-            // scalar V_0 terms times det_alpha det_beta, minus one-column replacements, plus J and II.
+            // Assemble the `m_\alpha = m_\beta = 0` Hamiltonian classes:
+            // scalar `V_0` terms times `\det\mathbf D_\alpha\det\mathbf D_\beta`, minus
+            // one-column replacements, plus `\mathcal J` and `\mathcal{II}`.
             let det_ab = det_a * det_b;
             let g0 = <T as From<f64>>::from(enuc)
                 + w.aa.f0h[0]
@@ -1105,15 +1122,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                 let zero_v = F64x4::zero();
                 let one_v = F64x4::splat(1.0);
 
-                // SIMD determinant helpers for the second-minor ranks.
+                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
                 let det3 = |m: &[F64x4; 16]| -> F64x4 {
+                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
                     let t0 = F64x4::minor(m[4], m[8], m[5], m[7]);
+                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
                     let mut out = F64x4::mul(m[0], t0);
+                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
                     let t1 = F64x4::minor(m[3], m[8], m[5], m[6]);
                     out = F64x4::msub(out, m[1], t1);
+                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
                     let t2 = F64x4::minor(m[3], m[7], m[4], m[6]);
                     F64x4::madd(out, m[2], t2)
                 };
+                // Expand a rank-four second minor along its first row.
                 let det4 = |m: &[F64x4; 16]| -> F64x4 {
                     let mut out = zero_v;
                     for col in 0..4 {
@@ -1139,6 +1161,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     }
                     out
                 };
+                // `det_small` evaluates the empty determinant and ranks one through four.
                 let det_small = |minor: &[F64x4; 16], n: usize| -> F64x4 {
                     match n {
                         0 => one_v,
@@ -1149,16 +1172,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                         _ => unreachable!(),
                     }
                 };
+                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
                 let mut rows_a = [[0usize; 6]; 4];
                 let mut cols_a = [[0usize; 6]; 4];
                 let mut d_a = [zero_v; DA];
                 let mut cof_a = [zero_v; DA];
                 let mut second_a = [zero_v; SA];
+                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
                 let mut det_a = one_v;
                 let mut j_a = zero_v;
                 let mut replacement_a = zero_v;
 
-                // Lane-wise alpha D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LA > 0 {
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
@@ -1176,7 +1203,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                         }
                     }
 
-                    // Gather D_{alpha,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.aa.n();
                     let x0_t = w.aa.x_slice(0);
                     let y0_t = w.aa.y_slice(0);
@@ -1200,8 +1228,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                         cof_a[0] = one_v;
                         det_a = d_a[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
+                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
                         let pairs_a = LA * (LA - 1) / 2;
                         let jsl_t = w.aa.j_slice(0);
                         let jsl =
@@ -1230,8 +1259,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LA - 2);
                                         second_a[row_pair * pairs_a + col_pair] = second;
+                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [0.0f64; 4];
                                         let mut exchange_lane = [0.0f64; 4];
                                         for lane in 0..4 {
@@ -1250,6 +1281,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                             F64x4::load(&direct_lane),
                                             F64x4::load(&exchange_lane),
                                         );
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_a = F64x4::madd(j_a, second, jdiff);
                                         } else {
@@ -1260,7 +1292,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                             }
                         }
 
-                        // Packed cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LA {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -1295,13 +1328,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
                         det_a = F64x4::mul(d_a[0], cof_a[0]);
                         for z in 1..LA {
                             det_a = F64x4::madd(det_a, d_a[z], cof_a[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_alpha]_{eta z} H^alpha_{eta z}.
+                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.aa.hcol0_t_slice();
                     let hcol0 =
                         std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
@@ -1320,16 +1357,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                         }
                     }
                 }
+                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
                 let mut rows_b = [[0usize; 6]; 4];
                 let mut cols_b = [[0usize; 6]; 4];
                 let mut d_b = [zero_v; DB];
                 let mut cof_b = [zero_v; DB];
                 let mut second_b = [zero_v; SB];
+                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
                 let mut det_b = one_v;
                 let mut j_b = zero_v;
                 let mut replacement_b = zero_v;
 
-                // Lane-wise beta D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LB > 0 {
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
@@ -1347,7 +1388,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                         }
                     }
 
-                    // Gather D_{beta,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.bb.n();
                     let x0_t = w.bb.x_slice(0);
                     let y0_t = w.bb.y_slice(0);
@@ -1371,8 +1413,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                         cof_b[0] = one_v;
                         det_b = d_b[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
+                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
                         let pairs_b = LB * (LB - 1) / 2;
                         let jsl_t = w.bb.j_slice(0);
                         let jsl =
@@ -1401,8 +1444,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LB - 2);
                                         second_b[row_pair * pairs_b + col_pair] = second;
+                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [0.0f64; 4];
                                         let mut exchange_lane = [0.0f64; 4];
                                         for lane in 0..4 {
@@ -1421,6 +1466,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                             F64x4::load(&direct_lane),
                                             F64x4::load(&exchange_lane),
                                         );
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_b = F64x4::madd(j_b, second, jdiff);
                                         } else {
@@ -1431,7 +1477,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                             }
                         }
 
-                        // Packed cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LB {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -1466,13 +1513,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
                         det_b = F64x4::mul(d_b[0], cof_b[0]);
                         for z in 1..LB {
                             det_b = F64x4::madd(det_b, d_b[z], cof_b[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_beta]_{eta z} H^beta_{eta z}.
+                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
+                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.bb.hcol0_t_slice();
                     let hcol0 =
                         std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
@@ -1492,8 +1543,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     }
                 }
 
-                // Packed mixed-spin double replacement:
-                // sum cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
+                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
                 let mut ii_term = zero_v;
                 if LA > 0 && LB > 0 {
                     let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
@@ -1553,15 +1605,19 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     }
                 }
 
-                // Packed final GNME assembly: scalar V_0 det_alpha det_beta, one-column
-                // replacements, same-spin J second minors, mixed-spin II, then the common prefactor.
+                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
+                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
                 let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<f64>();
                 let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<f64>();
                 let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<f64>();
                 let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<f64>();
                 let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<f64>();
                 let g0 = F64x4::splat(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
+                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
                 let det_ab = F64x4::mul(det_a, det_b);
+                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
+                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
+                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
                 let mut core = F64x4::mul(g0, det_ab);
                 core = F64x4::msub(core, det_b, replacement_a);
                 core = F64x4::msub(core, det_a, replacement_b);
@@ -1570,10 +1626,13 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                 core = F64x4::add(core, ii_term);
                 let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<f64>();
                 let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<f64>();
+                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
+                // `p_\beta{}^{xw}\tilde S_\beta`.
                 let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
                 let pref = F64x4::mul(F64x4::load(excitation_phase), F64x4::splat(ref_pref));
                 let mut h_lane = [0.0f64; 4];
                 let mut s_lane = [0.0f64; 4];
+                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
                 F64x4::mul(core, pref).store(&mut h_lane);
                 F64x4::mul(det_ab, pref).store(&mut s_lane);
                 h[..4].copy_from_slice(&h_lane);
@@ -1636,15 +1695,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                     C64x4::from_values(values[0], values[1], values[2], values[3])
                 };
 
-                // SIMD determinant helpers for the second-minor ranks.
+                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
                 let det3 = |m: &[C64x4; 16]| -> C64x4 {
+                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
                     let t0 = C64x4::minor(m[4], m[8], m[5], m[7]);
+                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
                     let mut out = C64x4::mul(m[0], t0);
+                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
                     let t1 = C64x4::minor(m[3], m[8], m[5], m[6]);
                     out = C64x4::msub(out, m[1], t1);
+                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
                     let t2 = C64x4::minor(m[3], m[7], m[4], m[6]);
                     C64x4::madd(out, m[2], t2)
                 };
+                // Expand a rank-four second minor along its first row.
                 let det4 = |m: &[C64x4; 16]| -> C64x4 {
                     let mut out = zero_v;
                     for col in 0..4 {
@@ -1670,6 +1734,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                     }
                     out
                 };
+                // `det_small` evaluates the empty determinant and ranks one through four.
                 let det_small = |minor: &[C64x4; 16], n: usize| -> C64x4 {
                     match n {
                         0 => one_v,
@@ -1680,16 +1745,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                         _ => unreachable!(),
                     }
                 };
+                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
                 let mut rows_a = [[0usize; 6]; 4];
                 let mut cols_a = [[0usize; 6]; 4];
                 let mut d_a = [zero_v; DA];
                 let mut cof_a = [zero_v; DA];
                 let mut second_a = [zero_v; SA];
+                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
                 let mut det_a = one_v;
                 let mut j_a = zero_v;
                 let mut replacement_a = zero_v;
 
-                // Lane-wise alpha D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LA > 0 {
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
@@ -1707,7 +1776,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                         }
                     }
 
-                    // Gather D_{alpha,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.aa.n();
                     let x0_t = w.aa.x_slice(0);
                     let y0_t = w.aa.y_slice(0);
@@ -1734,8 +1804,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                         cof_a[0] = one_v;
                         det_a = d_a[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
+                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
                         let pairs_a = LA * (LA - 1) / 2;
                         let jsl_t = w.aa.j_slice(0);
                         let jsl = std::slice::from_raw_parts(
@@ -1766,8 +1837,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LA - 2);
                                         second_a[row_pair * pairs_a + col_pair] = second;
+                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [Complex64::new(0.0, 0.0); 4];
                                         let mut exchange_lane = [Complex64::new(0.0, 0.0); 4];
                                         for lane in 0..4 {
@@ -1784,6 +1857,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                                         }
                                         let jdiff =
                                             C64x4::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_a = C64x4::madd(j_a, second, jdiff);
                                         } else {
@@ -1794,7 +1868,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                             }
                         }
 
-                        // Packed cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LA {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -1829,13 +1904,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
                         det_a = C64x4::mul(d_a[0], cof_a[0]);
                         for z in 1..LA {
                             det_a = C64x4::madd(det_a, d_a[z], cof_a[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_alpha]_{eta z} H^alpha_{eta z}.
+                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.aa.hcol0_t_slice();
                     let hcol0 = std::slice::from_raw_parts(
                         hcol0_t.as_ptr().cast::<Complex64>(),
@@ -1856,16 +1935,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                         }
                     }
                 }
+                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
                 let mut rows_b = [[0usize; 6]; 4];
                 let mut cols_b = [[0usize; 6]; 4];
                 let mut d_b = [zero_v; DB];
                 let mut cof_b = [zero_v; DB];
                 let mut second_b = [zero_v; SB];
+                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
                 let mut det_b = one_v;
                 let mut j_b = zero_v;
                 let mut replacement_b = zero_v;
 
-                // Lane-wise beta D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LB > 0 {
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
@@ -1883,7 +1966,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                         }
                     }
 
-                    // Gather D_{beta,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.bb.n();
                     let x0_t = w.bb.x_slice(0);
                     let y0_t = w.bb.y_slice(0);
@@ -1910,8 +1994,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                         cof_b[0] = one_v;
                         det_b = d_b[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
+                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
                         let pairs_b = LB * (LB - 1) / 2;
                         let jsl_t = w.bb.j_slice(0);
                         let jsl = std::slice::from_raw_parts(
@@ -1942,8 +2027,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LB - 2);
                                         second_b[row_pair * pairs_b + col_pair] = second;
+                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [Complex64::new(0.0, 0.0); 4];
                                         let mut exchange_lane = [Complex64::new(0.0, 0.0); 4];
                                         for lane in 0..4 {
@@ -1960,6 +2047,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                                         }
                                         let jdiff =
                                             C64x4::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_b = C64x4::madd(j_b, second, jdiff);
                                         } else {
@@ -1970,7 +2058,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                             }
                         }
 
-                        // Packed cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LB {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -2005,13 +2094,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
                         det_b = C64x4::mul(d_b[0], cof_b[0]);
                         for z in 1..LB {
                             det_b = C64x4::madd(det_b, d_b[z], cof_b[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_beta]_{eta z} H^beta_{eta z}.
+                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
+                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.bb.hcol0_t_slice();
                     let hcol0 = std::slice::from_raw_parts(
                         hcol0_t.as_ptr().cast::<Complex64>(),
@@ -2033,8 +2126,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                     }
                 }
 
-                // Packed mixed-spin double replacement:
-                // sum cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
+                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
                 let mut ii_term = zero_v;
                 if LA > 0 && LB > 0 {
                     let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
@@ -2100,8 +2194,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                     }
                 }
 
-                // Packed final GNME assembly: scalar V_0 det_alpha det_beta, one-column
-                // replacements, same-spin J second minors, mixed-spin II, then the common prefactor.
+                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
+                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
                 let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<Complex64>();
                 let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<Complex64>();
                 let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<Complex64>();
@@ -2110,7 +2204,11 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                 let g0_scalar =
                     Complex64::new(enuc, 0.0) + f0ha + v0a * 0.5 + f0hb + v0b * 0.5 + vab0;
                 let g0 = C64x4::splat(g0_scalar.re, g0_scalar.im);
+                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
                 let det_ab = C64x4::mul(det_a, det_b);
+                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
+                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
+                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
                 let mut core = C64x4::mul(g0, det_ab);
                 core = C64x4::msub(core, det_b, replacement_a);
                 core = C64x4::msub(core, det_a, replacement_b);
@@ -2119,6 +2217,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                 core = C64x4::add(core, ii_term);
                 let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<Complex64>();
                 let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<Complex64>();
+                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
+                // `p_\beta{}^{xw}\tilde S_\beta`.
                 let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
                 let phase = C64x4::from_values(
                     Complex64::new(excitation_phase[0], 0.0),
@@ -2131,6 +2231,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                 let mut h_im = [0.0f64; 4];
                 let mut s_re = [0.0f64; 4];
                 let mut s_im = [0.0f64; 4];
+                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
                 C64x4::mul(core, pref).store(&mut h_re, &mut h_im);
                 C64x4::mul(det_ab, pref).store(&mut s_re, &mut s_im);
                 for lane in 0..4 {
@@ -2192,15 +2293,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                 let zero_v = F64x8::zero();
                 let one_v = F64x8::splat(1.0);
 
-                // SIMD determinant helpers for the second-minor ranks.
+                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
                 let det3 = |m: &[F64x8; 16]| -> F64x8 {
+                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
                     let t0 = F64x8::minor(m[4], m[8], m[5], m[7]);
+                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
                     let mut out = F64x8::mul(m[0], t0);
+                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
                     let t1 = F64x8::minor(m[3], m[8], m[5], m[6]);
                     out = F64x8::msub(out, m[1], t1);
+                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
                     let t2 = F64x8::minor(m[3], m[7], m[4], m[6]);
                     F64x8::madd(out, m[2], t2)
                 };
+                // Expand a rank-four second minor along its first row.
                 let det4 = |m: &[F64x8; 16]| -> F64x8 {
                     let mut out = zero_v;
                     for col in 0..4 {
@@ -2226,6 +2332,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     }
                     out
                 };
+                // `det_small` evaluates the empty determinant and ranks one through four.
                 let det_small = |minor: &[F64x8; 16], n: usize| -> F64x8 {
                     match n {
                         0 => one_v,
@@ -2236,16 +2343,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                         _ => unreachable!(),
                     }
                 };
+                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
                 let mut rows_a = [[0usize; 6]; 8];
                 let mut cols_a = [[0usize; 6]; 8];
                 let mut d_a = [zero_v; DA];
                 let mut cof_a = [zero_v; DA];
                 let mut second_a = [zero_v; SA];
+                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
                 let mut det_a = one_v;
                 let mut j_a = zero_v;
                 let mut replacement_a = zero_v;
 
-                // Lane-wise alpha D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LA > 0 {
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
@@ -2263,7 +2374,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                         }
                     }
 
-                    // Gather D_{alpha,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.aa.n();
                     let x0_t = w.aa.x_slice(0);
                     let y0_t = w.aa.y_slice(0);
@@ -2287,8 +2399,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                         cof_a[0] = one_v;
                         det_a = d_a[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
+                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
                         let pairs_a = LA * (LA - 1) / 2;
                         let jsl_t = w.aa.j_slice(0);
                         let jsl =
@@ -2317,8 +2430,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LA - 2);
                                         second_a[row_pair * pairs_a + col_pair] = second;
+                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [0.0f64; 8];
                                         let mut exchange_lane = [0.0f64; 8];
                                         for lane in 0..8 {
@@ -2337,6 +2452,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                             F64x8::load(&direct_lane),
                                             F64x8::load(&exchange_lane),
                                         );
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_a = F64x8::madd(j_a, second, jdiff);
                                         } else {
@@ -2347,7 +2463,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                             }
                         }
 
-                        // Packed cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LA {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -2382,13 +2499,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
                         det_a = F64x8::mul(d_a[0], cof_a[0]);
                         for z in 1..LA {
                             det_a = F64x8::madd(det_a, d_a[z], cof_a[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_alpha]_{eta z} H^alpha_{eta z}.
+                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.aa.hcol0_t_slice();
                     let hcol0 =
                         std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
@@ -2407,16 +2528,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                         }
                     }
                 }
+                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
                 let mut rows_b = [[0usize; 6]; 8];
                 let mut cols_b = [[0usize; 6]; 8];
                 let mut d_b = [zero_v; DB];
                 let mut cof_b = [zero_v; DB];
                 let mut second_b = [zero_v; SB];
+                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
                 let mut det_b = one_v;
                 let mut j_b = zero_v;
                 let mut replacement_b = zero_v;
 
-                // Lane-wise beta D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LB > 0 {
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
@@ -2434,7 +2559,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                         }
                     }
 
-                    // Gather D_{beta,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.bb.n();
                     let x0_t = w.bb.x_slice(0);
                     let y0_t = w.bb.y_slice(0);
@@ -2458,8 +2584,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                         cof_b[0] = one_v;
                         det_b = d_b[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
+                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
                         let pairs_b = LB * (LB - 1) / 2;
                         let jsl_t = w.bb.j_slice(0);
                         let jsl =
@@ -2488,8 +2615,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LB - 2);
                                         second_b[row_pair * pairs_b + col_pair] = second;
+                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [0.0f64; 8];
                                         let mut exchange_lane = [0.0f64; 8];
                                         for lane in 0..8 {
@@ -2508,6 +2637,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                             F64x8::load(&direct_lane),
                                             F64x8::load(&exchange_lane),
                                         );
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_b = F64x8::madd(j_b, second, jdiff);
                                         } else {
@@ -2518,7 +2648,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                             }
                         }
 
-                        // Packed cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LB {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -2553,13 +2684,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
                         det_b = F64x8::mul(d_b[0], cof_b[0]);
                         for z in 1..LB {
                             det_b = F64x8::madd(det_b, d_b[z], cof_b[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_beta]_{eta z} H^beta_{eta z}.
+                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
+                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.bb.hcol0_t_slice();
                     let hcol0 =
                         std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
@@ -2579,8 +2714,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     }
                 }
 
-                // Packed mixed-spin double replacement:
-                // sum cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
+                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
                 let mut ii_term = zero_v;
                 if LA > 0 && LB > 0 {
                     let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
@@ -2640,15 +2776,19 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     }
                 }
 
-                // Packed final GNME assembly: scalar V_0 det_alpha det_beta, one-column
-                // replacements, same-spin J second minors, mixed-spin II, then the common prefactor.
+                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
+                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
                 let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<f64>();
                 let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<f64>();
                 let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<f64>();
                 let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<f64>();
                 let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<f64>();
                 let g0 = F64x8::splat(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
+                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
                 let det_ab = F64x8::mul(det_a, det_b);
+                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
+                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
+                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
                 let mut core = F64x8::mul(g0, det_ab);
                 core = F64x8::msub(core, det_b, replacement_a);
                 core = F64x8::msub(core, det_a, replacement_b);
@@ -2657,10 +2797,13 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                 core = F64x8::add(core, ii_term);
                 let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<f64>();
                 let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<f64>();
+                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
+                // `p_\beta{}^{xw}\tilde S_\beta`.
                 let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
                 let pref = F64x8::mul(F64x8::load(excitation_phase), F64x8::splat(ref_pref));
                 let mut h_lane = [0.0f64; 8];
                 let mut s_lane = [0.0f64; 8];
+                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
                 F64x8::mul(core, pref).store(&mut h_lane);
                 F64x8::mul(det_ab, pref).store(&mut s_lane);
                 h[..8].copy_from_slice(&h_lane);
@@ -2721,15 +2864,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                 let one_v = C64x8::splat(1.0, 0.0);
                 let pack = |values: &[Complex64; 8]| C64x8::from_values(*values);
 
-                // SIMD determinant helpers for the second-minor ranks.
+                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
                 let det3 = |m: &[C64x8; 16]| -> C64x8 {
+                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
                     let t0 = C64x8::minor(m[4], m[8], m[5], m[7]);
+                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
                     let mut out = C64x8::mul(m[0], t0);
+                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
                     let t1 = C64x8::minor(m[3], m[8], m[5], m[6]);
                     out = C64x8::msub(out, m[1], t1);
+                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
                     let t2 = C64x8::minor(m[3], m[7], m[4], m[6]);
                     C64x8::madd(out, m[2], t2)
                 };
+                // Expand a rank-four second minor along its first row.
                 let det4 = |m: &[C64x8; 16]| -> C64x8 {
                     let mut out = zero_v;
                     for col in 0..4 {
@@ -2755,6 +2903,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                     }
                     out
                 };
+                // `det_small` evaluates the empty determinant and ranks one through four.
                 let det_small = |minor: &[C64x8; 16], n: usize| -> C64x8 {
                     match n {
                         0 => one_v,
@@ -2765,16 +2914,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                         _ => unreachable!(),
                     }
                 };
+                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
                 let mut rows_a = [[0usize; 6]; 8];
                 let mut cols_a = [[0usize; 6]; 8];
                 let mut d_a = [zero_v; DA];
                 let mut cof_a = [zero_v; DA];
                 let mut second_a = [zero_v; SA];
+                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
                 let mut det_a = one_v;
                 let mut j_a = zero_v;
                 let mut replacement_a = zero_v;
 
-                // Lane-wise alpha D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LA > 0 {
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
@@ -2792,7 +2945,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                         }
                     }
 
-                    // Gather D_{alpha,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.aa.n();
                     let x0_t = w.aa.x_slice(0);
                     let y0_t = w.aa.y_slice(0);
@@ -2818,8 +2972,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                         cof_a[0] = one_v;
                         det_a = d_a[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{alpha,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
+                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
                         let pairs_a = LA * (LA - 1) / 2;
                         let jsl_t = w.aa.j_slice(0);
                         let jsl = std::slice::from_raw_parts(
@@ -2850,8 +3005,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LA - 2);
                                         second_a[row_pair * pairs_a + col_pair] = second;
+                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [Complex64::new(0.0, 0.0); 8];
                                         let mut exchange_lane = [Complex64::new(0.0, 0.0); 8];
                                         for lane in 0..8 {
@@ -2868,6 +3025,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                                         }
                                         let jdiff =
                                             C64x8::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_a = C64x8::madd(j_a, second, jdiff);
                                         } else {
@@ -2878,7 +3036,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                             }
                         }
 
-                        // Packed cof[D_{alpha,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LA {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -2913,13 +3072,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
                         det_a = C64x8::mul(d_a[0], cof_a[0]);
                         for z in 1..LA {
                             det_a = C64x8::madd(det_a, d_a[z], cof_a[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_alpha]_{eta z} H^alpha_{eta z}.
+                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.aa.hcol0_t_slice();
                     let hcol0 = std::slice::from_raw_parts(
                         hcol0_t.as_ptr().cast::<Complex64>(),
@@ -2937,16 +3100,20 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                         }
                     }
                 }
+                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
+                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
                 let mut rows_b = [[0usize; 6]; 8];
                 let mut cols_b = [[0usize; 6]; 8];
                 let mut d_b = [zero_v; DB];
                 let mut cof_b = [zero_v; DB];
                 let mut second_b = [zero_v; SB];
+                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
                 let mut det_b = one_v;
                 let mut j_b = zero_v;
                 let mut replacement_b = zero_v;
 
-                // Lane-wise beta D_{ov} labels: x-excitations contribute (a,i), w-excitations (j,b).
+                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
+                // `(a,i)` and w-excitations contribute `(j,b)`.
                 if LB > 0 {
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
@@ -2964,7 +3131,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                         }
                     }
 
-                    // Gather D_{beta,ov}[eta,z] = X^{(0)} on/below the diagonal, Y^{(0)} above it.
+                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
+                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
                     let n = w.bb.n();
                     let x0_t = w.bb.x_slice(0);
                     let y0_t = w.bb.y_slice(0);
@@ -2990,8 +3158,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                         cof_b[0] = one_v;
                         det_b = d_b[0];
                     } else {
-                        // Packed same-spin C_3 term:
-                        // sum phi J_{eta z,xi y} det D_{beta,ov}[eta,xi|z,y] in each lane.
+                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
+                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
+                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
                         let pairs_b = LB * (LB - 1) / 2;
                         let jsl_t = w.bb.j_slice(0);
                         let jsl = std::slice::from_raw_parts(
@@ -3022,8 +3191,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                                             }
                                             ii += 1;
                                         }
+                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
                                         let second = det_small(&minor, LB - 2);
                                         second_b[row_pair * pairs_b + col_pair] = second;
+                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
                                         let mut direct_lane = [Complex64::new(0.0, 0.0); 8];
                                         let mut exchange_lane = [Complex64::new(0.0, 0.0); 8];
                                         for lane in 0..8 {
@@ -3040,6 +3211,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                                         }
                                         let jdiff =
                                             C64x8::sub(pack(&direct_lane), pack(&exchange_lane));
+                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
                                         if ((eta + xi + z + y) & 1) == 0 {
                                             j_b = C64x8::madd(j_b, second, jdiff);
                                         } else {
@@ -3050,7 +3222,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                             }
                         }
 
-                        // Packed cof[D_{beta,ov}]_{eta z}=(-1)^{eta+z} det D[eta|z],
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
+                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
                         // reconstructed from second minors before expanding det D.
                         for eta in 0..LB {
                             let r = if eta == 0 { 1usize } else { 0usize };
@@ -3085,13 +3258,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                                 };
                             }
                         }
+                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
+                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
                         det_b = C64x8::mul(d_b[0], cof_b[0]);
                         for z in 1..LB {
                             det_b = C64x8::madd(det_b, d_b[z], cof_b[z]);
                         }
                     }
 
-                    // Packed one-column replacements sum cof[D_beta]_{eta z} H^beta_{eta z}.
+                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
+                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
+                    // one-column one-body, same-spin and mixed-spin intermediates.
                     let hcol0_t = w.bb.hcol0_t_slice();
                     let hcol0 = std::slice::from_raw_parts(
                         hcol0_t.as_ptr().cast::<Complex64>(),
@@ -3110,8 +3287,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                     }
                 }
 
-                // Packed mixed-spin double replacement:
-                // sum cof[D_alpha]_{eta z} II_{eta z,xi y} cof[D_beta]_{xi y}.
+                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
+                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
+                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
                 let mut ii_term = zero_v;
                 if LA > 0 && LB > 0 {
                     let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
@@ -3167,8 +3345,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                     }
                 }
 
-                // Packed final GNME assembly: scalar V_0 det_alpha det_beta, one-column
-                // replacements, same-spin J second minors, mixed-spin II, then the common prefactor.
+                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
+                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
                 let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<Complex64>();
                 let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<Complex64>();
                 let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<Complex64>();
@@ -3177,7 +3355,11 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                 let g0_scalar =
                     Complex64::new(enuc, 0.0) + f0ha + v0a * 0.5 + f0hb + v0b * 0.5 + vab0;
                 let g0 = C64x8::splat(g0_scalar.re, g0_scalar.im);
+                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
                 let det_ab = C64x8::mul(det_a, det_b);
+                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
+                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
+                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
                 let mut core = C64x8::mul(g0, det_ab);
                 core = C64x8::msub(core, det_b, replacement_a);
                 core = C64x8::msub(core, det_a, replacement_b);
@@ -3186,6 +3368,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                 core = C64x8::add(core, ii_term);
                 let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<Complex64>();
                 let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<Complex64>();
+                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
+                // `p_\beta{}^{xw}\tilde S_\beta`.
                 let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
                 let mut phase_values = [Complex64::new(0.0, 0.0); 8];
                 for lane in 0..8 {
@@ -3197,6 +3381,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                 let mut h_im = [0.0f64; 8];
                 let mut s_re = [0.0f64; 8];
                 let mut s_im = [0.0f64; 8];
+                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
                 C64x8::mul(core, pref).store(&mut h_re, &mut h_im);
                 C64x8::mul(det_ab, pref).store(&mut s_re, &mut s_im);
                 for lane in 0..8 {
@@ -3236,7 +3421,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_gen_prepared,
         {
-            // Generic m = 0 path: build spin-sector D_ov determinants and cofactors once,
+            // Generic `m = 0` path: build spin-sector `\mathbf D_{\mathrm{ov}}` determinants
+            // and cofactors once,
             // then reuse them for scalar, one-column, same-spin J and mixed-spin II terms.
             let la =
                 x_ex.alpha.holes.count_ones() as usize + w_ex.alpha.holes.count_ones() as usize;
