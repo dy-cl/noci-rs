@@ -12,6 +12,7 @@ use num_complex::Complex64;
 // Crate-root imports.
 #[cfg(target_arch = "x86_64")]
 use crate::ExcitationSpinCache;
+use crate::config::{MAXDET, MAXEXCIT, MAXL, SIMDMAXRANK, SIMDOVERLAPMAXL};
 use crate::maths::{det, det_const};
 use crate::noci::NOCIScalar;
 use crate::time_call;
@@ -20,7 +21,7 @@ use crate::{DetState, ExcitationSpin, ReducedOneSpinDetState};
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::dispatch::dispatch_overlap_ranks;
+use super::dispatch::{dispatch_overlap_ranks, dispatch_overlap_scalar_ranks, dispatch_pair_ranks};
 use super::helpers::mix_dets_same;
 use super::prepare::{construct_determinant_indices, prepare_same};
 #[cfg(target_arch = "x86_64")]
@@ -72,7 +73,7 @@ pub fn xw_overlap<T: NOCIScalar>(
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
 /// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
-/// For `m = 0` and `L \leq 6`, the direct overlap-only path evaluates the single determinant
+/// For `m = 0` and `L \leq MAXL`, the direct overlap-only path evaluates the single determinant
 /// without preparing reusable Hamiltonian scratch data. Other cases use `prepare_same`
 /// followed by the general overlap evaluator.
 /// # Arguments:
@@ -97,10 +98,10 @@ pub(crate) fn xw_overlap_prepared<T: NOCIScalar>(
         return <T as From<f64>>::from(0.0);
     }
 
-    // For `m = 0` and `L \leq 6`, construct and evaluate
+    // For `m = 0` and `L \leq MAXL`, construct and evaluate
     // `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`
     // directly without populating the reusable scratch representation.
-    if w.m == 0 && l <= 6 {
+    if w.m == 0 && l <= MAXL {
         return xw_overlap_m0_direct(w, l_ex, g_ex);
     }
 
@@ -396,7 +397,12 @@ unsafe fn xw_overlap_prepared_f64x4_row<T: NOCIScalar>(
             (source_rank, target_rank)
         };
 
-        if target_rank <= 4 && source_rank <= 4 && (1..=6).contains(&(target_rank + source_rank)) {
+        if target_rank <= MAXEXCIT
+            && source_rank <= MAXEXCIT
+            && target_rank <= SIMDMAXRANK
+            && source_rank <= SIMDMAXRANK
+            && (1..=SIMDOVERLAPMAXL).contains(&(target_rank + source_rank))
+        {
             let count = counts[source_rank];
             bins[source_rank][count] = source_cache;
             phases[source_rank][count] = source.phase;
@@ -481,7 +487,12 @@ unsafe fn xw_overlap_prepared_f64x8_row<T: NOCIScalar>(
             (source_rank, target_rank)
         };
 
-        if target_rank <= 4 && source_rank <= 4 && (1..=6).contains(&(target_rank + source_rank)) {
+        if target_rank <= MAXEXCIT
+            && source_rank <= MAXEXCIT
+            && target_rank <= SIMDMAXRANK
+            && source_rank <= SIMDMAXRANK
+            && (1..=SIMDOVERLAPMAXL).contains(&(target_rank + source_rank))
+        {
             let count = counts[source_rank];
             bins[source_rank][count] = source_cache;
             phases[source_rank][count] = source.phase;
@@ -566,7 +577,12 @@ unsafe fn xw_overlap_prepared_c64x4_row<T: NOCIScalar>(
             (source_rank, target_rank)
         };
 
-        if target_rank <= 4 && source_rank <= 4 && (1..=6).contains(&(target_rank + source_rank)) {
+        if target_rank <= MAXEXCIT
+            && source_rank <= MAXEXCIT
+            && target_rank <= SIMDMAXRANK
+            && source_rank <= SIMDMAXRANK
+            && (1..=SIMDOVERLAPMAXL).contains(&(target_rank + source_rank))
+        {
             let count = counts[source_rank];
             bins[source_rank][count] = source_cache;
             phases[source_rank][count] = source.phase;
@@ -651,7 +667,12 @@ unsafe fn xw_overlap_prepared_c64x8_row<T: NOCIScalar>(
             (source_rank, target_rank)
         };
 
-        if target_rank <= 4 && source_rank <= 4 && (1..=6).contains(&(target_rank + source_rank)) {
+        if target_rank <= MAXEXCIT
+            && source_rank <= MAXEXCIT
+            && target_rank <= SIMDMAXRANK
+            && source_rank <= SIMDMAXRANK
+            && (1..=SIMDOVERLAPMAXL).contains(&(target_rank + source_rank))
+        {
             let count = counts[source_rank];
             bins[source_rank][count] = source_cache;
             phases[source_rank][count] = source.phase;
@@ -796,17 +817,17 @@ unsafe fn xw_overlap_m0_prepared_f64x4_const<
     // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
+            usize::from(unsafe { *x_data(lane).particles.get_unchecked(eta) }) - nocc
         } else {
-            nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
+            nvirt + usize::from(unsafe { *w_data(lane).holes.get_unchecked(eta - RX) })
         }
     };
     // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
+            usize::from(unsafe { *x_data(lane).holes.get_unchecked(z) })
         } else {
-            usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
+            usize::from(unsafe { *w_data(lane).particles.get_unchecked(z - RX) })
         }
     };
     // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -993,17 +1014,17 @@ unsafe fn xw_overlap_m0_prepared_f64x8_const<
     // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
+            usize::from(unsafe { *x_data(lane).particles.get_unchecked(eta) }) - nocc
         } else {
-            nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
+            nvirt + usize::from(unsafe { *w_data(lane).holes.get_unchecked(eta - RX) })
         }
     };
     // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
+            usize::from(unsafe { *x_data(lane).holes.get_unchecked(z) })
         } else {
-            usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
+            usize::from(unsafe { *w_data(lane).particles.get_unchecked(z - RX) })
         }
     };
     // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -1194,17 +1215,17 @@ unsafe fn xw_overlap_m0_prepared_c64x4_const<
     // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
+            usize::from(unsafe { *x_data(lane).particles.get_unchecked(eta) }) - nocc
         } else {
-            nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
+            nvirt + usize::from(unsafe { *w_data(lane).holes.get_unchecked(eta - RX) })
         }
     };
     // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
+            usize::from(unsafe { *x_data(lane).holes.get_unchecked(z) })
         } else {
-            usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
+            usize::from(unsafe { *w_data(lane).particles.get_unchecked(z - RX) })
         }
     };
     // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -1390,17 +1411,17 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
     // Rows are ordered as `r_\eta \in V_x\cup O_w`, namely x-particles followed by w-holes.
     let row_index = |eta: usize, lane: usize| -> usize {
         if eta < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(4 + eta) }) - nocc
+            usize::from(unsafe { *x_data(lane).particles.get_unchecked(eta) }) - nocc
         } else {
-            nvirt + usize::from(unsafe { *w_data(lane).indices.get_unchecked(eta - RX) })
+            nvirt + usize::from(unsafe { *w_data(lane).holes.get_unchecked(eta - RX) })
         }
     };
     // Columns are ordered as `c_z \in O_x\cup V_w`, namely x-holes followed by w-particles.
     let col_index = |z: usize, lane: usize| -> usize {
         if z < RX {
-            usize::from(unsafe { *x_data(lane).indices.get_unchecked(z) })
+            usize::from(unsafe { *x_data(lane).holes.get_unchecked(z) })
         } else {
-            usize::from(unsafe { *w_data(lane).indices.get_unchecked(4 + z - RX) })
+            usize::from(unsafe { *w_data(lane).particles.get_unchecked(z - RX) })
         }
     };
     // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -1487,7 +1508,7 @@ unsafe fn xw_overlap_m0_prepared_c64x8_const<
     }
 }
 
-/// Evaluate the same-spin overlap directly when `m = 0` and `L \leq 6`:
+/// Evaluate the same-spin overlap directly when `m = 0` and `L \leq MAXL`:
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
 /// ` = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`.
 /// The row labels are the x-reference particles followed by the w-reference holes, while the column
@@ -1517,7 +1538,7 @@ pub(crate) fn xw_overlap_m0_direct<T: NOCIScalar>(
         return pref;
     }
 
-    dispatch_overlap_ranks!(
+    dispatch_overlap_scalar_ranks!(
         (rx, rw),
         |RX, RW, L| xw_overlap_m0_direct_const::<T, RX, RW, L>(w, l_ex, g_ex),
         xw_overlap_m0_direct_gen(w, l_ex, g_ex, l),
@@ -1566,7 +1587,7 @@ fn xw_overlap_m0_direct_const<T: NOCIScalar, const RX: usize, const RW: usize, c
     let x0 = w.x_slice(0);
     let y0 = w.y_slice(0);
     let zero = <T as From<f64>>::from(0.0);
-    let mut d = [zero; 36];
+    let mut d = [zero; MAXDET];
 
     // Build `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` from the fixed contraction labels, then
     // evaluate `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`.
@@ -1607,10 +1628,10 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
     let x0 = w.x_slice(0);
     let y0 = w.y_slice(0);
     let zero = <T as From<f64>>::from(0.0);
-    let mut rows = [0usize; 6];
-    let mut cols = [0usize; 6];
-    let mut d = [zero; 36];
-    construct_determinant_indices(x_ex, w_ex, w, &mut rows[..l], &mut cols[..l]);
+    let mut rows = vec![0usize; l];
+    let mut cols = vec![0usize; l];
+    let mut d = vec![zero; l * l];
+    construct_determinant_indices(x_ex, w_ex, w, &mut rows, &mut cols);
 
     for i in 0..l {
         let row = rows[i] * n;

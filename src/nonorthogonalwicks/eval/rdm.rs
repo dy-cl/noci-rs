@@ -12,6 +12,7 @@ use ndarray::Array2;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::config::{MAXEXCIT, SIMDMAXRANK, SIMDOVERLAPMAXL};
 use crate::maths::{det, det_const, mix_columns};
 use crate::noci::NOCIScalar;
 use crate::time_call;
@@ -20,7 +21,10 @@ use crate::{Excitation, ExcitationSpin};
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::{SameSpinView, WicksPairView};
-use super::dispatch::dispatch_rdm_ranks;
+use super::dispatch::{
+    dispatch_overlap_ranks, dispatch_overlap_scalar_ranks, dispatch_pair_ranks, dispatch_rdm_ranks,
+    dispatch_rdm_scalar_ranks,
+};
 use super::helpers::{extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
@@ -242,8 +246,12 @@ unsafe fn try_xw_rdmk_same_prepared_f64_simd<T: NOCIScalar, const K: usize>(
 ) -> bool {
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
-    let supported =
-        K <= 4 && rx <= 4 && rw <= 4 && (rx == 0 && rw == 0 || (1..=6).contains(&(rx + rw)));
+    let supported = K <= 4
+        && rx <= MAXEXCIT
+        && rw <= MAXEXCIT
+        && rx <= SIMDMAXRANK
+        && rw <= SIMDMAXRANK
+        && (rx == 0 && rw == 0 || rx + rw <= SIMDOVERLAPMAXL);
     if !supported {
         return false;
     }
@@ -339,8 +347,12 @@ unsafe fn try_xw_rdmk_same_prepared_c64_simd<T: NOCIScalar, const K: usize>(
 ) -> bool {
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
-    let supported =
-        K <= 4 && rx <= 4 && rw <= 4 && (rx == 0 && rw == 0 || (1..=6).contains(&(rx + rw)));
+    let supported = K <= 4
+        && rx <= MAXEXCIT
+        && rw <= MAXEXCIT
+        && rx <= SIMDMAXRANK
+        && rw <= SIMDMAXRANK
+        && (rx == 0 && rw == 0 || rx + rw <= SIMDOVERLAPMAXL);
     if !supported {
         return false;
     }
@@ -1193,14 +1205,14 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
         {
             let rx = ex.0.holes.count_ones() as usize;
             let rw = ex.1.holes.count_ones() as usize;
-            dispatch_rdm_ranks!(
+            dispatch_rdm_scalar_ranks!(
                 K,
                 (rx, rw),
                 |K, RX, RW, L, D| xw_rdmk_same_m0_prepared_const::<T, K, RX, RW, L, D>(
                     w,
                     ex,
                     (fundamental.0, fundamental.1, fundamental.3),
-                    // SAFETY: `dispatch_rdm_ranks!` selects this arm only when the caller's const
+                    // SAFETY: `dispatch_rdm_scalar_ranks!` selects this arm only when the caller's const
                     // `K` equals the arm-local literal `K`, so the two array-reference layouts are
                     // identical.
                     unsafe { &*std::ptr::from_ref(request).cast::<([usize; K], [usize; K])>() },

@@ -10,15 +10,19 @@ use std::arch::is_x86_feature_detected;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::config::{MAXL, MAXMINOR, SIMDHAMMAXL};
 use crate::maths::{adjugate_transpose, det};
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use crate::{DetState, Excitation, ExcitationCache, ReducedTwoSpinDetState};
+use crate::{DetState, Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinDetState};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
 use super::super::view::WicksPairView;
-use super::dispatch::dispatch_hamiltonian_ranks;
+use super::dispatch::{
+    HAMNRANKS, HAMRADIX, HAMRANKS, HAMSPACE, dispatch_hamiltonian_ranks,
+    dispatch_hamiltonian_ranks_inner, dispatch_hamiltonian_scalar_ranks,
+};
 use super::helpers::{DetBranches, DetIndex, Minor, ReplacementLayout};
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, column_replacement_det,
@@ -30,11 +34,8 @@ use super::simd::{C64x4, C64x8, F64x4, F64x8};
 
 /// Evaluate the Hamiltonian and overlap matrix elements between two determinants generated from
 /// one ordered pair of nonorthogonal references.
-/// For `m_\alpha = m_\beta = 0`, the fixed path is used when every individual spin excitation
-/// rank is at most four and `L_\alpha + L_\beta <= 6`, where
-/// `L_\sigma = L_{x,\sigma} + L_{w,\sigma}`. This covers every pair for which each
-/// determinant has total excitation order at most three, and also higher-order pairs that
-/// satisfy the same fixed-rank conditions.
+/// For `m_\alpha = m_\beta = 0`, the scalar fixed path is used when each determinant's total
+/// alpha-plus-beta excitation rank is no larger than build-time `MAXEXCIT`.
 /// Other `m = 0` cases use the generic fused cofactor kernel. Cases with
 /// `m_\alpha > 0` or `m_\beta > 0` use the generic fused distribution kernel, so this evaluator
 /// imposes no rank cutoff beyond the underlying excitation representation.
@@ -44,8 +45,8 @@ use super::simd::{C64x4, C64x8, F64x4, F64x8};
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `x_ex`: Full bra excitation used by the generic fallback.
 /// - `w_ex`: Full ket excitation used by the generic fallback.
-/// - `x_cache`: Predecoded bra excitation ranks and the first four orbital labels per spin.
-/// - `w_cache`: Predecoded ket excitation ranks and the first four orbital labels per spin.
+/// - `x_cache`: Cached bra excitation ranks and orbital labels per spin.
+/// - `w_cache`: Cached ket excitation ranks and orbital labels per spin.
 /// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for generic-rank and nonzero-`m` evaluation.
@@ -69,31 +70,22 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
             let (x_cache, w_cache) = cache;
 
             if w.aa.m == 0 && w.bb.m == 0 {
-                let fixed = x_cache.alpha.rank <= 4
-                    && x_cache.beta.rank <= 4
-                    && w_cache.alpha.rank <= 4
-                    && w_cache.beta.rank <= 4;
+                let ranks = (
+                    usize::from(x_cache.alpha.rank),
+                    usize::from(w_cache.alpha.rank),
+                    usize::from(x_cache.beta.rank),
+                    usize::from(w_cache.beta.rank),
+                );
 
-                if fixed {
-                    // The fixed path reads only predecoded ranks and orbital labels.
-                    // Raw excitation masks are touched only by the arbitrary-rank fallback below.
-                    let ranks = (
-                        usize::from(x_cache.alpha.rank),
-                        usize::from(w_cache.alpha.rank),
-                        usize::from(x_cache.beta.rank),
-                        usize::from(w_cache.beta.rank),
-                    );
-
-                    if ranks.0 + ranks.1 + ranks.2 + ranks.3 <= 6 {
-                        return xw_hamiltonian_overlap_m0_prepared(
-                            w,
-                            ranks,
-                            x_cache,
-                            w_cache,
-                            excitation_phase,
-                            enuc,
-                        );
-                    }
+                if let Some(value) = xw_hamiltonian_overlap_m0_prepared(
+                    w,
+                    ranks,
+                    x_cache,
+                    w_cache,
+                    excitation_phase,
+                    enuc,
+                ) {
+                    return value;
                 }
 
                 return xw_hamiltonian_overlap_m0_gen_prepared(
@@ -114,7 +106,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 
 /// Evaluate batched Hamiltonian and overlap matrix elements for one ordered reference pair.
 /// Every request supplied to this routine already belongs to that reference pair. Requests are
-/// streamed through the 190 fixed `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
+/// streamed through generated `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` bins when
 /// `m_\alpha = m_\beta = 0`. The widest matching real or complex SIMD kernel is selected internally,
 /// incomplete bins are padded with one valid request, and unsupported requests use the existing
 /// prepared scalar evaluator.
@@ -270,30 +262,18 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
     let (enuc, tol) = parameters;
     let (basis, reduced_basis) = basis;
 
-    // Map the sparse base-5 rank key to the 190 supported tuples whose total rank is at most six.
-    // This is batching state rather than part of the kernel hierarchy, so it remains local here.
-    let mut rank_bins = [usize::MAX; 625];
-    let mut next_bin = 0usize;
-    for rxa in 0..=4 {
-        for rwa in 0..=4 {
-            for rxb in 0..=4 {
-                for rwb in 0..=4 {
-                    if rxa + rwa + rxb + rwb <= 6 {
-                        let key = ((rxa * 5 + rwa) * 5 + rxb) * 5 + rwb;
-                        rank_bins[key] = next_bin;
-                        next_bin += 1;
-                    }
-                }
-            }
-        }
+    let mut rank_bins = [usize::MAX; HAMSPACE];
+
+    for (bin, &(rxa, rwa, rxb, rwb)) in HAMRANKS.iter().enumerate() {
+        let key = ((rxa * HAMRADIX + rwa) * HAMRADIX + rxb) * HAMRADIX + rwb;
+        rank_bins[key] = bin;
     }
 
-    let mut x_bins = [[ExcitationCache::default(); N]; 190];
-    let mut w_bins = [[ExcitationCache::default(); N]; 190];
-    let mut phases = [[1.0f64; N]; 190];
-    let mut outputs = [[0usize; N]; 190];
-    let mut counts = [0usize; 190];
-    let mut bin_ranks = [(0usize, 0usize, 0usize, 0usize); 190];
+    let mut x_bins = [[ExcitationCache::default(); N]; HAMNRANKS];
+    let mut w_bins = [[ExcitationCache::default(); N]; HAMNRANKS];
+    let mut phases = [[1.0f64; N]; HAMNRANKS];
+    let mut outputs = [[0usize; N]; HAMNRANKS];
+    let mut counts = [0usize; HAMNRANKS];
 
     unsafe {
         for &(output, a, b) in requests {
@@ -307,21 +287,25 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
                 usize::from(x_cache.beta.rank),
                 usize::from(w_cache.beta.rank),
             );
-            let fixed = ranks.0 <= 4
-                && ranks.1 <= 4
-                && ranks.2 <= 4
-                && ranks.3 <= 4
-                && ranks.0 + ranks.1 + ranks.2 + ranks.3 <= 6;
+            let bin = if ranks.0 < HAMRADIX
+                && ranks.1 < HAMRADIX
+                && ranks.2 < HAMRADIX
+                && ranks.3 < HAMRADIX
+                && ranks.0 + ranks.1 + ranks.2 + ranks.3 <= SIMDHAMMAXL
+            {
+                let key =
+                    ((ranks.0 * HAMRADIX + ranks.1) * HAMRADIX + ranks.2) * HAMRADIX + ranks.3;
+                rank_bins[key]
+            } else {
+                usize::MAX
+            };
 
-            if fixed {
-                let key = ((ranks.0 * 5 + ranks.1) * 5 + ranks.2) * 5 + ranks.3;
-                let bin = rank_bins[key];
+            if bin != usize::MAX {
                 let count = counts[bin];
                 x_bins[bin][count] = x_cache;
                 w_bins[bin][count] = w_cache;
                 phases[bin][count] = x_det.phase * w_det.phase;
                 outputs[bin][count] = output;
-                bin_ranks[bin] = ranks;
                 counts[bin] += 1;
 
                 if counts[bin] == N {
@@ -329,7 +313,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
                     let mut s = [R::from_real(0.0); N];
                     kernel(
                         w,
-                        ranks,
+                        HAMRANKS[bin],
                         (&x_bins[bin], &w_bins[bin]),
                         &phases[bin],
                         enuc,
@@ -379,7 +363,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
             let mut s = [R::from_real(0.0); N];
             kernel(
                 w,
-                bin_ranks[bin],
+                HAMRANKS[bin],
                 (&x_bins[bin], &w_bins[bin]),
                 &phases[bin],
                 enuc,
@@ -393,20 +377,17 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
     }
 }
 
-/// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to a fixed
-/// contraction-rank kernel.
-/// The specialised region contains all `(L_\alpha, L_\beta)` pairs with
-/// `L_\alpha + L_\beta <= 6`. The caller has already established that each individual
-/// predecoded spin excitation has rank at most four.
+/// Dispatch an `m_\alpha = m_\beta = 0` Hamiltonian and overlap matrix element to a generated
+/// fixed-rank scalar kernel.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `ranks`: Bra/ket alpha and beta ranks `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})`.
-/// - `x_ex`: Predecoded bra excitation ranks and orbital labels.
-/// - `w_ex`: Predecoded ket excitation ranks and orbital labels.
+/// - `x_ex`: Cached bra excitation ranks and orbital labels.
+/// - `w_ex`: Cached ket excitation ranks and orbital labels.
 /// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
 /// # Returns:
-/// - `(T, T)`: Hamiltonian and overlap matrix elements `(H, S)`.
+/// - `Option<(T, T)>`: Fixed-rank `(H,S)` result or `None` outside the generated region.
 #[inline(never)]
 fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
@@ -415,16 +396,14 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
     w_ex: &ExcitationCache,
     excitation_phase: f64,
     enuc: f64,
-) -> (T, T) {
+) -> Option<(T, T)> {
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared,
         {
-            // Dispatch by the four reference-resolved spin ranks so every label boundary and
-            // total contraction rank is compile-time constant in the scalar kernel.
-            dispatch_hamiltonian_ranks!(
+            dispatch_hamiltonian_scalar_ranks!(
                 ranks,
                 |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
-                    xw_hamiltonian_overlap_m0_prepared_const::<
+                    Some(xw_hamiltonian_overlap_m0_prepared_const::<
                         T,
                         RXA,
                         RWA,
@@ -436,12 +415,42 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
                         DB,
                         SA,
                         SB,
-                    >(w, x_ex, w_ex, excitation_phase, enuc)
+                    >(w, x_ex, w_ex, excitation_phase, enuc))
                 },
-                unreachable!(),
+                None,
             )
         }
     )
+}
+
+/// Construct fixed-rank Hamiltonian contraction labels from cached excitation data.
+/// # Arguments:
+/// - `x_ex`: Cached bra same-spin excitation.
+/// - `w_ex`: Cached ket same-spin excitation.
+/// - `nocc`: Number of occupied orbitals.
+/// - `nvirt`: Number of virtual orbitals.
+/// - `rows`: Output contraction-row labels.
+/// - `cols`: Output contraction-column labels.
+/// # Returns:
+/// - `()`: Writes `RX + RW` row and column labels.
+#[inline(always)]
+fn construct_hamiltonian_indices<const RX: usize, const RW: usize>(
+    x_ex: &ExcitationSpinCache,
+    w_ex: &ExcitationSpinCache,
+    nocc: usize,
+    nvirt: usize,
+    rows: &mut [usize; MAXL],
+    cols: &mut [usize; MAXL],
+) {
+    for i in 0..RX {
+        rows[i] = usize::from(x_ex.particles[i]) - nocc;
+        cols[i] = usize::from(x_ex.holes[i]);
+    }
+
+    for i in 0..RW {
+        rows[RX + i] = nvirt + usize::from(w_ex.holes[i]);
+        cols[RX + i] = usize::from(w_ex.particles[i]);
+    }
 }
 /// Evaluate the fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap for
 /// `m_\alpha = m_\beta = 0`.
@@ -502,8 +511,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             let zero = <T as From<f64>>::from(0.0);
             let one = <T as From<f64>>::from(1.0);
             let half = <T as From<f64>>::from(0.5);
-            let mut rows_a = [0usize; 6];
-            let mut cols_a = [0usize; 6];
+            let mut rows_a = [0usize; MAXL];
+            let mut cols_a = [0usize; MAXL];
             let mut d_a = [zero; DA];
             let mut cof_a = [zero; DA];
             let mut second_a = [zero; SA];
@@ -517,17 +526,14 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             if LA > 0 {
                 let nocc = w.aa.nocc;
                 let nvirt = w.aa.nmo - nocc;
-                let x_indices = &x_ex.alpha.indices;
-                let w_indices = &w_ex.alpha.indices;
-                for i in 0..RXA {
-                    rows_a[i] = usize::from(x_indices[4 + i]) - nocc;
-                    cols_a[i] = usize::from(x_indices[i]);
-                }
-                for i in RXA..LA {
-                    let k = i - RXA;
-                    rows_a[i] = nvirt + usize::from(w_indices[k]);
-                    cols_a[i] = usize::from(w_indices[4 + k]);
-                }
+                construct_hamiltonian_indices::<RXA, RWA>(
+                    &x_ex.alpha,
+                    &w_ex.alpha,
+                    nocc,
+                    nvirt,
+                    &mut rows_a,
+                    &mut cols_a,
+                );
 
                 // Form `D^\alpha_{\eta z}` from the `m_i = 0` fundamental contractions:
                 // `X^{(0)}_{r_\eta c_z}` on and below the diagonal and
@@ -563,7 +569,7 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                             for z in 0..LA {
                                 for y in (z + 1)..LA {
                                     let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
-                                    let mut minor = [zero; 16];
+                                    let mut minor = [zero; MAXMINOR];
                                     let mut ii = 0usize;
                                     for r in 0..LA {
                                         if r == eta || r == xi {
@@ -647,8 +653,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                     }
                 }
             }
-            let mut rows_b = [0usize; 6];
-            let mut cols_b = [0usize; 6];
+            let mut rows_b = [0usize; MAXL];
+            let mut cols_b = [0usize; MAXL];
             let mut d_b = [zero; DB];
             let mut cof_b = [zero; DB];
             let mut second_b = [zero; SB];
@@ -662,17 +668,14 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             if LB > 0 {
                 let nocc = w.bb.nocc;
                 let nvirt = w.bb.nmo - nocc;
-                let x_indices = &x_ex.beta.indices;
-                let w_indices = &w_ex.beta.indices;
-                for i in 0..RXB {
-                    rows_b[i] = usize::from(x_indices[4 + i]) - nocc;
-                    cols_b[i] = usize::from(x_indices[i]);
-                }
-                for i in RXB..LB {
-                    let k = i - RXB;
-                    rows_b[i] = nvirt + usize::from(w_indices[k]);
-                    cols_b[i] = usize::from(w_indices[4 + k]);
-                }
+                construct_hamiltonian_indices::<RXB, RWB>(
+                    &x_ex.beta,
+                    &w_ex.beta,
+                    nocc,
+                    nvirt,
+                    &mut rows_b,
+                    &mut cols_b,
+                );
 
                 // Form `D^\beta_{\eta z}` from the `m_i = 0` fundamental contractions:
                 // `X^{(0)}_{r_\eta c_z}` on and below the diagonal and
@@ -708,7 +711,7 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                             for z in 0..LB {
                                 for y in (z + 1)..LB {
                                     let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
-                                    let mut minor = [zero; 16];
+                                    let mut minor = [zero; MAXMINOR];
                                     let mut ii = 0usize;
                                     for r in 0..LB {
                                         if r == eta || r == xi {
@@ -1190,16 +1193,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
                     for lane in 0..4 {
-                        let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).alpha;
+                        let w_cache = &w_ex.get_unchecked(lane).alpha;
                         for i in 0..RXA {
-                            rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_a[lane][i] = usize::from(x_indices[i]);
+                            rows_a[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXA..LA {
                             let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_a[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -1375,16 +1379,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
                     for lane in 0..4 {
-                        let x_indices = &x_ex.get_unchecked(lane).beta.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).beta.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).beta;
+                        let w_cache = &w_ex.get_unchecked(lane).beta;
                         for i in 0..RXB {
-                            rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_b[lane][i] = usize::from(x_indices[i]);
+                            rows_b[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXB..LB {
                             let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_b[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -1763,16 +1768,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
                     for lane in 0..4 {
-                        let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).alpha;
+                        let w_cache = &w_ex.get_unchecked(lane).alpha;
                         for i in 0..RXA {
-                            rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_a[lane][i] = usize::from(x_indices[i]);
+                            rows_a[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXA..LA {
                             let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_a[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -1953,16 +1959,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
                     for lane in 0..4 {
-                        let x_indices = &x_ex.get_unchecked(lane).beta.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).beta.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).beta;
+                        let w_cache = &w_ex.get_unchecked(lane).beta;
                         for i in 0..RXB {
-                            rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_b[lane][i] = usize::from(x_indices[i]);
+                            rows_b[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXB..LB {
                             let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_b[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -2361,16 +2368,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
                     for lane in 0..8 {
-                        let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).alpha;
+                        let w_cache = &w_ex.get_unchecked(lane).alpha;
                         for i in 0..RXA {
-                            rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_a[lane][i] = usize::from(x_indices[i]);
+                            rows_a[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXA..LA {
                             let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_a[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -2546,16 +2554,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
                     for lane in 0..8 {
-                        let x_indices = &x_ex.get_unchecked(lane).beta.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).beta.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).beta;
+                        let w_cache = &w_ex.get_unchecked(lane).beta;
                         for i in 0..RXB {
-                            rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_b[lane][i] = usize::from(x_indices[i]);
+                            rows_b[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXB..LB {
                             let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_b[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -2932,16 +2941,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                     let nocc = w.aa.nocc;
                     let nvirt = w.aa.nmo - nocc;
                     for lane in 0..8 {
-                        let x_indices = &x_ex.get_unchecked(lane).alpha.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).alpha.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).alpha;
+                        let w_cache = &w_ex.get_unchecked(lane).alpha;
                         for i in 0..RXA {
-                            rows_a[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_a[lane][i] = usize::from(x_indices[i]);
+                            rows_a[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXA..LA {
                             let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_a[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 
@@ -3118,16 +3128,17 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
                     let nocc = w.bb.nocc;
                     let nvirt = w.bb.nmo - nocc;
                     for lane in 0..8 {
-                        let x_indices = &x_ex.get_unchecked(lane).beta.indices;
-                        let w_indices = &w_ex.get_unchecked(lane).beta.indices;
+                        let x_cache = &x_ex.get_unchecked(lane).beta;
+                        let w_cache = &w_ex.get_unchecked(lane).beta;
                         for i in 0..RXB {
-                            rows_b[lane][i] = usize::from(x_indices[4 + i]) - nocc;
-                            cols_b[lane][i] = usize::from(x_indices[i]);
+                            rows_b[lane][i] =
+                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
+                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
                         }
                         for i in RXB..LB {
                             let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(w_indices[k]);
-                            cols_b[lane][i] = usize::from(w_indices[4 + k]);
+                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
+                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
                         }
                     }
 

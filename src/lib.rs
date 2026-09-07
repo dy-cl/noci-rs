@@ -42,11 +42,14 @@ pub mod timers;
 pub mod utils;
 pub mod write;
 
+mod config;
+
 // External crate imports.
 use ndarray::{Array1, Array2, Array4};
 use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
+use crate::config::MAXEXCIT;
 use crate::noci::{MOCache, NOCIScalar};
 
 pub use error::{Error, Result};
@@ -121,32 +124,37 @@ pub struct ExcitationSpin {
 }
 
 impl ExcitationSpin {
-    /// Build the cached rank and orbital indices used by fixed-rank Wick kernels.
+    /// Build the cached rank and orbital labels used by fixed-rank Wick kernels.
+    /// Hole and particle labels are cached up to the build-time excitation ceiling `MAXEXCIT`.
     /// # Arguments:
     /// - `self`: Spin excitation to cache.
     /// # Returns:
-    /// - `ExcitationSpinCache`: Cached rank and first four hole/particle indices.
+    /// - `ExcitationSpinCache`: Cached excitation rank, hole labels and particle labels.
     #[inline(always)]
     pub fn cache(&self) -> ExcitationSpinCache {
         let rank = self.holes.count_ones() as u8;
-        debug_assert_eq!(u32::from(rank), self.parts.count_ones());
-        let mut indices = [0u8; 8];
+        let mut cached_holes = [0u8; MAXEXCIT];
+        let mut cached_particles = [0u8; MAXEXCIT];
         let mut holes = self.holes;
-        let mut parts = self.parts;
+        let mut particles = self.parts;
 
-        // Cache the first four hole and particle indices used by fixed-rank Wick kernels.
-        for i in 0..4 {
+        for i in 0..MAXEXCIT {
             if holes != 0 {
-                indices[i] = holes.trailing_zeros() as u8;
+                cached_holes[i] = holes.trailing_zeros() as u8;
                 holes &= holes - 1;
             }
-            if parts != 0 {
-                indices[4 + i] = parts.trailing_zeros() as u8;
-                parts &= parts - 1;
+
+            if particles != 0 {
+                cached_particles[i] = particles.trailing_zeros() as u8;
+                particles &= particles - 1;
             }
         }
 
-        ExcitationSpinCache { rank, indices }
+        ExcitationSpinCache {
+            rank,
+            holes: cached_holes,
+            particles: cached_particles,
+        }
     }
 }
 
@@ -155,8 +163,10 @@ impl ExcitationSpin {
 pub struct ExcitationSpinCache {
     /// Excitation rank relative to the parent determinant.
     pub rank: u8,
-    /// First four hole then particle orbital indices.
-    pub indices: [u8; 8],
+    /// Hole orbital labels up to the build-time excitation ceiling `MAXEXCIT`.
+    pub holes: [u8; MAXEXCIT],
+    /// Particle orbital labels up to the build-time excitation ceiling `MAXEXCIT`.
+    pub particles: [u8; MAXEXCIT],
 }
 
 /// Cached fixed-rank representations of both spin excitations.

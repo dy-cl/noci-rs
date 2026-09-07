@@ -414,7 +414,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             let jc = parent.areps[j].excitation_cache;
             ic.rank
                 .cmp(&jc.rank)
-                .then_with(|| ic.indices.cmp(&jc.indices))
+                .then_with(|| ic.holes.cmp(&jc.holes))
+                .then_with(|| ic.particles.cmp(&jc.particles))
                 .then_with(|| i.cmp(&j))
         });
 
@@ -423,7 +424,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         for position in 1..parent.a_eval_order.len() {
             let previous = parent.areps[parent.a_eval_order[position - 1]].excitation_cache;
             let current = parent.areps[parent.a_eval_order[position]].excitation_cache;
-            if current.rank != previous.rank || current.indices[..4] != previous.indices[..4] {
+            if current.rank != previous.rank || current.holes != previous.holes {
                 parent.a_eval_groups.push(position);
             }
         }
@@ -447,7 +448,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             let jc = parent.breps[j].excitation_cache;
             ic.rank
                 .cmp(&jc.rank)
-                .then_with(|| ic.indices.cmp(&jc.indices))
+                .then_with(|| ic.holes.cmp(&jc.holes))
+                .then_with(|| ic.particles.cmp(&jc.particles))
                 .then_with(|| i.cmp(&j))
         });
 
@@ -456,7 +458,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         for position in 1..parent.b_eval_order.len() {
             let previous = parent.breps[parent.b_eval_order[position - 1]].excitation_cache;
             let current = parent.breps[parent.b_eval_order[position]].excitation_cache;
-            if current.rank != previous.rank || current.indices[..4] != previous.indices[..4] {
+            if current.rank != previous.rank || current.holes != previous.holes {
                 parent.b_eval_groups.push(position);
             }
         }

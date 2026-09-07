@@ -10,6 +10,7 @@ use std::arch::is_x86_feature_detected;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::config::{MAXEXCIT, SIMDMAXRANK, SIMDONEMAXL};
 use crate::maths::{adjugate_transpose, adjugate_transpose_const, build_d, build_d_const, det};
 use crate::noci::NOCIScalar;
 use crate::time_call;
@@ -18,7 +19,7 @@ use crate::{DetState, ExcitationSpin, ExcitationSpinCache, ReducedOneSpinDetStat
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
-use super::dispatch::dispatch_onebody_ranks;
+use super::dispatch::{dispatch_onebody_ranks, dispatch_onebody_scalar_ranks, dispatch_pair_ranks};
 use super::helpers::{
     adjugate_transpose_generic, bit, column_replacement_correction, mix_dets_same,
 };
@@ -324,7 +325,12 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                 let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
-                if (1..=4).contains(&l) {
+                if target_rank <= MAXEXCIT
+                    && source_rank <= MAXEXCIT
+                    && target_rank <= SIMDMAXRANK
+                    && source_rank <= SIMDMAXRANK
+                    && (1..=SIMDONEMAXL).contains(&l)
+                {
                     let ranks = if target_left {
                         (target_rank, source_rank)
                     } else {
@@ -418,7 +424,12 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd<T: NOCIScalar>(
                 let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
-                if (1..=4).contains(&l) {
+                if target_rank <= MAXEXCIT
+                    && source_rank <= MAXEXCIT
+                    && target_rank <= SIMDMAXRANK
+                    && source_rank <= SIMDMAXRANK
+                    && (1..=SIMDONEMAXL).contains(&l)
+                {
                     let ranks = if target_left {
                         (target_rank, source_rank)
                     } else {
@@ -554,7 +565,12 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                 let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
-                if (1..=4).contains(&l) {
+                if target_rank <= MAXEXCIT
+                    && source_rank <= MAXEXCIT
+                    && target_rank <= SIMDMAXRANK
+                    && source_rank <= SIMDMAXRANK
+                    && (1..=SIMDONEMAXL).contains(&l)
+                {
                     let ranks = if target_left {
                         (target_rank, source_rank)
                     } else {
@@ -648,7 +664,12 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd<T: NOCIScalar>(
                 let source_rank = usize::from(source_caches.get_unchecked(group_start).rank);
                 let l = target_rank + source_rank;
 
-                if (1..=4).contains(&l) {
+                if target_rank <= MAXEXCIT
+                    && source_rank <= MAXEXCIT
+                    && target_rank <= SIMDMAXRANK
+                    && source_rank <= SIMDMAXRANK
+                    && (1..=SIMDONEMAXL).contains(&l)
+                {
                     let ranks = if target_left {
                         (target_rank, source_rank)
                     } else {
@@ -807,7 +828,7 @@ fn xw_f_overlap_m0_prepared<T: NOCIScalar>(
             let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
             (pref, pref * w.f0f[0])
         } else {
-            dispatch_onebody_ranks!(
+            dispatch_onebody_scalar_ranks!(
                 (rx, rw),
                 |RX, RW, L| xw_f_overlap_m0_prepared_const::<T, RX, RW, L>(
                     w, x_ex, w_ex, scratch, tol,
@@ -999,17 +1020,17 @@ unsafe fn xw_f_overlap_m0_prepared_f64x4_const<
                 // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
+                        usize::from(*x_data(lane).particles.get_unchecked(eta)) - nocc
                     } else {
-                        nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
+                        nvirt + usize::from(*w_data(lane).holes.get_unchecked(eta - RX))
                     }
                 };
                 // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(z))
+                        usize::from(*x_data(lane).holes.get_unchecked(z))
                     } else {
-                        usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
+                        usize::from(*w_data(lane).particles.get_unchecked(z - RX))
                     }
                 };
                 // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -1468,17 +1489,17 @@ unsafe fn xw_f_overlap_m0_prepared_c64x4_const<
                 // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
+                        usize::from(*x_data(lane).particles.get_unchecked(eta)) - nocc
                     } else {
-                        nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
+                        nvirt + usize::from(*w_data(lane).holes.get_unchecked(eta - RX))
                     }
                 };
                 // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(z))
+                        usize::from(*x_data(lane).holes.get_unchecked(z))
                     } else {
-                        usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
+                        usize::from(*w_data(lane).particles.get_unchecked(z - RX))
                     }
                 };
                 // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -1926,17 +1947,17 @@ unsafe fn xw_f_overlap_m0_prepared_f64x8_const<
                 // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
+                        usize::from(*x_data(lane).particles.get_unchecked(eta)) - nocc
                     } else {
-                        nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
+                        nvirt + usize::from(*w_data(lane).holes.get_unchecked(eta - RX))
                     }
                 };
                 // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(z))
+                        usize::from(*x_data(lane).holes.get_unchecked(z))
                     } else {
-                        usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
+                        usize::from(*w_data(lane).particles.get_unchecked(z - RX))
                     }
                 };
                 // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
@@ -2426,17 +2447,17 @@ unsafe fn xw_f_overlap_m0_prepared_c64x8_const<
                 // Rows are `r_\eta \in V_x\cup O_w`, with x-particles before w-holes.
                 let row_index = |eta: usize, lane: usize| -> usize {
                     if eta < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(4 + eta)) - nocc
+                        usize::from(*x_data(lane).particles.get_unchecked(eta)) - nocc
                     } else {
-                        nvirt + usize::from(*w_data(lane).indices.get_unchecked(eta - RX))
+                        nvirt + usize::from(*w_data(lane).holes.get_unchecked(eta - RX))
                     }
                 };
                 // Columns are `c_z \in O_x\cup V_w`, with x-holes before w-particles.
                 let col_index = |z: usize, lane: usize| -> usize {
                     if z < RX {
-                        usize::from(*x_data(lane).indices.get_unchecked(z))
+                        usize::from(*x_data(lane).holes.get_unchecked(z))
                     } else {
-                        usize::from(*w_data(lane).indices.get_unchecked(4 + z - RX))
+                        usize::from(*w_data(lane).particles.get_unchecked(z - RX))
                     }
                 };
                 // `D_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise

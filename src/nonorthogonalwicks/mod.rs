@@ -21,9 +21,9 @@
 //! - Preparation of contraction determinants and reusable scratch storage;
 //! - Specialised and general evaluators for overlap, one-body, two-body and
 //!   transition-density quantities.
-//! Once the reference-pair intermediates have been constructed, the subsequent evaluation
-//! cost depends on the excitation ranks and the allowed `m_i` distributions rather than
-//! directly on the number of electrons or basis functions.
+//! - Once the reference-pair intermediates have been constructed, the subsequent evaluation
+//!   cost depends on the excitation ranks and the allowed `m_i` distributions rather than
+//!   directly on the number of electrons or basis functions.
 
 mod build;
 mod eval;

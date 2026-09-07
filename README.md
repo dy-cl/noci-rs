@@ -118,6 +118,18 @@ cd noci-rs
 cargo build --release
 ```
 
+The maximum total determinant excitation rank compiled into fixed-rank Wick kernels is controlled
+at build time by `MAXEXCIT` and defaults to four:
+
+```bash
+MAXEXCIT=3 cargo build --release
+```
+
+For a two-spin determinant pair, specialisation requires both `RXA + RXB <= MAXEXCIT` and
+`RWA + RWB <= MAXEXCIT`. Higher excitation ranks remain supported through generic fallbacks;
+`MAXEXCIT` controls cache width and fixed-rank monomorphisation, not the functional maximum
+excitation rank.
+
 Detailed timing counters can be enabled with:
 
 ```bash
