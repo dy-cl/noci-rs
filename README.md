@@ -118,8 +118,8 @@ cd noci-rs
 cargo build --release
 ```
 
-The maximum total determinant excitation rank compiled into fixed-rank Wick kernels is controlled
-at build time by `MAXEXCIT` and defaults to four:
+The maximum total determinant excitation rank compiled into scalar and SIMD fixed-rank Wick kernels
+is controlled at build time by `MAXEXCIT` and defaults to four:
 
 ```bash
 MAXEXCIT=3 cargo build --release
@@ -128,7 +128,8 @@ MAXEXCIT=3 cargo build --release
 For a two-spin determinant pair, specialisation requires both `RXA + RXB <= MAXEXCIT` and
 `RWA + RWB <= MAXEXCIT`. Higher excitation ranks remain supported through generic fallbacks;
 `MAXEXCIT` controls cache width and fixed-rank monomorphisation, not the functional maximum
-excitation rank.
+excitation rank. AVX2 and AVX-512 select packed lane counts of four and eight determinant pairs,
+respectively; they do not limit excitation-rank support.
 
 Detailed timing counters can be enabled with:
 

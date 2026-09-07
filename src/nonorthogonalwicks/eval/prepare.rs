@@ -1,13 +1,14 @@
 // nonorthogonalwicks/eval/prepare.rs
 // Crate-root imports.
 use crate::ExcitationSpin;
-use crate::maths::{build_d, build_d_const};
+use crate::maths::{build_d_const, build_d_dynamic};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
 use super::super::view::SameSpinView;
+use super::dispatch::{dispatch_overlap_scalar_ranks, dispatch_pair_ranks};
 
 /// Prepare the contraction-determinant quantities shared by the same-spin overlap and Hamiltonian evaluators.
 /// `For total excitation rank L = L_x + L_w, the contraction determinant has elements:`
@@ -42,16 +43,16 @@ pub fn prepare_same<T: NOCIScalar>(
     })
 }
 
-/// `Prepare \mathbf D_{\mathrm{ov}}(0,\ldots,0) when m = 0, so the reference pair contains`
-/// `no zero-overlap orbital pairs and every column assignment is m_j = 0. Fixed-rank kernels are`
-/// `used for L = 1,\ldots,6; arbitrary ranks use the general determinant builder.`
+/// Prepare `D_ov(0,...,0)` when the reference pair contains no zero-overlap orbital pairs.
+/// Fixed-rank evaluation is selected by the generated `MAXEXCIT` dispatcher; larger ranks use
+/// the runtime determinant builder.
 /// # Arguments:
-/// - `w`: Reference-pair Wick intermediates with no zero-overlap orbital pairs.
-/// - `l_ex`: Excitation defining the bra determinant.
-/// - `g_ex`: Excitation defining the ket determinant.
-/// - `scratch`: `Scratch storage receiving the determinant labels and \mathbf D_{\mathrm{ov}}(0,\ldots,0).`
+/// - `w`: Same-spin reference-pair Wick intermediates.
+/// - `l_ex`: Bra excitation.
+/// - `g_ex`: Ket excitation.
+/// - `scratch`: Reusable Wick workspace.
 /// # Returns
-/// - `()`: `Writes the determinant labels and m_j = 0 contraction determinant.`
+/// - `()`: Writes determinant labels and `D_ov(0,...,0)`.
 #[inline(always)]
 fn prepare_same_m0<T: NOCIScalar>(
     w: &SameSpinView<'_, T>,
@@ -60,20 +61,21 @@ fn prepare_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
-        // For `m = 0`, only `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` is needed; fixed ranks keep the
-        // determinant
-        // construction monomorphised while larger ranks use the generic builder.
-        let l = l_ex.holes.count_ones() as usize + g_ex.holes.count_ones() as usize;
+        let rx = l_ex.holes.count_ones() as usize;
+        let rw = g_ex.holes.count_ones() as usize;
 
-        match l {
-            0 => {}
-            1 => prepare_same_m0_const::<T, 1>(w, l_ex, g_ex, scratch),
-            2 => prepare_same_m0_const::<T, 2>(w, l_ex, g_ex, scratch),
-            3 => prepare_same_m0_const::<T, 3>(w, l_ex, g_ex, scratch),
-            4 => prepare_same_m0_const::<T, 4>(w, l_ex, g_ex, scratch),
-            5 => prepare_same_m0_const::<T, 5>(w, l_ex, g_ex, scratch),
-            6 => prepare_same_m0_const::<T, 6>(w, l_ex, g_ex, scratch),
-            _ => {
+        if rx == 0 && rw == 0 {
+            scratch.ensure_same(0);
+            return;
+        }
+
+        dispatch_overlap_scalar_ranks!(
+            (rx, rw),
+            |_RX, _RW, L, _D| {
+                prepare_same_m0_const::<T, L>(w, l_ex, g_ex, scratch);
+            },
+            {
+                let l = rx + rw;
                 scratch.ensure_same(l);
 
                 construct_determinant_indices(
@@ -87,7 +89,7 @@ fn prepare_same_m0<T: NOCIScalar>(
                 let x0 = w.x(0);
                 let y0 = w.y(0);
 
-                build_d(
+                build_d_dynamic(
                     scratch.det0.as_mut_slice(),
                     l,
                     &x0,
@@ -95,8 +97,8 @@ fn prepare_same_m0<T: NOCIScalar>(
                     scratch.rows.as_slice(),
                     scratch.cols.as_slice(),
                 );
-            }
-        }
+            },
+        )
     })
 }
 
@@ -180,7 +182,7 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 
         let x0 = w.x(0);
         let y0 = w.y(0);
-        build_d(
+        build_d_dynamic(
             scratch.det0.as_mut_slice(),
             l,
             &x0,
@@ -191,7 +193,7 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 
         let x1 = w.x(1);
         let y1 = w.y(1);
-        build_d(
+        build_d_dynamic(
             scratch.det1.as_mut_slice(),
             l,
             &x1,

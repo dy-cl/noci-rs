@@ -12,8 +12,10 @@ use ndarray::Array2;
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::config::{MAXEXCIT, SIMDMAXRANK, SIMDOVERLAPMAXL};
-use crate::maths::{det, det_const, mix_columns};
+use crate::config::MAXEXCIT;
+#[cfg(target_arch = "x86_64")]
+use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd, det_simd_const};
+use crate::maths::{det_const, det_dynamic, mix_columns_dynamic};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 use crate::{Excitation, ExcitationSpin};
@@ -28,8 +30,6 @@ use super::dispatch::{
 use super::helpers::{extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
-#[cfg(target_arch = "x86_64")]
-use super::simd::{C64x4, C64x8, F64x4, F64x8};
 
 /// Evaluate one unnormalised same-spin rank-`K` transition-density element:
 /// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_K}_{q_1\cdots q_K}`
@@ -164,13 +164,16 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 && TypeId::of::<T>() == TypeId::of::<f64>() {
         unsafe {
-            // SAFETY: The `TypeId` check proves `T = f64`, so `out` has the layout required by
-            // the real SIMD dispatcher. The dispatcher checks the required CPU features.
+            // SAFETY: The `TypeId` check proves every generic value has its `f64` instantiation
+            // for the duration of the SIMD helper call.
+            let w_f64 = &*std::ptr::from_ref(w).cast::<SameSpinView<'_, f64>>();
+            let x0_f64 = std::slice::from_raw_parts(x0p.as_ptr().cast::<f64>(), x0p.len());
+            let y0_f64 = std::slice::from_raw_parts(y0p.as_ptr().cast::<f64>(), y0p.len());
             let out_f64 = std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<f64>(), out.len());
             if try_xw_rdmk_same_prepared_f64_simd(
-                w,
+                w_f64,
                 ex,
-                (&x0p, &y0p, ext_n),
+                (x0_f64, y0_f64, ext_n),
                 requests,
                 tol,
                 out_f64,
@@ -183,14 +186,17 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 && TypeId::of::<T>() == TypeId::of::<Complex64>() {
         unsafe {
-            // SAFETY: The `TypeId` check proves `T = Complex64`, so `out` has the layout required
-            // by the complex SIMD dispatcher. The dispatcher checks the required CPU features.
+            // SAFETY: The `TypeId` check proves every generic value has its `Complex64`
+            // instantiation for the duration of the SIMD helper call.
+            let w_c64 = &*std::ptr::from_ref(w).cast::<SameSpinView<'_, Complex64>>();
+            let x0_c64 = std::slice::from_raw_parts(x0p.as_ptr().cast::<Complex64>(), x0p.len());
+            let y0_c64 = std::slice::from_raw_parts(y0p.as_ptr().cast::<Complex64>(), y0p.len());
             let out_c64 =
                 std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<Complex64>(), out.len());
             if try_xw_rdmk_same_prepared_c64_simd(
-                w,
+                w_c64,
                 ex,
-                (&x0p, &y0p, ext_n),
+                (x0_c64, y0_c64, ext_n),
                 requests,
                 tol,
                 out_c64,
@@ -222,894 +228,600 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
     xw_rdmk_same_prepared_scalar_batch(w, ex, fundamental, requests, scratch, tol, out);
 }
 
-/// Try to evaluate a real same-spin rank-`K` RDM batch with fixed-rank SIMD kernels.
-/// Each lane evaluates one augmented `m = 0` determinant of dimension `D = K + RX + RW`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `requests`: Creation and annihilation index arrays in output order.
-/// - `tol`: Numerical threshold applied to each determinant contribution.
-/// - `out`: Real same-spin RDM elements in request order.
-/// # Returns
-/// - `bool`: Whether a supported SIMD path evaluated the complete batch.
-/// # Safety
-/// - The caller must prove `T = f64` before `fundamental` is reinterpreted as real storage.
+/// Packed RDM packet dispatcher behind one target-feature entry point.
 #[cfg(target_arch = "x86_64")]
-unsafe fn try_xw_rdmk_same_prepared_f64_simd<T: NOCIScalar, const K: usize>(
-    w: &SameSpinView<'_, T>,
+type RdmSimdPacket<T, const K: usize, const N: usize> = unsafe fn(
+    &SameSpinView<'_, T>,
+    (&ExcitationSpin, &ExcitationSpin),
+    (&[T], &[T], usize),
+    &[([usize; K], [usize; K]); N],
+    f64,
+    &mut [T; N],
+);
+
+/// Try to evaluate a real same-spin rank-`K` RDM batch with fixed-rank SIMD kernels.
+/// # Arguments:
+/// - `w`: Real same-spin Wick intermediates with `m = 0`.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions and row dimension.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Real RDM outputs.
+/// # Returns
+/// - `bool`: Whether an available SIMD path evaluated the complete batch.
+/// # Safety
+/// - `w` must contain no zero-overlap orbital pairs.
+#[cfg(target_arch = "x86_64")]
+unsafe fn try_xw_rdmk_same_prepared_f64_simd<const K: usize>(
+    w: &SameSpinView<'_, f64>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
+    fundamental: (&[f64], &[f64], usize),
     requests: &[([usize; K], [usize; K])],
     tol: f64,
     out: &mut [f64],
 ) -> bool {
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
-    let supported = K <= 4
-        && rx <= MAXEXCIT
-        && rw <= MAXEXCIT
-        && rx <= SIMDMAXRANK
-        && rw <= SIMDMAXRANK
-        && (rx == 0 && rw == 0 || rx + rw <= SIMDOVERLAPMAXL);
-    if !supported {
+    if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
         return false;
     }
 
-    unsafe {
-        if is_x86_feature_detected!("avx512f") {
-            let mut start = 0usize;
-            let count = requests.len().min(out.len());
-            while start < count {
-                let lanes = (count - start).min(8);
-                let mut packet = [*requests.get_unchecked(start); 8];
-                for lane in 1..lanes {
-                    packet[lane] = *requests.get_unchecked(start + lane);
-                }
-                let mut values = [0.0f64; 8];
-                dispatch_rdm_ranks!(
-                    K,
-                    (rx, rw),
-                    |K, RX, RW, L, D| xw_rdmk_same_m0_prepared_f64x8_const::<T, K, RX, RW, L, D>(
-                        w,
-                        ex,
-                        fundamental,
-                        &*std::ptr::from_ref(&packet).cast::<[([usize; K], [usize; K]); 8]>(),
-                        tol,
-                        &mut values,
-                    ),
-                    unreachable!(),
-                );
-                for lane in 0..lanes {
-                    *out.get_unchecked_mut(start + lane) = values[lane];
-                }
-                start += lanes;
-            }
-            return true;
+    if is_x86_feature_detected!("avx512f") {
+        unsafe {
+            xw_rdmk_same_prepared_simd_batch::<f64, K, 8>(
+                w,
+                ex,
+                fundamental,
+                requests,
+                tol,
+                out,
+                xw_rdmk_same_m0_prepared_f64x8,
+            );
         }
-
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            let mut start = 0usize;
-            let count = requests.len().min(out.len());
-            while start < count {
-                let lanes = (count - start).min(4);
-                let mut packet = [*requests.get_unchecked(start); 4];
-                for lane in 1..lanes {
-                    packet[lane] = *requests.get_unchecked(start + lane);
-                }
-                let mut values = [0.0f64; 4];
-                dispatch_rdm_ranks!(
-                    K,
-                    (rx, rw),
-                    |K, RX, RW, L, D| xw_rdmk_same_m0_prepared_f64x4_const::<T, K, RX, RW, L, D>(
-                        w,
-                        ex,
-                        fundamental,
-                        &*std::ptr::from_ref(&packet).cast::<[([usize; K], [usize; K]); 4]>(),
-                        tol,
-                        &mut values,
-                    ),
-                    unreachable!(),
-                );
-                for lane in 0..lanes {
-                    *out.get_unchecked_mut(start + lane) = values[lane];
-                }
-                start += lanes;
-            }
-            return true;
-        }
+        return true;
     }
-
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        unsafe {
+            xw_rdmk_same_prepared_simd_batch::<f64, K, 4>(
+                w,
+                ex,
+                fundamental,
+                requests,
+                tol,
+                out,
+                xw_rdmk_same_m0_prepared_f64x4,
+            );
+        }
+        return true;
+    }
     false
 }
 
 /// Try to evaluate a complex same-spin rank-`K` RDM batch with fixed-rank SIMD kernels.
-/// Each lane evaluates one augmented `m = 0` determinant of dimension `D = K + RX + RW`.
 /// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = Complex64` and `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `requests`: Creation and annihilation index arrays in output order.
-/// - `tol`: Numerical threshold applied to each determinant contribution.
-/// - `out`: Complex same-spin RDM elements in request order.
+/// - `w`: Complex same-spin Wick intermediates with `m = 0`.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions and row dimension.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Complex RDM outputs.
 /// # Returns
-/// - `bool`: Whether a supported SIMD path evaluated the complete batch.
+/// - `bool`: Whether an available SIMD path evaluated the complete batch.
 /// # Safety
-/// - The caller must prove `T = Complex64` before `fundamental` is reinterpreted as complex storage.
+/// - `w` must contain no zero-overlap orbital pairs.
 #[cfg(target_arch = "x86_64")]
-unsafe fn try_xw_rdmk_same_prepared_c64_simd<T: NOCIScalar, const K: usize>(
-    w: &SameSpinView<'_, T>,
+unsafe fn try_xw_rdmk_same_prepared_c64_simd<const K: usize>(
+    w: &SameSpinView<'_, Complex64>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
+    fundamental: (&[Complex64], &[Complex64], usize),
     requests: &[([usize; K], [usize; K])],
     tol: f64,
     out: &mut [Complex64],
 ) -> bool {
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
-    let supported = K <= 4
-        && rx <= MAXEXCIT
-        && rw <= MAXEXCIT
-        && rx <= SIMDMAXRANK
-        && rw <= SIMDMAXRANK
-        && (rx == 0 && rw == 0 || rx + rw <= SIMDOVERLAPMAXL);
-    if !supported {
+    if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
         return false;
     }
 
-    unsafe {
-        if is_x86_feature_detected!("avx512f") {
-            let mut start = 0usize;
-            let count = requests.len().min(out.len());
-            while start < count {
-                let lanes = (count - start).min(8);
-                let mut packet = [*requests.get_unchecked(start); 8];
-                for lane in 1..lanes {
-                    packet[lane] = *requests.get_unchecked(start + lane);
-                }
-                let mut values = [Complex64::new(0.0, 0.0); 8];
-                dispatch_rdm_ranks!(
-                    K,
-                    (rx, rw),
-                    |K, RX, RW, L, D| xw_rdmk_same_m0_prepared_c64x8_const::<T, K, RX, RW, L, D>(
-                        w,
-                        ex,
-                        fundamental,
-                        &*std::ptr::from_ref(&packet).cast::<[([usize; K], [usize; K]); 8]>(),
-                        tol,
-                        &mut values,
-                    ),
-                    unreachable!(),
-                );
-                for lane in 0..lanes {
-                    *out.get_unchecked_mut(start + lane) = values[lane];
-                }
-                start += lanes;
-            }
-            return true;
+    if is_x86_feature_detected!("avx512f") {
+        unsafe {
+            xw_rdmk_same_prepared_simd_batch::<Complex64, K, 8>(
+                w,
+                ex,
+                fundamental,
+                requests,
+                tol,
+                out,
+                xw_rdmk_same_m0_prepared_c64x8,
+            );
         }
-
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-            let mut start = 0usize;
-            let count = requests.len().min(out.len());
-            while start < count {
-                let lanes = (count - start).min(4);
-                let mut packet = [*requests.get_unchecked(start); 4];
-                for lane in 1..lanes {
-                    packet[lane] = *requests.get_unchecked(start + lane);
-                }
-                let mut values = [Complex64::new(0.0, 0.0); 4];
-                dispatch_rdm_ranks!(
-                    K,
-                    (rx, rw),
-                    |K, RX, RW, L, D| xw_rdmk_same_m0_prepared_c64x4_const::<T, K, RX, RW, L, D>(
-                        w,
-                        ex,
-                        fundamental,
-                        &*std::ptr::from_ref(&packet).cast::<[([usize; K], [usize; K]); 4]>(),
-                        tol,
-                        &mut values,
-                    ),
-                    unreachable!(),
-                );
-                for lane in 0..lanes {
-                    *out.get_unchecked_mut(start + lane) = values[lane];
-                }
-                start += lanes;
-            }
-            return true;
-        }
+        return true;
     }
-
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        unsafe {
+            xw_rdmk_same_prepared_simd_batch::<Complex64, K, 4>(
+                w,
+                ex,
+                fundamental,
+                requests,
+                tol,
+                out,
+                xw_rdmk_same_m0_prepared_c64x4,
+            );
+        }
+        return true;
+    }
     false
 }
 
-/// Evaluate four real fixed-rank same-spin rank-`K` RDM determinants for `m = 0`.
-/// Every SIMD lane computes
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`
-/// with compile-time augmented dimension `D = K + RX + RW`.
+/// Evaluate a same-spin RDM batch with fixed-width packed packets.
 /// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `requests`: Four creation-annihilation index tuples in SIMD-lane order.
-/// - `tol`: Numerical threshold applied to each determinant contribution.
-/// - `out`: Four real transition-density elements in SIMD-lane order.
+/// - `w`: Same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions and row dimension.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: RDM outputs.
+/// - `kernel`: Packed packet dispatcher.
 /// # Returns
-/// - `()`: Writes four rank-`K` RDM elements into `out`.
+/// - `()`: Writes every RDM request.
 /// # Safety
-/// - The caller must ensure `T = f64`, CPU support for `AVX2/FMA`, valid external and excitation
-///   indices, and compile-time ranks satisfying `D = K + RX + RW` with `D <= 10`.
+/// - `kernel` must support the current CPU and use `N` lanes.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
+#[inline(always)]
+unsafe fn xw_rdmk_same_prepared_simd_batch<T: NOCIScalar, const K: usize, const N: usize>(
+    w: &SameSpinView<'_, T>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[T], &[T], usize),
+    requests: &[([usize; K], [usize; K])],
+    tol: f64,
+    out: &mut [T],
+    kernel: RdmSimdPacket<T, K, N>,
+) {
+    let count = requests.len().min(out.len());
+    let mut start = 0usize;
+    while start < count {
+        let lanes = (count - start).min(N);
+        let mut packet = [unsafe { *requests.get_unchecked(start) }; N];
+        for lane in 1..lanes {
+            packet[lane] = unsafe { *requests.get_unchecked(start + lane) };
+        }
+        let mut values = [T::from_real(0.0); N];
+        unsafe {
+            kernel(w, ex, fundamental, &packet, tol, &mut values);
+        }
+        for lane in 0..lanes {
+            unsafe {
+                *out.get_unchecked_mut(start + lane) = values[lane];
+            }
+        }
+        start += lanes;
+    }
+}
+
+/// Evaluate packed fixed-rank same-spin RDM determinants.
+/// # Arguments:
+/// - `w`: Same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions and row dimension.
+/// - `requests`: External RDM indices in lane order.
+/// - `tol`: Numerical threshold.
+/// - `out`: RDM outputs in lane order.
+/// # Returns
+/// - `()`: Writes `LANES` transition-density values.
+/// # Safety
+/// - Indices must be valid and caller must establish `V` CPU support.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn xw_rdmk_same_m0_prepared_simd_const<
     T: NOCIScalar,
+    V: Simd<LANES, Scalar = T>,
+    const LANES: usize,
     const K: usize,
     const RX: usize,
     const RW: usize,
     const L: usize,
     const D: usize,
+    const DD: usize,
 >(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
     fundamental: (&[T], &[T], usize),
+    requests: &[([usize; K], [usize; K]); LANES],
+    tol: f64,
+    out: &mut [T; LANES],
+) {
+    let (x0, y0, ext_n) = fundamental;
+    let mut rows = [[0usize; D]; LANES];
+    let mut cols = [[0usize; D]; LANES];
+    for lane in 0..LANES {
+        for i in 0..K {
+            rows[lane][i] = w.nmo + requests[lane].0[i];
+            cols[lane][i] = w.nmo + requests[lane].1[i];
+        }
+    }
+
+    let nocc = w.nocc;
+    let nvirt = w.nmo - nocc;
+    let mut x_holes = ex.0.holes;
+    let mut x_parts = ex.0.parts;
+    for i in 0..RX {
+        let col = x_holes.trailing_zeros() as usize;
+        let row = x_parts.trailing_zeros() as usize - nocc;
+        for lane in 0..LANES {
+            cols[lane][K + i] = col;
+            rows[lane][K + i] = row;
+        }
+        x_holes &= x_holes - 1;
+        x_parts &= x_parts - 1;
+    }
+    let mut w_holes = ex.1.holes;
+    let mut w_parts = ex.1.parts;
+    for i in 0..(L - RX) {
+        let row = nvirt + w_holes.trailing_zeros() as usize;
+        let col = w_parts.trailing_zeros() as usize;
+        for lane in 0..LANES {
+            rows[lane][K + RX + i] = row;
+            cols[lane][K + RX + i] = col;
+        }
+        w_holes &= w_holes - 1;
+        w_parts &= w_parts - 1;
+    }
+
+    let zero = V::zero();
+    let mut determinant = [zero; DD];
+    for i in 0..D {
+        for j in 0..D {
+            let matrix = if i >= j { x0 } else { y0 };
+            let mut values = [T::from_real(0.0); LANES];
+            for lane in 0..LANES {
+                let index = rows[lane][i] * ext_n + cols[lane][j];
+                values[lane] = unsafe { *matrix.get_unchecked(index) };
+            }
+            determinant[i * D + j] = V::load(&values);
+        }
+    }
+
+    let value = det_simd_const::<V, LANES, D, DD>(&determinant);
+    let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
+    let mut lanes = [T::from_real(0.0); LANES];
+    V::store(V::mul(pref, value), &mut lanes);
+    for lane in 0..LANES {
+        out[lane] = if lanes[lane].abs() > tol {
+            lanes[lane]
+        } else {
+            T::from_real(0.0)
+        };
+    }
+}
+
+/// Dispatch four real RDM values to a fixed-rank AVX2/FMA kernel.
+/// # Arguments:
+/// - `w`: Real same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Real RDM outputs.
+/// # Returns
+/// - `()`: Writes four values.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn xw_rdmk_same_m0_prepared_f64x4<const K: usize>(
+    w: &SameSpinView<'_, f64>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[f64], &[f64], usize),
     requests: &[([usize; K], [usize; K]); 4],
     tol: f64,
     out: &mut [f64; 4],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
-        {
-            unsafe {
-                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
-                let pref = *std::ptr::from_ref(&w.phase).cast::<f64>() * w.tilde_s_prod;
-                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
-                if D == 0 {
-                    out.fill(pref);
-                    return;
-                }
-
-                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
-                let (x0, y0, ext_n) = fundamental;
-                let x0 = x0.as_ptr().cast::<f64>();
-                let y0 = y0.as_ptr().cast::<f64>();
-                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
-                let mut excitation_rows = [0usize; L];
-                let mut excitation_cols = [0usize; L];
-                let nocc = w.nocc;
-                let nvirt = w.nmo - nocc;
-                let mut x_holes = ex.0.holes;
-                let mut x_parts = ex.0.parts;
-                for i in 0..RX {
-                    excitation_cols[i] = x_holes.trailing_zeros() as usize;
-                    excitation_rows[i] = x_parts.trailing_zeros() as usize - nocc;
-                    x_holes &= x_holes - 1;
-                    x_parts &= x_parts - 1;
-                }
-                let mut w_holes = ex.1.holes;
-                let mut w_parts = ex.1.parts;
-                for i in 0..RW {
-                    excitation_rows[RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                    excitation_cols[RX + i] = w_parts.trailing_zeros() as usize;
-                    w_holes &= w_holes - 1;
-                    w_parts &= w_parts - 1;
-                }
-
-                // Prepend the external creation labels `\mathbf p` to the excitation rows.
-                let row_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).0[position]
-                    } else {
-                        excitation_rows[position - K]
-                    }
-                };
-                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
-                let col_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).1[position]
-                    } else {
-                        excitation_cols[position - K]
-                    }
-                };
-                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
-                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
-                let load_d = |i: usize, j: usize| -> F64x4 {
-                    let matrix = if i >= j { x0 } else { y0 };
-                    // Broadcast excitation-only entries and gather entries containing external labels.
-                    if i >= K && j >= K {
-                        F64x4::splat(*matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)))
-                    } else {
-                        F64x4::from_values(
-                            *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)),
-                            *matrix.add(row_index(i, 1) * ext_n + col_index(j, 1)),
-                            *matrix.add(row_index(i, 2) * ext_n + col_index(j, 2)),
-                            *matrix.add(row_index(i, 3) * ext_n + col_index(j, 3)),
-                        )
-                    }
-                };
-                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                let mut d = [F64x4::zero(); 100];
-                for i in 0..D {
-                    for j in 0..D {
-                        d[i * D + j] = load_d(i, j);
-                    }
-                }
-
-                // For each column subset `S`, evaluate the final-row Laplace recurrence
-                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
-                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
-                let full = (1usize << D) - 1;
-                let mut minors = [F64x4::zero(); 1024];
-                for c in 0..D {
-                    minors[1usize << c] = d[(D - 1) * D + c];
-                }
-                let mut size = 2usize;
-                while size <= D {
-                    let row = D - size;
-                    let mut next = [F64x4::zero(); 1024];
-                    let mut mask = full;
-                    loop {
-                        if mask.count_ones() as usize == size {
-                            let mut acc = F64x4::zero();
-                            let mut position = 0usize;
-                            for c in 0..D {
-                                let bit = 1usize << c;
-                                if mask & bit != 0 {
-                                    let minor = minors[mask ^ bit];
-                                    acc = if position & 1 == 0 {
-                                        F64x4::madd(acc, d[row * D + c], minor)
-                                    } else {
-                                        F64x4::msub(acc, d[row * D + c], minor)
-                                    };
-                                    position += 1;
-                                }
-                            }
-                            next[mask] = acc;
-                        }
-                        if mask == 0 {
-                            break;
-                        }
-                        mask = (mask - 1) & full;
-                    }
-                    minors = next;
-                    size += 1;
-                }
-
-                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
-                let mut determinant = [0.0f64; 4];
-                minors[full].store(&mut determinant);
-                for lane in 0..4 {
-                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                    out[lane] = if determinant[lane].abs() > tol {
-                        pref * determinant[lane]
-                    } else {
-                        0.0
-                    };
-                }
-            }
-        }
+    let rx = ex.0.holes.count_ones() as usize;
+    let rw = ex.1.holes.count_ones() as usize;
+    dispatch_rdm_ranks!(
+        K,
+        (rx, rw),
+        |K, RX, RW, L, D, DD| unsafe {
+            xw_rdmk_same_m0_prepared_f64x4_const::<K, RX, RW, L, D, DD>(
+                w,
+                ex,
+                fundamental,
+                &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 4]>(),
+                tol,
+                out,
+            )
+        },
+        (),
     )
 }
 
-/// Evaluate four complex fixed-rank same-spin rank-`K` RDM determinants for `m = 0`.
-/// Every SIMD lane computes
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`
-/// with compile-time augmented dimension `D = K + RX + RW`.
+/// Dispatch eight real RDM values to a fixed-rank AVX-512F kernel.
 /// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = Complex64` and `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `requests`: Four creation-annihilation index tuples in SIMD-lane order.
-/// - `tol`: Numerical threshold applied to each determinant contribution.
-/// - `out`: Four complex transition-density elements in SIMD-lane order.
+/// - `w`: Real same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Real RDM outputs.
 /// # Returns
-/// - `()`: Writes four rank-`K` RDM elements into `out`.
+/// - `()`: Writes eight values.
 /// # Safety
-/// - The caller must ensure `T = Complex64`, CPU support for `AVX2/FMA`, valid external and
-///   excitation indices, and compile-time ranks satisfying `D = K + RX + RW` with `D <= 10`.
+/// - The current CPU must support AVX-512F.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
-    T: NOCIScalar,
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
->(
-    w: &SameSpinView<'_, T>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
-    requests: &[([usize; K], [usize; K]); 4],
-    tol: f64,
-    out: &mut [Complex64; 4],
-) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
-        {
-            unsafe {
-                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
-                let phase = *std::ptr::from_ref(&w.phase).cast::<Complex64>();
-                let pref = phase * w.tilde_s_prod;
-                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
-                if D == 0 {
-                    out.fill(pref);
-                    return;
-                }
-
-                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
-                let (x0, y0, ext_n) = fundamental;
-                let x0 = x0.as_ptr().cast::<Complex64>();
-                let y0 = y0.as_ptr().cast::<Complex64>();
-                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
-                let mut excitation_rows = [0usize; L];
-                let mut excitation_cols = [0usize; L];
-                let nocc = w.nocc;
-                let nvirt = w.nmo - nocc;
-                let mut x_holes = ex.0.holes;
-                let mut x_parts = ex.0.parts;
-                for i in 0..RX {
-                    excitation_cols[i] = x_holes.trailing_zeros() as usize;
-                    excitation_rows[i] = x_parts.trailing_zeros() as usize - nocc;
-                    x_holes &= x_holes - 1;
-                    x_parts &= x_parts - 1;
-                }
-                let mut w_holes = ex.1.holes;
-                let mut w_parts = ex.1.parts;
-                for i in 0..RW {
-                    excitation_rows[RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                    excitation_cols[RX + i] = w_parts.trailing_zeros() as usize;
-                    w_holes &= w_holes - 1;
-                    w_parts &= w_parts - 1;
-                }
-
-                // Prepend the external creation labels `\mathbf p` to the excitation rows.
-                let row_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).0[position]
-                    } else {
-                        excitation_rows[position - K]
-                    }
-                };
-                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
-                let col_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).1[position]
-                    } else {
-                        excitation_cols[position - K]
-                    }
-                };
-                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
-                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
-                let load_d = |i: usize, j: usize| -> C64x4 {
-                    let matrix = if i >= j { x0 } else { y0 };
-                    // Broadcast excitation-only entries and gather entries containing external labels.
-                    if i >= K && j >= K {
-                        let value = *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0));
-                        C64x4::splat(value.re, value.im)
-                    } else {
-                        C64x4::from_values(
-                            *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)),
-                            *matrix.add(row_index(i, 1) * ext_n + col_index(j, 1)),
-                            *matrix.add(row_index(i, 2) * ext_n + col_index(j, 2)),
-                            *matrix.add(row_index(i, 3) * ext_n + col_index(j, 3)),
-                        )
-                    }
-                };
-                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                let mut d = [C64x4::zero(); 100];
-                for i in 0..D {
-                    for j in 0..D {
-                        d[i * D + j] = load_d(i, j);
-                    }
-                }
-
-                // For each column subset `S`, evaluate the final-row Laplace recurrence
-                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
-                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
-                let full = (1usize << D) - 1;
-                let mut minors = [C64x4::zero(); 1024];
-                for c in 0..D {
-                    minors[1usize << c] = d[(D - 1) * D + c];
-                }
-                let mut size = 2usize;
-                while size <= D {
-                    let row = D - size;
-                    let mut next = [C64x4::zero(); 1024];
-                    let mut mask = full;
-                    loop {
-                        if mask.count_ones() as usize == size {
-                            let mut acc = C64x4::zero();
-                            let mut position = 0usize;
-                            for c in 0..D {
-                                let bit = 1usize << c;
-                                if mask & bit != 0 {
-                                    let minor = minors[mask ^ bit];
-                                    acc = if position & 1 == 0 {
-                                        C64x4::madd(acc, d[row * D + c], minor)
-                                    } else {
-                                        C64x4::msub(acc, d[row * D + c], minor)
-                                    };
-                                    position += 1;
-                                }
-                            }
-                            next[mask] = acc;
-                        }
-                        if mask == 0 {
-                            break;
-                        }
-                        mask = (mask - 1) & full;
-                    }
-                    minors = next;
-                    size += 1;
-                }
-
-                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
-                let mut re = [0.0f64; 4];
-                let mut im = [0.0f64; 4];
-                minors[full].store(&mut re, &mut im);
-                for lane in 0..4 {
-                    let determinant = Complex64::new(re[lane], im[lane]);
-                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                    out[lane] = if determinant.norm() > tol {
-                        pref * determinant
-                    } else {
-                        Complex64::new(0.0, 0.0)
-                    };
-                }
-            }
-        }
-    )
-}
-
-/// Evaluate eight real fixed-rank same-spin rank-`K` RDM determinants for `m = 0`.
-/// Every SIMD lane computes
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`
-/// with compile-time augmented dimension `D = K + RX + RW`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = f64` and `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `requests`: Eight creation-annihilation index tuples in SIMD-lane order.
-/// - `tol`: Numerical threshold applied to each determinant contribution.
-/// - `out`: Eight real transition-density elements in SIMD-lane order.
-/// # Returns
-/// - `()`: Writes eight rank-`K` RDM elements into `out`.
-/// # Safety
-/// - The caller must ensure `T = f64`, CPU support for `AVX-512`, valid external and excitation
-///   indices, and compile-time ranks satisfying `D = K + RX + RW` with `D <= 10`.
-#[cfg(target_arch = "x86_64")]
-#[inline(never)]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
-    T: NOCIScalar,
-    const K: usize,
-    const RX: usize,
-    const RW: usize,
-    const L: usize,
-    const D: usize,
->(
-    w: &SameSpinView<'_, T>,
+unsafe fn xw_rdmk_same_m0_prepared_f64x8<const K: usize>(
+    w: &SameSpinView<'_, f64>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
+    fundamental: (&[f64], &[f64], usize),
     requests: &[([usize; K], [usize; K]); 8],
     tol: f64,
     out: &mut [f64; 8],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
-        {
-            unsafe {
-                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
-                let pref = *std::ptr::from_ref(&w.phase).cast::<f64>() * w.tilde_s_prod;
-                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
-                if D == 0 {
-                    out.fill(pref);
-                    return;
-                }
-
-                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
-                let (x0, y0, ext_n) = fundamental;
-                let x0 = x0.as_ptr().cast::<f64>();
-                let y0 = y0.as_ptr().cast::<f64>();
-                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
-                let mut excitation_rows = [0usize; L];
-                let mut excitation_cols = [0usize; L];
-                let nocc = w.nocc;
-                let nvirt = w.nmo - nocc;
-                let mut x_holes = ex.0.holes;
-                let mut x_parts = ex.0.parts;
-                for i in 0..RX {
-                    excitation_cols[i] = x_holes.trailing_zeros() as usize;
-                    excitation_rows[i] = x_parts.trailing_zeros() as usize - nocc;
-                    x_holes &= x_holes - 1;
-                    x_parts &= x_parts - 1;
-                }
-                let mut w_holes = ex.1.holes;
-                let mut w_parts = ex.1.parts;
-                for i in 0..RW {
-                    excitation_rows[RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                    excitation_cols[RX + i] = w_parts.trailing_zeros() as usize;
-                    w_holes &= w_holes - 1;
-                    w_parts &= w_parts - 1;
-                }
-
-                // Prepend the external creation labels `\mathbf p` to the excitation rows.
-                let row_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).0[position]
-                    } else {
-                        excitation_rows[position - K]
-                    }
-                };
-                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
-                let col_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).1[position]
-                    } else {
-                        excitation_cols[position - K]
-                    }
-                };
-                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
-                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
-                let load_d = |i: usize, j: usize| -> F64x8 {
-                    let matrix = if i >= j { x0 } else { y0 };
-                    // Broadcast excitation-only entries and gather entries containing external labels.
-                    if i >= K && j >= K {
-                        F64x8::splat(*matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)))
-                    } else {
-                        F64x8::from_values([
-                            *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)),
-                            *matrix.add(row_index(i, 1) * ext_n + col_index(j, 1)),
-                            *matrix.add(row_index(i, 2) * ext_n + col_index(j, 2)),
-                            *matrix.add(row_index(i, 3) * ext_n + col_index(j, 3)),
-                            *matrix.add(row_index(i, 4) * ext_n + col_index(j, 4)),
-                            *matrix.add(row_index(i, 5) * ext_n + col_index(j, 5)),
-                            *matrix.add(row_index(i, 6) * ext_n + col_index(j, 6)),
-                            *matrix.add(row_index(i, 7) * ext_n + col_index(j, 7)),
-                        ])
-                    }
-                };
-                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                let mut d = [F64x8::zero(); 100];
-                for i in 0..D {
-                    for j in 0..D {
-                        d[i * D + j] = load_d(i, j);
-                    }
-                }
-
-                // For each column subset `S`, evaluate the final-row Laplace recurrence
-                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
-                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
-                let full = (1usize << D) - 1;
-                let mut minors = [F64x8::zero(); 1024];
-                for c in 0..D {
-                    minors[1usize << c] = d[(D - 1) * D + c];
-                }
-                let mut size = 2usize;
-                while size <= D {
-                    let row = D - size;
-                    let mut next = [F64x8::zero(); 1024];
-                    let mut mask = full;
-                    loop {
-                        if mask.count_ones() as usize == size {
-                            let mut acc = F64x8::zero();
-                            let mut position = 0usize;
-                            for c in 0..D {
-                                let bit = 1usize << c;
-                                if mask & bit != 0 {
-                                    let minor = minors[mask ^ bit];
-                                    acc = if position & 1 == 0 {
-                                        F64x8::madd(acc, d[row * D + c], minor)
-                                    } else {
-                                        F64x8::msub(acc, d[row * D + c], minor)
-                                    };
-                                    position += 1;
-                                }
-                            }
-                            next[mask] = acc;
-                        }
-                        if mask == 0 {
-                            break;
-                        }
-                        mask = (mask - 1) & full;
-                    }
-                    minors = next;
-                    size += 1;
-                }
-
-                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
-                let mut determinant = [0.0f64; 8];
-                minors[full].store(&mut determinant);
-                for lane in 0..8 {
-                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                    out[lane] = if determinant[lane].abs() > tol {
-                        pref * determinant[lane]
-                    } else {
-                        0.0
-                    };
-                }
-            }
-        }
+    let rx = ex.0.holes.count_ones() as usize;
+    let rw = ex.1.holes.count_ones() as usize;
+    dispatch_rdm_ranks!(
+        K,
+        (rx, rw),
+        |K, RX, RW, L, D, DD| unsafe {
+            xw_rdmk_same_m0_prepared_f64x8_const::<K, RX, RW, L, D, DD>(
+                w,
+                ex,
+                fundamental,
+                &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 8]>(),
+                tol,
+                out,
+            )
+        },
+        (),
     )
 }
 
-/// Evaluate eight complex fixed-rank same-spin rank-`K` RDM determinants for `m = 0`.
-/// Every SIMD lane computes
-/// `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`
-/// with compile-time augmented dimension `D = K + RX + RW`.
+/// Dispatch four complex RDM values to a fixed-rank AVX2/FMA kernel.
 /// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates with `T = Complex64` and `m = 0`.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `fundamental`: Extended `X^{(0)}`, `Y^{(0)}`, and their row dimension.
-/// - `requests`: Eight creation-annihilation index tuples in SIMD-lane order.
-/// - `tol`: Numerical threshold applied to each determinant contribution.
-/// - `out`: Eight complex transition-density elements in SIMD-lane order.
+/// - `w`: Complex same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Complex RDM outputs.
 /// # Returns
-/// - `()`: Writes eight rank-`K` RDM elements into `out`.
+/// - `()`: Writes four values.
 /// # Safety
-/// - The caller must ensure `T = Complex64`, CPU support for `AVX-512`, valid external and
-///   excitation indices, and compile-time ranks satisfying `D = K + RX + RW` with `D <= 10`.
+/// - The current CPU must support AVX2 and FMA.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn xw_rdmk_same_m0_prepared_c64x4<const K: usize>(
+    w: &SameSpinView<'_, Complex64>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[Complex64], &[Complex64], usize),
+    requests: &[([usize; K], [usize; K]); 4],
+    tol: f64,
+    out: &mut [Complex64; 4],
+) {
+    let rx = ex.0.holes.count_ones() as usize;
+    let rw = ex.1.holes.count_ones() as usize;
+    dispatch_rdm_ranks!(
+        K,
+        (rx, rw),
+        |K, RX, RW, L, D, DD| unsafe {
+            xw_rdmk_same_m0_prepared_c64x4_const::<K, RX, RW, L, D, DD>(
+                w,
+                ex,
+                fundamental,
+                &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 4]>(),
+                tol,
+                out,
+            )
+        },
+        (),
+    )
+}
+
+/// Dispatch eight complex RDM values to a fixed-rank AVX-512F kernel.
+/// # Arguments:
+/// - `w`: Complex same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Complex RDM outputs.
+/// # Returns
+/// - `()`: Writes eight values.
+/// # Safety
+/// - The current CPU must support AVX-512F.
+#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
-    T: NOCIScalar,
+unsafe fn xw_rdmk_same_m0_prepared_c64x8<const K: usize>(
+    w: &SameSpinView<'_, Complex64>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[Complex64], &[Complex64], usize),
+    requests: &[([usize; K], [usize; K]); 8],
+    tol: f64,
+    out: &mut [Complex64; 8],
+) {
+    let rx = ex.0.holes.count_ones() as usize;
+    let rw = ex.1.holes.count_ones() as usize;
+    dispatch_rdm_ranks!(
+        K,
+        (rx, rw),
+        |K, RX, RW, L, D, DD| unsafe {
+            xw_rdmk_same_m0_prepared_c64x8_const::<K, RX, RW, L, D, DD>(
+                w,
+                ex,
+                fundamental,
+                &*std::ptr::from_ref(requests).cast::<[([usize; K], [usize; K]); 8]>(),
+                tol,
+                out,
+            )
+        },
+        (),
+    )
+}
+
+/// Evaluate four real fixed-rank RDM values with AVX2/FMA.
+/// # Arguments:
+/// - `w`: Real same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Real RDM outputs.
+/// # Returns
+/// - `()`: Writes four values.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA; indices must match fixed ranks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn xw_rdmk_same_m0_prepared_f64x4_const<
     const K: usize,
     const RX: usize,
     const RW: usize,
     const L: usize,
     const D: usize,
+    const DD: usize,
 >(
-    w: &SameSpinView<'_, T>,
+    w: &SameSpinView<'_, f64>,
     ex: (&ExcitationSpin, &ExcitationSpin),
-    fundamental: (&[T], &[T], usize),
+    fundamental: (&[f64], &[f64], usize),
+    requests: &[([usize; K], [usize; K]); 4],
+    tol: f64,
+    out: &mut [f64; 4],
+) {
+    unsafe {
+        xw_rdmk_same_m0_prepared_simd_const::<f64, F64x4, 4, K, RX, RW, L, D, DD>(
+            w,
+            ex,
+            fundamental,
+            requests,
+            tol,
+            out,
+        );
+    }
+}
+
+/// Evaluate eight real fixed-rank RDM values with AVX-512F.
+/// # Arguments:
+/// - `w`: Real same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Real RDM outputs.
+/// # Returns
+/// - `()`: Writes eight values.
+/// # Safety
+/// - The current CPU must support AVX-512F; indices must match fixed ranks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn xw_rdmk_same_m0_prepared_f64x8_const<
+    const K: usize,
+    const RX: usize,
+    const RW: usize,
+    const L: usize,
+    const D: usize,
+    const DD: usize,
+>(
+    w: &SameSpinView<'_, f64>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[f64], &[f64], usize),
+    requests: &[([usize; K], [usize; K]); 8],
+    tol: f64,
+    out: &mut [f64; 8],
+) {
+    unsafe {
+        xw_rdmk_same_m0_prepared_simd_const::<f64, F64x8, 8, K, RX, RW, L, D, DD>(
+            w,
+            ex,
+            fundamental,
+            requests,
+            tol,
+            out,
+        );
+    }
+}
+
+/// Evaluate four complex fixed-rank RDM values with AVX2/FMA.
+/// # Arguments:
+/// - `w`: Complex same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Complex RDM outputs.
+/// # Returns
+/// - `()`: Writes four values.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA; indices must match fixed ranks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn xw_rdmk_same_m0_prepared_c64x4_const<
+    const K: usize,
+    const RX: usize,
+    const RW: usize,
+    const L: usize,
+    const D: usize,
+    const DD: usize,
+>(
+    w: &SameSpinView<'_, Complex64>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[Complex64], &[Complex64], usize),
+    requests: &[([usize; K], [usize; K]); 4],
+    tol: f64,
+    out: &mut [Complex64; 4],
+) {
+    unsafe {
+        xw_rdmk_same_m0_prepared_simd_const::<Complex64, C64x4, 4, K, RX, RW, L, D, DD>(
+            w,
+            ex,
+            fundamental,
+            requests,
+            tol,
+            out,
+        );
+    }
+}
+
+/// Evaluate eight complex fixed-rank RDM values with AVX-512F.
+/// # Arguments:
+/// - `w`: Complex same-spin Wick intermediates.
+/// - `ex`: Bra and ket excitations.
+/// - `fundamental`: Extended contractions.
+/// - `requests`: External RDM indices.
+/// - `tol`: Numerical threshold.
+/// - `out`: Complex RDM outputs.
+/// # Returns
+/// - `()`: Writes eight values.
+/// # Safety
+/// - The current CPU must support AVX-512F; indices must match fixed ranks.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+unsafe fn xw_rdmk_same_m0_prepared_c64x8_const<
+    const K: usize,
+    const RX: usize,
+    const RW: usize,
+    const L: usize,
+    const D: usize,
+    const DD: usize,
+>(
+    w: &SameSpinView<'_, Complex64>,
+    ex: (&ExcitationSpin, &ExcitationSpin),
+    fundamental: (&[Complex64], &[Complex64], usize),
     requests: &[([usize; K], [usize; K]); 8],
     tol: f64,
     out: &mut [Complex64; 8],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
-        {
-            unsafe {
-                // `pref = p\,{}^{xw}\tilde S` is the phase-weighted reduced overlap.
-                let phase = *std::ptr::from_ref(&w.phase).cast::<Complex64>();
-                let pref = phase * w.tilde_s_prod;
-                // For `D = 0`, `\det\mathbf D_{\mathrm{RDM}} = \det\varnothing = 1`.
-                if D == 0 {
-                    out.fill(pref);
-                    return;
-                }
-
-                // `x0` and `y0` store the extended `X^{(0)}` and `Y^{(0)}` contractions.
-                let (x0, y0, ext_n) = fundamental;
-                let x0 = x0.as_ptr().cast::<Complex64>();
-                let y0 = y0.as_ptr().cast::<Complex64>();
-                // Excitation rows are `V_x\cup O_w`; excitation columns are `O_x\cup V_w`.
-                let mut excitation_rows = [0usize; L];
-                let mut excitation_cols = [0usize; L];
-                let nocc = w.nocc;
-                let nvirt = w.nmo - nocc;
-                let mut x_holes = ex.0.holes;
-                let mut x_parts = ex.0.parts;
-                for i in 0..RX {
-                    excitation_cols[i] = x_holes.trailing_zeros() as usize;
-                    excitation_rows[i] = x_parts.trailing_zeros() as usize - nocc;
-                    x_holes &= x_holes - 1;
-                    x_parts &= x_parts - 1;
-                }
-                let mut w_holes = ex.1.holes;
-                let mut w_parts = ex.1.parts;
-                for i in 0..RW {
-                    excitation_rows[RX + i] = nvirt + w_holes.trailing_zeros() as usize;
-                    excitation_cols[RX + i] = w_parts.trailing_zeros() as usize;
-                    w_holes &= w_holes - 1;
-                    w_parts &= w_parts - 1;
-                }
-
-                // Prepend the external creation labels `\mathbf p` to the excitation rows.
-                let row_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).0[position]
-                    } else {
-                        excitation_rows[position - K]
-                    }
-                };
-                // Prepend the external annihilation labels `\mathbf q` to the excitation columns.
-                let col_index = |position: usize, lane: usize| -> usize {
-                    if position < K {
-                        w.nmo + requests.get_unchecked(lane).1[position]
-                    } else {
-                        excitation_cols[position - K]
-                    }
-                };
-                // `D^{\mathbf p\mathbf q}_{ij} = X^{(0)}_{r_i c_j}` for `i \geq j`, otherwise
-                // `D^{\mathbf p\mathbf q}_{ij} = Y^{(0)}_{r_i c_j}`.
-                let load_d = |i: usize, j: usize| -> C64x8 {
-                    let matrix = if i >= j { x0 } else { y0 };
-                    // Broadcast excitation-only entries and gather entries containing external labels.
-                    if i >= K && j >= K {
-                        let value = *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0));
-                        C64x8::splat(value.re, value.im)
-                    } else {
-                        C64x8::from_values([
-                            *matrix.add(row_index(i, 0) * ext_n + col_index(j, 0)),
-                            *matrix.add(row_index(i, 1) * ext_n + col_index(j, 1)),
-                            *matrix.add(row_index(i, 2) * ext_n + col_index(j, 2)),
-                            *matrix.add(row_index(i, 3) * ext_n + col_index(j, 3)),
-                            *matrix.add(row_index(i, 4) * ext_n + col_index(j, 4)),
-                            *matrix.add(row_index(i, 5) * ext_n + col_index(j, 5)),
-                            *matrix.add(row_index(i, 6) * ext_n + col_index(j, 6)),
-                            *matrix.add(row_index(i, 7) * ext_n + col_index(j, 7)),
-                        ])
-                    }
-                };
-                // Construct the packed augmented matrices `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                let mut d = [C64x8::zero(); 100];
-                for i in 0..D {
-                    for j in 0..D {
-                        d[i * D + j] = load_d(i, j);
-                    }
-                }
-
-                // For each column subset `S`, evaluate the final-row Laplace recurrence
-                // `M_S = \sum_{c \in S}(-1)^{\operatorname{pos}(c,S)}D_{D-|S|,c}M_{S\setminus\{c\}}`.
-                // The complete subset gives `M_{\{0,\ldots,D-1\}} = \det\mathbf D_{\mathrm{RDM}}`.
-                let full = (1usize << D) - 1;
-                let mut minors = [C64x8::zero(); 1024];
-                for c in 0..D {
-                    minors[1usize << c] = d[(D - 1) * D + c];
-                }
-                let mut size = 2usize;
-                while size <= D {
-                    let row = D - size;
-                    let mut next = [C64x8::zero(); 1024];
-                    let mut mask = full;
-                    loop {
-                        if mask.count_ones() as usize == size {
-                            let mut acc = C64x8::zero();
-                            let mut position = 0usize;
-                            for c in 0..D {
-                                let bit = 1usize << c;
-                                if mask & bit != 0 {
-                                    let minor = minors[mask ^ bit];
-                                    acc = if position & 1 == 0 {
-                                        C64x8::madd(acc, d[row * D + c], minor)
-                                    } else {
-                                        C64x8::msub(acc, d[row * D + c], minor)
-                                    };
-                                    position += 1;
-                                }
-                            }
-                            next[mask] = acc;
-                        }
-                        if mask == 0 {
-                            break;
-                        }
-                        mask = (mask - 1) & full;
-                    }
-                    minors = next;
-                    size += 1;
-                }
-
-                // Extract `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` for every lane.
-                let mut re = [0.0f64; 8];
-                let mut im = [0.0f64; 8];
-                minors[full].store(&mut re, &mut im);
-                for lane in 0..8 {
-                    let determinant = Complex64::new(re[lane], im[lane]);
-                    // `\Gamma^{\mathbf p}_{\mathbf q} = pref\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-                    out[lane] = if determinant.norm() > tol {
-                        pref * determinant
-                    } else {
-                        Complex64::new(0.0, 0.0)
-                    };
-                }
-            }
-        }
-    )
+    unsafe {
+        xw_rdmk_same_m0_prepared_simd_const::<Complex64, C64x8, 8, K, RX, RW, L, D, DD>(
+            w,
+            ex,
+            fundamental,
+            requests,
+            tol,
+            out,
+        );
+    }
 }
 
 /// Evaluate a same-spin rank-`K` RDM request batch through the scalar prepared path.
@@ -1208,7 +920,7 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
             dispatch_rdm_scalar_ranks!(
                 K,
                 (rx, rw),
-                |K, RX, RW, L, D| xw_rdmk_same_m0_prepared_const::<T, K, RX, RW, L, D>(
+                |K, RX, RW, L, D, DD| xw_rdmk_same_m0_prepared_const::<T, K, RX, RW, L, D, DD>(
                     w,
                     ex,
                     (fundamental.0, fundamental.1, fundamental.3),
@@ -1253,6 +965,7 @@ fn xw_rdmk_same_m0_prepared_const<
     const RW: usize,
     const L: usize,
     const D: usize,
+    const DD: usize,
 >(
     w: &SameSpinView<'_, T>,
     ex: (&ExcitationSpin, &ExcitationSpin),
@@ -1293,7 +1006,7 @@ fn xw_rdmk_same_m0_prepared_const<
             }
 
             let (x0, y0, ext_n) = fundamental;
-            let d = scratch.det0.as_mut_slice();
+            let d = &mut scratch.det0.as_mut_slice()[..DD];
             for i in 0..D {
                 let row = rows[i] * ext_n;
                 for j in 0..D {
@@ -1306,9 +1019,8 @@ fn xw_rdmk_same_m0_prepared_const<
             }
 
             let zero = <T as From<f64>>::from(0.0);
-            if let Some(value) = det_const::<T, D>(d)
-                && value.abs() > tol
-            {
+            let value = det_const::<T, D, DD>(d);
+            if value.abs() > tol {
                 w.phase * <T as From<f64>>::from(w.tilde_s_prod) * value
             } else {
                 zero
@@ -1366,7 +1078,7 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
             }
 
             let zero = <T as From<f64>>::from(0.0);
-            if let Some(value) = det(d, d_rank)
+            if let Some(value) = det_dynamic(d, d_rank)
                 && value.abs() > tol
             {
                 w.phase * <T as From<f64>>::from(w.tilde_s_prod) * value
@@ -1433,14 +1145,14 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
             let zero = <T as From<f64>>::from(0.0);
             let mut acc = zero;
             for_each_m_combination(d_rank, w.m, |bits| {
-                mix_columns(
+                mix_columns_dynamic(
                     scratch.det_mix.as_mut_slice(),
                     scratch.det0.as_slice(),
                     scratch.det1.as_slice(),
                     d_rank,
                     bits,
                 );
-                if let Some(value) = det(scratch.det_mix.as_slice(), d_rank)
+                if let Some(value) = det_dynamic(scratch.det_mix.as_slice(), d_rank)
                     && value.abs() > tol
                 {
                     acc += value;

@@ -19,8 +19,15 @@ pub mod eri;
 pub mod linalg;
 pub mod wick;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod simd;
+
 // Public mixed re-exports.
 pub use einsum::*;
 pub use eri::*;
 pub use linalg::*;
 pub use wick::*;
+
+// Restricted type re-exports.
+#[cfg(target_arch = "x86_64")]
+pub(crate) use simd::{C64x4, C64x8, F64x4, F64x8, Simd};

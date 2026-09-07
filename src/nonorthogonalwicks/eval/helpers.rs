@@ -7,9 +7,7 @@ use ndarray::{Array2, ArrayView2, s};
 // Crate-root imports.
 #[cfg(feature = "nocc")]
 use crate::maths::adjoint;
-use crate::maths::{
-    adjugate_transpose, det, minor as build_minor, minor_adjugate_transpose, mix_columns,
-};
+use crate::maths::{adjugate_transpose_dynamic, minor_dynamic, mix_columns_dynamic};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 
@@ -62,35 +60,6 @@ pub(super) struct Minor {
     pub row: usize,
     /// Column z removed from the full determinant.
     pub col: usize,
-}
-
-/// `Evaluate \det\mathbf A for a row-major square matrix.`
-/// # Arguments:
-/// - `a`: `Row-major entries of \mathbf A.`
-/// - `n`: `Dimension of \mathbf A.`
-/// # Returns
-/// - `Option<T>`: `\det\mathbf A when the determinant routine succeeds.`
-#[inline(always)]
-pub(super) fn det_slice<T: NOCIScalar>(
-    a: &[T],
-    n: usize,
-) -> Option<T> {
-    det(a, n)
-}
-
-/// `Evaluate \det\mathbf A for a row-major square matrix, returning zero when the determinant`
-/// routine does not produce a value.
-/// # Arguments:
-/// - `a`: `Row-major entries of \mathbf A.`
-/// - `n`: `Dimension of \mathbf A.`
-/// # Returns
-/// - `T`: `\det\mathbf A, or zero when evaluation fails.`
-#[inline(always)]
-pub(super) fn det_or_zero<T: NOCIScalar>(
-    a: &[T],
-    n: usize,
-) -> T {
-    det_slice(a, n).unwrap_or(<T as From<f64>>::from(0.0))
 }
 
 /// Extend one fundamental-contraction matrix to include the external RDM basis:
@@ -461,7 +430,7 @@ pub(super) fn mix_dets_same<T: NOCIScalar>(
             None => {
                 // Construct the first mixed determinant by selecting every column from the
                 // corresponding all-`m_i = 0` or all-`m_i = 1` endpoint.
-                mix_columns(
+                mix_columns_dynamic(
                     scratch.det_mix.as_mut_slice(),
                     scratch.det0.as_slice(),
                     scratch.det1.as_slice(),
@@ -536,7 +505,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
         // `m_{\alpha 0}`; the remaining bits select alpha-spin determinant columns.
         for_each_m_combination(la + 1, w.aa.m, |bits_a| {
             let inda = bits_a >> 1;
-            mix_columns(
+            mix_columns_dynamic(
                 scratch.deta_mix.as_mut_slice(),
                 deta.zero,
                 deta.one,
@@ -554,7 +523,7 @@ pub(super) fn get_det_adjt_diff<T: NOCIScalar>(
                 // `m_{\beta 0} + \sum_y m_{\beta y} = m_\beta`.
                 for_each_m_combination(lb + 1, w.bb.m, |bits_b| {
                     let indb = bits_b >> 1;
-                    mix_columns(
+                    mix_columns_dynamic(
                         scratch.detb_mix.as_mut_slice(),
                         detb.zero,
                         detb.one,
@@ -601,30 +570,12 @@ pub(super) fn minor_adjt<T: NOCIScalar>(
     mut f: impl FnMut(usize, &[T], &[T], T),
 ) {
     let lm1 = minor.l.saturating_sub(1);
-    if minor.l <= 4 {
-        let mut invs = [];
-        let mut lu = [];
-        if let Some(det_minor) = minor_adjugate_transpose(
-            adjtb.as_mut_slice(),
-            minorb.as_mut_slice(),
-            &mut invs,
-            &mut lu,
-            full,
-            minor.l,
-            minor.row,
-            minor.col,
-            tol,
-        ) && det_minor.abs() > tol
-        {
-            f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
-        }
-    } else {
-        build_minor(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
-        if let Some(det_minor) =
-            adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
-        {
-            f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
-        }
+    minor_dynamic(minorb.as_mut_slice(), full, minor.l, minor.row, minor.col);
+
+    if let Some(det_minor) =
+        adjugate_transpose_generic(adjtb.as_mut_slice(), minorb.as_slice(), lm1, tol)
+    {
+        f(lm1, minorb.as_slice(), adjtb.as_slice(), det_minor);
     }
 }
 
@@ -672,17 +623,14 @@ pub(super) fn for_each_m_combination(
 }
 
 /// `Evaluate \det\mathbf D and its cofactor matrix:`
-/// `\operatorname{cof}[\mathbf D]_{rc} = (-1)^{r+c}\det\mathbf D[r|c]`.
-/// Fixed-rank determinant and cofactor kernels are used for `n \leq 4`; larger matrices evaluate
-/// the determinant first and then construct every cofactor explicitly from an
-/// `(n - 1)\times(n - 1)` minor.
+/// Evaluate a runtime-rank determinant and cofactor matrix and reject values below `tol`.
 /// # Arguments:
-/// - `adjt`: `Output row-major cofactor matrix \operatorname{cof}[\mathbf D].`
-/// - `full`: `Row-major entries of \mathbf D.`
-/// - `n`: `Dimension of \mathbf D.`
-/// - `tol`: `Numerical threshold applied to |\det\mathbf D|.`
+/// - `adjt`: Row-major cofactor matrix to write.
+/// - `full`: Input row-major square matrix.
+/// - `n`: Runtime matrix rank.
+/// - `tol`: Magnitude threshold.
 /// # Returns
-/// - `Option<T>`: `\det\mathbf D when its magnitude exceeds tol.`
+/// - `Option<T>`: Determinant when evaluation succeeds and exceeds `tol`.
 #[inline(always)]
 pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
     adjt: &mut [T],
@@ -690,34 +638,13 @@ pub(super) fn adjugate_transpose_generic<T: NOCIScalar>(
     n: usize,
     tol: f64,
 ) -> Option<T> {
-    // Use the specialised low-rank routine for `n \leq 4`.
-    if n <= 4 {
-        let mut invs = [];
-        let mut lu = [];
-        let detv = adjugate_transpose(adjt, &mut invs, &mut lu, full, n, tol)?;
-        if detv.abs() <= tol {
-            return None;
-        }
-        return Some(detv);
-    }
+    let mut invs = vec![0.0; n];
+    let mut lu = vec![T::from_real(0.0); n * n];
+    let determinant = adjugate_transpose_dynamic(adjt, &mut invs, &mut lu, full, n, tol)?;
 
-    // For larger matrices, reject determinant values below the numerical threshold before
-    // constructing the cofactor matrix.
-    let detv = det_slice(full, n)?;
-    if detv.abs() <= tol {
-        return None;
+    if determinant.abs() > tol {
+        Some(determinant)
+    } else {
+        None
     }
-
-    // Construct each cofactor as `(-1)^{r+c}\det\mathbf D[r|c]`.
-    let mut minor = vec![<T as From<f64>>::from(0.0); (n - 1) * (n - 1)];
-    for r in 0..n {
-        for c in 0..n {
-            build_minor(&mut minor, full, n, r, c);
-            let md = det_or_zero(&minor, n - 1);
-            let sign = if ((r + c) & 1) == 0 { 1.0 } else { -1.0 };
-            adjt[idx(n, r, c)] = <T as From<f64>>::from(sign) * md;
-        }
-    }
-
-    Some(detv)
 }

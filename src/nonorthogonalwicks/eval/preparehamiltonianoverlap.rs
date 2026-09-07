@@ -10,8 +10,14 @@ use std::arch::is_x86_feature_detected;
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::config::{MAXL, MAXMINOR, SIMDHAMMAXL};
-use crate::maths::{adjugate_transpose, det};
+#[cfg(target_arch = "x86_64")]
+use crate::maths::{
+    C64x4, C64x8, F64x4, F64x8, Simd, adjugate_transpose_simd_const, det_simd_const,
+};
+use crate::maths::{
+    adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
+    second_minor_const,
+};
 use crate::noci::NOCIScalar;
 use crate::time_call;
 use crate::{DetState, Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinDetState};
@@ -29,8 +35,6 @@ use super::helpers::{
     get_det_adjt_diff, ii_replacement, j_replacement, jslot, minor_adjt, mix_dets_same,
 };
 use super::prepare::prepare_same;
-#[cfg(target_arch = "x86_64")]
-use super::simd::{C64x4, C64x8, F64x4, F64x8};
 
 /// Evaluate the Hamiltonian and overlap matrix elements between two determinants generated from
 /// one ordered pair of nonorthogonal references.
@@ -137,6 +141,13 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
             if w.aa.m == 0 && w.bb.m == 0 {
                 unsafe {
                     if TypeId::of::<T>() == TypeId::of::<f64>() {
+                        let w_f64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, f64>>();
+                        let basis_f64 = std::slice::from_raw_parts(
+                            basis.0.as_ptr().cast::<DetState<f64>>(),
+                            basis.0.len(),
+                        );
+                        let scratch_f64 =
+                            &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<f64>>();
                         let out_f64 = std::slice::from_raw_parts_mut(
                             out.as_mut_ptr().cast::<(f64, f64)>(),
                             out.len(),
@@ -144,32 +155,39 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 
                         if is_x86_feature_detected!("avx512f") {
                             xw_hamiltonian_overlap_prepared_simd(
-                                w,
-                                basis,
+                                w_f64,
+                                (basis_f64, basis.1),
                                 requests,
                                 (enuc, tol),
-                                scratch,
+                                scratch_f64,
                                 out_f64,
-                                xw_hamiltonian_overlap_m0_prepared_f64x8::<T>,
+                                xw_hamiltonian_overlap_m0_prepared_f64x8,
                             );
                             return;
                         }
 
                         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
                             xw_hamiltonian_overlap_prepared_simd(
-                                w,
-                                basis,
+                                w_f64,
+                                (basis_f64, basis.1),
                                 requests,
                                 (enuc, tol),
-                                scratch,
+                                scratch_f64,
                                 out_f64,
-                                xw_hamiltonian_overlap_m0_prepared_f64x4::<T>,
+                                xw_hamiltonian_overlap_m0_prepared_f64x4,
                             );
                             return;
                         }
                     }
 
                     if TypeId::of::<T>() == TypeId::of::<Complex64>() {
+                        let w_c64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, Complex64>>();
+                        let basis_c64 = std::slice::from_raw_parts(
+                            basis.0.as_ptr().cast::<DetState<Complex64>>(),
+                            basis.0.len(),
+                        );
+                        let scratch_c64 =
+                            &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<Complex64>>();
                         let out_c64 = std::slice::from_raw_parts_mut(
                             out.as_mut_ptr().cast::<(Complex64, Complex64)>(),
                             out.len(),
@@ -177,26 +195,26 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 
                         if is_x86_feature_detected!("avx512f") {
                             xw_hamiltonian_overlap_prepared_simd(
-                                w,
-                                basis,
+                                w_c64,
+                                (basis_c64, basis.1),
                                 requests,
                                 (enuc, tol),
-                                scratch,
+                                scratch_c64,
                                 out_c64,
-                                xw_hamiltonian_overlap_m0_prepared_c64x8::<T>,
+                                xw_hamiltonian_overlap_m0_prepared_c64x8,
                             );
                             return;
                         }
 
                         if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
                             xw_hamiltonian_overlap_prepared_simd(
-                                w,
-                                basis,
+                                w_c64,
+                                (basis_c64, basis.1),
                                 requests,
                                 (enuc, tol),
-                                scratch,
+                                scratch_c64,
                                 out_c64,
-                                xw_hamiltonian_overlap_m0_prepared_c64x4::<T>,
+                                xw_hamiltonian_overlap_m0_prepared_c64x4,
                             );
                             return;
                         }
@@ -240,23 +258,23 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 /// # Returns:
 /// - `()`: Writes every request into `out`.
 /// # Safety:
-/// - The caller must prove `T = R` and support for the target features required by `kernel`.
+/// - The caller must provide a kernel supported by the current CPU.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::type_complexity)]
-unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, const N: usize>(
+unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     w: &WicksPairView<'_, T>,
     basis: (&[DetState<T>], &[ReducedTwoSpinDetState]),
     requests: &[(usize, usize, usize)],
     parameters: (f64, f64),
     scratch: &mut WickScratchSpin<T>,
-    out: &mut [(R, R)],
+    out: &mut [(T, T)],
     kernel: for<'a> unsafe fn(
         &WicksPairView<'a, T>,
         (usize, usize, usize, usize),
         (&[ExcitationCache; N], &[ExcitationCache; N]),
         &[f64; N],
         f64,
-        (&mut [R; N], &mut [R; N]),
+        (&mut [T; N], &mut [T; N]),
     ),
 ) {
     let (enuc, tol) = parameters;
@@ -291,7 +309,6 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
                 && ranks.1 < HAMRADIX
                 && ranks.2 < HAMRADIX
                 && ranks.3 < HAMRADIX
-                && ranks.0 + ranks.1 + ranks.2 + ranks.3 <= SIMDHAMMAXL
             {
                 let key =
                     ((ranks.0 * HAMRADIX + ranks.1) * HAMRADIX + ranks.2) * HAMRADIX + ranks.3;
@@ -309,8 +326,8 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
                 counts[bin] += 1;
 
                 if counts[bin] == N {
-                    let mut h = [R::from_real(0.0); N];
-                    let mut s = [R::from_real(0.0); N];
+                    let mut h = [T::from_real(0.0); N];
+                    let mut s = [T::from_real(0.0); N];
                     kernel(
                         w,
                         HAMRANKS[bin],
@@ -337,10 +354,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
                     scratch,
                     tol,
                 );
-                out[output] = (
-                    *std::ptr::from_ref(&value.0).cast::<R>(),
-                    *std::ptr::from_ref(&value.1).cast::<R>(),
-                );
+                out[output] = value;
             }
         }
 
@@ -359,8 +373,8 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, R: NOCIScalar, con
                 phases[bin][lane] = fill_phase;
             }
 
-            let mut h = [R::from_real(0.0); N];
-            let mut s = [R::from_real(0.0); N];
+            let mut h = [T::from_real(0.0); N];
+            let mut s = [T::from_real(0.0); N];
             kernel(
                 w,
                 HAMRANKS[bin],
@@ -402,19 +416,21 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
         {
             dispatch_hamiltonian_scalar_ranks!(
                 ranks,
-                |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
+                |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| {
                     Some(xw_hamiltonian_overlap_m0_prepared_const::<
                         T,
                         RXA,
                         RWA,
                         LA,
+                        DA,
+                        MA,
+                        MDA,
                         RXB,
                         RWB,
                         LB,
-                        DA,
                         DB,
-                        SA,
-                        SB,
+                        MB,
+                        MDB,
                     >(w, x_ex, w_ex, excitation_phase, enuc))
                 },
                 None,
@@ -434,13 +450,13 @@ fn xw_hamiltonian_overlap_m0_prepared<T: NOCIScalar>(
 /// # Returns:
 /// - `()`: Writes `RX + RW` row and column labels.
 #[inline(always)]
-fn construct_hamiltonian_indices<const RX: usize, const RW: usize>(
+fn construct_hamiltonian_indices<const RX: usize, const RW: usize, const L: usize>(
     x_ex: &ExcitationSpinCache,
     w_ex: &ExcitationSpinCache,
     nocc: usize,
     nvirt: usize,
-    rows: &mut [usize; MAXL],
-    cols: &mut [usize; MAXL],
+    rows: &mut [usize; L],
+    cols: &mut [usize; L],
 ) {
     for i in 0..RX {
         rows[i] = usize::from(x_ex.particles[i]) - nocc;
@@ -491,13 +507,15 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
+    const DA: usize,
+    const MA: usize,
+    const MDA: usize,
     const RXB: usize,
     const RWB: usize,
     const LB: usize,
-    const DA: usize,
     const DB: usize,
-    const SA: usize,
-    const SB: usize,
+    const MB: usize,
+    const MDB: usize,
 >(
     w: &WicksPairView<'_, T>,
     x_ex: &ExcitationCache,
@@ -508,340 +526,179 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_const,
         {
-            let zero = <T as From<f64>>::from(0.0);
-            let one = <T as From<f64>>::from(1.0);
-            let half = <T as From<f64>>::from(0.5);
-            let mut rows_a = [0usize; MAXL];
-            let mut cols_a = [0usize; MAXL];
+            let zero = T::from_real(0.0);
+            let half = T::from_real(0.5);
+            let mut rows_a = [0usize; LA];
+            let mut cols_a = [0usize; LA];
             let mut d_a = [zero; DA];
             let mut cof_a = [zero; DA];
-            let mut second_a = [zero; SA];
-            let mut det_a = one;
+            let n_a = w.aa.n();
+            let nocc_a = w.aa.nocc;
+            let nvirt_a = w.aa.nmo - nocc_a;
+            construct_hamiltonian_indices::<RXA, RWA, LA>(
+                &x_ex.alpha,
+                &w_ex.alpha,
+                nocc_a,
+                nvirt_a,
+                &mut rows_a,
+                &mut cols_a,
+            );
+
+            let x0_a = w.aa.x_slice(0);
+            let y0_a = w.aa.y_slice(0);
+            for i in 0..LA {
+                let row = rows_a[i] * n_a;
+                for j in 0..LA {
+                    d_a[i * LA + j] = if i >= j {
+                        x0_a[row + cols_a[j]]
+                    } else {
+                        y0_a[row + cols_a[j]]
+                    };
+                }
+            }
+
+            let det_a = adjugate_transpose_const::<T, LA, DA>(&mut cof_a, &d_a);
             let mut j_a = zero;
-            let mut replacement_a = zero;
-
-            // Build the alpha rows `r_\eta` and columns `c_z` for
-            // `\mathbf D_{\alpha,\mathrm{ov}}`; x-excitations
-            // contribute (a,i) labels and w-excitations contribute (j,b) labels.
-            if LA > 0 {
-                let nocc = w.aa.nocc;
-                let nvirt = w.aa.nmo - nocc;
-                construct_hamiltonian_indices::<RXA, RWA>(
-                    &x_ex.alpha,
-                    &w_ex.alpha,
-                    nocc,
-                    nvirt,
-                    &mut rows_a,
-                    &mut cols_a,
-                );
-
-                // Form `D^\alpha_{\eta z}` from the `m_i = 0` fundamental contractions:
-                // `X^{(0)}_{r_\eta c_z}` on and below the diagonal and
-                // `Y^{(0)}_{r_\eta c_z}` above it.
-                let n = w.aa.n();
-                let x0 = w.aa.x_slice(0);
-                let y0 = w.aa.y_slice(0);
-                for i in 0..LA {
-                    let row = rows_a[i] * n;
-                    for j in 0..LA {
-                        d_a[i * LA + j] = if i >= j {
-                            x0[row + cols_a[j]]
-                        } else {
-                            y0[row + cols_a[j]]
-                        };
-                    }
-                }
-                if LA == 1 {
-                    cof_a[0] = one;
-                    det_a = d_a[0];
-                } else {
-                    // Same-spin double Laplace class C_3:
-                    // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
-                    // `\mathcal J^\alpha_{\eta z,\xi y}`
-                    // `\det\mathbf D_{\alpha,\mathrm{ov}}[\eta,\xi|z,y]`.
-                    let pairs_a = LA * (LA - 1) / 2;
-                    let jsl = w.aa.j_slice(0);
-                    let n2 = n * n;
-                    let n3 = n2 * n;
-                    for eta in 0..LA {
-                        for xi in (eta + 1)..LA {
-                            let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
-                            for z in 0..LA {
-                                for y in (z + 1)..LA {
-                                    let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
-                                    let mut minor = [zero; MAXMINOR];
-                                    let mut ii = 0usize;
-                                    for r in 0..LA {
-                                        if r == eta || r == xi {
-                                            continue;
-                                        }
-                                        let mut jj = 0usize;
-                                        for c in 0..LA {
-                                            if c == z || c == y {
-                                                continue;
-                                            }
-                                            minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
-                                            jj += 1;
-                                        }
-                                        ii += 1;
-                                    }
-                                    let second_rank = LA - 2;
-                                    let second =
-                                        det(&minor[..second_rank * second_rank], second_rank)
-                                            .unwrap_or(zero);
-                                    second_a[row_pair * pairs_a + col_pair] = second;
-                                    let direct_base =
-                                        rows_a[eta] * n3 + cols_a[z] * n2 + rows_a[xi] * n;
-                                    let exchange_base =
-                                        rows_a[eta] * n3 + cols_a[y] * n2 + rows_a[xi] * n;
-                                    let term = second
-                                        * (jsl[direct_base + cols_a[y]]
-                                            - jsl[exchange_base + cols_a[z]]);
-                                    if ((eta + xi + z + y) & 1) == 0 {
-                                        j_a += term;
-                                    } else {
-                                        j_a -= term;
-                                    }
-                                }
+            let jsl_a = w.aa.j_slice(0);
+            let n2_a = n_a * n_a;
+            let n3_a = n2_a * n_a;
+            for eta in 0..LA {
+                for xi in (eta + 1)..LA {
+                    for z in 0..LA {
+                        for y in (z + 1)..LA {
+                            let mut minor = [zero; MDA];
+                            second_minor_const::<T, LA>(&mut minor, &d_a, eta, xi, z, y);
+                            let second = det_const::<T, MA, MDA>(&minor);
+                            let direct_base =
+                                rows_a[eta] * n3_a + cols_a[z] * n2_a + rows_a[xi] * n_a;
+                            let exchange_base =
+                                rows_a[eta] * n3_a + cols_a[y] * n2_a + rows_a[xi] * n_a;
+                            let term = second
+                                * (jsl_a[direct_base + cols_a[y]]
+                                    - jsl_a[exchange_base + cols_a[z]]);
+                            if ((eta + xi + z + y) & 1) == 0 {
+                                j_a += term;
+                            } else {
+                                j_a -= term;
                             }
                         }
-                    }
-
-                    // Reconstruct the cofactor
-                    // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`
-                    // from the second-minor table, then expand det D along the first row.
-                    for eta in 0..LA {
-                        let r = if eta == 0 { 1usize } else { 0usize };
-                        let r_minor = if r < eta { r } else { r - 1 };
-                        for z in 0..LA {
-                            let mut value = zero;
-                            for c in 0..LA {
-                                if c == z {
-                                    continue;
-                                }
-                                let c_minor = if c < z { c } else { c - 1 };
-                                let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                let row_pair = row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
-                                let col_pair = col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                let term =
-                                    d_a[r * LA + c] * second_a[row_pair * pairs_a + col_pair];
-                                if ((r_minor + c_minor) & 1) == 0 {
-                                    value += term;
-                                } else {
-                                    value -= term;
-                                }
-                            }
-                            cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 { value } else { -value };
-                        }
-                    }
-                    det_a = d_a[0] * cof_a[0];
-                    for z in 1..LA {
-                        det_a += d_a[z] * cof_a[z];
-                    }
-                }
-
-                // One-column Hamiltonian replacements:
-                // `\sum_z\det\mathbf D_{\alpha,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal H}_z}`
-                // ` = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-                // `\mathcal H^\alpha_{\eta z}`.
-                let hcol0 = w.aa.hcol0_t_slice();
-                for z in 0..LA {
-                    let base = cols_a[z] * n;
-                    for eta in 0..LA {
-                        replacement_a += cof_a[eta * LA + z] * hcol0[base + rows_a[eta]];
                     }
                 }
             }
-            let mut rows_b = [0usize; MAXL];
-            let mut cols_b = [0usize; MAXL];
+
+            let mut replacement_a = zero;
+            let hcol0_a = w.aa.hcol0_t_slice();
+            for z in 0..LA {
+                let base = cols_a[z] * n_a;
+                for eta in 0..LA {
+                    replacement_a += cof_a[eta * LA + z] * hcol0_a[base + rows_a[eta]];
+                }
+            }
+
+            let mut rows_b = [0usize; LB];
+            let mut cols_b = [0usize; LB];
             let mut d_b = [zero; DB];
             let mut cof_b = [zero; DB];
-            let mut second_b = [zero; SB];
-            let mut det_b = one;
+            let n_b = w.bb.n();
+            let nocc_b = w.bb.nocc;
+            let nvirt_b = w.bb.nmo - nocc_b;
+            construct_hamiltonian_indices::<RXB, RWB, LB>(
+                &x_ex.beta,
+                &w_ex.beta,
+                nocc_b,
+                nvirt_b,
+                &mut rows_b,
+                &mut cols_b,
+            );
+
+            let x0_b = w.bb.x_slice(0);
+            let y0_b = w.bb.y_slice(0);
+            for i in 0..LB {
+                let row = rows_b[i] * n_b;
+                for j in 0..LB {
+                    d_b[i * LB + j] = if i >= j {
+                        x0_b[row + cols_b[j]]
+                    } else {
+                        y0_b[row + cols_b[j]]
+                    };
+                }
+            }
+
+            let det_b = adjugate_transpose_const::<T, LB, DB>(&mut cof_b, &d_b);
             let mut j_b = zero;
+            let jsl_b = w.bb.j_slice(0);
+            let n2_b = n_b * n_b;
+            let n3_b = n2_b * n_b;
+            for eta in 0..LB {
+                for xi in (eta + 1)..LB {
+                    for z in 0..LB {
+                        for y in (z + 1)..LB {
+                            let mut minor = [zero; MDB];
+                            second_minor_const::<T, LB>(&mut minor, &d_b, eta, xi, z, y);
+                            let second = det_const::<T, MB, MDB>(&minor);
+                            let direct_base =
+                                rows_b[eta] * n3_b + cols_b[z] * n2_b + rows_b[xi] * n_b;
+                            let exchange_base =
+                                rows_b[eta] * n3_b + cols_b[y] * n2_b + rows_b[xi] * n_b;
+                            let term = second
+                                * (jsl_b[direct_base + cols_b[y]]
+                                    - jsl_b[exchange_base + cols_b[z]]);
+                            if ((eta + xi + z + y) & 1) == 0 {
+                                j_b += term;
+                            } else {
+                                j_b -= term;
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut replacement_b = zero;
-
-            // Build the beta rows `r_\eta` and columns `c_z` for
-            // `\mathbf D_{\beta,\mathrm{ov}}`; x-excitations
-            // contribute (a,i) labels and w-excitations contribute (j,b) labels.
-            if LB > 0 {
-                let nocc = w.bb.nocc;
-                let nvirt = w.bb.nmo - nocc;
-                construct_hamiltonian_indices::<RXB, RWB>(
-                    &x_ex.beta,
-                    &w_ex.beta,
-                    nocc,
-                    nvirt,
-                    &mut rows_b,
-                    &mut cols_b,
-                );
-
-                // Form `D^\beta_{\eta z}` from the `m_i = 0` fundamental contractions:
-                // `X^{(0)}_{r_\eta c_z}` on and below the diagonal and
-                // `Y^{(0)}_{r_\eta c_z}` above it.
-                let n = w.bb.n();
-                let x0 = w.bb.x_slice(0);
-                let y0 = w.bb.y_slice(0);
-                for i in 0..LB {
-                    let row = rows_b[i] * n;
-                    for j in 0..LB {
-                        d_b[i * LB + j] = if i >= j {
-                            x0[row + cols_b[j]]
-                        } else {
-                            y0[row + cols_b[j]]
-                        };
-                    }
-                }
-                if LB == 1 {
-                    cof_b[0] = one;
-                    det_b = d_b[0];
-                } else {
-                    // Same-spin double Laplace class C_3:
-                    // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
-                    // `\mathcal J^\beta_{\eta z,\xi y}`
-                    // `\det\mathbf D_{\beta,\mathrm{ov}}[\eta,\xi|z,y]`.
-                    let pairs_b = LB * (LB - 1) / 2;
-                    let jsl = w.bb.j_slice(0);
-                    let n2 = n * n;
-                    let n3 = n2 * n;
-                    for eta in 0..LB {
-                        for xi in (eta + 1)..LB {
-                            let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
-                            for z in 0..LB {
-                                for y in (z + 1)..LB {
-                                    let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
-                                    let mut minor = [zero; MAXMINOR];
-                                    let mut ii = 0usize;
-                                    for r in 0..LB {
-                                        if r == eta || r == xi {
-                                            continue;
-                                        }
-                                        let mut jj = 0usize;
-                                        for c in 0..LB {
-                                            if c == z || c == y {
-                                                continue;
-                                            }
-                                            minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
-                                            jj += 1;
-                                        }
-                                        ii += 1;
-                                    }
-                                    let second_rank = LB - 2;
-                                    let second =
-                                        det(&minor[..second_rank * second_rank], second_rank)
-                                            .unwrap_or(zero);
-                                    second_b[row_pair * pairs_b + col_pair] = second;
-                                    let direct_base =
-                                        rows_b[eta] * n3 + cols_b[z] * n2 + rows_b[xi] * n;
-                                    let exchange_base =
-                                        rows_b[eta] * n3 + cols_b[y] * n2 + rows_b[xi] * n;
-                                    let term = second
-                                        * (jsl[direct_base + cols_b[y]]
-                                            - jsl[exchange_base + cols_b[z]]);
-                                    if ((eta + xi + z + y) & 1) == 0 {
-                                        j_b += term;
-                                    } else {
-                                        j_b -= term;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Reconstruct the cofactor
-                    // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`
-                    // from the second-minor table, then expand det D along the first row.
-                    for eta in 0..LB {
-                        let r = if eta == 0 { 1usize } else { 0usize };
-                        let r_minor = if r < eta { r } else { r - 1 };
-                        for z in 0..LB {
-                            let mut value = zero;
-                            for c in 0..LB {
-                                if c == z {
-                                    continue;
-                                }
-                                let c_minor = if c < z { c } else { c - 1 };
-                                let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                let row_pair = row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
-                                let col_pair = col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                let term =
-                                    d_b[r * LB + c] * second_b[row_pair * pairs_b + col_pair];
-                                if ((r_minor + c_minor) & 1) == 0 {
-                                    value += term;
-                                } else {
-                                    value -= term;
-                                }
-                            }
-                            cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 { value } else { -value };
-                        }
-                    }
-                    det_b = d_b[0] * cof_b[0];
-                    for z in 1..LB {
-                        det_b += d_b[z] * cof_b[z];
-                    }
-                }
-
-                // One-column Hamiltonian replacements:
-                // `\sum_z\det\mathbf D_{\beta,\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal H}_z}`
-                // ` = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
-                // `\mathcal H^\beta_{\eta z}`.
-                let hcol0 = w.bb.hcol0_t_slice();
-                for z in 0..LB {
-                    let base = cols_b[z] * n;
-                    for eta in 0..LB {
-                        replacement_b += cof_b[eta * LB + z] * hcol0[base + rows_b[eta]];
-                    }
+            let hcol0_b = w.bb.hcol0_t_slice();
+            for z in 0..LB {
+                let base = cols_b[z] * n_b;
+                for eta in 0..LB {
+                    replacement_b += cof_b[eta * LB + z] * hcol0_b[base + rows_b[eta]];
                 }
             }
 
-            // Mixed-spin double replacement:
-            // `\sum_{z,y}\sum_{\eta,\xi}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-            // `\mathcal{II}_{\eta z,\xi y}`
-            // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
             let mut ii_term = zero;
-            if LA > 0 && LB > 0 {
-                let iisl = w.ab.iiab_slice(0, 0, 0, 0);
-                let n = w.ab.n();
-                let n2 = n * n;
-                let n3 = n2 * n;
-                if LA <= LB {
-                    for z in 0..LA {
-                        for eta in 0..LA {
-                            let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
-                            let mut inner = zero;
-                            for y in 0..LB {
-                                for xi in 0..LB {
-                                    inner += cof_b[xi * LB + y]
-                                        * iisl[base_a + rows_b[xi] * n + cols_b[y]];
-                                }
+            let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+            let n = w.ab.n();
+            let n2 = n * n;
+            let n3 = n2 * n;
+            if LA <= LB {
+                for z in 0..LA {
+                    for eta in 0..LA {
+                        let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
+                        let mut inner = zero;
+                        for y in 0..LB {
+                            for xi in 0..LB {
+                                inner +=
+                                    cof_b[xi * LB + y] * iisl[base_a + rows_b[xi] * n + cols_b[y]];
                             }
-                            ii_term += cof_a[eta * LA + z] * inner;
                         }
+                        ii_term += cof_a[eta * LA + z] * inner;
                     }
-                } else {
-                    for y in 0..LB {
-                        for xi in 0..LB {
-                            let suffix_b = rows_b[xi] * n + cols_b[y];
-                            let mut inner = zero;
-                            for z in 0..LA {
-                                for eta in 0..LA {
-                                    let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
-                                    inner += cof_a[eta * LA + z] * iisl[base_a + suffix_b];
-                                }
+                }
+            } else {
+                for y in 0..LB {
+                    for xi in 0..LB {
+                        let suffix_b = rows_b[xi] * n + cols_b[y];
+                        let mut inner = zero;
+                        for z in 0..LA {
+                            for eta in 0..LA {
+                                let base_a = rows_a[eta] * n3 + cols_a[z] * n2;
+                                inner += cof_a[eta * LA + z] * iisl[base_a + suffix_b];
                             }
-                            ii_term += cof_b[xi * LB + y] * inner;
                         }
+                        ii_term += cof_b[xi * LB + y] * inner;
                     }
                 }
             }
 
-            // Assemble the `m_\alpha = m_\beta = 0` Hamiltonian classes:
-            // scalar `V_0` terms times `\det\mathbf D_\alpha\det\mathbf D_\beta`, minus
-            // one-column replacements, plus `\mathcal J` and `\mathcal{II}`.
             let det_ab = det_a * det_b;
-            let g0 = <T as From<f64>>::from(enuc)
+            let g0 = T::from_real(enuc)
                 + w.aa.f0h[0]
                 + half * w.aa.v0[0]
                 + w.bb.f0h[0]
@@ -853,2555 +710,713 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             core += j_a * det_b;
             core += j_b * det_a;
             core += ii_term;
-            let pref = <T as From<f64>>::from(excitation_phase)
+            let pref = T::from_real(excitation_phase)
                 * w.aa.phase
-                * <T as From<f64>>::from(w.aa.tilde_s_prod)
+                * T::from_real(w.aa.tilde_s_prod)
                 * w.bb.phase
-                * <T as From<f64>>::from(w.bb.tilde_s_prod);
+                * T::from_real(w.bb.tilde_s_prod);
             (pref * core, pref * det_ab)
         }
     )
 }
 
-/// Dispatch 4 independent real `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
-/// AVX2/FMA kernel.
-/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
-/// while the orbital labels and excitation phases may differ between lanes.
+/// Evaluate packed fixed-rank Hamiltonian and overlap matrix elements.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = f64`.
-/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
-/// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
+/// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
+/// - `x_ex`: Cached bra excitations in lane order.
+/// - `w_ex`: Cached ket excitations in lane order.
+/// - `excitation_phase`: Excitation phases in lane order.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 4 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = f64`, CPU support for `AVX2/FMA`, individual predecoded spin
-///   ranks no larger than four, `L_\alpha + L_\beta <= 6` and output slices of length at
-///   least four.
+/// - `h`: Hamiltonian outputs.
+/// - `s`: Overlap outputs.
+/// # Returns
+/// - `()`: Writes `LANES` Hamiltonian and overlap values.
+/// # Safety
+/// - Cached labels must match fixed ranks; caller must establish `V` CPU support.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
+    T: NOCIScalar,
+    V: Simd<LANES, Scalar = T>,
+    const LANES: usize,
+    const RXA: usize,
+    const RWA: usize,
+    const LA: usize,
+    const DA: usize,
+    const MA: usize,
+    const MDA: usize,
+    const RXB: usize,
+    const RWB: usize,
+    const LB: usize,
+    const DB: usize,
+    const MB: usize,
+    const MDB: usize,
+>(
+    w: &WicksPairView<'_, T>,
+    x_ex: &[ExcitationCache; LANES],
+    w_ex: &[ExcitationCache; LANES],
+    excitation_phase: &[f64; LANES],
+    enuc: f64,
+    h: &mut [T; LANES],
+    s: &mut [T; LANES],
+) {
+    let zero = V::zero();
+    let mut rows_a = [[0usize; LA]; LANES];
+    let mut cols_a = [[0usize; LA]; LANES];
+    let nocc_a = w.aa.nocc;
+    let nvirt_a = w.aa.nmo - nocc_a;
+    for lane in 0..LANES {
+        let x_cache = unsafe { &x_ex.get_unchecked(lane).alpha };
+        let w_cache = unsafe { &w_ex.get_unchecked(lane).alpha };
+        for i in 0..RXA {
+            rows_a[lane][i] = usize::from(unsafe { *x_cache.particles.get_unchecked(i) }) - nocc_a;
+            cols_a[lane][i] = usize::from(unsafe { *x_cache.holes.get_unchecked(i) });
+        }
+        for i in RXA..LA {
+            let k = i - RXA;
+            rows_a[lane][i] = nvirt_a + usize::from(unsafe { *w_cache.holes.get_unchecked(k) });
+            cols_a[lane][i] = usize::from(unsafe { *w_cache.particles.get_unchecked(k) });
+        }
+    }
+
+    let n_a = w.aa.n();
+    let x0_a = w.aa.x_slice(0);
+    let y0_a = w.aa.y_slice(0);
+    let mut d_a = [zero; DA];
+    let mut cof_a = [zero; DA];
+    for i in 0..LA {
+        for j in 0..LA {
+            let matrix = if i >= j { x0_a } else { y0_a };
+            let mut values = [T::from_real(0.0); LANES];
+            for lane in 0..LANES {
+                let index = rows_a[lane][i] * n_a + cols_a[lane][j];
+                values[lane] = unsafe { *matrix.get_unchecked(index) };
+            }
+            d_a[i * LA + j] = V::load(&values);
+        }
+    }
+    let det_a = adjugate_transpose_simd_const::<V, LANES, LA, DA>(&mut cof_a, &d_a);
+
+    let mut j_a = zero;
+    let jsl_a = w.aa.j_slice(0);
+    let n2_a = n_a * n_a;
+    let n3_a = n2_a * n_a;
+    for eta in 0..LA {
+        for xi in (eta + 1)..LA {
+            for z in 0..LA {
+                for y in (z + 1)..LA {
+                    let mut minor = [zero; MDA];
+                    second_minor_const::<V, LA>(&mut minor, &d_a, eta, xi, z, y);
+                    let second = det_simd_const::<V, LANES, MA, MDA>(&minor);
+                    let mut direct = [T::from_real(0.0); LANES];
+                    let mut exchange = [T::from_real(0.0); LANES];
+                    for lane in 0..LANES {
+                        let direct_index = rows_a[lane][eta] * n3_a
+                            + cols_a[lane][z] * n2_a
+                            + rows_a[lane][xi] * n_a
+                            + cols_a[lane][y];
+                        let exchange_index = rows_a[lane][eta] * n3_a
+                            + cols_a[lane][y] * n2_a
+                            + rows_a[lane][xi] * n_a
+                            + cols_a[lane][z];
+                        direct[lane] = unsafe { *jsl_a.get_unchecked(direct_index) };
+                        exchange[lane] = unsafe { *jsl_a.get_unchecked(exchange_index) };
+                    }
+                    let difference = V::sub(V::load(&direct), V::load(&exchange));
+                    if ((eta + xi + z + y) & 1) == 0 {
+                        j_a = V::madd(j_a, second, difference);
+                    } else {
+                        j_a = V::msub(j_a, second, difference);
+                    }
+                }
+            }
+        }
+    }
+
+    let hcol0_a = w.aa.hcol0_t_slice();
+    let mut replacement_a = zero;
+    for z in 0..LA {
+        for eta in 0..LA {
+            let mut values = [T::from_real(0.0); LANES];
+            for lane in 0..LANES {
+                let index = cols_a[lane][z] * n_a + rows_a[lane][eta];
+                values[lane] = unsafe { *hcol0_a.get_unchecked(index) };
+            }
+            replacement_a = V::madd(replacement_a, cof_a[eta * LA + z], V::load(&values));
+        }
+    }
+
+    let mut rows_b = [[0usize; LB]; LANES];
+    let mut cols_b = [[0usize; LB]; LANES];
+    let nocc_b = w.bb.nocc;
+    let nvirt_b = w.bb.nmo - nocc_b;
+    for lane in 0..LANES {
+        let x_cache = unsafe { &x_ex.get_unchecked(lane).beta };
+        let w_cache = unsafe { &w_ex.get_unchecked(lane).beta };
+        for i in 0..RXB {
+            rows_b[lane][i] = usize::from(unsafe { *x_cache.particles.get_unchecked(i) }) - nocc_b;
+            cols_b[lane][i] = usize::from(unsafe { *x_cache.holes.get_unchecked(i) });
+        }
+        for i in RXB..LB {
+            let k = i - RXB;
+            rows_b[lane][i] = nvirt_b + usize::from(unsafe { *w_cache.holes.get_unchecked(k) });
+            cols_b[lane][i] = usize::from(unsafe { *w_cache.particles.get_unchecked(k) });
+        }
+    }
+
+    let n_b = w.bb.n();
+    let x0_b = w.bb.x_slice(0);
+    let y0_b = w.bb.y_slice(0);
+    let mut d_b = [zero; DB];
+    let mut cof_b = [zero; DB];
+    for i in 0..LB {
+        for j in 0..LB {
+            let matrix = if i >= j { x0_b } else { y0_b };
+            let mut values = [T::from_real(0.0); LANES];
+            for lane in 0..LANES {
+                let index = rows_b[lane][i] * n_b + cols_b[lane][j];
+                values[lane] = unsafe { *matrix.get_unchecked(index) };
+            }
+            d_b[i * LB + j] = V::load(&values);
+        }
+    }
+    let det_b = adjugate_transpose_simd_const::<V, LANES, LB, DB>(&mut cof_b, &d_b);
+
+    let mut j_b = zero;
+    let jsl_b = w.bb.j_slice(0);
+    let n2_b = n_b * n_b;
+    let n3_b = n2_b * n_b;
+    for eta in 0..LB {
+        for xi in (eta + 1)..LB {
+            for z in 0..LB {
+                for y in (z + 1)..LB {
+                    let mut minor = [zero; MDB];
+                    second_minor_const::<V, LB>(&mut minor, &d_b, eta, xi, z, y);
+                    let second = det_simd_const::<V, LANES, MB, MDB>(&minor);
+                    let mut direct = [T::from_real(0.0); LANES];
+                    let mut exchange = [T::from_real(0.0); LANES];
+                    for lane in 0..LANES {
+                        let direct_index = rows_b[lane][eta] * n3_b
+                            + cols_b[lane][z] * n2_b
+                            + rows_b[lane][xi] * n_b
+                            + cols_b[lane][y];
+                        let exchange_index = rows_b[lane][eta] * n3_b
+                            + cols_b[lane][y] * n2_b
+                            + rows_b[lane][xi] * n_b
+                            + cols_b[lane][z];
+                        direct[lane] = unsafe { *jsl_b.get_unchecked(direct_index) };
+                        exchange[lane] = unsafe { *jsl_b.get_unchecked(exchange_index) };
+                    }
+                    let difference = V::sub(V::load(&direct), V::load(&exchange));
+                    if ((eta + xi + z + y) & 1) == 0 {
+                        j_b = V::madd(j_b, second, difference);
+                    } else {
+                        j_b = V::msub(j_b, second, difference);
+                    }
+                }
+            }
+        }
+    }
+
+    let hcol0_b = w.bb.hcol0_t_slice();
+    let mut replacement_b = zero;
+    for z in 0..LB {
+        for eta in 0..LB {
+            let mut values = [T::from_real(0.0); LANES];
+            for lane in 0..LANES {
+                let index = cols_b[lane][z] * n_b + rows_b[lane][eta];
+                values[lane] = unsafe { *hcol0_b.get_unchecked(index) };
+            }
+            replacement_b = V::madd(replacement_b, cof_b[eta * LB + z], V::load(&values));
+        }
+    }
+
+    let iisl = w.ab.iiab_slice(0, 0, 0, 0);
+    let n = w.ab.n();
+    let n2 = n * n;
+    let n3 = n2 * n;
+    let mut ii_term = zero;
+    if LA <= LB {
+        for z in 0..LA {
+            for eta in 0..LA {
+                let mut inner = zero;
+                for y in 0..LB {
+                    for xi in 0..LB {
+                        let mut values = [T::from_real(0.0); LANES];
+                        for lane in 0..LANES {
+                            let index = rows_a[lane][eta] * n3
+                                + cols_a[lane][z] * n2
+                                + rows_b[lane][xi] * n
+                                + cols_b[lane][y];
+                            values[lane] = unsafe { *iisl.get_unchecked(index) };
+                        }
+                        inner = V::madd(inner, cof_b[xi * LB + y], V::load(&values));
+                    }
+                }
+                ii_term = V::madd(ii_term, cof_a[eta * LA + z], inner);
+            }
+        }
+    } else {
+        for y in 0..LB {
+            for xi in 0..LB {
+                let mut inner = zero;
+                for z in 0..LA {
+                    for eta in 0..LA {
+                        let mut values = [T::from_real(0.0); LANES];
+                        for lane in 0..LANES {
+                            let index = rows_a[lane][eta] * n3
+                                + cols_a[lane][z] * n2
+                                + rows_b[lane][xi] * n
+                                + cols_b[lane][y];
+                            values[lane] = unsafe { *iisl.get_unchecked(index) };
+                        }
+                        inner = V::madd(inner, cof_a[eta * LA + z], V::load(&values));
+                    }
+                }
+                ii_term = V::madd(ii_term, cof_b[xi * LB + y], inner);
+            }
+        }
+    }
+
+    let det_ab = V::mul(det_a, det_b);
+    let half = T::from_real(0.5);
+    let g0 = T::from_real(enuc)
+        + w.aa.f0h[0]
+        + half * w.aa.v0[0]
+        + w.bb.f0h[0]
+        + half * w.bb.v0[0]
+        + w.ab.vab0[0][0];
+    let mut core = V::mul(V::splat(g0), det_ab);
+    core = V::msub(core, det_b, replacement_a);
+    core = V::msub(core, det_a, replacement_b);
+    core = V::madd(core, j_a, det_b);
+    core = V::madd(core, j_b, det_a);
+    core = V::add(core, ii_term);
+    let reference_pref =
+        w.aa.phase * T::from_real(w.aa.tilde_s_prod) * w.bb.phase * T::from_real(w.bb.tilde_s_prod);
+    let mut pref = [T::from_real(0.0); LANES];
+    for lane in 0..LANES {
+        pref[lane] = T::from_real(excitation_phase[lane]) * reference_pref;
+    }
+    let pref = V::load(&pref);
+    V::store(V::mul(pref, core), h);
+    V::store(V::mul(pref, det_ab), s);
+}
+
+/// Dispatch four real Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
+/// # Arguments:
+/// - `w`: Real Wick intermediates.
+/// - `ranks`: Reference-resolved excitation ranks.
+/// - `ex`: Bra and ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
+/// - `enuc`: Nuclear repulsion energy.
+/// - `out`: Hamiltonian and overlap outputs.
+/// # Returns
+/// - `()`: Writes four matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4<T: NOCIScalar>(
-    w: &WicksPairView<'_, T>,
+pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4(
+    w: &WicksPairView<'_, f64>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
     excitation_phase: &[f64; 4],
     enuc: f64,
     out: (&mut [f64; 4], &mut [f64; 4]),
 ) {
-    unsafe {
-        let (x_ex, w_ex) = ex;
-        let (h, s) = out;
-        dispatch_hamiltonian_ranks!(
-            ranks,
-            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
-                xw_hamiltonian_overlap_m0_prepared_f64x4_const::<
-                    T,
-                    RXA,
-                    RWA,
-                    LA,
-                    RXB,
-                    RWB,
-                    LB,
-                    DA,
-                    DB,
-                    SA,
-                    SB,
-                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-            },
-            unreachable!(),
-        )
-    }
+    let (x_ex, w_ex) = ex;
+    let (h, s) = out;
+    dispatch_hamiltonian_ranks!(
+        ranks,
+        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
+            xw_hamiltonian_overlap_m0_prepared_f64x4_const::<
+                RXA,
+                RWA,
+                LA,
+                DA,
+                MA,
+                MDA,
+                RXB,
+                RWB,
+                LB,
+                DB,
+                MB,
+                MDB,
+            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+        },
+        (),
+    )
 }
 
-/// Dispatch 4 independent complex `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
-/// AVX2/FMA kernel.
-/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
-/// while the orbital labels and excitation phases may differ between lanes.
+/// Dispatch four complex Hamiltonian/overlap values to one fixed-rank AVX2/FMA kernel.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
-/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
-/// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
+/// - `w`: Complex Wick intermediates.
+/// - `ranks`: Reference-resolved excitation ranks.
+/// - `ex`: Bra and ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 4 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = Complex64`, CPU support for `AVX2/FMA`, individual predecoded
-///   spin ranks no larger than four and total contraction rank no larger than six.
+/// - `out`: Hamiltonian and overlap outputs.
+/// # Returns
+/// - `()`: Writes four matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4<T: NOCIScalar>(
-    w: &WicksPairView<'_, T>,
+pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4(
+    w: &WicksPairView<'_, Complex64>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 4], &[ExcitationCache; 4]),
     excitation_phase: &[f64; 4],
     enuc: f64,
     out: (&mut [Complex64; 4], &mut [Complex64; 4]),
 ) {
-    unsafe {
-        let (x_ex, w_ex) = ex;
-        let (h, s) = out;
-        dispatch_hamiltonian_ranks!(
-            ranks,
-            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
-                xw_hamiltonian_overlap_m0_prepared_c64x4_const::<
-                    T,
-                    RXA,
-                    RWA,
-                    LA,
-                    RXB,
-                    RWB,
-                    LB,
-                    DA,
-                    DB,
-                    SA,
-                    SB,
-                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-            },
-            unreachable!(),
-        )
-    }
+    let (x_ex, w_ex) = ex;
+    let (h, s) = out;
+    dispatch_hamiltonian_ranks!(
+        ranks,
+        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
+            xw_hamiltonian_overlap_m0_prepared_c64x4_const::<
+                RXA,
+                RWA,
+                LA,
+                DA,
+                MA,
+                MDA,
+                RXB,
+                RWB,
+                LB,
+                DB,
+                MB,
+                MDB,
+            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+        },
+        (),
+    )
 }
-/// Dispatch 8 independent real `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
-/// AVX-512 kernel.
-/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
-/// while the orbital labels and excitation phases may differ between lanes.
+
+/// Dispatch eight real Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = f64`.
-/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
-/// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
+/// - `w`: Real Wick intermediates.
+/// - `ranks`: Reference-resolved excitation ranks.
+/// - `ex`: Bra and ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 8 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = f64`, CPU support for `AVX-512`, individual predecoded spin
-///   ranks no larger than four, `L_\alpha + L_\beta <= 6` and output slices of length at
-///   least eight.
+/// - `out`: Hamiltonian and overlap outputs.
+/// # Returns
+/// - `()`: Writes eight matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8<T: NOCIScalar>(
-    w: &WicksPairView<'_, T>,
+pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8(
+    w: &WicksPairView<'_, f64>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
     excitation_phase: &[f64; 8],
     enuc: f64,
     out: (&mut [f64; 8], &mut [f64; 8]),
 ) {
-    unsafe {
-        let (x_ex, w_ex) = ex;
-        let (h, s) = out;
-        dispatch_hamiltonian_ranks!(
-            ranks,
-            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
-                xw_hamiltonian_overlap_m0_prepared_f64x8_const::<
-                    T,
-                    RXA,
-                    RWA,
-                    LA,
-                    RXB,
-                    RWB,
-                    LB,
-                    DA,
-                    DB,
-                    SA,
-                    SB,
-                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-            },
-            unreachable!(),
-        )
-    }
+    let (x_ex, w_ex) = ex;
+    let (h, s) = out;
+    dispatch_hamiltonian_ranks!(
+        ranks,
+        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
+            xw_hamiltonian_overlap_m0_prepared_f64x8_const::<
+                RXA,
+                RWA,
+                LA,
+                DA,
+                MA,
+                MDA,
+                RXB,
+                RWB,
+                LB,
+                DB,
+                MB,
+                MDB,
+            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+        },
+        (),
+    )
 }
 
-/// Dispatch 8 independent complex `m_\alpha = m_\beta = 0` matrix elements to a fixed-rank
-/// AVX-512 kernel.
-/// Every SIMD lane uses the same ordered reference pair and reference-resolved alpha/beta ranks,
-/// while the orbital labels and excitation phases may differ between lanes.
+/// Dispatch eight complex Hamiltonian/overlap values to one fixed-rank AVX-512F kernel.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
-/// - `ranks`: Shared `(RXA,RWA,RXB,RWB)` excitation ranks.
-/// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
+/// - `w`: Complex Wick intermediates.
+/// - `ranks`: Reference-resolved excitation ranks.
+/// - `ex`: Bra and ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 8 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = Complex64`, CPU support for `AVX-512`, individual predecoded
-///   spin ranks no larger than four and total contraction rank no larger than six.
+/// - `out`: Hamiltonian and overlap outputs.
+/// # Returns
+/// - `()`: Writes eight matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX-512F; cached ranks must match `ranks`.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
-pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8<T: NOCIScalar>(
-    w: &WicksPairView<'_, T>,
+pub(crate) unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8(
+    w: &WicksPairView<'_, Complex64>,
     ranks: (usize, usize, usize, usize),
     ex: (&[ExcitationCache; 8], &[ExcitationCache; 8]),
     excitation_phase: &[f64; 8],
     enuc: f64,
     out: (&mut [Complex64; 8], &mut [Complex64; 8]),
 ) {
-    unsafe {
-        let (x_ex, w_ex) = ex;
-        let (h, s) = out;
-        dispatch_hamiltonian_ranks!(
-            ranks,
-            |RXA, RWA, LA, RXB, RWB, LB, DA, DB, SA, SB| {
-                xw_hamiltonian_overlap_m0_prepared_c64x8_const::<
-                    T,
-                    RXA,
-                    RWA,
-                    LA,
-                    RXB,
-                    RWB,
-                    LB,
-                    DA,
-                    DB,
-                    SA,
-                    SB,
-                >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
-            },
-            unreachable!(),
-        )
-    }
+    let (x_ex, w_ex) = ex;
+    let (h, s) = out;
+    dispatch_hamiltonian_ranks!(
+        ranks,
+        |RXA, RWA, LA, DA, MA, MDA, RXB, RWB, LB, DB, MB, MDB| unsafe {
+            xw_hamiltonian_overlap_m0_prepared_c64x8_const::<
+                RXA,
+                RWA,
+                LA,
+                DA,
+                MA,
+                MDA,
+                RXB,
+                RWB,
+                LB,
+                DB,
+                MB,
+                MDB,
+            >(w, x_ex, w_ex, excitation_phase, enuc, h, s)
+        },
+        (),
+    )
 }
-/// Evaluate 4 independent real fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
-/// matrix elements for `m_\alpha = m_\beta = 0`.
-/// Each SIMD lane is one determinant pair and all lanes share the same reference pair
-/// and contraction ranks.
-/// This is the packed `f64x4` evaluation of the same determinant, cofactor, same-spin
-/// second-minor and mixed-spin cofactor contractions as `xw_hamiltonian_overlap_m0_prepared_const`.
+
+/// Evaluate four real fixed-rank Hamiltonian/overlap values with AVX2/FMA.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = f64`.
-/// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
+/// - `w`: Real Wick intermediates.
+/// - `x_ex`: Bra excitation caches.
+/// - `w_ex`: Ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 4 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = f64`, CPU support for `AVX2/FMA`, valid predecoded
-///   excitation labels and output slices of length at least 4.
+/// - `h`: Hamiltonian outputs.
+/// - `s`: Overlap outputs.
+/// # Returns
+/// - `()`: Writes four matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x4_const<
-    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
+    const DA: usize,
+    const MA: usize,
+    const MDA: usize,
     const RXB: usize,
     const RWB: usize,
     const LB: usize,
-    const DA: usize,
     const DB: usize,
-    const SA: usize,
-    const SB: usize,
+    const MB: usize,
+    const MDB: usize,
 >(
-    w: &WicksPairView<'_, T>,
+    w: &WicksPairView<'_, f64>,
     x_ex: &[ExcitationCache; 4],
     w_ex: &[ExcitationCache; 4],
     excitation_phase: &[f64; 4],
     enuc: f64,
-    h: &mut [f64],
-    s: &mut [f64],
+    h: &mut [f64; 4],
+    s: &mut [f64; 4],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_f64x4_const,
-        {
-            unsafe {
-                let zero_v = F64x4::zero();
-                let one_v = F64x4::splat(1.0);
-
-                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
-                let det3 = |m: &[F64x4; 16]| -> F64x4 {
-                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
-                    let t0 = F64x4::minor(m[4], m[8], m[5], m[7]);
-                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
-                    let mut out = F64x4::mul(m[0], t0);
-                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
-                    let t1 = F64x4::minor(m[3], m[8], m[5], m[6]);
-                    out = F64x4::msub(out, m[1], t1);
-                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
-                    let t2 = F64x4::minor(m[3], m[7], m[4], m[6]);
-                    F64x4::madd(out, m[2], t2)
-                };
-                // Expand a rank-four second minor along its first row.
-                let det4 = |m: &[F64x4; 16]| -> F64x4 {
-                    let mut out = zero_v;
-                    for col in 0..4 {
-                        let mut subm = [zero_v; 16];
-                        let mut ii = 0usize;
-                        for r in 1..4 {
-                            let mut jj = 0usize;
-                            for c in 0..4 {
-                                if c == col {
-                                    continue;
-                                }
-                                subm[ii * 3 + jj] = m[r * 4 + c];
-                                jj += 1;
-                            }
-                            ii += 1;
-                        }
-                        let term = F64x4::mul(m[col], det3(&subm));
-                        if (col & 1) == 0 {
-                            out = F64x4::add(out, term);
-                        } else {
-                            out = F64x4::sub(out, term);
-                        }
-                    }
-                    out
-                };
-                // `det_small` evaluates the empty determinant and ranks one through four.
-                let det_small = |minor: &[F64x4; 16], n: usize| -> F64x4 {
-                    match n {
-                        0 => one_v,
-                        1 => minor[0],
-                        2 => F64x4::minor(minor[0], minor[3], minor[1], minor[2]),
-                        3 => det3(minor),
-                        4 => det4(minor),
-                        _ => unreachable!(),
-                    }
-                };
-                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
-                let mut rows_a = [[0usize; 6]; 4];
-                let mut cols_a = [[0usize; 6]; 4];
-                let mut d_a = [zero_v; DA];
-                let mut cof_a = [zero_v; DA];
-                let mut second_a = [zero_v; SA];
-                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
-                let mut det_a = one_v;
-                let mut j_a = zero_v;
-                let mut replacement_a = zero_v;
-
-                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LA > 0 {
-                    let nocc = w.aa.nocc;
-                    let nvirt = w.aa.nmo - nocc;
-                    for lane in 0..4 {
-                        let x_cache = &x_ex.get_unchecked(lane).alpha;
-                        let w_cache = &w_ex.get_unchecked(lane).alpha;
-                        for i in 0..RXA {
-                            rows_a[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXA..LA {
-                            let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.aa.n();
-                    let x0_t = w.aa.x_slice(0);
-                    let y0_t = w.aa.y_slice(0);
-                    let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
-                    let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
-                    for i in 0..LA {
-                        for j in 0..LA {
-                            let mut values = [0.0f64; 4];
-                            for lane in 0..4 {
-                                let index = rows_a[lane][i] * n + cols_a[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_a[i * LA + j] = F64x4::load(&values);
-                        }
-                    }
-                    if LA == 1 {
-                        cof_a[0] = one_v;
-                        det_a = d_a[0];
-                    } else {
-                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
-                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                        let pairs_a = LA * (LA - 1) / 2;
-                        let jsl_t = w.aa.j_slice(0);
-                        let jsl =
-                            std::slice::from_raw_parts(jsl_t.as_ptr().cast::<f64>(), jsl_t.len());
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LA {
-                            for xi in (eta + 1)..LA {
-                                let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LA {
-                                    for y in (z + 1)..LA {
-                                        let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LA {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LA {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LA - 2);
-                                        second_a[row_pair * pairs_a + col_pair] = second;
-                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [0.0f64; 4];
-                                        let mut exchange_lane = [0.0f64; 4];
-                                        for lane in 0..4 {
-                                            let direct_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][z] * n2
-                                                + rows_a[lane][xi] * n;
-                                            let exchange_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][y] * n2
-                                                + rows_a[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_a[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
-                                        }
-                                        let jdiff = F64x4::sub(
-                                            F64x4::load(&direct_lane),
-                                            F64x4::load(&exchange_lane),
-                                        );
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_a = F64x4::madd(j_a, second, jdiff);
-                                        } else {
-                                            j_a = F64x4::msub(j_a, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LA {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LA {
-                                let mut value = zero_v;
-                                for c in 0..LA {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = F64x4::mul(
-                                        d_a[r * LA + c],
-                                        second_a[row_pair * pairs_a + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = F64x4::add(value, term);
-                                    } else {
-                                        value = F64x4::sub(value, term);
-                                    }
-                                }
-                                cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    F64x4::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
-                        det_a = F64x4::mul(d_a[0], cof_a[0]);
-                        for z in 1..LA {
-                            det_a = F64x4::madd(det_a, d_a[z], cof_a[z]);
-                        }
-                    }
-
-                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.aa.hcol0_t_slice();
-                    let hcol0 =
-                        std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
-                    for z in 0..LA {
-                        for eta in 0..LA {
-                            let mut values = [0.0f64; 4];
-                            for lane in 0..4 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
-                            }
-                            replacement_a = F64x4::madd(
-                                replacement_a,
-                                cof_a[eta * LA + z],
-                                F64x4::load(&values),
-                            );
-                        }
-                    }
-                }
-                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
-                let mut rows_b = [[0usize; 6]; 4];
-                let mut cols_b = [[0usize; 6]; 4];
-                let mut d_b = [zero_v; DB];
-                let mut cof_b = [zero_v; DB];
-                let mut second_b = [zero_v; SB];
-                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
-                let mut det_b = one_v;
-                let mut j_b = zero_v;
-                let mut replacement_b = zero_v;
-
-                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LB > 0 {
-                    let nocc = w.bb.nocc;
-                    let nvirt = w.bb.nmo - nocc;
-                    for lane in 0..4 {
-                        let x_cache = &x_ex.get_unchecked(lane).beta;
-                        let w_cache = &w_ex.get_unchecked(lane).beta;
-                        for i in 0..RXB {
-                            rows_b[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXB..LB {
-                            let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.bb.n();
-                    let x0_t = w.bb.x_slice(0);
-                    let y0_t = w.bb.y_slice(0);
-                    let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
-                    let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
-                    for i in 0..LB {
-                        for j in 0..LB {
-                            let mut values = [0.0f64; 4];
-                            for lane in 0..4 {
-                                let index = rows_b[lane][i] * n + cols_b[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_b[i * LB + j] = F64x4::load(&values);
-                        }
-                    }
-                    if LB == 1 {
-                        cof_b[0] = one_v;
-                        det_b = d_b[0];
-                    } else {
-                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
-                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
-                        let pairs_b = LB * (LB - 1) / 2;
-                        let jsl_t = w.bb.j_slice(0);
-                        let jsl =
-                            std::slice::from_raw_parts(jsl_t.as_ptr().cast::<f64>(), jsl_t.len());
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LB {
-                            for xi in (eta + 1)..LB {
-                                let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LB {
-                                    for y in (z + 1)..LB {
-                                        let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LB {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LB {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LB - 2);
-                                        second_b[row_pair * pairs_b + col_pair] = second;
-                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [0.0f64; 4];
-                                        let mut exchange_lane = [0.0f64; 4];
-                                        for lane in 0..4 {
-                                            let direct_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][z] * n2
-                                                + rows_b[lane][xi] * n;
-                                            let exchange_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][y] * n2
-                                                + rows_b[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_b[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
-                                        }
-                                        let jdiff = F64x4::sub(
-                                            F64x4::load(&direct_lane),
-                                            F64x4::load(&exchange_lane),
-                                        );
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_b = F64x4::madd(j_b, second, jdiff);
-                                        } else {
-                                            j_b = F64x4::msub(j_b, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LB {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LB {
-                                let mut value = zero_v;
-                                for c in 0..LB {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = F64x4::mul(
-                                        d_b[r * LB + c],
-                                        second_b[row_pair * pairs_b + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = F64x4::add(value, term);
-                                    } else {
-                                        value = F64x4::sub(value, term);
-                                    }
-                                }
-                                cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    F64x4::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
-                        det_b = F64x4::mul(d_b[0], cof_b[0]);
-                        for z in 1..LB {
-                            det_b = F64x4::madd(det_b, d_b[z], cof_b[z]);
-                        }
-                    }
-
-                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
-                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.bb.hcol0_t_slice();
-                    let hcol0 =
-                        std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
-                    for z in 0..LB {
-                        for eta in 0..LB {
-                            let mut values = [0.0f64; 4];
-                            for lane in 0..4 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
-                            }
-                            replacement_b = F64x4::madd(
-                                replacement_b,
-                                cof_b[eta * LB + z],
-                                F64x4::load(&values),
-                            );
-                        }
-                    }
-                }
-
-                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
-                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
-                let mut ii_term = zero_v;
-                if LA > 0 && LB > 0 {
-                    let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
-                    let iisl =
-                        std::slice::from_raw_parts(iisl_t.as_ptr().cast::<f64>(), iisl_t.len());
-                    let n = w.ab.n();
-                    let n2 = n * n;
-                    let n3 = n2 * n;
-                    if LA <= LB {
-                        for z in 0..LA {
-                            for eta in 0..LA {
-                                let mut inner = zero_v;
-                                for y in 0..LB {
-                                    for xi in 0..LB {
-                                        let mut values = [0.0f64; 4];
-                                        for lane in 0..4 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner = F64x4::madd(
-                                            inner,
-                                            cof_b[xi * LB + y],
-                                            F64x4::load(&values),
-                                        );
-                                    }
-                                }
-                                ii_term = F64x4::madd(ii_term, cof_a[eta * LA + z], inner);
-                            }
-                        }
-                    } else {
-                        for y in 0..LB {
-                            for xi in 0..LB {
-                                let mut inner = zero_v;
-                                for z in 0..LA {
-                                    for eta in 0..LA {
-                                        let mut values = [0.0f64; 4];
-                                        for lane in 0..4 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner = F64x4::madd(
-                                            inner,
-                                            cof_a[eta * LA + z],
-                                            F64x4::load(&values),
-                                        );
-                                    }
-                                }
-                                ii_term = F64x4::madd(ii_term, cof_b[xi * LB + y], inner);
-                            }
-                        }
-                    }
-                }
-
-                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
-                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
-                let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<f64>();
-                let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<f64>();
-                let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<f64>();
-                let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<f64>();
-                let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<f64>();
-                let g0 = F64x4::splat(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
-                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
-                let det_ab = F64x4::mul(det_a, det_b);
-                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
-                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
-                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
-                let mut core = F64x4::mul(g0, det_ab);
-                core = F64x4::msub(core, det_b, replacement_a);
-                core = F64x4::msub(core, det_a, replacement_b);
-                core = F64x4::madd(core, j_a, det_b);
-                core = F64x4::madd(core, j_b, det_a);
-                core = F64x4::add(core, ii_term);
-                let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<f64>();
-                let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<f64>();
-                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
-                // `p_\beta{}^{xw}\tilde S_\beta`.
-                let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
-                let pref = F64x4::mul(F64x4::load(excitation_phase), F64x4::splat(ref_pref));
-                let mut h_lane = [0.0f64; 4];
-                let mut s_lane = [0.0f64; 4];
-                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
-                F64x4::mul(core, pref).store(&mut h_lane);
-                F64x4::mul(det_ab, pref).store(&mut s_lane);
-                h[..4].copy_from_slice(&h_lane);
-                s[..4].copy_from_slice(&s_lane);
-            }
-        }
-    )
+    unsafe {
+        xw_hamiltonian_overlap_m0_prepared_simd_const::<
+            f64,
+            F64x4,
+            4,
+            RXA,
+            RWA,
+            LA,
+            DA,
+            MA,
+            MDA,
+            RXB,
+            RWB,
+            LB,
+            DB,
+            MB,
+            MDB,
+        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+    }
 }
 
-/// Evaluate 4 independent complex fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
-/// matrix elements for `m_\alpha = m_\beta = 0`.
-/// Each SIMD lane is one determinant pair and all lanes share the same reference pair
-/// and contraction ranks.
-/// This is the packed `c64x4` evaluation of the same determinant, cofactor, same-spin
-/// second-minor and mixed-spin cofactor contractions as `xw_hamiltonian_overlap_m0_prepared_const`.
+/// Evaluate four complex fixed-rank Hamiltonian/overlap values with AVX2/FMA.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
-/// - `x_ex`: 4 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 4 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 4 excitation phases in SIMD-lane order.
+/// - `w`: Complex Wick intermediates.
+/// - `x_ex`: Bra excitation caches.
+/// - `w_ex`: Ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 4 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = Complex64`, CPU support for `AVX2/FMA`, valid predecoded
-///   excitation labels and output slices of length at least 4.
+/// - `h`: Hamiltonian outputs.
+/// - `s`: Overlap outputs.
+/// # Returns
+/// - `()`: Writes four matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX2 and FMA; cached labels must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x4_const<
-    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
+    const DA: usize,
+    const MA: usize,
+    const MDA: usize,
     const RXB: usize,
     const RWB: usize,
     const LB: usize,
-    const DA: usize,
     const DB: usize,
-    const SA: usize,
-    const SB: usize,
+    const MB: usize,
+    const MDB: usize,
 >(
-    w: &WicksPairView<'_, T>,
+    w: &WicksPairView<'_, Complex64>,
     x_ex: &[ExcitationCache; 4],
     w_ex: &[ExcitationCache; 4],
     excitation_phase: &[f64; 4],
     enuc: f64,
-    h: &mut [Complex64],
-    s: &mut [Complex64],
+    h: &mut [Complex64; 4],
+    s: &mut [Complex64; 4],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_c64x4_const,
-        {
-            unsafe {
-                let zero_v = C64x4::zero();
-                let one_v = C64x4::splat(1.0, 0.0);
-                let pack = |values: &[Complex64; 4]| {
-                    C64x4::from_values(values[0], values[1], values[2], values[3])
-                };
-
-                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
-                let det3 = |m: &[C64x4; 16]| -> C64x4 {
-                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
-                    let t0 = C64x4::minor(m[4], m[8], m[5], m[7]);
-                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
-                    let mut out = C64x4::mul(m[0], t0);
-                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
-                    let t1 = C64x4::minor(m[3], m[8], m[5], m[6]);
-                    out = C64x4::msub(out, m[1], t1);
-                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
-                    let t2 = C64x4::minor(m[3], m[7], m[4], m[6]);
-                    C64x4::madd(out, m[2], t2)
-                };
-                // Expand a rank-four second minor along its first row.
-                let det4 = |m: &[C64x4; 16]| -> C64x4 {
-                    let mut out = zero_v;
-                    for col in 0..4 {
-                        let mut subm = [zero_v; 16];
-                        let mut ii = 0usize;
-                        for r in 1..4 {
-                            let mut jj = 0usize;
-                            for c in 0..4 {
-                                if c == col {
-                                    continue;
-                                }
-                                subm[ii * 3 + jj] = m[r * 4 + c];
-                                jj += 1;
-                            }
-                            ii += 1;
-                        }
-                        let term = C64x4::mul(m[col], det3(&subm));
-                        if (col & 1) == 0 {
-                            out = C64x4::add(out, term);
-                        } else {
-                            out = C64x4::sub(out, term);
-                        }
-                    }
-                    out
-                };
-                // `det_small` evaluates the empty determinant and ranks one through four.
-                let det_small = |minor: &[C64x4; 16], n: usize| -> C64x4 {
-                    match n {
-                        0 => one_v,
-                        1 => minor[0],
-                        2 => C64x4::minor(minor[0], minor[3], minor[1], minor[2]),
-                        3 => det3(minor),
-                        4 => det4(minor),
-                        _ => unreachable!(),
-                    }
-                };
-                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
-                let mut rows_a = [[0usize; 6]; 4];
-                let mut cols_a = [[0usize; 6]; 4];
-                let mut d_a = [zero_v; DA];
-                let mut cof_a = [zero_v; DA];
-                let mut second_a = [zero_v; SA];
-                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
-                let mut det_a = one_v;
-                let mut j_a = zero_v;
-                let mut replacement_a = zero_v;
-
-                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LA > 0 {
-                    let nocc = w.aa.nocc;
-                    let nvirt = w.aa.nmo - nocc;
-                    for lane in 0..4 {
-                        let x_cache = &x_ex.get_unchecked(lane).alpha;
-                        let w_cache = &w_ex.get_unchecked(lane).alpha;
-                        for i in 0..RXA {
-                            rows_a[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXA..LA {
-                            let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.aa.n();
-                    let x0_t = w.aa.x_slice(0);
-                    let y0_t = w.aa.y_slice(0);
-                    let x0 =
-                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
-                    let y0 =
-                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
-                    for i in 0..LA {
-                        for j in 0..LA {
-                            let mut values = [Complex64::new(0.0, 0.0); 4];
-                            for lane in 0..4 {
-                                let index = rows_a[lane][i] * n + cols_a[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_a[i * LA + j] =
-                                C64x4::from_values(values[0], values[1], values[2], values[3]);
-                        }
-                    }
-                    if LA == 1 {
-                        cof_a[0] = one_v;
-                        det_a = d_a[0];
-                    } else {
-                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
-                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                        let pairs_a = LA * (LA - 1) / 2;
-                        let jsl_t = w.aa.j_slice(0);
-                        let jsl = std::slice::from_raw_parts(
-                            jsl_t.as_ptr().cast::<Complex64>(),
-                            jsl_t.len(),
-                        );
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LA {
-                            for xi in (eta + 1)..LA {
-                                let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LA {
-                                    for y in (z + 1)..LA {
-                                        let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LA {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LA {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LA - 2);
-                                        second_a[row_pair * pairs_a + col_pair] = second;
-                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 4];
-                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 4];
-                                        for lane in 0..4 {
-                                            let direct_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][z] * n2
-                                                + rows_a[lane][xi] * n;
-                                            let exchange_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][y] * n2
-                                                + rows_a[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_a[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
-                                        }
-                                        let jdiff =
-                                            C64x4::sub(pack(&direct_lane), pack(&exchange_lane));
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_a = C64x4::madd(j_a, second, jdiff);
-                                        } else {
-                                            j_a = C64x4::msub(j_a, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LA {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LA {
-                                let mut value = zero_v;
-                                for c in 0..LA {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = C64x4::mul(
-                                        d_a[r * LA + c],
-                                        second_a[row_pair * pairs_a + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = C64x4::add(value, term);
-                                    } else {
-                                        value = C64x4::sub(value, term);
-                                    }
-                                }
-                                cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    C64x4::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
-                        det_a = C64x4::mul(d_a[0], cof_a[0]);
-                        for z in 1..LA {
-                            det_a = C64x4::madd(det_a, d_a[z], cof_a[z]);
-                        }
-                    }
-
-                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.aa.hcol0_t_slice();
-                    let hcol0 = std::slice::from_raw_parts(
-                        hcol0_t.as_ptr().cast::<Complex64>(),
-                        hcol0_t.len(),
-                    );
-                    for z in 0..LA {
-                        for eta in 0..LA {
-                            let mut values = [Complex64::new(0.0, 0.0); 4];
-                            for lane in 0..4 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
-                            }
-                            replacement_a = C64x4::madd(
-                                replacement_a,
-                                cof_a[eta * LA + z],
-                                C64x4::from_values(values[0], values[1], values[2], values[3]),
-                            );
-                        }
-                    }
-                }
-                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
-                let mut rows_b = [[0usize; 6]; 4];
-                let mut cols_b = [[0usize; 6]; 4];
-                let mut d_b = [zero_v; DB];
-                let mut cof_b = [zero_v; DB];
-                let mut second_b = [zero_v; SB];
-                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
-                let mut det_b = one_v;
-                let mut j_b = zero_v;
-                let mut replacement_b = zero_v;
-
-                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LB > 0 {
-                    let nocc = w.bb.nocc;
-                    let nvirt = w.bb.nmo - nocc;
-                    for lane in 0..4 {
-                        let x_cache = &x_ex.get_unchecked(lane).beta;
-                        let w_cache = &w_ex.get_unchecked(lane).beta;
-                        for i in 0..RXB {
-                            rows_b[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXB..LB {
-                            let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.bb.n();
-                    let x0_t = w.bb.x_slice(0);
-                    let y0_t = w.bb.y_slice(0);
-                    let x0 =
-                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
-                    let y0 =
-                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
-                    for i in 0..LB {
-                        for j in 0..LB {
-                            let mut values = [Complex64::new(0.0, 0.0); 4];
-                            for lane in 0..4 {
-                                let index = rows_b[lane][i] * n + cols_b[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_b[i * LB + j] =
-                                C64x4::from_values(values[0], values[1], values[2], values[3]);
-                        }
-                    }
-                    if LB == 1 {
-                        cof_b[0] = one_v;
-                        det_b = d_b[0];
-                    } else {
-                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
-                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
-                        let pairs_b = LB * (LB - 1) / 2;
-                        let jsl_t = w.bb.j_slice(0);
-                        let jsl = std::slice::from_raw_parts(
-                            jsl_t.as_ptr().cast::<Complex64>(),
-                            jsl_t.len(),
-                        );
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LB {
-                            for xi in (eta + 1)..LB {
-                                let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LB {
-                                    for y in (z + 1)..LB {
-                                        let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LB {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LB {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LB - 2);
-                                        second_b[row_pair * pairs_b + col_pair] = second;
-                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 4];
-                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 4];
-                                        for lane in 0..4 {
-                                            let direct_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][z] * n2
-                                                + rows_b[lane][xi] * n;
-                                            let exchange_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][y] * n2
-                                                + rows_b[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_b[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
-                                        }
-                                        let jdiff =
-                                            C64x4::sub(pack(&direct_lane), pack(&exchange_lane));
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_b = C64x4::madd(j_b, second, jdiff);
-                                        } else {
-                                            j_b = C64x4::msub(j_b, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LB {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LB {
-                                let mut value = zero_v;
-                                for c in 0..LB {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = C64x4::mul(
-                                        d_b[r * LB + c],
-                                        second_b[row_pair * pairs_b + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = C64x4::add(value, term);
-                                    } else {
-                                        value = C64x4::sub(value, term);
-                                    }
-                                }
-                                cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    C64x4::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
-                        det_b = C64x4::mul(d_b[0], cof_b[0]);
-                        for z in 1..LB {
-                            det_b = C64x4::madd(det_b, d_b[z], cof_b[z]);
-                        }
-                    }
-
-                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
-                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.bb.hcol0_t_slice();
-                    let hcol0 = std::slice::from_raw_parts(
-                        hcol0_t.as_ptr().cast::<Complex64>(),
-                        hcol0_t.len(),
-                    );
-                    for z in 0..LB {
-                        for eta in 0..LB {
-                            let mut values = [Complex64::new(0.0, 0.0); 4];
-                            for lane in 0..4 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
-                            }
-                            replacement_b = C64x4::madd(
-                                replacement_b,
-                                cof_b[eta * LB + z],
-                                C64x4::from_values(values[0], values[1], values[2], values[3]),
-                            );
-                        }
-                    }
-                }
-
-                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
-                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
-                let mut ii_term = zero_v;
-                if LA > 0 && LB > 0 {
-                    let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
-                    let iisl = std::slice::from_raw_parts(
-                        iisl_t.as_ptr().cast::<Complex64>(),
-                        iisl_t.len(),
-                    );
-                    let n = w.ab.n();
-                    let n2 = n * n;
-                    let n3 = n2 * n;
-                    if LA <= LB {
-                        for z in 0..LA {
-                            for eta in 0..LA {
-                                let mut inner = zero_v;
-                                for y in 0..LB {
-                                    for xi in 0..LB {
-                                        let mut values = [Complex64::new(0.0, 0.0); 4];
-                                        for lane in 0..4 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner = C64x4::madd(
-                                            inner,
-                                            cof_b[xi * LB + y],
-                                            C64x4::from_values(
-                                                values[0], values[1], values[2], values[3],
-                                            ),
-                                        );
-                                    }
-                                }
-                                ii_term = C64x4::madd(ii_term, cof_a[eta * LA + z], inner);
-                            }
-                        }
-                    } else {
-                        for y in 0..LB {
-                            for xi in 0..LB {
-                                let mut inner = zero_v;
-                                for z in 0..LA {
-                                    for eta in 0..LA {
-                                        let mut values = [Complex64::new(0.0, 0.0); 4];
-                                        for lane in 0..4 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner = C64x4::madd(
-                                            inner,
-                                            cof_a[eta * LA + z],
-                                            C64x4::from_values(
-                                                values[0], values[1], values[2], values[3],
-                                            ),
-                                        );
-                                    }
-                                }
-                                ii_term = C64x4::madd(ii_term, cof_b[xi * LB + y], inner);
-                            }
-                        }
-                    }
-                }
-
-                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
-                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
-                let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<Complex64>();
-                let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<Complex64>();
-                let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<Complex64>();
-                let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<Complex64>();
-                let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<Complex64>();
-                let g0_scalar =
-                    Complex64::new(enuc, 0.0) + f0ha + v0a * 0.5 + f0hb + v0b * 0.5 + vab0;
-                let g0 = C64x4::splat(g0_scalar.re, g0_scalar.im);
-                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
-                let det_ab = C64x4::mul(det_a, det_b);
-                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
-                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
-                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
-                let mut core = C64x4::mul(g0, det_ab);
-                core = C64x4::msub(core, det_b, replacement_a);
-                core = C64x4::msub(core, det_a, replacement_b);
-                core = C64x4::madd(core, j_a, det_b);
-                core = C64x4::madd(core, j_b, det_a);
-                core = C64x4::add(core, ii_term);
-                let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<Complex64>();
-                let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<Complex64>();
-                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
-                // `p_\beta{}^{xw}\tilde S_\beta`.
-                let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
-                let phase = C64x4::from_values(
-                    Complex64::new(excitation_phase[0], 0.0),
-                    Complex64::new(excitation_phase[1], 0.0),
-                    Complex64::new(excitation_phase[2], 0.0),
-                    Complex64::new(excitation_phase[3], 0.0),
-                );
-                let pref = C64x4::mul(phase, C64x4::splat(ref_pref.re, ref_pref.im));
-                let mut h_re = [0.0f64; 4];
-                let mut h_im = [0.0f64; 4];
-                let mut s_re = [0.0f64; 4];
-                let mut s_im = [0.0f64; 4];
-                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
-                C64x4::mul(core, pref).store(&mut h_re, &mut h_im);
-                C64x4::mul(det_ab, pref).store(&mut s_re, &mut s_im);
-                for lane in 0..4 {
-                    h[lane] = Complex64::new(h_re[lane], h_im[lane]);
-                    s[lane] = Complex64::new(s_re[lane], s_im[lane]);
-                }
-            }
-        }
-    )
+    unsafe {
+        xw_hamiltonian_overlap_m0_prepared_simd_const::<
+            Complex64,
+            C64x4,
+            4,
+            RXA,
+            RWA,
+            LA,
+            DA,
+            MA,
+            MDA,
+            RXB,
+            RWB,
+            LB,
+            DB,
+            MB,
+            MDB,
+        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+    }
 }
 
-/// Evaluate 8 independent real fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
-/// matrix elements for `m_\alpha = m_\beta = 0`.
-/// Each SIMD lane is one determinant pair and all lanes share the same reference pair
-/// and contraction ranks.
-/// This is the packed `f64x8` evaluation of the same determinant, cofactor, same-spin
-/// second-minor and mixed-spin cofactor contractions as `xw_hamiltonian_overlap_m0_prepared_const`.
+/// Evaluate eight real fixed-rank Hamiltonian/overlap values with AVX-512F.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = f64`.
-/// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
+/// - `w`: Real Wick intermediates.
+/// - `x_ex`: Bra excitation caches.
+/// - `w_ex`: Ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 8 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = f64`, CPU support for `AVX-512`, valid predecoded
-///   excitation labels and output slices of length at least 8.
+/// - `h`: Hamiltonian outputs.
+/// - `s`: Overlap outputs.
+/// # Returns
+/// - `()`: Writes eight matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_f64x8_const<
-    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
+    const DA: usize,
+    const MA: usize,
+    const MDA: usize,
     const RXB: usize,
     const RWB: usize,
     const LB: usize,
-    const DA: usize,
     const DB: usize,
-    const SA: usize,
-    const SB: usize,
+    const MB: usize,
+    const MDB: usize,
 >(
-    w: &WicksPairView<'_, T>,
+    w: &WicksPairView<'_, f64>,
     x_ex: &[ExcitationCache; 8],
     w_ex: &[ExcitationCache; 8],
     excitation_phase: &[f64; 8],
     enuc: f64,
-    h: &mut [f64],
-    s: &mut [f64],
+    h: &mut [f64; 8],
+    s: &mut [f64; 8],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_f64x8_const,
-        {
-            unsafe {
-                let zero_v = F64x8::zero();
-                let one_v = F64x8::splat(1.0);
-
-                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
-                let det3 = |m: &[F64x8; 16]| -> F64x8 {
-                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
-                    let t0 = F64x8::minor(m[4], m[8], m[5], m[7]);
-                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
-                    let mut out = F64x8::mul(m[0], t0);
-                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
-                    let t1 = F64x8::minor(m[3], m[8], m[5], m[6]);
-                    out = F64x8::msub(out, m[1], t1);
-                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
-                    let t2 = F64x8::minor(m[3], m[7], m[4], m[6]);
-                    F64x8::madd(out, m[2], t2)
-                };
-                // Expand a rank-four second minor along its first row.
-                let det4 = |m: &[F64x8; 16]| -> F64x8 {
-                    let mut out = zero_v;
-                    for col in 0..4 {
-                        let mut subm = [zero_v; 16];
-                        let mut ii = 0usize;
-                        for r in 1..4 {
-                            let mut jj = 0usize;
-                            for c in 0..4 {
-                                if c == col {
-                                    continue;
-                                }
-                                subm[ii * 3 + jj] = m[r * 4 + c];
-                                jj += 1;
-                            }
-                            ii += 1;
-                        }
-                        let term = F64x8::mul(m[col], det3(&subm));
-                        if (col & 1) == 0 {
-                            out = F64x8::add(out, term);
-                        } else {
-                            out = F64x8::sub(out, term);
-                        }
-                    }
-                    out
-                };
-                // `det_small` evaluates the empty determinant and ranks one through four.
-                let det_small = |minor: &[F64x8; 16], n: usize| -> F64x8 {
-                    match n {
-                        0 => one_v,
-                        1 => minor[0],
-                        2 => F64x8::minor(minor[0], minor[3], minor[1], minor[2]),
-                        3 => det3(minor),
-                        4 => det4(minor),
-                        _ => unreachable!(),
-                    }
-                };
-                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
-                let mut rows_a = [[0usize; 6]; 8];
-                let mut cols_a = [[0usize; 6]; 8];
-                let mut d_a = [zero_v; DA];
-                let mut cof_a = [zero_v; DA];
-                let mut second_a = [zero_v; SA];
-                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
-                let mut det_a = one_v;
-                let mut j_a = zero_v;
-                let mut replacement_a = zero_v;
-
-                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LA > 0 {
-                    let nocc = w.aa.nocc;
-                    let nvirt = w.aa.nmo - nocc;
-                    for lane in 0..8 {
-                        let x_cache = &x_ex.get_unchecked(lane).alpha;
-                        let w_cache = &w_ex.get_unchecked(lane).alpha;
-                        for i in 0..RXA {
-                            rows_a[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXA..LA {
-                            let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.aa.n();
-                    let x0_t = w.aa.x_slice(0);
-                    let y0_t = w.aa.y_slice(0);
-                    let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
-                    let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
-                    for i in 0..LA {
-                        for j in 0..LA {
-                            let mut values = [0.0f64; 8];
-                            for lane in 0..8 {
-                                let index = rows_a[lane][i] * n + cols_a[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_a[i * LA + j] = F64x8::load(&values);
-                        }
-                    }
-                    if LA == 1 {
-                        cof_a[0] = one_v;
-                        det_a = d_a[0];
-                    } else {
-                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
-                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                        let pairs_a = LA * (LA - 1) / 2;
-                        let jsl_t = w.aa.j_slice(0);
-                        let jsl =
-                            std::slice::from_raw_parts(jsl_t.as_ptr().cast::<f64>(), jsl_t.len());
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LA {
-                            for xi in (eta + 1)..LA {
-                                let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LA {
-                                    for y in (z + 1)..LA {
-                                        let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LA {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LA {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LA - 2);
-                                        second_a[row_pair * pairs_a + col_pair] = second;
-                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [0.0f64; 8];
-                                        let mut exchange_lane = [0.0f64; 8];
-                                        for lane in 0..8 {
-                                            let direct_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][z] * n2
-                                                + rows_a[lane][xi] * n;
-                                            let exchange_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][y] * n2
-                                                + rows_a[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_a[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
-                                        }
-                                        let jdiff = F64x8::sub(
-                                            F64x8::load(&direct_lane),
-                                            F64x8::load(&exchange_lane),
-                                        );
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_a = F64x8::madd(j_a, second, jdiff);
-                                        } else {
-                                            j_a = F64x8::msub(j_a, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LA {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LA {
-                                let mut value = zero_v;
-                                for c in 0..LA {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = F64x8::mul(
-                                        d_a[r * LA + c],
-                                        second_a[row_pair * pairs_a + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = F64x8::add(value, term);
-                                    } else {
-                                        value = F64x8::sub(value, term);
-                                    }
-                                }
-                                cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    F64x8::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
-                        det_a = F64x8::mul(d_a[0], cof_a[0]);
-                        for z in 1..LA {
-                            det_a = F64x8::madd(det_a, d_a[z], cof_a[z]);
-                        }
-                    }
-
-                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.aa.hcol0_t_slice();
-                    let hcol0 =
-                        std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
-                    for z in 0..LA {
-                        for eta in 0..LA {
-                            let mut values = [0.0f64; 8];
-                            for lane in 0..8 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
-                            }
-                            replacement_a = F64x8::madd(
-                                replacement_a,
-                                cof_a[eta * LA + z],
-                                F64x8::load(&values),
-                            );
-                        }
-                    }
-                }
-                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
-                let mut rows_b = [[0usize; 6]; 8];
-                let mut cols_b = [[0usize; 6]; 8];
-                let mut d_b = [zero_v; DB];
-                let mut cof_b = [zero_v; DB];
-                let mut second_b = [zero_v; SB];
-                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
-                let mut det_b = one_v;
-                let mut j_b = zero_v;
-                let mut replacement_b = zero_v;
-
-                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LB > 0 {
-                    let nocc = w.bb.nocc;
-                    let nvirt = w.bb.nmo - nocc;
-                    for lane in 0..8 {
-                        let x_cache = &x_ex.get_unchecked(lane).beta;
-                        let w_cache = &w_ex.get_unchecked(lane).beta;
-                        for i in 0..RXB {
-                            rows_b[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXB..LB {
-                            let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.bb.n();
-                    let x0_t = w.bb.x_slice(0);
-                    let y0_t = w.bb.y_slice(0);
-                    let x0 = std::slice::from_raw_parts(x0_t.as_ptr().cast::<f64>(), x0_t.len());
-                    let y0 = std::slice::from_raw_parts(y0_t.as_ptr().cast::<f64>(), y0_t.len());
-                    for i in 0..LB {
-                        for j in 0..LB {
-                            let mut values = [0.0f64; 8];
-                            for lane in 0..8 {
-                                let index = rows_b[lane][i] * n + cols_b[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_b[i * LB + j] = F64x8::load(&values);
-                        }
-                    }
-                    if LB == 1 {
-                        cof_b[0] = one_v;
-                        det_b = d_b[0];
-                    } else {
-                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
-                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
-                        let pairs_b = LB * (LB - 1) / 2;
-                        let jsl_t = w.bb.j_slice(0);
-                        let jsl =
-                            std::slice::from_raw_parts(jsl_t.as_ptr().cast::<f64>(), jsl_t.len());
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LB {
-                            for xi in (eta + 1)..LB {
-                                let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LB {
-                                    for y in (z + 1)..LB {
-                                        let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LB {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LB {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LB - 2);
-                                        second_b[row_pair * pairs_b + col_pair] = second;
-                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [0.0f64; 8];
-                                        let mut exchange_lane = [0.0f64; 8];
-                                        for lane in 0..8 {
-                                            let direct_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][z] * n2
-                                                + rows_b[lane][xi] * n;
-                                            let exchange_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][y] * n2
-                                                + rows_b[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_b[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
-                                        }
-                                        let jdiff = F64x8::sub(
-                                            F64x8::load(&direct_lane),
-                                            F64x8::load(&exchange_lane),
-                                        );
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_b = F64x8::madd(j_b, second, jdiff);
-                                        } else {
-                                            j_b = F64x8::msub(j_b, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LB {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LB {
-                                let mut value = zero_v;
-                                for c in 0..LB {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = F64x8::mul(
-                                        d_b[r * LB + c],
-                                        second_b[row_pair * pairs_b + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = F64x8::add(value, term);
-                                    } else {
-                                        value = F64x8::sub(value, term);
-                                    }
-                                }
-                                cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    F64x8::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
-                        det_b = F64x8::mul(d_b[0], cof_b[0]);
-                        for z in 1..LB {
-                            det_b = F64x8::madd(det_b, d_b[z], cof_b[z]);
-                        }
-                    }
-
-                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
-                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.bb.hcol0_t_slice();
-                    let hcol0 =
-                        std::slice::from_raw_parts(hcol0_t.as_ptr().cast::<f64>(), hcol0_t.len());
-                    for z in 0..LB {
-                        for eta in 0..LB {
-                            let mut values = [0.0f64; 8];
-                            for lane in 0..8 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
-                            }
-                            replacement_b = F64x8::madd(
-                                replacement_b,
-                                cof_b[eta * LB + z],
-                                F64x8::load(&values),
-                            );
-                        }
-                    }
-                }
-
-                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
-                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
-                let mut ii_term = zero_v;
-                if LA > 0 && LB > 0 {
-                    let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
-                    let iisl =
-                        std::slice::from_raw_parts(iisl_t.as_ptr().cast::<f64>(), iisl_t.len());
-                    let n = w.ab.n();
-                    let n2 = n * n;
-                    let n3 = n2 * n;
-                    if LA <= LB {
-                        for z in 0..LA {
-                            for eta in 0..LA {
-                                let mut inner = zero_v;
-                                for y in 0..LB {
-                                    for xi in 0..LB {
-                                        let mut values = [0.0f64; 8];
-                                        for lane in 0..8 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner = F64x8::madd(
-                                            inner,
-                                            cof_b[xi * LB + y],
-                                            F64x8::load(&values),
-                                        );
-                                    }
-                                }
-                                ii_term = F64x8::madd(ii_term, cof_a[eta * LA + z], inner);
-                            }
-                        }
-                    } else {
-                        for y in 0..LB {
-                            for xi in 0..LB {
-                                let mut inner = zero_v;
-                                for z in 0..LA {
-                                    for eta in 0..LA {
-                                        let mut values = [0.0f64; 8];
-                                        for lane in 0..8 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner = F64x8::madd(
-                                            inner,
-                                            cof_a[eta * LA + z],
-                                            F64x8::load(&values),
-                                        );
-                                    }
-                                }
-                                ii_term = F64x8::madd(ii_term, cof_b[xi * LB + y], inner);
-                            }
-                        }
-                    }
-                }
-
-                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
-                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
-                let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<f64>();
-                let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<f64>();
-                let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<f64>();
-                let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<f64>();
-                let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<f64>();
-                let g0 = F64x8::splat(enuc + f0ha + 0.5 * v0a + f0hb + 0.5 * v0b + vab0);
-                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
-                let det_ab = F64x8::mul(det_a, det_b);
-                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
-                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
-                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
-                let mut core = F64x8::mul(g0, det_ab);
-                core = F64x8::msub(core, det_b, replacement_a);
-                core = F64x8::msub(core, det_a, replacement_b);
-                core = F64x8::madd(core, j_a, det_b);
-                core = F64x8::madd(core, j_b, det_a);
-                core = F64x8::add(core, ii_term);
-                let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<f64>();
-                let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<f64>();
-                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
-                // `p_\beta{}^{xw}\tilde S_\beta`.
-                let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
-                let pref = F64x8::mul(F64x8::load(excitation_phase), F64x8::splat(ref_pref));
-                let mut h_lane = [0.0f64; 8];
-                let mut s_lane = [0.0f64; 8];
-                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
-                F64x8::mul(core, pref).store(&mut h_lane);
-                F64x8::mul(det_ab, pref).store(&mut s_lane);
-                h[..8].copy_from_slice(&h_lane);
-                s[..8].copy_from_slice(&s_lane);
-            }
-        }
-    )
+    unsafe {
+        xw_hamiltonian_overlap_m0_prepared_simd_const::<
+            f64,
+            F64x8,
+            8,
+            RXA,
+            RWA,
+            LA,
+            DA,
+            MA,
+            MDA,
+            RXB,
+            RWB,
+            LB,
+            DB,
+            MB,
+            MDB,
+        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+    }
 }
 
-/// Evaluate 8 independent complex fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap
-/// matrix elements for `m_\alpha = m_\beta = 0`.
-/// Each SIMD lane is one determinant pair and all lanes share the same reference pair
-/// and contraction ranks.
-/// This is the packed `c64x8` evaluation of the same determinant, cofactor, same-spin
-/// second-minor and mixed-spin cofactor contractions as `xw_hamiltonian_overlap_m0_prepared_const`.
+/// Evaluate eight complex fixed-rank Hamiltonian/overlap values with AVX-512F.
 /// # Arguments:
-/// - `w`: Wick intermediates for one ordered reference pair with `T = Complex64`.
-/// - `x_ex`: 8 predecoded bra excitations in SIMD-lane order.
-/// - `w_ex`: 8 predecoded ket excitations in SIMD-lane order.
-/// - `excitation_phase`: 8 excitation phases in SIMD-lane order.
+/// - `w`: Complex Wick intermediates.
+/// - `x_ex`: Bra excitation caches.
+/// - `w_ex`: Ket excitation caches.
+/// - `excitation_phase`: Excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
-/// - `h`: Hamiltonian output slice in SIMD-lane order.
-/// - `s`: Overlap output slice in SIMD-lane order.
-/// # Returns:
-/// - `()`: Writes 8 Hamiltonian and overlap matrix elements.
-/// # Safety:
-/// - The caller must ensure `T = Complex64`, CPU support for `AVX-512`, valid predecoded
-///   excitation labels and output slices of length at least 8.
+/// - `h`: Hamiltonian outputs.
+/// - `s`: Overlap outputs.
+/// # Returns
+/// - `()`: Writes eight matrix-element pairs.
+/// # Safety
+/// - The current CPU must support AVX-512F; cached labels must match fixed ranks.
 #[cfg(target_arch = "x86_64")]
-#[inline(never)]
 #[target_feature(enable = "avx512f")]
 unsafe fn xw_hamiltonian_overlap_m0_prepared_c64x8_const<
-    T: NOCIScalar,
     const RXA: usize,
     const RWA: usize,
     const LA: usize,
+    const DA: usize,
+    const MA: usize,
+    const MDA: usize,
     const RXB: usize,
     const RWB: usize,
     const LB: usize,
-    const DA: usize,
     const DB: usize,
-    const SA: usize,
-    const SB: usize,
+    const MB: usize,
+    const MDB: usize,
 >(
-    w: &WicksPairView<'_, T>,
+    w: &WicksPairView<'_, Complex64>,
     x_ex: &[ExcitationCache; 8],
     w_ex: &[ExcitationCache; 8],
     excitation_phase: &[f64; 8],
     enuc: f64,
-    h: &mut [Complex64],
-    s: &mut [Complex64],
+    h: &mut [Complex64; 8],
+    s: &mut [Complex64; 8],
 ) {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_c64x8_const,
-        {
-            unsafe {
-                let zero_v = C64x8::zero();
-                let one_v = C64x8::splat(1.0, 0.0);
-                let pack = |values: &[Complex64; 8]| C64x8::from_values(*values);
-
-                // Evaluate the second minors `\det\mathbf D_\sigma[\eta,\xi|z,y]` for ranks zero to four.
-                let det3 = |m: &[C64x8; 16]| -> C64x8 {
-                    // `t_0 = M_{11}M_{22} - M_{12}M_{21}`.
-                    let t0 = C64x8::minor(m[4], m[8], m[5], m[7]);
-                    // Begin `\det\mathbf M = M_{00}t_0 - M_{01}t_1 + M_{02}t_2`.
-                    let mut out = C64x8::mul(m[0], t0);
-                    // `t_1 = M_{10}M_{22} - M_{12}M_{20}`.
-                    let t1 = C64x8::minor(m[3], m[8], m[5], m[6]);
-                    out = C64x8::msub(out, m[1], t1);
-                    // `t_2 = M_{10}M_{21} - M_{11}M_{20}`.
-                    let t2 = C64x8::minor(m[3], m[7], m[4], m[6]);
-                    C64x8::madd(out, m[2], t2)
-                };
-                // Expand a rank-four second minor along its first row.
-                let det4 = |m: &[C64x8; 16]| -> C64x8 {
-                    let mut out = zero_v;
-                    for col in 0..4 {
-                        let mut subm = [zero_v; 16];
-                        let mut ii = 0usize;
-                        for r in 1..4 {
-                            let mut jj = 0usize;
-                            for c in 0..4 {
-                                if c == col {
-                                    continue;
-                                }
-                                subm[ii * 3 + jj] = m[r * 4 + c];
-                                jj += 1;
-                            }
-                            ii += 1;
-                        }
-                        let term = C64x8::mul(m[col], det3(&subm));
-                        if (col & 1) == 0 {
-                            out = C64x8::add(out, term);
-                        } else {
-                            out = C64x8::sub(out, term);
-                        }
-                    }
-                    out
-                };
-                // `det_small` evaluates the empty determinant and ranks one through four.
-                let det_small = |minor: &[C64x8; 16], n: usize| -> C64x8 {
-                    match n {
-                        0 => one_v,
-                        1 => minor[0],
-                        2 => C64x8::minor(minor[0], minor[3], minor[1], minor[2]),
-                        3 => det3(minor),
-                        4 => det4(minor),
-                        _ => unreachable!(),
-                    }
-                };
-                // Store `r^\alpha_\eta`, `c^\alpha_z`, `D^\alpha_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` and the alpha second minors.
-                let mut rows_a = [[0usize; 6]; 8];
-                let mut cols_a = [[0usize; 6]; 8];
-                let mut d_a = [zero_v; DA];
-                let mut cof_a = [zero_v; DA];
-                let mut second_a = [zero_v; SA];
-                // Accumulate `\det\mathbf D_\alpha`, `\mathcal C_{3,\alpha}` and alpha replacements.
-                let mut det_a = one_v;
-                let mut j_a = zero_v;
-                let mut replacement_a = zero_v;
-
-                // Lane-wise alpha `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LA > 0 {
-                    let nocc = w.aa.nocc;
-                    let nvirt = w.aa.nmo - nocc;
-                    for lane in 0..8 {
-                        let x_cache = &x_ex.get_unchecked(lane).alpha;
-                        let w_cache = &w_ex.get_unchecked(lane).alpha;
-                        for i in 0..RXA {
-                            rows_a[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_a[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXA..LA {
-                            let k = i - RXA;
-                            rows_a[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_a[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\alpha_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\alpha_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.aa.n();
-                    let x0_t = w.aa.x_slice(0);
-                    let y0_t = w.aa.y_slice(0);
-                    let x0 =
-                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
-                    let y0 =
-                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
-                    for i in 0..LA {
-                        for j in 0..LA {
-                            let mut values = [Complex64::new(0.0, 0.0); 8];
-                            for lane in 0..8 {
-                                let index = rows_a[lane][i] * n + cols_a[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_a[i * LA + j] = pack(&values);
-                        }
-                    }
-                    if LA == 1 {
-                        cof_a[0] = one_v;
-                        det_a = d_a[0];
-                    } else {
-                        // `\mathcal C_{3,\alpha} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\alpha_{\eta z,\xi y}`
-                        // `\det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                        let pairs_a = LA * (LA - 1) / 2;
-                        let jsl_t = w.aa.j_slice(0);
-                        let jsl = std::slice::from_raw_parts(
-                            jsl_t.as_ptr().cast::<Complex64>(),
-                            jsl_t.len(),
-                        );
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LA {
-                            for xi in (eta + 1)..LA {
-                                let row_pair = eta * (2 * LA - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LA {
-                                    for y in (z + 1)..LA {
-                                        let col_pair = z * (2 * LA - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LA {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LA {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LA - 2) + jj] = d_a[r * LA + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\alpha[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LA - 2);
-                                        second_a[row_pair * pairs_a + col_pair] = second;
-                                        // Gather `\mathcal J^\alpha_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 8];
-                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 8];
-                                        for lane in 0..8 {
-                                            let direct_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][z] * n2
-                                                + rows_a[lane][xi] * n;
-                                            let exchange_base = rows_a[lane][eta] * n3
-                                                + cols_a[lane][y] * n2
-                                                + rows_a[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_a[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_a[lane][z]);
-                                        }
-                                        let jdiff =
-                                            C64x8::sub(pack(&direct_lane), pack(&exchange_lane));
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_a = C64x8::madd(j_a, second, jdiff);
-                                        } else {
-                                            j_a = C64x8::msub(j_a, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\alpha[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LA {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LA {
-                                let mut value = zero_v;
-                                for c in 0..LA {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LA - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LA - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = C64x8::mul(
-                                        d_a[r * LA + c],
-                                        second_a[row_pair * pairs_a + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = C64x8::add(value, term);
-                                    } else {
-                                        value = C64x8::sub(value, term);
-                                    }
-                                }
-                                cof_a[eta * LA + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    C64x8::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\alpha = \sum_z D^\alpha_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\alpha]_{0z}`.
-                        det_a = C64x8::mul(d_a[0], cof_a[0]);
-                        for z in 1..LA {
-                            det_a = C64x8::madd(det_a, d_a[z], cof_a[z]);
-                        }
-                    }
-
-                    // `R_\alpha = \sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
-                    // `\mathcal H^\alpha_{\eta z}`, where `\mathcal H^\alpha` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.aa.hcol0_t_slice();
-                    let hcol0 = std::slice::from_raw_parts(
-                        hcol0_t.as_ptr().cast::<Complex64>(),
-                        hcol0_t.len(),
-                    );
-                    for z in 0..LA {
-                        for eta in 0..LA {
-                            let mut values = [Complex64::new(0.0, 0.0); 8];
-                            for lane in 0..8 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_a[lane][z] * n + rows_a[lane][eta]);
-                            }
-                            replacement_a =
-                                C64x8::madd(replacement_a, cof_a[eta * LA + z], pack(&values));
-                        }
-                    }
-                }
-                // Store `r^\beta_\eta`, `c^\beta_z`, `D^\beta_{\eta z}`,
-                // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` and the beta second minors.
-                let mut rows_b = [[0usize; 6]; 8];
-                let mut cols_b = [[0usize; 6]; 8];
-                let mut d_b = [zero_v; DB];
-                let mut cof_b = [zero_v; DB];
-                let mut second_b = [zero_v; SB];
-                // Accumulate `\det\mathbf D_\beta`, `\mathcal C_{3,\beta}` and beta replacements.
-                let mut det_b = one_v;
-                let mut j_b = zero_v;
-                let mut replacement_b = zero_v;
-
-                // Lane-wise beta `\mathbf D_{\mathrm{ov}}` labels: x-excitations contribute
-                // `(a,i)` and w-excitations contribute `(j,b)`.
-                if LB > 0 {
-                    let nocc = w.bb.nocc;
-                    let nvirt = w.bb.nmo - nocc;
-                    for lane in 0..8 {
-                        let x_cache = &x_ex.get_unchecked(lane).beta;
-                        let w_cache = &w_ex.get_unchecked(lane).beta;
-                        for i in 0..RXB {
-                            rows_b[lane][i] =
-                                usize::from(*x_cache.particles.get_unchecked(i)) - nocc;
-                            cols_b[lane][i] = usize::from(*x_cache.holes.get_unchecked(i));
-                        }
-                        for i in RXB..LB {
-                            let k = i - RXB;
-                            rows_b[lane][i] = nvirt + usize::from(*w_cache.holes.get_unchecked(k));
-                            cols_b[lane][i] = usize::from(*w_cache.particles.get_unchecked(k));
-                        }
-                    }
-
-                    // `D^\beta_{\eta z} = X^{(0)}_{r_\eta c_z}` for `\eta \geq z`, otherwise
-                    // `D^\beta_{\eta z} = Y^{(0)}_{r_\eta c_z}`.
-                    let n = w.bb.n();
-                    let x0_t = w.bb.x_slice(0);
-                    let y0_t = w.bb.y_slice(0);
-                    let x0 =
-                        std::slice::from_raw_parts(x0_t.as_ptr().cast::<Complex64>(), x0_t.len());
-                    let y0 =
-                        std::slice::from_raw_parts(y0_t.as_ptr().cast::<Complex64>(), y0_t.len());
-                    for i in 0..LB {
-                        for j in 0..LB {
-                            let mut values = [Complex64::new(0.0, 0.0); 8];
-                            for lane in 0..8 {
-                                let index = rows_b[lane][i] * n + cols_b[lane][j];
-                                values[lane] = if i >= j {
-                                    *x0.get_unchecked(index)
-                                } else {
-                                    *y0.get_unchecked(index)
-                                };
-                            }
-                            d_b[i * LB + j] = pack(&values);
-                        }
-                    }
-                    if LB == 1 {
-                        cof_b[0] = one_v;
-                        det_b = d_b[0];
-                    } else {
-                        // `\mathcal C_{3,\beta} = \sum_{\eta<\xi}\sum_{z<y}`
-                        // `\phi_{\eta\xi}^{zy}\mathcal J^\beta_{\eta z,\xi y}`
-                        // `\det\mathbf D_\beta[\eta,\xi|z,y]`.
-                        let pairs_b = LB * (LB - 1) / 2;
-                        let jsl_t = w.bb.j_slice(0);
-                        let jsl = std::slice::from_raw_parts(
-                            jsl_t.as_ptr().cast::<Complex64>(),
-                            jsl_t.len(),
-                        );
-                        let n2 = n * n;
-                        let n3 = n2 * n;
-                        for eta in 0..LB {
-                            for xi in (eta + 1)..LB {
-                                let row_pair = eta * (2 * LB - eta - 1) / 2 + (xi - eta - 1);
-                                for z in 0..LB {
-                                    for y in (z + 1)..LB {
-                                        let col_pair = z * (2 * LB - z - 1) / 2 + (y - z - 1);
-                                        let mut minor = [zero_v; 16];
-                                        let mut ii = 0usize;
-                                        for r in 0..LB {
-                                            if r == eta || r == xi {
-                                                continue;
-                                            }
-                                            let mut jj = 0usize;
-                                            for c in 0..LB {
-                                                if c == z || c == y {
-                                                    continue;
-                                                }
-                                                minor[ii * (LB - 2) + jj] = d_b[r * LB + c];
-                                                jj += 1;
-                                            }
-                                            ii += 1;
-                                        }
-                                        // `second = \det\mathbf D_\beta[\eta,\xi|z,y]`.
-                                        let second = det_small(&minor, LB - 2);
-                                        second_b[row_pair * pairs_b + col_pair] = second;
-                                        // Gather `\mathcal J^\beta_{\eta z,\xi y}` as direct minus exchange.
-                                        let mut direct_lane = [Complex64::new(0.0, 0.0); 8];
-                                        let mut exchange_lane = [Complex64::new(0.0, 0.0); 8];
-                                        for lane in 0..8 {
-                                            let direct_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][z] * n2
-                                                + rows_b[lane][xi] * n;
-                                            let exchange_base = rows_b[lane][eta] * n3
-                                                + cols_b[lane][y] * n2
-                                                + rows_b[lane][xi] * n;
-                                            direct_lane[lane] =
-                                                *jsl.get_unchecked(direct_base + cols_b[lane][y]);
-                                            exchange_lane[lane] =
-                                                *jsl.get_unchecked(exchange_base + cols_b[lane][z]);
-                                        }
-                                        let jdiff =
-                                            C64x8::sub(pack(&direct_lane), pack(&exchange_lane));
-                                        // `\phi_{\eta\xi}^{zy} = (-1)^{\eta+\xi+z+y}`.
-                                        if ((eta + xi + z + y) & 1) == 0 {
-                                            j_b = C64x8::madd(j_b, second, jdiff);
-                                        } else {
-                                            j_b = C64x8::msub(j_b, second, jdiff);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z}` is
-                        // `\operatorname{cof}[\mathbf D_\beta]_{\eta z} = (-1)^{\eta+z}\det\mathbf D_\beta[\eta|z]`,
-                        // reconstructed from second minors before expanding det D.
-                        for eta in 0..LB {
-                            let r = if eta == 0 { 1usize } else { 0usize };
-                            let r_minor = if r < eta { r } else { r - 1 };
-                            for z in 0..LB {
-                                let mut value = zero_v;
-                                for c in 0..LB {
-                                    if c == z {
-                                        continue;
-                                    }
-                                    let c_minor = if c < z { c } else { c - 1 };
-                                    let (row0, row1) = if eta < r { (eta, r) } else { (r, eta) };
-                                    let (col0, col1) = if z < c { (z, c) } else { (c, z) };
-                                    let row_pair =
-                                        row0 * (2 * LB - row0 - 1) / 2 + (row1 - row0 - 1);
-                                    let col_pair =
-                                        col0 * (2 * LB - col0 - 1) / 2 + (col1 - col0 - 1);
-                                    let term = C64x8::mul(
-                                        d_b[r * LB + c],
-                                        second_b[row_pair * pairs_b + col_pair],
-                                    );
-                                    if ((r_minor + c_minor) & 1) == 0 {
-                                        value = C64x8::add(value, term);
-                                    } else {
-                                        value = C64x8::sub(value, term);
-                                    }
-                                }
-                                cof_b[eta * LB + z] = if ((eta + z) & 1) == 0 {
-                                    value
-                                } else {
-                                    C64x8::sub(zero_v, value)
-                                };
-                            }
-                        }
-                        // `\det\mathbf D_\beta = \sum_z D^\beta_{0z}`
-                        // `\operatorname{cof}[\mathbf D_\beta]_{0z}`.
-                        det_b = C64x8::mul(d_b[0], cof_b[0]);
-                        for z in 1..LB {
-                            det_b = C64x8::madd(det_b, d_b[z], cof_b[z]);
-                        }
-                    }
-
-                    // `R_\beta = \sum_{\eta z}\operatorname{cof}[\mathbf D_\beta]_{\eta z}`
-                    // `\mathcal H^\beta_{\eta z}`, where `\mathcal H^\beta` combines all
-                    // one-column one-body, same-spin and mixed-spin intermediates.
-                    let hcol0_t = w.bb.hcol0_t_slice();
-                    let hcol0 = std::slice::from_raw_parts(
-                        hcol0_t.as_ptr().cast::<Complex64>(),
-                        hcol0_t.len(),
-                    );
-                    for z in 0..LB {
-                        for eta in 0..LB {
-                            let mut values = [Complex64::new(0.0, 0.0); 8];
-                            for lane in 0..8 {
-                                values[lane] =
-                                    *hcol0.get_unchecked(cols_b[lane][z] * n + rows_b[lane][eta]);
-                            }
-                            replacement_b =
-                                C64x8::madd(replacement_b, cof_b[eta * LB + z], pack(&values));
-                        }
-                    }
-                }
-
-                // `\mathcal C_{\alpha\beta} = \sum_{\eta z\xi y}`
-                // `\operatorname{cof}[\mathbf D_\alpha]_{\eta z}\mathcal{II}_{\eta z,\xi y}`
-                // `\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
-                let mut ii_term = zero_v;
-                if LA > 0 && LB > 0 {
-                    let iisl_t = w.ab.iiab_slice(0, 0, 0, 0);
-                    let iisl = std::slice::from_raw_parts(
-                        iisl_t.as_ptr().cast::<Complex64>(),
-                        iisl_t.len(),
-                    );
-                    let n = w.ab.n();
-                    let n2 = n * n;
-                    let n3 = n2 * n;
-                    if LA <= LB {
-                        for z in 0..LA {
-                            for eta in 0..LA {
-                                let mut inner = zero_v;
-                                for y in 0..LB {
-                                    for xi in 0..LB {
-                                        let mut values = [Complex64::new(0.0, 0.0); 8];
-                                        for lane in 0..8 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner =
-                                            C64x8::madd(inner, cof_b[xi * LB + y], pack(&values));
-                                    }
-                                }
-                                ii_term = C64x8::madd(ii_term, cof_a[eta * LA + z], inner);
-                            }
-                        }
-                    } else {
-                        for y in 0..LB {
-                            for xi in 0..LB {
-                                let mut inner = zero_v;
-                                for z in 0..LA {
-                                    for eta in 0..LA {
-                                        let mut values = [Complex64::new(0.0, 0.0); 8];
-                                        for lane in 0..8 {
-                                            let base_a =
-                                                rows_a[lane][eta] * n3 + cols_a[lane][z] * n2;
-                                            values[lane] = *iisl.get_unchecked(
-                                                base_a + rows_b[lane][xi] * n + cols_b[lane][y],
-                                            );
-                                        }
-                                        inner =
-                                            C64x8::madd(inner, cof_a[eta * LA + z], pack(&values));
-                                    }
-                                }
-                                ii_term = C64x8::madd(ii_term, cof_b[xi * LB + y], inner);
-                            }
-                        }
-                    }
-                }
-
-                // `G_0 = E_{\mathrm{nuc}} + F_{0,\alpha} + \frac12V_{0,\alpha}`
-                // `+ F_{0,\beta} + \frac12V_{0,\beta} + V_{\alpha\beta,0}`.
-                let f0ha = *std::ptr::from_ref(&w.aa.f0h[0]).cast::<Complex64>();
-                let v0a = *std::ptr::from_ref(&w.aa.v0[0]).cast::<Complex64>();
-                let f0hb = *std::ptr::from_ref(&w.bb.f0h[0]).cast::<Complex64>();
-                let v0b = *std::ptr::from_ref(&w.bb.v0[0]).cast::<Complex64>();
-                let vab0 = *std::ptr::from_ref(&w.ab.vab0[0][0]).cast::<Complex64>();
-                let g0_scalar =
-                    Complex64::new(enuc, 0.0) + f0ha + v0a * 0.5 + f0hb + v0b * 0.5 + vab0;
-                let g0 = C64x8::splat(g0_scalar.re, g0_scalar.im);
-                // `D_{\alpha\beta} = \det\mathbf D_\alpha\det\mathbf D_\beta`.
-                let det_ab = C64x8::mul(det_a, det_b);
-                // `H_0 = G_0D_{\alpha\beta} - R_\alpha\det\mathbf D_\beta`
-                // `- R_\beta\det\mathbf D_\alpha + \mathcal C_{3,\alpha}\det\mathbf D_\beta`
-                // `+ \mathcal C_{3,\beta}\det\mathbf D_\alpha + \mathcal C_{\alpha\beta}`.
-                let mut core = C64x8::mul(g0, det_ab);
-                core = C64x8::msub(core, det_b, replacement_a);
-                core = C64x8::msub(core, det_a, replacement_b);
-                core = C64x8::madd(core, j_a, det_b);
-                core = C64x8::madd(core, j_b, det_a);
-                core = C64x8::add(core, ii_term);
-                let phase_a = *std::ptr::from_ref(&w.aa.phase).cast::<Complex64>();
-                let phase_b = *std::ptr::from_ref(&w.bb.phase).cast::<Complex64>();
-                // `p = p_{\mathrm{ex}}p_\alpha{}^{xw}\tilde S_\alpha`
-                // `p_\beta{}^{xw}\tilde S_\beta`.
-                let ref_pref = phase_a * w.aa.tilde_s_prod * phase_b * w.bb.tilde_s_prod;
-                let mut phase_values = [Complex64::new(0.0, 0.0); 8];
-                for lane in 0..8 {
-                    phase_values[lane] = Complex64::new(excitation_phase[lane], 0.0);
-                }
-                let phase = C64x8::from_values(phase_values);
-                let pref = C64x8::mul(phase, C64x8::splat(ref_pref.re, ref_pref.im));
-                let mut h_re = [0.0f64; 8];
-                let mut h_im = [0.0f64; 8];
-                let mut s_re = [0.0f64; 8];
-                let mut s_im = [0.0f64; 8];
-                // Store `H = pH_0` and `S = pD_{\alpha\beta}`.
-                C64x8::mul(core, pref).store(&mut h_re, &mut h_im);
-                C64x8::mul(det_ab, pref).store(&mut s_re, &mut s_im);
-                for lane in 0..8 {
-                    h[lane] = Complex64::new(h_re[lane], h_im[lane]);
-                    s[lane] = Complex64::new(s_re[lane], s_im[lane]);
-                }
-            }
-        }
-    )
+    unsafe {
+        xw_hamiltonian_overlap_m0_prepared_simd_const::<
+            Complex64,
+            C64x8,
+            8,
+            RXA,
+            RWA,
+            LA,
+            DA,
+            MA,
+            MDA,
+            RXB,
+            RWB,
+            LB,
+            DB,
+            MB,
+            MDB,
+        >(w, x_ex, w_ex, excitation_phase, enuc, h, s);
+    }
 }
 
 /// Evaluate an arbitrary contraction-rank Hamiltonian and overlap for
@@ -3446,7 +1461,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
 
             let (det_a, have_a) = if la == 0 {
                 (<T as From<f64>>::from(1.0), true)
-            } else if let Some(value) = adjugate_transpose(
+            } else if let Some(value) = adjugate_transpose_dynamic(
                 scratch.aa.adjt_det.as_mut_slice(),
                 scratch.aa.invs.as_mut_slice(),
                 scratch.aa.lu.as_mut_slice(),
@@ -3456,12 +1471,15 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
             ) {
                 (value, true)
             } else {
-                (det(scratch.aa.det0.as_slice(), la).unwrap_or(zero), false)
+                (
+                    det_dynamic(scratch.aa.det0.as_slice(), la).unwrap_or(zero),
+                    false,
+                )
             };
 
             let (det_b, have_b) = if lb == 0 {
                 (<T as From<f64>>::from(1.0), true)
-            } else if let Some(value) = adjugate_transpose(
+            } else if let Some(value) = adjugate_transpose_dynamic(
                 scratch.bb.adjt_det.as_mut_slice(),
                 scratch.bb.invs.as_mut_slice(),
                 scratch.bb.lu.as_mut_slice(),
@@ -3471,7 +1489,10 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
             ) {
                 (value, true)
             } else {
-                (det(scratch.bb.det0.as_slice(), lb).unwrap_or(zero), false)
+                (
+                    det_dynamic(scratch.bb.det0.as_slice(), lb).unwrap_or(zero),
+                    false,
+                )
             };
             let mut same_a = zero;
             let mut same_b = zero;
@@ -3529,7 +1550,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                                         }
                                         ii += 1;
                                     }
-                                    let second = det(&minor, la - 2).unwrap_or(zero);
+                                    let second = det_dynamic(&minor, la - 2).unwrap_or(zero);
                                     let n2 = n * n;
                                     let n3 = n2 * n;
                                     let row_eta_n3 = rows[eta] * n3;
@@ -3603,7 +1624,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                                         }
                                         ii += 1;
                                     }
-                                    let second = det(&minor, lb - 2).unwrap_or(zero);
+                                    let second = det_dynamic(&minor, lb - 2).unwrap_or(zero);
                                     let n2 = n * n;
                                     let n3 = n2 * n;
                                     let row_eta_n3 = rows[eta] * n3;
@@ -3843,7 +1864,7 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
                 } else if m1 == 0 && m2 == 0 {
                     // Preserve overlap evaluation when the adjugate path rejects a singular mixed
                     // determinant.
-                    sa += det(scratch.det_mix.as_slice(), la).unwrap_or(zero);
+                    sa += det_dynamic(scratch.det_mix.as_slice(), la).unwrap_or(zero);
                 }
             });
 
@@ -3976,7 +1997,7 @@ fn xw_hamiltonian_overlap_gen_prepared<T: NOCIScalar>(
 
                     h2bb += contrib;
                 } else if m1 == 0 && m2 == 0 {
-                    sb += det(scratch.det_mix.as_slice(), lb).unwrap_or(zero);
+                    sb += det_dynamic(scratch.det_mix.as_slice(), lb).unwrap_or(zero);
                 }
             });
 

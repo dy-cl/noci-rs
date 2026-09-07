@@ -6,8 +6,6 @@ mod preparehamiltonianoverlap;
 mod prepareonebodyoverlap;
 #[cfg(feature = "nocc")]
 mod rdm;
-#[cfg(target_arch = "x86_64")]
-mod simd;
 
 // Crate-visible type re-exports.
 pub(crate) use overlap::SameSpinOverlapBatch;
