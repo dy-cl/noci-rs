@@ -19,10 +19,11 @@
 //! `\mathbf V^{(k)} couples the current NOCI state to the candidate space, and \epsilon is an`
 //! optional imaginary shift.
 //!
-//! The projected linear system is solved using restarted GMRES. Diagonal and low-rank
-//! Woodbury preconditioners are available, and candidate-space matrix-vector products may be
-//! evaluated from a stored packed matrix or on demand. MPI distributes candidate-space
-//! operator applications while Rayon parallelises matrix-element evaluation within each rank.
+//! The projected linear system is solved using restarted GMRES. GMRES may be run without
+//! preconditioning or with diagonal and low-rank Woodbury preconditioners. Candidate-space
+//! matrix-vector products may be evaluated from a stored packed matrix or on demand. MPI
+//! distributes candidate-space operator applications while Rayon parallelises matrix-element
+//! evaluation within each rank.
 //!
 //! Candidate importance is obtained from the NOCI-PT2 amplitudes and couplings. Determinants
 //! above the configured threshold are added to the selected space until the perturbative

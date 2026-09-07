@@ -77,7 +77,11 @@ impl FromStr for SNOCIStorage {
 
 #[derive(Clone, Copy)]
 pub enum SNOCIPreconditioner {
+    /// Do not precondition the GMRES linear system.
+    None,
+    /// Apply the inverse diagonal of the projected NOCI-PT2 operator.
     Diag,
+    /// Apply the diagonal plus rank-2 Woodbury projection correction.
     Woodbury,
 }
 
@@ -87,6 +91,7 @@ impl SNOCIPreconditioner {
     /// - `&'static str`: String representation used in input parsing.
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::Diag => "diag",
             Self::Woodbury => "woodbury",
         }
@@ -103,6 +108,7 @@ impl FromStr for SNOCIPreconditioner {
     /// - `Result`: Parsed preconditioner if valid string, otherwise error message.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
+            "none" => Ok(Self::None),
             "diag" => Ok(Self::Diag),
             "woodbury" => Ok(Self::Woodbury),
             _ => Err(format!("invalid SNOCI preconditioner: {s}")),

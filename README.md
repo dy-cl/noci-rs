@@ -216,7 +216,7 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 - Iterative candidate generation and determinant selection.
 - NOCI-PT2 candidate scoring and perturbative energy corrections [8].
 - GMRES solution of projected candidate-space equations [14].
-- Diagonal and Woodbury preconditioners.
+- Optional diagonal and Woodbury GMRES preconditioners.
 - Optional NOCI-PT2 imaginary shifts [8].
 - Can use holomorphic SCF states.
 
@@ -500,6 +500,10 @@ snoci = {
     },
 }
 ```
+
+The SNOCI GMRES preconditioner may be set to `"none"`, `"diag"`, or `"woodbury"`.
+`"none"` applies no preconditioning and avoids constructing the candidate-space
+preconditioner diagonals.
 
 A NOCI-PT2-only calculation may be performed by limiting the selected NOCI procedure to one iteration. Although arbitrary excitation orders are currently accepted, the rigorous NOCI-PT2 first-order interacting space consists of single and double excitations.
 

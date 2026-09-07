@@ -6,7 +6,7 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::input::SNOCIStorage;
+use crate::input::{SNOCIPreconditioner, SNOCIStorage};
 use crate::noci::{FockData, NOCIData, NOCIScalar, OneBodyFactorisation, OneBodyScratch};
 use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::nonorthogonalwicks::WicksShared;
@@ -342,26 +342,36 @@ where
             };
 
             let m_slice = m.as_ref().map(|m| m.as_slice());
-            let (m_diag, factorised_s_diag) = if let Some(one_body) = one_body.as_ref() {
-                let (m_diag, s_diag) = build_factorised_candidate_diags(
-                    &op,
-                    one_body,
-                    T::from_real(-op.projection.e0),
-                );
-                (m_diag, Some(s_diag))
-            } else {
-                (build_candidate_m_diag(&op, m_slice), None)
+            // Candidate diagonals are needed only for actual preconditioners.
+            let (m_diag, factorised_s_diag) = match opts.preconditioner {
+                SNOCIPreconditioner::None => (None, None),
+                SNOCIPreconditioner::Diag | SNOCIPreconditioner::Woodbury => {
+                    if let Some(one_body) = one_body.as_ref() {
+                        let (m_diag, s_diag) = build_factorised_candidate_diags(
+                            &op,
+                            one_body,
+                            T::from_real(-op.projection.e0),
+                        );
+                        (Some(m_diag), Some(s_diag))
+                    } else {
+                        (Some(build_candidate_m_diag(&op, m_slice)), None)
+                    }
+                }
             };
+
             let shifts = if opts.imag_shifts.is_empty() {
                 vec![0.0]
             } else {
                 opts.imag_shifts.clone()
             };
-            let s_diag = if shifts.iter().any(|&imag_shift| imag_shift != 0.0) {
+
+            // Shifted diagonal data are also unnecessary when GMRES is unpreconditioned.
+            let s_diag = if m_diag.is_some() && shifts.iter().any(|&imag_shift| imag_shift != 0.0) {
                 factorised_s_diag.or_else(|| Some(build_candidate_s_diag(&op)))
             } else {
                 None
             };
+
             let rhs = v_omega_krylov.mapv(|x| -x);
             let mut one_body_scratch: Option<OneBodyScratch<R>> = one_body
                 .as_ref()
@@ -370,16 +380,18 @@ where
             // Evaluate NOCI-PT2 energies, scores and diagnostics for each imaginary shift.
             let mut pt2 = Vec::new();
             for &imag_shift in &shifts {
-                let prec = build_preconditioner(
-                    &m_diag,
-                    s_diag.as_ref(),
-                    &krylov_projection,
-                    opts.preconditioner,
-                    imag_shift,
-                );
+                let prec = m_diag.as_ref().map(|m_diag| {
+                    build_preconditioner(
+                        m_diag,
+                        s_diag.as_ref(),
+                        &krylov_projection,
+                        opts.preconditioner,
+                        imag_shift,
+                    )
+                });
 
-                let a = gmres(
-                    |x| {
+                let a = {
+                    let mut apply = |x: &Array1<R>| {
                         if let (Some(one_body), Some(scratch)) =
                             (one_body.as_ref(), one_body_scratch.as_mut())
                         {
@@ -415,12 +427,14 @@ where
                         } else {
                             apply_shifted_omega_m(&op, &krylov_projection, x, m_slice, imag_shift)
                         }
-                    },
-                    |x| prec.apply(x),
-                    &rhs,
-                    &opts.gmres,
-                    world,
-                );
+                    };
+
+                    if let Some(prec) = prec.as_ref() {
+                        gmres(&mut apply, |x| prec.apply(x), &rhs, &opts.gmres, world)
+                    } else {
+                        gmres(&mut apply, |x| x.clone(), &rhs, &opts.gmres, world)
+                    }
+                };
 
                 let ma = if let (Some(one_body), Some(scratch)) =
                     (one_body.as_ref(), one_body_scratch.as_mut())
