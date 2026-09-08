@@ -22,30 +22,35 @@ use num_complex::Complex64;
 pub(crate) trait Simd<const N: usize>: Copy {
     /// Scalar value stored independently in each SIMD lane.
     type Scalar: Copy;
+
     /// Construct packed additive zero.
     /// # Arguments:
     /// - None.
     /// # Returns
     /// - `Self`: Packed zero.
     fn zero() -> Self;
+
     /// Construct packed multiplicative one.
     /// # Arguments:
     /// - None.
     /// # Returns
     /// - `Self`: Packed one.
     fn one() -> Self;
+
     /// Broadcast one scalar value into every lane.
     /// # Arguments:
     /// - `value`: Scalar value to broadcast.
     /// # Returns
     /// - `Self`: Packed broadcast value.
     fn splat(value: Self::Scalar) -> Self;
+
     /// Load one value for each lane.
     /// # Arguments:
     /// - `values`: Scalar values in lane order.
     /// # Returns
     /// - `Self`: Packed SIMD value.
     fn load(values: &[Self::Scalar; N]) -> Self;
+
     /// Store every SIMD lane.
     /// # Arguments:
     /// - `self`: Packed value to store.
@@ -56,6 +61,7 @@ pub(crate) trait Simd<const N: usize>: Copy {
         self,
         values: &mut [Self::Scalar; N],
     );
+
     /// Add two packed values.
     /// # Arguments:
     /// - `lhs`: Left packed operand.
@@ -66,6 +72,7 @@ pub(crate) trait Simd<const N: usize>: Copy {
         lhs: Self,
         rhs: Self,
     ) -> Self;
+
     /// Subtract two packed values.
     /// # Arguments:
     /// - `lhs`: Left packed operand.
@@ -76,6 +83,7 @@ pub(crate) trait Simd<const N: usize>: Copy {
         lhs: Self,
         rhs: Self,
     ) -> Self;
+
     /// Multiply two packed values.
     /// # Arguments:
     /// - `lhs`: Left packed operand.
@@ -86,6 +94,7 @@ pub(crate) trait Simd<const N: usize>: Copy {
         lhs: Self,
         rhs: Self,
     ) -> Self;
+
     /// Accumulate one packed product.
     /// # Arguments:
     /// - `acc`: Packed accumulator.
@@ -98,6 +107,7 @@ pub(crate) trait Simd<const N: usize>: Copy {
         lhs: Self,
         rhs: Self,
     ) -> Self;
+
     /// Subtract one packed product from an accumulator.
     /// # Arguments:
     /// - `acc`: Packed accumulator.
@@ -110,6 +120,7 @@ pub(crate) trait Simd<const N: usize>: Copy {
         lhs: Self,
         rhs: Self,
     ) -> Self;
+
     /// Multiply every lane by one real scalar.
     /// # Arguments:
     /// - `value`: Packed value to scale.

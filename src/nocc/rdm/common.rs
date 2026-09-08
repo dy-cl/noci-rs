@@ -4,7 +4,7 @@
 use ndarray::Array2;
 
 // Crate-root imports.
-use crate::maths::det_occupied_minor;
+use crate::maths::det_occupied_minor_dynamic;
 use crate::noci::{DetPair, NOCIScalar, occ_coeffs};
 
 /// Split creation and annihilation indices by spin assignment mask.
@@ -113,7 +113,7 @@ fn same_spin_rdm_element_naive<T: NOCIScalar>(
             continue;
         }
 
-        let cg = det_occupied_minor(g_c, ket, nel);
+        let cg = det_occupied_minor_dynamic(g_c, ket, nel);
         let mut bra = ket;
         let mut phase = one;
         let mut valid = true;
@@ -147,7 +147,7 @@ fn same_spin_rdm_element_naive<T: NOCIScalar>(
         }
 
         if valid {
-            let cl = det_occupied_minor(l_c, bra, nel);
+            let cl = det_occupied_minor_dynamic(l_c, bra, nel);
             acc += phase * cl * cg;
         }
     }

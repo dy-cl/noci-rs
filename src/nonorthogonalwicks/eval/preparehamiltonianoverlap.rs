@@ -16,7 +16,7 @@ use crate::maths::{
 };
 use crate::maths::{
     adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
-    second_minor_const,
+    second_minor_const, second_minor_dynamic,
 };
 use crate::noci::NOCIScalar;
 use crate::time_call;
@@ -1535,21 +1535,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                         for xi in (eta + 1)..la {
                             for z in 0..la {
                                 for y in (z + 1)..la {
-                                    let mut ii = 0usize;
-                                    for r in 0..la {
-                                        if r == eta || r == xi {
-                                            continue;
-                                        }
-                                        let mut minor_col = 0usize;
-                                        for c in 0..la {
-                                            if c == z || c == y {
-                                                continue;
-                                            }
-                                            minor[ii * (la - 2) + minor_col] = d[r * la + c];
-                                            minor_col += 1;
-                                        }
-                                        ii += 1;
-                                    }
+                                    second_minor_dynamic(&mut minor, d, la, eta, xi, z, y);
                                     let second = det_dynamic(&minor, la - 2).unwrap_or(zero);
                                     let n2 = n * n;
                                     let n3 = n2 * n;
@@ -1609,21 +1595,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                         for xi in (eta + 1)..lb {
                             for z in 0..lb {
                                 for y in (z + 1)..lb {
-                                    let mut ii = 0usize;
-                                    for r in 0..lb {
-                                        if r == eta || r == xi {
-                                            continue;
-                                        }
-                                        let mut minor_col = 0usize;
-                                        for c in 0..lb {
-                                            if c == z || c == y {
-                                                continue;
-                                            }
-                                            minor[ii * (lb - 2) + minor_col] = d[r * lb + c];
-                                            minor_col += 1;
-                                        }
-                                        ii += 1;
-                                    }
+                                    second_minor_dynamic(&mut minor, d, lb, eta, xi, z, y);
                                     let second = det_dynamic(&minor, lb - 2).unwrap_or(zero);
                                     let n2 = n * n;
                                     let n3 = n2 * n;
