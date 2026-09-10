@@ -47,12 +47,8 @@ pub struct QMCOptions {
     pub initial_population: f64,
     /// Target persistent population 1-norm.
     pub target_population: f64,
-    /// Minimum sampled persistent-population magnitude.
-    pub sampling_cutoff1: f64,
-    /// Minimum sampled pre-overlap population-change magnitude.
-    pub sampling_cutoff2: f64,
-    /// Minimum spawned population-change magnitude.
-    pub spawn_cutoff: f64,
+    /// FRI configuration for each stochastic compression site.
+    pub fri: FriOptions,
     /// Shift damping factor.
     pub shift_damping: f64,
     /// Number of QMC cycles per report block.
@@ -71,14 +67,49 @@ pub struct QMCOptions {
     pub seed: Option<u64>,
 }
 
-impl Default for QMCOptions {
+/// FRI policies fixed by stochastic compression site.
+#[derive(Clone, Copy)]
+pub struct FriOptions {
+    /// Fixed cutoff for sampling persistent populations.
+    pub population_cutoff: f64,
+    /// Fixed cutoff for individual spawned population changes.
+    pub spawn_cutoff: f64,
+    /// Per-MPI-rank target NNZ for the physical pre-overlap report vector.
+    pub pre_overlap_target_nnz: usize,
+    /// Per-MPI-rank target NNZ for the DirectOverlap shift tangent.
+    pub shift_tangent_target_nnz: usize,
+}
+
+impl Default for FriOptions {
+    /// Return explicit default FRI policies for every compression site.
+    /// # Returns:
+    /// - `Self`: Fixed cutoffs `1.0` and `0.25`, with per-rank report targets
+    ///   `2048` and `1024` for the physical and shift-tangent vectors.
     fn default() -> Self {
+        // Population sampling and individual spawning use fixed amplitude cutoffs, while the
+        // report-level vectors use adaptive cutoffs determined from
+        // `M(c) = \sum_i min(1, |x_i|/c)`.
+        Self {
+            population_cutoff: 1.0,
+            spawn_cutoff: 0.25,
+            pre_overlap_target_nnz: 2048,
+            shift_tangent_target_nnz: 1024,
+        }
+    }
+}
+
+impl Default for QMCOptions {
+    /// Return default stochastic QMC options.
+    /// # Returns:
+    /// - `Self`: Default population, propagation, excitation, and FRI configuration.
+    fn default() -> Self {
+        // Keep global excitation-generator default uniform. Parsing changes only an omitted
+        // DirectOverlap generator to overlap-weighted because that path already builds overlap
+        // factors needed by its explicit metric action.
         Self {
             initial_population: 100.0,
             target_population: 100000.0,
-            sampling_cutoff1: 0.0,
-            sampling_cutoff2: 0.0,
-            spawn_cutoff: 0.0,
+            fri: FriOptions::default(),
             shift_damping: 5e-4,
             ncycles: 10,
             nreports: 1000,

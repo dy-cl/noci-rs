@@ -44,7 +44,12 @@ qmc = {
     target_population = 100,
     ncycles = 1,
     nreports = 1,
+    fri = {
+        population = { cutoff = 0.0 },
+        spawn = { cutoff = 0.0 },
+        pre_overlap = { target_nnz = 1000000000 },
+        shift_tangent = { target_nnz = 1000000000 },
+    },
     excitation_gen = "uniform",
     seed = 1,
 }
-

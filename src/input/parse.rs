@@ -7,14 +7,16 @@ use std::path::Path;
 // External crate imports.
 use rlua::{Lua, Table, Value};
 
+// Crate-root imports.
+use crate::{Error, Result};
+
 // Parent/sibling imports.
 use super::{
-    DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, GMRESOptions, Input,
-    Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
+    DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
+    Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
     SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
     SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
-use crate::{Error, Result};
 
 /// Read required table from Lua globals.
 /// # Arguments:
@@ -396,18 +398,166 @@ fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
     })
 }
 
+/// Read site-specific FRI policies from `qmc.fri`.
+/// Population sampling and spawning accept only fixed cutoffs. Physical pre-overlap and
+/// DirectOverlap shift-tangent vectors accept only per-MPI-rank target NNZ values.
+/// # Arguments:
+/// - `qmc_tbl`: Lua `qmc` table containing the optional `fri` table.
+/// # Returns:
+/// - `Result<FriOptions, String>`: Validated FRI configuration or a clear schema error.
+fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
+    for legacy in [
+        "sampling_cutoff",
+        "sampling_cutoff1",
+        "sampling_cutoff2",
+        "spawn_cutoff",
+    ] {
+        if qmc_tbl
+            .contains_key(legacy)
+            .map_err(|err| err.to_string())?
+        {
+            return Err(format!(
+                "qmc.{legacy} is unsupported; configure the site-specific qmc.fri table"
+            ));
+        }
+    }
+
+    // The two cycle-local sites use fixed-cutoff FRI, while report-level Delta and B use
+    // adaptive cutoffs selected from `M(c) = \sum_i min(1, |x_i|/c)`.
+    let defaults = FriOptions::default();
+    let Some(fri_tbl) = qmc_tbl
+        .get::<_, Option<Table>>("fri")
+        .map_err(|_| "qmc.fri must be a table".to_string())?
+    else {
+        return Ok(defaults);
+    };
+
+    let population_tbl = fri_tbl
+        .get::<_, Option<Table>>("population")
+        .map_err(|_| "qmc.fri.population must be a table".to_string())?;
+    let population_cutoff = if let Some(table) = population_tbl {
+        if table
+            .contains_key("target_nnz")
+            .map_err(|err| err.to_string())?
+        {
+            return Err(
+                "qmc.fri.population supports only the fixed-cutoff field 'cutoff'".to_string(),
+            );
+        }
+        table
+            .get::<_, Option<f64>>("cutoff")
+            .map_err(|_| "qmc.fri.population.cutoff must be a number".to_string())?
+            .unwrap_or(defaults.population_cutoff)
+    } else {
+        defaults.population_cutoff
+    };
+    if !population_cutoff.is_finite() || population_cutoff < 0.0 {
+        return Err("qmc.fri.population.cutoff must be finite and non-negative".to_string());
+    }
+
+    let spawn_tbl = fri_tbl
+        .get::<_, Option<Table>>("spawn")
+        .map_err(|_| "qmc.fri.spawn must be a table".to_string())?;
+    let spawn_cutoff = if let Some(table) = spawn_tbl {
+        if table
+            .contains_key("target_nnz")
+            .map_err(|err| err.to_string())?
+        {
+            return Err("qmc.fri.spawn supports only the fixed-cutoff field 'cutoff'".to_string());
+        }
+        table
+            .get::<_, Option<f64>>("cutoff")
+            .map_err(|_| "qmc.fri.spawn.cutoff must be a number".to_string())?
+            .unwrap_or(defaults.spawn_cutoff)
+    } else {
+        defaults.spawn_cutoff
+    };
+    if !spawn_cutoff.is_finite() || spawn_cutoff < 0.0 {
+        return Err("qmc.fri.spawn.cutoff must be finite and non-negative".to_string());
+    }
+
+    let pre_overlap_tbl = fri_tbl
+        .get::<_, Option<Table>>("pre_overlap")
+        .map_err(|_| "qmc.fri.pre_overlap must be a table".to_string())?;
+    let pre_overlap_target_nnz = if let Some(table) = pre_overlap_tbl {
+        if table
+            .contains_key("cutoff")
+            .map_err(|err| err.to_string())?
+        {
+            return Err(
+                "qmc.fri.pre_overlap supports only the per-rank field 'target_nnz'".to_string(),
+            );
+        }
+        table
+            .get::<_, Option<usize>>("target_nnz")
+            .map_err(|_| "qmc.fri.pre_overlap.target_nnz must be an integer".to_string())?
+            .unwrap_or(defaults.pre_overlap_target_nnz)
+    } else {
+        defaults.pre_overlap_target_nnz
+    };
+    if pre_overlap_target_nnz == 0 {
+        return Err("qmc.fri.pre_overlap.target_nnz must be positive".to_string());
+    }
+
+    let shift_tangent_tbl = fri_tbl
+        .get::<_, Option<Table>>("shift_tangent")
+        .map_err(|_| "qmc.fri.shift_tangent must be a table".to_string())?;
+    let shift_tangent_target_nnz = if let Some(table) = shift_tangent_tbl {
+        if table
+            .contains_key("cutoff")
+            .map_err(|err| err.to_string())?
+        {
+            return Err(
+                "qmc.fri.shift_tangent supports only the per-rank field 'target_nnz'".to_string(),
+            );
+        }
+        table
+            .get::<_, Option<usize>>("target_nnz")
+            .map_err(|_| "qmc.fri.shift_tangent.target_nnz must be an integer".to_string())?
+            .unwrap_or(defaults.shift_tangent_target_nnz)
+    } else {
+        defaults.shift_tangent_target_nnz
+    };
+    if shift_tangent_target_nnz == 0 {
+        return Err("qmc.fri.shift_tangent.target_nnz must be positive".to_string());
+    }
+
+    Ok(FriOptions {
+        population_cutoff,
+        spawn_cutoff,
+        pre_overlap_target_nnz,
+        shift_tangent_target_nnz,
+    })
+}
+
 /// Read QMC options from optional Lua table.
 /// # Arguments:
 /// - `qmc_tbl`: Optional Lua qmc table.
+/// - `propagator`: Parsed propagator, used to choose DirectOverlap defaults.
 /// # Returns:
 /// - `Option<QMCOptions>`: Parsed QMC options.
-fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
+fn read_qmc(
+    qmc_tbl: Option<Table>,
+    propagator: Option<Propagator>,
+) -> Option<QMCOptions> {
     qmc_tbl.map(|qmc_tbl| {
         let defaults = QMCOptions::default();
+        let fri = read_fri(&qmc_tbl).unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
+        let direct_overlap = matches!(propagator, Some(Propagator::DirectOverlap));
+        // DirectOverlap already constructs overlap-factor information for `N' = N + S Delta`, so
+        // reuse it for overlap-weighted proposals instead of defaulting to wasteful uniform draws.
+        let default_excitation_gen = if direct_overlap {
+            ExcitationGen::OverlapWeighted
+        } else {
+            defaults.excitation_gen
+        };
         let excitation_gen_str: String =
             qmc_tbl
                 .get("excitation_gen")
-                .unwrap_or_else(|_| match defaults.excitation_gen {
+                .unwrap_or_else(|_| match default_excitation_gen {
                     ExcitationGen::Uniform => "uniform".to_string(),
                     ExcitationGen::HeatBath => "heat-bath".to_string(),
                     ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
@@ -417,6 +567,21 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             eprintln!("{msg}");
             std::process::exit(1);
         });
+        // The DirectOverlap tangent requires the realised overlap matrix element on every sampled
+        // path, `dB_w = dt S_{wx} \tilde N_x/p_gen(w|x)`. Uniform and overlap-weighted generation
+        // both use the batched `(H,S)` evaluator; the current heat-bath path does not separately
+        // expose S_{wx}.
+        if direct_overlap
+            && !matches!(
+                excitation_gen,
+                ExcitationGen::Uniform | ExcitationGen::OverlapWeighted
+            )
+        {
+            eprintln!(
+                "DirectOverlap supports excitation_gen = \"uniform\" or \"overlap-weighted\""
+            );
+            std::process::exit(1);
+        }
         let factor_tables = read_snoci_storage(
             "qmc.factor_tables",
             qmc_tbl.get::<_, Value>("factor_tables"),
@@ -430,9 +595,17 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             );
             std::process::exit(1);
         }
+        // The proposal distribution is `q_p(w|x) = p q_S(w|x)+ (1-p)q_U(w|x)`. Use a genuine
+        // mixture by default for DirectOverlap, while an explicit uniform generator remains legal.
+        let default_overlap_weight =
+            if direct_overlap && excitation_gen == ExcitationGen::OverlapWeighted {
+                0.5
+            } else {
+                defaults.overlap_weight
+            };
         let overlap_weight = qmc_tbl
             .get("overlap_weight")
-            .unwrap_or(defaults.overlap_weight);
+            .unwrap_or(default_overlap_weight);
         if !overlap_weight.is_finite() || !(0.0..1.0).contains(&overlap_weight) {
             eprintln!("qmc.overlap_weight must satisfy 0.0 <= overlap_weight < 1.0");
             std::process::exit(1);
@@ -444,17 +617,6 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             eprintln!("qmc.optimise_overlap_weight requires excitation_gen = \"overlap-weighted\"");
             std::process::exit(1);
         }
-
-        let sampling_cutoff1 = qmc_tbl.get("sampling_cutoff1").unwrap_or_else(|_| {
-            qmc_tbl
-                .get("sampling_cutoff")
-                .unwrap_or(defaults.sampling_cutoff1)
-        });
-        let sampling_cutoff2 = qmc_tbl
-            .get("sampling_cutoff2")
-            .unwrap_or(defaults.sampling_cutoff2);
-
-        let spawn_cutoff = qmc_tbl.get("spawn_cutoff").unwrap_or(defaults.spawn_cutoff);
 
         QMCOptions {
             initial_population: qmc_tbl
@@ -473,9 +635,7 @@ fn read_qmc(qmc_tbl: Option<Table>) -> Option<QMCOptions> {
             overlap_weight,
             optimise_overlap_weight,
             seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),
-            sampling_cutoff1,
-            sampling_cutoff2,
-            spawn_cutoff,
+            fri,
         }
     })
 }
@@ -691,17 +851,22 @@ pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let snoci_tbl: Option<Table> = globals.get::<_, Option<Table>>("snoci").unwrap_or(None);
     let noccmc_tbl: Option<Table> = globals.get::<_, Option<Table>>("noccmc").unwrap_or(None);
 
+    // QMC defaults depend on the propagator, so parse `prop -> qmc` rather than constructing the
+    // two option structures independently.
+    let prop = read_prop(prop_tbl);
+    let qmc = read_qmc(qmc_tbl, prop.as_ref().map(|options| options.propagator));
+
     Ok(Input {
         mol: read_mol(mol_tbl),
         scf: read_scf(scf_tbl),
         write: read_write(write_tbl),
         states: read_states(state_tbl),
         det: read_det(det_tbl),
-        qmc: read_qmc(qmc_tbl),
+        qmc,
         snoci: read_snoci(snoci_tbl),
         noccmc: read_noccmc(noccmc_tbl),
         excit: read_excit(excit_tbl),
-        prop: read_prop(prop_tbl),
+        prop,
         wicks: read_wicks(wicks_tbl),
     })
 }

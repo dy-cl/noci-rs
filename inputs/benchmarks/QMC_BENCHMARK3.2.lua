@@ -34,9 +34,12 @@ qmc = {
     initial_population = 5e2,
     target_population = 2e5,
     shift_damping = 1e-3,
-    sampling_cutoff1 = 1e0,
-    sampling_cutoff2 = 0.25,
-    spawn_cutoff = 0.25,
+    fri = {
+        population = { cutoff = 1e0 },
+        spawn = { cutoff = 0.25 },
+        pre_overlap = { target_nnz = 512 },
+        shift_tangent = { target_nnz = 1024 },
+    },
     ncycles = 1e1,
     nreports = 1e3,
     excitation_gen = "uniform",
@@ -56,4 +59,3 @@ wicks = {
     storage = "ram",
     cachedir = ".",
 }
-

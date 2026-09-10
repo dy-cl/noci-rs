@@ -362,7 +362,7 @@ pub fn qmc_step(
             sample_populations(
                 &state.mc.populations,
                 &mut state.mc.sampled,
-                qmc.sampling_cutoff1,
+                qmc.fri.population_cutoff,
                 &run,
                 &mut rng,
                 &mut sample_chunks,

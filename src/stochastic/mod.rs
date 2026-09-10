@@ -44,7 +44,7 @@
 //!
 //! generates the pre-overlap change
 //!
-//! `\mathbf\Delta = -\Delta\tau(\mathbf H - E_s^S\mathbf S)\tilde{\mathbf N}.`
+//! `\mathbf\Delta = -dt(\mathbf H - E_s\mathbf S)\tilde{\mathbf N}.`
 //!
 //! The persistent population is changed only through the explicit overlap action
 //!
@@ -59,10 +59,14 @@
 //! propagation consequently prevents stochastic population from accumulating in
 //! `\operatorname{null}(\mathbf S) without diagonalising or inverting the overlap matrix.`
 //!
-//! Fast Randomised Iteration-style stochastic compression may be applied to the persistent
-//! metric population and to individual generated population changes. Both compression maps
-//! preserve their conditional expectation while reducing the number or magnitude of values
-//! entering the spawning and communication steps.
+//! DirectOverlap differentiates the same sampled linear map with respect to its one physical
+//! shift. With `B = \partial\Delta/\partial E_s = dt S\tilde N`, the tangent of the final
+//! persistent population is `\partial N'/\partial E_s = SB`. The second overlap action is required
+//! because the controlled metric is evaluated after the persistent update.
+//!
+//! Fast Randomised Iteration-style stochastic compression may be applied to the persistent metric
+//! population, individual generated changes, the coalesced report change, and the independently
+//! coalesced shift tangent. Each compression map preserves its conditional expectation.
 //!
 //! # Shared stochastic infrastructure
 //!
@@ -82,6 +86,7 @@
 
 mod common;
 mod excit;
+mod fri;
 mod init;
 mod metric;
 mod overlapweighted;

@@ -36,6 +36,12 @@ qmc = {
     shift_damping = 1e-3,
     ncycles = 1e1,
     nreports = 1e3,
+    fri = {
+        population = { cutoff = 0.0 },
+        spawn = { cutoff = 0.0 },
+        pre_overlap = { target_nnz = 1000000000 },
+        shift_tangent = { target_nnz = 1000000000 },
+    },
     excitation_gen = "uniform",
 }
 
@@ -53,4 +59,3 @@ wicks = {
     storage = "ram",
     cachedir = ".",
 }
-

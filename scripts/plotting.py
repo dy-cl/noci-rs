@@ -1299,7 +1299,6 @@ def plotExcitationHist(args):
 
     finish(args)
 
-
 def plotProjectedShift(args):
     """
     Plot projected and population-control shift correlation energies.
@@ -1309,126 +1308,66 @@ def plotProjectedShift(args):
         plt.figure()
 
         defaultLabel = r"$E_{\mathrm{Proj}}(\tau)$"
-        for df, label in stochasticTrajectoryFrames(args, defaultLabel):
+
+        frames = stochasticTrajectoryFrames(args, defaultLabel)
+
+        # tab20 provides ten pairs of distinct but related colours.
+        colors = plt.get_cmap("tab20").colors
+
+        for i, (df, label) in enumerate(frames):
             df = df.dropna(subset=["Iter", "EProj", "ECorr", "EShift"])
             if df.empty:
                 continue
 
             shiftCorr, iterShift = qmcShiftCorrelation(df)
 
-            (line,) = plt.plot(
-                df["Iter"], df["ECorr"], label=label, linewidth=LINEWIDTH
+            if args.overlay:
+                eprojColor = colors[(2 * i) % len(colors)]
+                shiftColor = colors[(2 * i + 1) % len(colors)]
+            else:
+                eprojColor = "tab:green"
+                shiftColor = "tab:blue"
+
+            plt.plot(
+                df["Iter"],
+                df["ECorr"],
+                label=label,
+                linewidth=LINEWIDTH,
+                color=eprojColor,
             )
-            color = line.get_color()
 
             if iterShift is not None:
                 shiftLabel = (
-                    rf"{label} $E_s^S(\tau)$" if args.overlay else r"$E_s^S(\tau)$"
+                    rf"{label} $E_s^S(\tau)$"
+                    if args.overlay
+                    else r"$E_s^S(\tau)$"
                 )
+
                 plt.plot(
                     df["Iter"],
                     shiftCorr,
                     label=shiftLabel,
                     linewidth=LINEWIDTH,
                     linestyle="--",
-                    color=color,
+                    color=shiftColor,
                 )
+
                 plt.axvline(
                     df["Iter"].iloc[iterShift],
                     linestyle=":",
                     linewidth=LINEWIDTH,
-                    color=color,
+                    color=shiftColor,
                 )
 
         formatAxes(
             xlabel=r"Iteration / $\tau$",
             ylabel="Energy / Ha",
             legend=True,
-            legendLoc="lower right",
+            legendLoc="best",
         )
 
         finish(args)
         return
-
-    setStyle()
-    fig, ax = plt.subplots()
-
-    (lineShift,) = ax.plot(
-        [],
-        [],
-        label=r"$E_s^S(\tau)$",
-        linewidth=LINEWIDTH,
-        color="tab:blue",
-    )
-
-    (lineEproj,) = ax.plot(
-        [],
-        [],
-        label=r"$E_{\mathrm{Proj}}(\tau)$",
-        linewidth=LINEWIDTH,
-        color="tab:green",
-    )
-
-    shiftLine = ax.axvline(
-        0.0,
-        linestyle="--",
-        linewidth=LINEWIDTH,
-        color="tab:blue",
-        visible=False,
-    )
-
-    formatAxes(
-        xlabel=r"Iteration / $\tau$",
-        ylabel="Energy / Ha",
-        legend=True,
-        legendLoc="lower right",
-    )
-
-    def update():
-        df = readQMCFiles(args.paths).dropna(
-            subset=[
-                "Iter",
-                "EProj",
-                "ECorr",
-                "EShift",
-            ]
-        )
-
-        if df.empty:
-            return
-
-        x = df["Iter"].to_numpy()
-
-        shiftCorr, iterShift = qmcShiftCorrelation(df)
-
-        lineEproj.set_data(
-            x,
-            df["ECorr"].to_numpy(),
-        )
-
-        lineShift.set_data(
-            x,
-            shiftCorr.to_numpy(),
-        )
-
-        if iterShift is not None:
-            value = df["Iter"].iloc[iterShift]
-
-            shiftLine.set_xdata([value, value])
-            shiftLine.set_visible(True)
-
-        else:
-            shiftLine.set_visible(False)
-
-        ax.relim()
-        ax.autoscale_view()
-
-    showLive(
-        args,
-        fig,
-        update,
-    )
-
 
 def plotNW(args):
     """

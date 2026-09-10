@@ -33,7 +33,7 @@ pub use det::DeterministicOptions;
 pub use excit::ExcitationOptions;
 pub use mol::MolOptions;
 pub use prop::{PropagationOptions, Propagator};
-pub use qmc::{ExcitationGen, NOCCMCOptions, QMCOptions};
+pub use qmc::{ExcitationGen, FriOptions, NOCCMCOptions, QMCOptions};
 pub use scf::{DiisOptions, SCFInfo};
 pub use snoci::{GMRESOptions, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage};
 pub use state::{Metadynamics, SCFExcitation, SpatialBias, Spin, SpinBias, StateRecipe, StateType};

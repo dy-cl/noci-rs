@@ -192,9 +192,16 @@ pub fn print_input(input: &Input) {
             println!("TARGET_POPULATION: {}", q.target_population);
             println!("NCYCLES: {}", q.ncycles);
             println!("NREPORTS: {}", q.nreports);
-            println!("SAMPLING_CUTOFF1: {}", q.sampling_cutoff1);
-            println!("SAMPLING_CUTOFF2: {}", q.sampling_cutoff2);
-            println!("SPAWN_CUTOFF: {}", q.spawn_cutoff);
+            println!("FRI_POPULATION_CUTOFF: {}", q.fri.population_cutoff);
+            println!("FRI_SPAWN_CUTOFF: {}", q.fri.spawn_cutoff);
+            println!(
+                "FRI_PRE_OVERLAP_TARGET_NNZ_PER_RANK: {}",
+                q.fri.pre_overlap_target_nnz
+            );
+            println!(
+                "FRI_SHIFT_TANGENT_TARGET_NNZ_PER_RANK: {}",
+                q.fri.shift_tangent_target_nnz
+            );
             println!("SHIFT_DAMPING: {}", q.shift_damping);
             let excitation_gen = match q.excitation_gen {
                 ExcitationGen::Uniform => "uniform",

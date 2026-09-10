@@ -16,7 +16,7 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::ReducedTwoSpinDetState;
-use crate::input::{ExcitationGen, Input};
+use crate::input::{ExcitationGen, Input, Propagator};
 use crate::noci::{NOCIData, OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
@@ -26,6 +26,7 @@ use super::common::{
     coalesce_population_updates, exchange_population_changes, find_hs, max_scratch_sizes,
 };
 use super::excit::update_overlap_weight;
+use super::fri::{compress_dense_to_sparse, compress_sparse, round, target_cutoff};
 use super::init::initialise_qmc_state;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
@@ -34,7 +35,7 @@ use super::state::owner;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats, PopulationUpdate,
     ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, QmcRng, ScratchSize,
-    ShiftSpec, SparsePopulations, ThreadPropagation,
+    ShiftSpec, ShiftTangent, SparsePopulations, ThreadPropagation,
 };
 
 /// Accumulate a real population change on determinant `i`.
@@ -358,23 +359,50 @@ pub(in crate::stochastic) fn exchange_accumulated_updates(
     mpi.send_ranked.clear();
 }
 
-/// Generate one stochastic estimate of the pre-overlap population change.
-/// `Given the sampled populations \tilde N, this function`
-/// `estimates \Delta = -\Delta\tau(H - E_s S)\tilde N.`
+/// Exchange remote DirectOverlap tangent contributions and add them to owner-local storage.
 /// # Arguments:
-/// - `it`: Global stochastic-cycle index.
-/// - `sampled`: `Sparse sampled populations \tilde N.`
+/// - `tangent`: Report-level shift tangent.
+/// - `mpi`: Reusable MPI communication scratch.
+/// - `world`: MPI communicator.
+/// - `run`: Rank-local determinant ownership metadata.
+/// # Returns:
+/// - `()`: Adds received tangent updates to owner-local dense storage.
+fn exchange_shift_tangent(
+    tangent: &mut ShiftTangent,
+    mpi: &mut MPIScratch,
+    world: &impl CommunicatorCollectives,
+    run: &QMCRunInfo,
+) {
+    if run.nranks <= 1 {
+        tangent.remote.clear();
+        return;
+    }
+    // Each rank holds partial contributions to `B_w = \sum_a dt \sum_x S_{wx}\tilde N_x`.
+    // Redistribute them by determinant ownership before report-level FRI.
+    mpi.send_ranked.append(&mut tangent.remote);
+    prepare_spawn_update_exchange(run.nranks, mpi);
+    let received = exchange_population_changes(world, mpi);
+    for &update in received {
+        tangent.add(update.det as usize, update.dn, true);
+    }
+    mpi.send_contig.clear();
+    mpi.send_ranked.clear();
+}
+
+/// Generate one stochastic estimate of the pre-overlap population change.
+/// Given sampled populations `\tilde N`, this function estimates
+/// `\Delta = -dt(H-E_sS)\tilde N`. For DirectOverlap it simultaneously accumulates
+/// `B = \partial\Delta/\partial E_s = dt S\tilde N` from the same sampled paths.
+/// # Arguments:
+/// - `sample`: Global stochastic-cycle index and sparse sampled populations `\tilde N`.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local propagation metadata.
-/// - `shift`: `Current population-control shift E_s(\Delta \tau).`
-/// - `overlap_factors`: Persistent cross-parent overlap factors.
-/// - `overlap_generator`: Optional overlap-weighted excitation generator.
-/// - `overlap_weight`: Current report overlap mixture probability.
-/// - `optimise_overlap_weight`: Whether to accumulate adaptive derivative sums.
+/// - `shift`: Current population-control shift.
+/// - `overlap`: Persistent factors, generator, mixture weight, and optimisation flag.
 /// - `workers`: Persistent thread-local propagation storage.
 /// - `result`: Reusable storage for generated population changes.
 /// # Returns:
-/// - `()`: `Fills result with an estimate of -\Delta\tau(H - E_s S)\tilde N.`
+/// - `()`: Fills the physical population-change result and optional DirectOverlap tangent.
 pub(in crate::stochastic) fn propagate_iteration(
     sample: (usize, &SparsePopulations),
     data: &NOCIData<'_, f64>,
@@ -391,6 +419,18 @@ pub(in crate::stochastic) fn propagate_iteration(
 ) {
     let (it, sampled) = sample;
     let (overlap_factors, overlap_generator, overlap_weight, optimise_overlap_weight) = overlap;
+    // DirectOverlap simultaneously estimates `\Delta = -dt(H-E_sS)\tilde N` and its tangent
+    // `B = \partial\Delta/\partial E_s = dt S\tilde N` from the same sampled paths.
+    let accumulate_shift_tangent = matches!(shift.propagator, Propagator::DirectOverlap);
+    let dt = data.input.prop_ref().dt;
+
+    // Allocate dense N_det worker storage only for DirectOverlap. Prepare it even for an empty
+    // stochastic sample so report-end dense reduction remains valid.
+    if accumulate_shift_tangent {
+        for worker in workers.iter_mut() {
+            worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
+        }
+    }
 
     time_call!(
         crate::timers::stochastic::add_generate_population_changes,
@@ -409,6 +449,7 @@ pub(in crate::stochastic) fn propagate_iteration(
                     let mut worker = workers_shared[tid].lock().unwrap();
 
                     worker.clear();
+                    // worker.clear() is cycle-local; B must survive across all ncycles in a report.
                     worker.rng = QmcRng::seed_from_u64(
                         run.rank_seed ^ tid as u64 ^ (it as u64).wrapping_mul(0x9E3779B97F4A7C15),
                     );
@@ -426,6 +467,13 @@ pub(in crate::stochastic) fn propagate_iteration(
 
                             if population == 0.0 {
                                 continue;
+                            }
+
+                            if accumulate_shift_tangent {
+                                // The diagonal map is `d\Delta_x = -dt(H_xx-E_sS_xx)\tilde N_x`,
+                                // so `dB_x = +dt S_xx\tilde N_x`.
+                                let tangent_dn = dt * run.diagonal_hs[gamma].1 * population;
+                                worker.shift_tangent.add(gamma, tangent_dn, run.nranks > 1);
                             }
 
                             worker.diagonal_population_change(
@@ -449,6 +497,7 @@ pub(in crate::stochastic) fn propagate_iteration(
 
                     worker.resolve_batched_spawning(
                         shift,
+                        accumulate_shift_tangent,
                         data,
                         run,
                         (
@@ -564,18 +613,18 @@ pub(in crate::stochastic) fn population_stats_projected_energy(
     })
 }
 
-/// Construct an FRI-style sparse unbiased stochastic sample of the populations.
-/// `For a population x and some cutoff c > 0, \Phi_c(x) = x if |x| \geq c. Otherwise,`
-/// `Phi_c(x) = \text{sign}(x)c with probability |x| / c, \Phi_c(x) = 0 with probability`
-/// `1 - |x| / c. Therefore, \mathbb E[\Phi_c(x)] = x, and hence \mathbb E[\tilde N \mid N] = N.`
+/// Construct an FRI-style sparse unbiased stochastic sample of populations.
+/// For each population `x` and cutoff `c`, `E[\Phi_c(x) | x] = x`, so
+/// `E[\tilde N | N] = N`.
 /// # Arguments:
-/// - `populations`: Persistent rank-local population vector N.
-/// - `sampled`: `Temporary sparse sampled vector \tilde N.`
-/// - `cutoff`: Stochastic sampling cutoff c.
+/// - `populations`: Persistent rank-local population vector `N`.
+/// - `sampled`: Temporary sparse sampled vector `\tilde N`.
+/// - `cutoff`: Stochastic sampling cutoff `c`.
 /// - `run`: Rank-local determinant ownership information.
 /// - `rng`: Random-number generator.
+/// - `chunks`: Reusable parallel sampling buffers.
 /// # Returns:
-/// - `()`: Replaces `sampled` with a sparse unbiased sample of `populations`.
+/// - `()`: Replaces `sampled` with sparse unbiased sample of `populations`.
 pub(in crate::stochastic) fn sample_populations(
     populations: &[f64],
     sampled: &mut SparsePopulations,
@@ -588,41 +637,40 @@ pub(in crate::stochastic) fn sample_populations(
         if cutoff <= 0.0 {
             sampled.clear();
 
+            // With compression disabled, `\tilde N = N`, so retain every exactly nonzero local
+            // population.
             for (k, &population) in populations.iter().enumerate() {
                 if population != 0.0 {
                     sampled.insert_nonzero(run.owned[k], population);
                 }
             }
+
             return;
         }
 
         if populations.len() < 8192 {
             sampled.clear();
 
+            // Apply `N_i -> \Phi_c(N_i)` directly and omit zero outcomes from sparse sample.
             for (&det, &population) in run.owned.iter().zip(populations.iter()) {
-                if population == 0.0 {
-                    continue;
-                }
+                let sampled_population = round(population, cutoff, rng);
 
-                let abs_population = population.abs();
-
-                if abs_population >= cutoff {
-                    sampled.insert_nonzero(det, population);
-                } else if rng.r#gen::<f64>() < abs_population / cutoff {
-                    sampled.insert_nonzero(det, cutoff.copysign(population));
+                if sampled_population != 0.0 {
+                    sampled.insert_nonzero(det, sampled_population);
                 }
             }
 
             return;
         }
 
+        // Split large vectors into deterministic chunks with independent RNG streams derived from
+        // one cycle seed. Every element still follows scalar map `\Phi_c(N_i)`.
         let nthreads = rayon::current_num_threads().max(1);
         let chunk_size = populations.len().div_ceil(nthreads).max(1024);
         let nchunks = populations.len().div_ceil(chunk_size);
         let seed = rng.r#gen::<u64>();
 
         chunks.resize_with(nchunks, Vec::new);
-
         chunks[..nchunks]
             .par_iter_mut()
             .enumerate()
@@ -635,24 +683,17 @@ pub(in crate::stochastic) fn sample_populations(
                 let owned = &run.owned[start..end];
 
                 entries.clear();
-
                 for (&det, &population) in owned.iter().zip(populations.iter()) {
-                    if population == 0.0 {
-                        continue;
-                    }
+                    let sampled_population = round(population, cutoff, &mut rng);
 
-                    let abs_population = population.abs();
-
-                    if abs_population >= cutoff {
-                        entries.push((det, population));
-                    } else if rng.r#gen::<f64>() < abs_population / cutoff {
-                        entries.push((det, cutoff.copysign(population)));
+                    if sampled_population != 0.0 {
+                        entries.push((det, sampled_population));
                     }
                 }
             });
 
+        // Rebuild sparse state in deterministic chunk order while expensive sampling stays parallel.
         sampled.clear();
-
         for entries in chunks.iter().take(nchunks) {
             for &(det, population) in entries {
                 sampled.insert_nonzero(det, population);
@@ -661,61 +702,122 @@ pub(in crate::stochastic) fn sample_populations(
     });
 }
 
-/// Apply unbiased FRI stochastic rounding to a signed real value.
-/// `For some cutoff c > 0, \mathcal \Phi_c(x) = x when x = 0,`
-/// `c \leq 0, or |x| \geq c. For 0 < |x| < c, \Phi_c(x) = \text{sign}(x)c`
-/// with probability |x| / c, and zero otherwise. The rounding is conditionally unbiased
-/// `as \mathbb E[\Phi_c(x) \mid x] = x.`
+/// Reduce thread-local dense DirectOverlap tangents into one report-level vector.
+/// Computes `B_w = \sum_t B_w^{(t)}` in determinant-major order, then clears worker buffers.
 /// # Arguments:
-/// - `value`: Signed real value x.
-/// - `cutoff`: Minimum nonzero retained magnitude c.
-/// - `rng`: Random-number generator.
+/// - `workers`: Per-thread dense tangent accumulators.
+/// - `tangent`: Dense report-level tangent receiving thread sum.
 /// # Returns:
-/// - `f64`: Unbiased stochastically rounded value.
-pub(in crate::stochastic) fn fri(
-    value: f64,
-    cutoff: f64,
-    rng: &mut QmcRng,
-) -> f64 {
-    if value == 0.0 || cutoff <= 0.0 || value.abs() >= cutoff {
-        return value;
-    }
+/// - `()`: Replaces `tangent` with report tangent and clears thread-local tangents.
+fn reduce_shift_tangent(
+    workers: &mut [Mutex<ThreadPropagation>],
+    tangent: &mut [f64],
+) {
+    // Single-rank B is nearly dense. Reduce determinant-major to avoid touched-index bookkeeping
+    // and sparse materialisation before target-NNZ compression.
+    let sources = workers
+        .iter_mut()
+        .map(|worker| worker.get_mut().unwrap().shift_tangent.values.as_slice())
+        .collect::<Vec<_>>();
 
-    if rng.r#gen::<f64>() < value.abs() / cutoff {
-        cutoff.copysign(value)
+    tangent.par_iter_mut().enumerate().for_each(|(det, value)| {
+        *value = sources.iter().map(|source| source[det]).sum();
+    });
+
+    drop(sources);
+    workers.par_iter_mut().for_each(|worker| {
+        worker.get_mut().unwrap().shift_tangent.values.fill(0.0);
+    });
+}
+
+/// Differentiate final population 1-norm with respect to DirectOverlap shift.
+/// For propagated tangent `T = \partial N'/\partial E_s = SB`, computes
+/// `\partial ||N'||_1/\partial E_s = \sum_w sign(N'_w)T_w`.
+/// # Arguments:
+/// - `populations`: Final rank-local persistent populations `N'`.
+/// - `tangent`: Rank-local propagated tangent `T = SB`.
+/// - `run`: Rank-local determinant ownership metadata.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `(f64, f64)`: Global metric derivative and propagated-tangent 1-norm.
+fn population_metric_shift_derivative(
+    populations: &[f64],
+    tangent: &[f64],
+    run: &QMCRunInfo,
+    world: &impl Communicator,
+) -> (f64, f64) {
+    // DirectOverlap update is `N' = N + S\Delta(E_s)`. Since
+    // `B = \partial\Delta/\partial E_s`, outer overlap is required once more:
+    // `T = \partial N'/\partial E_s = SB`. Thus `dN_Metric/dE_s = sign(N')^T T`.
+    let local = populations
+        .par_iter()
+        .zip(tangent.par_iter())
+        .map(|(&population, &derivative)| (population.signum() * derivative, derivative.abs()))
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+
+    if run.nranks == 1 {
+        local
     } else {
-        0.0
+        // Both derivative and tangent norm are additive over determinant ownership.
+        let mut global = [0.0; 2];
+        world.all_reduce_into(&[local.0, local.1], &mut global, SystemOperation::sum());
+        (global[0], global[1])
     }
 }
 
-/// Apply FRI compression to sparse population updates in place.
-/// `Each update \Delta b_x is replaced by \Phi_c(\Delta b_x), so the compressed`
-/// pre-overlap vector remains conditionally unbiased:
-/// `\mathbb E[\Phi_c(\Delta b_x) \mid \Delta b_x] = \Delta b_x.`
+/// Update DirectOverlap population-control shift using measured metric derivative.
+/// Applies `E_s' = E_s - \zeta N_M(dN_M/dE_s)^{-1} ln(N_M/N_M^{prev})`.
 /// # Arguments:
-/// - `updates`: Sparse population changes.
-/// - `cutoff`: Minimum nonzero retained magnitude c.
-/// - `rng`: Random-number generator.
+/// - `stats`: Current population statistics.
+/// - `state`: Current propagation state.
+/// - `shift`: DirectOverlap population-control shift.
+/// - `metric_derivative`: `dN_Metric/dE_s`.
+/// - `tangent_norm`: `||\partial N'/\partial E_s||_1` for numerical zero detection.
+/// - `input`: User input options.
 /// # Returns:
-/// - `()`: Replaces `updates` with its sparse FRI-compressed form.
-pub(in crate::stochastic) fn fri_population_updates(
-    updates: &mut Vec<PopulationUpdate>,
-    cutoff: f64,
-    rng: &mut QmcRng,
+/// - `()`: Updates shift when controller is active and derivative is usable.
+fn update_direct_overlap_shift(
+    stats: &PopulationStats,
+    state: &mut PropagationState,
+    shift: &mut f64,
+    metric_derivative: f64,
+    tangent_norm: f64,
+    input: &Input,
 ) {
-    let mut out = 0usize;
+    let qmc = input.qmc.as_ref().unwrap();
+    let previous = state.prev_pop.nw;
+    let current = stats.nw;
 
-    for i in 0..updates.len() {
-        let mut update = updates[i];
-        update.dn = fri(update.dn, cutoff, rng);
+    // `target_population` only activates control. Afterwards controller damps report-to-report
+    // logarithmic growth `ln(N_Metric/N_Metric^{prev})`; target is not setpoint.
+    if !state.reached && current >= qmc.target_population {
+        state.reached = true;
+    }
 
-        if update.dn != 0.0 {
-            updates[out] = update;
-            out += 1;
+    let usable = state.reached
+        && current.is_finite()
+        && current > 0.0
+        && previous.is_finite()
+        && previous > 0.0
+        && metric_derivative.is_finite()
+        && tangent_norm.is_finite()
+        && tangent_norm > 0.0
+        && metric_derivative.abs() > f64::EPSILON * tangent_norm;
+
+    if usable {
+        // `metric_derivative` already contains `B = \sum_a dt S\tilde N^{(a)}` and every per-cycle
+        // dt factor. No additional `1/(dt*ncycles)` belongs in Newton update. EProj is observable
+        // only and cannot influence this physical shift.
+        let next =
+            *shift - qmc.shift_damping * current / metric_derivative * (current / previous).ln();
+
+        if next.is_finite() {
+            *shift = next;
         }
     }
 
-    updates.truncate(out);
+    // Always advance physical comparison population, including reports before activation.
+    state.prev_pop = *stats;
 }
 
 /// Update the single population-control shift.
@@ -753,6 +855,8 @@ pub(in crate::stochastic) fn update_shift(
 /// `\Delta^{(a)} \approx -\Delta\tau(H - E_s S)\tilde N^{(a)}.`
 /// At the end of the report block, the accumulated change is applied as
 /// `N'= N + S\sum_{a = 1}^{n_{\text{cycles}}}\Delta^{(a)}.`
+/// The same sampled paths produce `B = \partial\Delta/\partial E_s`, and the damped Newton
+/// controller uses `d||N'||_1/dE_s = sign(N')^T SB`.
 /// `This update preserves N \in \range(S) and removes null-space components.`
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
@@ -975,6 +1079,11 @@ pub fn qmc_step(
     );
 
     let mut population_changes = Vec::new();
+    let mut shift_tangent = ShiftTangent::new(ndets);
+    let mut shift_tangent_changes = Vec::new();
+    let mut propagated_shift_tangent = vec![0.0; run.owned.len()];
+    let mut pre_overlap_cutoff_hint = 0.0;
+    let mut shift_tangent_cutoff_hint = 0.0;
     let mut sample_chunks = Vec::new();
     let mut overlap_derivatives = OverlapDerivativeSums::default();
 
@@ -989,7 +1098,7 @@ pub fn qmc_step(
             sample_populations(
                 &state.mc.populations,
                 &mut state.mc.sampled,
-                qmc.sampling_cutoff1,
+                qmc.fri.population_cutoff,
                 &run,
                 &mut rng,
                 &mut sample_chunks,
@@ -1019,19 +1128,104 @@ pub fn qmc_step(
             );
         }
 
+        // Form `B = \sum_a dB^{(a)}` once per report. The single-rank path deliberately reduces
+        // dense thread vectors because B is almost fully occupied before FRI.
+        if run.nranks == 1 {
+            reduce_shift_tangent(&mut workers, &mut shift_tangent.values);
+        } else {
+            for worker in workers.iter_mut() {
+                let worker = worker.get_mut().unwrap();
+                for det in worker.shift_tangent.changed.drain(..) {
+                    let dn = worker.shift_tangent.values[det];
+                    worker.shift_tangent.values[det] = 0.0;
+                    shift_tangent.add(det, dn, true);
+                }
+                shift_tangent
+                    .remote
+                    .append(&mut worker.shift_tangent.remote);
+            }
+        }
+
         exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
+        if run.nranks > 1 {
+            exchange_shift_tangent(&mut shift_tangent, &mut mpiscratch, world, &run);
+        }
 
         take_population_changes(&mut state.mc, &mut population_changes);
+        if run.nranks > 1 {
+            shift_tangent.take_sparse(&mut shift_tangent_changes);
+        }
 
         population_changes.sort_unstable_by_key(|update| update.det);
 
+        // Both report vectors are now coalesced by determinant ownership. Select target-NNZ
+        // cutoffs only from these complete realised vectors, before any report-level FRI draw.
+        // Choose c_Delta from `E[||Phi_c(Delta)||_0] = \sum_i min(1,|Delta_i|/c)` and compress
+        // the complete physical report change before the outer overlap action.
         let mut fri_rng = QmcRng::seed_from_u64(
             run.rank_seed ^ 0xA0761D6478BD642F ^ (report as u64).wrapping_mul(0xE7037ED1A0B428DB),
         );
-        fri_population_updates(&mut population_changes, qmc.sampling_cutoff2, &mut fri_rng);
+        let pre_overlap_cutoff = target_cutoff(
+            &population_changes,
+            qmc.fri.pre_overlap_target_nnz,
+            pre_overlap_cutoff_hint,
+            |update| update.dn.abs(),
+        );
+        pre_overlap_cutoff_hint = pre_overlap_cutoff;
+        compress_sparse(&mut population_changes, pre_overlap_cutoff, &mut fri_rng);
 
+        // Compress B independently. `E[Phi(B)|B] = B`, hence linearity of S gives
+        // `E[S Phi(B)|B] = SB`.
+        let mut tangent_rng = QmcRng::seed_from_u64(
+            run.rank_seed ^ 0x8EBC6AF09C88C6E3 ^ (report as u64).wrapping_mul(0x589965CC75374CC3),
+        );
+        let shift_tangent_cutoff = if run.nranks == 1 {
+            target_cutoff(
+                &shift_tangent.values,
+                qmc.fri.shift_tangent_target_nnz,
+                shift_tangent_cutoff_hint,
+                |value| value.abs(),
+            )
+        } else {
+            target_cutoff(
+                &shift_tangent_changes,
+                qmc.fri.shift_tangent_target_nnz,
+                shift_tangent_cutoff_hint,
+                |update| update.dn.abs(),
+            )
+        };
+        shift_tangent_cutoff_hint = shift_tangent_cutoff;
+        if run.nranks == 1 {
+            compress_dense_to_sparse(
+                &mut shift_tangent.values,
+                shift_tangent_cutoff,
+                &mut tangent_rng,
+                &mut shift_tangent_changes,
+            );
+        } else {
+            compress_sparse(
+                &mut shift_tangent_changes,
+                shift_tangent_cutoff,
+                &mut tangent_rng,
+            );
+        }
+
+        // Apply the physical DirectOverlap report update `N' = N + S Delta` using the unchanged
+        // single-RHS overlap action from main.
         apply_overlap_population_changes(
             (&mut state.mc.populations, &population_changes),
+            data,
+            (&overlap_factor, &overlap_factors),
+            &run,
+            (world, &mut mpiscratch),
+            &mut overlap_scratch,
+        );
+
+        // Propagate the tangent through the same outer overlap,
+        // `\partial N'/\partial E_s = SB`.
+        propagated_shift_tangent.fill(0.0);
+        apply_overlap_population_changes(
+            (&mut propagated_shift_tangent, &shift_tangent_changes),
             data,
             (&overlap_factor, &overlap_factors),
             &run,
@@ -1048,7 +1242,22 @@ pub fn qmc_step(
 
         state.cur_pop = stats;
 
-        update_shift(&stats, &mut state, es, data.input);
+        // `dN_Metric/dE_s = sign(N')^T SB` supplies the physical Jacobian for the damped Newton
+        // population-control step. EProj is deliberately absent.
+        let (metric_derivative, tangent_norm) = population_metric_shift_derivative(
+            &state.mc.populations,
+            &propagated_shift_tangent,
+            &run,
+            world,
+        );
+        update_direct_overlap_shift(
+            &stats,
+            &mut state,
+            es,
+            metric_derivative,
+            tangent_norm,
+            data.input,
+        );
         update_overlap_weight(
             &mut state,
             &mut overlap_derivatives,

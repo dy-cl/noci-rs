@@ -465,9 +465,12 @@ qmc = {
     shift_damping = 5e-4,
     ncycles = 1e1,
     nreports = 1e3,
-    sampling_cutoff1 = 1.0,
-    sampling_cutoff2 = 0.0,
-    spawn_cutoff = 0.25,
+    fri = {
+        population = { cutoff = 1.0 },
+        spawn = { cutoff = 0.25 },
+        pre_overlap = { target_nnz = 2048 },
+        shift_tangent = { target_nnz = 1024 },
+    },
     excitation_gen = "uniform",
     factor_tables = "ram",
     overlap_weight = 0.0,
@@ -486,7 +489,9 @@ Exact heat-bath sampling is very expensive.
 
 The `overlap-weighted` generator mixes uniform sampling with a factorised proposal proportional to the absolute determinant overlap, \(|S_{wx}|\). `overlap_weight` sets the overlap branch probability in the range \(0 \le p < 1\), while `optimise_overlap_weight = true` adapts it between report blocks using the sampled second moment. The required overlap factor tables may use `factor_tables = "ram"` or `factor_tables = "disk"`.
 
-For `direct-overlap`, `sampling_cutoff1` controls the stochastic compression threshold used to sample the persistent metric population, `sampling_cutoff2` controls compression before applying the overlap, and `spawn_cutoff` controls compression of generated population changes.
+For `direct-overlap`, omitting `excitation_gen` selects `overlap-weighted` with `overlap_weight = 0.5`. An explicit `excitation_gen = "uniform"` remains available. DirectOverlap rejects heat-bath generators because its population tangent requires the separately realised overlap element on each sampled path.
+
+Each FRI site has one policy. `fri.population.cutoff` is the fixed amplitude threshold used to sample the persistent population, and `fri.spawn.cutoff` is the fixed threshold for individual spawned updates. `fri.pre_overlap.target_nnz` and `fri.shift_tangent.target_nnz` set per-MPI-rank expected retained nonzero counts for the physical pre-overlap vector and DirectOverlap shift tangent. Their cutoffs are selected adaptively from each report vector.
 
 ### Selected NOCI and NOCI-PT2
 

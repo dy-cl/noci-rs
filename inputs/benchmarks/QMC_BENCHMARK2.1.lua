@@ -34,8 +34,12 @@ qmc = {
     ncycles = 1e1,
     nreports = 5e3,
     shift_damping = 5e-4,
-    sampling_cutoff = 1e0,
-    spawn_cutoff = 0.25,
+    fri = {
+        population = { cutoff = 1e0 },
+        spawn = { cutoff = 0.25 },
+        pre_overlap = { target_nnz = 2048 },
+        shift_tangent = { target_nnz = 1024 },
+    },
     excitation_gen = 'uniform',
     seed = 1e0,
 }
