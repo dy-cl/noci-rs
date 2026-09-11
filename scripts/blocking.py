@@ -16,14 +16,23 @@ NEXT = 1  # Require the next N levels to be consistent within given error bars.
 # How much error can change between levels before it is not a plateau.
 PLATEAUTOL = 0.25
 
-# Shoulder picking quantities. 
+# Shoulder picking quantities.
 SHOULDER_POINTS = 10
 MIN_REFERENCE_POPULATION = 10.0
 SHOULDER_TAIL_POINTS = 20
 SHOULDER_PROMINENCE = 1.15
 
-# Equilibration picking quantity. 
+# Equilibration picking quantity.
 MSER_START_MAX_FRAC = 0.84
+
+# Reference overlap detection.
+REFERENCE_OVERLAP_BLOCKS = 8
+REFERENCE_OVERLAP_QUARTERS = 4
+REFERENCE_OVERLAP_MIN_POINTS_PER_BLOCK = 2
+REFERENCE_OVERLAP_SIGMA = 2.0
+REFERENCE_OVERLAP_MAX_START_FRAC = 0.75
+REFERENCE_OVERLAP_SCAN_POINTS = 101
+REFERENCE_OVERLAP_PERSISTENCE = 3
 
 
 def parse() -> argparse.Namespace:
@@ -42,7 +51,7 @@ def parse() -> argparse.Namespace:
         help=(
             "First iteration included in the blocking analysis. "
             "If omitted, determine the equilibration start automatically "
-            "using MSER after population control begins."
+            "using the shoulder, MSER, and reference overlap."
         ),
     )
     return parser.parse_args()
@@ -421,12 +430,8 @@ def blockingRatio(numerator, denominator) -> pd.DataFrame:
             numerator = numerator[:-1]
             denominator = denominator[:-1]
 
-        numerator = 0.5 * (
-            numerator[0::2] + numerator[1::2]
-        )
-        denominator = 0.5 * (
-            denominator[0::2] + denominator[1::2]
-        )
+        numerator = 0.5 * (numerator[0::2] + numerator[1::2])
+        denominator = 0.5 * (denominator[0::2] + denominator[1::2])
 
         level += 1
 
@@ -569,8 +574,206 @@ def firstActiveShift(df: pd.DataFrame) -> int:
     return int(active["Iter"].iloc[0])
 
 
+def referenceOverlap(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the normalised projected-energy denominator."""
+    total, _, _ = populationColumns(df)
+
+    finite = (
+        np.isfinite(df["Iter"])
+        & np.isfinite(df["EProjDen"])
+        & np.isfinite(df[total])
+        & (df[total] != 0.0)
+    )
+
+    data = df.loc[finite, ["Iter", "EProjDen", total]].copy()
+    data["ReferenceOverlap"] = data["EProjDen"] / data[total]
+
+    return data[["Iter", "ReferenceOverlap"]].reset_index(drop=True)
+
+
+def blockReferenceOverlap(data: pd.DataFrame) -> pd.DataFrame:
+    """Split a reference-overlap suffix into contiguous block means."""
+    maxBlocks = min(
+        REFERENCE_OVERLAP_BLOCKS,
+        len(data) // REFERENCE_OVERLAP_MIN_POINTS_PER_BLOCK,
+    )
+    nblocks = maxBlocks - maxBlocks % REFERENCE_OVERLAP_QUARTERS
+
+    if nblocks < REFERENCE_OVERLAP_BLOCKS:
+        raise ValueError("Too few reference-overlap blocks")
+
+    rows = []
+
+    for indices in np.array_split(np.arange(len(data)), nblocks):
+        block = data.iloc[indices]
+        rows.append(
+            (
+                float(block["Iter"].mean()),
+                float(block["ReferenceOverlap"].mean()),
+            )
+        )
+
+    return pd.DataFrame(rows, columns=["Iter", "ReferenceOverlap"])
+
+
+def referenceOverlapFlatness(
+    data: pd.DataFrame,
+    startIndex: int,
+) -> tuple[bool, float, float, float]:
+    """Test whether a reference-overlap suffix is statistically flat."""
+    suffix = data.iloc[startIndex:].reset_index(drop=True)
+    minimum = (
+        REFERENCE_OVERLAP_BLOCKS * REFERENCE_OVERLAP_MIN_POINTS_PER_BLOCK
+    )
+
+    if len(suffix) < minimum:
+        return False, np.nan, np.inf, np.inf
+
+    blocks = blockReferenceOverlap(suffix)
+    x = blocks["Iter"].to_numpy(dtype=float)
+    y = blocks["ReferenceOverlap"].to_numpy(dtype=float)
+
+    x = (x - x[0]) / (x[-1] - x[0])
+    xDelta = x - x.mean()
+    yDelta = y - y.mean()
+    xVariance = float(np.dot(xDelta, xDelta))
+    drift = float(np.dot(xDelta, yDelta) / xVariance)
+
+    residual = y - (y.mean() + drift * xDelta)
+    driftError = math.sqrt(
+        float(np.dot(residual, residual) / (len(y) - 2)) / xVariance
+    )
+
+    if drift == 0.0 and driftError == 0.0:
+        slopeZ = 0.0
+    elif driftError == 0.0:
+        slopeZ = np.inf
+    else:
+        slopeZ = abs(drift) / driftError
+
+    quarterMeans = []
+    quarterErrors = []
+
+    for indices in np.array_split(
+        np.arange(len(blocks)),
+        REFERENCE_OVERLAP_QUARTERS,
+    ):
+        values = y[indices]
+        quarterMeans.append(float(values.mean()))
+        quarterErrors.append(
+            float(values.std(ddof=1) / math.sqrt(values.size))
+        )
+
+    quarterZ = 0.0
+
+    for i in range(REFERENCE_OVERLAP_QUARTERS - 1):
+        error = math.hypot(quarterErrors[i], quarterErrors[i + 1])
+        difference = abs(quarterMeans[i + 1] - quarterMeans[i])
+
+        if difference == 0.0 and error == 0.0:
+            z = 0.0
+        elif error == 0.0:
+            z = np.inf
+        else:
+            z = difference / error
+
+        quarterZ = max(quarterZ, z)
+
+    flat = (
+        slopeZ <= REFERENCE_OVERLAP_SIGMA
+        and quarterZ <= REFERENCE_OVERLAP_SIGMA
+    )
+
+    return flat, drift, slopeZ, quarterZ
+
+
+def referenceOverlapStart(
+    df: pd.DataFrame,
+    candidate: int,
+) -> tuple[int, float, float, float]:
+    """Find the earliest persistent flat reference-overlap suffix."""
+    data = referenceOverlap(df)
+    data = data[data["Iter"] >= candidate].reset_index(drop=True)
+
+    minimum = (
+        REFERENCE_OVERLAP_BLOCKS * REFERENCE_OVERLAP_MIN_POINTS_PER_BLOCK
+    )
+
+    if len(data) < minimum:
+        raise ValueError(
+            "Insufficient reference-overlap samples after MSER: "
+            f"{len(data)} available, {minimum} required"
+        )
+
+    maxIndex = min(
+        len(data) - minimum,
+        int(REFERENCE_OVERLAP_MAX_START_FRAC * len(data)),
+    )
+
+    indices = np.unique(
+        np.linspace(
+            0,
+            maxIndex,
+            min(REFERENCE_OVERLAP_SCAN_POINTS, maxIndex + 1),
+            dtype=int,
+        )
+    )
+
+    consecutive = []
+    diagnostics = {}
+    best = None
+
+    for i in indices:
+        flat, drift, slopeZ, quarterZ = referenceOverlapFlatness(
+            data,
+            int(i),
+        )
+        diagnostics[int(i)] = drift, slopeZ, quarterZ
+        score = max(slopeZ, quarterZ)
+
+        if np.isfinite(score) and (best is None or score < best[0]):
+            best = score, int(i), drift, slopeZ, quarterZ
+
+        if flat:
+            consecutive.append(int(i))
+
+            if len(consecutive) >= REFERENCE_OVERLAP_PERSISTENCE:
+                accepted = consecutive[-REFERENCE_OVERLAP_PERSISTENCE]
+                drift, slopeZ, quarterZ = diagnostics[accepted]
+
+                return (
+                    int(data["Iter"].iloc[accepted]),
+                    drift,
+                    slopeZ,
+                    quarterZ,
+                )
+        else:
+            consecutive.clear()
+
+    if best is None:
+        detail = "no finite flatness diagnostic"
+    else:
+        _, i, drift, slopeZ, quarterZ = best
+        detail = (
+            f"best tested start {int(data['Iter'].iloc[i])}: "
+            f"drift={drift:.8g}, slope |z|={slopeZ:.3f}, "
+            f"max adjacent-quarter |z|={quarterZ:.3f}"
+        )
+
+    raise ValueError(
+        "Reference overlap never reaches a persistent flat suffix; " + detail
+    )
+
+
 def equilibrationStart(df: pd.DataFrame) -> int:
-    """Find a conservative automatic equilibration start using MSER."""
+    """Find a conservative automatic equilibration start."""
+    top, eligible = shoulderRows(df)
+    shoulderIsResolved, _ = shoulderResolved(top, eligible)
+
+    if not shoulderIsResolved:
+        raise ValueError("Shoulder is not resolved")
+
+    shoulderEnd = int(top["Iter"].max())
     activeStart = firstActiveShift(df)
     active = (
         df[df["Iter"] >= activeStart]
@@ -580,20 +783,25 @@ def equilibrationStart(df: pd.DataFrame) -> int:
 
     energyStart = mserStart(active, "EProj")
     shiftStart = mserStart(active, "EShift")
-    start = max(energyStart, shiftStart)
+    mserCandidate = max(shoulderEnd, activeStart, energyStart, shiftStart)
 
-    print(
-        f"First active-shift iteration: {activeStart}"
+    referenceStart, drift, slopeZ, quarterZ = referenceOverlapStart(
+        df,
+        mserCandidate,
     )
-    print(
-        f"MSER EProj start: {energyStart}"
-    )
-    print(
-        f"MSER EShift start: {shiftStart}"
-    )
-    print(
-        f"Using equilibration start: {start}"
-    )
+
+    start = max(mserCandidate, referenceStart)
+
+    print(f"Shoulder check: PASS, end iteration: {shoulderEnd}")
+    print(f"First active-shift iteration: {activeStart}")
+    print(f"MSER EProj start: {energyStart}")
+    print(f"MSER EShift start: {shiftStart}")
+    print(f"MSER candidate start: {mserCandidate}")
+    print(f"Reference-overlap flat start: {referenceStart}")
+    print(f"Reference-overlap fitted suffix drift: {drift:.8g}")
+    print(f"Reference-overlap slope |z|: {slopeZ:.3f}")
+    print(f"Reference-overlap max adjacent-quarter |z|: {quarterZ:.3f}")
+    print(f"Using equilibration start: {start}")
 
     return start
 
