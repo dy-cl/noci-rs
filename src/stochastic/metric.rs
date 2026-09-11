@@ -766,7 +766,9 @@ fn population_metric_shift_derivative(
 }
 
 /// Update DirectOverlap population-control shift using measured metric derivative.
-/// Applies `E_s' = E_s - \zeta N_M(dN_M/dE_s)^{-1} ln(N_M/N_M^{prev})`.
+/// Applies the damped Newton update
+/// `E_s' = E_s - \zeta N_M(dN_M/dE_s)^{-1}`
+/// `[ln(N_M/N_M^{prev}) + \kappa ln(N_M^{prev}/N_*)]`.
 /// # Arguments:
 /// - `stats`: Current population statistics.
 /// - `state`: Current propagation state.
@@ -788,8 +790,8 @@ fn update_direct_overlap_shift(
     let previous = state.prev_pop.nw;
     let current = stats.nw;
 
-    // `target_population` only activates control. Afterwards controller damps report-to-report
-    // logarithmic growth `ln(N_Metric/N_Metric^{prev})`; target is not setpoint.
+    // `target_population` activates control and, for positive `population_restoring`, is also the
+    // desired persistent population. Zero restoring preserves the original zero-growth residual.
     if !state.reached && current >= qmc.target_population {
         state.reached = true;
     }
@@ -808,8 +810,13 @@ fn update_direct_overlap_shift(
         // `metric_derivative` already contains `B = \sum_a dt S\tilde N^{(a)}` and every per-cycle
         // dt factor. No additional `1/(dt*ncycles)` belongs in Newton update. EProj is observable
         // only and cannot influence this physical shift.
-        let next =
-            *shift - qmc.shift_damping * current / metric_derivative * (current / previous).ln();
+        let growth = (current / previous).ln();
+        let residual = if qmc.population_restoring == 0.0 {
+            growth
+        } else {
+            growth + qmc.population_restoring * (previous / qmc.target_population).ln()
+        };
+        let next = *shift - qmc.shift_damping * current / metric_derivative * residual;
 
         if next.is_finite() {
             *shift = next;

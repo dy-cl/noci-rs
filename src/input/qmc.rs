@@ -45,12 +45,14 @@ impl Default for ExcitationGen {
 pub struct QMCOptions {
     /// Initial persistent population 1-norm.
     pub initial_population: f64,
-    /// Target persistent population 1-norm.
+    /// Shift-control activation population and, when restoring is enabled, persistent target.
     pub target_population: f64,
     /// FRI configuration for each stochastic compression site.
     pub fri: FriOptions,
-    /// Shift damping factor.
+    /// Damping `\zeta` of the population-control Newton update.
     pub shift_damping: f64,
+    /// Dimensionless target-restoring strength `\kappa` for DirectOverlap.
+    pub population_restoring: f64,
     /// Number of QMC cycles per report block.
     pub ncycles: usize,
     /// Number of report blocks.
@@ -111,6 +113,7 @@ impl Default for QMCOptions {
             target_population: 100000.0,
             fri: FriOptions::default(),
             shift_damping: 5e-4,
+            population_restoring: 0.0,
             ncycles: 10,
             nreports: 1000,
             excitation_gen: ExcitationGen::default(),

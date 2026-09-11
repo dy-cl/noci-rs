@@ -617,6 +617,15 @@ fn read_qmc(
             eprintln!("qmc.optimise_overlap_weight requires excitation_gen = \"overlap-weighted\"");
             std::process::exit(1);
         }
+        let population_restoring = qmc_tbl
+            .get("population_restoring")
+            .unwrap_or(defaults.population_restoring);
+        if !population_restoring.is_finite() || !(0.0..1.0).contains(&population_restoring) {
+            eprintln!(
+                "qmc.population_restoring must satisfy 0.0 <= population_restoring < 1.0"
+            );
+            std::process::exit(1);
+        }
 
         QMCOptions {
             initial_population: qmc_tbl
@@ -628,6 +637,7 @@ fn read_qmc(
             shift_damping: qmc_tbl
                 .get("shift_damping")
                 .unwrap_or(defaults.shift_damping),
+            population_restoring,
             ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
             nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,

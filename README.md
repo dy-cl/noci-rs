@@ -463,6 +463,7 @@ qmc = {
     initial_population = 1e2,
     target_population = 1e5,
     shift_damping = 5e-4,
+    population_restoring = 0.0,
     ncycles = 1e1,
     nreports = 1e3,
     fri = {
@@ -490,6 +491,8 @@ Exact heat-bath sampling is very expensive.
 The `overlap-weighted` generator mixes uniform sampling with a factorised proposal proportional to the absolute determinant overlap, \(|S_{wx}|\). `overlap_weight` sets the overlap branch probability in the range \(0 \le p < 1\), while `optimise_overlap_weight = true` adapts it between report blocks using the sampled second moment. The required overlap factor tables may use `factor_tables = "ram"` or `factor_tables = "disk"`.
 
 For `direct-overlap`, omitting `excitation_gen` selects `overlap-weighted` with `overlap_weight = 0.5`. An explicit `excitation_gen = "uniform"` remains available. DirectOverlap rejects heat-bath generators because its population tangent requires the separately realised overlap element on each sampled path.
+
+`shift_damping` is the damping \(\zeta\) of the Newton shift update. For DirectOverlap, `population_restoring` is the dimensionless target-restoring strength \(\kappa\): zero preserves the previous zero-growth controller, while positive values restore the persistent population towards `target_population`. DirectOverlap continues to use the physical metric-population Jacobian.
 
 Each FRI site has one policy. `fri.population.cutoff` is the fixed amplitude threshold used to sample the persistent population, and `fri.spawn.cutoff` is the fixed threshold for individual spawned updates. `fri.pre_overlap.target_nnz` and `fri.shift_tangent.target_nnz` set per-MPI-rank expected retained nonzero counts for the physical pre-overlap vector and DirectOverlap shift tangent. Their cutoffs are selected adaptively from each report vector.
 

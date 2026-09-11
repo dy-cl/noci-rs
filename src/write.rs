@@ -203,6 +203,7 @@ pub fn print_input(input: &Input) {
                 q.fri.shift_tangent_target_nnz
             );
             println!("SHIFT_DAMPING: {}", q.shift_damping);
+            println!("POPULATION_RESTORING: {}", q.population_restoring);
             let excitation_gen = match q.excitation_gen {
                 ExcitationGen::Uniform => "uniform",
                 ExcitationGen::HeatBath => "heat-bath",
