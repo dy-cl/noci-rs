@@ -1328,14 +1328,7 @@ def plotProjectedShift(args):
                 eprojColor = "tab:green"
                 shiftColor = "tab:blue"
 
-            plt.plot(
-                df["Iter"],
-                df["ECorr"],
-                label=label,
-                linewidth=LINEWIDTH,
-                color=eprojColor,
-            )
-
+            # Draw the shift beneath the projected energy.
             if iterShift is not None:
                 shiftLabel = (
                     rf"{label} $E_s^S(\tau)$"
@@ -1348,8 +1341,9 @@ def plotProjectedShift(args):
                     shiftCorr,
                     label=shiftLabel,
                     linewidth=LINEWIDTH,
-                    linestyle="--",
+                    linestyle="-",
                     color=shiftColor,
+                    zorder=2,
                 )
 
                 plt.axvline(
@@ -1357,7 +1351,18 @@ def plotProjectedShift(args):
                     linestyle=":",
                     linewidth=LINEWIDTH,
                     color=shiftColor,
+                    zorder=1,
                 )
+
+            # Keep projected energy above the shift where the curves overlap.
+            plt.plot(
+                df["Iter"],
+                df["ECorr"],
+                label=label,
+                linewidth=LINEWIDTH,
+                color=eprojColor,
+                zorder=3,
+            )
 
         formatAxes(
             xlabel=r"Iteration / $\tau$",
@@ -1368,6 +1373,86 @@ def plotProjectedShift(args):
 
         finish(args)
         return
+
+    setStyle()
+    fig, ax = plt.subplots()
+
+    # Create the shift first/lower, then projected energy above it.
+    (lineShift,) = ax.plot(
+        [],
+        [],
+        label=r"$E_s^S(\tau)$",
+        linewidth=LINEWIDTH,
+        linestyle="-",
+        color="tab:blue",
+        zorder=2,
+    )
+
+    (lineEProj,) = ax.plot(
+        [],
+        [],
+        label=r"$E_{\mathrm{Proj}}(\tau)$",
+        linewidth=LINEWIDTH,
+        color="tab:green",
+        zorder=3,
+    )
+
+    shiftStartLine = ax.axvline(
+        0.0,
+        linestyle=":",
+        linewidth=LINEWIDTH,
+        color="tab:blue",
+        visible=False,
+        zorder=1,
+    )
+
+    formatAxes(
+        xlabel=r"Iteration / $\tau$",
+        ylabel="Energy / Ha",
+        legend=True,
+        legendLoc="best",
+    )
+
+    def update():
+        df = readQMCFiles(args.paths).dropna(
+            subset=["Iter", "EProj", "ECorr", "EShift"]
+        )
+
+        if df.empty:
+            return
+
+        x = df["Iter"].to_numpy()
+
+        lineEProj.set_data(
+            x,
+            df["ECorr"].to_numpy(),
+        )
+
+        shiftCorr, iterShift = qmcShiftCorrelation(df)
+
+        if iterShift is not None:
+            lineShift.set_data(
+                x,
+                shiftCorr.to_numpy(),
+            )
+            lineShift.set_visible(True)
+
+            value = df["Iter"].iloc[iterShift]
+            shiftStartLine.set_xdata([value, value])
+            shiftStartLine.set_visible(True)
+        else:
+            lineShift.set_data([], [])
+            lineShift.set_visible(False)
+            shiftStartLine.set_visible(False)
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(
+        args,
+        fig,
+        update,
+    )
 
 def plotNW(args):
     """
