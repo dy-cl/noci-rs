@@ -400,7 +400,7 @@ fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
 
 /// Read site-specific FRI policies from `qmc.fri`.
 /// Population sampling and spawning accept only fixed cutoffs. Physical pre-overlap and
-/// DirectOverlap shift-tangent vectors accept only per-MPI-rank target NNZ values.
+/// Range-propagator shift-tangent vectors accept only per-MPI-rank target NNZ values.
 /// # Arguments:
 /// - `qmc_tbl`: Lua `qmc` table containing the optional `fri` table.
 /// # Returns:
@@ -533,7 +533,7 @@ fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
 /// Read QMC options from optional Lua table.
 /// # Arguments:
 /// - `qmc_tbl`: Optional Lua qmc table.
-/// - `propagator`: Parsed propagator, used to choose DirectOverlap defaults.
+/// - `propagator`: Parsed propagator, used to choose range-propagator defaults.
 /// # Returns:
 /// - `Option<QMCOptions>`: Parsed QMC options.
 fn read_qmc(
@@ -546,10 +546,11 @@ fn read_qmc(
             eprintln!("{message}");
             std::process::exit(1);
         });
-        let direct_overlap = matches!(propagator, Some(Propagator::DirectOverlap));
-        // DirectOverlap already constructs overlap-factor information for `N' = N + S Delta`, so
+        let s_apply = matches!(propagator, Some(Propagator::SApply));
+        let b_apply = matches!(propagator, Some(Propagator::BApply));
+        // SApply already constructs overlap-factor information for `N' = N + S Delta`, so
         // reuse it for overlap-weighted proposals instead of defaulting to wasteful uniform draws.
-        let default_excitation_gen = if direct_overlap {
+        let default_excitation_gen = if s_apply {
             ExcitationGen::OverlapWeighted
         } else {
             defaults.excitation_gen
@@ -567,19 +568,23 @@ fn read_qmc(
             eprintln!("{msg}");
             std::process::exit(1);
         });
-        // The DirectOverlap tangent requires the realised overlap matrix element on every sampled
+        // The SApply tangent requires the realised overlap matrix element on every sampled
         // path, `dB_w = dt S_{wx} \tilde N_x/p_gen(w|x)`. Uniform and overlap-weighted generation
         // both use the batched `(H,S)` evaluator; the current heat-bath path does not separately
         // expose S_{wx}.
-        if direct_overlap
+        if s_apply
             && !matches!(
                 excitation_gen,
                 ExcitationGen::Uniform | ExcitationGen::OverlapWeighted
             )
         {
             eprintln!(
-                "DirectOverlap supports excitation_gen = \"uniform\" or \"overlap-weighted\""
+                "SApply supports excitation_gen = \"uniform\" or \"overlap-weighted\""
             );
+            std::process::exit(1);
+        }
+        if b_apply && excitation_gen != ExcitationGen::Uniform {
+            eprintln!("BApply supports only excitation_gen = \"uniform\"");
             std::process::exit(1);
         }
         let factor_tables = read_snoci_storage(
@@ -596,9 +601,9 @@ fn read_qmc(
             std::process::exit(1);
         }
         // The proposal distribution is `q_p(w|x) = p q_S(w|x)+ (1-p)q_U(w|x)`. Use a genuine
-        // mixture by default for DirectOverlap, while an explicit uniform generator remains legal.
+        // mixture by default for SApply, while an explicit uniform generator remains legal.
         let default_overlap_weight =
-            if direct_overlap && excitation_gen == ExcitationGen::OverlapWeighted {
+            if s_apply && excitation_gen == ExcitationGen::OverlapWeighted {
                 0.5
             } else {
                 defaults.overlap_weight

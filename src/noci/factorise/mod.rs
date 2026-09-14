@@ -13,6 +13,7 @@ pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 use std::collections::HashMap;
 
 // Crate-root imports.
+use crate::basis::undo_excitation;
 use crate::{DetState, ExcitationSpinCache, ReducedOneSpinDetState};
 
 // Parent/sibling imports.
@@ -166,6 +167,37 @@ impl SpinFactorisation {
         parent: usize,
     ) -> &[FactorEntry] {
         &self.parents[parent].entries
+    }
+
+    /// Reconstruct the alpha and beta occupations of one parent reference.
+    /// The reconstruction uses the first retained determinant belonging to that parent and reverses
+    /// its stored excitation masks.
+    /// # Arguments:
+    /// - `self`: Shared determinant-space spin factorisation.
+    /// - `parent`: Parent reference index.
+    /// - `data`: Shared NOCI data.
+    /// # Returns:
+    /// - `(u128, u128)`: Parent alpha and beta occupation bitstrings.
+    pub(crate) fn parent_occupations<T: NOCIScalar>(
+        &self,
+        parent: usize,
+        data: &NOCIData<'_, T>,
+    ) -> (u128, u128) {
+        let state = &data.basis[self.parents[parent].entries[0].det];
+
+        // `O_P = (O_I \setminus P_I) \cup H_I`, independently for alpha and beta spin.
+        let oa = undo_excitation(
+            state.oa,
+            state.excitation.alpha.holes,
+            state.excitation.alpha.parts,
+        );
+        let ob = undo_excitation(
+            state.ob,
+            state.excitation.beta.holes,
+            state.excitation.beta.parts,
+        );
+
+        (oa, ob)
     }
 }
 
@@ -364,9 +396,8 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         })
         .collect::<Vec<_>>();
 
-    // `usize::MAX` marks representative slots which have not yet received their first determinant.
-    let unassigned_rep =
-        ReducedOneSpinDetState::new(usize::MAX, 1.0, ExcitationSpinCache::default());
+    let mut alpha_reps = (0..nparents).map(|_| Vec::new()).collect::<Vec<_>>();
+    let mut beta_reps = (0..nparents).map(|_| Vec::new()).collect::<Vec<_>>();
 
     for (det, state) in basis.iter().enumerate() {
         let parent = &mut parents[state.parent];
@@ -390,28 +421,42 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         }
         parent.entries_by_b[bids[det]].push(det);
 
-        // Store the first determinant carrying each alpha component as compact hot-path metadata.
-        if parent.areps.len() <= aids[det] {
-            parent.areps.resize(aids[det] + 1, unassigned_rep);
+        // Associate each retained alpha payload with the first real determinant carrying it.
+        if alpha_reps[state.parent].len() <= aids[det] {
+            alpha_reps[state.parent].resize(aids[det] + 1, None);
         }
-        if parent.areps[aids[det]].det == usize::MAX {
-            parent.areps[aids[det]] = ReducedOneSpinDetState::from_alpha(det, state);
+        if alpha_reps[state.parent][aids[det]].is_none() {
+            alpha_reps[state.parent][aids[det]] =
+                Some(ReducedOneSpinDetState::from_alpha(det, state));
         }
 
-        // Store the corresponding reduced beta representative without retaining the full `DetState`.
-        if parent.breps.len() <= bids[det] {
-            parent.breps.resize(bids[det] + 1, unassigned_rep);
+        // Associate each retained beta payload with the first real determinant carrying it.
+        if beta_reps[state.parent].len() <= bids[det] {
+            beta_reps[state.parent].resize(bids[det] + 1, None);
         }
-        if parent.breps[bids[det]].det == usize::MAX {
-            parent.breps[bids[det]] = ReducedOneSpinDetState::from_beta(det, state);
+        if beta_reps[state.parent][bids[det]].is_none() {
+            beta_reps[state.parent][bids[det]] =
+                Some(ReducedOneSpinDetState::from_beta(det, state));
         }
     }
 
-    for parent in &mut parents {
+    for ((parent, alpha_reps), beta_reps) in parents
+        .iter_mut()
+        .zip(alpha_reps.into_iter())
+        .zip(beta_reps.into_iter())
+    {
+        parent.areps = alpha_reps
+            .into_iter()
+            .map(|rep| rep.expect("every alpha component must have a retained determinant"))
+            .collect();
+        parent.breps = beta_reps
+            .into_iter()
+            .map(|rep| rep.expect("every beta component must have a retained determinant"))
+            .collect();
         parent.a_eval_order = (0..parent.areps.len()).collect();
         parent.a_eval_order.sort_unstable_by(|&i, &j| {
-            let ic = parent.areps[i].excitation_cache;
-            let jc = parent.areps[j].excitation_cache;
+            let ic = parent.areps[i].state.excitation_cache;
+            let jc = parent.areps[j].state.excitation_cache;
             ic.rank
                 .cmp(&jc.rank)
                 .then_with(|| ic.holes.cmp(&jc.holes))
@@ -422,8 +467,12 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         parent.a_eval_groups.clear();
         parent.a_eval_groups.push(0);
         for position in 1..parent.a_eval_order.len() {
-            let previous = parent.areps[parent.a_eval_order[position - 1]].excitation_cache;
-            let current = parent.areps[parent.a_eval_order[position]].excitation_cache;
+            let previous = parent.areps[parent.a_eval_order[position - 1]]
+                .state
+                .excitation_cache;
+            let current = parent.areps[parent.a_eval_order[position]]
+                .state
+                .excitation_cache;
             if current.rank != previous.rank || current.holes != previous.holes {
                 parent.a_eval_groups.push(position);
             }
@@ -434,18 +483,18 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         parent.a_eval_caches = parent
             .a_eval_order
             .iter()
-            .map(|&id| parent.areps[id].excitation_cache)
+            .map(|&id| parent.areps[id].state.excitation_cache)
             .collect();
         parent.a_eval_phases = parent
             .a_eval_order
             .iter()
-            .map(|&id| parent.areps[id].phase)
+            .map(|&id| parent.areps[id].state.phase)
             .collect();
 
         parent.b_eval_order = (0..parent.breps.len()).collect();
         parent.b_eval_order.sort_unstable_by(|&i, &j| {
-            let ic = parent.breps[i].excitation_cache;
-            let jc = parent.breps[j].excitation_cache;
+            let ic = parent.breps[i].state.excitation_cache;
+            let jc = parent.breps[j].state.excitation_cache;
             ic.rank
                 .cmp(&jc.rank)
                 .then_with(|| ic.holes.cmp(&jc.holes))
@@ -456,8 +505,12 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         parent.b_eval_groups.clear();
         parent.b_eval_groups.push(0);
         for position in 1..parent.b_eval_order.len() {
-            let previous = parent.breps[parent.b_eval_order[position - 1]].excitation_cache;
-            let current = parent.breps[parent.b_eval_order[position]].excitation_cache;
+            let previous = parent.breps[parent.b_eval_order[position - 1]]
+                .state
+                .excitation_cache;
+            let current = parent.breps[parent.b_eval_order[position]]
+                .state
+                .excitation_cache;
             if current.rank != previous.rank || current.holes != previous.holes {
                 parent.b_eval_groups.push(position);
             }
@@ -468,12 +521,12 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
         parent.b_eval_caches = parent
             .b_eval_order
             .iter()
-            .map(|&id| parent.breps[id].excitation_cache)
+            .map(|&id| parent.breps[id].state.excitation_cache)
             .collect();
         parent.b_eval_phases = parent
             .b_eval_order
             .iter()
-            .map(|&id| parent.breps[id].phase)
+            .map(|&id| parent.breps[id].state.phase)
             .collect();
 
         if parent.first_det != usize::MAX {

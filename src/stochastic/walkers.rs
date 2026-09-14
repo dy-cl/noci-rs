@@ -9,28 +9,26 @@ use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 use rand::SeedableRng;
-use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::ReducedTwoSpinDetState;
 use crate::input::ExcitationGen;
 use crate::noci::{NOCIData, SpinFactorisation};
-use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
-use super::common::{coalesce_population_updates, find_hs, max_scratch_sizes};
-use super::excit::update_overlap_weight;
-use super::metric::{
-    accumulate_generated_updates, exchange_accumulated_updates, population_stats_projected_energy,
-    sample_populations, take_population_changes, update_shift,
+use super::common::{
+    accumulate_generated_updates, coalesce_population_updates, exchange_accumulated_updates,
+    population_stats_projected_energy, propagate_iteration, take_population_changes,
 };
+use super::excit::update_overlap_weight;
+use super::fri::sample_populations;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::restart::{basis_hash, read_restart_hdf5};
+use super::restart::read_restart_hdf5;
+use super::shift::update_shift;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats,
-    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, QmcRng, ScratchSize,
-    ShiftSpec, SparsePopulations, ThreadPropagation, owner,
+    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, QmcRng, ShiftSpec,
+    SparsePopulations, ThreadPropagation,
 };
 
 /// Initialise rank-local walker populations from the initial coefficient vector.
@@ -113,120 +111,7 @@ pub fn qmc_step(
         std::process::exit(1);
     }
 
-    let irank = world.rank() as usize;
-    let nranks = world.size() as usize;
-    let ndets = data.basis.len();
-
-    let mut isref = vec![false; ndets];
-    for &i in ref_indices {
-        isref[i] = true;
-    }
-
-    let base_seed = qmc.seed.unwrap_or_else(rand::random);
-    let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
-
-    let scratchsize = {
-        let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
-        ScratchSize {
-            maxsame,
-            maxla,
-            maxlb,
-        }
-    };
-
-    let det_owner = if nranks == 1 {
-        vec![0; ndets]
-    } else {
-        (0..ndets)
-            .map(|det| owner(det, ndets, nranks))
-            .collect::<Vec<_>>()
-    };
-    let owned = if nranks == 1 {
-        (0..ndets).collect::<Vec<_>>()
-    } else {
-        det_owner
-            .iter()
-            .enumerate()
-            .filter_map(|(det, &owner)| if owner == irank { Some(det) } else { None })
-            .collect::<Vec<_>>()
-    };
-
-    let reference = ref_indices
-        .iter()
-        .filter_map(|&i| {
-            let coefficient = c0[i];
-
-            if coefficient == 0.0 {
-                None
-            } else {
-                Some((i, coefficient))
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let local_diagonal_hs: Vec<(f64, f64)> = owned
-        .par_iter()
-        .map_init(
-            || {
-                WickScratchSpin::with_sizes(
-                    scratchsize.maxsame,
-                    scratchsize.maxla,
-                    scratchsize.maxlb,
-                )
-            },
-            |scratch, &gamma| find_hs(data, gamma, gamma, scratch),
-        )
-        .collect();
-    let mut diagonal_hs = vec![(0.0, 0.0); ndets];
-    for (&gamma, hs) in owned.iter().zip(local_diagonal_hs) {
-        diagonal_hs[gamma] = hs;
-    }
-
-    let reference_hs = owned
-        .par_iter()
-        .map_init(
-            || {
-                WickScratchSpin::with_sizes(
-                    scratchsize.maxsame,
-                    scratchsize.maxla,
-                    scratchsize.maxlb,
-                )
-            },
-            |scratch, &gamma| {
-                let mut h = 0.0;
-                let mut s = 0.0;
-
-                for &(i, coefficient) in &reference {
-                    let (hig, sig) = find_hs(data, i, gamma, scratch);
-
-                    h += coefficient * hig;
-                    s += coefficient * sig;
-                }
-
-                (h, s)
-            },
-        )
-        .collect::<Vec<_>>();
-
-    let reduced_basis = data
-        .basis
-        .iter()
-        .map(ReducedTwoSpinDetState::from_state)
-        .collect::<Vec<_>>();
-
-    let run = QMCRunInfo {
-        irank,
-        nranks,
-        ndets,
-        basis_hash: basis_hash(data.basis),
-        reduced_basis,
-        det_owner,
-        owned,
-        base_seed,
-        rank_seed,
-        reference_hs,
-        diagonal_hs,
-    };
+    let (isref, scratchsize, run) = super::common::construct_qmc_run(data, c0, ref_indices, world);
 
     let overlap_generation = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
         let overlap_factor = SpinFactorisation::new(data);
@@ -245,7 +130,7 @@ pub fn qmc_step(
         None
     };
 
-    let mut local_pos = vec![usize::MAX; ndets];
+    let mut local_pos = vec![usize::MAX; run.ndets];
     for (k, &det) in run.owned.iter().enumerate() {
         local_pos[det] = k;
     }
@@ -337,9 +222,9 @@ pub fn qmc_step(
     };
 
     let propagator = data.input.prop_ref().propagator;
-    print_header(irank, propagator);
+    print_header(run.irank, propagator);
     print_initial_row(
-        irank,
+        run.irank,
         state.start_report * qmc.ncycles,
         &state,
         data.basis[0].e,
@@ -368,7 +253,7 @@ pub fn qmc_step(
                 &mut sample_chunks,
             );
 
-            super::metric::propagate_iteration(
+            propagate_iteration(
                 (iter, &state.mc.sampled),
                 data,
                 &run,
@@ -442,7 +327,15 @@ pub fn qmc_step(
             );
         }
 
-        print_row(irank, end, &state, &stats, data.basis[0].e, *es, propagator);
+        print_row(
+            run.irank,
+            end,
+            &state,
+            &stats,
+            data.basis[0].e,
+            *es,
+            propagator,
+        );
     }
 
     (state.eprojcur, state.mc.excitation_hist)

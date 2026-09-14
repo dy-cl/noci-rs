@@ -1,10 +1,148 @@
 // stochastic/fri.rs
 
 // External crate imports.
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
+
+// Crate-root imports.
+use crate::time_call;
 
 // Parent/sibling imports.
-use super::state::{PopulationUpdate, QmcRng};
+use super::state::{PopulationUpdate, QMCRunInfo, QmcRng, SparsePopulations};
+
+/// Sparse amplitude interface shared by report-level FRI vectors.
+pub(in crate::stochastic) trait FriAmplitude: Copy {
+    /// Return the signed amplitude to compress.
+    /// # Arguments:
+    /// - `self`: Sparse update value.
+    /// # Returns:
+    /// - `f64`: Signed update amplitude.
+    fn amplitude(&self) -> f64;
+
+    /// Replace the signed amplitude without changing its sparse key.
+    /// # Arguments:
+    /// - `self`: Sparse update value.
+    /// - `amplitude`: Replacement signed amplitude.
+    /// # Returns:
+    /// - `()`: Updates the amplitude in place.
+    fn set_amplitude(
+        &mut self,
+        amplitude: f64,
+    );
+}
+
+impl FriAmplitude for PopulationUpdate {
+    /// Return one NOCI-coordinate population update amplitude.
+    /// # Arguments:
+    /// - `self`: Sparse population update.
+    /// # Returns:
+    /// - `f64`: Signed population change.
+    fn amplitude(&self) -> f64 {
+        self.dn
+    }
+
+    /// Replace one NOCI-coordinate population update amplitude.
+    /// # Arguments:
+    /// - `self`: Sparse population update.
+    /// - `amplitude`: Replacement population change.
+    /// # Returns:
+    /// - `()`: Updates `dn` in place.
+    fn set_amplitude(
+        &mut self,
+        amplitude: f64,
+    ) {
+        self.dn = amplitude;
+    }
+}
+
+/// Construct an FRI-style sparse unbiased stochastic sample of populations.
+/// For each population `x` and cutoff `c`, `E[\Phi_c(x) | x] = x`, so
+/// `E[\tilde N | N] = N`.
+/// # Arguments:
+/// - `populations`: Persistent rank-local population vector `N`.
+/// - `sampled`: Temporary sparse sampled vector `\tilde N`.
+/// - `cutoff`: Stochastic sampling cutoff `c`.
+/// - `run`: Rank-local determinant ownership information.
+/// - `rng`: Random-number generator.
+/// - `chunks`: Reusable parallel sampling buffers.
+/// # Returns:
+/// - `()`: Replaces `sampled` with sparse unbiased sample of `populations`.
+pub(in crate::stochastic) fn sample_populations(
+    populations: &[f64],
+    sampled: &mut SparsePopulations,
+    cutoff: f64,
+    run: &QMCRunInfo,
+    rng: &mut QmcRng,
+    chunks: &mut Vec<Vec<(usize, f64)>>,
+) {
+    time_call!(crate::timers::stochastic::add_sample_populations, {
+        if cutoff <= 0.0 {
+            sampled.clear();
+
+            // With compression disabled, `\tilde N = N`, so retain every exactly nonzero local
+            // population.
+            for (k, &population) in populations.iter().enumerate() {
+                if population != 0.0 {
+                    sampled.insert_nonzero(run.owned[k], population);
+                }
+            }
+
+            return;
+        }
+
+        if populations.len() < 8192 {
+            sampled.clear();
+
+            // Apply `N_i -> \Phi_c(N_i)` directly and omit zero outcomes from sparse sample.
+            for (&det, &population) in run.owned.iter().zip(populations.iter()) {
+                let sampled_population = round(population, cutoff, rng);
+
+                if sampled_population != 0.0 {
+                    sampled.insert_nonzero(det, sampled_population);
+                }
+            }
+
+            return;
+        }
+
+        // Split large vectors into deterministic chunks with independent RNG streams derived from
+        // one cycle seed. Every element still follows scalar map `\Phi_c(N_i)`.
+        let nthreads = rayon::current_num_threads().max(1);
+        let chunk_size = populations.len().div_ceil(nthreads).max(1024);
+        let nchunks = populations.len().div_ceil(chunk_size);
+        let seed = rng.r#gen::<u64>();
+
+        chunks.resize_with(nchunks, Vec::new);
+        chunks[..nchunks]
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(chunk, entries)| {
+                let mut rng =
+                    QmcRng::seed_from_u64(seed ^ (chunk as u64).wrapping_mul(0x9E3779B97F4A7C15));
+                let start = chunk * chunk_size;
+                let end = (start + chunk_size).min(populations.len());
+                let populations = &populations[start..end];
+                let owned = &run.owned[start..end];
+
+                entries.clear();
+                for (&det, &population) in owned.iter().zip(populations.iter()) {
+                    let sampled_population = round(population, cutoff, &mut rng);
+
+                    if sampled_population != 0.0 {
+                        entries.push((det, sampled_population));
+                    }
+                }
+            });
+
+        // Rebuild sparse state in deterministic chunk order while expensive sampling stays parallel.
+        sampled.clear();
+        for entries in chunks.iter().take(nchunks) {
+            for &(det, population) in entries {
+                sampled.insert_nonzero(det, population);
+            }
+        }
+    });
+}
 
 /// Apply unbiased FRI stochastic rounding to one signed value.
 /// For cutoff `c > 0`, `\Phi_c(x) = x` when `|x| >= c`, while for
@@ -37,16 +175,16 @@ pub(in crate::stochastic) fn round(
     }
 }
 
-/// Apply FRI compression to sparse population updates in place.
+/// Apply FRI compression to sparse keyed amplitudes in place.
 /// Each stored amplitude obeys `E[\Phi_c(x) | x] = x`.
 /// # Arguments:
-/// - `updates`: Sparse population-update vector.
+/// - `updates`: Sparse keyed-amplitude vector.
 /// - `cutoff`: FRI amplitude cutoff.
 /// - `rng`: Random-number generator.
 /// # Returns:
 /// - `()`: Replaces `updates` with the retained FRI sample.
-pub(in crate::stochastic) fn compress_sparse(
-    updates: &mut Vec<PopulationUpdate>,
+pub(in crate::stochastic) fn compress_sparse<T: FriAmplitude>(
+    updates: &mut Vec<T>,
     cutoff: f64,
     rng: &mut QmcRng,
 ) {
@@ -55,8 +193,9 @@ pub(in crate::stochastic) fn compress_sparse(
     let mut out = 0usize;
     for i in 0..updates.len() {
         let mut update = updates[i];
-        update.dn = round(update.dn, cutoff, rng);
-        if update.dn != 0.0 {
+        let amplitude = round(update.amplitude(), cutoff, rng);
+        update.set_amplitude(amplitude);
+        if amplitude != 0.0 {
             updates[out] = update;
             out += 1;
         }

@@ -178,15 +178,41 @@ pub struct ExcitationCache {
     pub beta: ExcitationSpinCache,
 }
 
-/// Reduced one-spin determinant metadata used by fixed-rank determinant-space contractions.
+/// Identity-free one-spin numerical state used by fixed-rank determinant-space contractions.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedOneSpinDetState {
-    /// Global determinant index used to recover the full `DetState` when required.
-    pub(crate) det: usize,
+pub(crate) struct ReducedOneSpinState {
     /// Fermionic phase `\phi` relative to the parent determinant for this spin sector.
     pub(crate) phase: f64,
     /// Cached excitation rank and orbital labels for this spin sector.
     pub(crate) excitation_cache: ExcitationSpinCache,
+}
+
+impl ReducedOneSpinState {
+    /// Construct the minimal numerical payload for one spin sector.
+    /// # Arguments:
+    /// - `phase`: Fermionic phase `\phi` relative to the parent determinant.
+    /// - `excitation_cache`: Cached excitation rank and orbital labels.
+    /// # Returns
+    /// - `Self`: Identity-free fixed-rank kernel payload.
+    #[inline(always)]
+    pub(crate) fn new(
+        phase: f64,
+        excitation_cache: ExcitationSpinCache,
+    ) -> Self {
+        Self {
+            phase,
+            excitation_cache,
+        }
+    }
+}
+
+/// Reduced one-spin metadata for a retained determinant.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReducedOneSpinDetState {
+    /// Global determinant index used to recover the full `DetState` when required.
+    pub(crate) det: usize,
+    /// Identity-free numerical payload used by fixed-rank kernels.
+    pub(crate) state: ReducedOneSpinState,
 }
 
 impl ReducedOneSpinDetState {
@@ -205,8 +231,7 @@ impl ReducedOneSpinDetState {
     ) -> Self {
         Self {
             det,
-            phase,
-            excitation_cache,
+            state: ReducedOneSpinState::new(phase, excitation_cache),
         }
     }
 
@@ -239,22 +264,22 @@ impl ReducedOneSpinDetState {
     }
 }
 
-/// Reduced determinant metadata for fixed-rank two-spin contractions.
+/// Identity-free determinant metadata for fixed-rank two-spin contractions.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedTwoSpinDetState {
+pub(crate) struct ReducedTwoSpinState {
     /// Product of alpha- and beta-spin fermionic phases relative to the parent determinant.
     pub(crate) phase: f64,
     /// Cached excitation ranks and orbital labels for both spin sectors.
     pub(crate) excitation_cache: ExcitationCache,
 }
 
-impl ReducedTwoSpinDetState {
+impl ReducedTwoSpinState {
     /// Construct reduced determinant metadata for both spin sectors.
     /// # Arguments:
     /// - `phase`: Product of alpha- and beta-spin fermionic phases for determinant `I`.
     /// - `excitation_cache`: Cached excitation ranks and orbital labels for both spin sectors.
     /// # Returns
-    /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
+    /// - `ReducedTwoSpinState`: Identity-free two-spin numerical payload.
     #[inline(always)]
     pub(crate) fn new(
         phase: f64,
@@ -270,7 +295,7 @@ impl ReducedTwoSpinDetState {
     /// # Arguments:
     /// - `state`: Full determinant state containing both spin phases and excitation metadata.
     /// # Returns
-    /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
+    /// - `ReducedTwoSpinState`: Identity-free two-spin numerical payload.
     #[inline(always)]
     pub(crate) fn from_state<T: StateScalar>(state: &DetState<T>) -> Self {
         Self::new(state.pha * state.phb, state.excitation_cache)

@@ -232,7 +232,7 @@ fn xw_f_overlap_prepared_scalar_row<T: NOCIScalar>(
     let (target_rep, sources) = reps;
     let (target_left, alpha) = flags;
     let (overlap, fock) = out;
-    let target_phase = target_rep.phase;
+    let target_phase = target_rep.state.phase;
     let target = &basis[target_rep.det];
     let target_ex = if alpha {
         &target.excitation.alpha
@@ -253,7 +253,7 @@ fn xw_f_overlap_prepared_scalar_row<T: NOCIScalar>(
             (source_ex, target_ex)
         };
         let (s, f) = xw_f_overlap_prepared(w, x_ex, w_ex, scratch, tol);
-        let phase = T::from_real(target_phase * source_rep.phase);
+        let phase = T::from_real(target_phase * source_rep.state.phase);
 
         overlap[col] = phase * s;
         fock[col] = phase * f;
@@ -403,7 +403,7 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
         alpha,
     } = input;
     let (overlap, fock) = out;
-    let target_cache = target_rep.excitation_cache;
+    let target_cache = target_rep.state.excitation_cache;
     let target_rank = usize::from(target_cache.rank);
 
     for bounds in source_groups.windows(2) {
@@ -438,7 +438,8 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
                         let ordered = packet_start + lane;
                         let col = unsafe { *source_order.get_unchecked(ordered) };
                         let phase = T::from_real(
-                            target_rep.phase * unsafe { *source_phases.get_unchecked(ordered) },
+                            target_rep.state.phase
+                                * unsafe { *source_phases.get_unchecked(ordered) },
                         );
                         overlap[col] = phase * s[lane];
                         fock[col] = phase * f[lane];
@@ -457,7 +458,7 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
                     scratch,
                     tol,
                 );
-                let phase = T::from_real(target_rep.phase * sources[col].phase);
+                let phase = T::from_real(target_rep.state.phase * sources[col].state.phase);
                 overlap[col] = phase * s;
                 fock[col] = phase * f;
             }
@@ -472,7 +473,7 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
                     scratch,
                     tol,
                 );
-                let phase = T::from_real(target_rep.phase * sources[col].phase);
+                let phase = T::from_real(target_rep.state.phase * sources[col].state.phase);
                 overlap[col] = phase * s;
                 fock[col] = phase * f;
             }

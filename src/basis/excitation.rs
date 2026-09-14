@@ -107,7 +107,7 @@ pub fn excitation_phase(
 /// # Returns
 /// - `f64`: Fermionic phase factor.
 #[inline(always)]
-fn excitation_phase_bits(
+pub(crate) fn excitation_phase_bits(
     mut occ: u128,
     mut holes: u128,
     mut parts: u128,
@@ -244,7 +244,7 @@ fn apply_excitation(
 /// - `parts`: Orbitals added to the parent determinant.
 /// # Returns
 /// - `u128`: Reconstructed parent occupation bitstring.
-fn undo_excitation(
+pub(crate) fn undo_excitation(
     occ: u128,
     holes: u128,
     parts: u128,
@@ -259,7 +259,7 @@ fn undo_excitation(
 /// # Returns
 /// - `(u128, u128)`: Hole and particle orbital masks.
 #[inline(always)]
-fn excitation_between(
+pub(crate) fn excitation_between(
     parent: u128,
     child: u128,
 ) -> (u128, u128) {

@@ -25,7 +25,9 @@ pub(in crate::stochastic) fn print_header(
 ) {
     if irank == 0 {
         let (n, nref, naux, naux_occ) = match propagator {
-            Propagator::DirectOverlap => ("NMetric", "NMetricRef", "NSample", "NSampleOcc"),
+            Propagator::SApply | Propagator::BApply => {
+                ("NRange", "NRangeRef", "NSample", "NSampleOcc")
+            }
             _ => ("NWalk", "NRef", "-", "-"),
         };
 
@@ -59,7 +61,7 @@ pub(in crate::stochastic) fn print_initial_row(
         let shift = if state.reached { shift } else { 0.0 };
 
         match propagator {
-            Propagator::DirectOverlap => println!(
+            Propagator::SApply | Propagator::BApply => println!(
                 "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
                 iter,
                 state.pe.num,
@@ -113,7 +115,7 @@ pub(in crate::stochastic) fn print_row(
         let shift = if state.reached { shift } else { 0.0 };
 
         match propagator {
-            Propagator::DirectOverlap => println!(
+            Propagator::SApply | Propagator::BApply => println!(
                 "{:<8} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.12} {:>16.6} {:>16.6} {:>16.6} {:>16}",
                 iter,
                 state.pe.num,

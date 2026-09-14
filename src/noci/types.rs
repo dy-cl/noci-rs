@@ -464,6 +464,19 @@ pub(crate) struct Pair<T: NOCIScalar> {
     pub(crate) phase: T,
 }
 
+/// Determinant state in one parent reference's orthonormal MO determinant basis.
+/// Unlike `DetState`, this transient state carries no independent orbital coefficients because
+/// its orbitals are defined entirely by `parent`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct OrthogonalDetState {
+    /// Parent reference whose orthonormal MOs define the determinant.
+    pub(crate) parent: usize,
+    /// Alpha-spin occupation bitstring.
+    pub(crate) oa: u128,
+    /// Beta-spin occupation bitstring.
+    pub(crate) ob: u128,
+}
+
 /// MO-basis caches for orthogonal-parent matrix elements.
 pub struct MOCache<T: NOCIScalar> {
     /// One-electron Hamiltonian in parent alpha MO basis.

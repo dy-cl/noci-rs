@@ -18,7 +18,7 @@ use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd, det_simd_const};
 use crate::maths::{det_const, det_dynamic};
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use crate::{DetState, ExcitationSpin, ReducedOneSpinDetState};
+use crate::{DetState, ExcitationSpin, ReducedOneSpinDetState, ReducedOneSpinState};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
@@ -124,6 +124,172 @@ pub(crate) struct SameSpinOverlapBatch<'a, T: NOCIScalar> {
     pub(crate) alpha: bool,
     /// Output same-spin overlap factors in source-representative order.
     pub(crate) out: &'a mut [T],
+}
+
+/// Inputs and outputs for one row of BApply orthogonal-source overlap factors.
+pub(crate) struct SameSpinOrthogonalOverlapBatch<'a> {
+    /// Retained NOCI basis used to recover the target excitation.
+    pub(crate) basis: &'a [DetState<f64>],
+    /// Reduced retained target spin representative shared by the row.
+    pub(crate) target: ReducedOneSpinDetState,
+    /// Identity-free orthogonal source payloads in output-column order.
+    pub(crate) sources: &'a [ReducedOneSpinState],
+    /// Full parent-relative source excitations used only by scalar fallback.
+    pub(crate) source_excitations: &'a [ExcitationSpin],
+    /// Whether the retained target belongs to the left reference in `w`.
+    pub(crate) target_left: bool,
+    /// Whether to evaluate alpha-spin rather than beta-spin overlap factors.
+    pub(crate) alpha: bool,
+    /// Output same-spin overlap factors in source-representative order.
+    pub(crate) out: &'a mut [f64],
+}
+
+/// Statically dispatched access to retained or transient one-spin source metadata.
+trait ReducedOneSpinSource<T: NOCIScalar>: Copy {
+    /// Return the identity-free numerical state consumed by fixed-rank kernels.
+    /// # Arguments:
+    /// - `self`: Retained metadata or a transient numerical payload.
+    /// # Returns
+    /// - `ReducedOneSpinState`: Minimal phase and fixed-rank excitation cache.
+    fn reduced(self) -> ReducedOneSpinState;
+
+    /// Return the full source excitation required only by scalar fallback evaluation.
+    /// # Arguments:
+    /// - `self`: Retained metadata or a transient numerical payload.
+    /// - `basis`: Retained determinant basis.
+    /// - `transient`: Full transient source excitations aligned with source columns.
+    /// - `col`: Current source column.
+    /// - `alpha`: Whether alpha-spin rather than beta-spin factors are evaluated.
+    /// # Returns
+    /// - `&ExcitationSpin`: Full retained or transient source excitation.
+    fn excitation<'a>(
+        self,
+        basis: &'a [DetState<T>],
+        transient: &'a [ExcitationSpin],
+        col: usize,
+        alpha: bool,
+    ) -> &'a ExcitationSpin;
+}
+
+impl<T: NOCIScalar> ReducedOneSpinSource<T> for ReducedOneSpinDetState {
+    /// Strip retained identity before entering fixed-rank numerical kernels.
+    /// # Arguments:
+    /// - `self`: Identity-bearing retained spin metadata.
+    /// # Returns
+    /// - `ReducedOneSpinState`: Minimal numerical payload.
+    #[inline(always)]
+    fn reduced(self) -> ReducedOneSpinState {
+        self.state
+    }
+
+    /// Recover a retained full excitation from its valid determinant identity.
+    /// # Arguments:
+    /// - `self`: Identity-bearing retained spin metadata.
+    /// - `basis`: Retained determinant basis.
+    /// - `transient`: Unused transient excitation storage.
+    /// - `col`: Unused source column.
+    /// - `alpha`: Whether alpha-spin rather than beta-spin factors are evaluated.
+    /// # Returns
+    /// - `&ExcitationSpin`: Full retained source excitation.
+    #[inline(always)]
+    fn excitation<'a>(
+        self,
+        basis: &'a [DetState<T>],
+        _transient: &'a [ExcitationSpin],
+        _col: usize,
+        alpha: bool,
+    ) -> &'a ExcitationSpin {
+        if alpha {
+            &basis[self.det].excitation.alpha
+        } else {
+            &basis[self.det].excitation.beta
+        }
+    }
+}
+
+impl<T: NOCIScalar> ReducedOneSpinSource<T> for ReducedOneSpinState {
+    /// Pass an identity-free transient payload directly to fixed-rank numerical kernels.
+    /// # Arguments:
+    /// - `self`: Identity-free transient spin payload.
+    /// # Returns
+    /// - `ReducedOneSpinState`: Unchanged numerical payload.
+    #[inline(always)]
+    fn reduced(self) -> ReducedOneSpinState {
+        self
+    }
+
+    /// Recover a transient full excitation from its aligned side storage.
+    /// # Arguments:
+    /// - `self`: Identity-free transient spin payload.
+    /// - `basis`: Unused retained determinant basis.
+    /// - `transient`: Full transient source excitations aligned with source columns.
+    /// - `col`: Current source column.
+    /// - `alpha`: Unused spin flag because the side storage is already spin-specific.
+    /// # Returns
+    /// - `&ExcitationSpin`: Full transient source excitation.
+    #[inline(always)]
+    fn excitation<'a>(
+        self,
+        _basis: &'a [DetState<T>],
+        transient: &'a [ExcitationSpin],
+        col: usize,
+        _alpha: bool,
+    ) -> &'a ExcitationSpin {
+        &transient[col]
+    }
+}
+
+/// Evaluate one retained-target row against transient orthogonal source excitations.
+/// Fixed-rank packets use the existing SIMD kernels; scalar tails obtain full source masks from
+/// transient side storage, while fixed-rank kernels receive only identity-free numerical payloads.
+/// # Arguments:
+/// - `w`: Same-spin reference-pair Wick intermediates.
+/// - `batch`: One row of orthogonal-source overlap-factor work.
+/// - `scratch`: Reusable Wick workspace for scalar fallback evaluation.
+/// # Returns:
+/// - `()`: Writes one complete same-spin overlap-factor row into `batch.out`.
+pub(crate) fn xw_overlap_orthogonal_prepared_batched(
+    w: &SameSpinView<'_, f64>,
+    batch: SameSpinOrthogonalOverlapBatch<'_>,
+    scratch: &mut WickScratch<f64>,
+) {
+    let SameSpinOrthogonalOverlapBatch {
+        basis,
+        target,
+        sources,
+        source_excitations,
+        target_left,
+        alpha,
+        out,
+    } = batch;
+    #[cfg(target_arch = "x86_64")]
+    if w.m == 0 {
+        unsafe {
+            if try_xw_overlap_prepared_f64_orthogonal_simd(
+                w,
+                basis,
+                (target, sources),
+                source_excitations,
+                (target_left, alpha),
+                scratch,
+                out,
+            ) {
+                return;
+            }
+        }
+    }
+
+    for (col, source) in sources.iter().enumerate() {
+        out[col] = xw_overlap_prepared_scalar_value_source(
+            w,
+            basis,
+            (target, *source),
+            source_excitations,
+            col,
+            (target_left, alpha),
+            scratch,
+        );
+    }
 }
 
 /// Evaluate one row of same-spin overlaps for one ordered reference pair.
@@ -267,24 +433,52 @@ fn xw_overlap_prepared_scalar_value<T: NOCIScalar>(
     flags: (bool, bool),
     scratch: &mut WickScratch<T>,
 ) -> T {
+    xw_overlap_prepared_scalar_value_source(w, basis, reps, &[], 0, flags, scratch)
+}
+
+/// Evaluate one retained-target/source overlap through the shared scalar Wick kernel.
+/// Source identity is statically selected: retained sources recover masks from `basis`, while
+/// transient sources use aligned full-excitation side storage.
+/// # Arguments:
+/// - `w`: Same-spin reference-pair Wick intermediates.
+/// - `basis`: Retained determinant basis containing target and retained-source masks.
+/// - `reps`: Retained target metadata and retained or transient source metadata.
+/// - `source_excitations`: Full transient source excitations, empty for retained sources.
+/// - `col`: Current source column in transient side storage.
+/// - `flags`: Whether the target is left, and whether alpha-spin factors are evaluated.
+/// - `scratch`: Reusable same-spin Wick evaluator workspace.
+/// # Returns
+/// - `T`: Same-spin overlap including both excitation phases.
+#[inline(always)]
+fn xw_overlap_prepared_scalar_value_source<T, S>(
+    w: &SameSpinView<'_, T>,
+    basis: &[DetState<T>],
+    reps: (ReducedOneSpinDetState, S),
+    source_excitations: &[ExcitationSpin],
+    col: usize,
+    flags: (bool, bool),
+    scratch: &mut WickScratch<T>,
+) -> T
+where
+    T: NOCIScalar,
+    S: ReducedOneSpinSource<T>,
+{
     let (target, source) = reps;
     let (target_left, alpha) = flags;
     let target_state = &basis[target.det];
-    let source_state = &basis[source.det];
-    let (target_ex, source_ex) = if alpha {
-        (
-            &target_state.excitation.alpha,
-            &source_state.excitation.alpha,
-        )
+    let target_ex = if alpha {
+        &target_state.excitation.alpha
     } else {
-        (&target_state.excitation.beta, &source_state.excitation.beta)
+        &target_state.excitation.beta
     };
+    let source_ex = source.excitation(basis, source_excitations, col, alpha);
     let (x_ex, w_ex) = if target_left {
         (target_ex, source_ex)
     } else {
         (source_ex, target_ex)
     };
-    T::from_real(target.phase * source.phase) * xw_overlap_prepared(w, x_ex, w_ex, scratch)
+    let source = source.reduced();
+    T::from_real(target.state.phase * source.phase) * xw_overlap_prepared(w, x_ex, w_ex, scratch)
 }
 
 /// Fixed-rank packed overlap kernel selected by one target-feature entry point.
@@ -328,6 +522,60 @@ unsafe fn try_xw_overlap_prepared_f64_simd(
     if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
         unsafe {
             xw_overlap_prepared_f64x4_row(w, basis, reps, flags, scratch, out);
+        }
+        return true;
+    }
+    false
+}
+
+/// Try to evaluate one real orthogonal-source row with existing fixed-rank SIMD kernels.
+/// # Arguments:
+/// - `w`: Real same-spin reference-pair Wick intermediates with `m = 0`.
+/// - `basis`: Retained determinant basis used by scalar tails.
+/// - `reps`: Retained target and transient source representatives.
+/// - `source_excitations`: Full transient source excitations for scalar tails.
+/// - `flags`: Target-reference and spin flags.
+/// - `scratch`: Reusable Wick workspace.
+/// - `out`: Real overlap output row.
+/// # Returns:
+/// - `bool`: Whether an available SIMD path evaluated the complete row.
+/// # Safety
+/// - `w` must contain no zero-overlap orbital pairs.
+#[cfg(target_arch = "x86_64")]
+unsafe fn try_xw_overlap_prepared_f64_orthogonal_simd(
+    w: &SameSpinView<'_, f64>,
+    basis: &[DetState<f64>],
+    reps: (ReducedOneSpinDetState, &[ReducedOneSpinState]),
+    source_excitations: &[ExcitationSpin],
+    flags: (bool, bool),
+    scratch: &mut WickScratch<f64>,
+    out: &mut [f64],
+) -> bool {
+    if is_x86_feature_detected!("avx512f") {
+        unsafe {
+            xw_overlap_prepared_simd_row::<f64, ReducedOneSpinState, 8>(
+                w,
+                (basis, source_excitations),
+                reps,
+                flags,
+                scratch,
+                out,
+                xw_overlap_m0_prepared_f64x8,
+            );
+        }
+        return true;
+    }
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        unsafe {
+            xw_overlap_prepared_simd_row::<f64, ReducedOneSpinState, 4>(
+                w,
+                (basis, source_excitations),
+                reps,
+                flags,
+                scratch,
+                out,
+                xw_overlap_m0_prepared_f64x4,
+            );
         }
         return true;
     }
@@ -379,24 +627,30 @@ unsafe fn try_xw_overlap_prepared_c64_simd(
 /// - `scratch`: Reusable same-spin Wick evaluator workspace.
 /// - `out`: Overlap output row.
 /// - `kernel`: Fixed-rank packed kernel behind the active target-feature boundary.
+/// - `source_excitations`: Transient source masks, or an empty slice for retained sources.
 /// # Returns
 /// - `()`: Writes one complete same-spin overlap-factor row.
 /// # Safety
 /// - `kernel` must support the current CPU and use `N` packed lanes.
+/// - Transient `source_excitations` must align one-to-one with source payloads.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-unsafe fn xw_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
+unsafe fn xw_overlap_prepared_simd_row<T, S, const N: usize>(
     w: &SameSpinView<'_, T>,
-    basis: &[DetState<T>],
-    reps: (ReducedOneSpinDetState, &[ReducedOneSpinDetState]),
+    fallback: (&[DetState<T>], &[ExcitationSpin]),
+    reps: (ReducedOneSpinDetState, &[S]),
     flags: (bool, bool),
     scratch: &mut WickScratch<T>,
     out: &mut [T],
     kernel: OverlapSimdKernel<T, N>,
-) {
+) where
+    T: NOCIScalar,
+    S: ReducedOneSpinSource<T>,
+{
     let (target, sources) = reps;
+    let (basis, source_excitations) = fallback;
     let (target_left, _) = flags;
-    let target_cache = target.excitation_cache;
+    let target_cache = target.state.excitation_cache;
     let target_rank = usize::from(target_cache.rank);
     let mut bins = [[ExcitationSpinCache::default(); N]; MAXEXCIT + 1];
     let mut phases = [[1.0f64; N]; MAXEXCIT + 1];
@@ -404,6 +658,7 @@ unsafe fn xw_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
     let mut counts = [0usize; MAXEXCIT + 1];
 
     for (col, source) in sources.iter().enumerate() {
+        let source = source.reduced();
         let source_cache = source.excitation_cache;
         let source_rank = usize::from(source_cache.rank);
         let ranks = if target_left {
@@ -433,20 +688,35 @@ unsafe fn xw_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
                 }
                 for lane in 0..N {
                     out[outputs[source_rank][lane]] =
-                        T::from_real(target.phase * phases[source_rank][lane]) * overlap[lane];
+                        T::from_real(target.state.phase * phases[source_rank][lane])
+                            * overlap[lane];
                 }
                 counts[source_rank] = 0;
             }
         } else {
-            out[col] =
-                xw_overlap_prepared_scalar_value(w, basis, (target, *source), flags, scratch);
+            out[col] = xw_overlap_prepared_scalar_value_source(
+                w,
+                basis,
+                (target, sources[col]),
+                source_excitations,
+                col,
+                flags,
+                scratch,
+            );
         }
     }
 
     for source_rank in 0..=MAXEXCIT {
         for &col in &outputs[source_rank][..counts[source_rank]] {
-            out[col] =
-                xw_overlap_prepared_scalar_value(w, basis, (target, sources[col]), flags, scratch);
+            out[col] = xw_overlap_prepared_scalar_value_source(
+                w,
+                basis,
+                (target, sources[col]),
+                source_excitations,
+                col,
+                flags,
+                scratch,
+            );
         }
     }
 }
@@ -474,9 +744,9 @@ unsafe fn xw_overlap_prepared_f64x4_row(
     out: &mut [f64],
 ) {
     unsafe {
-        xw_overlap_prepared_simd_row::<f64, 4>(
+        xw_overlap_prepared_simd_row::<f64, ReducedOneSpinDetState, 4>(
             w,
-            basis,
+            (basis, &[]),
             reps,
             flags,
             scratch,
@@ -509,9 +779,9 @@ unsafe fn xw_overlap_prepared_f64x8_row(
     out: &mut [f64],
 ) {
     unsafe {
-        xw_overlap_prepared_simd_row::<f64, 8>(
+        xw_overlap_prepared_simd_row::<f64, ReducedOneSpinDetState, 8>(
             w,
-            basis,
+            (basis, &[]),
             reps,
             flags,
             scratch,
@@ -544,9 +814,9 @@ unsafe fn xw_overlap_prepared_c64x4_row(
     out: &mut [Complex64],
 ) {
     unsafe {
-        xw_overlap_prepared_simd_row::<Complex64, 4>(
+        xw_overlap_prepared_simd_row::<Complex64, ReducedOneSpinDetState, 4>(
             w,
-            basis,
+            (basis, &[]),
             reps,
             flags,
             scratch,
@@ -579,9 +849,9 @@ unsafe fn xw_overlap_prepared_c64x8_row(
     out: &mut [Complex64],
 ) {
     unsafe {
-        xw_overlap_prepared_simd_row::<Complex64, 8>(
+        xw_overlap_prepared_simd_row::<Complex64, ReducedOneSpinDetState, 8>(
             w,
-            basis,
+            (basis, &[]),
             reps,
             flags,
             scratch,

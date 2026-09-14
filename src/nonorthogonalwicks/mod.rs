@@ -39,7 +39,7 @@ pub use view::WicksView;
 
 // Crate-visible type re-exports.
 pub(crate) use build::{DiffSpinBuild, SameSpinBuild};
-pub(crate) use eval::{SameSpinOneBodyBatch, SameSpinOverlapBatch};
+pub(crate) use eval::{SameSpinOneBodyBatch, SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch};
 pub(crate) use scratch::WickScratchSpin;
 pub(crate) use storage::{WICKS_DISK_CACHE_VERSION, WicksDiskMeta, WicksRma};
 pub(crate) use types::{DiffSpinMeta, PairMeta, PairZeroCounts, SameSpinMeta};
@@ -53,7 +53,8 @@ pub(crate) use eval::{
 };
 pub(crate) use eval::{
     xw_f_overlap_prepared, xw_f_overlap_prepared_batched, xw_hamiltonian_overlap_prepared,
-    xw_hamiltonian_overlap_prepared_batched, xw_overlap_prepared, xw_overlap_prepared_batched,
+    xw_hamiltonian_overlap_prepared_batched, xw_overlap_orthogonal_prepared_batched,
+    xw_overlap_prepared, xw_overlap_prepared_batched,
 };
 pub(crate) use layout::{assign_offsets, write_diff_spin, write_hcol0, write_same_spin, write2t};
 pub(crate) use storage::{create_wicks_mmap, load_wicks_mmap};

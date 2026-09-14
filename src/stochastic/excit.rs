@@ -6,13 +6,198 @@ use mpi::traits::*;
 use rand::Rng;
 
 // Crate-root imports.
+use crate::DetState;
 use crate::input::{ExcitationGen, Input};
-use crate::noci::NOCIData;
+use crate::noci::{MOCache, NOCIData, OrthogonalDetState};
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::find_hs;
 use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo, QmcRng};
+
+/// Return the orbital index of the `rank`th set bit.
+/// Callers guarantee `rank < bits.count_ones()`.
+/// # Arguments:
+/// - `bits`: Orbital bit mask.
+/// - `rank`: Zero-based rank among set bits.
+/// # Returns
+/// - `usize`: Selected orbital index.
+#[inline(always)]
+fn select_set_bit(
+    mut bits: u128,
+    mut rank: usize,
+) -> usize {
+    // Remove the `rank` lowest set bits. The next trailing set bit is the selected orbital.
+    while rank != 0 {
+        bits &= bits - 1;
+        rank -= 1;
+    }
+
+    bits.trailing_zeros() as usize
+}
+
+/// Sample uniformly from all determinants coupled to `source` by the orthogonal-parent
+/// one- and two-electron Hamiltonian.
+/// The child classes are alpha singles, beta singles, alpha-alpha doubles, beta-beta doubles,
+/// and alpha-beta doubles. Every distinct connected determinant has
+/// `P_gen(D|x) = 1 / N_conn`.
+/// # Arguments:
+/// - `source`: NOCI source determinant `|Phi_x>`.
+/// - `cache`: MO-basis integral cache defining the parent orbital dimensions.
+/// - `rng`: Random-number generator.
+/// # Returns
+/// - `Option<(f64, OrthogonalDetState)>`: Generation probability and sampled orthogonal
+///   determinant, or `None` when the source has no connected determinant.
+pub(in crate::stochastic) fn pgen_orthogonal_uniform(
+    source: &DetState<f64>,
+    cache: &MOCache<f64>,
+    rng: &mut QmcRng,
+) -> Option<(f64, OrthogonalDetState)> {
+    let nmoa = cache.ha.nrows();
+    let nmob = cache.hb.nrows();
+
+    // `V_\sigma = {0,\ldots,n_\mathrm{mo}^\sigma-1} \setminus O_\sigma`.
+    // Mask unused bits above the parent MO dimension before complementing the occupation.
+    let vira = !source.oa
+        & if nmoa == 128 {
+            u128::MAX
+        } else {
+            (1u128 << nmoa) - 1
+        };
+    let virb = !source.ob
+        & if nmob == 128 {
+            u128::MAX
+        } else {
+            (1u128 << nmob) - 1
+        };
+
+    let noa = source.oa.count_ones() as usize;
+    let nob = source.ob.count_ones() as usize;
+    let nva = vira.count_ones() as usize;
+    let nvb = virb.count_ones() as usize;
+
+    // `N_{\alpha1} = n_{o\alpha} n_{v\alpha}`,
+    // `N_{\beta1} = n_{o\beta} n_{v\beta}`,
+    // `N_{\alpha\alpha} = C(n_{o\alpha},2) C(n_{v\alpha},2)`,
+    // `N_{\beta\beta} = C(n_{o\beta},2) C(n_{v\beta},2)`,
+    // `N_{\alpha\beta} = n_{o\alpha}n_{v\alpha}n_{o\beta}n_{v\beta}`.
+    let nas = noa * nva;
+    let nbs = nob * nvb;
+
+    let naa = if noa >= 2 && nva >= 2 {
+        (noa * (noa - 1) / 2) * (nva * (nva - 1) / 2)
+    } else {
+        0
+    };
+
+    let nbb = if nob >= 2 && nvb >= 2 {
+        (nob * (nob - 1) / 2) * (nvb * (nvb - 1) / 2)
+    } else {
+        0
+    };
+
+    let nab = nas * nbs;
+    let nconnected = nas + nbs + naa + nbb + nab;
+
+    if nconnected == 0 {
+        return None;
+    }
+
+    // Select class `c` with `P(c) = N_c/N_\mathrm{conn}`. Uniform sampling inside the selected
+    // class then gives `P_\mathrm{gen}(D|x) = 1/N_\mathrm{conn}` for every connected determinant.
+    let mut class = rng.gen_range(0..nconnected);
+    let mut oa = source.oa;
+    let mut ob = source.ob;
+
+    if class < nas {
+        let i = select_set_bit(source.oa, rng.gen_range(0..noa));
+        let a = select_set_bit(vira, rng.gen_range(0..nva));
+
+        oa &= !(1u128 << i);
+        oa |= 1u128 << a;
+    } else {
+        class -= nas;
+
+        if class < nbs {
+            let i = select_set_bit(source.ob, rng.gen_range(0..nob));
+            let a = select_set_bit(virb, rng.gen_range(0..nvb));
+
+            ob &= !(1u128 << i);
+            ob |= 1u128 << a;
+        } else {
+            class -= nbs;
+
+            if class < naa {
+                // Ordered distinct ranks represent each unordered occupied pair twice and each
+                // unordered virtual pair twice. The four representations therefore cancel
+                // exactly, leaving every distinct same-spin double uniformly distributed.
+                let ir = rng.gen_range(0..noa);
+                let mut jr = rng.gen_range(0..noa - 1);
+                if jr >= ir {
+                    jr += 1;
+                }
+
+                let ar = rng.gen_range(0..nva);
+                let mut br = rng.gen_range(0..nva - 1);
+                if br >= ar {
+                    br += 1;
+                }
+
+                let i = select_set_bit(source.oa, ir);
+                let j = select_set_bit(source.oa, jr);
+                let a = select_set_bit(vira, ar);
+                let b = select_set_bit(vira, br);
+
+                oa &= !((1u128 << i) | (1u128 << j));
+                oa |= (1u128 << a) | (1u128 << b);
+            } else {
+                class -= naa;
+
+                if class < nbb {
+                    let ir = rng.gen_range(0..nob);
+                    let mut jr = rng.gen_range(0..nob - 1);
+                    if jr >= ir {
+                        jr += 1;
+                    }
+
+                    let ar = rng.gen_range(0..nvb);
+                    let mut br = rng.gen_range(0..nvb - 1);
+                    if br >= ar {
+                        br += 1;
+                    }
+
+                    let i = select_set_bit(source.ob, ir);
+                    let j = select_set_bit(source.ob, jr);
+                    let a = select_set_bit(virb, ar);
+                    let b = select_set_bit(virb, br);
+
+                    ob &= !((1u128 << i) | (1u128 << j));
+                    ob |= (1u128 << a) | (1u128 << b);
+                } else {
+                    let i = select_set_bit(source.oa, rng.gen_range(0..noa));
+                    let a = select_set_bit(vira, rng.gen_range(0..nva));
+                    let j = select_set_bit(source.ob, rng.gen_range(0..nob));
+                    let b = select_set_bit(virb, rng.gen_range(0..nvb));
+
+                    oa &= !(1u128 << i);
+                    oa |= 1u128 << a;
+
+                    ob &= !(1u128 << j);
+                    ob |= 1u128 << b;
+                }
+            }
+        }
+    }
+
+    Some((
+        1.0 / nconnected as f64,
+        OrthogonalDetState {
+            parent: source.parent,
+            oa,
+            ob,
+        },
+    ))
+}
 
 /// Evaluate the shifted off-diagonal coupling
 /// `T_{xw}(\Delta\tau) = H_{xw} - E_s(\Delta \tau) S_{xw}.`

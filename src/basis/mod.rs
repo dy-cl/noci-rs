@@ -33,3 +33,6 @@ pub use duplicate::{density_distance, electron_distance};
 pub use excitation::{excitation_phase, generate_excited_basis};
 pub use generate::generate_reference_noci_basis;
 pub use normalise::hermitian_hnoci_basis;
+
+// Crate-visible function re-exports.
+pub(crate) use excitation::{excitation_between, excitation_phase_bits, undo_excitation};

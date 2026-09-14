@@ -51,7 +51,7 @@ pub struct QMCOptions {
     pub fri: FriOptions,
     /// Damping `\zeta` of the population-control Newton update.
     pub shift_damping: f64,
-    /// Dimensionless target-restoring strength `\kappa` for DirectOverlap.
+    /// Dimensionless target-restoring strength `\kappa` for range propagators.
     pub population_restoring: f64,
     /// Number of QMC cycles per report block.
     pub ncycles: usize,
@@ -78,7 +78,7 @@ pub struct FriOptions {
     pub spawn_cutoff: f64,
     /// Per-MPI-rank target NNZ for the physical pre-overlap report vector.
     pub pre_overlap_target_nnz: usize,
-    /// Per-MPI-rank target NNZ for the DirectOverlap shift tangent.
+    /// Per-MPI-rank target NNZ for a range-propagator shift tangent.
     pub shift_tangent_target_nnz: usize,
 }
 
@@ -106,7 +106,7 @@ impl Default for QMCOptions {
     /// - `Self`: Default population, propagation, excitation, and FRI configuration.
     fn default() -> Self {
         // Keep global excitation-generator default uniform. Parsing changes only an omitted
-        // DirectOverlap generator to overlap-weighted because that path already builds overlap
+        // SApply generator to overlap-weighted because that path already builds overlap
         // factors needed by its explicit metric action.
         Self {
             initial_population: 100.0,

@@ -6,7 +6,7 @@ use crate::nonorthogonalwicks::{
     xw_hamiltonian_overlap_prepared_batched,
 };
 use crate::time_call;
-use crate::{AoData, DetState, ReducedTwoSpinDetState};
+use crate::{AoData, DetState, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
@@ -72,7 +72,7 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 pub(crate) fn calculate_hs_pairs_wicks_batched(
     data: &NOCIData<'_, f64>,
     pairs: &[(usize, usize)],
-    reduced_basis: &[ReducedTwoSpinDetState],
+    reduced_basis: &[ReducedTwoSpinState],
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
@@ -170,17 +170,34 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
     ldet: &DetState<T>,
     gdet: &DetState<T>,
 ) -> (T, T) {
+    let s = calculate_s_pair_orthogonal(ldet, gdet);
+    let h = calculate_h_pair_orthogonal(ao, cache, (ldet.oa, ldet.ob), (gdet.oa, gdet.ob));
+    (h, s)
+}
+
+/// Calculate an orthogonal-parent Hamiltonian matrix element using shared Slater-Condon rules.
+/// # Arguments:
+/// - `ao`: AO integrals and nuclear-repulsion energy.
+/// - `cache`: MO-basis one- and two-electron integrals for the common parent.
+/// - `l_occ`: Bra alpha and beta occupation bitstrings.
+/// - `g_occ`: Ket alpha and beta occupation bitstrings.
+/// # Returns:
+/// - `T`: Hamiltonian matrix element between the occupation-defined determinants.
+pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
+    ao: &AoData,
+    cache: &MOCache<T>,
+    l_occ: (u128, u128),
+    g_occ: (u128, u128),
+) -> T {
     time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
-        let xa = ldet.oa ^ gdet.oa;
-        let xb = ldet.ob ^ gdet.ob;
+        let xa = l_occ.0 ^ g_occ.0;
+        let xb = l_occ.1 ^ g_occ.1;
 
         let ra = (xa.count_ones() as usize) / 2;
         let rb = (xb.count_ones() as usize) / 2;
 
-        let s = calculate_s_pair_orthogonal(ldet, gdet);
-
         if ra > 2 || rb > 2 || ra + rb > 2 {
-            return (<T as From<f64>>::from(0.0), s);
+            return <T as From<f64>>::from(0.0);
         }
 
         let mut holesa = [0usize; 2];
@@ -189,7 +206,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
         let mut partsb = [0usize; 2];
 
         if ra > 0 {
-            let mut bits = gdet.oa & !ldet.oa;
+            let mut bits = g_occ.0 & !l_occ.0;
             let mut k = 0;
             while bits != 0 {
                 holesa[k] = bits.trailing_zeros() as usize;
@@ -197,7 +214,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
                 k += 1;
             }
 
-            let mut bits = ldet.oa & !gdet.oa;
+            let mut bits = l_occ.0 & !g_occ.0;
             let mut k = 0;
             while bits != 0 {
                 partsa[k] = bits.trailing_zeros() as usize;
@@ -207,7 +224,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
         }
 
         if rb > 0 {
-            let mut bits = gdet.ob & !ldet.ob;
+            let mut bits = g_occ.1 & !l_occ.1;
             let mut k = 0;
             while bits != 0 {
                 holesb[k] = bits.trailing_zeros() as usize;
@@ -215,7 +232,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
                 k += 1;
             }
 
-            let mut bits = ldet.ob & !gdet.ob;
+            let mut bits = l_occ.1 & !g_occ.1;
             let mut k = 0;
             while bits != 0 {
                 partsb[k] = bits.trailing_zeros() as usize;
@@ -225,33 +242,33 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
         }
 
         let phase = <T as From<f64>>::from(
-            excitation_phase(gdet.oa, &holesa[..ra], &partsa[..ra])
-                * excitation_phase(gdet.ob, &holesb[..rb], &partsb[..rb]),
+            excitation_phase(g_occ.0, &holesa[..ra], &partsa[..ra])
+                * excitation_phase(g_occ.1, &holesb[..rb], &partsb[..rb]),
         );
 
         if ra == 0 && rb == 0 {
             let mut h = <T as From<f64>>::from(ao.enuc);
 
-            let mut bits = ldet.oa;
+            let mut bits = l_occ.0;
             while bits != 0 {
                 let i = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 h += cache.ha[(i, i)];
             }
 
-            let mut bits = ldet.ob;
+            let mut bits = l_occ.1;
             while bits != 0 {
                 let i = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 h += cache.hb[(i, i)];
             }
 
-            let mut bits_i = ldet.oa;
+            let mut bits_i = l_occ.0;
             while bits_i != 0 {
                 let i = bits_i.trailing_zeros() as usize;
                 bits_i &= bits_i - 1;
 
-                let mut bits_j = ldet.oa;
+                let mut bits_j = l_occ.0;
                 while bits_j != 0 {
                     let j = bits_j.trailing_zeros() as usize;
                     bits_j &= bits_j - 1;
@@ -259,12 +276,12 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
                 }
             }
 
-            let mut bits_i = ldet.ob;
+            let mut bits_i = l_occ.1;
             while bits_i != 0 {
                 let i = bits_i.trailing_zeros() as usize;
                 bits_i &= bits_i - 1;
 
-                let mut bits_j = ldet.ob;
+                let mut bits_j = l_occ.1;
                 while bits_j != 0 {
                     let j = bits_j.trailing_zeros() as usize;
                     bits_j &= bits_j - 1;
@@ -272,12 +289,12 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
                 }
             }
 
-            let mut bits_i = ldet.oa;
+            let mut bits_i = l_occ.0;
             while bits_i != 0 {
                 let i = bits_i.trailing_zeros() as usize;
                 bits_i &= bits_i - 1;
 
-                let mut bits_j = ldet.ob;
+                let mut bits_j = l_occ.1;
                 while bits_j != 0 {
                     let j = bits_j.trailing_zeros() as usize;
                     bits_j &= bits_j - 1;
@@ -285,7 +302,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
                 }
             }
 
-            return (h, s);
+            return h;
         }
 
         if ra == 1 && rb == 0 {
@@ -294,21 +311,21 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
 
             let mut h = cache.ha[(a, i)];
 
-            let mut bits = ldet.oa & gdet.oa;
+            let mut bits = l_occ.0 & g_occ.0;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 h += cache.eri_aa_asym[(a, i, j, j)];
             }
 
-            let mut bits = ldet.ob & gdet.ob;
+            let mut bits = l_occ.1 & g_occ.1;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 h += cache.eri_ab_coul[(a, i, j, j)];
             }
 
-            return (phase * h, s);
+            return phase * h;
         }
 
         if ra == 0 && rb == 1 {
@@ -317,21 +334,21 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
 
             let mut h = cache.hb[(a, i)];
 
-            let mut bits = ldet.ob & gdet.ob;
+            let mut bits = l_occ.1 & g_occ.1;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 h += cache.eri_bb_asym[(a, i, j, j)];
             }
 
-            let mut bits = ldet.oa & gdet.oa;
+            let mut bits = l_occ.0 & g_occ.0;
             while bits != 0 {
                 let j = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 h += cache.eri_ab_coul[(j, j, i, a)];
             }
 
-            return (phase * h, s);
+            return phase * h;
         }
 
         if ra == 2 && rb == 0 {
@@ -339,7 +356,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             let j = holesa[1];
             let a = partsa[0];
             let b = partsa[1];
-            return (phase * cache.eri_aa_asym[(a, i, j, b)], s);
+            return phase * cache.eri_aa_asym[(a, i, j, b)];
         }
 
         if ra == 0 && rb == 2 {
@@ -347,7 +364,7 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             let j = holesb[1];
             let a = partsb[0];
             let b = partsb[1];
-            return (phase * cache.eri_bb_asym[(a, i, j, b)], s);
+            return phase * cache.eri_bb_asym[(a, i, j, b)];
         }
 
         if ra == 1 && rb == 1 {
@@ -355,9 +372,9 @@ fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
             let j = holesb[0];
             let a = partsa[0];
             let b = partsb[0];
-            return (phase * cache.eri_ab_coul[(a, i, j, b)], s);
+            return phase * cache.eri_ab_coul[(a, i, j, b)];
         }
-        (<T as From<f64>>::from(0.0), s)
+        <T as From<f64>>::from(0.0)
     })
 }
 

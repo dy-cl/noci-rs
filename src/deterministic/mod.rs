@@ -7,7 +7,7 @@
 //! sampling.
 //!
 //! Two population representations are supported: direct propagation of a coefficient vector
-//! and direct-overlap propagation of a real population constrained to the range of the overlap
+//! and S-apply propagation of a real population constrained to the range of the overlap
 //! matrix.
 //!
 //! # Coefficient propagation
@@ -25,9 +25,9 @@
 //!
 //! `may therefore be controlled using separate shifts E_s and E_s^S.`
 //!
-//! # Direct-overlap propagation
+//! # S-apply propagation
 //!
-//! `The direct-overlap propagator stores a real population \mathbf N initialised in`
+//! `The S-apply propagator stores a real population \mathbf N initialised in`
 //! `\operatorname{range}(\mathbf S), for example as`
 //!
 //! `\mathbf N_0 = \mathbf S\mathbf c_0.`

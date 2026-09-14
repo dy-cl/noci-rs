@@ -20,7 +20,7 @@ use crate::maths::{
 };
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use crate::{DetState, Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinDetState};
+use crate::{DetState, Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
@@ -127,7 +127,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    basis: (&[DetState<T>], &[ReducedTwoSpinDetState]),
+    basis: (&[DetState<T>], &[ReducedTwoSpinState]),
     requests: &[(usize, usize, usize)],
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
@@ -263,7 +263,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 #[allow(clippy::type_complexity)]
 unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     w: &WicksPairView<'_, T>,
-    basis: (&[DetState<T>], &[ReducedTwoSpinDetState]),
+    basis: (&[DetState<T>], &[ReducedTwoSpinState]),
     requests: &[(usize, usize, usize)],
     parameters: (f64, f64),
     scratch: &mut WickScratchSpin<T>,

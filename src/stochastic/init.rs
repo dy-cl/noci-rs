@@ -10,8 +10,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::common::{find_s, gather_all_populations};
-use super::metric::projected_energy;
+use super::common::{find_s, gather_all_populations, projected_energy};
 use super::restart::read_restart_hdf5;
 use super::state::{
     ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, PropagationState,
