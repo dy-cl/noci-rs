@@ -300,6 +300,33 @@ impl ReducedTwoSpinState {
     pub(crate) fn from_state<T: StateScalar>(state: &DetState<T>) -> Self {
         Self::new(state.pha * state.phb, state.excitation_cache)
     }
+
+    /// Construct reduced two-spin metadata for an excitation from one orthogonal source.
+    /// The phase is `p = p_\alpha p_\beta`, evaluated from the source occupations and the
+    /// existing excitation masks, while the fixed-rank labels are `C = excitation.cache()`.
+    /// # Arguments:
+    /// - `source`: Source alpha and beta occupation bitstrings.
+    /// - `excitation`: Existing excitation masks connecting the source to its child.
+    /// # Returns
+    /// - `ReducedTwoSpinState`: Identity-free phase and fixed-rank excitation cache.
+    #[inline(always)]
+    pub(crate) fn from_excitation(
+        source: (u128, u128),
+        excitation: &Excitation,
+    ) -> Self {
+        let phase_a = crate::basis::excitation_phase_bits(
+            source.0,
+            excitation.alpha.holes,
+            excitation.alpha.parts,
+        );
+        let phase_b = crate::basis::excitation_phase_bits(
+            source.1,
+            excitation.beta.holes,
+            excitation.beta.parts,
+        );
+
+        Self::new(phase_a * phase_b, excitation.cache())
+    }
 }
 
 /// Data shared by post-SCF NOCI, NOCI-QMC, and SNOCI methods.

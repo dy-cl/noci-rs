@@ -6,10 +6,10 @@ use mpi::traits::*;
 use rand::Rng;
 
 // Crate-root imports.
-use crate::DetState;
 use crate::input::{ExcitationGen, Input};
-use crate::noci::{MOCache, NOCIData, OrthogonalDetState};
+use crate::noci::{MOCache, NOCIData};
 use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::{DetState, Excitation, ExcitationSpin, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::common::find_hs;
@@ -22,6 +22,34 @@ use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo
 /// - `rank`: Zero-based rank among set bits.
 /// # Returns
 /// - `usize`: Selected orbital index.
+#[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+#[inline(always)]
+fn select_set_bit(
+    bits: u128,
+    rank: usize,
+) -> usize {
+    use std::arch::x86_64::_pdep_u64;
+
+    let low = bits as u64;
+    let nlow = low.count_ones() as usize;
+    if rank < nlow {
+        let selected = unsafe { _pdep_u64(1u64 << rank, low) };
+        selected.trailing_zeros() as usize
+    } else {
+        let high = (bits >> 64) as u64;
+        let selected = unsafe { _pdep_u64(1u64 << (rank - nlow), high) };
+        64 + selected.trailing_zeros() as usize
+    }
+}
+
+/// Return the orbital index of the `rank`th set bit using the portable clear-lowest-bit path.
+/// Callers guarantee `rank < bits.count_ones()`.
+/// # Arguments:
+/// - `bits`: Orbital bit mask.
+/// - `rank`: Zero-based rank among set bits.
+/// # Returns
+/// - `usize`: Selected orbital index.
+#[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
 #[inline(always)]
 fn select_set_bit(
     mut bits: u128,
@@ -36,167 +64,263 @@ fn select_set_bit(
     bits.trailing_zeros() as usize
 }
 
-/// Sample uniformly from all determinants coupled to `source` by the orthogonal-parent
-/// one- and two-electron Hamiltonian.
-/// The child classes are alpha singles, beta singles, alpha-alpha doubles, beta-beta doubles,
-/// and alpha-beta doubles. Every distinct connected determinant has
-/// `P_gen(D|x) = 1 / N_conn`.
-/// # Arguments:
-/// - `source`: NOCI source determinant `|Phi_x>`.
-/// - `cache`: MO-basis integral cache defining the parent orbital dimensions.
-/// - `rng`: Random-number generator.
-/// # Returns
-/// - `Option<(f64, OrthogonalDetState)>`: Generation probability and sampled orthogonal
-///   determinant, or `None` when the source has no connected determinant.
-pub(in crate::stochastic) fn pgen_orthogonal_uniform(
-    source: &DetState<f64>,
-    cache: &MOCache<f64>,
-    rng: &mut QmcRng,
-) -> Option<(f64, OrthogonalDetState)> {
-    let nmoa = cache.ha.nrows();
-    let nmob = cache.hb.nrows();
+/// Relative occupied/virtual-rank topology of one orthogonal Hamiltonian connection.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::stochastic) enum OrthogonalConnection {
+    /// Replace one alpha electron.
+    AlphaSingle {
+        /// Rank of the removed orbital among occupied alpha orbitals.
+        occupied: u8,
+        /// Rank of the inserted orbital among virtual alpha orbitals.
+        virtual_: u8,
+    },
+    /// Replace one beta electron.
+    BetaSingle {
+        /// Rank of the removed orbital among occupied beta orbitals.
+        occupied: u8,
+        /// Rank of the inserted orbital among virtual beta orbitals.
+        virtual_: u8,
+    },
+    /// Replace two alpha electrons.
+    AlphaDouble {
+        /// Ranks of the removed orbitals among occupied alpha orbitals.
+        occupied: [u8; 2],
+        /// Ranks of the inserted orbitals among virtual alpha orbitals.
+        virtual_: [u8; 2],
+    },
+    /// Replace two beta electrons.
+    BetaDouble {
+        /// Ranks of the removed orbitals among occupied beta orbitals.
+        occupied: [u8; 2],
+        /// Ranks of the inserted orbitals among virtual beta orbitals.
+        virtual_: [u8; 2],
+    },
+    /// Replace one alpha and one beta electron.
+    AlphaBetaDouble {
+        /// Rank of the removed orbital among occupied alpha orbitals.
+        occupied_a: u8,
+        /// Rank of the inserted orbital among virtual alpha orbitals.
+        virtual_a: u8,
+        /// Rank of the removed orbital among occupied beta orbitals.
+        occupied_b: u8,
+        /// Rank of the inserted orbital among virtual beta orbitals.
+        virtual_b: u8,
+    },
+}
 
-    // `V_\sigma = {0,\ldots,n_\mathrm{mo}^\sigma-1} \setminus O_\sigma`.
-    // Mask unused bits above the parent MO dimension before complementing the occupation.
-    let vira = !source.oa
-        & if nmoa == 128 {
-            u128::MAX
-        } else {
-            (1u128 << nmoa) - 1
-        };
-    let virb = !source.ob
-        & if nmob == 128 {
-            u128::MAX
-        } else {
-            (1u128 << nmob) - 1
-        };
+/// Persistent uniform proposal topology for parent-orthogonal Hamiltonian connections.
+pub(in crate::stochastic) struct OrthogonalUniformGenerator {
+    /// Valid alpha-orbital mask shared by every parent basis.
+    alpha_mask: u128,
+    /// Valid beta-orbital mask shared by every parent basis.
+    beta_mask: u128,
+    /// Exact probability `1/N_\mathrm{conn}` for every table entry.
+    pgen: f64,
+    /// Complete system-wide table of relative occupied/virtual-rank connections.
+    connections: Vec<OrthogonalConnection>,
+}
 
-    let noa = source.oa.count_ones() as usize;
-    let nob = source.ob.count_ones() as usize;
-    let nva = vira.count_ones() as usize;
-    let nvb = virb.count_ones() as usize;
+impl OrthogonalUniformGenerator {
+    /// Construct all `N_\mathrm{conn}` one- and two-body connection topologies once.
+    /// The table enumerates `O_\alpha V_\alpha`, `O_\beta V_\beta`, same-spin pair products,
+    /// and `O_\alpha V_\alpha O_\beta V_\beta` using orbital ranks rather than labels.
+    /// # Arguments:
+    /// - `source`: Representative determinant defining fixed electron counts.
+    /// - `cache`: Representative MO cache defining common alpha and beta orbital dimensions.
+    /// # Returns
+    /// - `Self`: System-wide flat uniform connection table and valid-orbital masks.
+    pub(in crate::stochastic) fn new(
+        source: &DetState<f64>,
+        cache: &MOCache<f64>,
+    ) -> Self {
+        let noa = source.oa.count_ones() as usize;
+        let nob = source.ob.count_ones() as usize;
+        let nva = cache.ha.nrows() - noa;
+        let nvb = cache.hb.nrows() - nob;
+        let nas = noa * nva;
+        let nbs = nob * nvb;
+        let naa = (noa * noa.saturating_sub(1) / 2) * (nva * nva.saturating_sub(1) / 2);
+        let nbb = (nob * nob.saturating_sub(1) / 2) * (nvb * nvb.saturating_sub(1) / 2);
+        let nab = nas * nbs;
+        let mut connections = Vec::with_capacity(nas + nbs + naa + nbb + nab);
 
-    // `N_{\alpha1} = n_{o\alpha} n_{v\alpha}`,
-    // `N_{\beta1} = n_{o\beta} n_{v\beta}`,
-    // `N_{\alpha\alpha} = C(n_{o\alpha},2) C(n_{v\alpha},2)`,
-    // `N_{\beta\beta} = C(n_{o\beta},2) C(n_{v\beta},2)`,
-    // `N_{\alpha\beta} = n_{o\alpha}n_{v\alpha}n_{o\beta}n_{v\beta}`.
-    let nas = noa * nva;
-    let nbs = nob * nvb;
-
-    let naa = if noa >= 2 && nva >= 2 {
-        (noa * (noa - 1) / 2) * (nva * (nva - 1) / 2)
-    } else {
-        0
-    };
-
-    let nbb = if nob >= 2 && nvb >= 2 {
-        (nob * (nob - 1) / 2) * (nvb * (nvb - 1) / 2)
-    } else {
-        0
-    };
-
-    let nab = nas * nbs;
-    let nconnected = nas + nbs + naa + nbb + nab;
-
-    if nconnected == 0 {
-        return None;
-    }
-
-    // Select class `c` with `P(c) = N_c/N_\mathrm{conn}`. Uniform sampling inside the selected
-    // class then gives `P_\mathrm{gen}(D|x) = 1/N_\mathrm{conn}` for every connected determinant.
-    let mut class = rng.gen_range(0..nconnected);
-    let mut oa = source.oa;
-    let mut ob = source.ob;
-
-    if class < nas {
-        let i = select_set_bit(source.oa, rng.gen_range(0..noa));
-        let a = select_set_bit(vira, rng.gen_range(0..nva));
-
-        oa &= !(1u128 << i);
-        oa |= 1u128 << a;
-    } else {
-        class -= nas;
-
-        if class < nbs {
-            let i = select_set_bit(source.ob, rng.gen_range(0..nob));
-            let a = select_set_bit(virb, rng.gen_range(0..nvb));
-
-            ob &= !(1u128 << i);
-            ob |= 1u128 << a;
-        } else {
-            class -= nbs;
-
-            if class < naa {
-                // Ordered distinct ranks represent each unordered occupied pair twice and each
-                // unordered virtual pair twice. The four representations therefore cancel
-                // exactly, leaving every distinct same-spin double uniformly distributed.
-                let ir = rng.gen_range(0..noa);
-                let mut jr = rng.gen_range(0..noa - 1);
-                if jr >= ir {
-                    jr += 1;
-                }
-
-                let ar = rng.gen_range(0..nva);
-                let mut br = rng.gen_range(0..nva - 1);
-                if br >= ar {
-                    br += 1;
-                }
-
-                let i = select_set_bit(source.oa, ir);
-                let j = select_set_bit(source.oa, jr);
-                let a = select_set_bit(vira, ar);
-                let b = select_set_bit(vira, br);
-
-                oa &= !((1u128 << i) | (1u128 << j));
-                oa |= (1u128 << a) | (1u128 << b);
-            } else {
-                class -= naa;
-
-                if class < nbb {
-                    let ir = rng.gen_range(0..nob);
-                    let mut jr = rng.gen_range(0..nob - 1);
-                    if jr >= ir {
-                        jr += 1;
+        for occupied in 0..noa {
+            for virtual_ in 0..nva {
+                connections.push(OrthogonalConnection::AlphaSingle {
+                    occupied: occupied as u8,
+                    virtual_: virtual_ as u8,
+                });
+            }
+        }
+        for occupied in 0..nob {
+            for virtual_ in 0..nvb {
+                connections.push(OrthogonalConnection::BetaSingle {
+                    occupied: occupied as u8,
+                    virtual_: virtual_ as u8,
+                });
+            }
+        }
+        for occupied_i in 0..noa {
+            for occupied_j in occupied_i + 1..noa {
+                for virtual_a in 0..nva {
+                    for virtual_b in virtual_a + 1..nva {
+                        connections.push(OrthogonalConnection::AlphaDouble {
+                            occupied: [occupied_i as u8, occupied_j as u8],
+                            virtual_: [virtual_a as u8, virtual_b as u8],
+                        });
                     }
-
-                    let ar = rng.gen_range(0..nvb);
-                    let mut br = rng.gen_range(0..nvb - 1);
-                    if br >= ar {
-                        br += 1;
-                    }
-
-                    let i = select_set_bit(source.ob, ir);
-                    let j = select_set_bit(source.ob, jr);
-                    let a = select_set_bit(virb, ar);
-                    let b = select_set_bit(virb, br);
-
-                    ob &= !((1u128 << i) | (1u128 << j));
-                    ob |= (1u128 << a) | (1u128 << b);
-                } else {
-                    let i = select_set_bit(source.oa, rng.gen_range(0..noa));
-                    let a = select_set_bit(vira, rng.gen_range(0..nva));
-                    let j = select_set_bit(source.ob, rng.gen_range(0..nob));
-                    let b = select_set_bit(virb, rng.gen_range(0..nvb));
-
-                    oa &= !(1u128 << i);
-                    oa |= 1u128 << a;
-
-                    ob &= !(1u128 << j);
-                    ob |= 1u128 << b;
                 }
             }
         }
+        for occupied_i in 0..nob {
+            for occupied_j in occupied_i + 1..nob {
+                for virtual_a in 0..nvb {
+                    for virtual_b in virtual_a + 1..nvb {
+                        connections.push(OrthogonalConnection::BetaDouble {
+                            occupied: [occupied_i as u8, occupied_j as u8],
+                            virtual_: [virtual_a as u8, virtual_b as u8],
+                        });
+                    }
+                }
+            }
+        }
+        for occupied_a in 0..noa {
+            for virtual_a in 0..nva {
+                for occupied_b in 0..nob {
+                    for virtual_b in 0..nvb {
+                        connections.push(OrthogonalConnection::AlphaBetaDouble {
+                            occupied_a: occupied_a as u8,
+                            virtual_a: virtual_a as u8,
+                            occupied_b: occupied_b as u8,
+                            virtual_b: virtual_b as u8,
+                        });
+                    }
+                }
+            }
+        }
+
+        let alpha_mask = if cache.ha.nrows() == 128 {
+            u128::MAX
+        } else {
+            (1u128 << cache.ha.nrows()) - 1
+        };
+        let beta_mask = if cache.hb.nrows() == 128 {
+            u128::MAX
+        } else {
+            (1u128 << cache.hb.nrows()) - 1
+        };
+        let pgen = if connections.is_empty() {
+            0.0
+        } else {
+            1.0 / connections.len() as f64
+        };
+
+        Self {
+            alpha_mask,
+            beta_mask,
+            pgen,
+            connections,
+        }
     }
 
-    Some((
-        1.0 / nconnected as f64,
-        OrthogonalDetState {
-            parent: source.parent,
-            oa,
-            ob,
-        },
-    ))
+    /// Sample one connection with `P_\mathrm{gen}(D|x)=1/N_\mathrm{conn}`.
+    /// # Arguments:
+    /// - `self`: Persistent uniform connection topology.
+    /// - `rng`: Thread-local random-number generator.
+    /// # Returns
+    /// - `Option<(usize, f64)>`: Connection-table index and exact uniform probability.
+    #[inline(always)]
+    pub(in crate::stochastic) fn sample<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> Option<(usize, f64)> {
+        if self.connections.is_empty() {
+            None
+        } else {
+            Some((rng.gen_range(0..self.connections.len()), self.pgen))
+        }
+    }
+}
+
+/// Resolve one relative connection into `E_{Dx}` and its reduced numerical state.
+/// Occupied and virtual ranks are mapped into source-specific labels, after which the existing
+/// excitation masks define `O'_\sigma=(O_\sigma\setminus I_\sigma)\cup A_\sigma` downstream.
+/// # Arguments:
+/// - `generator`: Persistent valid-orbital masks and connection table.
+/// - `connection`: Sampled connection-table index.
+/// - `source`: Source determinant `|\Phi_x^P\rangle`.
+/// # Returns
+/// - `(Excitation, ReducedTwoSpinState)`: Existing excitation masks and prepared numerical state.
+#[inline(always)]
+pub(in crate::stochastic) fn resolve_orthogonal_connection(
+    generator: &OrthogonalUniformGenerator,
+    connection: usize,
+    source: &DetState<f64>,
+) -> (Excitation, ReducedTwoSpinState) {
+    let vira = generator.alpha_mask & !source.oa;
+    let virb = generator.beta_mask & !source.ob;
+    let mut excitation = Excitation::empty();
+
+    match generator.connections[connection] {
+        OrthogonalConnection::AlphaSingle { occupied, virtual_ } => {
+            let i = select_set_bit(source.oa, occupied as usize);
+            let a = select_set_bit(vira, virtual_ as usize);
+            excitation.alpha = ExcitationSpin {
+                holes: 1u128 << i,
+                parts: 1u128 << a,
+            };
+        }
+        OrthogonalConnection::BetaSingle { occupied, virtual_ } => {
+            let i = select_set_bit(source.ob, occupied as usize);
+            let a = select_set_bit(virb, virtual_ as usize);
+            excitation.beta = ExcitationSpin {
+                holes: 1u128 << i,
+                parts: 1u128 << a,
+            };
+        }
+        OrthogonalConnection::AlphaDouble { occupied, virtual_ } => {
+            let i = select_set_bit(source.oa, occupied[0] as usize);
+            let j = select_set_bit(source.oa, occupied[1] as usize);
+            let a = select_set_bit(vira, virtual_[0] as usize);
+            let b = select_set_bit(vira, virtual_[1] as usize);
+            excitation.alpha = ExcitationSpin {
+                holes: (1u128 << i) | (1u128 << j),
+                parts: (1u128 << a) | (1u128 << b),
+            };
+        }
+        OrthogonalConnection::BetaDouble { occupied, virtual_ } => {
+            let i = select_set_bit(source.ob, occupied[0] as usize);
+            let j = select_set_bit(source.ob, occupied[1] as usize);
+            let a = select_set_bit(virb, virtual_[0] as usize);
+            let b = select_set_bit(virb, virtual_[1] as usize);
+            excitation.beta = ExcitationSpin {
+                holes: (1u128 << i) | (1u128 << j),
+                parts: (1u128 << a) | (1u128 << b),
+            };
+        }
+        OrthogonalConnection::AlphaBetaDouble {
+            occupied_a,
+            virtual_a,
+            occupied_b,
+            virtual_b,
+        } => {
+            let i = select_set_bit(source.oa, occupied_a as usize);
+            let a = select_set_bit(vira, virtual_a as usize);
+            let j = select_set_bit(source.ob, occupied_b as usize);
+            let b = select_set_bit(virb, virtual_b as usize);
+            excitation.alpha = ExcitationSpin {
+                holes: 1u128 << i,
+                parts: 1u128 << a,
+            };
+            excitation.beta = ExcitationSpin {
+                holes: 1u128 << j,
+                parts: 1u128 << b,
+            };
+        }
+    }
+
+    let reduced = ReducedTwoSpinState::from_excitation((source.oa, source.ob), &excitation);
+    (excitation, reduced)
 }
 
 /// Evaluate the shifted off-diagonal coupling

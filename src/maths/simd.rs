@@ -4,10 +4,11 @@
 // Standard library imports.
 use std::arch::x86_64::{
     __m256d, __m512d, _mm256_add_pd, _mm256_fmadd_pd, _mm256_fmsub_pd, _mm256_fnmadd_pd,
-    _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_pd, _mm256_set1_pd, _mm256_setzero_pd,
-    _mm256_storeu_pd, _mm256_sub_pd, _mm512_add_pd, _mm512_fmadd_pd, _mm512_fmsub_pd,
-    _mm512_fnmadd_pd, _mm512_loadu_pd, _mm512_mul_pd, _mm512_set_pd, _mm512_set1_pd,
-    _mm512_setzero_pd, _mm512_storeu_pd, _mm512_sub_pd,
+    _mm256_i64gather_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_set_epi64x, _mm256_set_pd,
+    _mm256_set1_pd, _mm256_setzero_pd, _mm256_storeu_pd, _mm256_sub_pd, _mm512_add_pd,
+    _mm512_fmadd_pd, _mm512_fmsub_pd, _mm512_fnmadd_pd, _mm512_i64gather_pd, _mm512_loadu_pd,
+    _mm512_mul_pd, _mm512_set_epi64, _mm512_set_pd, _mm512_set1_pd, _mm512_setzero_pd,
+    _mm512_storeu_pd, _mm512_sub_pd,
 };
 
 // External crate imports.
@@ -50,6 +51,19 @@ pub(crate) trait Simd<const N: usize>: Copy {
     /// # Returns
     /// - `Self`: Packed SIMD value.
     fn load(values: &[Self::Scalar; N]) -> Self;
+
+    /// Gather one scalar value for each lane from independent indices.
+    /// # Arguments:
+    /// - `values`: Contiguous scalar input values.
+    /// - `indices`: Scalar indices in lane order.
+    /// # Returns
+    /// - `Self`: Packed gathered values.
+    /// # Safety
+    /// - Every index must be in bounds for `values`.
+    unsafe fn gather(
+        values: &[Self::Scalar],
+        indices: &[usize; N],
+    ) -> Self;
 
     /// Store every SIMD lane.
     /// # Arguments:
@@ -130,6 +144,17 @@ pub(crate) trait Simd<const N: usize>: Copy {
     fn scale_real(
         value: Self,
         factor: f64,
+    ) -> Self;
+
+    /// Multiply each lane by its corresponding real factor.
+    /// # Arguments:
+    /// - `value`: Packed real or complex values.
+    /// - `factors`: Independent real scale factors in lane order.
+    /// # Returns
+    /// - `Self`: Lane-wise products `factors[lane] * value[lane]`.
+    fn multiply_real_lanes(
+        value: Self,
+        factors: &[f64; N],
     ) -> Self;
 }
 
@@ -781,6 +806,30 @@ impl Simd<4> for F64x4 {
         F64x4::load(values)
     }
 
+    /// Gather four real values by scalar index.
+    /// # Arguments:
+    /// - `values`: Contiguous real input values.
+    /// - `indices`: Four scalar indices.
+    /// # Returns
+    /// - `Self`: Packed gathered values.
+    /// # Safety
+    /// - Every index must be in bounds for `values`.
+    #[inline(always)]
+    unsafe fn gather(
+        values: &[Self::Scalar],
+        indices: &[usize; 4],
+    ) -> Self {
+        let packed = unsafe {
+            _mm256_set_epi64x(
+                indices[3] as i64,
+                indices[2] as i64,
+                indices[1] as i64,
+                indices[0] as i64,
+            )
+        };
+        Self(unsafe { _mm256_i64gather_pd(values.as_ptr(), packed, 8) })
+    }
+
     /// Store every packed lane.
     /// # Arguments:
     /// - `self`: Packed value to store.
@@ -882,6 +931,20 @@ impl Simd<4> for F64x4 {
     ) -> Self {
         F64x4::mul(value, F64x4::splat(factor))
     }
+
+    /// Multiply four real lanes by independent real factors.
+    /// # Arguments:
+    /// - `value`: Packed real values.
+    /// - `factors`: Four real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise products.
+    #[inline(always)]
+    fn multiply_real_lanes(
+        value: Self,
+        factors: &[f64; 4],
+    ) -> Self {
+        F64x4::mul(value, F64x4::load(factors))
+    }
 }
 
 impl Simd<8> for F64x8 {
@@ -925,6 +988,34 @@ impl Simd<8> for F64x8 {
     #[inline(always)]
     fn load(values: &[Self::Scalar; 8]) -> Self {
         F64x8::load(values)
+    }
+
+    /// Gather eight real values by scalar index.
+    /// # Arguments:
+    /// - `values`: Contiguous real input values.
+    /// - `indices`: Eight scalar indices.
+    /// # Returns
+    /// - `Self`: Packed gathered values.
+    /// # Safety
+    /// - Every index must be in bounds for `values`.
+    #[inline(always)]
+    unsafe fn gather(
+        values: &[Self::Scalar],
+        indices: &[usize; 8],
+    ) -> Self {
+        let packed = unsafe {
+            _mm512_set_epi64(
+                indices[7] as i64,
+                indices[6] as i64,
+                indices[5] as i64,
+                indices[4] as i64,
+                indices[3] as i64,
+                indices[2] as i64,
+                indices[1] as i64,
+                indices[0] as i64,
+            )
+        };
+        Self(unsafe { _mm512_i64gather_pd(packed, values.as_ptr(), 8) })
     }
 
     /// Store every packed lane.
@@ -1028,6 +1119,20 @@ impl Simd<8> for F64x8 {
     ) -> Self {
         F64x8::mul(value, F64x8::splat(factor))
     }
+
+    /// Multiply eight real lanes by independent real factors.
+    /// # Arguments:
+    /// - `value`: Packed real values.
+    /// - `factors`: Eight real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise products.
+    #[inline(always)]
+    fn multiply_real_lanes(
+        value: Self,
+        factors: &[f64; 8],
+    ) -> Self {
+        F64x8::mul(value, F64x8::load(factors))
+    }
 }
 
 impl Simd<4> for C64x4 {
@@ -1071,6 +1176,42 @@ impl Simd<4> for C64x4 {
     #[inline(always)]
     fn load(values: &[Self::Scalar; 4]) -> Self {
         C64x4::from_values(values[0], values[1], values[2], values[3])
+    }
+
+    /// Gather four complex values by scalar index.
+    /// # Arguments:
+    /// - `values`: Contiguous complex input values.
+    /// - `indices`: Four complex-scalar indices.
+    /// # Returns
+    /// - `Self`: Packed gathered complex values.
+    /// # Safety
+    /// - Every index must be in bounds for `values`.
+    #[inline(always)]
+    unsafe fn gather(
+        values: &[Self::Scalar],
+        indices: &[usize; 4],
+    ) -> Self {
+        let real_indices = unsafe {
+            _mm256_set_epi64x(
+                (2 * indices[3]) as i64,
+                (2 * indices[2]) as i64,
+                (2 * indices[1]) as i64,
+                (2 * indices[0]) as i64,
+            )
+        };
+        let imag_indices = unsafe {
+            _mm256_set_epi64x(
+                (2 * indices[3] + 1) as i64,
+                (2 * indices[2] + 1) as i64,
+                (2 * indices[1] + 1) as i64,
+                (2 * indices[0] + 1) as i64,
+            )
+        };
+        let values = values.as_ptr().cast::<f64>();
+        Self {
+            re: unsafe { _mm256_i64gather_pd(values, real_indices, 8) },
+            im: unsafe { _mm256_i64gather_pd(values, imag_indices, 8) },
+        }
     }
 
     /// Store every packed lane.
@@ -1179,6 +1320,24 @@ impl Simd<4> for C64x4 {
     ) -> Self {
         C64x4::mul(value, C64x4::splat(factor, 0.0))
     }
+
+    /// Multiply four complex lanes by independent real factors.
+    /// # Arguments:
+    /// - `value`: Packed complex values.
+    /// - `factors`: Four real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise complex-real products.
+    #[inline(always)]
+    fn multiply_real_lanes(
+        value: Self,
+        factors: &[f64; 4],
+    ) -> Self {
+        let factors = unsafe { _mm256_loadu_pd(factors.as_ptr()) };
+        Self {
+            re: unsafe { _mm256_mul_pd(value.re, factors) },
+            im: unsafe { _mm256_mul_pd(value.im, factors) },
+        }
+    }
 }
 
 impl Simd<8> for C64x8 {
@@ -1222,6 +1381,50 @@ impl Simd<8> for C64x8 {
     #[inline(always)]
     fn load(values: &[Self::Scalar; 8]) -> Self {
         C64x8::from_values(*values)
+    }
+
+    /// Gather eight complex values by scalar index.
+    /// # Arguments:
+    /// - `values`: Contiguous complex input values.
+    /// - `indices`: Eight complex-scalar indices.
+    /// # Returns
+    /// - `Self`: Packed gathered complex values.
+    /// # Safety
+    /// - Every index must be in bounds for `values`.
+    #[inline(always)]
+    unsafe fn gather(
+        values: &[Self::Scalar],
+        indices: &[usize; 8],
+    ) -> Self {
+        let real_indices = unsafe {
+            _mm512_set_epi64(
+                (2 * indices[7]) as i64,
+                (2 * indices[6]) as i64,
+                (2 * indices[5]) as i64,
+                (2 * indices[4]) as i64,
+                (2 * indices[3]) as i64,
+                (2 * indices[2]) as i64,
+                (2 * indices[1]) as i64,
+                (2 * indices[0]) as i64,
+            )
+        };
+        let imag_indices = unsafe {
+            _mm512_set_epi64(
+                (2 * indices[7] + 1) as i64,
+                (2 * indices[6] + 1) as i64,
+                (2 * indices[5] + 1) as i64,
+                (2 * indices[4] + 1) as i64,
+                (2 * indices[3] + 1) as i64,
+                (2 * indices[2] + 1) as i64,
+                (2 * indices[1] + 1) as i64,
+                (2 * indices[0] + 1) as i64,
+            )
+        };
+        let values = values.as_ptr().cast::<f64>();
+        Self {
+            re: unsafe { _mm512_i64gather_pd(real_indices, values, 8) },
+            im: unsafe { _mm512_i64gather_pd(imag_indices, values, 8) },
+        }
     }
 
     /// Store every packed lane.
@@ -1329,5 +1532,23 @@ impl Simd<8> for C64x8 {
         factor: f64,
     ) -> Self {
         C64x8::mul(value, C64x8::splat(factor, 0.0))
+    }
+
+    /// Multiply eight complex lanes by independent real factors.
+    /// # Arguments:
+    /// - `value`: Packed complex values.
+    /// - `factors`: Eight real lane factors.
+    /// # Returns
+    /// - `Self`: Lane-wise complex-real products.
+    #[inline(always)]
+    fn multiply_real_lanes(
+        value: Self,
+        factors: &[f64; 8],
+    ) -> Self {
+        let factors = unsafe { _mm512_loadu_pd(factors.as_ptr()) };
+        Self {
+            re: unsafe { _mm512_mul_pd(value.re, factors) },
+            im: unsafe { _mm512_mul_pd(value.im, factors) },
+        }
     }
 }

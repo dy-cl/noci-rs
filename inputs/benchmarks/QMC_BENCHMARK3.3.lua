@@ -27,7 +27,7 @@ excit = {orders = {1, 2, 3}}
 
 prop = {
     dt = 5e-7,
-    propagator = "direct-overlap"
+    propagator = "b-apply"
 }
 
 qmc = {

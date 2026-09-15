@@ -76,6 +76,7 @@ def extract(path: Path) -> pd.DataFrame:
         return columns[6:] in (
             ["NWalk", "NRef", "-", "-"],
             ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
+            ["NRange", "NRangeRef", "NSample", "NSampleOcc"],
         )
 
     floatPattern = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
@@ -147,6 +148,13 @@ def extract(path: Path) -> pd.DataFrame:
     else:
         df.columns = header
 
+    df = df.rename(
+        columns={
+            "NMetric": "NRange",
+            "NMetricRef": "NRangeRef",
+        }
+    )
+
     return df.drop_duplicates(subset=["Iter"], keep="last")
 
 
@@ -172,8 +180,8 @@ def prepareObservables(df: pd.DataFrame) -> pd.DataFrame:
 
 def populationColumns(df: pd.DataFrame):
     """Return total, reference, and occupied population columns."""
-    if "NMetric" in df.columns:
-        return "NMetric", "NMetricRef", "NSampleOcc"
+    if "NRange" in df.columns:
+        return "NRange", "NRangeRef", "NSampleOcc"
 
     if "NWalk" in df.columns:
         return "NWalk", "NRef", None
@@ -187,8 +195,7 @@ def shoulderRows(
     npoints=SHOULDER_POINTS,
     minReference=MIN_REFERENCE_POPULATION,
 ):
-    """Return the standard pre-population-control shoulder-estimator rows.
-    """
+    """Return the standard pre-population-control shoulder-estimator rows."""
     if df.empty:
         raise ValueError("Empty stochastic QMC trajectory")
 
@@ -896,8 +903,8 @@ def main() -> None:
         for column in [
             "NWalk",
             "NRef",
-            "NMetric",
-            "NMetricRef",
+            "NRange",
+            "NRangeRef",
             "NSample",
             "NSampleOcc",
         ]

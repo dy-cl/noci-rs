@@ -56,10 +56,6 @@ struct OrthogonalParentUpdates {
     parent: usize,
     /// Sparse `\chi^P_{ab}` entries using active source-component positions.
     entries: Vec<SpinUpdate>,
-    /// Active alpha occupations in source-factor column order.
-    ao: Vec<u128>,
-    /// Active beta occupations in source-factor column order.
-    bo: Vec<u128>,
     /// Synthetic compact alpha representatives used by existing SIMD factor construction.
     areps: Vec<ReducedOneSpinState>,
     /// Synthetic compact beta representatives used by existing SIMD factor construction.
@@ -70,6 +66,14 @@ struct OrthogonalParentUpdates {
     bex: Vec<ExcitationSpin>,
     /// Same-parent occupation lookup containing source phase times `\chi_D^P`.
     exact: HashMap<(u128, u128), f64>,
+    /// Canonical parent-local alpha component IDs for active sources.
+    aids: Vec<usize>,
+    /// Canonical parent-local beta component IDs for active sources.
+    bids: Vec<usize>,
+    /// Canonical alpha component ID to active source position.
+    apos: Vec<usize>,
+    /// Canonical beta component ID to active source position.
+    bpos: Vec<usize>,
 }
 
 /// Borrowed sparse numerical source used by blocked overlap contractions.
@@ -81,6 +85,112 @@ struct FactorisedSource<'a> {
     nalpha: usize,
     /// Number of active beta source components.
     nbeta: usize,
+}
+
+#[derive(Clone, Copy)]
+struct FactorisedFactors<'a> {
+    /// Row-major alpha overlap factors.
+    alpha: &'a [f64],
+    /// Row-major beta overlap factors.
+    beta: &'a [f64],
+    /// Number of source columns in the alpha factor table.
+    alpha_stride: usize,
+    /// Number of source columns in the beta factor table.
+    beta_stride: usize,
+    /// Optional persistent target alpha component IDs.
+    target_alpha_ids: Option<&'a [usize]>,
+    /// Optional persistent target beta component IDs.
+    target_beta_ids: Option<&'a [usize]>,
+    /// Optional persistent source alpha component IDs.
+    source_alpha_ids: Option<&'a [usize]>,
+    /// Optional persistent source beta component IDs.
+    source_beta_ids: Option<&'a [usize]>,
+}
+
+impl FactorisedFactors<'_> {
+    /// Return `A^{QP}_{\bar a a}` for active target and source positions.
+    /// # Arguments:
+    /// - `self`: Factor-table view.
+    /// - `target`: Active target alpha position.
+    /// - `source`: Active source alpha position.
+    /// # Returns
+    /// - `f64`: Selected alpha overlap factor.
+    #[inline(always)]
+    fn alpha(
+        &self,
+        target: usize,
+        source: usize,
+    ) -> f64 {
+        let target = self.target_alpha_ids.map_or(target, |ids| ids[target]);
+        let source = self.source_alpha_ids.map_or(source, |ids| ids[source]);
+        self.alpha[target * self.alpha_stride + source]
+    }
+
+    /// Return `B^{QP}_{\bar b b}` for active target and source positions.
+    /// # Arguments:
+    /// - `self`: Factor-table view.
+    /// - `target`: Active target beta position.
+    /// - `source`: Active source beta position.
+    /// # Returns
+    /// - `f64`: Selected beta overlap factor.
+    #[inline(always)]
+    fn beta(
+        &self,
+        target: usize,
+        source: usize,
+    ) -> f64 {
+        let target = self.target_beta_ids.map_or(target, |ids| ids[target]);
+        let source = self.source_beta_ids.map_or(source, |ids| ids[source]);
+        self.beta[target * self.beta_stride + source]
+    }
+
+    /// Contract one active beta row with a contiguous intermediate vector.
+    /// # Arguments:
+    /// - `self`: Factor-table view.
+    /// - `target`: Active target beta position.
+    /// - `values`: Intermediate vector indexed by active source position.
+    /// # Returns
+    /// - `f64`: Dot product `sum_b B^{QP}_{\bar b b}U_b`.
+    #[inline(always)]
+    fn dot_beta(
+        &self,
+        target: usize,
+        values: &[f64],
+    ) -> f64 {
+        if self.source_beta_ids.is_none() && self.target_beta_ids.is_none() {
+            return dot_f64(
+                values,
+                &self.beta[target * self.beta_stride..(target + 1) * self.beta_stride],
+            );
+        }
+        (0..values.len())
+            .map(|source| values[source] * self.beta(target, source))
+            .sum()
+    }
+
+    /// Contract one active alpha row with a contiguous intermediate vector.
+    /// # Arguments:
+    /// - `self`: Factor-table view.
+    /// - `target`: Active target alpha position.
+    /// - `values`: Intermediate vector indexed by active source position.
+    /// # Returns
+    /// - `f64`: Dot product `sum_a A^{QP}_{\bar a a}T_a`.
+    #[inline(always)]
+    fn dot_alpha(
+        &self,
+        target: usize,
+        values: &[f64],
+    ) -> f64 {
+        if self.source_alpha_ids.is_none() && self.target_alpha_ids.is_none() {
+            return dot_f64(
+                &self.alpha[target * self.alpha_stride..(target + 1) * self.alpha_stride],
+                values,
+            );
+        }
+        (0..values.len())
+            .map(|source| self.alpha(target, source) * values[source])
+            .sum()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -193,9 +303,56 @@ pub(crate) struct OrthogonalOverlapScratch {
     updates: Vec<OrthogonalParentUpdates>,
     /// Existing retained overlap contraction scratch reused after source-factor construction.
     overlap: OverlapScratch,
+    /// Lazily interned physical alpha occupations by source parent.
+    alpha_occupations: Vec<Vec<u128>>,
+    /// Lazily interned physical beta occupations by source parent.
+    beta_occupations: Vec<Vec<u128>>,
+    /// Stable alpha occupation IDs by source parent.
+    alpha_ids: Vec<HashMap<u128, usize>>,
+    /// Stable beta occupation IDs by source parent.
+    beta_ids: Vec<HashMap<u128, usize>>,
+}
+
+impl OrthogonalOverlapScratch {
+    /// Count physical spin components appended after retained parent-local IDs.
+    /// # Arguments:
+    /// - `self`: Canonical occupation registry for BApply sources.
+    /// - `spin`: Retained spin factorisation defining initial component counts.
+    /// # Returns:
+    /// - `(usize, usize)`: Added alpha and beta component counts across source parents.
+    pub(crate) fn added_components(
+        &self,
+        spin: &SpinFactorisation,
+    ) -> (usize, usize) {
+        (0..self.alpha_occupations.len()).fold((0, 0), |(alpha, beta), parent| {
+            let (retained_alpha, retained_beta) = spin.parent_component_counts(parent);
+            (
+                alpha + self.alpha_occupations[parent].len() - retained_alpha,
+                beta + self.beta_occupations[parent].len() - retained_beta,
+            )
+        })
+    }
 }
 
 impl OverlapFactors {
+    /// Measure the actual overlap-factor and proposal-CDF backing.
+    /// # Arguments:
+    /// - `self`: Persistent cross-parent factor blocks.
+    /// # Returns:
+    /// - `(usize, usize)`: Factor and CDF backing bytes, counting each block once.
+    pub(crate) fn storage_bytes(&self) -> (usize, usize) {
+        self.blocks
+            .iter()
+            .flatten()
+            .fold((0, 0), |(tables, cdfs), block| {
+                let (alpha, beta, acdf, bcdf) = block.factors.factors();
+                (
+                    tables + (alpha.len() + beta.len()) * std::mem::size_of::<f64>(),
+                    cdfs + (acdf.len() + bcdf.len()) * std::mem::size_of::<f64>(),
+                )
+            })
+    }
+
     /// Return the persistent factor block for ordered parent pair `QP`.
     /// # Arguments:
     /// - `self`: Persistent overlap factors.
@@ -211,6 +368,23 @@ impl OverlapFactors {
         source_parent: usize,
     ) -> Option<&OverlapFactorBlock> {
         self.blocks[target_parent * nparent + source_parent].as_ref()
+    }
+
+    /// Return the mutable persistent factor block for ordered parent pair `QP`.
+    /// # Arguments:
+    /// - `self`: Persistent overlap factors.
+    /// - `nparent`: Number of parent references in the spin factorisation.
+    /// - `target_parent`: Target parent `Q`.
+    /// - `source_parent`: Source parent `P`.
+    /// # Returns
+    /// - `Option<&mut OverlapFactorBlock>`: Mutable factor block when present.
+    pub(crate) fn block_mut(
+        &mut self,
+        nparent: usize,
+        target_parent: usize,
+        source_parent: usize,
+    ) -> Option<&mut OverlapFactorBlock> {
+        self.blocks[target_parent * nparent + source_parent].as_mut()
     }
 }
 
@@ -434,6 +608,146 @@ impl SpinFactorisation {
         }
     }
 
+    /// Intern physical source-spin occupations and append their `B^{\dagger}` factor columns.
+    /// For persistent `ram` or `disk` storage, each new occupation is evaluated once and then
+    /// addressed by its stable source component ID; `none` leaves construction to the transient
+    /// active-factor path.
+    /// # Arguments:
+    /// - `self`: Shared retained determinant spin factorisation.
+    /// - `factors`: Persistent overlap-factor blocks selected by `SNOCIStorage`.
+    /// - `scratch`: BApply occupation interning and transient source metadata.
+    /// - `target_parent`: Target parent `Q`.
+    /// - `source`: Orthogonal source block belonging to parent `P`.
+    /// - `context`: Shared NOCI data, ordered Wick pair, and left-reference flag.
+    /// # Returns
+    /// - `Option<&OverlapFactorBlock>`: Persistent factor block after interning, when available.
+    fn intern_orthogonal_source_columns<'a>(
+        &self,
+        factors: &'a mut OverlapFactors,
+        scratch: &mut OrthogonalOverlapScratch,
+        target_parent: usize,
+        source: &OrthogonalParentUpdates,
+        context: (&NOCIData<'_, f64>, &WicksPairView<'_, f64>, bool),
+    ) -> Option<&'a OverlapFactorBlock> {
+        let (data, pair, target_left) = context;
+        let source_parent = source.parent;
+        let nparent = self.parents.len();
+        let block = factors.block_mut(nparent, target_parent, source_parent)?;
+        let parent_occupations = self.parent_occupations(source_parent, data);
+        let target_areps = self.parents[target_parent].areps.as_slice();
+        let target_breps = self.parents[target_parent].breps.as_slice();
+
+        let missing_alpha = scratch.alpha_occupations[source_parent][block.nsa..].to_vec();
+        let mut alpha_columns = Vec::with_capacity(missing_alpha.len());
+        if !missing_alpha.is_empty() {
+            let source_reps = missing_alpha
+                .iter()
+                .map(|&occupation| {
+                    let (holes, parts) = excitation_between(parent_occupations.0, occupation);
+                    let excitation = ExcitationSpin { holes, parts };
+                    let phase = excitation_phase_bits(parent_occupations.0, holes, parts);
+                    ReducedOneSpinState::new(phase, excitation.cache())
+                })
+                .collect::<Vec<_>>();
+            let source_excitations = missing_alpha
+                .iter()
+                .map(|&occupation| {
+                    let (holes, parts) = excitation_between(parent_occupations.0, occupation);
+                    ExcitationSpin { holes, parts }
+                })
+                .collect::<Vec<_>>();
+            let mut table = vec![0.0; target_areps.len() * source_reps.len()];
+            table
+                .par_chunks_mut(source_reps.len())
+                .zip(target_areps.par_iter())
+                .for_each_init(WickScratchSpin::new, |wick, (row, &target_rep)| {
+                    xw_overlap_orthogonal_prepared_batched(
+                        &pair.aa,
+                        SameSpinOrthogonalOverlapBatch {
+                            basis: data.basis,
+                            target: target_rep,
+                            sources: &source_reps,
+                            source_excitations: &source_excitations,
+                            target_left,
+                            alpha: true,
+                            out: row,
+                        },
+                        &mut wick.aa,
+                    );
+                });
+            for column in 0..source_reps.len() {
+                alpha_columns.push(
+                    (0..target_areps.len())
+                        .map(|row| table[row * source_reps.len() + column])
+                        .collect(),
+                );
+            }
+        }
+
+        let missing_beta = scratch.beta_occupations[source_parent][block.nsb..].to_vec();
+        let mut beta_columns = Vec::with_capacity(missing_beta.len());
+        if !missing_beta.is_empty() {
+            let source_reps = missing_beta
+                .iter()
+                .map(|&occupation| {
+                    let (holes, parts) = excitation_between(parent_occupations.1, occupation);
+                    let excitation = ExcitationSpin { holes, parts };
+                    let phase = excitation_phase_bits(parent_occupations.1, holes, parts);
+                    ReducedOneSpinState::new(phase, excitation.cache())
+                })
+                .collect::<Vec<_>>();
+            let source_excitations = missing_beta
+                .iter()
+                .map(|&occupation| {
+                    let (holes, parts) = excitation_between(parent_occupations.1, occupation);
+                    ExcitationSpin { holes, parts }
+                })
+                .collect::<Vec<_>>();
+            let mut table = vec![0.0; target_breps.len() * source_reps.len()];
+            table
+                .par_chunks_mut(source_reps.len())
+                .zip(target_breps.par_iter())
+                .for_each_init(WickScratchSpin::new, |wick, (row, &target_rep)| {
+                    xw_overlap_orthogonal_prepared_batched(
+                        &pair.bb,
+                        SameSpinOrthogonalOverlapBatch {
+                            basis: data.basis,
+                            target: target_rep,
+                            sources: &source_reps,
+                            source_excitations: &source_excitations,
+                            target_left,
+                            alpha: false,
+                            out: row,
+                        },
+                        &mut wick.bb,
+                    );
+                });
+            for column in 0..source_reps.len() {
+                beta_columns.push(
+                    (0..target_breps.len())
+                        .map(|row| table[row * source_reps.len() + column])
+                        .collect(),
+                );
+            }
+        }
+
+        if !alpha_columns.is_empty() || !beta_columns.is_empty() {
+            block.factors.append_source_columns(
+                block.nta,
+                block.ntb,
+                block.nsa,
+                block.nsb,
+                &alpha_columns,
+                &beta_columns,
+            );
+            block.factors.flush();
+            block.nsa += alpha_columns.len();
+            block.nsb += beta_columns.len();
+        }
+
+        Some(block)
+    }
+
     /// `Construct reusable storage for one full application of S\Delta.`
     /// The scratch contains only mutable grouping and contraction workspaces; persistent
     /// factor tables live in `OverlapFactors`.
@@ -479,11 +793,36 @@ impl SpinFactorisation {
         let updates = (0..self.parents.len())
             .map(OrthogonalParentUpdates::new)
             .collect();
-
+        let nparent = self.parents.len();
+        let mut alpha_occupations = self
+            .parents
+            .iter()
+            .map(|parent| vec![0; parent.areps.len()])
+            .collect::<Vec<_>>();
+        let mut beta_occupations = self
+            .parents
+            .iter()
+            .map(|parent| vec![0; parent.breps.len()])
+            .collect::<Vec<_>>();
+        let mut alpha_ids = (0..nparent).map(|_| HashMap::new()).collect::<Vec<_>>();
+        let mut beta_ids = (0..nparent).map(|_| HashMap::new()).collect::<Vec<_>>();
+        for (parent, space) in self.parents.iter().enumerate() {
+            for entry in &space.entries {
+                let state = &data.basis[entry.det];
+                alpha_occupations[parent][entry.a] = state.oa;
+                beta_occupations[parent][entry.b] = state.ob;
+                alpha_ids[parent].insert(state.oa, entry.a);
+                beta_ids[parent].insert(state.ob, entry.b);
+            }
+        }
         OrthogonalOverlapScratch {
             parent_occupations,
             updates,
             overlap: self.overlap_scratch(),
+            alpha_occupations,
+            beta_occupations,
+            alpha_ids,
+            beta_ids,
         }
     }
 
@@ -494,27 +833,59 @@ impl SpinFactorisation {
     /// - `targets`: Global retained-NOCI determinant index for each local population row.
     /// - `updates`: Complete realised orthogonal-space residual after report-level FRI.
     /// - `data`: Shared NOCI determinant data and Wick intermediates.
+    /// - `factors`: Persistent overlap storage selected by `SNOCIStorage`.
     /// - `scratch`: Reusable BApply source metadata and overlap contraction storage.
     /// # Returns:
     /// - `()`: Applies the complete `B^\dagger\chi` update without target-row sampling.
-    pub(crate) fn apply_orthogonal_overlap_sparse(
+    pub(crate) fn apply_orthogonal_overlap_sparse<I>(
         &self,
         populations: &mut [f64],
         targets: &[usize],
-        updates: &[(OrthogonalDetState, f64)],
+        updates: I,
         data: &NOCIData<'_, f64>,
+        factors: &mut OverlapFactors,
         scratch: &mut OrthogonalOverlapScratch,
-    ) {
-        if populations.is_empty() || updates.is_empty() {
+    ) where
+        I: IntoIterator<Item = (OrthogonalDetState, f64)>,
+    {
+        if populations.is_empty() {
             return;
         }
 
         for source in &mut scratch.updates {
             source.clear();
         }
-        for &(det, dn) in updates {
+        let transient = matches!(
+            data.input.qmc.as_ref().unwrap().bapply_factor_tables,
+            SNOCIStorage::None
+        );
+        for (det, dn) in updates {
             if dn != 0.0 {
-                scratch.updates[det.parent].push(det, dn, scratch.parent_occupations[det.parent]);
+                let parent = det.parent;
+                let aid = if let Some(&id) = scratch.alpha_ids[parent].get(&det.oa) {
+                    id
+                } else {
+                    let id = scratch.alpha_occupations[parent].len();
+                    scratch.alpha_occupations[parent].push(det.oa);
+                    scratch.alpha_ids[parent].insert(det.oa, id);
+                    id
+                };
+                let bid = if let Some(&id) = scratch.beta_ids[parent].get(&det.ob) {
+                    id
+                } else {
+                    let id = scratch.beta_occupations[parent].len();
+                    scratch.beta_occupations[parent].push(det.ob);
+                    scratch.beta_ids[parent].insert(det.ob, id);
+                    id
+                };
+                scratch.updates[det.parent].push(
+                    det,
+                    dn,
+                    scratch.parent_occupations[det.parent],
+                    transient,
+                    aid,
+                    bid,
+                );
             }
         }
 
@@ -533,7 +904,6 @@ impl SpinFactorisation {
                 continue;
             }
 
-            let factorised = source.factorised_source();
             for target in &target_blocks {
                 if target.parent == source.parent {
                     Self::apply_orthogonal_source_exact(populations, target, &source, data);
@@ -546,46 +916,109 @@ impl SpinFactorisation {
                 let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
                 let pair = wicks.pair(lp, gp);
 
-                // For `|Phi_w^Q> = |Phi^Q_{\bar a\bar b}>` and one transient orthogonal source
-                // `|D^P_{ab}>`, factorise
-                // `<Phi_w^Q|D^P_{ab}> = A^{QP}_{\bar a a} B^{QP}_{\bar b b}`.
-                // Only source-factor construction differs from retained SApply; the blocked
-                // contraction is shared.
-                self.build_orthogonal_overlap_factor_tables(
-                    target,
+                let persistent = self.intern_orthogonal_source_columns(
+                    factors,
+                    scratch,
+                    target.parent,
                     &source,
-                    data,
-                    &pair,
-                    target_left,
-                    &mut scratch.overlap,
+                    (data, &pair, target_left),
                 );
-                match self.select_overlap_contraction(target, factorised) {
-                    OverlapContraction::FactorisedRows => {
-                        Self::apply_overlap_factorised_rows_tables(
-                            populations,
-                            target,
-                            factorised,
-                            (&scratch.overlap.afac, &scratch.overlap.bfac),
-                            true,
-                            |entry| (entry.apos, entry.bpos),
-                            &mut scratch.overlap.values,
-                        );
+                if let Some(block) = persistent {
+                    let (alpha, beta, _, _) = block.factors.factors();
+                    let factorised = source.factorised_source();
+                    let factor_tables = FactorisedFactors {
+                        alpha,
+                        beta,
+                        alpha_stride: alpha.len() / block.nta,
+                        beta_stride: beta.len() / block.ntb,
+                        target_alpha_ids: Some(target.aids.as_slice()),
+                        target_beta_ids: Some(target.bids.as_slice()),
+                        source_alpha_ids: Some(source.aids.as_slice()),
+                        source_beta_ids: Some(source.bids.as_slice()),
+                    };
+                    // For `|Phi_w^Q> = |Phi^Q_{\\bar a\\bar b}>` and one transient orthogonal source
+                    // `|D^P_{ab}>`, factorise
+                    // `<Phi_w^Q|D^P_{ab}> = A^{QP}_{\\bar a a} B^{QP}_{\\bar b b}`.
+                    // Only source-factor construction differs from retained SApply; the blocked
+                    // contraction is shared.
+                    match self.select_overlap_contraction(target, factorised) {
+                        OverlapContraction::FactorisedRows => {
+                            Self::apply_overlap_factorised_rows_tables(
+                                populations,
+                                target,
+                                factorised,
+                                factor_tables,
+                                &mut scratch.overlap.values,
+                            );
+                        }
+                        OverlapContraction::AFirst => {
+                            Self::gather_overlap_factor_tables(
+                                target,
+                                &source.aids,
+                                &source.bids,
+                                block,
+                                &mut scratch.overlap.afac,
+                                &mut scratch.overlap.bfac,
+                            );
+                            self.apply_overlap_a_first_scratch(
+                                populations,
+                                target,
+                                factorised,
+                                &mut scratch.overlap,
+                            );
+                        }
+                        OverlapContraction::BFirst => {
+                            Self::gather_overlap_factor_tables(
+                                target,
+                                &source.aids,
+                                &source.bids,
+                                block,
+                                &mut scratch.overlap.afac,
+                                &mut scratch.overlap.bfac,
+                            );
+                            self.apply_overlap_b_first_scratch(
+                                populations,
+                                target,
+                                factorised,
+                                &mut scratch.overlap,
+                            );
+                        }
                     }
-                    OverlapContraction::AFirst => {
-                        self.apply_overlap_a_first(
-                            populations,
-                            target,
-                            factorised,
-                            &mut scratch.overlap,
-                        );
-                    }
-                    OverlapContraction::BFirst => {
-                        self.apply_overlap_b_first(
-                            populations,
-                            target,
-                            factorised,
-                            &mut scratch.overlap,
-                        );
+                } else {
+                    let factorised = source.factorised_source();
+                    self.build_orthogonal_overlap_factor_tables(
+                        target,
+                        &source,
+                        data,
+                        &pair,
+                        target_left,
+                        &mut scratch.overlap,
+                    );
+                    match self.select_overlap_contraction(target, factorised) {
+                        OverlapContraction::FactorisedRows => {
+                            Self::apply_overlap_factorised_rows_scratch(
+                                populations,
+                                target,
+                                factorised,
+                                &mut scratch.overlap,
+                            );
+                        }
+                        OverlapContraction::AFirst => {
+                            self.apply_overlap_a_first_scratch(
+                                populations,
+                                target,
+                                factorised,
+                                &mut scratch.overlap,
+                            );
+                        }
+                        OverlapContraction::BFirst => {
+                            self.apply_overlap_b_first_scratch(
+                                populations,
+                                target,
+                                factorised,
+                                &mut scratch.overlap,
+                            );
+                        }
                     }
                 }
             }
@@ -895,7 +1328,7 @@ impl SpinFactorisation {
                         target_left,
                         scratch,
                     );
-                    self.apply_overlap_a_first(output, target, factorised, scratch);
+                    self.apply_overlap_a_first_scratch(output, target, factorised, scratch);
                 }
                 OverlapContraction::BFirst => {
                     self.build_overlap_factor_tables(
@@ -906,7 +1339,7 @@ impl SpinFactorisation {
                         target_left,
                         scratch,
                     );
-                    self.apply_overlap_b_first(output, target, factorised, scratch);
+                    self.apply_overlap_b_first_scratch(output, target, factorised, scratch);
                 }
             }
             return;
@@ -925,22 +1358,24 @@ impl SpinFactorisation {
             OverlapContraction::AFirst => {
                 Self::gather_overlap_factor_tables(
                     target,
-                    source,
+                    &source.aids,
+                    &source.bids,
                     factors,
                     &mut scratch.afac,
                     &mut scratch.bfac,
                 );
-                self.apply_overlap_a_first(output, target, factorised, scratch);
+                self.apply_overlap_a_first_scratch(output, target, factorised, scratch);
             }
             OverlapContraction::BFirst => {
                 Self::gather_overlap_factor_tables(
                     target,
-                    source,
+                    &source.aids,
+                    &source.bids,
                     factors,
                     &mut scratch.afac,
                     &mut scratch.bfac,
                 );
-                self.apply_overlap_b_first(output, target, factorised, scratch);
+                self.apply_overlap_b_first_scratch(output, target, factorised, scratch);
             }
         }
     }
@@ -969,9 +1404,16 @@ impl SpinFactorisation {
             output,
             target,
             factorised,
-            (afac, bfac),
-            false,
-            |entry| (source.aids[entry.apos], source.bids[entry.bpos]),
+            FactorisedFactors {
+                alpha: afac,
+                beta: bfac,
+                alpha_stride: afac.len() / factors.nta,
+                beta_stride: bfac.len() / factors.ntb,
+                target_alpha_ids: Some(target.aids.as_slice()),
+                target_beta_ids: Some(target.bids.as_slice()),
+                source_alpha_ids: Some(source.aids.as_slice()),
+                source_beta_ids: Some(source.bids.as_slice()),
+            },
             values,
         );
     }
@@ -988,20 +1430,13 @@ impl SpinFactorisation {
     /// - `values`: Reusable target-row output storage.
     /// # Returns:
     /// - `()`: Adds the factorised sparse-row contribution to `output`.
-    fn apply_overlap_factorised_rows_tables<F>(
+    fn apply_overlap_factorised_rows_tables(
         output: &mut [f64],
         target: &LocalParentBlock,
         source: FactorisedSource<'_>,
-        factors: (&[f64], &[f64]),
-        active_target_rows: bool,
-        source_position: F,
+        factors: FactorisedFactors<'_>,
         values: &mut Vec<f64>,
-    ) where
-        F: Fn(&SpinUpdate) -> (usize, usize) + Sync,
-    {
-        let (afac, bfac) = factors;
-        let nsa = source.nalpha;
-        let nsb = source.nbeta;
+    ) {
         values.clear();
         values.resize(target.targets.len(), 0.0);
 
@@ -1009,23 +1444,12 @@ impl SpinFactorisation {
             .par_iter_mut()
             .zip(target.targets.par_iter())
             .for_each(|(value, row)| {
-                let ta = if active_target_rows {
-                    target.apos[row.a]
-                } else {
-                    row.a
-                };
-                let tb = if active_target_rows {
-                    target.bpos[row.b]
-                } else {
-                    row.b
-                };
-                let arow = &afac[ta * nsa..(ta + 1) * nsa];
-                let brow = &bfac[tb * nsb..(tb + 1) * nsb];
                 let mut dp = 0.0;
 
                 for entry in source.entries {
-                    let (a, b) = source_position(entry);
-                    dp += arow[a] * brow[b] * entry.dn;
+                    dp += factors.alpha(target.apos[row.a], entry.apos)
+                        * factors.beta(target.bpos[row.b], entry.bpos)
+                        * entry.dn;
                 }
 
                 *value = dp;
@@ -1123,6 +1547,115 @@ impl SpinFactorisation {
                 output[target.local] += value;
             }
         }
+    }
+
+    /// Apply factorised rows using temporary active factor tables owned by `scratch`.
+    /// `\delta N_w = \sum_{(a,b)}A^{QP}_{\bar a a}B^{QP}_{\bar b b}D^P_{ab}` is evaluated
+    /// through the shared row contraction after the tables are moved out of the workspace.
+    /// # Arguments:
+    /// - `output`: Rank-local persistent population increment.
+    /// - `target`: Target parent block defining active target rows.
+    /// - `source`: Borrowed sparse source description.
+    /// - `scratch`: Reusable active factor and contraction storage.
+    /// # Returns:
+    /// - `()`: Adds the factorised row contribution to `output`.
+    fn apply_overlap_factorised_rows_scratch(
+        output: &mut [f64],
+        target: &LocalParentBlock,
+        source: FactorisedSource<'_>,
+        scratch: &mut OverlapScratch,
+    ) {
+        let afac = std::mem::take(&mut scratch.afac);
+        let bfac = std::mem::take(&mut scratch.bfac);
+        let factors = FactorisedFactors {
+            alpha: &afac,
+            beta: &bfac,
+            alpha_stride: source.nalpha,
+            beta_stride: source.nbeta,
+            target_alpha_ids: None,
+            target_beta_ids: None,
+            source_alpha_ids: None,
+            source_beta_ids: None,
+        };
+        Self::apply_overlap_factorised_rows_tables(
+            output,
+            target,
+            source,
+            factors,
+            &mut scratch.values,
+        );
+        scratch.afac = afac;
+        scratch.bfac = bfac;
+    }
+
+    /// Apply A-first blocked contractions using temporary active factor tables in `scratch`.
+    /// `T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}` is formed before the shared final
+    /// beta contraction, with the same mathematics as persistent factor storage.
+    /// # Arguments:
+    /// - `self`: Shared determinant-space factorisation.
+    /// - `output`: Rank-local persistent population increment.
+    /// - `target`: Target parent block defining active target rows.
+    /// - `source`: Borrowed sparse source description.
+    /// - `scratch`: Reusable active factor and contraction storage.
+    /// # Returns:
+    /// - `()`: Adds the A-first contribution to `output`.
+    fn apply_overlap_a_first_scratch(
+        &self,
+        output: &mut [f64],
+        target: &LocalParentBlock,
+        source: FactorisedSource<'_>,
+        scratch: &mut OverlapScratch,
+    ) {
+        let afac = std::mem::take(&mut scratch.afac);
+        let bfac = std::mem::take(&mut scratch.bfac);
+        let factors = FactorisedFactors {
+            alpha: &afac,
+            beta: &bfac,
+            alpha_stride: source.nalpha,
+            beta_stride: source.nbeta,
+            target_alpha_ids: None,
+            target_beta_ids: None,
+            source_alpha_ids: None,
+            source_beta_ids: None,
+        };
+        self.apply_overlap_a_first(output, target, source, factors, scratch);
+        scratch.afac = afac;
+        scratch.bfac = bfac;
+    }
+
+    /// Apply B-first blocked contractions using temporary active factor tables in `scratch`.
+    /// `U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}` is formed before the shared final
+    /// alpha contraction, with the same mathematics as persistent factor storage.
+    /// # Arguments:
+    /// - `self`: Shared determinant-space factorisation.
+    /// - `output`: Rank-local persistent population increment.
+    /// - `target`: Target parent block defining active target rows.
+    /// - `source`: Borrowed sparse source description.
+    /// - `scratch`: Reusable active factor and contraction storage.
+    /// # Returns:
+    /// - `()`: Adds the B-first contribution to `output`.
+    fn apply_overlap_b_first_scratch(
+        &self,
+        output: &mut [f64],
+        target: &LocalParentBlock,
+        source: FactorisedSource<'_>,
+        scratch: &mut OverlapScratch,
+    ) {
+        let afac = std::mem::take(&mut scratch.afac);
+        let bfac = std::mem::take(&mut scratch.bfac);
+        let factors = FactorisedFactors {
+            alpha: &afac,
+            beta: &bfac,
+            alpha_stride: source.nalpha,
+            beta_stride: source.nbeta,
+            target_alpha_ids: None,
+            target_beta_ids: None,
+            source_alpha_ids: None,
+            source_beta_ids: None,
+        };
+        self.apply_overlap_b_first(output, target, source, factors, scratch);
+        scratch.afac = afac;
+        scratch.bfac = bfac;
     }
 
     /// `Select how to apply one cross-parent block of S\Delta.`
@@ -1350,10 +1883,6 @@ impl SpinFactorisation {
         scratch.afac.resize(target_areps.len() * nsa, 0.0);
         scratch.bfac.resize(target_breps.len() * nsb, 0.0);
 
-        // Factorise one cross-parent overlap as
-        // `<\Phi^Q_{\bar a\bar b}|D^P_{ab}> = A^{QP}_{\bar a a}B^{QP}_{\bar b b}`.
-        // Factor construction is source-specific; the blocked contraction below is shared with
-        // SApply.
         scratch
             .afac
             .par_chunks_mut(nsa)
@@ -1479,15 +2008,16 @@ impl SpinFactorisation {
     /// - `()`: Fills the active alpha- and beta-factor submatrices without Wick evaluation.
     fn gather_overlap_factor_tables(
         target: &LocalParentBlock,
-        source: &ParentUpdates,
+        aids: &[usize],
+        bids: &[usize],
         factors: &OverlapFactorBlock,
         afac: &mut Vec<f64>,
         bfac: &mut Vec<f64>,
     ) {
         let nta = target.aids.len();
         let ntb = target.bids.len();
-        let nsa = source.aids.len();
-        let nsb = source.bids.len();
+        let nsa = aids.len();
+        let nsb = bids.len();
         let na = nta * nsa;
         let nb = ntb * nsb;
 
@@ -1502,8 +2032,9 @@ impl SpinFactorisation {
         afac.par_chunks_mut(nsa)
             .zip(target.aids.par_iter())
             .for_each(|(row, &ta)| {
-                let full = &full_afac[ta * factors.nsa..(ta + 1) * factors.nsa];
-                for (col, &sa) in source.aids.iter().enumerate() {
+                let stride = full_afac.len() / factors.nta;
+                let full = &full_afac[ta * stride..(ta + 1) * stride];
+                for (col, &sa) in aids.iter().enumerate() {
                     row[col] = full[sa];
                 }
             });
@@ -1511,8 +2042,9 @@ impl SpinFactorisation {
         bfac.par_chunks_mut(nsb)
             .zip(target.bids.par_iter())
             .for_each(|(row, &tb)| {
-                let full = &full_bfac[tb * factors.nsb..(tb + 1) * factors.nsb];
-                for (col, &sb) in source.bids.iter().enumerate() {
+                let stride = full_bfac.len() / factors.ntb;
+                let full = &full_bfac[tb * stride..(tb + 1) * stride];
+                for (col, &sb) in bids.iter().enumerate() {
                     row[col] = full[sb];
                 }
             });
@@ -1532,25 +2064,23 @@ impl SpinFactorisation {
         output: &mut [f64],
         target: &LocalParentBlock,
         source: FactorisedSource<'_>,
+        factors: FactorisedFactors<'_>,
         scratch: &mut OverlapScratch,
     ) {
         let nta = target.aids.len();
-        let nsa = source.nalpha;
         let nsb = source.nbeta;
 
         scratch.intermediate.clear();
         scratch.intermediate.resize(nta * nsb, 0.0);
 
-        // Form T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}.
+        // Form `T_{\bar a b} = \sum_a A^{QP}_{\bar a a}D^P_{ab}`.
         scratch
             .intermediate
             .par_chunks_mut(nsb)
             .enumerate()
             .for_each(|(ta_pos, row)| {
-                let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
-
                 for entry in source.entries {
-                    row[entry.bpos] += arow[entry.apos] * entry.dn;
+                    row[entry.bpos] += factors.alpha(ta_pos, entry.apos) * entry.dn;
                 }
             });
 
@@ -1560,7 +2090,7 @@ impl SpinFactorisation {
             let first = target.first_local;
             let increments = &mut output[first..first + target.targets.len()];
 
-            // Finish \delta N_w^{QP} = \sum_b T_{\bar a_w b}B^{QP}_{\bar b_w b}.
+            // Finish `\delta N_w^{QP} = \sum_b T_{\bar a_w b}B^{QP}_{\bar b_w b}`.
             increments
                 .par_iter_mut()
                 .zip(target.targets.par_iter())
@@ -1569,9 +2099,7 @@ impl SpinFactorisation {
                     let tb_pos = target.bpos[t.b];
 
                     let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
-
-                    *increment += dot_f64(trow, brow);
+                    *increment += factors.dot_beta(tb_pos, trow);
                 });
         } else {
             scratch.values.resize(target.targets.len(), 0.0);
@@ -1585,9 +2113,7 @@ impl SpinFactorisation {
                     let tb_pos = target.bpos[t.b];
 
                     let trow = &scratch.intermediate[ta_pos * nsb..(ta_pos + 1) * nsb];
-                    let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
-
-                    *value = dot_f64(trow, brow);
+                    *value = factors.dot_beta(tb_pos, trow);
                 });
 
             for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
@@ -1612,25 +2138,23 @@ impl SpinFactorisation {
         output: &mut [f64],
         target: &LocalParentBlock,
         source: FactorisedSource<'_>,
+        factors: FactorisedFactors<'_>,
         scratch: &mut OverlapScratch,
     ) {
         let ntb = target.bids.len();
         let nsa = source.nalpha;
-        let nsb = source.nbeta;
 
         scratch.intermediate.clear();
         scratch.intermediate.resize(ntb * nsa, 0.0);
 
-        // Form U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}.
+        // Form `U_{a\bar b} = \sum_b D^P_{ab}B^{QP}_{\bar b b}`.
         scratch
             .intermediate
             .par_chunks_mut(nsa)
             .enumerate()
             .for_each(|(tb_pos, row)| {
-                let brow = &scratch.bfac[tb_pos * nsb..(tb_pos + 1) * nsb];
-
                 for entry in source.entries {
-                    row[entry.apos] += entry.dn * brow[entry.bpos];
+                    row[entry.apos] += entry.dn * factors.beta(tb_pos, entry.bpos);
                 }
             });
 
@@ -1640,7 +2164,7 @@ impl SpinFactorisation {
             let first = target.first_local;
             let increments = &mut output[first..first + target.targets.len()];
 
-            // Finish \delta N_w^{QP} = \sum_a A^{QP}_{\bar a_w a}U_{a\bar b_w}.
+            // Finish `\delta N_w^{QP} = \sum_a A^{QP}_{\bar a_w a}U_{a\bar b_w}`.
             increments
                 .par_iter_mut()
                 .zip(target.targets.par_iter())
@@ -1648,10 +2172,8 @@ impl SpinFactorisation {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
 
-                    let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
                     let urow = &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
-
-                    *increment += dot_f64(arow, urow);
+                    *increment += factors.dot_alpha(ta_pos, urow);
                 });
         } else {
             scratch.values.resize(target.targets.len(), 0.0);
@@ -1664,10 +2186,9 @@ impl SpinFactorisation {
                     let ta_pos = target.apos[t.a];
                     let tb_pos = target.bpos[t.b];
 
-                    let arow = &scratch.afac[ta_pos * nsa..(ta_pos + 1) * nsa];
                     let urow = &scratch.intermediate[tb_pos * nsa..(tb_pos + 1) * nsa];
 
-                    *value = dot_f64(arow, urow);
+                    *value = factors.dot_alpha(ta_pos, urow);
                 });
 
             for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
@@ -1883,13 +2404,15 @@ impl OrthogonalParentUpdates {
         Self {
             parent,
             entries: Vec::new(),
-            ao: Vec::new(),
-            bo: Vec::new(),
             areps: Vec::new(),
             breps: Vec::new(),
             aex: Vec::new(),
             bex: Vec::new(),
             exact: HashMap::new(),
+            aids: Vec::new(),
+            bids: Vec::new(),
+            apos: Vec::new(),
+            bpos: Vec::new(),
         }
     }
 
@@ -1899,6 +2422,9 @@ impl OrthogonalParentUpdates {
     /// - `det`: Orthogonal determinant receiving `\chi_D^P`.
     /// - `dn`: Coalesced residual amplitude.
     /// - `parent_occupations`: Alpha and beta occupations of parent reference `P`.
+    /// - `transient`: Whether the `none` backend requires temporary Wick representatives.
+    /// - `aid`: Canonical parent-local alpha component ID.
+    /// - `bid`: Canonical parent-local beta component ID.
     /// # Returns:
     /// - `()`: Adds one sparse entry and any newly active spin components.
     fn push(
@@ -1906,35 +2432,55 @@ impl OrthogonalParentUpdates {
         det: OrthogonalDetState,
         dn: f64,
         parent_occupations: (u128, u128),
+        transient: bool,
+        aid: usize,
+        bid: usize,
     ) {
-        let apos = if let Some(position) = self.ao.iter().position(|&oa| oa == det.oa) {
-            position
-        } else {
+        if self.apos.len() <= aid {
+            self.apos.resize(aid + 1, usize::MAX);
+        }
+        if self.bpos.len() <= bid {
+            self.bpos.resize(bid + 1, usize::MAX);
+        }
+        let apos = if self.apos[aid] == usize::MAX {
             // Construct source excitations relative to parent `P`:
             // `H_D = O_P \setminus O_D`, `P_D = O_D \setminus O_P`.
             // Reuse the existing bit-mask phase and fixed-rank cache construction.
-            let (holes, parts) = excitation_between(parent_occupations.0, det.oa);
-            let excitation = ExcitationSpin { holes, parts };
-            let phase = excitation_phase_bits(parent_occupations.0, holes, parts);
-            self.ao.push(det.oa);
-            self.aex.push(excitation);
-            self.areps
-                .push(ReducedOneSpinState::new(phase, excitation.cache()));
-            self.ao.len() - 1
-        };
-        let bpos = if let Some(position) = self.bo.iter().position(|&ob| ob == det.ob) {
-            position
+            let position = self.aids.len();
+            self.aids.push(aid);
+            self.apos[aid] = position;
+            if transient {
+                let (holes, parts) = excitation_between(parent_occupations.0, det.oa);
+                let excitation = ExcitationSpin { holes, parts };
+                let phase = excitation_phase_bits(parent_occupations.0, holes, parts);
+                self.aex.push(excitation);
+                self.areps
+                    .push(ReducedOneSpinState::new(phase, excitation.cache()));
+            }
+            self.apos[aid]
         } else {
-            let (holes, parts) = excitation_between(parent_occupations.1, det.ob);
-            let excitation = ExcitationSpin { holes, parts };
-            let phase = excitation_phase_bits(parent_occupations.1, holes, parts);
-            self.bo.push(det.ob);
-            self.bex.push(excitation);
-            self.breps
-                .push(ReducedOneSpinState::new(phase, excitation.cache()));
-            self.bo.len() - 1
+            self.apos[aid]
         };
-        let phase = self.areps[apos].phase * self.breps[bpos].phase;
+        let bpos = if self.bpos[bid] == usize::MAX {
+            let position = self.bids.len();
+            self.bids.push(bid);
+            self.bpos[bid] = position;
+            if transient {
+                let (holes, parts) = excitation_between(parent_occupations.1, det.ob);
+                let excitation = ExcitationSpin { holes, parts };
+                let phase = excitation_phase_bits(parent_occupations.1, holes, parts);
+                self.bex.push(excitation);
+                self.breps
+                    .push(ReducedOneSpinState::new(phase, excitation.cache()));
+            }
+            self.bpos[bid]
+        } else {
+            self.bpos[bid]
+        };
+        let (aholes, aparts) = excitation_between(parent_occupations.0, det.oa);
+        let (bholes, bparts) = excitation_between(parent_occupations.1, det.ob);
+        let phase = excitation_phase_bits(parent_occupations.0, aholes, aparts)
+            * excitation_phase_bits(parent_occupations.1, bholes, bparts);
 
         self.entries.push(SpinUpdate { apos, bpos, dn });
         *self.exact.entry((det.oa, det.ob)).or_insert(0.0) += phase * dn;
@@ -1948,8 +2494,8 @@ impl OrthogonalParentUpdates {
     fn factorised_source(&self) -> FactorisedSource<'_> {
         FactorisedSource {
             entries: &self.entries,
-            nalpha: self.areps.len(),
-            nbeta: self.breps.len(),
+            nalpha: self.aids.len(),
+            nbeta: self.bids.len(),
         }
     }
 
@@ -1959,13 +2505,19 @@ impl OrthogonalParentUpdates {
     /// # Returns:
     /// - `()`: Removes all source entries and metadata.
     fn clear(&mut self) {
+        for &aid in &self.aids {
+            self.apos[aid] = usize::MAX;
+        }
+        for &bid in &self.bids {
+            self.bpos[bid] = usize::MAX;
+        }
         self.entries.clear();
-        self.ao.clear();
-        self.bo.clear();
         self.areps.clear();
         self.breps.clear();
         self.aex.clear();
         self.bex.clear();
         self.exact.clear();
+        self.aids.clear();
+        self.bids.clear();
     }
 }

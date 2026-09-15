@@ -31,6 +31,7 @@ mod hs;
 mod m;
 mod matrix;
 mod naive;
+mod orthogonal;
 mod overlap;
 mod types;
 mod wicks;
@@ -46,14 +47,15 @@ pub use wicks::{build_wicks_shared, update_wicks_fock};
 
 // Crate-visible type re-exports.
 pub(crate) use factorise::{
-    OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch, SpinFactorisation,
+    OneBodyFactorisation, OneBodyScratch, OrthogonalOverlapScratch, OverlapFactors, OverlapScratch,
+    SpinFactorisation,
 };
 pub(crate) use types::{DetPair, FockData, OrthogonalDetState};
 
 // Crate-visible function re-exports.
 pub(crate) use fock::calculate_f_pair;
 pub(crate) use hs::{
-    calculate_h_pair_orthogonal, calculate_hs_pair, calculate_hs_pairs_wicks_batched,
+    calculate_h_pairs_orthogonal_batched, calculate_hs_pair, calculate_hs_pairs_wicks_batched,
 };
 pub(crate) use m::calculate_m_pair;
 pub(crate) use matrix::build_noci_fock;

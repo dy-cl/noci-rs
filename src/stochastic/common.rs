@@ -13,20 +13,21 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::input::{Input, Propagator};
 use crate::noci::{
-    DetPair, NOCIData, OverlapFactors, calculate_hs_pair, calculate_hs_pairs_wicks_batched,
-    calculate_s_pair,
+    DetPair, NOCIData, OverlapFactors, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
+    calculate_hs_pairs_wicks_batched, calculate_s_pair,
 };
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 use crate::{ReducedTwoSpinState, SCFState};
 
 // Parent/sibling imports.
+use super::excit::{OrthogonalUniformGenerator, resolve_orthogonal_connection};
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::restart::basis_hash;
 use super::state::{
     MCState, MPIScratch, PopulationStats, PopulationUpdate, ProjectedEnergyUpdate,
-    PropagationResult, QMCRunInfo, QmcRng, ScratchSize, ShiftSpec, SparsePopulations,
-    ThreadPropagation, owner,
+    PropagationResult, PropagationResultOrthogonal, QMCRunInfo, QmcRng, ScratchSize, ShiftSpec,
+    SparsePopulations, ThreadPropagation, ThreadPropagationOrthogonal, owner,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -274,6 +275,74 @@ pub(in crate::stochastic) fn propagate_iteration(
         result.remote.append(&mut worker.remote);
         result.samples.append(&mut worker.samples);
         result.overlap_derivatives.add(&worker.overlap_derivatives);
+    }
+}
+
+/// Generate one cycle of the stochastic orthogonal residual
+/// `\chi_D=-dt\sum_{a,x}[H_{Dx}-E_s\delta_{Dx}]\tilde N_x^{(a)}`.
+/// # Arguments:
+/// - `sample`: Global cycle index and sparse sampled populations.
+/// - `data`: Immutable stochastic propagation data.
+/// - `run`: Rank-local ownership and cached diagonal metadata.
+/// - `shift`: Current physical shift `E_s`.
+/// - `generator`: Persistent system-wide uniform orthogonal connection topology.
+/// - `workers`: Persistent thread-local orthogonal propagation storage.
+/// - `result`: Reusable local, remote, and generation-sample results.
+/// # Returns
+/// - `()`: Fills one cycle's realised orthogonal updates and worker shift tangents.
+pub(in crate::stochastic) fn propagate_iteration_orthogonal(
+    sample: (usize, &SparsePopulations),
+    data: &NOCIData<'_, f64>,
+    run: &QMCRunInfo,
+    shift: f64,
+    generator: &OrthogonalUniformGenerator,
+    workers: &mut [Mutex<ThreadPropagationOrthogonal>],
+    result: &mut PropagationResultOrthogonal,
+) {
+    let (iteration, sampled) = sample;
+    let dt = data.input.prop_ref().dt;
+    for worker in workers.iter_mut() {
+        worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
+    }
+    result.clear();
+    let occupied = sampled.occ();
+    if !occupied.is_empty() {
+        let next = AtomicUsize::new(0);
+        let workers_shared: &[Mutex<ThreadPropagationOrthogonal>] = workers;
+        rayon::broadcast(|context| {
+            let tid = context.index();
+            let mut worker = workers_shared[tid].lock().unwrap();
+            worker.clear();
+            worker.rng = QmcRng::seed_from_u64(
+                run.rank_seed ^ tid as u64 ^ (iteration as u64).wrapping_mul(0x9E3779B97F4A7C15),
+            );
+
+            loop {
+                let start = next.fetch_add(8, Ordering::Relaxed);
+                if start >= occupied.len() {
+                    break;
+                }
+                for &source in &occupied[start..(start + 8).min(occupied.len())] {
+                    let population = sampled.get(source);
+                    if population == 0.0 {
+                        continue;
+                    }
+                    worker
+                        .shift_tangent
+                        .add(source, dt * population, run.nranks > 1);
+                    worker.diagonal_population_change(source, population, shift, data, run);
+                    worker.spawning(source, population, generator);
+                }
+            }
+
+            worker.resolve_batched_spawning(data, generator, run);
+        });
+    }
+    for worker in workers.iter_mut() {
+        let worker = worker.get_mut().unwrap();
+        result.local.append(&mut worker.local);
+        result.remote.append(&mut worker.remote);
+        result.samples.append(&mut worker.samples);
     }
 }
 
@@ -562,6 +631,47 @@ pub(in crate::stochastic) fn find_hs_batched(
         } else {
             out[i] = find_hs(data, a, b, scratch);
         }
+    }
+}
+
+/// Evaluate batched orthogonal Hamiltonian elements
+/// `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
+/// # Arguments:
+/// - `data`: Shared stochastic propagation data and parent MO caches.
+/// - `generator`: Uniform parent-orthogonal connection topology.
+/// - `pairs`: Compact retained-source and relative-connection indices.
+/// - `out`: Hamiltonian results in request order.
+/// # Returns
+/// - `()`: Writes all requested orthogonal Hamiltonian elements into `out`.
+pub(in crate::stochastic) fn find_h_orthogonal_batched(
+    data: &NOCIData<'_, f64>,
+    generator: &OrthogonalUniformGenerator,
+    pairs: &[(usize, usize)],
+    out: &mut [f64],
+) {
+    #[cfg(target_arch = "x86_64")]
+    let width = if std::is_x86_feature_detected!("avx512f") {
+        8
+    } else if std::is_x86_feature_detected!("avx2") {
+        4
+    } else {
+        1
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let width = 1;
+    for (packet, values) in pairs.chunks(width).zip(out.chunks_mut(width)) {
+        let mut sources = [0usize; 8];
+        let mut states = [ReducedTwoSpinState::from_state(&data.basis[0]); 8];
+        for (i, &(source, connection)) in packet.iter().enumerate() {
+            sources[i] = source;
+            states[i] = resolve_orthogonal_connection(generator, connection, &data.basis[source]).1;
+        }
+        calculate_h_pairs_orthogonal_batched(
+            data,
+            &sources[..packet.len()],
+            &states[..packet.len()],
+            values,
+        );
     }
 }
 

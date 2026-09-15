@@ -61,6 +61,10 @@ pub struct QMCOptions {
     pub excitation_gen: ExcitationGen,
     /// Storage strategy for persistent overlap factor tables.
     pub factor_tables: SNOCIStorage,
+    /// SApply storage strategy for persistent overlap factors and proposal CDFs.
+    pub sapply_factor_tables: SNOCIStorage,
+    /// BApply storage strategy for persistent overlap factors.
+    pub bapply_factor_tables: SNOCIStorage,
     /// Mixture weight for the factorised-overlap excitation proposal.
     pub overlap_weight: f64,
     /// Whether to optimise the overlap mixture weight during propagation.
@@ -118,6 +122,8 @@ impl Default for QMCOptions {
             nreports: 1000,
             excitation_gen: ExcitationGen::default(),
             factor_tables: SNOCIStorage::RAM,
+            sapply_factor_tables: SNOCIStorage::RAM,
+            bapply_factor_tables: SNOCIStorage::RAM,
             overlap_weight: 0.0,
             optimise_overlap_weight: false,
             seed: None,

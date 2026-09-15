@@ -68,6 +68,7 @@ def isQMCHeader(header: str) -> bool:
     return columns[6:] in (
         ["NWalk", "NRef", "-", "-"],
         ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
+        ["NRange", "NRangeRef", "NSample", "NSampleOcc"],
     )
 
 
@@ -78,7 +79,7 @@ def qmcPopulationColumns(df: pd.DataFrame):
     if "NWalk" in df.columns:
         return "NWalk", "NRef", None, None
 
-    return "NMetric", "NMetricRef", "NSample", "NSampleOcc"
+    return "NRange", "NRangeRef", "NSample", "NSampleOcc"
 
 
 def addTrajectoryArgs(parser, overlay=False):
@@ -192,6 +193,13 @@ def readQMC(path: Path) -> pd.DataFrame:
         df.columns = header[:8]
     else:
         df.columns = header
+
+    df = df.rename(
+        columns={
+            "NMetric": "NRange",
+            "NMetricRef": "NRangeRef",
+        }
+    )
 
     for column in df.columns:
         df[column] = pd.to_numeric(df[column], errors="coerce")
@@ -314,7 +322,7 @@ def readDeterministicQMC(path: Path) -> pd.DataFrame:
 
 def readDeterministicCoefficients(path: Path) -> pd.DataFrame:
     """
-    Read in deterministic coefficient lines from a deterministic NOCIQMC output file and create a pandas dataframe.
+    Read in a matrix and create a dataframe.
     """
     with open(path, "r") as f:
         firstLine = f.readline().strip()
@@ -1299,6 +1307,7 @@ def plotExcitationHist(args):
 
     finish(args)
 
+
 def plotProjectedShift(args):
     """
     Plot projected and population-control shift correlation energies.
@@ -1453,6 +1462,7 @@ def plotProjectedShift(args):
         fig,
         update,
     )
+
 
 def plotNW(args):
     """

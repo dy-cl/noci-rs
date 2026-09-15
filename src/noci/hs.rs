@@ -1,15 +1,18 @@
 // noci/hs.rs
 // Crate-root imports.
-use crate::basis::excitation_phase;
+use crate::basis::excitation_between;
 use crate::nonorthogonalwicks::{
     WickScratchSpin, WicksView, xw_hamiltonian_overlap_prepared,
     xw_hamiltonian_overlap_prepared_batched,
 };
 use crate::time_call;
-use crate::{AoData, DetState, ReducedTwoSpinState};
+use crate::{AoData, DetState, Excitation, ExcitationSpin, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
+use super::orthogonal::{
+    xw_hamiltonian_orthogonal_prepared, xw_hamiltonian_orthogonal_prepared_batched,
+};
 use super::overlap::calculate_s_pair_orthogonal;
 use super::types::{DetPair, MOCache, NOCIData, NOCIScalar};
 
@@ -190,192 +193,70 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
     g_occ: (u128, u128),
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
-        let xa = l_occ.0 ^ g_occ.0;
-        let xb = l_occ.1 ^ g_occ.1;
-
-        let ra = (xa.count_ones() as usize) / 2;
-        let rb = (xb.count_ones() as usize) / 2;
-
-        if ra > 2 || rb > 2 || ra + rb > 2 {
-            return <T as From<f64>>::from(0.0);
+        let (alpha_holes, alpha_parts) = excitation_between(g_occ.0, l_occ.0);
+        let (beta_holes, beta_parts) = excitation_between(g_occ.1, l_occ.1);
+        let ra = alpha_holes.count_ones() as usize;
+        let rb = beta_holes.count_ones() as usize;
+        if alpha_parts.count_ones() as usize != ra
+            || beta_parts.count_ones() as usize != rb
+            || ra + rb > 2
+        {
+            return T::from_real(0.0);
         }
 
-        let mut holesa = [0usize; 2];
-        let mut partsa = [0usize; 2];
-        let mut holesb = [0usize; 2];
-        let mut partsb = [0usize; 2];
-
-        if ra > 0 {
-            let mut bits = g_occ.0 & !l_occ.0;
-            let mut k = 0;
-            while bits != 0 {
-                holesa[k] = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                k += 1;
-            }
-
-            let mut bits = l_occ.0 & !g_occ.0;
-            let mut k = 0;
-            while bits != 0 {
-                partsa[k] = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                k += 1;
-            }
-        }
-
-        if rb > 0 {
-            let mut bits = g_occ.1 & !l_occ.1;
-            let mut k = 0;
-            while bits != 0 {
-                holesb[k] = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                k += 1;
-            }
-
-            let mut bits = l_occ.1 & !g_occ.1;
-            let mut k = 0;
-            while bits != 0 {
-                partsb[k] = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                k += 1;
-            }
-        }
-
-        let phase = <T as From<f64>>::from(
-            excitation_phase(g_occ.0, &holesa[..ra], &partsa[..ra])
-                * excitation_phase(g_occ.1, &holesb[..rb], &partsb[..rb]),
-        );
-
-        if ra == 0 && rb == 0 {
-            let mut h = <T as From<f64>>::from(ao.enuc);
-
-            let mut bits = l_occ.0;
-            while bits != 0 {
-                let i = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                h += cache.ha[(i, i)];
-            }
-
-            let mut bits = l_occ.1;
-            while bits != 0 {
-                let i = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                h += cache.hb[(i, i)];
-            }
-
-            let mut bits_i = l_occ.0;
-            while bits_i != 0 {
-                let i = bits_i.trailing_zeros() as usize;
-                bits_i &= bits_i - 1;
-
-                let mut bits_j = l_occ.0;
-                while bits_j != 0 {
-                    let j = bits_j.trailing_zeros() as usize;
-                    bits_j &= bits_j - 1;
-                    h += <T as From<f64>>::from(0.5) * cache.eri_aa_asym[(i, i, j, j)];
-                }
-            }
-
-            let mut bits_i = l_occ.1;
-            while bits_i != 0 {
-                let i = bits_i.trailing_zeros() as usize;
-                bits_i &= bits_i - 1;
-
-                let mut bits_j = l_occ.1;
-                while bits_j != 0 {
-                    let j = bits_j.trailing_zeros() as usize;
-                    bits_j &= bits_j - 1;
-                    h += <T as From<f64>>::from(0.5) * cache.eri_bb_asym[(i, i, j, j)];
-                }
-            }
-
-            let mut bits_i = l_occ.0;
-            while bits_i != 0 {
-                let i = bits_i.trailing_zeros() as usize;
-                bits_i &= bits_i - 1;
-
-                let mut bits_j = l_occ.1;
-                while bits_j != 0 {
-                    let j = bits_j.trailing_zeros() as usize;
-                    bits_j &= bits_j - 1;
-                    h += cache.eri_ab_coul[(i, i, j, j)];
-                }
-            }
-
-            return h;
-        }
-
-        if ra == 1 && rb == 0 {
-            let i = holesa[0];
-            let a = partsa[0];
-
-            let mut h = cache.ha[(a, i)];
-
-            let mut bits = l_occ.0 & g_occ.0;
-            while bits != 0 {
-                let j = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                h += cache.eri_aa_asym[(a, i, j, j)];
-            }
-
-            let mut bits = l_occ.1 & g_occ.1;
-            while bits != 0 {
-                let j = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                h += cache.eri_ab_coul[(a, i, j, j)];
-            }
-
-            return phase * h;
-        }
-
-        if ra == 0 && rb == 1 {
-            let i = holesb[0];
-            let a = partsb[0];
-
-            let mut h = cache.hb[(a, i)];
-
-            let mut bits = l_occ.1 & g_occ.1;
-            while bits != 0 {
-                let j = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                h += cache.eri_bb_asym[(a, i, j, j)];
-            }
-
-            let mut bits = l_occ.0 & g_occ.0;
-            while bits != 0 {
-                let j = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                h += cache.eri_ab_coul[(j, j, i, a)];
-            }
-
-            return phase * h;
-        }
-
-        if ra == 2 && rb == 0 {
-            let i = holesa[0];
-            let j = holesa[1];
-            let a = partsa[0];
-            let b = partsa[1];
-            return phase * cache.eri_aa_asym[(a, i, j, b)];
-        }
-
-        if ra == 0 && rb == 2 {
-            let i = holesb[0];
-            let j = holesb[1];
-            let a = partsb[0];
-            let b = partsb[1];
-            return phase * cache.eri_bb_asym[(a, i, j, b)];
-        }
-
-        if ra == 1 && rb == 1 {
-            let i = holesa[0];
-            let j = holesb[0];
-            let a = partsa[0];
-            let b = partsb[0];
-            return phase * cache.eri_ab_coul[(a, i, j, b)];
-        }
-        <T as From<f64>>::from(0.0)
+        let excitation = Excitation {
+            alpha: ExcitationSpin {
+                holes: alpha_holes,
+                parts: alpha_parts,
+            },
+            beta: ExcitationSpin {
+                holes: beta_holes,
+                parts: beta_parts,
+            },
+        };
+        let state = ReducedTwoSpinState::from_excitation(g_occ, &excitation);
+        xw_hamiltonian_orthogonal_prepared(ao, cache, g_occ, &state)
     })
+}
+
+/// Evaluate a batch `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
+/// Consecutive requests are grouped into parent-local runs before prepared scalar/SIMD evaluation,
+/// preserving request order without allocating parent-indexed request tables.
+/// # Arguments:
+/// - `data`: Shared NOCI basis, AO data, and parent MO caches.
+/// - `sources`: Retained source determinant indices in request order.
+/// - `states`: Prepared source-relative excitation states in request order.
+/// - `out`: Hamiltonian results in request order.
+/// # Returns
+/// - `()`: Writes all parent-orthogonal Hamiltonian matrix elements into `out`.
+pub(crate) fn calculate_h_pairs_orthogonal_batched<T: NOCIScalar>(
+    data: &NOCIData<'_, T>,
+    sources: &[usize],
+    states: &[ReducedTwoSpinState],
+    out: &mut [T],
+) {
+    let mocache = data
+        .mocache
+        .expect("orthogonal Hamiltonian batching requires parent MO caches");
+    let mut start = 0usize;
+
+    while start < sources.len() {
+        let parent = data.basis[sources[start]].parent;
+        let mut end = start + 1;
+        while end < sources.len() && data.basis[sources[end]].parent == parent {
+            end += 1;
+        }
+
+        xw_hamiltonian_orthogonal_prepared_batched(
+            data.ao,
+            &mocache[parent],
+            data.basis,
+            &sources[start..end],
+            &states[start..end],
+            &mut out[start..end],
+        );
+        start = end;
+    }
 }
 
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants x and w

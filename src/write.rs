@@ -212,6 +212,8 @@ pub fn print_input(input: &Input) {
             };
             println!("EXCITATION_GEN: {}", excitation_gen);
             println!("FACTOR_TABLES: {}", q.factor_tables.as_str());
+            println!("SAPPLY_FACTOR_TABLES: {}", q.sapply_factor_tables.as_str());
+            println!("BAPPLY_FACTOR_TABLES: {}", q.bapply_factor_tables.as_str());
             println!("OVERLAP_WEIGHT: {}", q.overlap_weight);
             println!("OPTIMISE_OVERLAP_WEIGHT: {}", q.optimise_overlap_weight);
             println!("SEED: {:?}", q.seed);

@@ -31,7 +31,7 @@ use super::report::{check_stop, print_header, print_initial_row, print_row, writ
 use super::shift::update_shift_tangent;
 use super::state::{
     ExcitationHist, MPIScratch, OverlapDerivativeSums, PopulationUpdate, PropagationResult,
-    QMCRunInfo, QmcRng, ShiftSpec, ShiftTangent, ThreadPropagation,
+    QMCRunInfo, QmcRng, ShiftSpec, ShiftTangent, TangentWorker, ThreadPropagation,
 };
 
 /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
@@ -85,7 +85,7 @@ fn apply_population_changes_local<I>(
 /// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`
 /// # Returns
 /// - `()`: Applies the global overlap-transformed population change.
-fn apply_overlap_population_changes(
+pub(in crate::stochastic) fn apply_overlap_population_changes(
     changes: (&mut [f64], &[PopulationUpdate]),
     data: &NOCIData<'_, f64>,
     overlap: (&SpinFactorisation, &OverlapFactors),
@@ -179,7 +179,7 @@ fn apply_overlap_population_changes(
 /// - `run`: Rank-local determinant ownership metadata.
 /// # Returns:
 /// - `()`: Adds received tangent updates to owner-local dense storage.
-fn exchange_shift_tangent(
+pub(in crate::stochastic) fn exchange_shift_tangent(
     tangent: &mut ShiftTangent,
     mpi: &mut MPIScratch,
     world: &impl CommunicatorCollectives,
@@ -201,22 +201,22 @@ fn exchange_shift_tangent(
     mpi.send_ranked.clear();
 }
 
-/// Reduce thread-local dense SApply tangents into one report-level vector.
-/// Computes `B_w = \sum_t B_w^{(t)}` in determinant-major order, then clears worker buffers.
+/// Reduce thread-local dense retained-space tangents into one report-level vector.
+/// Computes `B_w = \sum_t B_w^{(t)}` in determinant-major order for either range propagator.
 /// # Arguments:
 /// - `workers`: Per-thread dense tangent accumulators.
 /// - `tangent`: Dense report-level tangent receiving thread sum.
 /// # Returns:
 /// - `()`: Replaces `tangent` with report tangent and clears thread-local tangents.
-fn reduce_shift_tangent(
-    workers: &mut [Mutex<ThreadPropagation>],
+pub(in crate::stochastic) fn reduce_shift_tangent<T: TangentWorker + Send>(
+    workers: &mut [Mutex<T>],
     tangent: &mut [f64],
 ) {
     // Single-rank B is nearly dense. Reduce determinant-major to avoid touched-index bookkeeping
     // and sparse materialisation before target-NNZ compression.
     let sources = workers
         .iter_mut()
-        .map(|worker| worker.get_mut().unwrap().shift_tangent.values.as_slice())
+        .map(|worker| worker.get_mut().unwrap().tangent().values.as_slice())
         .collect::<Vec<_>>();
 
     tangent.par_iter_mut().enumerate().for_each(|(det, value)| {
@@ -225,8 +225,29 @@ fn reduce_shift_tangent(
 
     drop(sources);
     workers.par_iter_mut().for_each(|worker| {
-        worker.get_mut().unwrap().shift_tangent.values.fill(0.0);
+        worker.get_mut().unwrap().tangent().values.fill(0.0);
     });
+}
+
+/// Drain sparse worker shift tangents into the report accumulator for MPI exchange.
+/// # Arguments:
+/// - `workers`: Persistent SApply or BApply propagation workers.
+/// - `tangent`: Owner-local report tangent and remote contributions.
+/// # Returns:
+/// - `()`: Adds touched worker values and drains remote updates.
+pub(in crate::stochastic) fn collect_shift_tangent<T: TangentWorker>(
+    workers: &mut [Mutex<T>],
+    tangent: &mut ShiftTangent,
+) {
+    for worker in workers.iter_mut() {
+        let source = worker.get_mut().unwrap().tangent();
+        for det in source.changed.drain(..) {
+            let dn = source.values[det];
+            source.values[det] = 0.0;
+            tangent.add(det, dn, true);
+        }
+        tangent.remote.append(&mut source.remote);
+    }
 }
 
 /// Perform SApply range-preserving stochastic NOCI propagation.
@@ -273,9 +294,23 @@ pub fn qmc_step(
         data,
         Path::new(factor_cache),
         world.rank(),
-        qmc.factor_tables,
+        qmc.sapply_factor_tables,
         build_overlap_cdfs,
     );
+    if run.irank == 0 {
+        let (tables, cdfs) = overlap_factors.storage_bytes();
+        let mib = 1024.0 * 1024.0;
+        println!(
+            "SApply factor storage: {}",
+            qmc.sapply_factor_tables.as_str()
+        );
+        println!("SApply factor tables: {:.3} MiB", tables as f64 / mib);
+        println!("SApply proposal CDFs: {:.3} MiB", cdfs as f64 / mib);
+        println!(
+            "SApply total factor storage: {:.3} MiB",
+            (tables + cdfs) as f64 / mib
+        );
+    }
     let overlap_generator = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
         Some(OverlapWeightedGenerator::new(
             data,
@@ -397,17 +432,7 @@ pub fn qmc_step(
         if run.nranks == 1 {
             reduce_shift_tangent(&mut workers, &mut shift_tangent.values);
         } else {
-            for worker in workers.iter_mut() {
-                let worker = worker.get_mut().unwrap();
-                for det in worker.shift_tangent.changed.drain(..) {
-                    let dn = worker.shift_tangent.values[det];
-                    worker.shift_tangent.values[det] = 0.0;
-                    shift_tangent.add(det, dn, true);
-                }
-                shift_tangent
-                    .remote
-                    .append(&mut worker.shift_tangent.remote);
-            }
+            collect_shift_tangent(&mut workers, &mut shift_tangent);
         }
 
         exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
