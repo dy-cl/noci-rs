@@ -281,6 +281,7 @@ pub fn qmc_step(
     }
     let (isref, _, run) = construct_qmc_run(data, c0, ref_indices, world);
     let factorisation = SpinFactorisation::new(data);
+    let components = factorisation.orthogonal_components(data);
     if factorisation.nparents() > 1 && data.wicks.is_none() {
         panic!("BApply cross-parent B^dagger requires Wick intermediates");
     }
@@ -312,7 +313,12 @@ pub fn qmc_step(
     );
 
     let mut workers = (0..rayon::current_num_threads())
-        .map(|tid| Mutex::new(ThreadPropagationOrthogonal::new(run.rank_seed ^ tid as u64)))
+        .map(|tid| {
+            Mutex::new(ThreadPropagationOrthogonal::new(
+                run.rank_seed ^ tid as u64,
+                factorisation.nparents(),
+            ))
+        })
         .collect::<Vec<_>>();
     let mut propagation_result = PropagationResultOrthogonal::new();
     let mut local_updates = Vec::new();
@@ -347,7 +353,7 @@ pub fn qmc_step(
                 data,
                 &run,
                 *es,
-                &generator,
+                (&generator, &factorisation, &components),
                 &mut workers,
                 &mut propagation_result,
             );

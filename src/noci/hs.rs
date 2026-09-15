@@ -1,20 +1,55 @@
 // noci/hs.rs
 // Crate-root imports.
-use crate::basis::excitation_between;
+use crate::basis::{excitation_between, excitation_phase_bits};
 use crate::nonorthogonalwicks::{
     WickScratchSpin, WicksView, xw_hamiltonian_overlap_prepared,
     xw_hamiltonian_overlap_prepared_batched,
 };
 use crate::time_call;
-use crate::{AoData, DetState, Excitation, ExcitationSpin, ReducedTwoSpinState};
+use crate::{
+    AoData, DetState, Excitation, ExcitationCache, ExcitationSpin, ExcitationSpinCache,
+    ReducedTwoSpinState,
+};
 
 // Parent/sibling imports.
+use super::factorise::{OrthogonalComponents, OrthogonalSpinComponent, SpinFactorisation};
 use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
 use super::orthogonal::{
-    xw_hamiltonian_orthogonal_prepared, xw_hamiltonian_orthogonal_prepared_batched,
+    OrthogonalConnection, xw_hamiltonian_orthogonal_prepared,
+    xw_hamiltonian_orthogonal_prepared_batched,
 };
 use super::overlap::calculate_s_pair_orthogonal;
 use super::types::{DetPair, MOCache, NOCIData, NOCIScalar};
+
+/// Reusable parent-and-sector grouping storage for compact orthogonal Hamiltonian requests.
+pub(crate) struct OrthogonalHamiltonianScratch {
+    /// Original request positions grouped by source parent and fixed-rank numerical sector.
+    groups: Vec<Vec<usize>>,
+}
+
+impl OrthogonalHamiltonianScratch {
+    /// Construct reusable source-parent and rank-sector request groups.
+    /// # Arguments:
+    /// - `nparents`: Number of source parent references.
+    /// # Returns:
+    /// - `Self`: Empty grouping storage with five numerical sectors per parent.
+    pub(crate) fn new(nparents: usize) -> Self {
+        Self {
+            groups: (0..5 * nparents).map(|_| Vec::new()).collect(),
+        }
+    }
+
+    /// Clear request groups while retaining their cycle-to-cycle allocation.
+    /// # Arguments:
+    /// - `self`: Reusable orthogonal numerical grouping storage.
+    /// # Returns:
+    /// - `()`: Removes all original request positions.
+    fn clear(&mut self) {
+        for group in &mut self.groups {
+            group.clear();
+        }
+    }
+}
 
 /// Wrapper function which dispatches to Hamiltonian and overlap matrix-element evaluation routines
 /// depending on user input and properties of the determinant pair involved. If the determinant
@@ -219,44 +254,262 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
     })
 }
 
-/// Evaluate a batch `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
-/// Consecutive requests are grouped into parent-local runs before prepared scalar/SIMD evaluation,
-/// preserving request order without allocating parent-indexed request tables.
+/// Evaluate a compact batch `H_{D_kx_k}=\langle D_k^{P_k}|\hat H|\Phi_{x_k}^{P_k}\rangle`.
+/// Requests are grouped by source parent and fixed-rank Slater-Condon sector, so each full SIMD
+/// packet contains one double-excitation sector while `out` remains ordered by compact request.
 /// # Arguments:
 /// - `data`: Shared NOCI basis, AO data, and parent MO caches.
-/// - `sources`: Retained source determinant indices in request order.
-/// - `states`: Prepared source-relative excitation states in request order.
+/// - `factorisation`: Canonical parent-local source component IDs.
+/// - `components`: Prepared occupied and virtual labels for those canonical components.
+/// - `connections`: Relative orthogonal connection topology.
+/// - `pairs`: Compact `(source, connection)` requests in stochastic request order.
+/// - `scratch`: Reusable source-parent and rank-sector grouping storage.
 /// - `out`: Hamiltonian results in request order.
-/// # Returns
+/// # Returns:
 /// - `()`: Writes all parent-orthogonal Hamiltonian matrix elements into `out`.
-pub(crate) fn calculate_h_pairs_orthogonal_batched<T: NOCIScalar>(
-    data: &NOCIData<'_, T>,
-    sources: &[usize],
-    states: &[ReducedTwoSpinState],
-    out: &mut [T],
+pub(crate) fn calculate_h_pairs_orthogonal_batched(
+    data: &NOCIData<'_, f64>,
+    factorisation: &SpinFactorisation,
+    components: &OrthogonalComponents,
+    connections: &[OrthogonalConnection],
+    pairs: &[(usize, usize)],
+    scratch: &mut OrthogonalHamiltonianScratch,
+    out: &mut [f64],
 ) {
+    scratch.clear();
+    for (output, &(source, connection)) in pairs.iter().enumerate() {
+        let parent = data.basis[source].parent;
+        scratch.groups[parent * 5 + connections[connection].sector()].push(output);
+    }
+
     let mocache = data
         .mocache
         .expect("orthogonal Hamiltonian batching requires parent MO caches");
-    let mut start = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    let width = if std::is_x86_feature_detected!("avx512f") {
+        8
+    } else if std::is_x86_feature_detected!("avx2") {
+        4
+    } else {
+        1
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let width = 1;
 
-    while start < sources.len() {
-        let parent = data.basis[sources[start]].parent;
-        let mut end = start + 1;
-        while end < sources.len() && data.basis[sources[end]].parent == parent {
-            end += 1;
+    for (parent, cache) in mocache.iter().enumerate().take(factorisation.nparents()) {
+        for sector in 0..5 {
+            let outputs = &scratch.groups[parent * 5 + sector];
+            if outputs.is_empty() {
+                continue;
+            }
+            let mut start = 0usize;
+            while sector >= 2 && width > 1 && start + width <= outputs.len() {
+                let mut sources = [0usize; 8];
+                let mut states = [ReducedTwoSpinState::new(1.0, ExcitationCache::default()); 8];
+                let mut values = [0.0; 8];
+                for lane in 0..width {
+                    let output = outputs[start + lane];
+                    let (source, connection) = pairs[output];
+                    sources[lane] = source;
+                    states[lane] = prepared_orthogonal_connection(
+                        data,
+                        factorisation,
+                        components,
+                        source,
+                        connections[connection],
+                    );
+                }
+                xw_hamiltonian_orthogonal_prepared_batched(
+                    data.ao,
+                    cache,
+                    data.basis,
+                    &sources[..width],
+                    &states[..width],
+                    &mut values[..width],
+                );
+                for lane in 0..width {
+                    out[outputs[start + lane]] = values[lane];
+                }
+                start += width;
+            }
+            for &output in &outputs[start..] {
+                let (source, connection) = pairs[output];
+                let state = prepared_orthogonal_connection(
+                    data,
+                    factorisation,
+                    components,
+                    source,
+                    connections[connection],
+                );
+                let source = &data.basis[source];
+                out[output] = xw_hamiltonian_orthogonal_prepared(
+                    data.ao,
+                    cache,
+                    (source.oa, source.ob),
+                    &state,
+                );
+            }
         }
-
-        xw_hamiltonian_orthogonal_prepared_batched(
-            data.ao,
-            &mocache[parent],
-            data.basis,
-            &sources[start..end],
-            &states[start..end],
-            &mut out[start..end],
-        );
-        start = end;
     }
+}
+
+/// Resolve an orthogonal connection directly into the fixed-rank kernel payload.
+/// The connection supplies ranks and canonical source components supply orbital labels, so generic
+/// excitation masks are formed only transiently for the existing fermionic phase expression.
+/// # Arguments:
+/// - `data`: Shared retained determinant basis.
+/// - `factorisation`: Canonical source alpha and beta component IDs.
+/// - `components`: Prepared parent-local occupied and virtual orbital labels.
+/// - `source`: Retained source determinant index.
+/// - `connection`: Relative orthogonal connection topology.
+/// # Returns:
+/// - `ReducedTwoSpinState`: Minimal phase and fixed-rank labels consumed by the H kernel.
+#[inline(always)]
+fn prepared_orthogonal_connection(
+    data: &NOCIData<'_, f64>,
+    factorisation: &SpinFactorisation,
+    components: &OrthogonalComponents,
+    source: usize,
+    connection: OrthogonalConnection,
+) -> ReducedTwoSpinState {
+    let source_state = &data.basis[source];
+    let (alpha, beta) = components.components(
+        source_state.parent,
+        factorisation.aid(source),
+        factorisation.bid(source),
+    );
+    let cache = fixed_rank_connection(alpha, beta, connection);
+    let phase = orthogonal_phase(alpha, cache.alpha) * orthogonal_phase(beta, cache.beta);
+    ReducedTwoSpinState::new(phase, cache)
+}
+
+/// Construct fixed-rank cached labels from prepared source components and one connection.
+/// # Arguments:
+/// - `alpha`: Prepared alpha source-component orbital labels.
+/// - `beta`: Prepared beta source-component orbital labels.
+/// - `connection`: Relative orthogonal connection topology.
+/// # Returns:
+/// - `ExcitationCache`: Direct fixed-rank orbital labels for the orthogonal H kernel.
+#[inline(always)]
+fn fixed_rank_connection(
+    alpha: &OrthogonalSpinComponent,
+    beta: &OrthogonalSpinComponent,
+    connection: OrthogonalConnection,
+) -> ExcitationCache {
+    let mut alpha_cache = ExcitationSpinCache::default();
+    let mut beta_cache = ExcitationSpinCache::default();
+
+    match connection {
+        OrthogonalConnection::AlphaSingle { occupied, virtual_ } => {
+            alpha_cache.rank = 1;
+            alpha_cache.holes[0] = alpha.occupied[occupied as usize];
+            alpha_cache.particles[0] = alpha.virtuals[virtual_ as usize];
+        }
+        OrthogonalConnection::BetaSingle { occupied, virtual_ } => {
+            beta_cache.rank = 1;
+            beta_cache.holes[0] = beta.occupied[occupied as usize];
+            beta_cache.particles[0] = beta.virtuals[virtual_ as usize];
+        }
+        OrthogonalConnection::AlphaDouble { occupied, virtual_ } => {
+            alpha_cache.rank = 2;
+            alpha_cache.holes[0] = alpha.occupied[occupied[0] as usize];
+            alpha_cache.holes[1] = alpha.occupied[occupied[1] as usize];
+            alpha_cache.particles[0] = alpha.virtuals[virtual_[0] as usize];
+            alpha_cache.particles[1] = alpha.virtuals[virtual_[1] as usize];
+        }
+        OrthogonalConnection::BetaDouble { occupied, virtual_ } => {
+            beta_cache.rank = 2;
+            beta_cache.holes[0] = beta.occupied[occupied[0] as usize];
+            beta_cache.holes[1] = beta.occupied[occupied[1] as usize];
+            beta_cache.particles[0] = beta.virtuals[virtual_[0] as usize];
+            beta_cache.particles[1] = beta.virtuals[virtual_[1] as usize];
+        }
+        OrthogonalConnection::AlphaBetaDouble {
+            occupied_a,
+            virtual_a,
+            occupied_b,
+            virtual_b,
+        } => {
+            alpha_cache.rank = 1;
+            alpha_cache.holes[0] = alpha.occupied[occupied_a as usize];
+            alpha_cache.particles[0] = alpha.virtuals[virtual_a as usize];
+            beta_cache.rank = 1;
+            beta_cache.holes[0] = beta.occupied[occupied_b as usize];
+            beta_cache.particles[0] = beta.virtuals[virtual_b as usize];
+        }
+    }
+
+    ExcitationCache {
+        alpha: alpha_cache,
+        beta: beta_cache,
+    }
+}
+
+/// Evaluate the existing fermionic phase expression from direct fixed-rank labels.
+/// # Arguments:
+/// - `component`: Source-spin occupation and rank-to-orbital lookup metadata.
+/// - `cache`: Fixed-rank hole and particle labels for one connection spin sector.
+/// # Returns:
+/// - `f64`: Fermionic phase of this spin-sector excitation.
+#[inline(always)]
+fn orthogonal_phase(
+    component: &OrthogonalSpinComponent,
+    cache: ExcitationSpinCache,
+) -> f64 {
+    excitation_phase_bits(
+        component.occupation,
+        fixed_rank_mask(cache.holes, cache.rank),
+        fixed_rank_mask(cache.particles, cache.rank),
+    )
+}
+
+/// Construct the physical child occupations of an orthogonal connection.
+/// # Arguments:
+/// - `data`: Shared retained determinant basis.
+/// - `factorisation`: Canonical source alpha and beta component IDs.
+/// - `components`: Prepared parent-local occupied and virtual orbital labels.
+/// - `source`: Retained source determinant index.
+/// - `connection`: Relative orthogonal connection topology.
+/// # Returns:
+/// - `(u128, u128)`: Alpha and beta occupations of the physical child determinant.
+pub(crate) fn orthogonal_connection_child(
+    data: &NOCIData<'_, f64>,
+    factorisation: &SpinFactorisation,
+    components: &OrthogonalComponents,
+    source: usize,
+    connection: OrthogonalConnection,
+) -> (u128, u128) {
+    let source_state = &data.basis[source];
+    let (alpha, beta) = components.components(
+        source_state.parent,
+        factorisation.aid(source),
+        factorisation.bid(source),
+    );
+    let cache = fixed_rank_connection(alpha, beta, connection);
+    (
+        (alpha.occupation & !fixed_rank_mask(cache.alpha.holes, cache.alpha.rank))
+            | fixed_rank_mask(cache.alpha.particles, cache.alpha.rank),
+        (beta.occupation & !fixed_rank_mask(cache.beta.holes, cache.beta.rank))
+            | fixed_rank_mask(cache.beta.particles, cache.beta.rank),
+    )
+}
+
+/// Form a spin-orbital bit mask from fixed-rank cached orbital labels.
+/// # Arguments:
+/// - `orbitals`: Cached hole or particle orbital labels.
+/// - `rank`: Number of active labels.
+/// # Returns:
+/// - `u128`: Bit mask containing exactly the active orbital labels.
+#[inline(always)]
+fn fixed_rank_mask(
+    orbitals: [u8; crate::MAXEXCIT],
+    rank: u8,
+) -> u128 {
+    let mut bits = 0u128;
+    for &orbital in orbitals.iter().take(usize::from(rank)) {
+        bits |= 1u128 << orbital;
+    }
+    bits
 }
 
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants x and w

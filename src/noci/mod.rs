@@ -47,15 +47,17 @@ pub use wicks::{build_wicks_shared, update_wicks_fock};
 
 // Crate-visible type re-exports.
 pub(crate) use factorise::{
-    OneBodyFactorisation, OneBodyScratch, OrthogonalOverlapScratch, OverlapFactors, OverlapScratch,
-    SpinFactorisation,
+    OneBodyFactorisation, OneBodyScratch, OrthogonalComponents, OrthogonalOverlapScratch,
+    OverlapFactors, OverlapScratch, SpinFactorisation,
 };
+pub(crate) use orthogonal::OrthogonalConnection;
 pub(crate) use types::{DetPair, FockData, OrthogonalDetState};
 
 // Crate-visible function re-exports.
 pub(crate) use fock::calculate_f_pair;
 pub(crate) use hs::{
-    calculate_h_pairs_orthogonal_batched, calculate_hs_pair, calculate_hs_pairs_wicks_batched,
+    OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
+    calculate_hs_pairs_wicks_batched, orthogonal_connection_child,
 };
 pub(crate) use m::calculate_m_pair;
 pub(crate) use matrix::build_noci_fock;

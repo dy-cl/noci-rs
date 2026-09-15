@@ -13,15 +13,16 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::input::{Input, Propagator};
 use crate::noci::{
-    DetPair, NOCIData, OverlapFactors, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
-    calculate_hs_pairs_wicks_batched, calculate_s_pair,
+    DetPair, NOCIData, OrthogonalComponents, OverlapFactors, SpinFactorisation,
+    calculate_h_pairs_orthogonal_batched, calculate_hs_pair, calculate_hs_pairs_wicks_batched,
+    calculate_s_pair,
 };
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 use crate::{ReducedTwoSpinState, SCFState};
 
 // Parent/sibling imports.
-use super::excit::{OrthogonalUniformGenerator, resolve_orthogonal_connection};
+use super::excit::OrthogonalUniformGenerator;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::restart::basis_hash;
 use super::state::{
@@ -285,7 +286,7 @@ pub(in crate::stochastic) fn propagate_iteration(
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local ownership and cached diagonal metadata.
 /// - `shift`: Current physical shift `E_s`.
-/// - `generator`: Persistent system-wide uniform orthogonal connection topology.
+/// - `orthogonal`: Uniform connection topology and its canonical prepared source components.
 /// - `workers`: Persistent thread-local orthogonal propagation storage.
 /// - `result`: Reusable local, remote, and generation-sample results.
 /// # Returns
@@ -295,11 +296,16 @@ pub(in crate::stochastic) fn propagate_iteration_orthogonal(
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
     shift: f64,
-    generator: &OrthogonalUniformGenerator,
+    orthogonal: (
+        &OrthogonalUniformGenerator,
+        &SpinFactorisation,
+        &OrthogonalComponents,
+    ),
     workers: &mut [Mutex<ThreadPropagationOrthogonal>],
     result: &mut PropagationResultOrthogonal,
 ) {
     let (iteration, sampled) = sample;
+    let (generator, factorisation, components) = orthogonal;
     let dt = data.input.prop_ref().dt;
     for worker in workers.iter_mut() {
         worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
@@ -335,7 +341,7 @@ pub(in crate::stochastic) fn propagate_iteration_orthogonal(
                 }
             }
 
-            worker.resolve_batched_spawning(data, generator, run);
+            worker.resolve_batched_spawning(data, generator, factorisation, components, run);
         });
     }
     for worker in workers.iter_mut() {
@@ -639,40 +645,31 @@ pub(in crate::stochastic) fn find_hs_batched(
 /// # Arguments:
 /// - `data`: Shared stochastic propagation data and parent MO caches.
 /// - `generator`: Uniform parent-orthogonal connection topology.
+/// - `factorisation`: Canonical parent-local source component IDs.
+/// - `components`: Prepared occupied and virtual labels for those canonical components.
 /// - `pairs`: Compact retained-source and relative-connection indices.
+/// - `scratch`: Reusable numerical parent-and-sector request groups.
 /// - `out`: Hamiltonian results in request order.
 /// # Returns
 /// - `()`: Writes all requested orthogonal Hamiltonian elements into `out`.
 pub(in crate::stochastic) fn find_h_orthogonal_batched(
     data: &NOCIData<'_, f64>,
     generator: &OrthogonalUniformGenerator,
+    factorisation: &SpinFactorisation,
+    components: &OrthogonalComponents,
     pairs: &[(usize, usize)],
+    scratch: &mut crate::noci::OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
-    #[cfg(target_arch = "x86_64")]
-    let width = if std::is_x86_feature_detected!("avx512f") {
-        8
-    } else if std::is_x86_feature_detected!("avx2") {
-        4
-    } else {
-        1
-    };
-    #[cfg(not(target_arch = "x86_64"))]
-    let width = 1;
-    for (packet, values) in pairs.chunks(width).zip(out.chunks_mut(width)) {
-        let mut sources = [0usize; 8];
-        let mut states = [ReducedTwoSpinState::from_state(&data.basis[0]); 8];
-        for (i, &(source, connection)) in packet.iter().enumerate() {
-            sources[i] = source;
-            states[i] = resolve_orthogonal_connection(generator, connection, &data.basis[source]).1;
-        }
-        calculate_h_pairs_orthogonal_batched(
-            data,
-            &sources[..packet.len()],
-            &states[..packet.len()],
-            values,
-        );
-    }
+    calculate_h_pairs_orthogonal_batched(
+        data,
+        factorisation,
+        components,
+        generator.connections(),
+        pairs,
+        scratch,
+        out,
+    );
 }
 
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended

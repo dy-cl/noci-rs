@@ -69,6 +69,44 @@ pub(super) struct ParentSpinSpace {
     pub(super) last_det: usize,
 }
 
+/// Prepared occupied and virtual orbital labels for one canonical parent-local spin component.
+pub(crate) struct OrthogonalSpinComponent {
+    /// Occupation bitstring used for fermionic phase and child construction.
+    pub(crate) occupation: u128,
+    /// Orbital labels indexed by occupied rank.
+    pub(crate) occupied: Vec<u8>,
+    /// Orbital labels indexed by virtual rank.
+    pub(crate) virtuals: Vec<u8>,
+}
+
+/// Prepared parent-local spin-component metadata for orthogonal connections.
+pub(crate) struct OrthogonalComponents {
+    /// Alpha-spin components indexed by parent then canonical alpha component ID.
+    alpha: Vec<Vec<OrthogonalSpinComponent>>,
+    /// Beta-spin components indexed by parent then canonical beta component ID.
+    beta: Vec<Vec<OrthogonalSpinComponent>>,
+}
+
+impl OrthogonalComponents {
+    /// Return canonical alpha and beta source-component metadata for one retained determinant.
+    /// # Arguments:
+    /// - `self`: Prepared parent-local source components.
+    /// - `parent`: Source parent reference.
+    /// - `aid`: Canonical alpha component ID.
+    /// - `bid`: Canonical beta component ID.
+    /// # Returns:
+    /// - `(&OrthogonalSpinComponent, &OrthogonalSpinComponent)`: Prepared source spin metadata.
+    #[inline(always)]
+    pub(crate) fn components(
+        &self,
+        parent: usize,
+        aid: usize,
+        bid: usize,
+    ) -> (&OrthogonalSpinComponent, &OrthogonalSpinComponent) {
+        (&self.alpha[parent][aid], &self.beta[parent][bid])
+    }
+}
+
 /// Shared determinant-space spin factorisation `I <-> (P,a_I,b_I)`.
 pub(crate) struct SpinFactorisation {
     /// Alpha compact IDs keyed by determinant index and local to the determinant parent.
@@ -198,6 +236,74 @@ impl SpinFactorisation {
         );
 
         (oa, ob)
+    }
+
+    /// Prepare occupied and virtual orbital labels for canonical source spin components.
+    /// The tables satisfy `i=O_a[r_i]` and `a=V_a[r_a]`, so orthogonal connection resolution
+    /// reuses parent-local component IDs instead of selecting ranks from occupation masks.
+    /// # Arguments:
+    /// - `self`: Shared determinant-space spin topology.
+    /// - `data`: Shared retained basis and parent MO caches.
+    /// # Returns:
+    /// - `OrthogonalComponents`: Parent-local alpha and beta source-component lookup tables.
+    pub(crate) fn orthogonal_components(
+        &self,
+        data: &NOCIData<'_, f64>,
+    ) -> OrthogonalComponents {
+        let mocache = data
+            .mocache
+            .expect("orthogonal component preparation requires parent MO caches");
+        let mut alpha = Vec::with_capacity(self.parents.len());
+        let mut beta = Vec::with_capacity(self.parents.len());
+        for (parent, space) in self.parents.iter().enumerate() {
+            alpha.push(
+                space
+                    .areps
+                    .iter()
+                    .map(|representative| {
+                        let occupation = data.basis[representative.det].oa;
+                        orthogonal_spin_component(occupation, mocache[parent].ha.nrows())
+                    })
+                    .collect(),
+            );
+            beta.push(
+                space
+                    .breps
+                    .iter()
+                    .map(|representative| {
+                        let occupation = data.basis[representative.det].ob;
+                        orthogonal_spin_component(occupation, mocache[parent].hb.nrows())
+                    })
+                    .collect(),
+            );
+        }
+        OrthogonalComponents { alpha, beta }
+    }
+}
+
+/// Prepare occupied and virtual orbital-label lookup tables from one occupation bitstring.
+/// # Arguments:
+/// - `occupation`: Occupied spin-orbital bitstring.
+/// - `norb`: Number of spin orbitals in the parent MO basis.
+/// # Returns:
+/// - `OrthogonalSpinComponent`: Canonical rank-to-orbital lookup metadata.
+fn orthogonal_spin_component(
+    occupation: u128,
+    norb: usize,
+) -> OrthogonalSpinComponent {
+    let mut occupied = Vec::with_capacity(occupation.count_ones() as usize);
+    let mut virtuals = Vec::with_capacity(norb - occupied.capacity());
+    for orbital in 0..norb {
+        if occupation & (1u128 << orbital) == 0 {
+            virtuals.push(orbital as u8);
+        } else {
+            occupied.push(orbital as u8);
+        }
+    }
+    OrthogonalSpinComponent {
+        occupation,
+        occupied,
+        virtuals,
     }
 }
 

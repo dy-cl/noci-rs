@@ -6,14 +6,15 @@ use rand::{Rng, SeedableRng};
 // Crate-root imports.
 use crate::ReducedTwoSpinState;
 use crate::input::{ExcitationGen, Propagator};
-use crate::noci::{NOCIData, OrthogonalDetState, OverlapFactors};
+use crate::noci::{
+    NOCIData, OrthogonalComponents, OrthogonalDetState, OrthogonalHamiltonianScratch,
+    OverlapFactors, SpinFactorisation, orthogonal_connection_child,
+};
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::{find_h_orthogonal_batched, find_hs_batched};
-use super::excit::{
-    OrthogonalUniformGenerator, init_heat_bath, pgen_heat_bath, resolve_orthogonal_connection,
-};
+use super::excit::{OrthogonalUniformGenerator, init_heat_bath, pgen_heat_bath};
 use super::fri::{FriAmplitude, round};
 use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
 
@@ -672,6 +673,8 @@ pub(in crate::stochastic) struct ThreadPropagationOrthogonal {
     spawn_pairs: Vec<(usize, usize)>,
     /// Parent-orthogonal Hamiltonian results aligned with spawn requests.
     spawn_h: Vec<f64>,
+    /// Reusable numerical parent-and-sector grouping storage for orthogonal H batches.
+    orthogonal_scratch: OrthogonalHamiltonianScratch,
 }
 
 /// Access the shared shift-tangent accumulator of either propagation worker.
@@ -1102,9 +1105,13 @@ impl ThreadPropagationOrthogonal {
     /// Construct reusable storage for orthogonal residual generation `\chi=-dt(\hat H-E_s)BN`.
     /// # Arguments:
     /// - `seed`: Initial thread-local random-number seed.
+    /// - `nparents`: Number of source parent references for numerical request grouping.
     /// # Returns
     /// - `Self`: Empty report and iteration buffers for BApply spawning.
-    pub(in crate::stochastic) fn new(seed: u64) -> Self {
+    pub(in crate::stochastic) fn new(
+        seed: u64,
+        nparents: usize,
+    ) -> Self {
         Self {
             local: Vec::new(),
             remote: Vec::new(),
@@ -1114,6 +1121,7 @@ impl ThreadPropagationOrthogonal {
             spawn_requests: Vec::new(),
             spawn_pairs: Vec::new(),
             spawn_h: Vec::new(),
+            orthogonal_scratch: OrthogonalHamiltonianScratch::new(nparents),
         }
     }
 
@@ -1193,6 +1201,8 @@ impl ThreadPropagationOrthogonal {
     /// - `source`: Retained source determinant index `x`.
     /// - `population`: Sampled real population `\tilde N_x`.
     /// - `generator`: Persistent system-wide orthogonal connection topology.
+    /// - `factorisation`: Canonical parent-local source component IDs.
+    /// - `components`: Prepared occupied and virtual source-component labels.
     /// # Returns
     /// - `()`: Appends unresolved batched spawn requests.
     pub(in crate::stochastic) fn spawning(
@@ -1232,6 +1242,8 @@ impl ThreadPropagationOrthogonal {
         &mut self,
         data: &NOCIData<'_, f64>,
         generator: &OrthogonalUniformGenerator,
+        factorisation: &SpinFactorisation,
+        components: &OrthogonalComponents,
         run: &QMCRunInfo,
     ) {
         if self.spawn_requests.is_empty() {
@@ -1246,7 +1258,15 @@ impl ThreadPropagationOrthogonal {
         );
         self.spawn_h.clear();
         self.spawn_h.resize(self.spawn_requests.len(), 0.0);
-        find_h_orthogonal_batched(data, generator, &self.spawn_pairs, &mut self.spawn_h);
+        find_h_orthogonal_batched(
+            data,
+            generator,
+            factorisation,
+            components,
+            &self.spawn_pairs,
+            &mut self.orthogonal_scratch,
+            &mut self.spawn_h,
+        );
 
         let qmc = data.input.qmc.as_ref().unwrap();
         let dt = data.input.prop_ref().dt;
@@ -1263,10 +1283,13 @@ impl ThreadPropagationOrthogonal {
             }
 
             let source = &data.basis[request.parent];
-            let (excitation, _) =
-                resolve_orthogonal_connection(generator, request.connection, source);
-            let oa = (source.oa & !excitation.alpha.holes) | excitation.alpha.parts;
-            let ob = (source.ob & !excitation.beta.holes) | excitation.beta.parts;
+            let (oa, ob) = orthogonal_connection_child(
+                data,
+                factorisation,
+                components,
+                request.parent,
+                generator.connections()[request.connection],
+            );
             self.route_update(
                 OrthogonalDetState {
                     parent: source.parent,
