@@ -4,7 +4,6 @@ use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
 // Crate-root imports.
-use crate::DetState;
 use crate::input::{Input, Propagator};
 use crate::maths::{adjoint, parallel_matvec};
 use crate::noci::NOCIScalar;
@@ -389,7 +388,7 @@ pub fn propagate<T: NOCIScalar>(
     mut es: f64,
     history: &mut Vec<Coefficients<T>>,
     input: &Input,
-    basis: &[DetState<T>],
+    basis: &crate::noci::NOCISpace<T>,
 ) -> Option<Array1<T>> {
     if matches!(input.prop_ref().propagator, Propagator::BApply) {
         panic!("BApply has no deterministic propagation implementation.");

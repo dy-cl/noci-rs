@@ -27,7 +27,7 @@ const HISTORY: usize = 20;
 /// - `ao`: Contains AO integrals and metadata.
 /// - `input`: User input specifications.
 /// - `run`: Immutable data for this h-SCF optimisation, including the state label,
-///   NOCI status, parent index, and electron-electron scaling.
+///   NOCI status, and electron-electron scaling.
 /// # Returns:
 /// - `Option<HSCFState>`: Converged h-SCF state if optimisation succeeds.
 pub(crate) fn hscf_cycle(

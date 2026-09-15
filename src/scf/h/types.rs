@@ -33,8 +33,6 @@ pub(crate) struct HSCFRunData<'a> {
     pub(crate) label: &'a str,
     /// Whether the state should enter the NOCI basis.
     pub(crate) noci_basis: bool,
-    /// Parent recipe index.
-    pub(crate) parent: usize,
     /// Two-electron integral complex scaling parameter.
     pub(crate) lambda: Complex64,
 }

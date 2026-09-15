@@ -15,14 +15,15 @@ use rayon::prelude::*;
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
 use crate::noci::{
-    DetPair, FockData, MOCache, NOCIData, NOCIScalar, OneBodyFactorisation, OneBodyScratch,
+    DetPair, FockData, MOCache, NOCIData, NOCIIndex, NOCIScalar, NOCISpace, OneBodyFactorisation,
+    OneBodyScratch,
 };
 use crate::noci::{
     build_noci_fock, build_noci_hs, build_noci_s, calculate_m_pair, calculate_s_pair,
 };
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksShared};
 use crate::time_call;
-use crate::{AoData, DetState, input::Input};
+use crate::{AoData, input::Input};
 
 // Parent/sibling imports.
 use super::{PT2ProjectedOperator, PT2Projection, Preconditioner, SNOCIFocks, SNOCIOverlaps};
@@ -76,7 +77,8 @@ impl<T: NOCIScalar> CandidateM<T> {
 ///   overlap matrix in the current space, lowest eigenvalue, and corresponding eigenvector.
 pub(in crate::snoci) fn solve_current_space<T: NOCIScalar>(
     ao: &AoData,
-    current_space: &[DetState<T>],
+    space: &NOCISpace<T>,
+    current_space: &[NOCIIndex],
     input: &Input,
     wicks: Option<&WicksShared<T>>,
     mocache: &[MOCache<T>],
@@ -84,8 +86,7 @@ pub(in crate::snoci) fn solve_current_space<T: NOCIScalar>(
 ) -> (Array2<T>, Array2<T>, f64, Array1<T>) {
     time_call!(crate::timers::snoci::add_solve_current_space, {
         let wview = wicks.as_ref().map(|ws| ws.view());
-        let data = NOCIData::new(ao, current_space, input, tol, wview).withmocache(mocache);
-
+        let data = NOCIData::new(ao, space, input, tol, wview).withmocache(mocache);
         let (hcurrent, scurrent, _) = build_noci_hs(&data, current_space, current_space, true);
         let (evals, c) = general_evp(&hcurrent, &scurrent, true, tol);
 
@@ -105,8 +106,8 @@ pub(in crate::snoci) fn solve_current_space<T: NOCIScalar>(
 /// - `SNOCIOverlaps`: Candidate-current and current-candidate overlap blocks.
 pub(in crate::snoci) fn build_snoci_overlaps<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    candidates: &[DetState<T>],
-    selected_space: &[DetState<T>],
+    candidates: &[NOCIIndex],
+    selected_space: &[NOCIIndex],
 ) -> SNOCIOverlaps<T> {
     time_call!(crate::timers::snoci::add_build_snoci_overlaps, {
         let (s_ai, _) = build_noci_s(data, candidates, selected_space, false);
@@ -129,8 +130,8 @@ pub(in crate::snoci) fn build_snoci_focks<T: NOCIScalar>(
     current_data: &NOCIData<'_, T>,
     candidate_data: &NOCIData<'_, T>,
     fock: &FockData<'_, T>,
-    selected_space: &[DetState<T>],
-    candidates: &[DetState<T>],
+    selected_space: &[NOCIIndex],
+    candidates: &[NOCIIndex],
 ) -> SNOCIFocks<T> {
     time_call!(crate::timers::snoci::add_build_snoci_focks, {
         let (f_ii, _) = build_noci_fock(current_data, fock, selected_space, selected_space, true);
@@ -150,8 +151,8 @@ pub(in crate::snoci) fn build_snoci_focks<T: NOCIScalar>(
 /// - `Array2<T>`: Candidate-current Hamiltonian block `H_ai`.
 pub(in crate::snoci) fn build_candidate_current_h<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    candidates: &[DetState<T>],
-    selected_space: &[DetState<T>],
+    candidates: &[NOCIIndex],
+    selected_space: &[NOCIIndex],
 ) -> Array2<T> {
     time_call!(crate::timers::snoci::add_build_candidate_h_ai, {
         build_noci_hs(data, candidates, selected_space, false).0
@@ -268,7 +269,7 @@ fn fill_candidate_m<T: NOCIScalar>(
     (0..n)
         .into_par_iter()
         .for_each_init(WickScratchSpin::new, |scratch, a| {
-            let ldet = &op.candidates[a];
+            let ldet = op.candidates[a];
             let row = a * (2 * n - a + 1) / 2;
             let row_len = n - a;
             // Rows in packed upper-triangular storage are disjoint, and each `a` is visited once.
@@ -276,7 +277,7 @@ fn fill_candidate_m<T: NOCIScalar>(
                 unsafe { std::slice::from_raw_parts_mut((m_addr as *mut T).add(row), row_len) };
 
             for (db, m_ab) in row.iter_mut().enumerate() {
-                let gdet = &op.candidates[a + db];
+                let gdet = op.candidates[a + db];
                 *m_ab = calculate_m_pair(
                     op.data,
                     op.fock,
@@ -316,7 +317,7 @@ pub(in crate::snoci) fn build_candidate_m_diag<T: NOCIScalar>(
         let diag: Vec<T> = (0..n)
             .into_par_iter()
             .map_init(WickScratchSpin::new, |scratch, a| {
-                let det = &op.candidates[a];
+                let det = op.candidates[a];
                 calculate_m_pair(
                     op.data,
                     op.fock,
@@ -343,7 +344,7 @@ pub(in crate::snoci) fn build_candidate_s_diag<T: NOCIScalar>(
         .candidates
         .par_iter()
         .map_init(WickScratchSpin::new, |scratch, det| {
-            calculate_s_pair(op.data, DetPair::new(det, det), Some(scratch))
+            calculate_s_pair(op.data, DetPair::new(*det, *det), Some(scratch))
         })
         .collect();
 
@@ -441,7 +442,7 @@ where
                 || (WickScratchSpin::new(), vec![zero; n]),
                 |(mut scratch, mut y), a| {
                     let xa = xs[a];
-                    let ldet = &op.candidates[a];
+                    let ldet = op.candidates[a];
 
                     for b in a..n {
                         let xb = xs[b];
@@ -450,7 +451,7 @@ where
                             continue;
                         }
 
-                        let gdet = &op.candidates[b];
+                        let gdet = op.candidates[b];
                         let m_ab = calculate_m_pair(
                             op.data,
                             op.fock,
@@ -543,7 +544,7 @@ where
 
         for a in (irank..n).step_by(nranks) {
             let xa = xs[a];
-            let ldet = &op.candidates[a];
+            let ldet = op.candidates[a];
 
             for b in a..n {
                 let xb = xs[b];
@@ -551,7 +552,7 @@ where
                     continue;
                 }
 
-                let gdet = &op.candidates[b];
+                let gdet = op.candidates[b];
                 let m_ab = calculate_m_pair(
                     op.data,
                     op.fock,
@@ -607,7 +608,7 @@ where
             || (WickScratchSpin::new(), vec![zero; n]),
             |(mut scratch, mut y), a| {
                 let xa = xs[a];
-                let ldet = &op.candidates[a];
+                let ldet = op.candidates[a];
 
                 for b in a..n {
                     let xb = xs[b];
@@ -616,7 +617,7 @@ where
                         continue;
                     }
 
-                    let gdet = &op.candidates[b];
+                    let gdet = op.candidates[b];
                     let s_ab =
                         calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
                     let s_ab = <R as From<T>>::from(s_ab);
@@ -679,7 +680,7 @@ where
 
     for a in (irank..n).step_by(nranks) {
         let xa = xs[a];
-        let ldet = &op.candidates[a];
+        let ldet = op.candidates[a];
 
         for b in a..n {
             let xb = xs[b];
@@ -687,7 +688,7 @@ where
                 continue;
             }
 
-            let gdet = &op.candidates[b];
+            let gdet = op.candidates[b];
             let s_ab = calculate_s_pair(op.data, DetPair::new(ldet, gdet), Some(&mut scratch));
             let s_ab = <R as From<T>>::from(s_ab);
 
@@ -1132,16 +1133,16 @@ where
 /// - `sigma`: Selection threshold.
 /// - `max_add`: Maximum number of candidates to add.
 /// # Returns:
-/// - `Vec<DetState<T>>`: Selected candidates sorted by decreasing score.
-pub(in crate::snoci) fn select_candidates<T: NOCIScalar>(
-    candidates: &[DetState<T>],
+/// - `Vec<NOCIIndex>`: Selected candidates sorted by decreasing score.
+pub(in crate::snoci) fn select_candidates(
+    candidates: &[NOCIIndex],
     candidate_scores: &[f64],
     sigma: f64,
     max_add: usize,
-) -> Vec<DetState<T>> {
-    let mut ranked: Vec<(DetState<T>, f64)> = candidates
+) -> Vec<NOCIIndex> {
+    let mut ranked: Vec<(NOCIIndex, f64)> = candidates
         .iter()
-        .cloned()
+        .copied()
         .zip(candidate_scores.iter().copied())
         .filter(|(_, score)| *score > sigma)
         .collect();

@@ -2,7 +2,7 @@ mod common;
 
 // External crate imports.
 use noci_rs::basis::generate_reference_noci_basis;
-use noci_rs::noci::{build_mo_cache, build_wicks_shared, calculate_noci_energy};
+use noci_rs::noci::{NOCISpace, build_mo_cache, build_wicks_shared, calculate_noci_energy};
 use noci_rs::snoci::snoci_step;
 use noci_rs::{HSCFState, PostSCFData};
 use num_complex::Complex64;
@@ -38,21 +38,17 @@ fn run_pt2_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let (e_ref, _c0, _dt_hs_ref) =
-        calculate_noci_energy(&ao, &input, &noci_reference_basis, 1e-12, &mocache, None);
+        calculate_noci_energy(&ao, &input, &reference_space, 1e-12, &mocache, None);
 
     let post = PostSCFData {
         ao: &ao,
-        states: &states,
-        noci_reference_basis: &noci_reference_basis,
+        space: &reference_space,
         mocache: &mocache,
         tol: 1e-12,
     };
@@ -62,9 +58,9 @@ fn run_pt2_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let snoci = input.snoci.as_ref().unwrap();
     let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
-        snoci_step::<f64, Complex64>(&post, &noci_reference_basis, &input, None, &world)
+        snoci_step::<f64, Complex64>(&post, &reference_space, &input, None, &world)
     } else {
-        snoci_step::<f64, f64>(&post, &noci_reference_basis, &input, None, &world)
+        snoci_step::<f64, f64>(&post, &reference_space, &input, None, &world)
     };
 
     let pt2 = result
@@ -98,24 +94,22 @@ fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
 
-    let mut wicks = build_wicks_shared::<f64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+    let mut wicks =
+        build_wicks_shared::<f64>(&world, &ao, reference_space.parents(), 1e-12, &input);
     let (e_ref, _c0, _dt_hs_ref) = {
         let wicks_view = wicks.view();
         calculate_noci_energy(
             &ao,
             &input,
-            &noci_reference_basis,
+            &reference_space,
             1e-12,
             &mocache,
             Some(wicks_view),
@@ -124,29 +118,16 @@ fn run_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let post = PostSCFData {
         ao: &ao,
-        states: &states,
-        noci_reference_basis: &noci_reference_basis,
+        space: &reference_space,
         mocache: &mocache,
         tol: 1e-12,
     };
 
     let snoci = input.snoci.as_ref().unwrap();
     let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
-        snoci_step::<f64, Complex64>(
-            &post,
-            &noci_reference_basis,
-            &input,
-            Some(&mut wicks),
-            &world,
-        )
+        snoci_step::<f64, Complex64>(&post, &reference_space, &input, Some(&mut wicks), &world)
     } else {
-        snoci_step::<f64, f64>(
-            &post,
-            &noci_reference_basis,
-            &input,
-            Some(&mut wicks),
-            &world,
-        )
+        snoci_step::<f64, f64>(&post, &reference_space, &input, Some(&mut wicks), &world)
     };
 
     let pt2 = result
@@ -181,21 +162,18 @@ fn run_complex_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let states: Vec<HSCFState> = basis.states.iter().map(HSCFState::from_real).collect();
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
     let mut wicks =
-        build_wicks_shared::<Complex64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+        build_wicks_shared::<Complex64>(&world, &ao, reference_space.parents(), 1e-12, &input);
     let (e_ref, _c0, _dt_hs_ref) = calculate_noci_energy(
         &ao,
         &input,
-        &noci_reference_basis,
+        &reference_space,
         1e-12,
         &mocache,
         Some(wicks.view()),
@@ -203,14 +181,13 @@ fn run_complex_pt2_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let post = PostSCFData {
         ao: &ao,
-        states: &states,
-        noci_reference_basis: &noci_reference_basis,
+        space: &reference_space,
         mocache: &mocache,
         tol: 1e-12,
     };
     let result = snoci_step::<Complex64, Complex64>(
         &post,
-        &noci_reference_basis,
+        &reference_space,
         &input,
         Some(&mut wicks),
         &world,

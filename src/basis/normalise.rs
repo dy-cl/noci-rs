@@ -20,9 +20,8 @@ pub fn hermitian_hnoci_basis(
 ) -> Vec<HSCFState> {
     let mut out: Vec<HSCFState> = hstates.iter().filter(|st| st.noci_basis).cloned().collect();
 
-    for (i, st) in out.iter_mut().enumerate() {
+    for st in &mut out {
         normalise_hermitian(st, s);
-        st.parent = i;
     }
 
     out

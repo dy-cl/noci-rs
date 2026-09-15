@@ -9,10 +9,9 @@ use ndarray::Array1;
 
 // Crate-root imports.
 use crate::PostSCFData;
-use crate::basis::generate_excited_basis;
 use crate::deterministic::{projected_energy, propagate};
 use crate::input::Input;
-use crate::noci::{NOCIData, NOCIScalar, build_noci_hs};
+use crate::noci::{NOCIData, NOCIIndex, NOCIScalar, build_noci_hs};
 use crate::nonorthogonalwicks::WicksView;
 use crate::time_call;
 use crate::utils::wavefunction_sparsity;
@@ -38,9 +37,9 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
             println!("{}", "=".repeat(100));
             println!("Building NOCI-QMC basis....");
 
-            let include_refs = true;
+            let references = (0..post.space.len()).map(NOCIIndex).collect::<Vec<_>>();
             let basis = time_call!(crate::timers::deterministic::add_generate_excited_basis, {
-                generate_excited_basis(post.noci_reference_basis, input, include_refs)
+                post.space.excited_from(&references, input, true)
             });
 
             let n = basis.len();
@@ -54,8 +53,9 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
             let symmetric = true;
             let data =
                 NOCIData::new(post.ao, &basis, input, post.tol, wicks).withmocache(post.mocache);
+            let indices = (0..basis.len()).map(NOCIIndex).collect::<Vec<_>>();
             let (h, s, _) = time_call!(crate::timers::deterministic::add_build_noci_hs, {
-                build_noci_hs(&data, &basis, &basis, symmetric)
+                build_noci_hs(&data, &indices, &indices, symmetric)
             });
             println!("Finished calculating NOCI-QMC matrix elements.");
 
@@ -63,10 +63,11 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
 
             let mut c0qmc = Array1::<T>::zeros(n);
             if !input.write.write_deterministic_coeffs {
-                for (i, ref_st) in post.noci_reference_basis.iter().enumerate() {
+                for (i, ref_st) in post.space.labels.iter().enumerate() {
                     let idx = basis
+                        .labels
                         .iter()
-                        .position(|qmc_st| qmc_st.label == ref_st.label)
+                        .position(|qmc_st| qmc_st == ref_st)
                         .unwrap();
                     c0qmc[idx] = c0[i];
                 }
@@ -78,12 +79,14 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
             println!("{}", "=".repeat(100));
 
             let ref_indices: Vec<usize> = post
-                .noci_reference_basis
+                .space
+                .labels
                 .iter()
                 .map(|ref_st| {
                     basis
+                        .labels
                         .iter()
-                        .position(|qmc_st| qmc_st.label == ref_st.label)
+                        .position(|qmc_st| qmc_st == ref_st)
                         .unwrap()
                 })
                 .collect();

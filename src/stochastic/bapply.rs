@@ -13,7 +13,7 @@ use rand::SeedableRng;
 // Crate-root imports.
 use crate::input::ExcitationGen;
 use crate::noci::{
-    NOCIData, OrthogonalDetState, OrthogonalOverlapScratch, OverlapFactors, SpinFactorisation,
+    AuxiliaryIndex, AuxiliarySpace, NOCIData, NOCIIndex, OverlapFactors, SpinFactorisation,
 };
 use crate::nonorthogonalwicks::WickScratchSpin;
 
@@ -27,8 +27,9 @@ use super::init::initialise_qmc_state;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::shift::update_shift_tangent;
 use super::state::{
-    ExcitationHist, MPIScratch, MPIScratchOrthogonal, PopulationUpdate, PopulationUpdateOrthogonal,
-    PropagationResultOrthogonal, QmcRng, ShiftTangent, ThreadPropagationOrthogonal,
+    AuxiliaryMPIScratch, AuxiliaryPopulationUpdate, AuxiliaryPropagationResult,
+    AuxiliaryThreadPropagation, ExcitationHist, NOCIMPIScratch, NOCIPopulationUpdate, QmcRng,
+    ShiftTangent,
 };
 
 /// Accumulate one cycle's `\chi_D^P` events and retain remote events for report exchange.
@@ -40,9 +41,9 @@ use super::state::{
 /// # Returns
 /// - `()`: Drains cycle-local results into report accumulators.
 fn accumulate_generated_updates_orthogonal(
-    result: &mut PropagationResultOrthogonal,
-    updates: &mut Vec<PopulationUpdateOrthogonal>,
-    scratch: &mut MPIScratchOrthogonal,
+    result: &mut AuxiliaryPropagationResult,
+    updates: &mut Vec<AuxiliaryPopulationUpdate>,
+    scratch: &mut AuxiliaryMPIScratch,
     histogram: &mut Option<super::state::ExcitationHist>,
 ) {
     updates.append(&mut result.local);
@@ -61,20 +62,13 @@ fn accumulate_generated_updates_orthogonal(
 /// - `updates`: Sparse orthogonal updates with arbitrary ordering.
 /// # Returns
 /// - `()`: Sorts by determinant key and combines repeated amplitudes.
-fn coalesce_population_updates_orthogonal(updates: &mut Vec<PopulationUpdateOrthogonal>) {
-    updates.sort_unstable_by_key(|update| {
-        (
-            update.parent,
-            update.oa_high,
-            update.oa_low,
-            update.ob_high,
-            update.ob_low,
-        )
-    });
+fn coalesce_auxiliary_population_updates(updates: &mut Vec<AuxiliaryPopulationUpdate>) {
+    updates.sort_unstable_by_key(|update| update.det);
+
     let mut out = 0usize;
     for i in 0..updates.len() {
         let update = updates[i];
-        if out != 0 && updates[out - 1].state() == update.state() {
+        if out != 0 && updates[out - 1].det == update.det {
             updates[out - 1].dn += update.dn;
         } else {
             updates[out] = update;
@@ -93,8 +87,8 @@ fn coalesce_population_updates_orthogonal(updates: &mut Vec<PopulationUpdateOrth
 /// # Returns
 /// - `()`: Places complete owner-local contributions in `scratch.recv`.
 fn redistribute_population_updates_orthogonal(
-    local: &mut Vec<PopulationUpdateOrthogonal>,
-    scratch: &mut MPIScratchOrthogonal,
+    local: &mut Vec<AuxiliaryPopulationUpdate>,
+    scratch: &mut AuxiliaryMPIScratch,
     world: &impl Communicator,
 ) {
     if world.size() == 1 {
@@ -103,16 +97,9 @@ fn redistribute_population_updates_orthogonal(
         return;
     }
 
-    scratch.send_ranked.sort_unstable_by_key(|(peer, update)| {
-        (
-            *peer,
-            update.parent,
-            update.oa_high,
-            update.oa_low,
-            update.ob_high,
-            update.ob_low,
-        )
-    });
+    scratch
+        .send_ranked
+        .sort_unstable_by_key(|(peer, update)| (*peer, update.det));
     scratch.send_counts.fill(0);
     scratch.send_displacements.fill(0);
     scratch.send_contig.clear();
@@ -133,14 +120,7 @@ fn redistribute_population_updates_orthogonal(
     }
     scratch.recv_contig.resize(
         nrecv,
-        PopulationUpdateOrthogonal::new(
-            OrthogonalDetState {
-                parent: 0,
-                oa: 0,
-                ob: 0,
-            },
-            0.0,
-        ),
+        AuxiliaryPopulationUpdate::new(AuxiliaryIndex(0), 0.0),
     );
     let send = Partition::new(
         &scratch.send_contig[..],
@@ -163,12 +143,12 @@ fn redistribute_population_updates_orthogonal(
 /// - `scratch`: Reusable orthogonal MPI storage.
 /// - `world`: MPI communicator.
 /// # Returns
-/// - `&[PopulationUpdateOrthogonal]`: Identical global compressed vector on every rank.
+/// - `&[AuxiliaryPopulationUpdate]`: Identical global compressed vector on every rank.
 fn gather_all_populations_orthogonal<'a>(
-    owned: &[PopulationUpdateOrthogonal],
-    scratch: &'a mut MPIScratchOrthogonal,
+    owned: &[AuxiliaryPopulationUpdate],
+    scratch: &'a mut AuxiliaryMPIScratch,
     world: &impl Communicator,
-) -> &'a [PopulationUpdateOrthogonal] {
+) -> &'a [AuxiliaryPopulationUpdate] {
     if world.size() == 1 {
         scratch.gather_recv.clear();
         scratch.gather_recv.extend_from_slice(owned);
@@ -187,14 +167,7 @@ fn gather_all_populations_orthogonal<'a>(
     }
     scratch.gather_recv.resize(
         ntotal,
-        PopulationUpdateOrthogonal::new(
-            OrthogonalDetState {
-                parent: 0,
-                oa: 0,
-                ob: 0,
-            },
-            0.0,
-        ),
+        AuxiliaryPopulationUpdate::new(AuxiliaryIndex(0), 0.0),
     );
     let mut recv = PartitionMut::new(
         &mut scratch.gather_recv[..],
@@ -220,14 +193,12 @@ fn print_bapply_storage(
     mode: crate::input::SNOCIStorage,
     initial: usize,
     factors: &OverlapFactors,
-    scratch: &OrthogonalOverlapScratch,
-    spin: &SpinFactorisation,
 ) {
     if rank != 0 {
         return;
     }
     let (final_bytes, _) = factors.storage_bytes();
-    let (alpha, beta) = scratch.added_components(spin);
+    let (alpha, beta) = factors.added_components();
     let mib = 1024.0 * 1024.0;
     println!("BApply factor storage: {}", mode.as_str());
     println!(
@@ -238,8 +209,8 @@ fn print_bapply_storage(
         "BApply final factor tables: {:.3} MiB",
         final_bytes as f64 / mib
     );
-    println!("BApply added physical alpha components: {alpha}");
-    println!("BApply added physical beta components: {beta}");
+    println!("BApply added alpha factor columns: {alpha}");
+    println!("BApply added beta factor columns: {beta}");
     println!(
         "BApply peak factor storage: {:.3} MiB",
         final_bytes as f64 / mib
@@ -281,11 +252,14 @@ pub fn qmc_step(
     }
     let (isref, _, run) = construct_qmc_run(data, c0, ref_indices, world);
     let factorisation = SpinFactorisation::new(data);
-    let components = factorisation.orthogonal_components(data);
+    let auxiliary = AuxiliarySpace::new(data.space);
     if factorisation.nparents() > 1 && data.wicks.is_none() {
         panic!("BApply cross-parent B^dagger requires Wick intermediates");
     }
-    let generator = OrthogonalUniformGenerator::new(&data.basis[0], &mocache[data.basis[0].parent]);
+    let generator = OrthogonalUniformGenerator::new(
+        data.space.occupations(NOCIIndex(0)),
+        &mocache[data.space.state(NOCIIndex(0)).parent],
+    );
     let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
     let mut overlap_factors = factorisation.build_overlap_factors(
         data,
@@ -296,9 +270,9 @@ pub fn qmc_step(
     );
     let initial_factor_bytes = overlap_factors.storage_bytes().0;
     let mut overlap_scratch = factorisation.overlap_scratch();
-    let mut orthogonal_scratch = factorisation.orthogonal_overlap_scratch(data);
-    let mut mpi = MPIScratch::new(run.nranks);
-    let mut orthogonal_mpi = MPIScratchOrthogonal::new(run.nranks);
+    let mut auxiliary_scratch = factorisation.auxiliary_overlap_scratch();
+    let mut mpi = NOCIMPIScratch::new(run.nranks);
+    let mut orthogonal_mpi = AuxiliaryMPIScratch::new(run.nranks);
     let mut wick = WickScratchSpin::new();
     let mut state = initialise_qmc_state(c0, es, data, &run, &isref, &mut wick, (world, &mut mpi));
     let propagator = data.input.prop_ref().propagator;
@@ -307,23 +281,23 @@ pub fn qmc_step(
         run.irank,
         state.start_report * qmc.ncycles,
         &state,
-        data.basis[0].e,
+        data.space.parents[0].e,
         *es,
         propagator,
     );
 
     let mut workers = (0..rayon::current_num_threads())
         .map(|tid| {
-            Mutex::new(ThreadPropagationOrthogonal::new(
+            Mutex::new(AuxiliaryThreadPropagation::new(
                 run.rank_seed ^ tid as u64,
                 factorisation.nparents(),
             ))
         })
         .collect::<Vec<_>>();
-    let mut propagation_result = PropagationResultOrthogonal::new();
+    let mut propagation_result = AuxiliaryPropagationResult::new();
     let mut local_updates = Vec::new();
     let mut shift_tangent = ShiftTangent::new(run.ndets);
-    let mut tangent_updates = Vec::<PopulationUpdate>::new();
+    let mut tangent_updates = Vec::<NOCIPopulationUpdate>::new();
     let mut propagated_tangent = vec![0.0; run.owned.len()];
     let mut sample_chunks = Vec::new();
     let mut chi_cutoff_hint = 0.0;
@@ -353,7 +327,7 @@ pub fn qmc_step(
                 data,
                 &run,
                 *es,
-                (&generator, &factorisation, &components),
+                (&generator, &auxiliary),
                 &mut workers,
                 &mut propagation_result,
             );
@@ -364,10 +338,10 @@ pub fn qmc_step(
                 &mut state.mc.excitation_hist,
             );
         }
-        coalesce_population_updates_orthogonal(&mut local_updates);
+        coalesce_auxiliary_population_updates(&mut local_updates);
         redistribute_population_updates_orthogonal(&mut local_updates, &mut orthogonal_mpi, world);
         let mut owner_updates = std::mem::take(&mut orthogonal_mpi.recv_contig);
-        coalesce_population_updates_orthogonal(&mut owner_updates);
+        coalesce_auxiliary_population_updates(&mut owner_updates);
         let chi_cutoff = target_cutoff(
             &owner_updates,
             qmc.fri.pre_overlap_target_nnz,
@@ -382,10 +356,10 @@ pub fn qmc_step(
         factorisation.apply_orthogonal_overlap_sparse(
             &mut state.mc.populations,
             &run.owned,
-            gathered.iter().map(|update| (update.state(), update.dn)),
-            data,
+            gathered.iter().map(|update| (update.index(), update.dn)),
+            (data, &auxiliary),
             &mut overlap_factors,
-            &mut orthogonal_scratch,
+            &mut auxiliary_scratch,
         );
         orthogonal_mpi.recv_contig = owner_updates;
 
@@ -461,8 +435,6 @@ pub fn qmc_step(
                 qmc.bapply_factor_tables,
                 initial_factor_bytes,
                 &overlap_factors,
-                &orthogonal_scratch,
-                &factorisation,
             );
             return result;
         }
@@ -483,7 +455,7 @@ pub fn qmc_step(
             end,
             &state,
             &stats,
-            data.basis[0].e,
+            data.space.parents[0].e,
             *es,
             propagator,
         );
@@ -494,8 +466,6 @@ pub fn qmc_step(
         qmc.bapply_factor_tables,
         initial_factor_bytes,
         &overlap_factors,
-        &orthogonal_scratch,
-        &factorisation,
     );
     (state.eprojcur, state.mc.excitation_hist)
 }

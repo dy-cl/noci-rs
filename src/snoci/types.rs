@@ -7,9 +7,8 @@ use std::time::Instant;
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
-use crate::DetState;
 use crate::input::SNOCIPreconditioner;
-use crate::noci::{FockData, NOCIData, NOCIScalar};
+use crate::noci::{FockData, NOCIData, NOCIIndex, NOCIScalar};
 
 /// Storage for the result of a selected NOCI step.
 pub struct SNOCIState<T: NOCIScalar> {
@@ -21,10 +20,8 @@ pub struct SNOCIState<T: NOCIScalar> {
     pub hcurrent: Array2<T>,
     /// Overlap matrix in the current selected space.
     pub scurrent: Array2<T>,
-    /// Candidate determinants considered on the current iteration.
-    pub candidates: Vec<DetState<T>>,
     /// Candidate determinants selected for addition to the current space.
-    pub selected: Vec<DetState<T>>,
+    pub(crate) selected: Vec<NOCIIndex>,
     // Results of the NOCI-PT2 solve.
     pub pt2: Vec<SNOCIPT2Result>,
 }
@@ -124,7 +121,7 @@ pub(in crate::snoci) struct PT2ProjectedOperator<'a, 'data, 'fock, T: NOCIScalar
     /// Fock-specific matrix-element data.
     pub(in crate::snoci) fock: &'a FockData<'fock, T>,
     /// Candidate determinants defining the first-order interacting space.
-    pub(in crate::snoci) candidates: &'a [DetState<T>],
+    pub(in crate::snoci) candidates: &'a [NOCIIndex],
     /// Precomputed projection quantities.
     pub(in crate::snoci) projection: &'a PT2Projection<T>,
 }

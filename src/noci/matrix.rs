@@ -7,6 +7,7 @@ use ndarray::{Array1, Array2};
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::AoData;
 use crate::input::Input;
 use crate::maths::general_evp;
 use crate::noci::{calculate_f_pair, calculate_hs_pair, calculate_s_pair};
@@ -14,11 +15,11 @@ use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::time_call;
 use crate::utils::print_array2_indexed;
 use crate::write::write_hs_matrices;
-use crate::{AoData, DetState};
 
 // Parent/sibling imports.
 use super::fock::compare_f_pair_wicks_naive;
 use super::hs::compare_hs_pair_wicks_naive;
+use super::space::{NOCIIndex, NOCISpace};
 use super::types::{DetPair, FockData, MOCache, NOCIData, NOCIScalar, ScatterValue};
 
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
@@ -34,11 +35,11 @@ use super::types::{DetPair, FockData, MOCache, NOCIData, NOCIScalar, ScatterValu
 /// - `(Vec<(usize, usize, U)>, Duration)`: Evaluated matrix elements with
 ///   their indices and the wall time for the evaluation.
 /// # Type Parameters:
-/// - `O`: `Fn(&DetState<T>, &DetState<T>, Option<&mut WickScratchSpin<T>>) -> U` and `Sync`.
+/// - `O`: Matrix-element callback over retained determinant indices and Wick scratch.
 /// - `U`: Required to be `Send`.
 fn calculate_matrix_elements<T, U, O>(
-    left: &[DetState<T>],
-    right: &[DetState<T>],
+    left: &[NOCIIndex],
+    right: &[NOCIIndex],
     input: &Input,
     symmetric: bool,
     o: O,
@@ -46,7 +47,7 @@ fn calculate_matrix_elements<T, U, O>(
 where
     T: NOCIScalar,
     U: Send,
-    O: Fn(&DetState<T>, &DetState<T>, Option<&mut WickScratchSpin<T>>) -> U + Sync,
+    O: Fn(NOCIIndex, NOCIIndex, Option<&mut WickScratchSpin<T>>) -> U + Sync,
 {
     let nl = left.len();
     let nr = right.len();
@@ -65,13 +66,13 @@ where
         pairs
             .par_iter()
             .map_init(WickScratchSpin::<T>::new, |scratch, &(i, j)| {
-                (i, j, o(&left[i], &right[j], Some(scratch)))
+                (i, j, o(left[i], right[j], Some(scratch)))
             })
             .collect()
     } else {
         pairs
             .par_iter()
-            .map(|&(i, j)| (i, j, o(&left[i], &right[j], None)))
+            .map(|&(i, j)| (i, j, o(left[i], right[j], None)))
             .collect()
     };
 
@@ -122,8 +123,8 @@ where
 pub(crate) fn build_noci_fock<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     fock: &FockData<'_, T>,
-    left: &[DetState<T>],
-    right: &[DetState<T>],
+    left: &[NOCIIndex],
+    right: &[NOCIIndex],
     symmetric: bool,
 ) -> (Array2<T>, Duration) {
     time_call!(crate::timers::noci::add_build_full_fock, {
@@ -181,10 +182,10 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
 /// - `symmetric`: Whether the matrix is symmetric.
 /// # Returns:
 /// - `(Array2<T>, Duration)`: The overlap matrix and the matrix-build time.
-pub fn build_noci_s<T: NOCIScalar>(
+pub(crate) fn build_noci_s<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    left: &[DetState<T>],
-    right: &[DetState<T>],
+    left: &[NOCIIndex],
+    right: &[NOCIIndex],
     symmetric: bool,
 ) -> (Array2<T>, Duration) {
     time_call!(crate::timers::noci::add_build_full_overlap, {
@@ -213,8 +214,8 @@ pub fn build_noci_s<T: NOCIScalar>(
 ///   and matrix-build time.
 pub fn build_noci_hs<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    left: &[DetState<T>],
-    right: &[DetState<T>],
+    left: &[NOCIIndex],
+    right: &[NOCIIndex],
     symmetric: bool,
 ) -> (Array2<T>, Array2<T>, Duration) {
     time_call!(crate::timers::noci::add_build_full_hs, {
@@ -267,7 +268,7 @@ pub fn build_noci_hs<T: NOCIScalar>(
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `input`: User input specifications.
-/// - `scfstates`: Vector of all SCF states used in the NOCI basis.
+/// - `space`: Authoritative retained determinant topology and parent orbital frames.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.
@@ -277,15 +278,16 @@ pub fn build_noci_hs<T: NOCIScalar>(
 pub fn calculate_noci_energy<T: NOCIScalar>(
     ao: &AoData,
     input: &Input,
-    scfstates: &[DetState<T>],
+    space: &NOCISpace<T>,
     tol: f64,
     mocache: &[MOCache<T>],
     wicks: Option<&WicksView<T>>,
 ) -> (f64, Array1<T>, Duration) {
-    let data = NOCIData::new(ao, scfstates, input, tol, wicks).withmocache(mocache);
-    let (h, s, d_hs) = build_noci_hs(&data, scfstates, scfstates, true);
+    let data = NOCIData::new(ao, space, input, tol, wicks).withmocache(mocache);
+    let indices = (0..space.len()).map(NOCIIndex).collect::<Vec<_>>();
+    let (h, s, d_hs) = build_noci_hs(&data, &indices, &indices, true);
 
-    let h_shift = &h - &s.mapv(|x| scfstates[0].e * x);
+    let h_shift = &h - &s.mapv(|x| space.parents[0].e * x);
     if input.write.verbose >= 2 {
         println!("{}", "=".repeat(100));
         println!("NOCI-reference Hamiltonian:");

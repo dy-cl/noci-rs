@@ -13,22 +13,20 @@ use rayon::prelude::*;
 // Crate-root imports.
 use crate::input::{Input, Propagator};
 use crate::noci::{
-    DetPair, NOCIData, OrthogonalComponents, OverlapFactors, SpinFactorisation,
-    calculate_h_pairs_orthogonal_batched, calculate_hs_pair, calculate_hs_pairs_wicks_batched,
-    calculate_s_pair,
+    AuxiliarySpace, DetPair, NOCIData, OverlapFactors, calculate_h_pairs_orthogonal_batched,
+    calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
 };
 use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
-use crate::{ReducedTwoSpinState, SCFState};
 
 // Parent/sibling imports.
 use super::excit::OrthogonalUniformGenerator;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::restart::basis_hash;
 use super::state::{
-    MCState, MPIScratch, PopulationStats, PopulationUpdate, ProjectedEnergyUpdate,
-    PropagationResult, PropagationResultOrthogonal, QMCRunInfo, QmcRng, ScratchSize, ShiftSpec,
-    SparsePopulations, ThreadPropagation, ThreadPropagationOrthogonal, owner,
+    AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
+    NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
+    ProjectedEnergyUpdate, QMCRunInfo, QmcRng, ScratchSize, ShiftSpec, SparsePopulations, owner,
 };
 
 /// Accumulate one signed population change in dense/sparse Monte Carlo storage.
@@ -60,14 +58,14 @@ fn add_delta(
 /// - `()`: Clears touched dense entries and fills `changes`.
 pub(in crate::stochastic) fn take_population_changes(
     mc: &mut MCState,
-    changes: &mut Vec<PopulationUpdate>,
+    changes: &mut Vec<NOCIPopulationUpdate>,
 ) {
     changes.clear();
     for det in mc.changed.drain(..) {
         let dn = mc.delta[det];
         mc.delta[det] = 0.0;
         if dn != 0.0 {
-            changes.push(PopulationUpdate {
+            changes.push(NOCIPopulationUpdate {
                 det: det as u64,
                 dn,
             });
@@ -85,9 +83,9 @@ pub(in crate::stochastic) fn take_population_changes(
 /// - `()`: Updates local delta, histogram, and remote buffers.
 pub(in crate::stochastic) fn accumulate_generated_updates(
     mc: &mut MCState,
-    propagation: &mut PropagationResult,
+    propagation: &mut NOCIPropagationResult,
     input: &Input,
-    scratch: &mut MPIScratch,
+    scratch: &mut NOCIMPIScratch,
 ) {
     for (det, dn) in propagation.local.drain(..) {
         add_delta(mc, det, dn);
@@ -112,7 +110,7 @@ pub(in crate::stochastic) fn accumulate_generated_updates(
 /// - `()`: Fills contiguous send data, counts, and displacements.
 pub(in crate::stochastic) fn prepare_spawn_update_exchange(
     nranks: usize,
-    scratch: &mut MPIScratch,
+    scratch: &mut NOCIMPIScratch,
 ) {
     scratch.send_counts.fill(0);
     scratch.send_displacements.fill(0);
@@ -157,7 +155,7 @@ pub(in crate::stochastic) fn prepare_spawn_update_exchange(
 /// - `()`: Adds received updates to `mc.delta`.
 pub(in crate::stochastic) fn exchange_accumulated_updates(
     mc: &mut MCState,
-    scratch: &mut MPIScratch,
+    scratch: &mut NOCIMPIScratch,
     world: &impl CommunicatorCollectives,
     run: &QMCRunInfo,
 ) {
@@ -199,8 +197,8 @@ pub(in crate::stochastic) fn propagate_iteration(
         f64,
         bool,
     ),
-    workers: &mut [Mutex<ThreadPropagation>],
-    result: &mut PropagationResult,
+    workers: &mut [Mutex<NOCIThreadPropagation>],
+    result: &mut NOCIPropagationResult,
 ) {
     let (iteration, sampled) = sample;
     let (overlap_factors, overlap_generator, overlap_weight, optimise_overlap_weight) = overlap;
@@ -215,7 +213,7 @@ pub(in crate::stochastic) fn propagate_iteration(
     let occupied = sampled.occ();
     if !occupied.is_empty() {
         let next = AtomicUsize::new(0);
-        let workers_shared: &[Mutex<ThreadPropagation>] = workers;
+        let workers_shared: &[Mutex<NOCIThreadPropagation>] = workers;
         rayon::broadcast(|context| {
             let tid = context.index();
             let mut worker = workers_shared[tid].lock().unwrap();
@@ -296,16 +294,12 @@ pub(in crate::stochastic) fn propagate_iteration_orthogonal(
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
     shift: f64,
-    orthogonal: (
-        &OrthogonalUniformGenerator,
-        &SpinFactorisation,
-        &OrthogonalComponents,
-    ),
-    workers: &mut [Mutex<ThreadPropagationOrthogonal>],
-    result: &mut PropagationResultOrthogonal,
+    orthogonal: (&OrthogonalUniformGenerator, &AuxiliarySpace),
+    workers: &mut [Mutex<AuxiliaryThreadPropagation>],
+    result: &mut AuxiliaryPropagationResult,
 ) {
     let (iteration, sampled) = sample;
-    let (generator, factorisation, components) = orthogonal;
+    let (generator, auxiliary) = orthogonal;
     let dt = data.input.prop_ref().dt;
     for worker in workers.iter_mut() {
         worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
@@ -314,7 +308,7 @@ pub(in crate::stochastic) fn propagate_iteration_orthogonal(
     let occupied = sampled.occ();
     if !occupied.is_empty() {
         let next = AtomicUsize::new(0);
-        let workers_shared: &[Mutex<ThreadPropagationOrthogonal>] = workers;
+        let workers_shared: &[Mutex<AuxiliaryThreadPropagation>] = workers;
         rayon::broadcast(|context| {
             let tid = context.index();
             let mut worker = workers_shared[tid].lock().unwrap();
@@ -336,12 +330,14 @@ pub(in crate::stochastic) fn propagate_iteration_orthogonal(
                     worker
                         .shift_tangent
                         .add(source, dt * population, run.nranks > 1);
-                    worker.diagonal_population_change(source, population, shift, data, run);
+                    worker.diagonal_population_change(
+                        source, population, shift, data, auxiliary, run,
+                    );
                     worker.spawning(source, population, generator);
                 }
             }
 
-            worker.resolve_batched_spawning(data, generator, factorisation, components, run);
+            worker.resolve_batched_spawning(data, generator, auxiliary, run);
         });
     }
     for worker in workers.iter_mut() {
@@ -369,14 +365,14 @@ pub(in crate::stochastic) fn construct_qmc_run(
     let qmc = data.input.qmc.as_ref().unwrap();
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
-    let ndets = data.basis.len();
+    let ndets = data.space.len();
     let mut isref = vec![false; ndets];
     for &i in ref_indices {
         isref[i] = true;
     }
     let base_seed = qmc.seed.unwrap_or_else(rand::random);
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
-    let (maxsame, maxla, maxlb) = max_scratch_sizes(data.basis);
+    let (maxsame, maxla, maxlb) = max_scratch_sizes(data.space);
     let scratchsize = ScratchSize {
         maxsame,
         maxla,
@@ -385,9 +381,7 @@ pub(in crate::stochastic) fn construct_qmc_run(
     let det_owner = if nranks == 1 {
         vec![0; ndets]
     } else {
-        (0..ndets)
-            .map(|det| owner(det, ndets, nranks))
-            .collect::<Vec<_>>()
+        (0..ndets).map(|det| owner(det, nranks)).collect::<Vec<_>>()
     };
     let owned = if nranks == 1 {
         (0..ndets).collect::<Vec<_>>()
@@ -430,12 +424,6 @@ pub(in crate::stochastic) fn construct_qmc_run(
             },
         )
         .collect::<Vec<_>>();
-    let reduced_basis = data
-        .basis
-        .iter()
-        .map(ReducedTwoSpinState::from_state)
-        .collect();
-
     (
         isref,
         scratchsize,
@@ -443,8 +431,7 @@ pub(in crate::stochastic) fn construct_qmc_run(
             irank,
             nranks,
             ndets,
-            basis_hash: basis_hash(data.basis),
-            reduced_basis,
+            basis_hash: basis_hash(data.space),
             det_owner,
             owned,
             base_seed,
@@ -560,22 +547,29 @@ pub(in crate::stochastic) fn find_s(
 ) -> f64 {
     // Get the sorted pair of indices
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
-    let ldet = &data.basis[a];
-    let gdet = &data.basis[b];
+    let ldet = data.space.state(crate::noci::NOCIIndex(a));
+    let gdet = data.space.state(crate::noci::NOCIIndex(b));
 
     // If the determinants share the same parent take an orthogonal early exit.
     if ldet.parent == gdet.parent
         && let Some(mocache) = data.mocache
         && mocache[ldet.parent].orthogonal_slater_condon
     {
-        if ldet.oa == gdet.oa && ldet.ob == gdet.ob {
-            return (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+        if data.space.occupations(crate::noci::NOCIIndex(a))
+            == data.space.occupations(crate::noci::NOCIIndex(b))
+        {
+            return data.space.phase(crate::noci::NOCIIndex(a))
+                * data.space.phase(crate::noci::NOCIIndex(b));
         }
         return 0.0;
     }
 
     // Otherwise calculate normally.
-    calculate_s_pair(data, DetPair::new(ldet, gdet), Some(scratch))
+    calculate_s_pair(
+        data,
+        DetPair::new(crate::noci::NOCIIndex(a), crate::noci::NOCIIndex(b)),
+        Some(scratch),
+    )
 }
 
 /// `Find Hamiltonian and overlap matrix elements H_{ij} and S_{ij}.`
@@ -598,7 +592,7 @@ pub(in crate::stochastic) fn find_hs(
     // Calculate the matrix element.
     calculate_hs_pair(
         data,
-        DetPair::new(&data.basis[a], &data.basis[b]),
+        DetPair::new(crate::noci::NOCIIndex(a), crate::noci::NOCIIndex(b)),
         Some(scratch),
     )
 }
@@ -609,7 +603,6 @@ pub(in crate::stochastic) fn find_hs(
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
-/// - `reduced_basis`: Compact two-spin metadata keyed by global determinant index.
 /// - `scratch`: Reusable Wick scratch space for scalar and generic-rank evaluation.
 /// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
 /// # Returns:
@@ -617,21 +610,22 @@ pub(in crate::stochastic) fn find_hs(
 pub(in crate::stochastic) fn find_hs_batched(
     data: &NOCIData<'_, f64>,
     pairs: &[(usize, usize)],
-    reduced_basis: &[ReducedTwoSpinState],
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
     if data.input.wicks.enabled && data.wicks.is_some() {
-        calculate_hs_pairs_wicks_batched(data, pairs, reduced_basis, scratch, out);
+        calculate_hs_pairs_wicks_batched(data, pairs, scratch, out);
         return;
     }
 
     for (i, &(a, b)) in pairs.iter().enumerate() {
-        let ldet = &data.basis[a];
-        let gdet = &data.basis[b];
+        let ldet = data.space.state(crate::noci::NOCIIndex(a));
+        let gdet = data.space.state(crate::noci::NOCIIndex(b));
+        let loa = data.space.occupations(crate::noci::NOCIIndex(a));
+        let goa = data.space.occupations(crate::noci::NOCIIndex(b));
 
         if ldet.parent == gdet.parent
-            && (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4
+            && (loa.0 ^ goa.0).count_ones() + (loa.1 ^ goa.1).count_ones() > 4
         {
             out[i] = (0.0, 0.0);
         } else {
@@ -655,21 +649,11 @@ pub(in crate::stochastic) fn find_hs_batched(
 pub(in crate::stochastic) fn find_h_orthogonal_batched(
     data: &NOCIData<'_, f64>,
     generator: &OrthogonalUniformGenerator,
-    factorisation: &SpinFactorisation,
-    components: &OrthogonalComponents,
-    pairs: &[(usize, usize)],
+    pairs: &[(crate::noci::NOCIIndex, usize)],
     scratch: &mut crate::noci::OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
-    calculate_h_pairs_orthogonal_batched(
-        data,
-        factorisation,
-        components,
-        generator.connections(),
-        pairs,
-        scratch,
-        out,
-    );
+    calculate_h_pairs_orthogonal_batched(data, generator.connections(), pairs, scratch, out);
 }
 
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended
@@ -679,15 +663,21 @@ pub(in crate::stochastic) fn find_h_orthogonal_batched(
 /// # Returns
 /// - `(usize, usize, usize)`: Maximum same-spin scratch size, alpha excitation size, and beta
 ///   excitation size.
-pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, usize, usize) {
-    let maxexa = basis
+pub(in crate::stochastic) fn max_scratch_sizes(
+    space: &crate::noci::NOCISpace<f64>
+) -> (usize, usize, usize) {
+    let maxexa = space
+        .components
         .iter()
-        .map(|st| st.excitation.alpha.holes.count_ones() as usize)
+        .flat_map(|parent| &parent.alpha)
+        .map(|st| st.excitation.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
-    let maxexb = basis
+    let maxexb = space
+        .components
         .iter()
-        .map(|st| st.excitation.beta.holes.count_ones() as usize)
+        .flat_map(|parent| &parent.beta)
+        .map(|st| st.excitation.holes.count_ones() as usize)
         .max()
         .unwrap_or(0);
     let maxsame = 2 * maxexa.max(maxexb);
@@ -697,7 +687,7 @@ pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, us
 }
 
 /// Communicate spawned population updates between MPI ranks.
-/// Remote spawn updates are stored locally as one `Vec<PopulationUpdate>` per destination rank.
+/// Remote spawn updates are stored locally as one `Vec<NOCIPopulationUpdate>` per destination rank.
 /// This routine packs those per-destination buffers into one contiguous send buffer, exchanges the
 /// number of updates each rank will send/receive, then performs one `MPI_Alltoallv`-style exchange
 /// of the packed payloads.
@@ -705,11 +695,11 @@ pub(in crate::stochastic) fn max_scratch_sizes(basis: &[SCFState]) -> (usize, us
 /// - `world`: `MPI communicator object (MPI_COMM_WORLD).`
 /// - `scratch`: Reusable MPI scratch space for counts, displacements, and contiguous send/recv buffers.
 /// # Returns
-/// - `&[PopulationUpdate]`: Flat buffer containing all spawned population updates received from other ranks.
+/// - `&[NOCIPopulationUpdate]`: Flat buffer containing all spawned population updates received from other ranks.
 pub(crate) fn exchange_population_changes<'a>(
     world: &impl CommunicatorCollectives,
-    scratch: &'a mut MPIScratch,
-) -> &'a [PopulationUpdate] {
+    scratch: &'a mut NOCIMPIScratch,
+) -> &'a [NOCIPopulationUpdate] {
     time_call!(
         crate::timers::stochastic::add_exchange_population_changes,
         {
@@ -739,7 +729,7 @@ pub(crate) fn exchange_population_changes<'a>(
             scratch.recv_contig.clear();
             scratch
                 .recv_contig
-                .resize(nrecv, PopulationUpdate { det: 0, dn: 0.0 });
+                .resize(nrecv, NOCIPopulationUpdate { det: 0, dn: 0.0 });
 
             let send_part = Partition::new(
                 &scratch.send_contig[..],
@@ -770,12 +760,12 @@ pub(crate) fn exchange_population_changes<'a>(
 /// - `send`: Local population updates to gather.
 /// - `scratch`: Reusable MPI scratch space.
 /// # Returns
-/// - `&[PopulationUpdate]`: Global gathered population updates.
+/// - `&[NOCIPopulationUpdate]`: Global gathered population updates.
 pub(crate) fn gather_all_populations<'a>(
     world: &impl Communicator,
-    send: &[PopulationUpdate],
-    scratch: &'a mut MPIScratch,
-) -> &'a [PopulationUpdate] {
+    send: &[NOCIPopulationUpdate],
+    scratch: &'a mut NOCIMPIScratch,
+) -> &'a [NOCIPopulationUpdate] {
     time_call!(crate::timers::stochastic::add_gather_all_populations, {
         let nsend = send.len() as i32;
         world.all_gather_into(&nsend, &mut scratch.gather_counts[..]);
@@ -793,7 +783,7 @@ pub(crate) fn gather_all_populations<'a>(
 
         scratch
             .gather_recv
-            .resize(ntot, PopulationUpdate { det: 0, dn: 0.0 });
+            .resize(ntot, NOCIPopulationUpdate { det: 0, dn: 0.0 });
         let mut recv = PartitionMut::new(
             &mut scratch.gather_recv[..],
             &scratch.gather_counts[..],
@@ -809,7 +799,7 @@ pub(crate) fn gather_all_populations<'a>(
 /// - `updates`: Population updates sorted by determinant index.
 /// # Returns
 /// - `()`: Compresses repeated determinant updates in place.
-pub(in crate::stochastic) fn coalesce_population_updates(updates: &mut Vec<PopulationUpdate>) {
+pub(in crate::stochastic) fn coalesce_population_updates(updates: &mut Vec<NOCIPopulationUpdate>) {
     let mut out = 0usize;
     for i in 0..updates.len() {
         if out > 0 && updates[out - 1].det == updates[i].det {

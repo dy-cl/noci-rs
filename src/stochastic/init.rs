@@ -13,8 +13,8 @@ use crate::time_call;
 use super::common::{find_s, gather_all_populations, projected_energy};
 use super::restart::read_restart_hdf5;
 use super::state::{
-    ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, PropagationState,
-    QMCRunInfo, SparsePopulations,
+    ExcitationHist, MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationStats,
+    PropagationState, QMCRunInfo, SparsePopulations,
 };
 
 /// Initialise the persistent range-safe population vector as `S c0`.
@@ -35,14 +35,14 @@ pub(in crate::stochastic) fn initialise_populations(
     run: &QMCRunInfo,
     world: &impl Communicator,
     scratch: &mut WickScratchSpin<f64>,
-    mpiscratch: &mut MPIScratch,
+    mpiscratch: &mut NOCIMPIScratch,
 ) -> Vec<f64> {
     time_call!(crate::timers::stochastic::add_initialise_populations, {
         let local = c0
             .iter()
             .enumerate()
             .filter(|(i, population)| **population != 0.0 && run.det_owner[*i] == run.irank)
-            .map(|(i, &population)| PopulationUpdate {
+            .map(|(i, &population)| NOCIPopulationUpdate {
                 det: i as u64,
                 dn: population,
             })
@@ -99,7 +99,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
     run: &QMCRunInfo,
     isref: &[bool],
     scratch: &mut WickScratchSpin<f64>,
-    mpi: (&impl Communicator, &mut MPIScratch),
+    mpi: (&impl Communicator, &mut NOCIMPIScratch),
 ) -> PropagationState {
     let (world, mpiscratch) = mpi;
     let qmc = data.input.qmc.as_ref().unwrap();

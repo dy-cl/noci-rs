@@ -11,9 +11,9 @@
 //! The selected states retain their orbital coefficients, occupations, labels and reference
 //! ordering.
 //!
-//! Excited determinant bases are generated from the molecular-orbital set of
-//! each selected reference. Their excitation descriptors, parent-reference indices and
-//! fermionic phases are retained for subsequent matrix-element evaluation.
+//! Excited determinants are generated in `NOCISpace` from selected parent orbital frames.
+//! Parent-local spin components retain their excitation descriptors and fermionic phases
+//! for subsequent matrix-element evaluation.
 
 mod atoms;
 mod bias;
@@ -30,7 +30,7 @@ pub use types::ReferenceBasis;
 
 // Public function re-exports.
 pub use duplicate::{density_distance, electron_distance};
-pub use excitation::{excitation_phase, generate_excited_basis};
+pub use excitation::excitation_phase;
 pub use generate::generate_reference_noci_basis;
 pub use normalise::hermitian_hnoci_basis;
 

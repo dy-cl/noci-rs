@@ -26,9 +26,9 @@ use super::report::{check_stop, print_header, print_initial_row, print_row, writ
 use super::restart::read_restart_hdf5;
 use super::shift::update_shift;
 use super::state::{
-    ExcitationHist, MCState, MPIScratch, OverlapDerivativeSums, PopulationStats,
-    ProjectedEnergyUpdate, PropagationResult, PropagationState, QMCRunInfo, QmcRng, ShiftSpec,
-    SparsePopulations, ThreadPropagation,
+    ExcitationHist, MCState, NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation,
+    OverlapDerivativeSums, PopulationStats, ProjectedEnergyUpdate, PropagationState, QMCRunInfo,
+    QmcRng, ShiftSpec, SparsePopulations,
 };
 
 /// Initialise rank-local walker populations from the initial coefficient vector.
@@ -72,7 +72,7 @@ fn initialise_populations(
 /// - `()`: Updates rank-local populations in place.
 fn apply_population_changes(
     populations: &mut [f64],
-    changes: &[super::state::PopulationUpdate],
+    changes: &[super::state::NOCIPopulationUpdate],
     local_pos: &[usize],
 ) {
     for update in changes {
@@ -137,7 +137,7 @@ pub fn qmc_step(
 
     let mut workers = (0..rayon::current_num_threads())
         .map(|tid| {
-            Mutex::new(ThreadPropagation::with_sizes(
+            Mutex::new(NOCIThreadPropagation::with_sizes(
                 run.rank_seed ^ tid as u64,
                 scratchsize.maxsame,
                 scratchsize.maxla,
@@ -145,8 +145,8 @@ pub fn qmc_step(
             ))
         })
         .collect::<Vec<_>>();
-    let mut propagation_result = PropagationResult::new();
-    let mut mpiscratch = MPIScratch::new(run.nranks);
+    let mut propagation_result = NOCIPropagationResult::new();
+    let mut mpiscratch = NOCIMPIScratch::new(run.nranks);
 
     let mut state = if let Some(path) = data.input.write.read_restart.as_deref() {
         if run.irank == 0 {
@@ -227,7 +227,7 @@ pub fn qmc_step(
         run.irank,
         state.start_report * qmc.ncycles,
         &state,
-        data.basis[0].e,
+        data.space.parents[0].e,
         *es,
         propagator,
     );
@@ -332,7 +332,7 @@ pub fn qmc_step(
             end,
             &state,
             &stats,
-            data.basis[0].e,
+            data.space.parents[0].e,
             *es,
             propagator,
         );

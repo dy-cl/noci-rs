@@ -9,6 +9,8 @@ use mpi::topology::Communicator;
 use ndarray::Array2;
 
 // Crate-root imports.
+use crate::AoData;
+use crate::determinant::ParentDeterminant;
 use crate::input::Input;
 use crate::input::Spin;
 use crate::mpiutils::Sharedffi;
@@ -21,7 +23,6 @@ use crate::nonorthogonalwicks::{
     assign_offsets, create_wicks_mmap, load_wicks_mmap, write_diff_spin, write_hcol0,
     write_same_spin, write2t,
 };
-use crate::{AoData, DetState};
 
 // Parent/sibling imports.
 use super::types::NOCIScalar;
@@ -36,8 +37,8 @@ use super::types::NOCIScalar;
 /// - `(SameSpinBuild<T>, SameSpinBuild<T>, DiffSpinBuild<T>, PairMeta<T>)`: Alpha-alpha, beta-beta, and alpha-beta Wick's intermediates together with the corresponding per-pair metadata.
 fn build_wicks_pair<T: NOCIScalar>(
     ao: &AoData,
-    ri: &DetState<T>,
-    rj: &DetState<T>,
+    ri: &ParentDeterminant<T>,
+    rj: &ParentDeterminant<T>,
     tol: f64,
 ) -> (
     SameSpinBuild<T>,
@@ -89,7 +90,7 @@ fn build_wicks_pair<T: NOCIScalar>(
 /// - `Vec<PairZeroCounts>`: Pair-adaptive zero counts ordered by `idx = i * nref + j`.
 fn plan_wicks_pairs<T: NOCIScalar>(
     ao: &AoData,
-    refs: &[DetState<T>],
+    refs: &[ParentDeterminant<T>],
     tol: f64,
 ) -> Vec<PairZeroCounts> {
     let nref = refs.len();
@@ -125,7 +126,7 @@ fn plan_wicks_pairs<T: NOCIScalar>(
 /// # Arguments:
 /// - `world`: MPI communicator object.
 /// - `ao`: Contains AO integrals and other system data.
-/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `parents`: Selected parent orbital frames in reference order.
 /// - `tol`: Tolerance for a number being zero.
 /// - `input`: User input specifications.
 /// # Returns:
@@ -133,15 +134,15 @@ fn plan_wicks_pairs<T: NOCIScalar>(
 pub fn build_wicks_shared<T: NOCIScalar>(
     world: &impl Communicator,
     ao: &AoData,
-    noci_reference_basis: &[DetState<T>],
+    parents: &[ParentDeterminant<T>],
     tol: f64,
     input: &Input,
 ) -> WicksShared<T> {
-    let nref = noci_reference_basis.len();
-    let nmo = noci_reference_basis[0].ca.ncols();
+    let nref = parents.len();
+    let nmo = parents[0].ca.ncols();
     let irank = world.rank();
 
-    let plans = plan_wicks_pairs(ao, noci_reference_basis, tol);
+    let plans = plan_wicks_pairs(ao, parents, tol);
     let (offset, tensor_len) = assign_offsets(&plans, nmo, ao.n);
     drop(plans);
     let nbytes = tensor_len * std::mem::size_of::<T>();
@@ -168,8 +169,8 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 tensor.fill(<T as From<f64>>::from(f64::NAN));
 
                 for i in 0..nref {
-                    let ri = &noci_reference_basis[i];
-                    for (j, rj) in noci_reference_basis.iter().enumerate() {
+                    let ri = &parents[i];
+                    for (j, rj) in parents.iter().enumerate() {
                         println!(
                             "Building intermediates for reference pair: {}, {} on world rank {}",
                             i,
@@ -237,8 +238,8 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                     create_wicks_mmap::<T>(&slab_path, nref, offset.clone(), tensor_len).unwrap();
 
                 for i in 0..nref {
-                    let ri = &noci_reference_basis[i];
-                    for (j, rj) in noci_reference_basis.iter().enumerate() {
+                    let ri = &parents[i];
+                    for (j, rj) in parents.iter().enumerate() {
                         println!(
                             "Building intermediates for reference pair: {}, {} on world rank {}",
                             i,
@@ -283,22 +284,22 @@ pub fn build_wicks_shared<T: NOCIScalar>(
 /// # Arguments:
 /// - `fa`: Fock matrix spin alpha.
 /// - `fb`: Fock matrix spin beta.
-/// - `noci_reference_basis`: Vector of only the reference determinants.
+/// - `parents`: Selected parent orbital frames in reference order.
 /// - `wicks`: Shared memory Wick's intermediates storage.
 /// # Returns:
 /// - `()`: Updates the stored Fock-related Wick's intermediates in `wicks` in place.
-pub fn update_wicks_fock<T: NOCIScalar>(
+pub(crate) fn update_wicks_fock<T: NOCIScalar>(
     fa: &Array2<T>,
     fb: &Array2<T>,
-    noci_reference_basis: &[DetState<T>],
+    parents: &[ParentDeterminant<T>],
     s: &Array2<f64>,
     tol: f64,
     wicks: &mut WicksShared<T>,
 ) {
-    let nref = noci_reference_basis.len();
+    let nref = parents.len();
 
-    for (i, ri) in noci_reference_basis.iter().enumerate().take(nref) {
-        for (j, rj) in noci_reference_basis.iter().enumerate().take(nref) {
+    for (i, ri) in parents.iter().enumerate().take(nref) {
+        for (j, rj) in parents.iter().enumerate().take(nref) {
             let idx = i * nref + j;
 
             let (off_aa, off_bb) = {

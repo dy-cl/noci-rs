@@ -1,24 +1,21 @@
 // noci/hs.rs
 // Crate-root imports.
-use crate::basis::{excitation_between, excitation_phase_bits};
+use crate::basis::excitation_between;
 use crate::nonorthogonalwicks::{
     WickScratchSpin, WicksView, xw_hamiltonian_overlap_prepared,
     xw_hamiltonian_overlap_prepared_batched,
 };
 use crate::time_call;
-use crate::{
-    AoData, DetState, Excitation, ExcitationCache, ExcitationSpin, ExcitationSpinCache,
-    ReducedTwoSpinState,
-};
+use crate::{AoData, Excitation, ExcitationCache, ExcitationSpin, ReducedTwoSpinState};
 
 // Parent/sibling imports.
-use super::factorise::{OrthogonalComponents, OrthogonalSpinComponent, SpinFactorisation};
 use super::naive::{build_s_pair, occ_coeffs, one_electron, two_electron_diff, two_electron_same};
 use super::orthogonal::{
     OrthogonalConnection, xw_hamiltonian_orthogonal_prepared,
     xw_hamiltonian_orthogonal_prepared_batched,
 };
 use super::overlap::calculate_s_pair_orthogonal;
+use super::space::{NOCIIndex, NOCISpace};
 use super::types::{DetPair, MOCache, NOCIData, NOCIScalar};
 
 /// Reusable parent-and-sector grouping storage for compact orthogonal Hamiltonian requests.
@@ -64,33 +61,36 @@ impl OrthogonalHamiltonianScratch {
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between the determinant pair.
 pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     scratch: Option<&mut WickScratchSpin<T>>,
 ) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair, {
-        let ldet = pair.ldet;
-        let gdet = pair.gdet;
+        let ldet = data.space.state(pair.ldet);
+        let gdet = data.space.state(pair.gdet);
 
         if ldet.parent == gdet.parent
             && let Some(mocache) = data.mocache
         {
             let cache = &mocache[ldet.parent];
             if cache.orthogonal_slater_condon {
-                return calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
+                return calculate_hs_pair_orthogonal(
+                    data.ao, cache, data.space, pair.ldet, pair.gdet,
+                );
             }
         }
 
         if data.input.wicks.enabled {
             calculate_hs_pair_wicks(
                 data.ao,
-                ldet,
-                gdet,
+                data.space,
+                pair.ldet,
+                pair.gdet,
                 data.tol,
                 data.wicks.unwrap(),
                 scratch.unwrap(),
             )
         } else {
-            calculate_hs_pair_naive(data.ao, ldet, gdet, data.tol)
+            calculate_hs_pair_naive(data.ao, data.space, pair.ldet, pair.gdet, data.tol)
         }
     })
 }
@@ -102,7 +102,6 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 /// # Arguments:
 /// - `data`: Shared real NOCI data with precomputed Wick intermediates.
 /// - `pairs`: Canonically ordered determinant-index pairs `(a, b)` with `a <= b`.
-/// - `reduced_basis`: Compact two-spin metadata keyed by global determinant index.
 /// - `scratch`: Reusable Wick workspace for generic-rank evaluation.
 /// - `out`: Hamiltonian and overlap results in the same order as `pairs`.
 /// # Returns:
@@ -110,7 +109,6 @@ pub(crate) fn calculate_hs_pair<T: NOCIScalar>(
 pub(crate) fn calculate_hs_pairs_wicks_batched(
     data: &NOCIData<'_, f64>,
     pairs: &[(usize, usize)],
-    reduced_basis: &[ReducedTwoSpinState],
     scratch: &mut WickScratchSpin<f64>,
     out: &mut [(f64, f64)],
 ) {
@@ -124,11 +122,13 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
     // Resolve same-parent Slater-Condon cases and place every remaining request into exactly one
     // ordered reference-pair group. The Wick evaluator therefore never filters unrelated pairs.
     for (output, &(a, b)) in pairs.iter().enumerate() {
-        let ldet = &data.basis[a];
-        let gdet = &data.basis[b];
+        let ldet = data.space.state(NOCIIndex(a));
+        let gdet = data.space.state(NOCIIndex(b));
+        let l_occ = data.space.occupations(NOCIIndex(a));
+        let g_occ = data.space.occupations(NOCIIndex(b));
 
         if ldet.parent == gdet.parent {
-            if (ldet.oa ^ gdet.oa).count_ones() + (ldet.ob ^ gdet.ob).count_ones() > 4 {
+            if (l_occ.0 ^ g_occ.0).count_ones() + (l_occ.1 ^ g_occ.1).count_ones() > 4 {
                 out[output] = (0.0, 0.0);
                 continue;
             }
@@ -136,7 +136,13 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
             if let Some(mocache) = data.mocache {
                 let cache = &mocache[ldet.parent];
                 if cache.orthogonal_slater_condon {
-                    out[output] = calculate_hs_pair_orthogonal(data.ao, cache, ldet, gdet);
+                    out[output] = calculate_hs_pair_orthogonal(
+                        data.ao,
+                        cache,
+                        data.space,
+                        NOCIIndex(a),
+                        NOCIIndex(b),
+                    );
                     continue;
                 }
             }
@@ -157,7 +163,7 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
         let w = wicks.pair(lp, gp);
         xw_hamiltonian_overlap_prepared_batched(
             &w,
-            (data.basis, reduced_basis),
+            (data.space, &data.space.reduced),
             requests,
             data.ao.enuc,
             scratch,
@@ -178,15 +184,22 @@ pub(crate) fn calculate_hs_pairs_wicks_batched(
 ///   and max elementwise discrepancy.
 pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     scratch: &mut WickScratchSpin<T>,
 ) -> ((T, T), (f64, f64)) {
     let ldet = pair.ldet;
     let gdet = pair.gdet;
 
-    let (hn, sn) = calculate_hs_pair_naive(data.ao, ldet, gdet, data.tol);
-    let (hw, sw) =
-        calculate_hs_pair_wicks(data.ao, ldet, gdet, data.tol, data.wicks.unwrap(), scratch);
+    let (hn, sn) = calculate_hs_pair_naive(data.ao, data.space, ldet, gdet, data.tol);
+    let (hw, sw) = calculate_hs_pair_wicks(
+        data.ao,
+        data.space,
+        ldet,
+        gdet,
+        data.tol,
+        data.wicks.unwrap(),
+        scratch,
+    );
 
     let hdiff = (hn - hw).abs();
     let sdiff = (sn - sw).abs();
@@ -205,11 +218,13 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
 fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
     ao: &AoData,
     cache: &MOCache<T>,
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
 ) -> (T, T) {
-    let s = calculate_s_pair_orthogonal(ldet, gdet);
-    let h = calculate_h_pair_orthogonal(ao, cache, (ldet.oa, ldet.ob), (gdet.oa, gdet.ob));
+    let s = calculate_s_pair_orthogonal(space, ldet, gdet);
+    let h =
+        calculate_h_pair_orthogonal(ao, cache, space.occupations(ldet), space.occupations(gdet));
     (h, s)
 }
 
@@ -269,16 +284,14 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
 /// - `()`: Writes all parent-orthogonal Hamiltonian matrix elements into `out`.
 pub(crate) fn calculate_h_pairs_orthogonal_batched(
     data: &NOCIData<'_, f64>,
-    factorisation: &SpinFactorisation,
-    components: &OrthogonalComponents,
     connections: &[OrthogonalConnection],
-    pairs: &[(usize, usize)],
+    pairs: &[(NOCIIndex, usize)],
     scratch: &mut OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
     scratch.clear();
     for (output, &(source, connection)) in pairs.iter().enumerate() {
-        let parent = data.basis[source].parent;
+        let parent = data.space.state(source).parent;
         scratch.groups[parent * 5 + connections[connection].sector()].push(output);
     }
 
@@ -296,7 +309,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
     #[cfg(not(target_arch = "x86_64"))]
     let width = 1;
 
-    for (parent, cache) in mocache.iter().enumerate().take(factorisation.nparents()) {
+    for (parent, cache) in mocache.iter().enumerate().take(data.space.parents.len()) {
         for sector in 0..5 {
             let outputs = &scratch.groups[parent * 5 + sector];
             if outputs.is_empty() {
@@ -304,26 +317,20 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
             }
             let mut start = 0usize;
             while sector >= 2 && width > 1 && start + width <= outputs.len() {
-                let mut sources = [0usize; 8];
+                let mut occupations = [(0u128, 0u128); 8];
                 let mut states = [ReducedTwoSpinState::new(1.0, ExcitationCache::default()); 8];
                 let mut values = [0.0; 8];
                 for lane in 0..width {
                     let output = outputs[start + lane];
                     let (source, connection) = pairs[output];
-                    sources[lane] = source;
-                    states[lane] = prepared_orthogonal_connection(
-                        data,
-                        factorisation,
-                        components,
-                        source,
-                        connections[connection],
-                    );
+                    occupations[lane] = data.space.occupations(source);
+                    states[lane] = connections[connection]
+                        .reduced(data.space.alpha(source), data.space.beta(source));
                 }
                 xw_hamiltonian_orthogonal_prepared_batched(
                     data.ao,
                     cache,
-                    data.basis,
-                    &sources[..width],
+                    &occupations[..width],
                     &states[..width],
                     &mut values[..width],
                 );
@@ -334,182 +341,17 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
             }
             for &output in &outputs[start..] {
                 let (source, connection) = pairs[output];
-                let state = prepared_orthogonal_connection(
-                    data,
-                    factorisation,
-                    components,
-                    source,
-                    connections[connection],
-                );
-                let source = &data.basis[source];
+                let state = connections[connection]
+                    .reduced(data.space.alpha(source), data.space.beta(source));
                 out[output] = xw_hamiltonian_orthogonal_prepared(
                     data.ao,
                     cache,
-                    (source.oa, source.ob),
+                    data.space.occupations(source),
                     &state,
                 );
             }
         }
     }
-}
-
-/// Resolve an orthogonal connection directly into the fixed-rank kernel payload.
-/// The connection supplies ranks and canonical source components supply orbital labels, so generic
-/// excitation masks are formed only transiently for the existing fermionic phase expression.
-/// # Arguments:
-/// - `data`: Shared retained determinant basis.
-/// - `factorisation`: Canonical source alpha and beta component IDs.
-/// - `components`: Prepared parent-local occupied and virtual orbital labels.
-/// - `source`: Retained source determinant index.
-/// - `connection`: Relative orthogonal connection topology.
-/// # Returns:
-/// - `ReducedTwoSpinState`: Minimal phase and fixed-rank labels consumed by the H kernel.
-#[inline(always)]
-fn prepared_orthogonal_connection(
-    data: &NOCIData<'_, f64>,
-    factorisation: &SpinFactorisation,
-    components: &OrthogonalComponents,
-    source: usize,
-    connection: OrthogonalConnection,
-) -> ReducedTwoSpinState {
-    let source_state = &data.basis[source];
-    let (alpha, beta) = components.components(
-        source_state.parent,
-        factorisation.aid(source),
-        factorisation.bid(source),
-    );
-    let cache = fixed_rank_connection(alpha, beta, connection);
-    let phase = orthogonal_phase(alpha, cache.alpha) * orthogonal_phase(beta, cache.beta);
-    ReducedTwoSpinState::new(phase, cache)
-}
-
-/// Construct fixed-rank cached labels from prepared source components and one connection.
-/// # Arguments:
-/// - `alpha`: Prepared alpha source-component orbital labels.
-/// - `beta`: Prepared beta source-component orbital labels.
-/// - `connection`: Relative orthogonal connection topology.
-/// # Returns:
-/// - `ExcitationCache`: Direct fixed-rank orbital labels for the orthogonal H kernel.
-#[inline(always)]
-fn fixed_rank_connection(
-    alpha: &OrthogonalSpinComponent,
-    beta: &OrthogonalSpinComponent,
-    connection: OrthogonalConnection,
-) -> ExcitationCache {
-    let mut alpha_cache = ExcitationSpinCache::default();
-    let mut beta_cache = ExcitationSpinCache::default();
-
-    match connection {
-        OrthogonalConnection::AlphaSingle { occupied, virtual_ } => {
-            alpha_cache.rank = 1;
-            alpha_cache.holes[0] = alpha.occupied[occupied as usize];
-            alpha_cache.particles[0] = alpha.virtuals[virtual_ as usize];
-        }
-        OrthogonalConnection::BetaSingle { occupied, virtual_ } => {
-            beta_cache.rank = 1;
-            beta_cache.holes[0] = beta.occupied[occupied as usize];
-            beta_cache.particles[0] = beta.virtuals[virtual_ as usize];
-        }
-        OrthogonalConnection::AlphaDouble { occupied, virtual_ } => {
-            alpha_cache.rank = 2;
-            alpha_cache.holes[0] = alpha.occupied[occupied[0] as usize];
-            alpha_cache.holes[1] = alpha.occupied[occupied[1] as usize];
-            alpha_cache.particles[0] = alpha.virtuals[virtual_[0] as usize];
-            alpha_cache.particles[1] = alpha.virtuals[virtual_[1] as usize];
-        }
-        OrthogonalConnection::BetaDouble { occupied, virtual_ } => {
-            beta_cache.rank = 2;
-            beta_cache.holes[0] = beta.occupied[occupied[0] as usize];
-            beta_cache.holes[1] = beta.occupied[occupied[1] as usize];
-            beta_cache.particles[0] = beta.virtuals[virtual_[0] as usize];
-            beta_cache.particles[1] = beta.virtuals[virtual_[1] as usize];
-        }
-        OrthogonalConnection::AlphaBetaDouble {
-            occupied_a,
-            virtual_a,
-            occupied_b,
-            virtual_b,
-        } => {
-            alpha_cache.rank = 1;
-            alpha_cache.holes[0] = alpha.occupied[occupied_a as usize];
-            alpha_cache.particles[0] = alpha.virtuals[virtual_a as usize];
-            beta_cache.rank = 1;
-            beta_cache.holes[0] = beta.occupied[occupied_b as usize];
-            beta_cache.particles[0] = beta.virtuals[virtual_b as usize];
-        }
-    }
-
-    ExcitationCache {
-        alpha: alpha_cache,
-        beta: beta_cache,
-    }
-}
-
-/// Evaluate the existing fermionic phase expression from direct fixed-rank labels.
-/// # Arguments:
-/// - `component`: Source-spin occupation and rank-to-orbital lookup metadata.
-/// - `cache`: Fixed-rank hole and particle labels for one connection spin sector.
-/// # Returns:
-/// - `f64`: Fermionic phase of this spin-sector excitation.
-#[inline(always)]
-fn orthogonal_phase(
-    component: &OrthogonalSpinComponent,
-    cache: ExcitationSpinCache,
-) -> f64 {
-    excitation_phase_bits(
-        component.occupation,
-        fixed_rank_mask(cache.holes, cache.rank),
-        fixed_rank_mask(cache.particles, cache.rank),
-    )
-}
-
-/// Construct the physical child occupations of an orthogonal connection.
-/// # Arguments:
-/// - `data`: Shared retained determinant basis.
-/// - `factorisation`: Canonical source alpha and beta component IDs.
-/// - `components`: Prepared parent-local occupied and virtual orbital labels.
-/// - `source`: Retained source determinant index.
-/// - `connection`: Relative orthogonal connection topology.
-/// # Returns:
-/// - `(u128, u128)`: Alpha and beta occupations of the physical child determinant.
-pub(crate) fn orthogonal_connection_child(
-    data: &NOCIData<'_, f64>,
-    factorisation: &SpinFactorisation,
-    components: &OrthogonalComponents,
-    source: usize,
-    connection: OrthogonalConnection,
-) -> (u128, u128) {
-    let source_state = &data.basis[source];
-    let (alpha, beta) = components.components(
-        source_state.parent,
-        factorisation.aid(source),
-        factorisation.bid(source),
-    );
-    let cache = fixed_rank_connection(alpha, beta, connection);
-    (
-        (alpha.occupation & !fixed_rank_mask(cache.alpha.holes, cache.alpha.rank))
-            | fixed_rank_mask(cache.alpha.particles, cache.alpha.rank),
-        (beta.occupation & !fixed_rank_mask(cache.beta.holes, cache.beta.rank))
-            | fixed_rank_mask(cache.beta.particles, cache.beta.rank),
-    )
-}
-
-/// Form a spin-orbital bit mask from fixed-rank cached orbital labels.
-/// # Arguments:
-/// - `orbitals`: Cached hole or particle orbital labels.
-/// - `rank`: Number of active labels.
-/// # Returns:
-/// - `u128`: Bit mask containing exactly the active orbital labels.
-#[inline(always)]
-fn fixed_rank_mask(
-    orbitals: [u8; crate::MAXEXCIT],
-    rank: u8,
-) -> u128 {
-    let mut bits = 0u128;
-    for &orbital in orbitals.iter().take(usize::from(rank)) {
-        bits |= 1u128 << orbital;
-    }
-    bits
 }
 
 /// Calculate both the overlap and Hamiltonian matrix elements between determinants x and w
@@ -522,16 +364,22 @@ fn fixed_rank_mask(
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
     ao: &AoData,
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair_naive, {
         // Per spin occupid coefficients.
-        let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-        let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-        let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-        let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+        let lp = space.parent(ldet);
+        let gp = space.parent(gdet);
+        let (loa, lob) = space.occupations(ldet);
+        let (goa, gob) = space.occupations(gdet);
+
+        let l_ca_occ = occ_coeffs(&lp.ca, loa);
+        let g_ca_occ = occ_coeffs(&gp.ca, goa);
+        let l_cb_occ = occ_coeffs(&lp.cb, lob);
+        let g_cb_occ = occ_coeffs(&gp.cb, gob);
 
         let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
         let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
@@ -570,20 +418,35 @@ pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
 /// - `(T, T)`: Hamiltonian and overlap matrix elements for the pair.
 pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(
     ao: &AoData,
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
     tol: f64,
     wicks: &WicksView<T>,
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, T) {
     time_call!(crate::timers::noci::add_calculate_hs_pair_wicks, {
-        let w = wicks.pair(ldet.parent, gdet.parent);
-        let excitation_phase = (ldet.pha * gdet.pha) * (ldet.phb * gdet.phb);
+        let left = space.reduced(ldet);
+        let right = space.reduced(gdet);
+        let w = wicks.pair(space.state(left.det).parent, space.state(right.det).parent);
+        let excitation_phase = left.state.phase * right.state.phase;
+        let (la, lb) = space.excitations(ldet);
+        let (ga, gb) = space.excitations(gdet);
+        let lex = Excitation {
+            alpha: *la,
+            beta: *lb,
+        };
+        let gex = Excitation {
+            alpha: *ga,
+            beta: *gb,
+        };
+        let lc = left.state.excitation_cache;
+        let gc = right.state.excitation_cache;
 
         xw_hamiltonian_overlap_prepared(
             &w,
-            (&ldet.excitation, &gdet.excitation),
-            (&ldet.excitation_cache, &gdet.excitation_cache),
+            (&lex, &gex),
+            (&lc, &gc),
             excitation_phase,
             ao.enuc,
             scratch,

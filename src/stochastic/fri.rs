@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::state::{PopulationUpdate, QMCRunInfo, QmcRng, SparsePopulations};
+use super::state::{NOCIPopulationUpdate, QMCRunInfo, QmcRng, SparsePopulations};
 
 /// Sparse amplitude interface shared by report-level FRI vectors.
 pub(in crate::stochastic) trait FriAmplitude: Copy {
@@ -31,7 +31,7 @@ pub(in crate::stochastic) trait FriAmplitude: Copy {
     );
 }
 
-impl FriAmplitude for PopulationUpdate {
+impl FriAmplitude for NOCIPopulationUpdate {
     /// Return one NOCI-coordinate population update amplitude.
     /// # Arguments:
     /// - `self`: Sparse population update.
@@ -356,7 +356,7 @@ pub(in crate::stochastic) fn compress_dense_to_sparse(
     values: &mut [f64],
     cutoff: f64,
     rng: &mut QmcRng,
-    updates: &mut Vec<PopulationUpdate>,
+    updates: &mut Vec<NOCIPopulationUpdate>,
 ) {
     updates.clear();
     // B is nearly dense before report FRI, so combine stochastic rounding, dense-buffer clearing and
@@ -365,7 +365,7 @@ pub(in crate::stochastic) fn compress_dense_to_sparse(
         let dn = round(*value, cutoff, rng);
         *value = 0.0;
         if dn != 0.0 {
-            updates.push(PopulationUpdate {
+            updates.push(NOCIPopulationUpdate {
                 det: det as u64,
                 dn,
             });

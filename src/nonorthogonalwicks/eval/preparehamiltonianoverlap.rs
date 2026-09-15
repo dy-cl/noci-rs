@@ -18,9 +18,9 @@ use crate::maths::{
     adjugate_transpose_const, adjugate_transpose_dynamic, det_const, det_dynamic,
     second_minor_const, second_minor_dynamic,
 };
-use crate::noci::NOCIScalar;
+use crate::noci::{NOCIIndex, NOCIScalar, NOCISpace};
 use crate::time_call;
-use crate::{DetState, Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinState};
+use crate::{Excitation, ExcitationCache, ExcitationSpinCache, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratchSpin;
@@ -117,7 +117,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `basis`: Determinant basis used only by generic fallback evaluation.
-/// - `reduced_basis`: Compact two-spin metadata keyed by global determinant index.
+/// - `reduced_states`: Compact two-spin metadata keyed by global determinant index.
 /// - `requests`: Tuples `(output, a, b)` containing output position and determinant indices.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for scalar generic-rank evaluation.
@@ -127,7 +127,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
 /// - `()`: Writes every matrix element in `requests` into `out`.
 pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
     w: &WicksPairView<'_, T>,
-    basis: (&[DetState<T>], &[ReducedTwoSpinState]),
+    basis: (&NOCISpace<T>, &[ReducedTwoSpinState]),
     requests: &[(usize, usize, usize)],
     enuc: f64,
     scratch: &mut WickScratchSpin<T>,
@@ -142,10 +142,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 unsafe {
                     if TypeId::of::<T>() == TypeId::of::<f64>() {
                         let w_f64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, f64>>();
-                        let basis_f64 = std::slice::from_raw_parts(
-                            basis.0.as_ptr().cast::<DetState<f64>>(),
-                            basis.0.len(),
-                        );
+                        let basis_f64 = &*std::ptr::from_ref(basis.0).cast::<NOCISpace<f64>>();
                         let scratch_f64 =
                             &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<f64>>();
                         let out_f64 = std::slice::from_raw_parts_mut(
@@ -182,10 +179,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 
                     if TypeId::of::<T>() == TypeId::of::<Complex64>() {
                         let w_c64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, Complex64>>();
-                        let basis_c64 = std::slice::from_raw_parts(
-                            basis.0.as_ptr().cast::<DetState<Complex64>>(),
-                            basis.0.len(),
-                        );
+                        let basis_c64 =
+                            &*std::ptr::from_ref(basis.0).cast::<NOCISpace<Complex64>>();
                         let scratch_c64 =
                             &mut *std::ptr::from_mut(scratch).cast::<WickScratchSpin<Complex64>>();
                         let out_c64 = std::slice::from_raw_parts_mut(
@@ -222,16 +217,24 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
                 }
             }
 
-            let (basis, reduced_basis) = basis;
+            let (space, reduced_states) = basis;
             for &(output, a, b) in requests {
-                let x_det = &reduced_basis[a];
-                let w_det = &reduced_basis[b];
-                let x_state = &basis[a];
-                let w_state = &basis[b];
+                let x_det = &reduced_states[a];
+                let w_det = &reduced_states[b];
+                let (xa, xb) = space.excitations(NOCIIndex(a));
+                let (wa, wb) = space.excitations(NOCIIndex(b));
+                let x_state = Excitation {
+                    alpha: *xa,
+                    beta: *xb,
+                };
+                let w_state = Excitation {
+                    alpha: *wa,
+                    beta: *wb,
+                };
 
                 out[output] = xw_hamiltonian_overlap_prepared(
                     w,
-                    (&x_state.excitation, &w_state.excitation),
+                    (&x_state, &w_state),
                     (&x_det.excitation_cache, &w_det.excitation_cache),
                     x_det.phase * w_det.phase,
                     enuc,
@@ -263,7 +266,7 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
 #[allow(clippy::type_complexity)]
 unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     w: &WicksPairView<'_, T>,
-    basis: (&[DetState<T>], &[ReducedTwoSpinState]),
+    basis: (&NOCISpace<T>, &[ReducedTwoSpinState]),
     requests: &[(usize, usize, usize)],
     parameters: (f64, f64),
     scratch: &mut WickScratchSpin<T>,
@@ -278,7 +281,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     ),
 ) {
     let (enuc, tol) = parameters;
-    let (basis, reduced_basis) = basis;
+    let (basis, reduced_states) = basis;
 
     let mut rank_bins = [usize::MAX; HAMSPACE];
 
@@ -295,8 +298,8 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
 
     unsafe {
         for &(output, a, b) in requests {
-            let x_det = &reduced_basis[a];
-            let w_det = &reduced_basis[b];
+            let x_det = &reduced_states[a];
+            let w_det = &reduced_states[b];
             let x_cache = x_det.excitation_cache;
             let w_cache = w_det.excitation_cache;
             let ranks = (
@@ -343,11 +346,19 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
                     counts[bin] = 0;
                 }
             } else {
-                let x_state = &basis[a];
-                let w_state = &basis[b];
+                let (xa, xb) = basis.excitations(NOCIIndex(a));
+                let (wa, wb) = basis.excitations(NOCIIndex(b));
+                let x_state = Excitation {
+                    alpha: *xa,
+                    beta: *xb,
+                };
+                let w_state = Excitation {
+                    alpha: *wa,
+                    beta: *wb,
+                };
                 let value = xw_hamiltonian_overlap_prepared(
                     w,
-                    (&x_state.excitation, &w_state.excitation),
+                    (&x_state, &w_state),
                     (&x_cache, &w_cache),
                     x_det.phase * w_det.phase,
                     enuc,

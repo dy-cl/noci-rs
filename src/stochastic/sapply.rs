@@ -30,8 +30,9 @@ use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
 use super::shift::update_shift_tangent;
 use super::state::{
-    ExcitationHist, MPIScratch, OverlapDerivativeSums, PopulationUpdate, PropagationResult,
-    QMCRunInfo, QmcRng, ShiftSpec, ShiftTangent, TangentWorker, ThreadPropagation,
+    ExcitationHist, NOCIMPIScratch, NOCIPopulationUpdate, NOCIPropagationResult,
+    NOCIThreadPropagation, OverlapDerivativeSums, QMCRunInfo, QmcRng, ShiftSpec, ShiftTangent,
+    TangentWorker,
 };
 
 /// `Apply \delta N_w = \sum_\Omega S_{w\Omega}\Delta_\Omega.`
@@ -86,11 +87,11 @@ fn apply_population_changes_local<I>(
 /// # Returns
 /// - `()`: Applies the global overlap-transformed population change.
 pub(in crate::stochastic) fn apply_overlap_population_changes(
-    changes: (&mut [f64], &[PopulationUpdate]),
+    changes: (&mut [f64], &[NOCIPopulationUpdate]),
     data: &NOCIData<'_, f64>,
     overlap: (&SpinFactorisation, &OverlapFactors),
     run: &QMCRunInfo,
-    mpi: (&impl CommunicatorCollectives, &mut MPIScratch),
+    mpi: (&impl CommunicatorCollectives, &mut NOCIMPIScratch),
     scratch: &mut OverlapScratch,
 ) {
     let (populations, dlocal) = changes;
@@ -138,7 +139,7 @@ pub(in crate::stochastic) fn apply_overlap_population_changes(
 
         // Size recieve buffer to hold all updates from all ranks.
         mpi.gather_recv
-            .resize(ntot, PopulationUpdate { det: 0, dn: 0.0 });
+            .resize(ntot, NOCIPopulationUpdate { det: 0, dn: 0.0 });
 
         let mut recv = PartitionMut::new(
             &mut mpi.gather_recv[..],
@@ -181,7 +182,7 @@ pub(in crate::stochastic) fn apply_overlap_population_changes(
 /// - `()`: Adds received tangent updates to owner-local dense storage.
 pub(in crate::stochastic) fn exchange_shift_tangent(
     tangent: &mut ShiftTangent,
-    mpi: &mut MPIScratch,
+    mpi: &mut NOCIMPIScratch,
     world: &impl CommunicatorCollectives,
     run: &QMCRunInfo,
 ) {
@@ -322,7 +323,7 @@ pub fn qmc_step(
     };
     let mut workers = (0..rayon::current_num_threads())
         .map(|tid| {
-            Mutex::new(ThreadPropagation::with_sizes(
+            Mutex::new(NOCIThreadPropagation::with_sizes(
                 run.rank_seed ^ tid as u64,
                 scratchsize.maxsame,
                 scratchsize.maxla,
@@ -330,12 +331,12 @@ pub fn qmc_step(
             ))
         })
         .collect::<Vec<_>>();
-    let mut propagation_result = PropagationResult::new();
+    let mut propagation_result = NOCIPropagationResult::new();
     let mut overlap_scratch = overlap_factor.overlap_scratch();
 
     // Thread local scratch for Wick's theorem and for MPI communicattion.
     let mut scratch = WickScratchSpin::new();
-    let mut mpiscratch = MPIScratch::new(run.nranks);
+    let mut mpiscratch = NOCIMPIScratch::new(run.nranks);
 
     // Initialise populations, projected-energy accumulators and shift.
     let mut state = initialise_qmc_state(
@@ -355,7 +356,7 @@ pub fn qmc_step(
         );
         type ThreadState = (
             Vec<(usize, f64)>,
-            Vec<PopulationUpdate>,
+            Vec<NOCIPopulationUpdate>,
             Vec<f64>,
             QmcRng,
             WickScratchSpin<f64>,
@@ -372,7 +373,7 @@ pub fn qmc_step(
         run.irank,
         state.start_report * qmc.ncycles,
         &state,
-        data.basis[0].e,
+        data.space.parents[0].e,
         *es,
         propagator,
     );
@@ -580,7 +581,7 @@ pub fn qmc_step(
             end,
             &state,
             &stats,
-            data.basis[0].e,
+            data.space.parents[0].e,
             *es,
             propagator,
         );

@@ -7,16 +7,14 @@ mod storage;
 
 // Crate-visible type re-exports.
 pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
-pub(crate) use overlap::{OrthogonalOverlapScratch, OverlapFactors, OverlapScratch};
+pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 
 // Standard library imports.
-use std::collections::HashMap;
-
 // Crate-root imports.
-use crate::basis::undo_excitation;
-use crate::{DetState, ExcitationSpinCache, ReducedOneSpinDetState};
+use crate::ExcitationSpinCache;
 
 // Parent/sibling imports.
+use super::space::{NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
 use super::types::{NOCIData, NOCIScalar};
 
 /// Actual determinant entry in a parent-local spin factorisation.
@@ -34,7 +32,7 @@ pub(crate) struct FactorEntry {
 #[derive(Default)]
 pub(super) struct ParentSpinSpace {
     /// Reduced representative for each parent-local alpha component.
-    pub(super) areps: Vec<ReducedOneSpinDetState>,
+    pub(super) areps: Vec<ReducedOneSpinNOCIDeterminantState>,
     /// Alpha component IDs in fixed-rank Wick evaluation order.
     pub(super) a_eval_order: Vec<usize>,
     /// Alpha excitation caches in fixed-rank Wick evaluation order.
@@ -44,7 +42,7 @@ pub(super) struct ParentSpinSpace {
     /// Boundaries of equal-rank, common-hole alpha evaluation groups.
     pub(super) a_eval_groups: Vec<usize>,
     /// Reduced representative for each parent-local beta component.
-    pub(super) breps: Vec<ReducedOneSpinDetState>,
+    pub(super) breps: Vec<ReducedOneSpinNOCIDeterminantState>,
     /// Beta component IDs in fixed-rank Wick evaluation order.
     pub(super) b_eval_order: Vec<usize>,
     /// Beta excitation caches in fixed-rank Wick evaluation order.
@@ -59,131 +57,59 @@ pub(super) struct ParentSpinSpace {
     pub(super) entries_by_a: Vec<Vec<usize>>,
     /// Determinant indices grouped by parent-local beta component.
     pub(super) entries_by_b: Vec<Vec<usize>>,
-    /// Representative determinant for each parent-local occupation pair.
-    pub(super) oreps: Vec<usize>,
-    /// Occupation-pair ID keyed by determinant offset from `first_det`.
-    pub(super) oids: Vec<usize>,
-    /// First determinant index belonging to this parent.
-    pub(super) first_det: usize,
-    /// One-past-last determinant index belonging to this parent when parent blocks are contiguous.
-    pub(super) last_det: usize,
 }
 
-/// Prepared occupied and virtual orbital labels for one canonical parent-local spin component.
-pub(crate) struct OrthogonalSpinComponent {
-    /// Occupation bitstring used for fermionic phase and child construction.
-    pub(crate) occupation: u128,
-    /// Orbital labels indexed by occupied rank.
-    pub(crate) occupied: Vec<u8>,
-    /// Orbital labels indexed by virtual rank.
-    pub(crate) virtuals: Vec<u8>,
-}
-
-/// Prepared parent-local spin-component metadata for orthogonal connections.
-pub(crate) struct OrthogonalComponents {
-    /// Alpha-spin components indexed by parent then canonical alpha component ID.
-    alpha: Vec<Vec<OrthogonalSpinComponent>>,
-    /// Beta-spin components indexed by parent then canonical beta component ID.
-    beta: Vec<Vec<OrthogonalSpinComponent>>,
-}
-
-impl OrthogonalComponents {
-    /// Return canonical alpha and beta source-component metadata for one retained determinant.
-    /// # Arguments:
-    /// - `self`: Prepared parent-local source components.
-    /// - `parent`: Source parent reference.
-    /// - `aid`: Canonical alpha component ID.
-    /// - `bid`: Canonical beta component ID.
-    /// # Returns:
-    /// - `(&OrthogonalSpinComponent, &OrthogonalSpinComponent)`: Prepared source spin metadata.
-    #[inline(always)]
-    pub(crate) fn components(
-        &self,
-        parent: usize,
-        aid: usize,
-        bid: usize,
-    ) -> (&OrthogonalSpinComponent, &OrthogonalSpinComponent) {
-        (&self.alpha[parent][aid], &self.beta[parent][bid])
-    }
-}
-
-/// Shared determinant-space spin factorisation `I <-> (P,a_I,b_I)`.
+/// Numerical spin-factorised evaluation plan for the retained NOCI space.
 pub(crate) struct SpinFactorisation {
-    /// Alpha compact IDs keyed by determinant index and local to the determinant parent.
-    pub(super) aids: Vec<usize>,
-    /// Beta compact IDs keyed by determinant index and local to the determinant parent.
-    pub(super) bids: Vec<usize>,
-    /// Largest number of unique alpha spin components in one parent reference.
+    /// Largest parent-local alpha factor dimension.
     pub(super) ma: usize,
-    /// Largest number of unique beta spin components in one parent reference.
+    /// Largest parent-local beta factor dimension.
     pub(super) mb: usize,
-    /// Parent-local determinant ranges, representatives and actual determinant entries.
+    /// Parent-local factor evaluation orders and retained entries.
     pub(super) parents: Vec<ParentSpinSpace>,
 }
 
 impl SpinFactorisation {
-    /// Construct `I <-> (P,a_I,b_I)` for a NOCI determinant basis.
+    /// Prepare parent-local factor evaluation orders from authoritative component IDs.
     /// # Arguments:
-    /// - `data`: Shared NOCI data defining the determinant basis and parent references.
-    /// # Returns
-    /// - `SpinFactorisation`: Shared parent-local spin topology.
+    /// - `data`: Retained NOCI topology and matrix-element data.
+    /// # Returns:
+    /// - `Self`: Numerical spin-factorised evaluation plan.
     pub(crate) fn new<T: NOCIScalar>(data: &NOCIData<'_, T>) -> Self {
-        let mut aids = vec![0usize; data.basis.len()];
-        let mut bids = vec![0usize; data.basis.len()];
-        let ma = assign_aids(data.basis, &mut aids);
-        let mb = assign_bids(data.basis, &mut bids);
-        let parents = build_parent_spin_spaces(data.basis, &aids, &bids);
+        let parents = build_parent_spin_spaces(data.space);
+        let ma = data
+            .space
+            .components
+            .iter()
+            .map(|parent| parent.na())
+            .max()
+            .unwrap_or(0);
+        let mb = data
+            .space
+            .components
+            .iter()
+            .map(|parent| parent.nb())
+            .max()
+            .unwrap_or(0);
 
-        Self {
-            aids,
-            bids,
-            ma,
-            mb,
-            parents,
-        }
+        Self { ma, mb, parents }
     }
 
-    /// Return the number of parent references in the determinant factorisation.
+    /// Return the number of parent reference blocks in the numerical plan.
     /// # Arguments:
-    /// - `self`: Shared parent-local spin topology.
+    /// - `self`: Prepared factorisation plan.
     /// # Returns:
-    /// - `usize`: Number of parent references.
+    /// - `usize`: Parent count.
     pub(crate) fn nparents(&self) -> usize {
         self.parents.len()
     }
 
-    /// Return the parent-local alpha component ID for one determinant.
+    /// Return the retained alpha and beta factor dimensions for one parent.
     /// # Arguments:
-    /// - `self`: Shared parent-local spin topology.
-    /// - `det`: Global determinant index.
+    /// - `self`: Prepared factorisation plan.
+    /// - `parent`: Parent orbital-frame index.
     /// # Returns:
-    /// - `usize`: Parent-local alpha component ID.
-    pub(crate) fn aid(
-        &self,
-        det: usize,
-    ) -> usize {
-        self.aids[det]
-    }
-
-    /// Return the parent-local beta component ID for one determinant.
-    /// # Arguments:
-    /// - `self`: Shared parent-local spin topology.
-    /// - `det`: Global determinant index.
-    /// # Returns:
-    /// - `usize`: Parent-local beta component ID.
-    pub(crate) fn bid(
-        &self,
-        det: usize,
-    ) -> usize {
-        self.bids[det]
-    }
-
-    /// Return the spin-component dimensions for one parent reference.
-    /// # Arguments:
-    /// - `self`: Shared parent-local spin topology.
-    /// - `parent`: Parent reference index.
-    /// # Returns:
-    /// - `(usize, usize)`: Number of alpha and beta components.
+    /// - `(usize, usize)`: Alpha and beta factor dimensions.
     pub(crate) fn parent_component_counts(
         &self,
         parent: usize,
@@ -194,116 +120,17 @@ impl SpinFactorisation {
         )
     }
 
-    /// Return the actual determinant entries for one parent reference.
+    /// Return retained entries grouped by one parent for factor contractions.
     /// # Arguments:
-    /// - `self`: Shared parent-local spin topology.
-    /// - `parent`: Parent reference index.
+    /// - `self`: Prepared factorisation plan.
+    /// - `parent`: Parent orbital-frame index.
     /// # Returns:
-    /// - `&[FactorEntry]`: Existing determinant entries `(I,a_I,b_I)`.
+    /// - `&[FactorEntry]`: Ordered retained entries.
     pub(crate) fn parent_entries(
         &self,
         parent: usize,
     ) -> &[FactorEntry] {
         &self.parents[parent].entries
-    }
-
-    /// Reconstruct the alpha and beta occupations of one parent reference.
-    /// The reconstruction uses the first retained determinant belonging to that parent and reverses
-    /// its stored excitation masks.
-    /// # Arguments:
-    /// - `self`: Shared determinant-space spin factorisation.
-    /// - `parent`: Parent reference index.
-    /// - `data`: Shared NOCI data.
-    /// # Returns:
-    /// - `(u128, u128)`: Parent alpha and beta occupation bitstrings.
-    pub(crate) fn parent_occupations<T: NOCIScalar>(
-        &self,
-        parent: usize,
-        data: &NOCIData<'_, T>,
-    ) -> (u128, u128) {
-        let state = &data.basis[self.parents[parent].entries[0].det];
-
-        // `O_P = (O_I \setminus P_I) \cup H_I`, independently for alpha and beta spin.
-        let oa = undo_excitation(
-            state.oa,
-            state.excitation.alpha.holes,
-            state.excitation.alpha.parts,
-        );
-        let ob = undo_excitation(
-            state.ob,
-            state.excitation.beta.holes,
-            state.excitation.beta.parts,
-        );
-
-        (oa, ob)
-    }
-
-    /// Prepare occupied and virtual orbital labels for canonical source spin components.
-    /// The tables satisfy `i=O_a[r_i]` and `a=V_a[r_a]`, so orthogonal connection resolution
-    /// reuses parent-local component IDs instead of selecting ranks from occupation masks.
-    /// # Arguments:
-    /// - `self`: Shared determinant-space spin topology.
-    /// - `data`: Shared retained basis and parent MO caches.
-    /// # Returns:
-    /// - `OrthogonalComponents`: Parent-local alpha and beta source-component lookup tables.
-    pub(crate) fn orthogonal_components(
-        &self,
-        data: &NOCIData<'_, f64>,
-    ) -> OrthogonalComponents {
-        let mocache = data
-            .mocache
-            .expect("orthogonal component preparation requires parent MO caches");
-        let mut alpha = Vec::with_capacity(self.parents.len());
-        let mut beta = Vec::with_capacity(self.parents.len());
-        for (parent, space) in self.parents.iter().enumerate() {
-            alpha.push(
-                space
-                    .areps
-                    .iter()
-                    .map(|representative| {
-                        let occupation = data.basis[representative.det].oa;
-                        orthogonal_spin_component(occupation, mocache[parent].ha.nrows())
-                    })
-                    .collect(),
-            );
-            beta.push(
-                space
-                    .breps
-                    .iter()
-                    .map(|representative| {
-                        let occupation = data.basis[representative.det].ob;
-                        orthogonal_spin_component(occupation, mocache[parent].hb.nrows())
-                    })
-                    .collect(),
-            );
-        }
-        OrthogonalComponents { alpha, beta }
-    }
-}
-
-/// Prepare occupied and virtual orbital-label lookup tables from one occupation bitstring.
-/// # Arguments:
-/// - `occupation`: Occupied spin-orbital bitstring.
-/// - `norb`: Number of spin orbitals in the parent MO basis.
-/// # Returns:
-/// - `OrthogonalSpinComponent`: Canonical rank-to-orbital lookup metadata.
-fn orthogonal_spin_component(
-    occupation: u128,
-    norb: usize,
-) -> OrthogonalSpinComponent {
-    let mut occupied = Vec::with_capacity(occupation.count_ones() as usize);
-    let mut virtuals = Vec::with_capacity(norb - occupied.capacity());
-    for orbital in 0..norb {
-        if occupation & (1u128 << orbital) == 0 {
-            virtuals.push(orbital as u8);
-        } else {
-            occupied.push(orbital as u8);
-        }
-    }
-    OrthogonalSpinComponent {
-        occupation,
-        occupied,
-        virtuals,
     }
 }
 
@@ -321,244 +148,82 @@ pub(super) fn ordered_parent_pair(
     target_parent: usize,
     source_parent: usize,
 ) -> (usize, usize, bool) {
-    if factorisation.parents[target_parent].first_det
-        <= factorisation.parents[source_parent].first_det
-    {
+    let target_first = factorisation.parents[target_parent]
+        .entries
+        .first()
+        .map_or(usize::MAX, |entry| entry.det);
+    let source_first = factorisation.parents[source_parent]
+        .entries
+        .first()
+        .map_or(usize::MAX, |entry| entry.det);
+
+    if target_first <= source_first {
         (target_parent, source_parent, true)
     } else {
         (source_parent, target_parent, false)
     }
 }
 
-/// Assign compact alpha IDs by sorting determinant indices and deduplicating consecutive identities.
+/// Build the numerical factor plan from canonical parent-local component identities.
+/// The retained determinant set is sparse within each `A_P \\times B_P` product, so entries are
+/// recorded in basis order while one-spin evaluation orders come from the component caches.
 /// # Arguments:
-/// - `basis`: NOCI determinant basis.
-/// - `aids`: Output alpha compact IDs keyed by determinant index.
-/// # Returns
-/// - `usize`: Largest number of unique alpha components in any parent.
-fn assign_aids<T: NOCIScalar>(
-    basis: &[DetState<T>],
-    aids: &mut [usize],
-) -> usize {
-    let mut indices = (0..basis.len()).collect::<Vec<_>>();
-
-    indices.sort_unstable_by(|&i, &j| {
-        let id = &basis[i];
-        let jd = &basis[j];
-
-        id.parent
-            .cmp(&jd.parent)
-            .then_with(|| id.oa.cmp(&jd.oa))
-            .then_with(|| id.excitation.alpha.holes.cmp(&jd.excitation.alpha.holes))
-            .then_with(|| id.excitation.alpha.parts.cmp(&jd.excitation.alpha.parts))
-            .then_with(|| id.pha.to_bits().cmp(&jd.pha.to_bits()))
-    });
-
-    assign_spin_ids(&indices, basis, aids, same_alpha_key)
-}
-
-/// Assign compact beta IDs by sorting determinant indices and deduplicating consecutive identities.
-/// # Arguments:
-/// - `basis`: NOCI determinant basis.
-/// - `bids`: Output beta compact IDs keyed by determinant index.
-/// # Returns
-/// - `usize`: Largest number of unique beta components in any parent.
-fn assign_bids<T: NOCIScalar>(
-    basis: &[DetState<T>],
-    bids: &mut [usize],
-) -> usize {
-    let mut indices = (0..basis.len()).collect::<Vec<_>>();
-
-    indices.sort_unstable_by(|&i, &j| {
-        let id = &basis[i];
-        let jd = &basis[j];
-
-        id.parent
-            .cmp(&jd.parent)
-            .then_with(|| id.ob.cmp(&jd.ob))
-            .then_with(|| id.excitation.beta.holes.cmp(&jd.excitation.beta.holes))
-            .then_with(|| id.excitation.beta.parts.cmp(&jd.excitation.beta.parts))
-            .then_with(|| id.phb.to_bits().cmp(&jd.phb.to_bits()))
-    });
-
-    assign_spin_ids(&indices, basis, bids, same_beta_key)
-}
-
-/// Assign compact same-spin IDs after sorting by parent-local spin key.
-/// # Arguments:
-/// - `indices`: Determinant indices sorted by parent and same-spin key.
-/// - `basis`: NOCI determinant basis.
-/// - `ids`: Output compact IDs keyed by determinant index.
-/// - `same_key`: Same-spin key equality predicate.
-/// # Returns
-/// - `usize`: Largest number of unique components in any parent.
-fn assign_spin_ids<T, F>(
-    indices: &[usize],
-    basis: &[DetState<T>],
-    ids: &mut [usize],
-    same_key: F,
-) -> usize
-where
-    T: NOCIScalar,
-    F: Fn(&DetState<T>, &DetState<T>) -> bool,
-{
-    let mut last = usize::MAX;
-    let mut next = 0usize;
-    let mut maxu = 0usize;
-
-    for (pos, &det) in indices.iter().enumerate() {
-        let parent = basis[det].parent;
-        if pos == 0 || parent != basis[last].parent {
-            if pos != 0 {
-                maxu = maxu.max(next);
-            }
-            next = 0;
-            ids[det] = next;
-            next += 1;
-        } else if same_key(&basis[last], &basis[det]) {
-            ids[det] = ids[last];
-        } else {
-            ids[det] = next;
-            next += 1;
-        }
-        last = det;
-    }
-
-    maxu.max(next)
-}
-
-/// Test equality of parent-local alpha determinant components.
-/// # Arguments:
-/// - `lhs`: Previous determinant in sorted alpha key order.
-/// - `rhs`: Current determinant in sorted alpha key order.
-/// # Returns
-/// - `bool`: Whether both determinants share one alpha component ID.
-fn same_alpha_key<T: NOCIScalar>(
-    lhs: &DetState<T>,
-    rhs: &DetState<T>,
-) -> bool {
-    lhs.oa == rhs.oa
-        && lhs.excitation.alpha.holes == rhs.excitation.alpha.holes
-        && lhs.excitation.alpha.parts == rhs.excitation.alpha.parts
-        && lhs.pha.to_bits() == rhs.pha.to_bits()
-}
-
-/// Test equality of parent-local beta determinant components.
-/// # Arguments:
-/// - `lhs`: Previous determinant in sorted beta key order.
-/// - `rhs`: Current determinant in sorted beta key order.
-/// # Returns
-/// - `bool`: Whether both determinants share one beta component ID.
-fn same_beta_key<T: NOCIScalar>(
-    lhs: &DetState<T>,
-    rhs: &DetState<T>,
-) -> bool {
-    lhs.ob == rhs.ob
-        && lhs.excitation.beta.holes == rhs.excitation.beta.holes
-        && lhs.excitation.beta.parts == rhs.excitation.beta.parts
-        && lhs.phb.to_bits() == rhs.phb.to_bits()
-}
-
-/// Build parent-local spin and occupation representative tables.
-/// `D_P` is stored as actual determinant entries `(I,a_I,b_I)` and is not assumed to span
-/// the complete Cartesian product `A_P \times B_P`.
-/// # Arguments:
-/// - `basis`: NOCI determinant basis.
-/// - `aids`: Parent-local alpha component IDs keyed by determinant.
-/// - `bids`: Parent-local beta component IDs keyed by determinant.
-/// # Returns
-/// - `Vec<ParentSpinSpace>`: Per-parent determinant ranges, representatives, occupation IDs and actual entries.
-fn build_parent_spin_spaces<T: NOCIScalar>(
-    basis: &[DetState<T>],
-    aids: &[usize],
-    bids: &[usize],
-) -> Vec<ParentSpinSpace> {
-    let nparents = basis
-        .iter()
-        .map(|det| det.parent)
-        .max()
-        .map(|parent| parent + 1)
-        .unwrap_or(0);
-
-    let mut parents = (0..nparents)
-        .map(|_| ParentSpinSpace {
-            areps: Vec::new(),
-            a_eval_order: Vec::new(),
-            a_eval_caches: Vec::new(),
-            a_eval_phases: Vec::new(),
-            a_eval_groups: Vec::new(),
-            breps: Vec::new(),
-            b_eval_order: Vec::new(),
-            b_eval_caches: Vec::new(),
-            b_eval_phases: Vec::new(),
-            b_eval_groups: Vec::new(),
-            entries: Vec::new(),
-            entries_by_a: Vec::new(),
-            entries_by_b: Vec::new(),
-            oreps: Vec::new(),
-            oids: Vec::new(),
-            first_det: usize::MAX,
-            last_det: 0,
-        })
+/// - `space`: Authoritative retained NOCI determinant topology.
+/// # Returns:
+/// - `Vec<ParentSpinSpace>`: Parent-local factor orders and retained entries.
+fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSpinSpace> {
+    let mut parents = (0..space.parents.len())
+        .map(|_| ParentSpinSpace::default())
         .collect::<Vec<_>>();
 
-    let mut alpha_reps = (0..nparents).map(|_| Vec::new()).collect::<Vec<_>>();
-    let mut beta_reps = (0..nparents).map(|_| Vec::new()).collect::<Vec<_>>();
-
-    for (det, state) in basis.iter().enumerate() {
+    for (det, state) in space.states.iter().enumerate() {
         let parent = &mut parents[state.parent];
-
-        parent.first_det = parent.first_det.min(det);
-        parent.last_det = parent.last_det.max(det + 1);
+        let aid = state.aid.0;
+        let bid = state.bid.0;
 
         parent.entries.push(FactorEntry {
             det,
-            a: aids[det],
-            b: bids[det],
+            a: aid,
+            b: bid,
         });
 
-        if parent.entries_by_a.len() <= aids[det] {
-            parent.entries_by_a.resize_with(aids[det] + 1, Vec::new);
+        if parent.entries_by_a.len() <= aid {
+            parent.entries_by_a.resize_with(aid + 1, Vec::new);
         }
-        parent.entries_by_a[aids[det]].push(det);
+        parent.entries_by_a[aid].push(det);
 
-        if parent.entries_by_b.len() <= bids[det] {
-            parent.entries_by_b.resize_with(bids[det] + 1, Vec::new);
+        if parent.entries_by_b.len() <= bid {
+            parent.entries_by_b.resize_with(bid + 1, Vec::new);
         }
-        parent.entries_by_b[bids[det]].push(det);
-
-        // Associate each retained alpha payload with the first real determinant carrying it.
-        if alpha_reps[state.parent].len() <= aids[det] {
-            alpha_reps[state.parent].resize(aids[det] + 1, None);
-        }
-        if alpha_reps[state.parent][aids[det]].is_none() {
-            alpha_reps[state.parent][aids[det]] =
-                Some(ReducedOneSpinDetState::from_alpha(det, state));
-        }
-
-        // Associate each retained beta payload with the first real determinant carrying it.
-        if beta_reps[state.parent].len() <= bids[det] {
-            beta_reps[state.parent].resize(bids[det] + 1, None);
-        }
-        if beta_reps[state.parent][bids[det]].is_none() {
-            beta_reps[state.parent][bids[det]] =
-                Some(ReducedOneSpinDetState::from_beta(det, state));
-        }
+        parent.entries_by_b[bid].push(det);
     }
 
-    for ((parent, alpha_reps), beta_reps) in parents
-        .iter_mut()
-        .zip(alpha_reps.into_iter())
-        .zip(beta_reps.into_iter())
-    {
-        parent.areps = alpha_reps
-            .into_iter()
-            .map(|rep| rep.expect("every alpha component must have a retained determinant"))
+    for (parent_id, parent) in parents.iter_mut().enumerate() {
+        let components = space.parent_components(parent_id);
+
+        parent.areps = components
+            .alpha
+            .iter()
+            .enumerate()
+            .map(|(component, state)| ReducedOneSpinNOCIDeterminantState {
+                parent: parent_id,
+                component: NOCISpinIndex(component),
+                state: state.reduced,
+            })
             .collect();
-        parent.breps = beta_reps
-            .into_iter()
-            .map(|rep| rep.expect("every beta component must have a retained determinant"))
+        parent.breps = components
+            .beta
+            .iter()
+            .enumerate()
+            .map(|(component, state)| ReducedOneSpinNOCIDeterminantState {
+                parent: parent_id,
+                component: NOCISpinIndex(component),
+                state: state.reduced,
+            })
             .collect();
+
+        // Fixed-rank Wick rows are grouped by rank and common holes so the numerical evaluator
+        // can reuse contraction preparation independently of determinant-pair identities.
         parent.a_eval_order = (0..parent.areps.len()).collect();
         parent.a_eval_order.sort_unstable_by(|&i, &j| {
             let ic = parent.areps[i].state.excitation_cache;
@@ -569,8 +234,6 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
                 .then_with(|| ic.particles.cmp(&jc.particles))
                 .then_with(|| i.cmp(&j))
         });
-
-        parent.a_eval_groups.clear();
         parent.a_eval_groups.push(0);
         for position in 1..parent.a_eval_order.len() {
             let previous = parent.areps[parent.a_eval_order[position - 1]]
@@ -607,8 +270,6 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
                 .then_with(|| ic.particles.cmp(&jc.particles))
                 .then_with(|| i.cmp(&j))
         });
-
-        parent.b_eval_groups.clear();
         parent.b_eval_groups.push(0);
         for position in 1..parent.b_eval_order.len() {
             let previous = parent.breps[parent.b_eval_order[position - 1]]
@@ -634,29 +295,6 @@ fn build_parent_spin_spaces<T: NOCIScalar>(
             .iter()
             .map(|&id| parent.breps[id].state.phase)
             .collect();
-
-        if parent.first_det != usize::MAX {
-            parent
-                .oids
-                .resize(parent.last_det - parent.first_det, usize::MAX);
-        }
-    }
-
-    let mut occupation_ids = (0..nparents)
-        .map(|_| HashMap::new())
-        .collect::<Vec<HashMap<(u128, u128), usize>>>();
-
-    for (det, state) in basis.iter().enumerate() {
-        let parent = &mut parents[state.parent];
-
-        let oid = *occupation_ids[state.parent]
-            .entry((state.oa, state.ob))
-            .or_insert_with(|| {
-                parent.oreps.push(det);
-                parent.oreps.len() - 1
-            });
-
-        parent.oids[det - parent.first_det] = oid;
     }
 
     parents

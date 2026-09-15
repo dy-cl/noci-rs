@@ -1,12 +1,12 @@
 // noci/overlap.rs
 
 // Crate-root imports.
-use crate::DetState;
 use crate::nonorthogonalwicks::{WickScratchSpin, WicksPairView, WicksView, xw_overlap_prepared};
 use crate::time_call;
 
 // Parent/sibling imports.
 use super::naive::{build_s_pair, occ_coeffs};
+use super::space::{NOCIIndex, NOCISpace};
 use super::types::{DetPair, NOCIData, NOCIScalar};
 
 /// Wrapper function which dispatches to overlap matrix-element evaluation routines depending on
@@ -22,26 +22,32 @@ use super::types::{DetPair, NOCIData, NOCIScalar};
 /// - `T`: Overlap matrix element between the determinant pair.
 pub(crate) fn calculate_s_pair<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     scratch: Option<&mut WickScratchSpin<T>>,
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_s_pair, {
-        let ldet = pair.ldet;
-        let gdet = pair.gdet;
+        let ldet = data.space.state(pair.ldet);
+        let gdet = data.space.state(pair.gdet);
 
         if ldet.parent == gdet.parent {
             let mocache = data
                 .mocache
                 .expect("Orthogonal overlap matrix elements require mocache.");
             if mocache[ldet.parent].orthogonal_slater_condon {
-                return calculate_s_pair_orthogonal(ldet, gdet);
+                return calculate_s_pair_orthogonal(data.space, pair.ldet, pair.gdet);
             }
         }
 
         if data.input.wicks.enabled {
-            calculate_s_pair_wicks(ldet, gdet, data.wicks.unwrap(), scratch.unwrap())
+            calculate_s_pair_wicks(
+                data.space,
+                pair.ldet,
+                pair.gdet,
+                data.wicks.unwrap(),
+                scratch.unwrap(),
+            )
         } else {
-            calculate_s_pair_naive(data, ldet, gdet)
+            calculate_s_pair_naive(data, pair.ldet, pair.gdet)
         }
     })
 }
@@ -54,12 +60,13 @@ pub(crate) fn calculate_s_pair<T: NOCIScalar>(
 /// # Returns:
 /// - `T`: Overlap matrix element between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_s_pair_orthogonal, {
-        if ldet.oa == gdet.oa && ldet.ob == gdet.ob {
-            <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb))
+        if space.occupations(ldet) == space.occupations(gdet) {
+            <T as From<f64>>::from(space.phase(ldet) * space.phase(gdet))
         } else {
             <T as From<f64>>::from(0.0)
         }
@@ -76,19 +83,24 @@ pub(in crate::noci) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
 /// - `T`: Overlap matrix element between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_s_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_s_pair_naive, {
-        let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-        let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-        let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-        let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+        let lp = data.space.parent(ldet);
+        let gp = data.space.parent(gdet);
+        let (loa, lob) = data.space.occupations(ldet);
+        let (goa, gob) = data.space.occupations(gdet);
+
+        let l_ca_occ = occ_coeffs(&lp.ca, loa);
+        let g_ca_occ = occ_coeffs(&gp.ca, goa);
+        let l_cb_occ = occ_coeffs(&lp.cb, lob);
+        let g_cb_occ = occ_coeffs(&gp.cb, gob);
 
         let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
         let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
-        let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+        let det_phase = <T as From<f64>>::from(data.space.phase(ldet) * data.space.phase(gdet));
         det_phase * pa.s * pb.s
     })
 }
@@ -103,18 +115,19 @@ pub(in crate::noci) fn calculate_s_pair_naive<T: NOCIScalar>(
 /// # Returns:
 /// - `T`: Overlap matrix element.
 fn calculate_s_pair_wicks<T: NOCIScalar>(
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
     wicks: &WicksView<T>,
     scratch: &mut WickScratchSpin<T>,
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_s_pair_wicks, {
-        let w = wicks.pair(ldet.parent, gdet.parent);
+        let lparent = space.state(ldet).parent;
+        let gparent = space.state(gdet).parent;
+        let w = wicks.pair(lparent, gparent);
 
-        let ex_la = &ldet.excitation.alpha;
-        let ex_ga = &gdet.excitation.alpha;
-        let ex_lb = &ldet.excitation.beta;
-        let ex_gb = &gdet.excitation.beta;
+        let (ex_la, ex_lb) = space.excitations(ldet);
+        let (ex_ga, ex_gb) = space.excitations(gdet);
 
         let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
         let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
@@ -125,12 +138,12 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
 
         let zero = <T as From<f64>>::from(0.0);
 
-        let sa = calculate_s_alpha_pair_wicks(ldet, gdet, &w, scratch);
+        let sa = calculate_s_alpha_pair_wicks(space, ldet, gdet, &w, scratch);
         if sa == zero {
             return zero;
         }
 
-        let sb = calculate_s_beta_pair_wicks(ldet, gdet, &w, scratch);
+        let sb = calculate_s_beta_pair_wicks(space, ldet, gdet, &w, scratch);
         if sb == zero {
             return zero;
         }
@@ -149,16 +162,23 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
 /// - `T`: Alpha same-spin overlap including determinant phases.
 #[inline(always)]
 pub(in crate::noci) fn calculate_s_alpha_pair_wicks<T: NOCIScalar>(
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
     w: &WicksPairView<'_, T>,
     scratch: &mut WickScratchSpin<T>,
 ) -> T {
-    let l_ex = &ldet.excitation.alpha;
-    let g_ex = &gdet.excitation.alpha;
-    let phase = <T as From<f64>>::from(ldet.pha * gdet.pha);
+    let l_alpha = space.alpha(ldet);
+    let g_alpha = space.alpha(gdet);
+    let phase = <T as From<f64>>::from(l_alpha.reduced.phase * g_alpha.reduced.phase);
 
-    phase * xw_overlap_prepared(&w.aa, l_ex, g_ex, &mut scratch.aa)
+    phase
+        * xw_overlap_prepared(
+            &w.aa,
+            &l_alpha.excitation,
+            &g_alpha.excitation,
+            &mut scratch.aa,
+        )
 }
 
 /// Calculate the beta same-spin overlap for an ordered Wick pair.
@@ -171,14 +191,21 @@ pub(in crate::noci) fn calculate_s_alpha_pair_wicks<T: NOCIScalar>(
 /// - `T`: Beta same-spin overlap including determinant phases.
 #[inline(always)]
 pub(in crate::noci) fn calculate_s_beta_pair_wicks<T: NOCIScalar>(
-    ldet: &DetState<T>,
-    gdet: &DetState<T>,
+    space: &NOCISpace<T>,
+    ldet: NOCIIndex,
+    gdet: NOCIIndex,
     w: &WicksPairView<'_, T>,
     scratch: &mut WickScratchSpin<T>,
 ) -> T {
-    let l_ex = &ldet.excitation.beta;
-    let g_ex = &gdet.excitation.beta;
-    let phase = <T as From<f64>>::from(ldet.phb * gdet.phb);
+    let l_beta = space.beta(ldet);
+    let g_beta = space.beta(gdet);
+    let phase = <T as From<f64>>::from(l_beta.reduced.phase * g_beta.reduced.phase);
 
-    phase * xw_overlap_prepared(&w.bb, l_ex, g_ex, &mut scratch.bb)
+    phase
+        * xw_overlap_prepared(
+            &w.bb,
+            &l_beta.excitation,
+            &g_beta.excitation,
+            &mut scratch.bb,
+        )
 }

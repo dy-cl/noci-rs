@@ -9,9 +9,10 @@ use ndarray_linalg::{Eigh, UPLO};
 
 // Crate-root imports.
 use crate::AoData;
-use crate::DetState;
 use crate::maths::{ERIScalar, adjoint, loewdin_x, real2_as};
-use crate::noci::{NOCIData, NOCIScalar, build_noci_s, noci_density, occ_coeffs};
+use crate::noci::{
+    NOCIData, NOCIIndex, NOCIScalar, NOCISpace, build_noci_s, noci_density, occ_coeffs,
+};
 
 /// Stores a common orthonormal natural-orbital basis and its occupation partition.
 pub(crate) struct NOCINaturalOrbitals {
@@ -42,11 +43,12 @@ pub(crate) fn noci_natural_orbitals(
     vtol: f64,
 ) -> NOCINaturalOrbitals {
     // Get overlap matrix of states in NOCI basis.
-    let (s, _) = build_noci_s(data, data.basis, data.basis, true);
+    let indices = (0..data.space.len()).map(NOCIIndex).collect::<Vec<_>>();
+    let (s, _) = build_noci_s(data, &indices, &indices, true);
     let norm = coeffs.dot(&s.dot(coeffs));
 
     // Get AO density matrix of states in NOCI basis and normalise.
-    let (da, db) = noci_density(data.ao, data.basis, coeffs, data.tol);
+    let (da, db) = noci_density(data.ao, data.space, &indices, coeffs, data.tol);
     let mut d = da + db;
     d.mapv_inplace(|x| x / norm);
 
@@ -119,34 +121,34 @@ fn partition_natural_occupations(
 /// - `c`: AO coefficients of the orthonormal orbital basis.
 /// - `s`: AO overlap matrix.
 /// # Returns:
-/// - `Vec<DetState<T>>`: Determinants represented in the supplied orbital basis.
+/// - `NOCISpace<T>`: Retained determinants represented in the supplied orbital basis.
 pub(crate) fn transform_noci_basis<T: NOCIScalar>(
-    basis: &[DetState<T>],
+    basis: &NOCISpace<T>,
     c: &Array2<T>,
     s: &Array2<f64>,
-) -> Vec<DetState<T>> {
+) -> NOCISpace<T> {
     let s = real2_as::<T>(s);
     let cdag_s = adjoint(c).dot(&s);
 
-    basis
+    let parents = basis
+        .parents
         .iter()
-        .map(|det| {
-            let ca = cdag_s.dot(det.ca.as_ref());
-            let cb = cdag_s.dot(det.cb.as_ref());
-
-            let ca_occ = occ_coeffs(&ca, det.oa);
-            let cb_occ = occ_coeffs(&cb, det.ob);
-            let da = ca_occ.dot(&adjoint(&ca_occ));
-            let db = cb_occ.dot(&adjoint(&cb_occ));
-
-            let mut out = det.clone();
-            out.ca = Arc::new(ca);
-            out.cb = Arc::new(cb);
-            out.da = Arc::new(da);
-            out.db = Arc::new(db);
-            out
+        .map(|parent| {
+            let mut transformed = parent.clone();
+            transformed.ca = Arc::new(cdag_s.dot(parent.ca.as_ref()));
+            transformed.cb = Arc::new(cdag_s.dot(parent.cb.as_ref()));
+            transformed
         })
-        .collect()
+        .collect();
+    let mut out = NOCISpace::from_parents(parents);
+
+    for index in 0..basis.len() {
+        let state = basis.state(NOCIIndex(index));
+        let (oa, ob) = basis.occupations(NOCIIndex(index));
+        out.push(state.parent, oa, ob, basis.labels[index].clone());
+    }
+
+    out
 }
 
 /// Transform AO data into a supplied orbital basis.

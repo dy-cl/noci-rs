@@ -1,20 +1,18 @@
 // driver/scf.rs
 
 // External crate imports.
-use num_complex::Complex64;
-
 // Crate-root imports.
 use crate::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
 use crate::input::Input;
 use crate::time_call;
-use crate::{AoData, DetState, HSCFState, SCFState};
+use crate::{AoData, HSCFState, SCFState};
 
 /// Prepared real references for downstream reference-space NOCI.
 pub struct RealReferencePrep {
     /// SCF states generated for this geometry.
     pub states: Vec<SCFState>,
     /// Real reference basis before reference-space filtering.
-    pub basis: Vec<DetState<f64>>,
+    pub basis: Vec<SCFState<f64>>,
 }
 
 /// Prepared holomorphic references for downstream reference-space NOCI.
@@ -26,7 +24,7 @@ pub struct HolomorphicReferencePrep {
     /// Off axis complex h-SCF states for tracking across geometries.
     pub htracks: Vec<HSCFState>,
     /// Complex Hermitian reference basis before reference-space filtering.
-    pub basis: Vec<DetState<Complex64>>,
+    pub basis: Vec<HSCFState>,
 }
 
 /// Run SCF calculations for real reference states.

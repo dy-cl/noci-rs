@@ -6,7 +6,6 @@ use mpi::traits::*;
 use rand::Rng;
 
 // Crate-root imports.
-use crate::DetState;
 use crate::input::{ExcitationGen, Input};
 use crate::noci::{MOCache, NOCIData, OrthogonalConnection};
 use crate::nonorthogonalwicks::WickScratchSpin;
@@ -33,11 +32,11 @@ impl OrthogonalUniformGenerator {
     /// # Returns
     /// - `Self`: System-wide flat uniform connection table and valid-orbital masks.
     pub(in crate::stochastic) fn new(
-        source: &DetState<f64>,
+        occupations: (u128, u128),
         cache: &MOCache<f64>,
     ) -> Self {
-        let noa = source.oa.count_ones() as usize;
-        let nob = source.ob.count_ones() as usize;
+        let noa = occupations.0.count_ones() as usize;
+        let nob = occupations.1.count_ones() as usize;
         let nva = cache.ha.nrows() - noa;
         let nvb = cache.hb.nrows() - nob;
         let nas = noa * nva;
@@ -156,12 +155,13 @@ pub(in crate::stochastic) fn coupling(
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> f64 {
-    let lambda_det = &data.basis[lambda];
-    let gamma_det = &data.basis[gamma];
+    let lambda_state = data.space.state(crate::noci::NOCIIndex(lambda));
+    let gamma_state = data.space.state(crate::noci::NOCIIndex(gamma));
+    let (lambda_oa, lambda_ob) = data.space.occupations(crate::noci::NOCIIndex(lambda));
+    let (gamma_oa, gamma_ob) = data.space.occupations(crate::noci::NOCIIndex(gamma));
 
-    if lambda_det.parent == gamma_det.parent
-        && (lambda_det.oa ^ gamma_det.oa).count_ones() + (lambda_det.ob ^ gamma_det.ob).count_ones()
-            > 4
+    if lambda_state.parent == gamma_state.parent
+        && (lambda_oa ^ gamma_oa).count_ones() + (lambda_ob ^ gamma_ob).count_ones() > 4
     {
         return 0.0;
     }
@@ -188,7 +188,7 @@ pub(in crate::stochastic) fn init_heat_bath(
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> HeatBath {
-    let ndets = data.basis.len();
+    let ndets = data.space.len();
     // Total weight W_w = \sum_{x != w} |T_{x w}(\Delta \tau)|.
     let mut sumxw = 0.0_f64;
     // Cumulative weights A_n = \sum_{i = 1}^n |T_{i w}(\Delta \tau)|.
@@ -245,7 +245,7 @@ pub(in crate::stochastic) fn pgen_heat_bath(
     hb: &HeatBath,
     scratch: &mut WickScratchSpin<f64>,
 ) -> (f64, f64, usize) {
-    let ndets = data.basis.len();
+    let ndets = data.space.len();
     // If \Sum_{x \neq w} |H_{xw} - E_s^S(\tau)S_{xw} (sumxw)
     // is zero (unsure how likely this is) then fallback to uniform distribution.
     if hb.sumxw == 0.0 {

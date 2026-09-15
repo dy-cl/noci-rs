@@ -24,6 +24,7 @@
 //!
 //! is then solved.
 
+mod auxiliary;
 mod cache;
 mod factorise;
 mod fock;
@@ -33,35 +34,42 @@ mod matrix;
 mod naive;
 mod orthogonal;
 mod overlap;
+mod space;
 mod types;
 mod wicks;
 
 // Public type re-exports.
+pub use crate::determinant::ParentDeterminant;
+pub use space::{NOCIDeterminantState, NOCIIndex, NOCISpace};
 pub use types::{FockMOCache, MOCache, NOCIData, NOCIScalar};
 
 // Public function re-exports.
-pub use cache::{build_fock_mo_cache, build_mo_cache};
-pub use matrix::{build_noci_hs, build_noci_s, calculate_noci_energy};
-pub use naive::noci_density;
-pub use wicks::{build_wicks_shared, update_wicks_fock};
+pub use cache::build_mo_cache;
+pub use matrix::{build_noci_hs, calculate_noci_energy};
+pub use wicks::build_wicks_shared;
 
 // Crate-visible type re-exports.
+pub(crate) use auxiliary::{
+    AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex,
+};
 pub(crate) use factorise::{
-    OneBodyFactorisation, OneBodyScratch, OrthogonalComponents, OrthogonalOverlapScratch,
-    OverlapFactors, OverlapScratch, SpinFactorisation,
+    OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch, SpinFactorisation,
 };
 pub(crate) use orthogonal::OrthogonalConnection;
-pub(crate) use types::{DetPair, FockData, OrthogonalDetState};
+pub(crate) use space::{NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
+pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
+pub(crate) use cache::build_fock_mo_cache;
 pub(crate) use fock::calculate_f_pair;
 pub(crate) use hs::{
     OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
-    calculate_hs_pairs_wicks_batched, orthogonal_connection_child,
+    calculate_hs_pairs_wicks_batched,
 };
 pub(crate) use m::calculate_m_pair;
-pub(crate) use matrix::build_noci_fock;
-pub(crate) use naive::occ_coeffs;
+pub(crate) use matrix::{build_noci_fock, build_noci_s};
 #[cfg(feature = "nocc")]
 pub(crate) use naive::{build_s_pair, pair_density};
+pub(crate) use naive::{noci_density, occ_coeffs};
 pub(crate) use overlap::calculate_s_pair;
+pub(crate) use wicks::update_wicks_fock;

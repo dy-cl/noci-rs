@@ -73,11 +73,12 @@ impl OverlapWeightedGenerator {
             .collect();
 
         let nparent = spin.nparents();
-        let det_meta = (0..data.basis.len())
+        let det_meta = (0..data.space.len())
             .map(|det| {
-                let source_parent = data.basis[det].parent;
-                let source_a = spin.aid(det);
-                let source_b = spin.bid(det);
+                let source = data.space.state(crate::noci::NOCIIndex(det));
+                let source_parent = source.parent;
+                let source_a = source.aid.0;
+                let source_b = source.bid.0;
                 let mut ztotal = 0.0;
 
                 for target_parent in 0..nparent {

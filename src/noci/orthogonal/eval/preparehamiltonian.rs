@@ -13,7 +13,7 @@ use num_complex::Complex64;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd};
 use crate::noci::{MOCache, NOCIScalar};
-use crate::{AoData, DetState, ReducedTwoSpinState};
+use crate::{AoData, ReducedTwoSpinState};
 
 // Parent/sibling imports.
 use super::dispatch::dispatch_orthogonal_ranks;
@@ -219,8 +219,7 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
 pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
     ao: &AoData,
     cache: &MOCache<T>,
-    basis: &[DetState<T>],
-    sources: &[usize],
+    occupations: &[(u128, u128)],
     states: &[ReducedTwoSpinState],
     out: &mut [T],
 ) {
@@ -228,15 +227,12 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
     unsafe {
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             let cache_f64 = &*std::ptr::from_ref(cache).cast::<MOCache<f64>>();
-            let basis_f64 =
-                std::slice::from_raw_parts(basis.as_ptr().cast::<DetState<f64>>(), basis.len());
             let out_f64 = std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<f64>(), out.len());
             if is_x86_feature_detected!("avx512f") {
                 xw_hamiltonian_orthogonal_prepared_simd(
                     ao,
                     cache_f64,
-                    basis_f64,
-                    sources,
+                    occupations,
                     states,
                     out_f64,
                     xw_hamiltonian_orthogonal_prepared_f64x8,
@@ -247,8 +243,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
                 xw_hamiltonian_orthogonal_prepared_simd(
                     ao,
                     cache_f64,
-                    basis_f64,
-                    sources,
+                    occupations,
                     states,
                     out_f64,
                     xw_hamiltonian_orthogonal_prepared_f64x4,
@@ -259,18 +254,13 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
 
         if TypeId::of::<T>() == TypeId::of::<Complex64>() {
             let cache_c64 = &*std::ptr::from_ref(cache).cast::<MOCache<Complex64>>();
-            let basis_c64 = std::slice::from_raw_parts(
-                basis.as_ptr().cast::<DetState<Complex64>>(),
-                basis.len(),
-            );
             let out_c64 =
                 std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<Complex64>(), out.len());
             if is_x86_feature_detected!("avx512f") {
                 xw_hamiltonian_orthogonal_prepared_simd(
                     ao,
                     cache_c64,
-                    basis_c64,
-                    sources,
+                    occupations,
                     states,
                     out_c64,
                     xw_hamiltonian_orthogonal_prepared_c64x8,
@@ -281,8 +271,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
                 xw_hamiltonian_orthogonal_prepared_simd(
                     ao,
                     cache_c64,
-                    basis_c64,
-                    sources,
+                    occupations,
                     states,
                     out_c64,
                     xw_hamiltonian_orthogonal_prepared_c64x4,
@@ -292,9 +281,8 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
         }
     }
 
-    for ((&source, state), value) in sources.iter().zip(states).zip(out) {
-        let source = &basis[source];
-        *value = xw_hamiltonian_orthogonal_prepared(ao, cache, (source.oa, source.ob), state);
+    for ((&occupation, state), value) in occupations.iter().zip(states).zip(out) {
+        *value = xw_hamiltonian_orthogonal_prepared(ao, cache, occupation, state);
     }
 }
 
@@ -318,8 +306,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
 unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>(
     ao: &AoData,
     cache: &MOCache<T>,
-    basis: &[DetState<T>],
-    sources: &[usize],
+    occupations: &[(u128, u128)],
     states: &[ReducedTwoSpinState],
     out: &mut [T],
     kernel: unsafe fn(&MOCache<T>, (usize, usize), &[ReducedTwoSpinState; N], &mut [T; N]),
@@ -332,7 +319,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
     let mut outputs = [[0usize; N]; 3];
     let mut counts = [0usize; 3];
 
-    for (output, (&source, state)) in sources.iter().zip(states).enumerate() {
+    for (output, (&occupation, state)) in occupations.iter().zip(states).enumerate() {
         let ranks = (
             usize::from(state.excitation_cache.alpha.rank),
             usize::from(state.excitation_cache.beta.rank),
@@ -342,9 +329,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
             (1, 1) => 1,
             (0, 2) => 2,
             _ => {
-                let source = &basis[source];
-                out[output] =
-                    xw_hamiltonian_orthogonal_prepared(ao, cache, (source.oa, source.ob), state);
+                out[output] = xw_hamiltonian_orthogonal_prepared(ao, cache, occupation, state);
                 continue;
             }
         };

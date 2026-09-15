@@ -5,7 +5,6 @@ use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
 // Crate-root imports.
-use crate::DetState;
 use crate::deterministic::{ProjPropagator, Projectors};
 use crate::noci::NOCIScalar;
 
@@ -287,7 +286,7 @@ fn format_determinant_label(
 pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
     ground_state: &Array1<T>,
     p: &Projectors<T>,
-    basis: &[DetState<T>],
+    basis: &crate::noci::NOCISpace<T>,
     nstates: usize,
     nterms: usize,
 ) {
@@ -367,13 +366,13 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
 
         for (rank, &mu) in terms.iter().take(nterms_print).enumerate() {
             let a_mu_i = p.ur[(mu, i)] / T::from_real(lambda_i.sqrt());
-            let det = &basis[mu];
+            let label = &basis.labels[mu];
             println!(
                 "  {:>4} {:>6} {:>7}  {:<68} {:>24} {:>27}",
                 rank + 1,
                 mu,
-                det.parent,
-                format_determinant_label(det.label.as_str(), 68),
+                basis.states[mu].parent,
+                format_determinant_label(label.as_str(), 68),
                 format_signed_scalar(a_mu_i),
                 format_signed_scalar(vi * a_mu_i)
             );

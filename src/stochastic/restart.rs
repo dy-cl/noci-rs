@@ -9,7 +9,7 @@ use mpi::topology::Communicator;
 use mpi::traits::*;
 
 // Crate-root imports.
-use crate::SCFState;
+use crate::noci::{NOCIIndex, NOCISpace};
 
 // Parent/sibling imports.
 use super::state::ExcitationHist;
@@ -46,10 +46,9 @@ pub(in crate::stochastic) struct RestartState {
 /// - `basis`: Ordered stochastic determinant basis used by the current executable.
 /// # Returns:
 /// - `[u64; 2]`: Two-lane deterministic basis hash.
-pub(in crate::stochastic) fn basis_hash(basis: &[SCFState]) -> [u64; 2] {
+pub(in crate::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
     let mut hash = [0xcbf29ce484222325, 0x84222325cbf29ce4];
-    let max_parent = basis.iter().map(|det| det.parent).max().unwrap_or(0);
-    let mut seen_parent = vec![false; max_parent + 1];
+    let mut seen_parent = vec![false; space.parents.len()];
 
     let mut mix = |value: u64| {
         hash[0] ^= value;
@@ -58,36 +57,42 @@ pub(in crate::stochastic) fn basis_hash(basis: &[SCFState]) -> [u64; 2] {
         hash[1] = hash[1].wrapping_mul(0x00000100000001b3);
     };
 
-    mix(basis.len() as u64);
-    for (i, det) in basis.iter().enumerate() {
+    mix(space.len() as u64);
+    for i in 0..space.len() {
+        let index = NOCIIndex(i);
+        let det = space.state(index);
+        let alpha = space.alpha(index);
+        let beta = space.beta(index);
+
         mix(i as u64);
         mix(det.parent as u64);
-        for value in [det.oa, det.ob] {
+        for value in [alpha.occupation, beta.occupation] {
             mix(value as u64);
             mix((value >> 64) as u64);
         }
-        mix(det.pha.to_bits());
-        mix(det.phb.to_bits());
+        mix(alpha.reduced.phase.to_bits());
+        mix(beta.reduced.phase.to_bits());
         for value in [
-            det.excitation.alpha.holes,
-            det.excitation.alpha.parts,
-            det.excitation.beta.holes,
-            det.excitation.beta.parts,
+            alpha.excitation.holes,
+            alpha.excitation.parts,
+            beta.excitation.holes,
+            beta.excitation.parts,
         ] {
             mix(value as u64);
             mix((value >> 64) as u64);
         }
         if !seen_parent[det.parent] {
             seen_parent[det.parent] = true;
+            let parent = &space.parents[det.parent];
             mix(det.parent as u64);
-            mix(det.ca.nrows() as u64);
-            mix(det.ca.ncols() as u64);
-            for &value in det.ca.iter() {
+            mix(parent.ca.nrows() as u64);
+            mix(parent.ca.ncols() as u64);
+            for &value in parent.ca.iter() {
                 mix(value.to_bits());
             }
-            mix(det.cb.nrows() as u64);
-            mix(det.cb.ncols() as u64);
-            for &value in det.cb.iter() {
+            mix(parent.cb.nrows() as u64);
+            mix(parent.cb.ncols() as u64);
+            for &value in parent.cb.iter() {
                 mix(value.to_bits());
             }
         }

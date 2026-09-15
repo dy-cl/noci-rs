@@ -3,9 +3,10 @@
 use ndarray::{Array2, Array4};
 
 // Crate-root imports.
+use crate::AoData;
+use crate::determinant::ParentDeterminant;
 use crate::maths::{adjoint, real2_as};
 use crate::time_call;
-use crate::{AoData, DetState};
 
 // Parent/sibling imports.
 use super::types::{FockMOCache, MOCache, NOCIScalar};
@@ -50,7 +51,7 @@ fn hermitian_orthonormal_error<T: NOCIScalar>(
 /// - `Vec<MOCache<T>>`: MO-basis integrals for each parent.
 pub fn build_mo_cache<T: NOCIScalar>(
     ao: &AoData,
-    parents: &[DetState<T>],
+    parents: &[ParentDeterminant<T>],
     tol: f64,
 ) -> Vec<MOCache<T>> {
     time_call!(crate::timers::noci::add_build_mo_cache, {
@@ -131,10 +132,10 @@ pub fn build_mo_cache<T: NOCIScalar>(
 /// - `tol`: Tolerance for identifying Hermitian-orthonormal parent MOs.
 /// # Returns:
 /// - `Vec<FockMOCache<T>>`: MO basis Fock matrices for each parent.
-pub fn build_fock_mo_cache<T: NOCIScalar>(
+pub(crate) fn build_fock_mo_cache<T: NOCIScalar>(
     fa: &Array2<T>,
     fb: &Array2<T>,
-    parents: &[DetState<T>],
+    parents: &[ParentDeterminant<T>],
     s: &Array2<f64>,
     tol: f64,
 ) -> Vec<FockMOCache<T>> {
