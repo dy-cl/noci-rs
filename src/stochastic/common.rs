@@ -253,7 +253,6 @@ pub(in crate::stochastic) fn propagate_iteration(
                         population,
                         shift,
                         data,
-                        run,
                         (overlap_factors, overlap_generator, overlap_weight),
                     );
                 }

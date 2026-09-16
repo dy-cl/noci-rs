@@ -14,7 +14,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 // Parent/sibling imports.
 use super::common::{find_h_orthogonal_batched, find_hs_batched};
 use super::excit::{OrthogonalUniformGenerator, init_heat_bath, pgen_heat_bath};
-use super::fri::{FriAmplitude, round};
+use super::fri::{FriAmplitude, compress_sparse};
 use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
 
 /// Stable RNG used by seeded QMC streams.
@@ -635,6 +635,8 @@ pub(in crate::stochastic) struct NOCIThreadPropagation {
     pub(in crate::stochastic) rng: QmcRng,
     /// Batched off-diagonal spawn requests accumulated over one worker propagation iteration.
     spawn_requests: Vec<NOCIBatchedSpawnRequest>,
+    /// Raw off-diagonal spawn events awaiting one worker-batch pivotal compression.
+    raw_spawn_updates: Vec<NOCIPopulationUpdate>,
     /// Canonically ordered determinant pairs corresponding to `spawn_requests`.
     spawn_pairs: Vec<(usize, usize)>,
     /// Hamiltonian and overlap elements corresponding to `spawn_requests`.
@@ -659,6 +661,8 @@ pub(in crate::stochastic) struct AuxiliaryThreadPropagation {
     pub(in crate::stochastic) rng: QmcRng,
     /// Batched relative connection requests for one stochastic iteration.
     spawn_requests: Vec<AuxiliaryBatchedSpawnRequest>,
+    /// Raw off-diagonal auxiliary events awaiting one worker-batch pivotal compression.
+    raw_spawn_updates: Vec<AuxiliaryPopulationUpdate>,
     /// Compact source and relative connection indices aligned with requests.
     spawn_pairs: Vec<(NOCIIndex, usize)>,
     /// Parent-orthogonal Hamiltonian results aligned with spawn requests.
@@ -723,6 +727,7 @@ impl NOCIThreadPropagation {
             samples: Vec::new(),
             rng: QmcRng::seed_from_u64(seed),
             spawn_requests: Vec::new(),
+            raw_spawn_updates: Vec::new(),
             spawn_pairs: Vec::new(),
             spawn_hs: Vec::new(),
             wick_scratch: Box::new(WickScratchSpin::with_sizes(maxsame, maxla, maxlb)),
@@ -742,13 +747,14 @@ impl NOCIThreadPropagation {
         self.remote.clear();
         self.samples.clear();
         self.spawn_requests.clear();
+        self.raw_spawn_updates.clear();
         self.spawn_pairs.clear();
         self.spawn_hs.clear();
         self.overlap_derivatives = OverlapDerivativeSums::default();
     }
 
     /// Resolve all batched spawn requests accumulated by this worker during one propagation
-    /// iteration. Matrix elements are evaluated together before ordinary spawning, FRI and
+    /// iteration. Matrix elements are evaluated together before ordinary spawning, pivotal FRI and
     /// ownership logic. For SApply, the same realised overlap elements also supply
     /// `dB_w = dt S_{wx}\tilde N_x/p_gen(w|x)`.
     /// # Arguments:
@@ -774,7 +780,7 @@ impl NOCIThreadPropagation {
     ) {
         let (overlap_factors, overlap_generator, overlap_weight, optimise_overlap_weight) = overlap;
 
-        if self.spawn_requests.is_empty() {
+        if self.spawn_requests.is_empty() && self.raw_spawn_updates.is_empty() {
             return;
         }
 
@@ -869,33 +875,37 @@ impl NOCIThreadPropagation {
                 self.samples.push(raw.abs());
             }
 
-            let dn = round(raw, qmc.fri.spawn_cutoff, &mut self.rng);
-            if dn == 0.0 {
-                continue;
-            }
-
-            if run.nranks == 1 {
-                self.local.push((request.child, dn));
-            } else {
-                let destination = run.det_owner[request.child];
-
-                if destination == run.irank {
-                    self.local.push((request.child, dn));
-                } else {
-                    self.remote.push((
-                        destination,
-                        NOCIPopulationUpdate {
-                            det: request.child as u64,
-                            dn,
-                        },
-                    ));
-                }
-            }
+            self.raw_spawn_updates.push(NOCIPopulationUpdate {
+                det: request.child as u64,
+                dn: raw,
+            });
         }
 
         self.spawn_requests.clear();
         self.spawn_pairs.clear();
         self.spawn_hs.clear();
+
+        // Compress complete event batch before ownership routing; duplicate children remain distinct.
+        compress_sparse(
+            &mut self.raw_spawn_updates,
+            qmc.fri.spawn_cutoff,
+            &mut self.rng,
+        );
+        for update in &self.raw_spawn_updates {
+            let child = update.det as usize;
+            if run.nranks == 1 {
+                self.local.push((child, update.dn));
+            } else {
+                let destination = run.det_owner[child];
+
+                if destination == run.irank {
+                    self.local.push((child, update.dn));
+                } else {
+                    self.remote.push((destination, *update));
+                }
+            }
+        }
+        self.raw_spawn_updates.clear();
     }
 
     /// Generate the diagonal real population change for one sampled determinant.
@@ -930,17 +940,15 @@ impl NOCIThreadPropagation {
     /// - `population`: Real sampled population on `gamma`.
     /// - `shift`: Current population-control shift.
     /// - `data`: Immutable stochastic propagation data.
-    /// - `run`: Rank-local propagation metadata.
     /// - `overlap`: Optional overlap factors and generator with current mixture weight.
     /// # Returns:
-    /// - `()`: Appends local and remote real population changes.
+    /// - `()`: Appends unresolved off-diagonal spawn events to this worker's batch.
     pub(in crate::stochastic) fn spawning(
         &mut self,
         gamma: usize,
         population: f64,
         shift: ShiftSpec,
         data: &NOCIData<'_, f64>,
-        run: &QMCRunInfo,
         overlap: (
             Option<&OverlapFactors>,
             Option<&OverlapWeightedGenerator>,
@@ -1063,29 +1071,10 @@ impl NOCIThreadPropagation {
                 self.samples.push(raw.abs());
             }
 
-            let dn = round(raw, qmc.fri.spawn_cutoff, &mut self.rng);
-
-            if dn == 0.0 {
-                continue;
-            }
-
-            if run.nranks == 1 {
-                self.local.push((lambda, dn));
-            } else {
-                let destination = run.det_owner[lambda];
-
-                if destination == run.irank {
-                    self.local.push((lambda, dn));
-                } else {
-                    self.remote.push((
-                        destination,
-                        NOCIPopulationUpdate {
-                            det: lambda as u64,
-                            dn,
-                        },
-                    ));
-                }
-            }
+            self.raw_spawn_updates.push(NOCIPopulationUpdate {
+                det: lambda as u64,
+                dn: raw,
+            });
         }
     }
 }
@@ -1108,6 +1097,7 @@ impl AuxiliaryThreadPropagation {
             samples: Vec::new(),
             rng: QmcRng::seed_from_u64(seed),
             spawn_requests: Vec::new(),
+            raw_spawn_updates: Vec::new(),
             spawn_pairs: Vec::new(),
             spawn_h: Vec::new(),
             orthogonal_scratch: OrthogonalHamiltonianScratch::new(nparents),
@@ -1124,6 +1114,7 @@ impl AuxiliaryThreadPropagation {
         self.remote.clear();
         self.samples.clear();
         self.spawn_requests.clear();
+        self.raw_spawn_updates.clear();
         self.spawn_pairs.clear();
         self.spawn_h.clear();
     }
@@ -1209,12 +1200,14 @@ impl AuxiliaryThreadPropagation {
         }
     }
 
-    /// Resolve and evaluate `H_{Dx}` for all requests before stochastic spawn rounding.
-    /// Surviving updates construct `O'_\sigma=(O_\sigma\setminus I_\sigma)\cup A_\sigma` only
-    /// after `round(-dt H_{Dx}\tilde N_x/P_\mathrm{gen})` returns a nonzero amplitude.
+    /// Resolve and evaluate `H_{Dx}` for all requests before pivotal spawn compression.
+    /// Each raw event `\chi_D=-dt H_{Dx}\tilde N_x/P_\mathrm{gen}(D|x)` constructs its connected
+    /// `O'_\sigma=(O_\sigma\setminus I_\sigma)\cup A_\sigma` key, then the complete worker batch is
+    /// compressed without coalescing duplicate keys.
     /// # Arguments:
     /// - `data`: Shared NOCI basis, parent MO caches, timestep, and FRI configuration.
     /// - `generator`: Persistent system-wide orthogonal connection topology.
+    /// - `auxiliary`: Canonical auxiliary determinant space.
     /// - `run`: MPI ownership metadata for realised physical determinants.
     /// # Returns
     /// - `()`: Appends realised orthogonal updates and clears iteration-local batch buffers.
@@ -1225,7 +1218,7 @@ impl AuxiliaryThreadPropagation {
         auxiliary: &AuxiliarySpace,
         run: &QMCRunInfo,
     ) {
-        if self.spawn_requests.is_empty() {
+        if self.spawn_requests.is_empty() && self.raw_spawn_updates.is_empty() {
             return;
         }
 
@@ -1254,22 +1247,31 @@ impl AuxiliaryThreadPropagation {
             if record_samples {
                 self.samples.push(raw.abs());
             }
-            let dn = round(raw, qmc.fri.spawn_cutoff, &mut self.rng);
-            if dn == 0.0 {
-                continue;
-            }
 
             let child = auxiliary.connected(
                 data.space,
                 request.source,
                 generator.connections()[request.connection],
             );
-            self.route_update(child, dn, run);
+            self.raw_spawn_updates
+                .push(AuxiliaryPopulationUpdate::new(child, raw));
         }
 
         self.spawn_requests.clear();
         self.spawn_pairs.clear();
         self.spawn_h.clear();
+
+        // Preserve event-level spawn-cutoff semantics by pivotalising before duplicate coalescing.
+        compress_sparse(
+            &mut self.raw_spawn_updates,
+            qmc.fri.spawn_cutoff,
+            &mut self.rng,
+        );
+        for i in 0..self.raw_spawn_updates.len() {
+            let update = self.raw_spawn_updates[i];
+            self.route_update(update.index(), update.dn, run);
+        }
+        self.raw_spawn_updates.clear();
     }
 }
 
