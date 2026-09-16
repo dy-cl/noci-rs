@@ -190,6 +190,10 @@ pub fn print_input(input: &Input) {
             println!("ENABLED: true");
             println!("INITIAL_POPULATION: {}", q.initial_population);
             println!("TARGET_POPULATION: {}", q.target_population);
+            match q.n_projected {
+                Some(n) => println!("N_PROJECTED: {}", n),
+                None => println!("N_PROJECTED: NREF"),
+            }
             println!("NCYCLES: {}", q.ncycles);
             println!("NREPORTS: {}", q.nreports);
             println!("FRI_POPULATION_CUTOFF: {}", q.fri.population_cutoff);

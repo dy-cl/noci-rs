@@ -4,14 +4,18 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // External crate imports.
+use mpi::collective::SystemOperation;
 use mpi::datatype::{Partition, PartitionMut};
 use mpi::topology::Communicator;
 use mpi::traits::*;
+use ndarray::Array2;
 use rand::SeedableRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::input::{Input, Propagator};
+use crate::maths::general_evp;
+use crate::mpiutils::broadcast;
 use crate::noci::{
     AuxiliarySpace, DetPair, NOCIData, OverlapFactors, calculate_h_pairs_orthogonal_batched,
     calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
@@ -353,11 +357,276 @@ pub(in crate::stochastic) fn propagate_iteration_auxiliary(
     }
 }
 
+/// Contract a fixed projected-energy trial state against every locally owned determinant.
+/// For `|Psi_P> = \sum_i c_i^P |Phi_i>`, constructs
+/// `H_w^P = \sum_i c_i^P H_{iw}` and `S_w^P = \sum_i c_i^P S_{iw}`.
+/// # Arguments:
+/// - `data`: Immutable stochastic propagation data.
+/// - `projection`: Global determinant indices and coefficients defining `|Psi_P>`.
+/// - `owned`: Global determinant indices owned by this MPI rank.
+/// - `cached_hs`: Optional precomputed contractions indexed by global determinant.
+/// - `scratch_size`: Maximum same-spin, alpha-spin and beta-spin Wick scratch dimensions.
+/// # Returns:
+/// - `Vec<(f64, f64)>`: Trial Hamiltonian and overlap contractions aligned with `owned`.
+fn build_projection_hs(
+    data: &NOCIData<'_, f64>,
+    projection: &[(usize, f64)],
+    owned: &[usize],
+    cached_hs: &[Option<(f64, f64)>],
+    scratch_size: (usize, usize, usize),
+) -> Vec<(f64, f64)> {
+    let (maxsame, maxla, maxlb) = scratch_size;
+
+    owned
+        .par_iter()
+        .map_init(
+            || WickScratchSpin::with_sizes(maxsame, maxla, maxlb),
+            |scratch, &w| {
+                // Reuse selected-space contractions whenever this column is already known.
+                if let Some(hs) = cached_hs[w] {
+                    return hs;
+                }
+
+                // Contract the trial coefficients against column `w` of H and S.
+                projection
+                    .iter()
+                    .fold((0.0, 0.0), |(h, s), &(i, coefficient)| {
+                        let (hiw, siw) = find_hs(data, i, w, scratch);
+
+                        (h + coefficient * hiw, s + coefficient * siw)
+                    })
+            },
+        )
+        .collect()
+}
+
+/// Recover the reference-space Rayleigh quotient from the existing trial contractions.
+/// For the reference vector `c_0`, evaluates `E_0 = (c_0^T H c_0)/(c_0^T S c_0)`.
+/// # Arguments:
+/// - `c0`: Reference coefficients embedded in the full stochastic determinant basis.
+/// - `projection_hs`: Original reference-state `H` and `S` contractions aligned with `owned`.
+/// - `owned`: Global determinant indices owned by this MPI rank.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `f64`: Reference-space NOCI energy `E_0`.
+fn reference_projected_energy(
+    c0: &[f64],
+    projection_hs: &[(f64, f64)],
+    owned: &[usize],
+    world: &impl Communicator,
+) -> f64 {
+    // Only determinants carrying reference coefficients contribute to this Rayleigh quotient.
+    let (num_local, den_local) =
+        owned
+            .iter()
+            .zip(projection_hs.iter())
+            .fold((0.0, 0.0), |(num, den), (&w, &(h, s))| {
+                let coefficient = c0[w];
+
+                (num + coefficient * h, den + coefficient * s)
+            });
+
+    let local = [num_local, den_local];
+    let mut global = [0.0; 2];
+
+    // Combine the distributed reference contributions before forming the energy.
+    if world.size() == 1 {
+        global = local;
+    } else {
+        world.all_reduce_into(&local, &mut global, SystemOperation::sum());
+    }
+
+    let energy = global[0] / global[1];
+
+    // A non-finite result means the supplied reference state is not a valid projector.
+    if !energy.is_finite() {
+        panic!(
+            "reference projected energy is not finite: numerator {}, denominator {}",
+            global[0], global[1]
+        );
+    }
+
+    energy
+}
+
+/// Select the largest external components of the reference-state Schrödinger residual.
+/// For `R_w = H_w^0 - E_0 S_w^0`, retains the largest external values of `|R_w|`.
+/// # Arguments:
+/// - `projection_hs`: Original reference-state `H` and `S` contractions aligned with `owned`.
+/// - `reference_energy`: Reference-space NOCI energy `E_0`.
+/// - `ref_indices`: Original reference determinant indices.
+/// - `isref`: Boolean mask identifying original reference determinants.
+/// - `owned`: Global determinant indices owned by this MPI rank.
+/// - `n_projected`: Total requested projection-space dimension including original references.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `Vec<usize>`: Ordered projection-space determinant indices with references first.
+fn select_projected_determinants(
+    projection_hs: &[(f64, f64)],
+    reference_energy: f64,
+    ref_indices: &[usize],
+    isref: &[bool],
+    owned: &[usize],
+    n_projected: usize,
+    world: &impl Communicator,
+) -> Vec<usize> {
+    let n_external = n_projected - ref_indices.len();
+
+    // The reference-only projector requires no residual ranking.
+    if n_external == 0 {
+        return ref_indices.to_vec();
+    }
+
+    let mut local_residuals = vec![0.0; isref.len()];
+
+    // Ownership is disjoint, so each residual is written on exactly one rank.
+    for (&w, &(h, s)) in owned.iter().zip(projection_hs.iter()) {
+        if !isref[w] {
+            local_residuals[w] = (h - reference_energy * s).abs();
+        }
+    }
+
+    let mut residuals = vec![0.0; isref.len()];
+
+    // Reconstruct the complete residual vector once during deterministic setup.
+    if world.size() == 1 {
+        residuals = local_residuals;
+    } else {
+        world.all_reduce_into(
+            &local_residuals[..],
+            &mut residuals[..],
+            SystemOperation::sum(),
+        );
+    }
+
+    // Exclude references because they are retained unconditionally.
+    let mut candidates = residuals
+        .into_iter()
+        .enumerate()
+        .filter_map(|(w, residual)| (!isref[w]).then_some((w, residual)))
+        .collect::<Vec<_>>();
+
+    // Use the determinant index as a stable tie-break for equal residuals.
+    candidates.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    // Keep only the external determinants required to reach `n_projected`.
+    candidates.truncate(n_external);
+
+    // The earlier dimension validation should make this impossible.
+    if candidates.len() != n_external {
+        panic!(
+            "requested {} external projected-energy determinants but found only {}",
+            n_external,
+            candidates.len()
+        );
+    }
+
+    let mut projected = Vec::with_capacity(n_projected);
+
+    // Preserve the original ordering of the reference NOCI basis.
+    projected.extend_from_slice(ref_indices);
+
+    // Append external determinants in decreasing residual importance.
+    projected.extend(candidates.into_iter().map(|(w, _)| w));
+
+    projected
+}
+
+/// Solve the NOCI generalised eigenproblem in the residual-selected projection space.
+/// Constructs `H_PP c_P = E_P S_PP c_P` and trial contractions for selected determinants.
+/// # Arguments:
+/// - `data`: Immutable stochastic propagation data.
+/// - `projected`: Global determinant indices defining the selected projection space.
+/// - `scratch_size`: Maximum same-spin, alpha-spin and beta-spin Wick scratch dimensions.
+/// - `world`: MPI communicator.
+/// # Returns:
+/// - `(Vec<f64>, Vec<(f64, f64)>)`: Ground-state coefficients and selected-column contractions.
+fn solve_projected_state(
+    data: &NOCIData<'_, f64>,
+    projected: &[usize],
+    scratch_size: (usize, usize, usize),
+    world: &impl Communicator,
+) -> (Vec<f64>, Vec<(f64, f64)>) {
+    let mut coefficients = Vec::new();
+    let mut selected_hs = Vec::new();
+
+    // Construct the deterministic selected-space problem only once on rank zero.
+    if world.rank() == 0 {
+        let n = projected.len();
+        let (maxsame, maxla, maxlb) = scratch_size;
+
+        // Enumerate the independent upper-triangle matrix elements.
+        let pairs = (0..n)
+            .flat_map(|i| (i..n).map(move |j| (i, j)))
+            .collect::<Vec<_>>();
+
+        // Evaluate independent H and S elements in parallel with thread-local Wick scratch.
+        let values = pairs
+            .par_iter()
+            .map_init(
+                || WickScratchSpin::with_sizes(maxsame, maxla, maxlb),
+                |scratch, &(i, j)| {
+                    let hs = find_hs(data, projected[i], projected[j], scratch);
+
+                    (i, j, hs)
+                },
+            )
+            .collect::<Vec<_>>();
+
+        let mut h = Array2::<f64>::zeros((n, n));
+        let mut s = Array2::<f64>::zeros((n, n));
+
+        // Scatter the evaluated upper triangle into the real-symmetric H and S matrices.
+        for (i, j, (hij, sij)) in values {
+            h[(i, j)] = hij;
+            h[(j, i)] = hij;
+
+            s[(i, j)] = sij;
+            s[(j, i)] = sij;
+        }
+
+        // Use the established positive-overlap projection used by the NOCI solver.
+        let (energies, vectors) = general_evp(&h, &s, true, data.tol);
+
+        // The first generalized eigenvector is the selected-space ground state.
+        coefficients = vectors.column(0).iter().copied().collect();
+
+        // Reuse the selected H and S block instead of recalculating selected columns.
+        selected_hs = (0..n)
+            .into_par_iter()
+            .map(|j| {
+                let mut hp = 0.0;
+                let mut sp = 0.0;
+
+                for i in 0..n {
+                    hp += coefficients[i] * h[(i, j)];
+                    sp += coefficients[i] * s[(i, j)];
+                }
+
+                (hp, sp)
+            })
+            .collect();
+
+        println!("Projected-energy trial determinants: {n}");
+        println!("Projected-energy trial energy: {:.12}", energies[0]);
+    }
+
+    // Every rank requires the optimized coefficients for its owned determinant columns.
+    broadcast(world, &mut coefficients);
+
+    // Every rank also receives the contractions already known inside the selected space.
+    broadcast(world, &mut selected_hs);
+
+    (coefficients, selected_hs)
+}
+
 /// Construct shared rank-local metadata for every stochastic propagation family.
+/// The projected-energy state retains references and the largest components of
+/// `R_w = <Phi_w|(H-E_0)|Psi_0>` until its requested dimension is reached.
 /// # Arguments:
 /// - `data`: Shared NOCI data.
-/// - `c0`: Initial coefficient vector defining the projected-energy reference.
-/// - `ref_indices`: Reference determinant indices.
+/// - `c0`: Initial reference coefficient vector embedded in the stochastic determinant basis.
+/// - `ref_indices`: Original reference determinant indices.
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `(Vec<bool>, ScratchSize, QMCRunInfo)`: Reference mask, Wick scratch bounds, and run metadata.
@@ -371,23 +640,55 @@ pub(in crate::stochastic) fn construct_qmc_run(
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
     let ndets = data.space.len();
+
+    // An omitted `n_projected` means that only the original references are used.
+    let n_projected = qmc.n_projected.unwrap_or(ref_indices.len());
+
+    // The projection state must contain every original NOCI reference.
+    if n_projected < ref_indices.len() {
+        panic!(
+            "qmc.n_projected = {} is smaller than the number of NOCI references {}",
+            n_projected,
+            ref_indices.len()
+        );
+    }
+
+    // The projection state cannot exceed the stochastic determinant basis.
+    if n_projected > ndets {
+        panic!(
+            "qmc.n_projected = {} exceeds the stochastic determinant-space size {}",
+            n_projected, ndets
+        );
+    }
+
+    // Keep the reference-population mask independent of the enlarged energy projector.
     let mut isref = vec![false; ndets];
+
     for &i in ref_indices {
         isref[i] = true;
     }
+
+    // Preserve the established deterministic rank-dependent RNG construction.
     let base_seed = qmc.seed.unwrap_or_else(rand::random);
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
+
+    // Determine the largest Wick scratch dimensions required by the stochastic basis.
     let (maxsame, maxla, maxlb) = max_scratch_sizes(data.space);
+
     let scratchsize = ScratchSize {
         maxsame,
         maxla,
         maxlb,
     };
+
+    // Assign every stochastic determinant to one deterministic MPI owner.
     let det_owner = if nranks == 1 {
         vec![0; ndets]
     } else {
         (0..ndets).map(|det| owner(det, nranks)).collect::<Vec<_>>()
     };
+
+    // Store only the persistent population coordinates owned by this rank.
     let owned = if nranks == 1 {
         (0..ndets).collect::<Vec<_>>()
     } else {
@@ -397,38 +698,90 @@ pub(in crate::stochastic) fn construct_qmc_run(
             .filter_map(|(det, &owner)| if owner == irank { Some(det) } else { None })
             .collect::<Vec<_>>()
     };
+
+    // Embed the original reference NOCI state in the full stochastic basis.
     let reference = ref_indices
         .iter()
         .filter_map(|&i| {
             let coefficient = c0[i];
+
             (coefficient != 0.0).then_some((i, coefficient))
         })
         .collect::<Vec<_>>();
+
+    // Cache diagonal matrix elements because stochastic propagation reuses them repeatedly.
     let local_diagonal_hs = owned
         .par_iter()
         .map_init(
             || WickScratchSpin::with_sizes(maxsame, maxla, maxlb),
-            |scratch, &gamma| find_hs(data, gamma, gamma, scratch),
+            |scratch, &w| find_hs(data, w, w, scratch),
         )
         .collect::<Vec<_>>();
+
+    // Retain the existing global-indexed diagonal layout used throughout propagation.
     let mut diagonal_hs = vec![(0.0, 0.0); ndets];
-    for (&gamma, hs) in owned.iter().zip(local_diagonal_hs) {
-        diagonal_hs[gamma] = hs;
+
+    for (&w, hs) in owned.iter().zip(local_diagonal_hs) {
+        diagonal_hs[w] = hs;
     }
-    let reference_hs = owned
-        .par_iter()
-        .map_init(
-            || WickScratchSpin::with_sizes(maxsame, maxla, maxlb),
-            |scratch, &gamma| {
-                reference
-                    .iter()
-                    .fold((0.0, 0.0), |(h, s), &(i, coefficient)| {
-                        let (hig, sig) = find_hs(data, i, gamma, scratch);
-                        (h + coefficient * hig, s + coefficient * sig)
-                    })
-            },
-        )
-        .collect::<Vec<_>>();
+
+    // No selected-space contractions are known before constructing the reference projector.
+    let empty_cache = vec![None; ndets];
+
+    // Build the original reference contractions needed both for EProj and for the residual.
+    let mut projection_hs = build_projection_hs(
+        data,
+        &reference,
+        &owned,
+        &empty_cache,
+        (maxsame, maxla, maxlb),
+    );
+
+    // Preserve the exact old setup path when only the original references are requested.
+    if n_projected > ref_indices.len() {
+        // Recover E_0 without evaluating any additional H or S matrix elements.
+        let reference_energy = reference_projected_energy(c0, &projection_hs, &owned, world);
+
+        // Select external determinants where the reference wavefunction violates H Psi = E S Psi most.
+        let projected = select_projected_determinants(
+            &projection_hs,
+            reference_energy,
+            ref_indices,
+            &isref,
+            &owned,
+            n_projected,
+            world,
+        );
+
+        // Optimize the coefficients by rediagonalizing H and S in the selected space.
+        let (projected_coefficients, selected_hs) =
+            solve_projected_state(data, &projected, (maxsame, maxla, maxlb), world);
+
+        // Pair each selected determinant with its optimized NOCI coefficient.
+        let projection = projected
+            .iter()
+            .copied()
+            .zip(projected_coefficients)
+            .collect::<Vec<_>>();
+
+        // Cache projected contractions already available from H_PP and S_PP.
+        let mut cached_hs = vec![None; ndets];
+
+        for (&w, hs) in projected.iter().zip(selected_hs) {
+            cached_hs[w] = Some(hs);
+        }
+
+        // Evaluate only projection-to-basis columns not already available from the selected solve.
+        projection_hs = build_projection_hs(
+            data,
+            &projection,
+            &owned,
+            &cached_hs,
+            (maxsame, maxla, maxlb),
+        );
+    }
+
+    // Propagation, shift control and NRangeRef remain independent of projector enrichment.
     (
         isref,
         scratchsize,
@@ -441,7 +794,7 @@ pub(in crate::stochastic) fn construct_qmc_run(
             owned,
             base_seed,
             rank_seed,
-            reference_hs,
+            projection_hs,
             diagonal_hs,
         },
     )
@@ -460,18 +813,21 @@ pub(in crate::stochastic) fn projected_energy(
     world: &impl Communicator,
 ) -> ProjectedEnergyUpdate {
     time_call!(crate::timers::stochastic::add_compute_projected_energy, {
+        // Projector enrichment still leaves exactly one stored H and S contraction per determinant.
         let (num_local, den_local) = populations
             .par_iter()
-            .zip(run.reference_hs.par_iter())
+            .zip(run.projection_hs.par_iter())
             .map(|(&population, &(h, s))| (population * h, population * s))
             .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+
+        // Reduce numerator and denominator together exactly as in the existing estimator.
         let local = [num_local, den_local];
         let mut global = [0.0; 2];
 
         if run.nranks == 1 {
             global = local;
         } else {
-            world.all_reduce_into(&local, &mut global, mpi::collective::SystemOperation::sum());
+            world.all_reduce_into(&local, &mut global, SystemOperation::sum());
         }
 
         ProjectedEnergyUpdate {
@@ -484,7 +840,7 @@ pub(in crate::stochastic) fn projected_energy(
 /// Compute range-population statistics and projected energy with one MPI reduction.
 /// # Arguments:
 /// - `mc`: Current Monte Carlo state.
-/// - `isref`: Reference-determinant mask.
+/// - `isref`: Original reference-determinant mask.
 /// - `run`: Rank-local propagation metadata.
 /// - `world`: MPI communicator.
 /// # Returns:
@@ -496,20 +852,26 @@ pub(in crate::stochastic) fn population_stats_projected_energy(
     world: &impl Communicator,
 ) -> (PopulationStats, ProjectedEnergyUpdate) {
     time_call!(crate::timers::stochastic::add_compute_population_stats, {
+        // Accumulate population diagnostics and the enriched estimator in one local pass.
         let (nw_local, nref_local, num_local, den_local) = mc
             .populations
             .par_iter()
             .enumerate()
-            .zip(run.reference_hs.par_iter())
+            .zip(run.projection_hs.par_iter())
             .map(|((k, &population), &(h, s))| {
                 let abs = population.abs();
+
+                // NRangeRef remains tied only to the original NOCI references.
                 let nref = if isref[run.owned[k]] { abs } else { 0.0 };
+
                 (abs, nref, population * h, population * s)
             })
             .reduce(
                 || (0.0, 0.0, 0.0, 0.0),
                 |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3),
             );
+
+        // Preserve the existing single collective for all report-level scalar observables.
         let local = [
             nw_local,
             nref_local,
@@ -518,12 +880,13 @@ pub(in crate::stochastic) fn population_stats_projected_energy(
             num_local,
             den_local,
         ];
+
         let mut global = [0.0; 6];
 
         if run.nranks == 1 {
             global = local;
         } else {
-            world.all_reduce_into(&local, &mut global, mpi::collective::SystemOperation::sum());
+            world.all_reduce_into(&local, &mut global, SystemOperation::sum());
         }
 
         (

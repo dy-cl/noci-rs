@@ -47,6 +47,9 @@ pub struct QMCOptions {
     pub initial_population: f64,
     /// Shift-control activation population and, when restoring is enabled, persistent target.
     pub target_population: f64,
+    /// Total number of determinants retained in the projected-energy trial state.
+    /// `None` uses exactly the number of NOCI reference determinants.
+    pub n_projected: Option<usize>,
     /// FRI configuration for each stochastic compression site.
     pub fri: FriOptions,
     /// Damping `\zeta` of the population-control Newton update.
@@ -106,15 +109,16 @@ impl Default for FriOptions {
 
 impl Default for QMCOptions {
     /// Return default stochastic QMC options.
+    /// # Arguments:
+    /// - None.
     /// # Returns:
-    /// - `Self`: Default population, propagation, excitation, and FRI configuration.
+    /// - `Self`: Default population, projection, propagation, excitation, and FRI configuration.
     fn default() -> Self {
-        // Keep global excitation-generator default uniform. Parsing changes only an omitted
-        // SApply generator to overlap-weighted because that path already builds overlap
-        // factors needed by its explicit metric action.
+        // Resolve the default projection size from the actual reference count during QMC setup.
         Self {
             initial_population: 100.0,
             target_population: 100000.0,
+            n_projected: None,
             fri: FriOptions::default(),
             shift_damping: 5e-4,
             population_restoring: 0.0,

@@ -63,8 +63,8 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) base_seed: u64,
     /// Rank-specific seed derived from the base seed.
     pub(in crate::stochastic) rank_seed: u64,
-    /// Reference-row Hamiltonian and overlap elements aligned with `owned`.
-    pub(in crate::stochastic) reference_hs: Vec<(f64, f64)>,
+    /// Projected-energy Hamiltonian and overlap contractions aligned with `owned`.
+    pub(in crate::stochastic) projection_hs: Vec<(f64, f64)>,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
     pub(in crate::stochastic) diagonal_hs: Vec<(f64, f64)>,
 }
