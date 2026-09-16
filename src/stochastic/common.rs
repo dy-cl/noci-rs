@@ -277,29 +277,29 @@ pub(in crate::stochastic) fn propagate_iteration(
     }
 }
 
-/// Generate one cycle of the stochastic orthogonal residual
+/// Generate one cycle of the stochastic auxiliary-space residual
 /// `\chi_D=-dt\sum_{a,x}[H_{Dx}-E_s\delta_{Dx}]\tilde N_x^{(a)}`.
 /// # Arguments:
 /// - `sample`: Global cycle index and sparse sampled populations.
 /// - `data`: Immutable stochastic propagation data.
 /// - `run`: Rank-local ownership and cached diagonal metadata.
 /// - `shift`: Current physical shift `E_s`.
-/// - `orthogonal`: Uniform connection topology and its canonical prepared source components.
-/// - `workers`: Persistent thread-local orthogonal propagation storage.
+/// - `auxiliary`: Uniform connection generator and canonical auxiliary-space topology.
+/// - `workers`: Persistent thread-local auxiliary propagation storage.
 /// - `result`: Reusable local, remote, and generation-sample results.
 /// # Returns
-/// - `()`: Fills one cycle's realised orthogonal updates and worker shift tangents.
-pub(in crate::stochastic) fn propagate_iteration_orthogonal(
+/// - `()`: Fills one cycle's realised auxiliary updates and worker shift tangents.
+pub(in crate::stochastic) fn propagate_iteration_auxiliary(
     sample: (usize, &SparsePopulations),
     data: &NOCIData<'_, f64>,
     run: &QMCRunInfo,
     shift: f64,
-    orthogonal: (&OrthogonalUniformGenerator, &AuxiliarySpace),
+    auxiliary: (&OrthogonalUniformGenerator, &AuxiliarySpace),
     workers: &mut [Mutex<AuxiliaryThreadPropagation>],
     result: &mut AuxiliaryPropagationResult,
 ) {
     let (iteration, sampled) = sample;
-    let (generator, auxiliary) = orthogonal;
+    let (generator, auxiliary_space) = auxiliary;
     let dt = data.input.prop_ref().dt;
     for worker in workers.iter_mut() {
         worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
@@ -331,13 +331,18 @@ pub(in crate::stochastic) fn propagate_iteration_orthogonal(
                         .shift_tangent
                         .add(source, dt * population, run.nranks > 1);
                     worker.diagonal_population_change(
-                        source, population, shift, data, auxiliary, run,
+                        source,
+                        population,
+                        shift,
+                        data,
+                        auxiliary_space,
+                        run,
                     );
                     worker.spawning(source, population, generator);
                 }
             }
 
-            worker.resolve_batched_spawning(data, generator, auxiliary, run);
+            worker.resolve_batched_spawning(data, generator, auxiliary_space, run);
         });
     }
     for worker in workers.iter_mut() {

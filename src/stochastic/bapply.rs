@@ -19,7 +19,7 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::{
-    construct_qmc_run, population_stats_projected_energy, propagate_iteration_orthogonal,
+    construct_qmc_run, population_stats_projected_energy, propagate_iteration_auxiliary,
 };
 use super::excit::OrthogonalUniformGenerator;
 use super::fri::{compress_dense_to_sparse, compress_sparse, sample_populations, target_cutoff};
@@ -39,8 +39,8 @@ use super::state::{
 /// - `scratch`: Persistent MPI exchange scratch for remote events.
 /// - `histogram`: Optional excitation-magnitude histogram.
 /// # Returns
-/// - `()`: Drains cycle-local results into report accumulators.
-fn accumulate_generated_updates_orthogonal(
+/// - `()`: Drains cycle-local auxiliary results into report accumulators.
+fn accumulate_generated_updates_auxiliary(
     result: &mut AuxiliaryPropagationResult,
     updates: &mut Vec<AuxiliaryPopulationUpdate>,
     scratch: &mut AuxiliaryMPIScratch,
@@ -57,9 +57,9 @@ fn accumulate_generated_updates_orthogonal(
     }
 }
 
-/// Coalesce repeated orthogonal determinant amplitudes in place.
+/// Coalesce repeated auxiliary determinant amplitudes in place.
 /// # Arguments:
-/// - `updates`: Sparse orthogonal updates with arbitrary ordering.
+/// - `updates`: Sparse auxiliary updates with arbitrary ordering.
 /// # Returns
 /// - `()`: Sorts by determinant key and combines repeated amplitudes.
 fn coalesce_auxiliary_population_updates(updates: &mut Vec<AuxiliaryPopulationUpdate>) {
@@ -79,24 +79,18 @@ fn coalesce_auxiliary_population_updates(updates: &mut Vec<AuxiliaryPopulationUp
     updates.retain(|update| update.dn != 0.0);
 }
 
-/// Exchange pre-routed orthogonal events and combine them with local report updates.
+/// Exchange pre-routed auxiliary events and combine them with local report updates.
 /// # Arguments:
 /// - `local`: Rank-owned report residual updates.
-/// - `scratch`: Reusable orthogonal MPI storage.
+/// - `scratch`: Reusable auxiliary MPI storage.
 /// - `world`: MPI communicator.
 /// # Returns
-/// - `()`: Places complete owner-local contributions in `scratch.recv`.
-fn redistribute_population_updates_orthogonal(
+/// - `()`: Places complete owner-local contributions in `scratch.recv_contig`.
+fn redistribute_population_updates_auxiliary(
     local: &mut Vec<AuxiliaryPopulationUpdate>,
     scratch: &mut AuxiliaryMPIScratch,
     world: &impl Communicator,
 ) {
-    if world.size() == 1 {
-        scratch.recv_contig.clear();
-        scratch.recv_contig.append(local);
-        return;
-    }
-
     scratch
         .send_ranked
         .sort_unstable_by_key(|(peer, update)| (*peer, update.det));
@@ -137,23 +131,18 @@ fn redistribute_population_updates_orthogonal(
     scratch.send_ranked.clear();
 }
 
-/// Gather owner-compressed orthogonal vectors so every rank sees identical `chi`.
+/// Gather owner-compressed auxiliary vectors so every rank sees identical `\chi`.
 /// # Arguments:
 /// - `owned`: Complete compressed updates owned by this rank.
-/// - `scratch`: Reusable orthogonal MPI storage.
+/// - `scratch`: Reusable auxiliary MPI storage.
 /// - `world`: MPI communicator.
 /// # Returns
 /// - `&[AuxiliaryPopulationUpdate]`: Identical global compressed vector on every rank.
-fn gather_all_populations_orthogonal<'a>(
+fn gather_all_auxiliary_updates<'a>(
     owned: &[AuxiliaryPopulationUpdate],
     scratch: &'a mut AuxiliaryMPIScratch,
     world: &impl Communicator,
 ) -> &'a [AuxiliaryPopulationUpdate] {
-    if world.size() == 1 {
-        scratch.gather_recv.clear();
-        scratch.gather_recv.extend_from_slice(owned);
-        return &scratch.gather_recv;
-    }
     let nsend = owned.len() as i32;
     world.all_gather_into(&nsend, &mut scratch.gather_counts[..]);
     let mut ntotal = 0usize;
@@ -184,9 +173,7 @@ fn gather_all_populations_orthogonal<'a>(
 /// - `mode`: Requested shared `SNOCIStorage` backend.
 /// - `initial`: Initial factor-table backing bytes.
 /// - `factors`: Current persistent cross-parent factor tables.
-/// - `scratch`: Canonical physical component registry.
-/// - `spin`: Retained spin-component factorisation.
-/// # Returns:
+/// # Returns
 /// - `()`: Writes actual initial, final, and peak backing and added component counts.
 fn print_bapply_storage(
     rank: usize,
@@ -272,7 +259,7 @@ pub fn qmc_step(
     let mut overlap_scratch = factorisation.overlap_scratch();
     let mut auxiliary_scratch = factorisation.auxiliary_overlap_scratch();
     let mut mpi = NOCIMPIScratch::new(run.nranks);
-    let mut orthogonal_mpi = AuxiliaryMPIScratch::new(run.nranks);
+    let mut auxiliary_mpi = AuxiliaryMPIScratch::new(run.nranks);
     let mut wick = WickScratchSpin::new();
     let mut state = initialise_qmc_state(c0, es, data, &run, &isref, &mut wick, (world, &mut mpi));
     let propagator = data.input.prop_ref().propagator;
@@ -305,7 +292,7 @@ pub fn qmc_step(
 
     for report in state.start_report..qmc.nreports {
         local_updates.clear();
-        orthogonal_mpi.send_ranked.clear();
+        auxiliary_mpi.send_ranked.clear();
         for cycle in 0..qmc.ncycles {
             let iteration = report * qmc.ncycles + cycle;
             let mut rng = QmcRng::seed_from_u64(
@@ -322,7 +309,7 @@ pub fn qmc_step(
                 &mut sample_chunks,
             );
 
-            propagate_iteration_orthogonal(
+            propagate_iteration_auxiliary(
                 (iteration, &state.mc.sampled),
                 data,
                 &run,
@@ -331,17 +318,28 @@ pub fn qmc_step(
                 &mut workers,
                 &mut propagation_result,
             );
-            accumulate_generated_updates_orthogonal(
+            accumulate_generated_updates_auxiliary(
                 &mut propagation_result,
                 &mut local_updates,
-                &mut orthogonal_mpi,
+                &mut auxiliary_mpi,
                 &mut state.mc.excitation_hist,
             );
         }
         coalesce_auxiliary_population_updates(&mut local_updates);
-        redistribute_population_updates_orthogonal(&mut local_updates, &mut orthogonal_mpi, world);
-        let mut owner_updates = std::mem::take(&mut orthogonal_mpi.recv_contig);
-        coalesce_auxiliary_population_updates(&mut owner_updates);
+        let mut owner_updates = if run.nranks == 1 {
+            // Preserve allocation across reports while avoiding MPI scratch and a second coalesce.
+            std::mem::take(&mut local_updates)
+        } else {
+            redistribute_population_updates_auxiliary(
+                &mut local_updates,
+                &mut auxiliary_mpi,
+                world,
+            );
+
+            let mut updates = std::mem::take(&mut auxiliary_mpi.recv_contig);
+            coalesce_auxiliary_population_updates(&mut updates);
+            updates
+        };
         let chi_cutoff = target_cutoff(
             &owner_updates,
             qmc.fri.pre_overlap_target_nnz,
@@ -351,17 +349,34 @@ pub fn qmc_step(
         chi_cutoff_hint = chi_cutoff;
         let mut fri_rng = QmcRng::seed_from_u64(run.rank_seed ^ 0xA0761D6478BD642F ^ report as u64);
         compress_sparse(&mut owner_updates, chi_cutoff, &mut fri_rng);
-        let gathered =
-            gather_all_populations_orthogonal(&owner_updates, &mut orthogonal_mpi, world);
-        factorisation.apply_orthogonal_overlap_sparse(
-            &mut state.mc.populations,
-            &run.owned,
-            gathered.iter().map(|update| (update.index(), update.dn)),
-            (data, &auxiliary),
-            &mut overlap_factors,
-            &mut auxiliary_scratch,
-        );
-        orthogonal_mpi.recv_contig = owner_updates;
+        if run.nranks == 1 {
+            factorisation.apply_auxiliary_overlap_sparse(
+                &mut state.mc.populations,
+                &run.owned,
+                owner_updates
+                    .iter()
+                    .map(|update| (update.index(), update.dn)),
+                (data, &auxiliary),
+                &mut overlap_factors,
+                &mut auxiliary_scratch,
+            );
+        } else {
+            let gathered = gather_all_auxiliary_updates(&owner_updates, &mut auxiliary_mpi, world);
+
+            factorisation.apply_auxiliary_overlap_sparse(
+                &mut state.mc.populations,
+                &run.owned,
+                gathered.iter().map(|update| (update.index(), update.dn)),
+                (data, &auxiliary),
+                &mut overlap_factors,
+                &mut auxiliary_scratch,
+            );
+        }
+        if run.nranks == 1 {
+            local_updates = owner_updates;
+        } else {
+            auxiliary_mpi.recv_contig = owner_updates;
+        }
 
         if run.nranks == 1 {
             super::sapply::reduce_shift_tangent(&mut workers, &mut shift_tangent.values);
