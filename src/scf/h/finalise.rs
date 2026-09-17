@@ -11,7 +11,7 @@ use num_complex::Complex64;
 use crate::input::Input;
 use crate::scf::{DensityMode, density, energy, fock_lambda};
 use crate::utils::print_array2_indexed;
-use crate::{AoData, Excitation, ExcitationCache, HSCFState};
+use crate::{AoData, HSCFState};
 
 // Parent/sibling imports.
 use super::types::HSCFRunData;
@@ -64,16 +64,11 @@ pub(crate) fn finalise(
         e,
         oa,
         ob,
-        pha: 1.0,
-        phb: 1.0,
         ca: Arc::new(ca),
         cb: Arc::new(cb),
         da: Arc::new(da),
         db: Arc::new(db),
         label: run.label.to_string(),
         noci_basis: run.noci_basis,
-        parent: run.parent,
-        excitation: Excitation::empty(),
-        excitation_cache: ExcitationCache::default(),
     }
 }

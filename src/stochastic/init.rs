@@ -10,12 +10,11 @@ use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
 // Parent/sibling imports.
-use super::common::{find_s, gather_all_populations};
-use super::metric::projected_energy;
-use super::restart::read_restart_hdf5;
+use super::common::{find_s, gather_all_populations, projected_energy};
+use super::restart::{population_representation, read_restart_hdf5};
 use super::state::{
-    ExcitationHist, MCState, MPIScratch, PopulationStats, PopulationUpdate, PropagationState,
-    QMCRunInfo, SparsePopulations,
+    ExcitationHist, MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationStats,
+    PropagationState, QMCRunInfo, SparsePopulations,
 };
 
 /// Initialise the persistent range-safe population vector as `S c0`.
@@ -36,14 +35,14 @@ pub(in crate::stochastic) fn initialise_populations(
     run: &QMCRunInfo,
     world: &impl Communicator,
     scratch: &mut WickScratchSpin<f64>,
-    mpiscratch: &mut MPIScratch,
+    mpiscratch: &mut NOCIMPIScratch,
 ) -> Vec<f64> {
     time_call!(crate::timers::stochastic::add_initialise_populations, {
         let local = c0
             .iter()
             .enumerate()
             .filter(|(i, population)| **population != 0.0 && run.det_owner[*i] == run.irank)
-            .map(|(i, &population)| PopulationUpdate {
+            .map(|(i, &population)| NOCIPopulationUpdate {
                 det: i as u64,
                 dn: population,
             })
@@ -100,7 +99,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
     run: &QMCRunInfo,
     isref: &[bool],
     scratch: &mut WickScratchSpin<f64>,
-    mpi: (&impl Communicator, &mut MPIScratch),
+    mpi: (&impl Communicator, &mut NOCIMPIScratch),
 ) -> PropagationState {
     let (world, mpiscratch) = mpi;
     let qmc = data.input.qmc.as_ref().unwrap();
@@ -110,7 +109,14 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             println!("Reading restart from {path}");
         }
 
-        let restart = read_restart_hdf5(path, world, run.ndets, run.basis_hash).unwrap();
+        let restart = read_restart_hdf5(
+            path,
+            world,
+            run.ndets,
+            run.basis_hash,
+            population_representation(data.input.prop_ref().propagator),
+        )
+        .unwrap();
         if restart.populations.len() != run.owned.len() {
             panic!(
                 "Restart population length mismatch on rank {}: saved {}, current {}.",
@@ -139,14 +145,24 @@ pub(in crate::stochastic) fn initialise_qmc_state(
 
         let pe = projected_energy(&mc.populations, run, world);
 
-        let prev_pop = PopulationStats::new(restart.nwprev, restart.nrefprev, 0.0, 0);
+        let prev_pop = PopulationStats::new(
+            restart.nwprev,
+            restart.nrefprev,
+            restart.nsampledprev,
+            restart.nsampledoprev,
+        );
         let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
         return PropagationState::new(
             mc,
             pe,
             restart.report + 1,
-            restart.nwprev >= qmc.target_population,
+            restart.reached.unwrap_or_else(|| {
+                if run.irank == 0 {
+                    println!("Warning: legacy restart lacks population-control activation state; inferring from saved population.");
+                }
+                restart.nwprev >= qmc.target_population
+            }),
             prev_pop,
             overlap_weight,
         );

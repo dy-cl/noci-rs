@@ -11,14 +11,15 @@ use ndarray::Array1;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::ExcitationSpinCache;
 use crate::input::SNOCIStorage;
 use crate::noci::fock::calculate_f_pair_orthogonal;
 use crate::noci::overlap::calculate_s_pair_orthogonal;
 use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
+use crate::noci::{NOCIIndex, NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
 use crate::nonorthogonalwicks::{
     SameSpinOneBodyBatch, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batched,
 };
-use crate::{DetState, ExcitationSpinCache, ReducedOneSpinDetState};
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};
@@ -86,9 +87,9 @@ struct OrthogonalOccupationGroup {
 struct OrthogonalOneBodyBlock {
     /// Parent `P`.
     parent: usize,
-    /// Occupation-pair ID keyed by `(o_alpha,o_beta)`.
-    opos: HashMap<(u128, u128), usize>,
-    /// Determinants grouped by occupation pair.
+    /// Numerical group keyed by canonical alpha/beta component IDs.
+    opos: HashMap<(NOCISpinIndex, NOCISpinIndex), usize>,
+    /// Determinants grouped by the same canonical component pair.
     groups: Vec<OrthogonalOccupationGroup>,
 }
 
@@ -151,7 +152,6 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 {
                     blocks.push(OneBodyBlock::Orthogonal(build_orthogonal_one_body_block(
                         &spin,
-                        data,
                         target_parent,
                     )));
                 } else if matches!(storage, SNOCIStorage::None) {
@@ -296,7 +296,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 OneBodyBlock::Orthogonal(block) => self.apply_one_body_orthogonal(
                     block,
                     (xs, &mut y),
-                    data.basis,
+                    data.space,
                     &fock.fock_mocache[block.parent],
                     lambda,
                     partition,
@@ -347,7 +347,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         lambda: T,
     ) -> (Array1<T>, Array1<T>) {
         let zero = T::from_real(0.0);
-        let ndet = self.spin.aids.len();
+        let ndet = data.space.len();
         let mut m_diag = vec![zero; ndet];
         let mut s_diag = vec![zero; ndet];
 
@@ -446,7 +446,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         &self,
         block: &OrthogonalOneBodyBlock,
         vectors: (&[R], &mut [R]),
-        basis: &[DetState<T>],
+        space: &NOCISpace<T>,
         cache: &FockMOCache<T>,
         lambda: R,
         partition: (usize, usize),
@@ -463,22 +463,24 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
             if xe == zero {
                 continue;
             }
-            let source = &basis[entry.det];
-            let oid = source_parent.oids[entry.det - source_parent.first_det];
-            let group = &block.groups[oid];
+            let source = NOCIIndex(entry.det);
+            let source_state = space.state(source);
+            let group = &block.groups[block.opos[&(source_state.aid, source_state.bid)]];
             for target in &group.targets {
                 if target.a % nworker == worker {
-                    let target_det = &basis[target.det];
+                    let target_det = NOCIIndex(target.det);
                     let f = <R as From<T>>::from(calculate_f_pair_orthogonal(
-                        cache, target_det, source,
+                        cache, space, target_det, source,
                     ));
-                    let s = <R as From<T>>::from(calculate_s_pair_orthogonal(target_det, source));
+                    let s = <R as From<T>>::from(calculate_s_pair_orthogonal(
+                        space, target_det, source,
+                    ));
                     y[target.det] += (f + lambda * s) * xe;
                 }
             }
 
-            apply_orthogonal_alpha_singles(block, source, xe, y, basis, cache, partition);
-            apply_orthogonal_beta_singles(block, source, xe, y, basis, cache, partition);
+            apply_orthogonal_alpha_singles(block, source, xe, y, space, cache, partition);
+            apply_orthogonal_beta_singles(block, source, xe, y, space, cache, partition);
         }
     }
 
@@ -802,7 +804,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     let mut updates = Vec::with_capacity(target.entries_by_b[tb].len());
 
                     for &det in &target.entries_by_b[tb] {
-                        let ta = self.spin.aids[det];
+                        let ta = data.space.state(NOCIIndex(det)).aid.0;
                         if ta % nworker != worker {
                             continue;
                         }
@@ -978,7 +980,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                     let mut updates = Vec::with_capacity(target.entries_by_a[ta].len());
 
                     for &det in &target.entries_by_a[ta] {
-                        let tb = self.spin.bids[det];
+                        let tb = data.space.state(NOCIIndex(det)).bid.0;
                         if tb % nworker != worker {
                             continue;
                         }
@@ -1115,30 +1117,27 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
 /// Build same-parent orthogonal one-body action metadata for parent `P`.
 /// # Arguments:
 /// - `spin`: Shared determinant-space factorisation.
-/// - `data`: Shared NOCI determinant data.
 /// - `parent_id`: Parent `P`.
 /// # Returns
 /// - `OrthogonalOneBodyBlock`: Orthogonal same-parent block with occupation lookup data.
-fn build_orthogonal_one_body_block<T: NOCIScalar>(
+fn build_orthogonal_one_body_block(
     spin: &SpinFactorisation,
-    data: &NOCIData<'_, T>,
     parent_id: usize,
 ) -> OrthogonalOneBodyBlock {
     let parent = &spin.parents[parent_id];
     let mut opos = HashMap::new();
-    let mut groups = Vec::with_capacity(parent.oreps.len());
-
-    for &det in &parent.oreps {
-        let state = &data.basis[det];
-        opos.insert((state.oa, state.ob), groups.len());
-        groups.push(OrthogonalOccupationGroup {
-            targets: Vec::new(),
-        });
-    }
+    let mut groups = Vec::new();
 
     for entry in &parent.entries {
-        let oid = parent.oids[entry.det - parent.first_det];
-        groups[oid].targets.push(OrthogonalTarget {
+        let key = (NOCISpinIndex(entry.a), NOCISpinIndex(entry.b));
+        let group = *opos.entry(key).or_insert_with(|| {
+            let index = groups.len();
+            groups.push(OrthogonalOccupationGroup {
+                targets: Vec::new(),
+            });
+            index
+        });
+        groups[group].targets.push(OrthogonalTarget {
             det: entry.det,
             a: entry.a,
         });
@@ -1201,10 +1200,10 @@ fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
     s_diag: &mut [T],
 ) {
     for entry in &parent.entries {
-        let det = &data.basis[entry.det];
-        let s = calculate_s_pair_orthogonal(det, det);
+        let det = NOCIIndex(entry.det);
+        let s = calculate_s_pair_orthogonal(data.space, det, det);
         s_diag[entry.det] = s;
-        m_diag[entry.det] = calculate_f_pair_orthogonal(cache, det, det) + lambda * s;
+        m_diag[entry.det] = calculate_f_pair_orthogonal(cache, data.space, det, det) + lambda * s;
     }
 }
 
@@ -1221,10 +1220,10 @@ fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
 /// - `()`: Adds alpha single-excitation Fock contributions into `y`.
 fn apply_orthogonal_alpha_singles<T, R>(
     orthogonal: &OrthogonalOneBodyBlock,
-    source: &DetState<T>,
+    source: NOCIIndex,
     xe: R,
     y: &mut [R],
-    basis: &[DetState<T>],
+    space: &NOCISpace<T>,
     cache: &FockMOCache<T>,
     partition: (usize, usize),
 ) where
@@ -1233,26 +1232,32 @@ fn apply_orthogonal_alpha_singles<T, R>(
 {
     let (worker, nworker) = partition;
     let nmo = cache.fa.nrows();
-    let mut holes = source.oa;
+    let state = space.state(source);
+    let (oa, _) = space.occupations(source);
+    let mut holes = oa;
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
         holes &= holes - 1;
 
         for part in 0..nmo {
-            if ((source.oa >> part) & 1) == 1 {
+            if ((oa >> part) & 1) == 1 {
                 continue;
             }
-            let target_oa = (source.oa & !(1u128 << hole)) | (1u128 << part);
+            let target_oa = (oa & !(1u128 << hole)) | (1u128 << part);
 
-            let Some(&opos) = orthogonal.opos.get(&(target_oa, source.ob)) else {
+            let components = space.parent_components(state.parent);
+            let Some(&aid) = components.aids.get(&target_oa) else {
+                continue;
+            };
+            let Some(&opos) = orthogonal.opos.get(&(aid, state.bid)) else {
                 continue;
             };
 
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
-                    let target_det = &basis[target.det];
+                    let target_det = NOCIIndex(target.det);
                     y[target.det] += <R as From<T>>::from(calculate_f_pair_orthogonal(
-                        cache, target_det, source,
+                        cache, space, target_det, source,
                     )) * xe;
                 }
             }
@@ -1273,10 +1278,10 @@ fn apply_orthogonal_alpha_singles<T, R>(
 /// - `()`: Adds beta single-excitation Fock contributions into `y`.
 fn apply_orthogonal_beta_singles<T, R>(
     orthogonal: &OrthogonalOneBodyBlock,
-    source: &DetState<T>,
+    source: NOCIIndex,
     xe: R,
     y: &mut [R],
-    basis: &[DetState<T>],
+    space: &NOCISpace<T>,
     cache: &FockMOCache<T>,
     partition: (usize, usize),
 ) where
@@ -1285,26 +1290,32 @@ fn apply_orthogonal_beta_singles<T, R>(
 {
     let (worker, nworker) = partition;
     let nmo = cache.fb.nrows();
-    let mut holes = source.ob;
+    let state = space.state(source);
+    let (_, ob) = space.occupations(source);
+    let mut holes = ob;
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
         holes &= holes - 1;
 
         for part in 0..nmo {
-            if ((source.ob >> part) & 1) == 1 {
+            if ((ob >> part) & 1) == 1 {
                 continue;
             }
-            let target_ob = (source.ob & !(1u128 << hole)) | (1u128 << part);
+            let target_ob = (ob & !(1u128 << hole)) | (1u128 << part);
 
-            let Some(&opos) = orthogonal.opos.get(&(source.oa, target_ob)) else {
+            let components = space.parent_components(state.parent);
+            let Some(&bid) = components.bids.get(&target_ob) else {
+                continue;
+            };
+            let Some(&opos) = orthogonal.opos.get(&(state.aid, bid)) else {
                 continue;
             };
 
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
-                    let target_det = &basis[target.det];
+                    let target_det = NOCIIndex(target.det);
                     y[target.det] += <R as From<T>>::from(calculate_f_pair_orthogonal(
-                        cache, target_det, source,
+                        cache, space, target_det, source,
                     )) * xe;
                 }
             }
@@ -1316,7 +1327,7 @@ fn apply_orthogonal_beta_singles<T, R>(
 #[derive(Clone, Copy)]
 struct SpinOneBodySources<'a> {
     /// Reduced source spin representatives in output-column order.
-    reps: &'a [ReducedOneSpinDetState],
+    reps: &'a [ReducedOneSpinNOCIDeterminantState],
     /// Logical source component IDs in fixed-rank Wick evaluation order.
     order: &'a [usize],
     /// Boundaries of equal-rank, common-hole source groups in `order`.
@@ -1342,7 +1353,7 @@ struct SpinOneBodySources<'a> {
 fn build_spin_one_body_factors<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target_reps: &[ReducedOneSpinDetState],
+    target_reps: &[ReducedOneSpinNOCIDeterminantState],
     sources: SpinOneBodySources<'_>,
     rows: Range<usize>,
     flags: (bool, bool),
@@ -1387,7 +1398,7 @@ fn build_spin_one_body_factors<T: NOCIScalar>(
 fn build_spin_one_body_factor_row<T: NOCIScalar>(
     pair: &WicksPairView<'_, T>,
     data: &NOCIData<'_, T>,
-    target: ReducedOneSpinDetState,
+    target: ReducedOneSpinNOCIDeterminantState,
     sources: SpinOneBodySources<'_>,
     flags: (bool, bool),
     scratch: &mut WickScratchSpin<T>,
@@ -1405,7 +1416,7 @@ fn build_spin_one_body_factor_row<T: NOCIScalar>(
     xw_f_overlap_prepared_batched(
         w,
         SameSpinOneBodyBatch {
-            basis: data.basis,
+            basis: data.space,
             target,
             sources: sources.reps,
             source_order: sources.order,

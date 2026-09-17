@@ -5,7 +5,6 @@ use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
 // Crate-root imports.
-use crate::DetState;
 use crate::deterministic::{ProjPropagator, Projectors};
 use crate::noci::NOCIScalar;
 
@@ -156,12 +155,12 @@ pub(super) fn print_initial_null_diagnostics<T: NOCIScalar>(
 /// - `propagator`: Propagator blocks in relevant and null subspace bases.
 /// - `es`: Initial value of the non-overlap shift.
 /// - `es_s`: Initial value of the overlap-transformed shift.
-/// - `doverlap`: Whether direct-overlap propagation is active.
+/// - `sapply`: Whether S-apply propagation is active.
 pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
     propagator: &ProjPropagator<T>,
     es: f64,
     es_s: f64,
-    doverlap: bool,
+    sapply: bool,
 ) {
     println!(
         "With initial shifts E_s: {}, E_s^S: {}, ||Unn||: {}, ||Urr||: {}, ||Urn||: {}, ||Unr||: {}.",
@@ -176,10 +175,10 @@ pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
     let nnull = propagator.unn.nrows();
     if nnull == 0 {
         println!("Null-space dimension is 0.");
-    } else if doverlap {
+    } else if sapply {
         let identity_n = Array2::<T>::eye(nnull);
         println!(
-            "Direct-overlap null-space diagnostics: ||Unn - I|| = {}, ||Unr|| = {}, ||Urn|| = {}.",
+            "S-apply null-space diagnostics: ||Unn - I|| = {}, ||Unr|| = {}, ||Urn|| = {}.",
             (&propagator.unn - &identity_n).norm(),
             propagator.unr.norm(),
             propagator.urn.norm()
@@ -192,15 +191,15 @@ pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
 
 /// Print the deterministic propagation table header.
 /// # Arguments
-/// - `doverlap`: Whether direct-overlap propagation is active.
-pub(super) fn print_propagation_table_header(doverlap: bool) {
+/// - `sapply`: Whether S-apply propagation is active.
+pub(super) fn print_propagation_table_header(sapply: bool) {
     let (
         identity_shift_label,
         overlap_shift_label,
         population_label,
         overlap_population_label,
         metric_label,
-    ) = if doverlap {
+    ) = if sapply {
         ("Identity shift", "Shift (EsS)", "||N||", "||SN||", "N^†SN")
     } else {
         ("Shift (Es)", "Shift (EsS)", "||C||", "||SC||", "C^†SC")
@@ -287,7 +286,7 @@ fn format_determinant_label(
 pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
     ground_state: &Array1<T>,
     p: &Projectors<T>,
-    basis: &[DetState<T>],
+    basis: &crate::noci::NOCISpace<T>,
     nstates: usize,
     nterms: usize,
 ) {
@@ -367,13 +366,13 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
 
         for (rank, &mu) in terms.iter().take(nterms_print).enumerate() {
             let a_mu_i = p.ur[(mu, i)] / T::from_real(lambda_i.sqrt());
-            let det = &basis[mu];
+            let label = &basis.labels[mu];
             println!(
                 "  {:>4} {:>6} {:>7}  {:<68} {:>24} {:>27}",
                 rank + 1,
                 mu,
-                det.parent,
-                format_determinant_label(det.label.as_str(), 68),
+                basis.states[mu].parent,
+                format_determinant_label(label.as_str(), 68),
                 format_signed_scalar(a_mu_i),
                 format_signed_scalar(vi * a_mu_i)
             );

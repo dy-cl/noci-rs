@@ -103,8 +103,7 @@ pub fn run_geometry(
                 ReferenceKind::Real,
                 world,
             );
-            let post =
-                run_real_post_reference(&ao, &prep.states, &mut reference, input, tol, world);
+            let post = run_real_post_reference(&ao, &mut reference, input, tol, world);
             let timings = timers::snapshot_all_mpi(world);
             let mut results = GeometryResults::from_real(
                 r,
@@ -132,7 +131,7 @@ pub fn run_geometry(
 
         let mut reference =
             run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Real, world);
-        let post = run_real_post_reference(&ao, &prep.states, &mut reference, input, tol, world);
+        let post = run_real_post_reference(&ao, &mut reference, input, tol, world);
         let timings = timers::snapshot_all_mpi(world);
         Ok(GeometryResults::from_real(
             r,

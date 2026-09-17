@@ -7,12 +7,136 @@ use rand::Rng;
 
 // Crate-root imports.
 use crate::input::{ExcitationGen, Input};
-use crate::noci::NOCIData;
+use crate::noci::{MOCache, NOCIData, OrthogonalConnection};
 use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::find_hs;
 use super::state::{HeatBath, OverlapDerivativeSums, PropagationState, QMCRunInfo, QmcRng};
+
+/// Persistent uniform proposal topology for parent-orthogonal Hamiltonian connections.
+pub(in crate::stochastic) struct OrthogonalUniformGenerator {
+    /// Exact probability `1/N_\mathrm{conn}` for every table entry.
+    pgen: f64,
+    /// Complete system-wide table of relative occupied/virtual-rank connections.
+    connections: Vec<OrthogonalConnection>,
+}
+
+impl OrthogonalUniformGenerator {
+    /// Construct all `N_\mathrm{conn}` one- and two-body connection topologies once.
+    /// The table enumerates `O_\alpha V_\alpha`, `O_\beta V_\beta`, same-spin pair products,
+    /// and `O_\alpha V_\alpha O_\beta V_\beta` using orbital ranks rather than labels.
+    /// # Arguments:
+    /// - `source`: Representative determinant defining fixed electron counts.
+    /// - `cache`: Representative MO cache defining common alpha and beta orbital dimensions.
+    /// # Returns
+    /// - `Self`: System-wide flat uniform connection table and valid-orbital masks.
+    pub(in crate::stochastic) fn new(
+        occupations: (u128, u128),
+        cache: &MOCache<f64>,
+    ) -> Self {
+        let noa = occupations.0.count_ones() as usize;
+        let nob = occupations.1.count_ones() as usize;
+        let nva = cache.ha.nrows() - noa;
+        let nvb = cache.hb.nrows() - nob;
+        let nas = noa * nva;
+        let nbs = nob * nvb;
+        let naa = (noa * noa.saturating_sub(1) / 2) * (nva * nva.saturating_sub(1) / 2);
+        let nbb = (nob * nob.saturating_sub(1) / 2) * (nvb * nvb.saturating_sub(1) / 2);
+        let nab = nas * nbs;
+        let mut connections = Vec::with_capacity(nas + nbs + naa + nbb + nab);
+
+        for occupied in 0..noa {
+            for virtual_ in 0..nva {
+                connections.push(OrthogonalConnection::AlphaSingle {
+                    occupied: occupied as u8,
+                    virtual_: virtual_ as u8,
+                });
+            }
+        }
+        for occupied in 0..nob {
+            for virtual_ in 0..nvb {
+                connections.push(OrthogonalConnection::BetaSingle {
+                    occupied: occupied as u8,
+                    virtual_: virtual_ as u8,
+                });
+            }
+        }
+        for occupied_i in 0..noa {
+            for occupied_j in occupied_i + 1..noa {
+                for virtual_a in 0..nva {
+                    for virtual_b in virtual_a + 1..nva {
+                        connections.push(OrthogonalConnection::AlphaDouble {
+                            occupied: [occupied_i as u8, occupied_j as u8],
+                            virtual_: [virtual_a as u8, virtual_b as u8],
+                        });
+                    }
+                }
+            }
+        }
+        for occupied_i in 0..nob {
+            for occupied_j in occupied_i + 1..nob {
+                for virtual_a in 0..nvb {
+                    for virtual_b in virtual_a + 1..nvb {
+                        connections.push(OrthogonalConnection::BetaDouble {
+                            occupied: [occupied_i as u8, occupied_j as u8],
+                            virtual_: [virtual_a as u8, virtual_b as u8],
+                        });
+                    }
+                }
+            }
+        }
+        for occupied_a in 0..noa {
+            for virtual_a in 0..nva {
+                for occupied_b in 0..nob {
+                    for virtual_b in 0..nvb {
+                        connections.push(OrthogonalConnection::AlphaBetaDouble {
+                            occupied_a: occupied_a as u8,
+                            virtual_a: virtual_a as u8,
+                            occupied_b: occupied_b as u8,
+                            virtual_b: virtual_b as u8,
+                        });
+                    }
+                }
+            }
+        }
+
+        let pgen = if connections.is_empty() {
+            0.0
+        } else {
+            1.0 / connections.len() as f64
+        };
+
+        Self { pgen, connections }
+    }
+
+    /// Sample one connection with `P_\mathrm{gen}(D|x)=1/N_\mathrm{conn}`.
+    /// # Arguments:
+    /// - `self`: Persistent uniform connection topology.
+    /// - `rng`: Thread-local random-number generator.
+    /// # Returns
+    /// - `Option<(usize, f64)>`: Connection-table index and exact uniform probability.
+    #[inline(always)]
+    pub(in crate::stochastic) fn sample<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> Option<(usize, f64)> {
+        if self.connections.is_empty() {
+            None
+        } else {
+            Some((rng.gen_range(0..self.connections.len()), self.pgen))
+        }
+    }
+
+    /// Borrow the complete relative connection topology for numerical batching.
+    /// # Arguments:
+    /// - `self`: Persistent uniform connection generator.
+    /// # Returns:
+    /// - `&[OrthogonalConnection]`: Connection table indexed by compact spawn requests.
+    pub(in crate::stochastic) fn connections(&self) -> &[OrthogonalConnection] {
+        &self.connections
+    }
+}
 
 /// Evaluate the shifted off-diagonal coupling
 /// `T_{xw}(\Delta\tau) = H_{xw} - E_s(\Delta \tau) S_{xw}.`
@@ -31,12 +155,13 @@ pub(in crate::stochastic) fn coupling(
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> f64 {
-    let lambda_det = &data.basis[lambda];
-    let gamma_det = &data.basis[gamma];
+    let lambda_state = data.space.state(crate::noci::NOCIIndex(lambda));
+    let gamma_state = data.space.state(crate::noci::NOCIIndex(gamma));
+    let (lambda_oa, lambda_ob) = data.space.occupations(crate::noci::NOCIIndex(lambda));
+    let (gamma_oa, gamma_ob) = data.space.occupations(crate::noci::NOCIIndex(gamma));
 
-    if lambda_det.parent == gamma_det.parent
-        && (lambda_det.oa ^ gamma_det.oa).count_ones() + (lambda_det.ob ^ gamma_det.ob).count_ones()
-            > 4
+    if lambda_state.parent == gamma_state.parent
+        && (lambda_oa ^ gamma_oa).count_ones() + (lambda_ob ^ gamma_ob).count_ones() > 4
     {
         return 0.0;
     }
@@ -63,7 +188,7 @@ pub(in crate::stochastic) fn init_heat_bath(
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> HeatBath {
-    let ndets = data.basis.len();
+    let ndets = data.space.len();
     // Total weight W_w = \sum_{x != w} |T_{x w}(\Delta \tau)|.
     let mut sumxw = 0.0_f64;
     // Cumulative weights A_n = \sum_{i = 1}^n |T_{i w}(\Delta \tau)|.
@@ -120,7 +245,7 @@ pub(in crate::stochastic) fn pgen_heat_bath(
     hb: &HeatBath,
     scratch: &mut WickScratchSpin<f64>,
 ) -> (f64, f64, usize) {
-    let ndets = data.basis.len();
+    let ndets = data.space.len();
     // If \Sum_{x \neq w} |H_{xw} - E_s^S(\tau)S_{xw} (sumxw)
     // is zero (unsure how likely this is) then fallback to uniform distribution.
     if hb.sumxw == 0.0 {

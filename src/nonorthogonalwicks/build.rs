@@ -6,10 +6,11 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
+use crate::AoData;
+use crate::determinant::ParentDeterminant;
 use crate::input::Spin;
 use crate::maths::{ERIAO2MOScratch, adjoint, real2_as};
 use crate::noci::{NOCIScalar, occ_coeffs};
-use crate::{AoData, DetState};
 
 /// Symmetry-unique distributions of zero-overlap orbital pairs over the four contractions
 /// `in the same-spin \mathcal J intermediate. The symmetry`
@@ -90,8 +91,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// - `SameSpinBuild<T>`: Same-spin intermediates for the reference determinant pair.
     pub fn new(
         ao: &AoData,
-        g: &DetState<T>,
-        l: &DetState<T>,
+        g: &ParentDeterminant<T>,
+        l: &ParentDeterminant<T>,
         spin: Spin,
         tol: f64,
     ) -> Self {
@@ -583,8 +584,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     pub fn construct_f_scalar(
         s_munu: &Array2<f64>,
         f_munu: &Array2<T>,
-        g: &DetState<T>,
-        l: &DetState<T>,
+        g: &ParentDeterminant<T>,
+        l: &ParentDeterminant<T>,
         spin: Spin,
         tol: f64,
     ) -> ([T; 2], [[Array2<T>; 2]; 2]) {
@@ -751,8 +752,8 @@ impl<T: NOCIScalar> DiffSpinBuild<T> {
     /// - `DiffSpinBuild<T>`: Different-spin two-body intermediates for the reference determinant pair.
     pub fn new(
         ao: &AoData,
-        g: &DetState<T>,
-        l: &DetState<T>,
+        g: &ParentDeterminant<T>,
+        l: &ParentDeterminant<T>,
         tol: f64,
     ) -> Self {
         let eri = &ao.eri_coul;

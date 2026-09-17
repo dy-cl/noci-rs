@@ -25,10 +25,12 @@ pub enum Propagator {
     /// `U^{\mathrm{DDS},2}_{wx} = [1 + \Delta\tau(E_s - E_s^S)]\delta_{wx}`
     /// `- \Delta\tau[H_{wx} - E_s^S S_{wx}].`
     DifferenceDoublyShiftedU2,
-    /// `Direct-overlap propagator with persistent population N_w = S_{wx}c_x:`
-    /// `U^{\mathrm{DO}}_{wx} = \delta_{wx}`
-    /// `- \Delta\tau S_{wy}[H_{yx} - E_s^S S_{yx}].`
-    DirectOverlap,
+    /// S-apply propagator with persistent range population `N = Sc`:
+    /// `\Delta \simeq -dt(H-E_sS)N`, followed by `N' = N + S\Delta`.
+    SApply,
+    /// B-apply propagator with persistent range population `N = Sc`:
+    /// `\chi \simeq -dt(\hat H-E_s)BN`, followed by `N' = N + B^\dagger\chi`.
+    BApply,
 }
 
 impl Propagator {
@@ -42,7 +44,8 @@ impl Propagator {
             Self::DoublyShifted => "doubly-shifted",
             Self::DifferenceDoublyShiftedU1 => "difference-doubly-shifted-u1",
             Self::DifferenceDoublyShiftedU2 => "difference-doubly-shifted-u2",
-            Self::DirectOverlap => "direct-overlap",
+            Self::SApply => "s-apply",
+            Self::BApply => "b-apply",
         }
     }
 }
@@ -62,7 +65,8 @@ impl FromStr for Propagator {
             "doubly-shifted" => Ok(Self::DoublyShifted),
             "difference-doubly-shifted-u1" => Ok(Self::DifferenceDoublyShiftedU1),
             "difference-doubly-shifted-u2" => Ok(Self::DifferenceDoublyShiftedU2),
-            "direct-overlap" => Ok(Self::DirectOverlap),
+            "s-apply" => Ok(Self::SApply),
+            "b-apply" => Ok(Self::BApply),
             _ => Err(format!("invalid propagator: {s}")),
         }
     }

@@ -1,9 +1,10 @@
 mod common;
 
 // External crate imports.
-use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
+use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::noci::{
-    NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
+    NOCIData, NOCIIndex, NOCISpace, build_mo_cache, build_noci_hs, build_wicks_shared,
+    calculate_noci_energy,
 };
 use noci_rs::snoci::snoci_step;
 use noci_rs::{HSCFState, PostSCFData};
@@ -40,21 +41,17 @@ fn run_snoci_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let (e_ref, _c0, _dt_hs_ref) =
-        calculate_noci_energy(&ao, &input, &noci_reference_basis, 1e-12, &mocache, None);
+        calculate_noci_energy(&ao, &input, &reference_space, 1e-12, &mocache, None);
 
     let post = PostSCFData {
         ao: &ao,
-        states: &states,
-        noci_reference_basis: &noci_reference_basis,
+        space: &reference_space,
         mocache: &mocache,
         tol: 1e-12,
     };
@@ -64,9 +61,9 @@ fn run_snoci_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let snoci = input.snoci.as_ref().unwrap();
     let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
-        snoci_step::<f64, Complex64>(&post, &noci_reference_basis, &input, None, &world)
+        snoci_step::<f64, Complex64>(&post, &reference_space, &input, None, &world)
     } else {
-        snoci_step::<f64, f64>(&post, &noci_reference_basis, &input, None, &world)
+        snoci_step::<f64, f64>(&post, &reference_space, &input, None, &world)
     };
 
     assert!(
@@ -99,24 +96,22 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
 
-    let mut wicks = build_wicks_shared::<f64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+    let mut wicks =
+        build_wicks_shared::<f64>(&world, &ao, reference_space.parents(), 1e-12, &input);
     let (e_ref, _c0, _dt_hs_ref) = {
         let wicks_view = wicks.view();
         calculate_noci_energy(
             &ao,
             &input,
-            &noci_reference_basis,
+            &reference_space,
             1e-12,
             &mocache,
             Some(wicks_view),
@@ -125,29 +120,16 @@ fn run_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let post = PostSCFData {
         ao: &ao,
-        states: &states,
-        noci_reference_basis: &noci_reference_basis,
+        space: &reference_space,
         mocache: &mocache,
         tol: 1e-12,
     };
 
     let snoci = input.snoci.as_ref().unwrap();
     let result = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
-        snoci_step::<f64, Complex64>(
-            &post,
-            &noci_reference_basis,
-            &input,
-            Some(&mut wicks),
-            &world,
-        )
+        snoci_step::<f64, Complex64>(&post, &reference_space, &input, Some(&mut wicks), &world)
     } else {
-        snoci_step::<f64, f64>(
-            &post,
-            &noci_reference_basis,
-            &input,
-            Some(&mut wicks),
-            &world,
-        )
+        snoci_step::<f64, f64>(&post, &reference_space, &input, Some(&mut wicks), &world)
     };
 
     assert!(
@@ -181,21 +163,18 @@ fn run_complex_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let states: Vec<HSCFState> = basis.states.iter().map(HSCFState::from_real).collect();
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
     let mut wicks =
-        build_wicks_shared::<Complex64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+        build_wicks_shared::<Complex64>(&world, &ao, reference_space.parents(), 1e-12, &input);
     let (e_ref, _c0, _dt_hs_ref) = calculate_noci_energy(
         &ao,
         &input,
-        &noci_reference_basis,
+        &reference_space,
         1e-12,
         &mocache,
         Some(wicks.view()),
@@ -203,14 +182,13 @@ fn run_complex_snoci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
 
     let post = PostSCFData {
         ao: &ao,
-        states: &states,
-        noci_reference_basis: &noci_reference_basis,
+        space: &reference_space,
         mocache: &mocache,
         tol: 1e-12,
     };
     let result = snoci_step::<Complex64, Complex64>(
         &post,
-        &noci_reference_basis,
+        &reference_space,
         &input,
         Some(&mut wicks),
         &world,
@@ -747,17 +725,17 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
     let (mut input, ao, _expected): (_, _, ExpectedSNOCI) = load_test("SNOCI_H4_STO-3G_1_5");
 
     let basis = generate_reference_noci_basis(&ao, &mut input, None, None);
-    let mut refs: Vec<_> = basis
+    let refs: Vec<_> = basis
         .states
         .iter()
         .filter(|s| s.noci_basis)
         .cloned()
         .collect();
-    for (i, st) in refs.iter_mut().enumerate() {
-        st.parent = i;
-    }
-
-    let candidates = generate_excited_basis(&refs, &input, false);
+    let reference_space = NOCISpace::from_scf(&refs);
+    let sources = (0..reference_space.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let candidates = reference_space.excited_from(&sources, &input, false);
     let rank = |parent: usize, child_oa: u128, child_ob: u128| {
         let parent = &refs[parent];
         (
@@ -768,38 +746,66 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
         )
     };
 
-    let left = candidates
-        .iter()
-        .find(|st| st.parent == 0 && rank(0, st.oa, st.ob) == (2, 2, 0, 0))
-        .expect("missing RHF alpha-alpha double excitation")
-        .clone();
-    let right = candidates
-        .iter()
-        .find(|st| st.parent == 1 && rank(1, st.oa, st.ob) == (2, 2, 0, 0))
-        .expect("missing alpha-parent alpha-alpha double excitation")
-        .clone();
-    assert_eq!(rank(0, left.oa, left.ob), (2, 2, 0, 0));
-    assert_eq!(rank(1, right.oa, right.ob), (2, 2, 0, 0));
+    let left = (0..candidates.len())
+        .map(NOCIIndex)
+        .find(|&index| {
+            candidates.state(index).parent == 0
+                && rank(
+                    0,
+                    candidates.occupations(index).0,
+                    candidates.occupations(index).1,
+                ) == (2, 2, 0, 0)
+        })
+        .expect("missing RHF alpha-alpha double excitation");
+    let right = (0..candidates.len())
+        .map(NOCIIndex)
+        .find(|&index| {
+            candidates.state(index).parent == 1
+                && rank(
+                    1,
+                    candidates.occupations(index).0,
+                    candidates.occupations(index).1,
+                ) == (2, 2, 0, 0)
+        })
+        .expect("missing alpha-parent alpha-alpha double excitation");
+    assert_eq!(
+        rank(
+            0,
+            candidates.occupations(left).0,
+            candidates.occupations(left).1
+        ),
+        (2, 2, 0, 0)
+    );
+    assert_eq!(
+        rank(
+            1,
+            candidates.occupations(right).0,
+            candidates.occupations(right).1
+        ),
+        (2, 2, 0, 0)
+    );
 
-    let probe = vec![left, right];
-    let mocache = build_mo_cache(&ao, &refs, input.scf.d_tol);
+    let probe = candidates.subset(&[left, right]);
+    let indices = [NOCIIndex(0), NOCIIndex(1)];
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
     let data = NOCIData::new(&ao, &probe, &input, 1e-12, None).withmocache(&mocache);
-    let (h, s, _dt) = build_noci_hs(&data, &probe, &probe, true);
+    let (h, s, _dt) = build_noci_hs(&data, &indices, &indices, true);
 
     let (mut input_wicks, ao_wicks, _expected): (_, _, ExpectedSNOCI) =
         load_test("SNOCI_H4_STO-3G_1_5_WICKS");
     input_wicks.wicks.compare = false;
     let basis_wicks = generate_reference_noci_basis(&ao_wicks, &mut input_wicks, None, None);
-    let mut refs_wicks: Vec<_> = basis_wicks
+    let refs_wicks: Vec<_> = basis_wicks
         .states
         .iter()
         .filter(|s| s.noci_basis)
         .cloned()
         .collect();
-    for (i, st) in refs_wicks.iter_mut().enumerate() {
-        st.parent = i;
-    }
-    let candidates_wicks = generate_excited_basis(&refs_wicks, &input_wicks, false);
+    let reference_space_wicks = NOCISpace::from_scf(&refs_wicks);
+    let sources_wicks = (0..reference_space_wicks.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let candidates_wicks = reference_space_wicks.excited_from(&sources_wicks, &input_wicks, false);
     let rank_wicks = |parent: usize, child_oa: u128, child_ob: u128| {
         let parent = &refs_wicks[parent];
         (
@@ -809,21 +815,43 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
             (child_ob & !parent.ob).count_ones() as usize,
         )
     };
-    let left_wicks = candidates_wicks
-        .iter()
-        .find(|st| st.parent == 0 && rank_wicks(0, st.oa, st.ob) == (2, 2, 0, 0))
-        .expect("missing Wicks RHF alpha-alpha double excitation")
-        .clone();
-    let right_wicks = candidates_wicks
-        .iter()
-        .find(|st| st.parent == 1 && rank_wicks(1, st.oa, st.ob) == (2, 2, 0, 0))
-        .expect("missing Wicks alpha-parent alpha-alpha double excitation")
-        .clone();
-    let probe_wicks = vec![left_wicks, right_wicks];
-    let mocache_wicks = build_mo_cache(&ao_wicks, &refs_wicks, input_wicks.scf.d_tol);
+    let left_wicks = (0..candidates_wicks.len())
+        .map(NOCIIndex)
+        .find(|&index| {
+            candidates_wicks.state(index).parent == 0
+                && rank_wicks(
+                    0,
+                    candidates_wicks.occupations(index).0,
+                    candidates_wicks.occupations(index).1,
+                ) == (2, 2, 0, 0)
+        })
+        .expect("missing Wicks RHF alpha-alpha double excitation");
+    let right_wicks = (0..candidates_wicks.len())
+        .map(NOCIIndex)
+        .find(|&index| {
+            candidates_wicks.state(index).parent == 1
+                && rank_wicks(
+                    1,
+                    candidates_wicks.occupations(index).0,
+                    candidates_wicks.occupations(index).1,
+                ) == (2, 2, 0, 0)
+        })
+        .expect("missing Wicks alpha-parent alpha-alpha double excitation");
+    let probe_wicks = candidates_wicks.subset(&[left_wicks, right_wicks]);
+    let mocache_wicks = build_mo_cache(
+        &ao_wicks,
+        reference_space_wicks.parents(),
+        input_wicks.scf.d_tol,
+    );
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
-    let wicks = build_wicks_shared::<f64>(&world, &ao_wicks, &refs_wicks, 1e-12, &input_wicks);
+    let wicks = build_wicks_shared::<f64>(
+        &world,
+        &ao_wicks,
+        reference_space_wicks.parents(),
+        1e-12,
+        &input_wicks,
+    );
     let data_wicks = NOCIData::new(
         &ao_wicks,
         &probe_wicks,
@@ -832,7 +860,7 @@ fn snoci_h4_sto_3g_1_5_ang_double_excitation_pair_wicks() {
         Some(wicks.view()),
     )
     .withmocache(&mocache_wicks);
-    let (h_wicks, s_wicks, _dt) = build_noci_hs(&data_wicks, &probe_wicks, &probe_wicks, true);
+    let (h_wicks, s_wicks, _dt) = build_noci_hs(&data_wicks, &indices, &indices, true);
 
     assert_eq!(h.shape(), &[2, 2]);
     assert_eq!(s.shape(), &[2, 2]);

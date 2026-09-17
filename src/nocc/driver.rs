@@ -45,11 +45,17 @@ pub(crate) fn run_noccmc(
         print_noci_natural_orbitals("NOCI natural orbitals", no);
     }
 
-    let nobasis = transform_noci_basis(post.noci_reference_basis, &no.c, &post.ao.s);
+    let nobasis = transform_noci_basis(post.space, &no.c, &post.ao.s);
     let noao = transform_ao_data(post.ao, &no.c);
 
     let nowicks = if input.wicks.enabled {
-        Some(build_wicks_shared(world, &noao, &nobasis, post.tol, input))
+        Some(build_wicks_shared(
+            world,
+            &noao,
+            &nobasis.parents,
+            post.tol,
+            input,
+        ))
     } else {
         None
     };

@@ -9,10 +9,11 @@ use mpi::topology::Communicator;
 use mpi::traits::*;
 
 // Crate-root imports.
-use crate::SCFState;
+use crate::input::Propagator;
+use crate::noci::{NOCIIndex, NOCISpace};
 
 // Parent/sibling imports.
-use super::state::ExcitationHist;
+use super::state::{ExcitationHist, PopulationRepresentation};
 
 /// Storage required to resume stochastic propagation.
 pub(in crate::stochastic) struct RestartState {
@@ -24,6 +25,10 @@ pub(in crate::stochastic) struct RestartState {
     pub(in crate::stochastic) nwprev: f64,
     /// Persistent reference population at the previous shift update.
     pub(in crate::stochastic) nrefprev: f64,
+    /// Sampled population at the previous shift update.
+    pub(in crate::stochastic) nsampledprev: f64,
+    /// Number of sampled-population determinants at the previous shift update.
+    pub(in crate::stochastic) nsampledoprev: i64,
     /// Rank-local persistent real populations.
     pub(in crate::stochastic) populations: Vec<f64>,
     /// Optional excitation histogram.
@@ -36,6 +41,48 @@ pub(in crate::stochastic) struct RestartState {
     pub(in crate::stochastic) ndets: usize,
     /// Deterministic hash of the ordered stochastic determinant basis.
     pub(in crate::stochastic) basis_hash: [u64; 2],
+    /// Population representation, absent in legacy restart files.
+    pub(in crate::stochastic) representation: Option<PopulationRepresentation>,
+    /// Whether population control had activated, absent in legacy restart files.
+    pub(in crate::stochastic) reached: Option<bool>,
+    /// Target population used when restart was written, absent in legacy files.
+    pub(in crate::stochastic) target_population: Option<f64>,
+}
+
+/// Map propagator choice to persisted population representation.
+/// # Arguments:
+/// - `propagator`: Stochastic propagator selected by input.
+/// # Returns:
+/// - `PopulationRepresentation`: Representation stored in restart metadata.
+pub(in crate::stochastic) fn population_representation(
+    propagator: Propagator
+) -> PopulationRepresentation {
+    match propagator {
+        Propagator::SApply | Propagator::BApply => PopulationRepresentation::Range,
+        _ => PopulationRepresentation::Coefficient,
+    }
+}
+
+/// Read restart validation metadata needed before constructing RNG streams.
+pub(in crate::stochastic) fn restart_base_seed(
+    path: &str,
+    world: &impl Communicator,
+    expected_ndets: usize,
+    expected_hash: [u64; 2],
+    expected_representation: PopulationRepresentation,
+) -> Option<u64> {
+    let file = File::open(path).unwrap();
+    let meta = file.group("meta").unwrap();
+    validate_restart_metadata(
+        &meta,
+        world,
+        expected_ndets,
+        expected_hash,
+        expected_representation,
+    );
+    meta.dataset("base_seed")
+        .ok()
+        .map(|dataset| dataset.read_1d::<u64>().unwrap()[0])
 }
 
 /// Build a deterministic hash of the ordered stochastic determinant basis.
@@ -46,10 +93,9 @@ pub(in crate::stochastic) struct RestartState {
 /// - `basis`: Ordered stochastic determinant basis used by the current executable.
 /// # Returns:
 /// - `[u64; 2]`: Two-lane deterministic basis hash.
-pub(in crate::stochastic) fn basis_hash(basis: &[SCFState]) -> [u64; 2] {
+pub(in crate::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
     let mut hash = [0xcbf29ce484222325, 0x84222325cbf29ce4];
-    let max_parent = basis.iter().map(|det| det.parent).max().unwrap_or(0);
-    let mut seen_parent = vec![false; max_parent + 1];
+    let mut seen_parent = vec![false; space.parents.len()];
 
     let mut mix = |value: u64| {
         hash[0] ^= value;
@@ -58,36 +104,42 @@ pub(in crate::stochastic) fn basis_hash(basis: &[SCFState]) -> [u64; 2] {
         hash[1] = hash[1].wrapping_mul(0x00000100000001b3);
     };
 
-    mix(basis.len() as u64);
-    for (i, det) in basis.iter().enumerate() {
+    mix(space.len() as u64);
+    for i in 0..space.len() {
+        let index = NOCIIndex(i);
+        let det = space.state(index);
+        let alpha = space.alpha(index);
+        let beta = space.beta(index);
+
         mix(i as u64);
         mix(det.parent as u64);
-        for value in [det.oa, det.ob] {
+        for value in [alpha.occupation, beta.occupation] {
             mix(value as u64);
             mix((value >> 64) as u64);
         }
-        mix(det.pha.to_bits());
-        mix(det.phb.to_bits());
+        mix(alpha.reduced.phase.to_bits());
+        mix(beta.reduced.phase.to_bits());
         for value in [
-            det.excitation.alpha.holes,
-            det.excitation.alpha.parts,
-            det.excitation.beta.holes,
-            det.excitation.beta.parts,
+            alpha.excitation.holes,
+            alpha.excitation.parts,
+            beta.excitation.holes,
+            beta.excitation.parts,
         ] {
             mix(value as u64);
             mix((value >> 64) as u64);
         }
         if !seen_parent[det.parent] {
             seen_parent[det.parent] = true;
+            let parent = &space.parents[det.parent];
             mix(det.parent as u64);
-            mix(det.ca.nrows() as u64);
-            mix(det.ca.ncols() as u64);
-            for &value in det.ca.iter() {
+            mix(parent.ca.nrows() as u64);
+            mix(parent.ca.ncols() as u64);
+            for &value in parent.ca.iter() {
                 mix(value.to_bits());
             }
-            mix(det.cb.nrows() as u64);
-            mix(det.cb.ncols() as u64);
-            for &value in det.cb.iter() {
+            mix(parent.cb.nrows() as u64);
+            mix(parent.cb.ncols() as u64);
+            for &value in parent.cb.iter() {
                 mix(value.to_bits());
             }
         }
@@ -110,15 +162,25 @@ fn validate_restart_metadata(
     world: &impl Communicator,
     expected_ndets: usize,
     expected_hash: [u64; 2],
+    expected_representation: PopulationRepresentation,
 ) {
     let Ok(schema) = meta.dataset("schema_version") else {
         if world.rank() == 0 {
-            println!("Warning: legacy restart has no validation, proceed at own risk.");
+            println!("Warning: legacy restart has no metadata validation; proceed at own risk.");
         }
         return;
     };
 
     let schema = schema.read_1d::<u64>().unwrap()[0];
+    if schema == 1 {
+        if world.rank() == 0 {
+            println!(
+                "Warning: old restart schema has no full metadata validation; proceed at own risk."
+            );
+        }
+    } else if schema != 2 {
+        panic!("Restart schema version mismatch: saved {schema}, current 2.");
+    }
     let nranks = meta.dataset("nranks").unwrap().read_1d::<u64>().unwrap()[0] as usize;
     let ndets = meta.dataset("ndets").unwrap().read_1d::<u64>().unwrap()[0] as usize;
     let hash = meta
@@ -128,9 +190,6 @@ fn validate_restart_metadata(
         .unwrap();
     let saved_hash = [hash[0], hash[1]];
 
-    if schema != 1 {
-        panic!("Restart schema version mismatch: saved {schema}, current 1.");
-    }
     if nranks != world.size() as usize {
         panic!(
             "Restart MPI rank count mismatch: saved {nranks}, current {}.",
@@ -142,6 +201,20 @@ fn validate_restart_metadata(
     }
     if saved_hash != expected_hash {
         panic!("Restart basis hash mismatch: saved {saved_hash:x?}, current {expected_hash:x?}.");
+    }
+
+    if schema == 2 {
+        let dataset = meta
+            .dataset("population_representation")
+            .unwrap_or_else(|_| panic!("Restart schema-2 file lacks population representation."));
+        let saved = dataset.read_1d::<u8>().unwrap();
+        let saved = std::str::from_utf8(saved.as_slice().unwrap()).unwrap_or("invalid");
+        if saved != expected_representation.as_str() {
+            panic!(
+                "Restart population representation mismatch: saved {saved}, current {}.",
+                expected_representation.as_str()
+            );
+        }
     }
 }
 
@@ -186,6 +259,14 @@ pub(in crate::stochastic) fn write_restart_hdf5(
             .with_data(&[state.nrefprev])
             .create("nrefprev")?;
 
+        meta.new_dataset_builder()
+            .with_data(&[state.nsampledprev])
+            .create("nsampledprev")?;
+
+        meta.new_dataset_builder()
+            .with_data(&[state.nsampledoprev])
+            .create("nsampledoprev")?;
+
         if let Some(seed) = state.base_seed {
             meta.new_dataset_builder()
                 .with_data(&[seed])
@@ -199,8 +280,20 @@ pub(in crate::stochastic) fn write_restart_hdf5(
         }
 
         meta.new_dataset_builder()
-            .with_data(&[1_u64])
+            .with_data(&[2_u64])
             .create("schema_version")?;
+
+        meta.new_dataset_builder()
+            .with_data(state.representation.unwrap().as_str().as_bytes())
+            .create("population_representation")?;
+
+        meta.new_dataset_builder()
+            .with_data(&[u8::from(state.reached.unwrap_or(false))])
+            .create("reached")?;
+
+        meta.new_dataset_builder()
+            .with_data(&[state.target_population.unwrap()])
+            .create("target_population")?;
 
         meta.new_dataset_builder()
             .with_data(&[nranks as u64])
@@ -284,12 +377,19 @@ pub(in crate::stochastic) fn read_restart_hdf5(
     world: &impl Communicator,
     expected_ndets: usize,
     expected_hash: [u64; 2],
+    expected_representation: PopulationRepresentation,
 ) -> hdf5::Result<RestartState> {
     let irank = world.rank() as usize;
 
     let file = File::open(path)?;
     let meta = file.group("meta")?;
-    validate_restart_metadata(&meta, world, expected_ndets, expected_hash);
+    validate_restart_metadata(
+        &meta,
+        world,
+        expected_ndets,
+        expected_hash,
+        expected_representation,
+    );
 
     let report = meta.dataset("report")?.read_1d::<u64>()?[0] as usize;
 
@@ -299,6 +399,23 @@ pub(in crate::stochastic) fn read_restart_hdf5(
 
     let nrefprev = meta.dataset("nrefprev")?.read_1d::<f64>()?[0];
 
+    let nsampledprev = meta
+        .dataset("nsampledprev")
+        .ok()
+        .map(|dataset| dataset.read_1d::<f64>().unwrap()[0])
+        .unwrap_or_else(|| {
+            if world.rank() == 0 {
+                println!("Warning: restart lacks saved sampled population; using zero.");
+            }
+            0.0
+        });
+
+    let nsampledoprev = meta
+        .dataset("nsampledoprev")
+        .ok()
+        .map(|dataset| dataset.read_1d::<i64>().unwrap()[0])
+        .unwrap_or(0);
+
     let base_seed = meta
         .dataset("base_seed")
         .ok()
@@ -306,6 +423,26 @@ pub(in crate::stochastic) fn read_restart_hdf5(
 
     let overlap_weight = meta
         .dataset("overlap_weight")
+        .ok()
+        .map(|dataset| dataset.read_1d::<f64>().unwrap()[0]);
+
+    let representation = meta
+        .dataset("population_representation")
+        .ok()
+        .map(|dataset| {
+            let bytes = dataset.read_1d::<u8>().unwrap();
+            match std::str::from_utf8(bytes.as_slice().unwrap()).unwrap_or("") {
+                "coefficient" => PopulationRepresentation::Coefficient,
+                "range" => PopulationRepresentation::Range,
+                value => panic!("Invalid restart population representation {value:?}."),
+            }
+        });
+    let reached = meta
+        .dataset("reached")
+        .ok()
+        .map(|dataset| dataset.read_1d::<u8>().unwrap()[0] != 0);
+    let target_population = meta
+        .dataset("target_population")
         .ok()
         .map(|dataset| dataset.read_1d::<f64>().unwrap()[0]);
 
@@ -349,11 +486,16 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         shift,
         nwprev,
         nrefprev,
+        nsampledprev,
+        nsampledoprev,
         populations,
         excitation_hist,
         base_seed,
         overlap_weight,
         ndets: expected_ndets,
         basis_hash: expected_hash,
+        representation,
+        reached,
+        target_population,
     })
 }

@@ -8,7 +8,7 @@ use ndarray::{Array1, Array2, Axis, s};
 
 // Crate-root imports.
 use crate::maths::adjoint;
-use crate::{DetState, StateScalar};
+use crate::{SCFState, StateScalar};
 
 pub struct SpinOccupation {
     /// Indices of occupied alpha-spin orbitals.
@@ -71,8 +71,8 @@ fn orbital_occupation(
 /// # Arguments:
 /// - `st`: Determinant state to clone into occupied-first orbital order.
 /// # Returns
-/// - `DetState<T>`: Clone of `st` in occupied-first orbital order.
-pub fn occ_first<T: StateScalar>(st: &DetState<T>) -> DetState<T> {
+/// - `SCFState<T>`: Clone of `st` in occupied-first orbital order.
+pub fn occ_first<T: StateScalar>(st: &SCFState<T>) -> SCFState<T> {
     let (aocc, avirt) = orbital_occupation(st.ca.ncols(), st.oa);
     let naocc = aocc.len();
 
@@ -123,7 +123,7 @@ pub fn occ_first<T: StateScalar>(st: &DetState<T>) -> DetState<T> {
 /// - `st`: Determinant state whose orbital occupations are being inspected.
 /// # Returns
 /// - `SpinOccupation`: Occupied and virtual MO indices for alpha and beta spin.
-pub fn spin_occupation<T: StateScalar>(st: &DetState<T>) -> SpinOccupation {
+pub fn spin_occupation<T: StateScalar>(st: &SCFState<T>) -> SpinOccupation {
     let (occ_alpha, virt_alpha) = orbital_occupation(st.ca.ncols(), st.oa);
 
     let (occ_beta, virt_beta) = orbital_occupation(st.cb.ncols(), st.ob);

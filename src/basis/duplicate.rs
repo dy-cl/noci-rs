@@ -4,7 +4,7 @@
 use ndarray::Array2;
 
 // Crate-root imports.
-use crate::DetState;
+use crate::SCFState;
 use crate::maths::real2_as;
 use crate::noci::NOCIScalar;
 
@@ -17,8 +17,8 @@ use crate::noci::NOCIScalar;
 /// # Returns
 /// - `f64`: Electron distance between the two determinant states.
 pub fn electron_distance<T: NOCIScalar>(
-    w: &DetState<T>,
-    x: &DetState<T>,
+    w: &SCFState<T>,
+    x: &SCFState<T>,
     s: &Array2<f64>,
 ) -> f64 {
     let smat = real2_as::<T>(s);
@@ -46,8 +46,8 @@ pub fn electron_distance<T: NOCIScalar>(
 /// # Returns
 /// - `f64`: Squared density distance between the two determinant states.
 pub fn density_distance<T: NOCIScalar>(
-    w: &DetState<T>,
-    x: &DetState<T>,
+    w: &SCFState<T>,
+    x: &SCFState<T>,
     s: &Array2<f64>,
 ) -> f64 {
     let smat = real2_as::<T>(s);
@@ -67,7 +67,7 @@ pub fn density_distance<T: NOCIScalar>(
 /// # Returns:
 /// - `()`: Mutates duplicate states in place by setting `noci_basis = false`.
 pub(crate) fn mark_duplicate_noci_states<T: NOCIScalar>(
-    states: &mut [DetState<T>],
+    states: &mut [SCFState<T>],
     s: &Array2<f64>,
     d_tol: f64,
     verbose: u8,

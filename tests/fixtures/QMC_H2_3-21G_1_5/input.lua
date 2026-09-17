@@ -17,10 +17,27 @@ mol = {
 
 states = {
     mom = {
-        {label = "RHF (0, 0)", noci = true},
-        {label = "UHF (1, -1)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
-        {label = "UHF (-1, 1)", spin_bias = {pattern = {-1, 1}, pol = 0.75}, noci = true},
-    }
+        {
+            label = "RHF (0, 0)",
+            noci = true,
+        },
+        {
+            label = "UHF (1, -1)",
+            spin_bias = {
+                pattern = {1, -1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-1, 1)",
+            spin_bias = {
+                pattern = {-1, 1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+    },
 }
 
 wicks = {
@@ -42,14 +59,29 @@ prop = {
 qmc = {
     initial_population = 10,
     target_population = 100,
+
     ncycles = 1,
     nreports = 1,
+
     fri = {
-        population = { cutoff = 0.0 },
-        spawn = { cutoff = 0.0 },
-        pre_overlap = { target_nnz = 1000000000 },
-        shift_tangent = { target_nnz = 1000000000 },
+        population = {
+            cutoff = 0.0,
+        },
+
+        spawn = {
+            cutoff = 0.0,
+        },
+
+        pre_overlap = {
+            target_nnz = 1000000000,
+        },
+
+        shift_tangent = {
+            target_nnz = 1000000000,
+        },
     },
+
     excitation_gen = "uniform",
+
     seed = 1,
 }

@@ -136,7 +136,6 @@ pub(crate) fn generate_states_metadynamics(
                         input,
                         label,
                         noci_basis,
-                        labelidx,
                         (false, None, biasi),
                     )
                     .expect("SCF did not converge")
@@ -158,7 +157,6 @@ pub(crate) fn generate_states_metadynamics(
                     input,
                     label,
                     noci_basis,
-                    labelidx,
                     (false, None, None),
                 )
                 .expect("SCF did not converge");
@@ -302,7 +300,6 @@ pub(crate) fn generate_states_metadynamics(
                     input,
                     label,
                     noci_basis,
-                    irhf,
                     (false, None, biasi),
                 )
                 .expect("SCF did not converge")
@@ -321,7 +318,6 @@ pub(crate) fn generate_states_metadynamics(
                 input,
                 label,
                 noci_basis,
-                irhf,
                 (false, None, None),
             )
             .expect("SCF did not converge");

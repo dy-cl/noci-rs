@@ -13,7 +13,10 @@ use crate::maths::{
     einsum_ba_abcd_cd_complex_real, einsum_ba_abcd_cd_real,
 };
 use crate::nonorthogonalwicks::WicksView;
-use crate::{AoData, DetState, StateScalar};
+use crate::{AoData, StateScalar};
+
+// Parent/sibling imports.
+use super::space::{NOCIIndex, NOCISpace};
 
 /// Scalar type accepted by generic NOCI matrix-element code.
 pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
@@ -219,8 +222,8 @@ impl NOCIScalar for Complex64 {
 pub struct NOCIData<'a, T: NOCIScalar> {
     /// AO-basis integrals and other system-wide data.
     pub ao: &'a AoData,
-    /// List of the current determinants in the basis.
-    pub basis: &'a [DetState<T>],
+    /// Authoritative retained determinant space.
+    pub(crate) space: &'a NOCISpace<T>,
     /// User input controlling matrix-element evaluation and optional Wick's usage.
     pub input: &'a Input,
     /// Numerical tolerance used to decide when quantities are treated as zero.
@@ -235,7 +238,7 @@ impl<'a, T: NOCIScalar> NOCIData<'a, T> {
     /// Construct the shared data required for NOCI matrix-element evaluation.
     /// # Arguments:
     /// - `ao`: Contains AO integrals and other system data.
-    /// - `basis`: Determinant basis with respect to which matrix elements are being evaluated.
+    /// - `space`: Authoritative retained determinant space.
     /// - `input`: User defined input options.
     /// - `tol`: Tolerance for a number being zero.
     /// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
@@ -243,14 +246,14 @@ impl<'a, T: NOCIScalar> NOCIData<'a, T> {
     /// - `NOCIData<'a, T>`: Shared data for NOCI matrix-element evaluation.
     pub fn new(
         ao: &'a AoData,
-        basis: &'a [DetState<T>],
+        space: &'a NOCISpace<T>,
         input: &'a Input,
         tol: f64,
         wicks: Option<&'a WicksView<T>>,
     ) -> Self {
         Self {
             ao,
-            basis,
+            space,
             input,
             tol,
             wicks,
@@ -305,14 +308,14 @@ impl<'a, T: NOCIScalar> FockData<'a, T> {
 
 /// Stores the pair of determinants whose matrix element is being evaluated.
 #[derive(Clone, Copy)]
-pub(crate) struct DetPair<'a, T: NOCIScalar> {
+pub(crate) struct DetPair {
     /// Left determinant in the matrix element.
-    pub(crate) ldet: &'a DetState<T>,
+    pub(crate) ldet: NOCIIndex,
     /// Right determinant in the matrix element.
-    pub(crate) gdet: &'a DetState<T>,
+    pub(crate) gdet: NOCIIndex,
 }
 
-impl<'a, T: NOCIScalar> DetPair<'a, T> {
+impl DetPair {
     /// Construct the pair of determinants whose matrix element is to be evaluated.
     /// # Arguments:
     /// - `ldet`: Left determinant in the matrix element.
@@ -320,8 +323,8 @@ impl<'a, T: NOCIScalar> DetPair<'a, T> {
     /// # Returns:
     /// - `DetPair<'a, T>`: Pair of determinants to be passed to matrix-element routines.
     pub(crate) fn new(
-        ldet: &'a DetState<T>,
-        gdet: &'a DetState<T>,
+        ldet: NOCIIndex,
+        gdet: NOCIIndex,
     ) -> Self {
         Self { ldet, gdet }
     }

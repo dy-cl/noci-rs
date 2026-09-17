@@ -7,7 +7,7 @@ use std::fs;
 use noci_rs::basis::{generate_reference_noci_basis, hermitian_hnoci_basis};
 use noci_rs::input::{Input, load_input};
 use noci_rs::integrals::generate_ao_data;
-use noci_rs::noci::{build_mo_cache, build_wicks_shared, calculate_noci_energy};
+use noci_rs::noci::{NOCISpace, build_mo_cache, build_wicks_shared, calculate_noci_energy};
 use noci_rs::{AoData, HSCFState, SCFState};
 use num_complex::Complex64;
 use serde::Deserialize;
@@ -81,14 +81,12 @@ fn run_reference_noci_fixture(fixture: &str) -> (Vec<f64>, f64) {
 
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut basis: Vec<_> = states.into_iter().filter(|s| s.noci_basis).collect();
-    for (i, st) in basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let basis: Vec<_> = states.into_iter().filter(|s| s.noci_basis).collect();
+    let space = NOCISpace::from_scf(&basis);
 
-    let mocache = build_mo_cache(&ao, &basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, space.parents(), input.scf.d_tol);
     let (e_ref, _coeffs, _dt_hs) =
-        calculate_noci_energy(&ao, &input, &basis, 1e-12, &mocache, None);
+        calculate_noci_energy(&ao, &input, &space, 1e-12, &mocache, None);
 
     (scf_energies, e_ref)
 }
@@ -108,18 +106,16 @@ fn run_reference_noci_fixture_wicks(fixture: &str) -> (Vec<f64>, f64) {
 
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut basis: Vec<_> = states.into_iter().filter(|s| s.noci_basis).collect();
-    for (i, st) in basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let basis: Vec<_> = states.into_iter().filter(|s| s.noci_basis).collect();
+    let space = NOCISpace::from_scf(&basis);
 
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
 
-    let mocache = build_mo_cache(&ao, &basis, input.scf.d_tol);
-    let wicks = build_wicks_shared::<f64>(&world, &ao, &basis, 1e-12, &input);
+    let mocache = build_mo_cache(&ao, space.parents(), input.scf.d_tol);
+    let wicks = build_wicks_shared::<f64>(&world, &ao, space.parents(), 1e-12, &input);
     let (e_ref, _coeffs, _dt_hs) =
-        calculate_noci_energy(&ao, &input, &basis, 1e-12, &mocache, Some(wicks.view()));
+        calculate_noci_energy(&ao, &input, &space, 1e-12, &mocache, Some(wicks.view()));
 
     (scf_energies, e_ref)
 }
@@ -158,25 +154,27 @@ fn run_holomorphic_reference_noci_fixture(
             generate_reference_noci_basis(ao, &mut input, Some(&prev_states), prev_htracks)
         };
 
-        let mut basis: Vec<_> = hermitian_hnoci_basis(&refs.hstates, &ao.s)
+        let basis: Vec<_> = hermitian_hnoci_basis(&refs.hstates, &ao.s)
             .into_iter()
             .filter(|st| st.noci_basis)
             .collect();
-        for (i, st) in basis.iter_mut().enumerate() {
-            st.parent = i;
-        }
+        let space = NOCISpace::from_scf(&basis);
 
-        let mocache = build_mo_cache(ao, &basis, input.scf.d_tol);
+        let mocache = build_mo_cache(ao, space.parents(), input.scf.d_tol);
         let wicks = if input.wicks.enabled || input.wicks.compare {
             Some(build_wicks_shared::<Complex64>(
-                &world, ao, &basis, 1e-12, &input,
+                &world,
+                ao,
+                space.parents(),
+                1e-12,
+                &input,
             ))
         } else {
             None
         };
         let wicks_view = wicks.as_ref().map(|w| w.view());
         let (e_ref, _c0, _dt_hs) =
-            calculate_noci_energy(ao, &input, &basis, 1e-12, &mocache, wicks_view);
+            calculate_noci_energy(ao, &input, &space, 1e-12, &mocache, wicks_view);
 
         energies.push(e_ref);
         final_scf = refs.states.iter().map(|st| st.e).collect();

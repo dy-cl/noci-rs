@@ -27,7 +27,6 @@ const STEPS: usize = 5;
 /// - `ao`: Contains AO integrals and metadata.
 /// - `input`: Contains user specified input data.
 /// - `label`: Label for the h-SCF state.
-/// - `i`: Index of the h-SCF state.
 /// # Returns:
 /// - `Option<HSCFState>`: Converged off-axis h-SCF tracking state if continuation succeeds.
 pub(crate) fn initialise_hscf_track(
@@ -35,7 +34,6 @@ pub(crate) fn initialise_hscf_track(
     ao: &AoData,
     input: &Input,
     label: &str,
-    i: usize,
 ) -> Option<HSCFState> {
     // Promote orbitals from a converged real HF calculation to complex.
     // This corresponds to `lambda = 1` scaling of the two electron integrals.
@@ -61,7 +59,6 @@ pub(crate) fn initialise_hscf_track(
             HSCFRunData {
                 label,
                 noci_basis: false,
-                parent: i,
                 lambda,
             },
         )?;
@@ -83,7 +80,6 @@ pub(crate) fn initialise_hscf_track(
 /// - `ao`: Contains AO integrals and metadata for the current geometry.
 /// - `input`: Contains user specified input data.
 /// - `label`: Label for the h-SCF state.
-/// - `i`: Index of the h-SCF state.
 /// # Returns:
 /// - `Option<HSCFState>`: Converged off-axis tracking state at the current geometry.
 pub(crate) fn continue_hscf_track(
@@ -91,7 +87,6 @@ pub(crate) fn continue_hscf_track(
     ao: &AoData,
     input: &Input,
     label: &str,
-    i: usize,
 ) -> Option<HSCFState> {
     // AO overlap changes between geometries so previous orbitals
     // must be re-orthonormalised with the new metric.
@@ -109,7 +104,6 @@ pub(crate) fn continue_hscf_track(
         HSCFRunData {
             label,
             noci_basis: false,
-            parent: i,
             lambda,
         },
     )
@@ -124,7 +118,6 @@ pub(crate) fn continue_hscf_track(
 /// - `ao`: Contains AO integrals and metadata.
 /// - `input`: Contains user specified input data.
 /// - `label`: Label for the h-SCF state.
-/// - `i`: Index of the h-SCF state.
 /// - `noci_basis`: Whether the final physical state should enter the NOCI basis.
 /// # Returns:
 /// - `Option<HSCFState>`: Physical `\lambda = 1` h-SCF state if continuation succeeds.
@@ -133,7 +126,6 @@ pub(crate) fn physical_hscf_state(
     ao: &AoData,
     input: &Input,
     label: &str,
-    i: usize,
     noci_basis: bool,
 ) -> Option<HSCFState> {
     // Start from the off-axis '\lambda' shifted solutions.
@@ -163,7 +155,6 @@ pub(crate) fn physical_hscf_state(
             HSCFRunData {
                 label,
                 noci_basis: noci_basis && step == STEPS,
-                parent: i,
                 lambda,
             },
         )?;

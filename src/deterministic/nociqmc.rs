@@ -4,7 +4,6 @@ use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
 // Crate-root imports.
-use crate::DetState;
 use crate::input::{Input, Propagator};
 use crate::maths::{adjoint, parallel_matvec};
 use crate::noci::NOCIScalar;
@@ -68,8 +67,8 @@ fn propagator_shifts(
         Propagator::DoublyShifted => (es_s, es),
         Propagator::DifferenceDoublyShiftedU1 => (0.5 * (es + es_s), es - es_s),
         Propagator::DifferenceDoublyShiftedU2 => (es_s, es - es_s),
-        Propagator::DirectOverlap => {
-            panic!("Propagator::DirectOverlap cannot be specified in this way.")
+        Propagator::SApply | Propagator::BApply => {
+            panic!("range propagators cannot be specified in this deterministic path.")
         }
     }
 }
@@ -229,7 +228,10 @@ impl<T: NOCIScalar> ProjPropagator<T> {
         dt: f64,
         prop: &Propagator,
     ) -> Self {
-        if matches!(prop, Propagator::DirectOverlap) {
+        if matches!(prop, Propagator::BApply) {
+            panic!("BApply has no deterministic propagation implementation.");
+        }
+        if matches!(prop, Propagator::SApply) {
             let es_s = T::from_real(es_s);
             let dt = T::from_real(dt);
 
@@ -248,7 +250,7 @@ impl<T: NOCIScalar> ProjPropagator<T> {
             let action_r = s.dot(&residual_r);
             let action_n = s.dot(&residual_n);
 
-            // Project the direct-overlap action into the relevant/null
+            // Project the S-apply action into the relevant/null
             // subspace basis.
             let arr = p.ur_dag.dot(&action_r);
             let anr = p.un_dag.dot(&action_r);
@@ -333,7 +335,7 @@ pub fn propagate_step<T: NOCIScalar>(
     prop: &Propagator,
 ) -> Array1<T> {
     match prop {
-        Propagator::DirectOverlap => {
+        Propagator::SApply => {
             let es_s = T::from_real(es_s);
             let dt = T::from_real(dt);
 
@@ -345,6 +347,10 @@ pub fn propagate_step<T: NOCIScalar>(
             let overlap_residual = parallel_matvec(s, &residual);
 
             c - &overlap_residual.mapv(|z| dt * z)
+        }
+
+        Propagator::BApply => {
+            panic!("BApply has no deterministic propagation implementation.")
         }
 
         _ => {
@@ -382,20 +388,23 @@ pub fn propagate<T: NOCIScalar>(
     mut es: f64,
     history: &mut Vec<Coefficients<T>>,
     input: &Input,
-    basis: &[DetState<T>],
+    basis: &crate::noci::NOCISpace<T>,
 ) -> Option<Array1<T>> {
+    if matches!(input.prop_ref().propagator, Propagator::BApply) {
+        panic!("BApply has no deterministic propagation implementation.");
+    }
     let mut es_s = es;
-    let doverlap = matches!(input.prop_ref().propagator, Propagator::DirectOverlap);
+    let sapply = matches!(input.prop_ref().propagator, Propagator::SApply);
 
-    // There is no identity shift in direct-overlap propagation.
-    if doverlap {
+    // There is no identity shift in S-apply propagation.
+    if sapply {
         es = 0.0;
     }
 
     // Old style propagators evolve coefficient vector directly whilst
-    // direct overlap propagation evolves coefficient vector acted on by
+    // S-apply propagation evolves coefficient vector acted on by
     // the overlap.
-    let mut c_norm = if doverlap {
+    let mut c_norm = if sapply {
         parallel_matvec(s, c0)
     } else {
         c0.clone()
@@ -464,7 +473,7 @@ pub fn propagate<T: NOCIScalar>(
             &input.prop_ref().propagator,
         );
 
-        print_projected_propagator_diagnostics(&proj_propagator, es, es_s, doverlap);
+        print_projected_propagator_diagnostics(&proj_propagator, es, es_s, sapply);
 
         // Add initial coefficients to the history.
         history.push(Coefficients {
@@ -475,7 +484,7 @@ pub fn propagate<T: NOCIScalar>(
         projectors = Some(p);
     }
 
-    print_propagation_table_header(doverlap);
+    print_propagation_table_header(sapply);
 
     // Print initial row.
     let den0 = c_norm
@@ -569,7 +578,7 @@ pub fn propagate<T: NOCIScalar>(
         if det.dynamic_shift {
             let fac = det.dynamic_shift_alpha / input.prop_ref().dt;
 
-            if doverlap {
+            if sapply {
                 es_s -= fac * (log_pop_c_new - log_pop_c);
             } else {
                 es -= fac * (log_pop_c_new - log_pop_c);

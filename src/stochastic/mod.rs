@@ -6,7 +6,7 @@
 //! evaluated on demand using the common NOCI matrix-element layer.
 //!
 //! Two population representations are provided: the signed-integer walker formulation and
-//! the range-preserving direct-overlap formulation.
+//! two range-preserving S-apply and B-apply formulations.
 //!
 //! # Signed-integer walker propagation
 //!
@@ -31,9 +31,9 @@
 //! zero state of the Hilbert space and does not affect physical observables, but it can increase
 //! the total walker population and computational cost.
 //!
-//! # Direct-overlap propagation
+//! # Range propagation
 //!
-//! The direct-overlap formulation instead stores the real metric population
+//! Both SApply and BApply instead store the real range population
 //!
 //! `\mathbf N = \mathbf S\mathbf c,`
 //!
@@ -50,6 +50,14 @@
 //!
 //! `\mathbf N' = \mathbf N + \mathbf S\mathbf\Delta.`
 //!
+//! BApply instead samples the orthogonal-space action
+//!
+//! `\boldsymbol\chi \simeq -dt(\hat{\mathbf H}-E_s)\mathbf B\tilde{\mathbf N}`
+//!
+//! and applies the exact final map
+//!
+//! `\mathbf N' = \mathbf N + \mathbf B^\dagger\boldsymbol\chi.`
+//!
 //! Therefore
 //!
 //! `\mathbf N' - \mathbf N \in \operatorname{range}(\mathbf S).`
@@ -59,7 +67,7 @@
 //! propagation consequently prevents stochastic population from accumulating in
 //! `\operatorname{null}(\mathbf S) without diagonalising or inverting the overlap matrix.`
 //!
-//! DirectOverlap differentiates the same sampled linear map with respect to its one physical
+//! SApply differentiates the same sampled linear map with respect to its one physical
 //! shift. With `B = \partial\Delta/\partial E_s = dt S\tilde N`, the tangent of the final
 //! persistent population is `\partial N'/\partial E_s = SB`. The second overlap action is required
 //! because the controlled metric is evaluated after the persistent update.
@@ -81,18 +89,20 @@
 //! - Report-block accumulation, output, stopping conditions and restart support.
 //!
 //! The stochastic driver selects the population representation from the configured propagator,
-//! using direct-overlap propagation for `Propagator::DirectOverlap` and the signed-walker
-//! implementation for the remaining stochastic propagators.
+//! using explicit `SApply` and `BApply` range branches and the signed-walker implementation for
+//! the remaining stochastic propagators.
 
+mod bapply;
 mod common;
 mod excit;
 mod fri;
 mod init;
-mod metric;
 mod overlapweighted;
 mod propagate;
 mod report;
 mod restart;
+mod sapply;
+mod shift;
 mod state;
 mod walkers;
 

@@ -400,7 +400,7 @@ fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
 
 /// Read site-specific FRI policies from `qmc.fri`.
 /// Population sampling and spawning accept only fixed cutoffs. Physical pre-overlap and
-/// DirectOverlap shift-tangent vectors accept only per-MPI-rank target NNZ values.
+/// Range-propagator shift-tangent vectors accept only per-MPI-rank target NNZ values.
 /// # Arguments:
 /// - `qmc_tbl`: Lua `qmc` table containing the optional `fri` table.
 /// # Returns:
@@ -533,7 +533,7 @@ fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
 /// Read QMC options from optional Lua table.
 /// # Arguments:
 /// - `qmc_tbl`: Optional Lua qmc table.
-/// - `propagator`: Parsed propagator, used to choose DirectOverlap defaults.
+/// - `propagator`: Parsed propagator, used to choose range-propagator defaults.
 /// # Returns:
 /// - `Option<QMCOptions>`: Parsed QMC options.
 fn read_qmc(
@@ -542,18 +542,22 @@ fn read_qmc(
 ) -> Option<QMCOptions> {
     qmc_tbl.map(|qmc_tbl| {
         let defaults = QMCOptions::default();
+
         let fri = read_fri(&qmc_tbl).unwrap_or_else(|message| {
             eprintln!("{message}");
             std::process::exit(1);
         });
-        let direct_overlap = matches!(propagator, Some(Propagator::DirectOverlap));
-        // DirectOverlap already constructs overlap-factor information for `N' = N + S Delta`, so
-        // reuse it for overlap-weighted proposals instead of defaulting to wasteful uniform draws.
-        let default_excitation_gen = if direct_overlap {
+
+        let s_apply = matches!(propagator, Some(Propagator::SApply));
+        let b_apply = matches!(propagator, Some(Propagator::BApply));
+
+        // Reuse SApply overlap information rather than defaulting to uniform proposals.
+        let default_excitation_gen = if s_apply {
             ExcitationGen::OverlapWeighted
         } else {
             defaults.excitation_gen
         };
+
         let excitation_gen_str: String =
             qmc_tbl
                 .get("excitation_gen")
@@ -563,42 +567,61 @@ fn read_qmc(
                     ExcitationGen::ApproximateHeatBath => "approximate-heat-bath".to_string(),
                     ExcitationGen::OverlapWeighted => "overlap-weighted".to_string(),
                 });
+
         let excitation_gen: ExcitationGen = excitation_gen_str.parse().unwrap_or_else(|msg| {
             eprintln!("{msg}");
             std::process::exit(1);
         });
-        // The DirectOverlap tangent requires the realised overlap matrix element on every sampled
-        // path, `dB_w = dt S_{wx} \tilde N_x/p_gen(w|x)`. Uniform and overlap-weighted generation
-        // both use the batched `(H,S)` evaluator; the current heat-bath path does not separately
-        // expose S_{wx}.
-        if direct_overlap
+
+        // SApply requires the realised overlap on every sampled tangent path.
+        if s_apply
             && !matches!(
                 excitation_gen,
                 ExcitationGen::Uniform | ExcitationGen::OverlapWeighted
             )
         {
             eprintln!(
-                "DirectOverlap supports excitation_gen = \"uniform\" or \"overlap-weighted\""
+                "SApply supports excitation_gen = \"uniform\" or \"overlap-weighted\""
             );
             std::process::exit(1);
         }
+
+        // BApply currently samples only uniform parent-orthogonal connections.
+        if b_apply && excitation_gen != ExcitationGen::Uniform {
+            eprintln!("BApply supports only excitation_gen = \"uniform\"");
+            std::process::exit(1);
+        }
+
         let factor_tables = read_snoci_storage(
             "qmc.factor_tables",
             qmc_tbl.get::<_, Value>("factor_tables"),
             defaults.factor_tables,
         );
-        if matches!(factor_tables, SNOCIStorage::None)
+
+        let sapply_factor_tables = read_snoci_storage(
+            "qmc.sapply_factor_tables",
+            qmc_tbl.get::<_, Value>("sapply_factor_tables"),
+            factor_tables,
+        );
+
+        let bapply_factor_tables = read_snoci_storage(
+            "qmc.bapply_factor_tables",
+            qmc_tbl.get::<_, Value>("bapply_factor_tables"),
+            factor_tables,
+        );
+
+        if matches!(sapply_factor_tables, SNOCIStorage::None)
             && excitation_gen == ExcitationGen::OverlapWeighted
         {
             eprintln!(
-                "qmc.factor_tables must be 'ram' or 'disk' with excitation_gen = \"overlap-weighted\""
+                "qmc.sapply_factor_tables must be 'ram' or 'disk' with excitation_gen = \"overlap-weighted\""
             );
             std::process::exit(1);
         }
-        // The proposal distribution is `q_p(w|x) = p q_S(w|x)+ (1-p)q_U(w|x)`. Use a genuine
-        // mixture by default for DirectOverlap, while an explicit uniform generator remains legal.
+
+        // Use a genuine overlap/uniform proposal mixture by default for SApply.
         let default_overlap_weight =
-            if direct_overlap && excitation_gen == ExcitationGen::OverlapWeighted {
+            if s_apply && excitation_gen == ExcitationGen::OverlapWeighted {
                 0.5
             } else {
                 defaults.overlap_weight
@@ -606,24 +629,39 @@ fn read_qmc(
         let overlap_weight = qmc_tbl
             .get("overlap_weight")
             .unwrap_or(default_overlap_weight);
+
         if !overlap_weight.is_finite() || !(0.0..1.0).contains(&overlap_weight) {
             eprintln!("qmc.overlap_weight must satisfy 0.0 <= overlap_weight < 1.0");
             std::process::exit(1);
         }
+
         let optimise_overlap_weight = qmc_tbl
             .get("optimise_overlap_weight")
             .unwrap_or(defaults.optimise_overlap_weight);
+
         if optimise_overlap_weight && excitation_gen != ExcitationGen::OverlapWeighted {
             eprintln!("qmc.optimise_overlap_weight requires excitation_gen = \"overlap-weighted\"");
             std::process::exit(1);
         }
+
         let population_restoring = qmc_tbl
             .get("population_restoring")
             .unwrap_or(defaults.population_restoring);
+
         if !population_restoring.is_finite() || !(0.0..1.0).contains(&population_restoring) {
             eprintln!(
                 "qmc.population_restoring must satisfy 0.0 <= population_restoring < 1.0"
             );
+            std::process::exit(1);
+        }
+
+        // `None` is resolved from the actual number of references after basis construction.
+        let n_projected = qmc_tbl
+            .get::<_, Option<usize>>("n_projected")
+            .unwrap_or(defaults.n_projected);
+
+        if matches!(n_projected, Some(0)) {
+            eprintln!("qmc.n_projected must be positive");
             std::process::exit(1);
         }
 
@@ -634,6 +672,7 @@ fn read_qmc(
             target_population: qmc_tbl
                 .get("target_population")
                 .unwrap_or(defaults.target_population),
+            n_projected,
             shift_damping: qmc_tbl
                 .get("shift_damping")
                 .unwrap_or(defaults.shift_damping),
@@ -642,6 +681,8 @@ fn read_qmc(
             nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,
             factor_tables,
+            sapply_factor_tables,
+            bapply_factor_tables,
             overlap_weight,
             optimise_overlap_weight,
             seed: qmc_tbl.get("seed").unwrap_or(defaults.seed),

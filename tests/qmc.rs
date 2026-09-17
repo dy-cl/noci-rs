@@ -6,8 +6,10 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 // External crate imports.
-use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
-use noci_rs::noci::{NOCIData, build_mo_cache, build_wicks_shared, calculate_noci_energy};
+use noci_rs::basis::generate_reference_noci_basis;
+use noci_rs::noci::{
+    NOCIData, NOCIIndex, NOCISpace, build_mo_cache, build_wicks_shared, calculate_noci_energy,
+};
 use noci_rs::stochastic::qmc_step;
 use rayon::ThreadPoolBuilder;
 use serde::Deserialize;
@@ -73,22 +75,19 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
 
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
 
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let wicks = if input.wicks.enabled {
         Some(build_wicks_shared::<f64>(
             &world,
             &ao,
-            &noci_reference_basis,
+            reference_space.parents(),
             1e-12,
             &input,
         ))
@@ -97,26 +96,21 @@ fn run_qmc_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     };
     let wicks_view = wicks.as_ref().map(|w| w.view());
 
-    let (e_ref, c0, _dt_hs_ref) = calculate_noci_energy(
-        &ao,
-        &input,
-        &noci_reference_basis,
-        1e-12,
-        &mocache,
-        wicks_view,
-    );
+    let (e_ref, c0, _dt_hs_ref) =
+        calculate_noci_energy(&ao, &input, &reference_space, 1e-12, &mocache, wicks_view);
 
-    let include_refs = true;
-    let basis = generate_excited_basis(&noci_reference_basis, &input, include_refs);
+    let sources = (0..reference_space.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let basis = reference_space.excited_from(&sources, &input, true);
 
     let n = basis.len();
     let mut c0qmc = vec![0.0; n];
     let mut ref_indices = Vec::with_capacity(noci_reference_basis.len());
 
     for (i, ref_st) in noci_reference_basis.iter().enumerate() {
-        let idx = basis
-            .iter()
-            .position(|qmc_st| qmc_st.label == ref_st.label)
+        let idx = (0..basis.len())
+            .find(|&index| basis.label(NOCIIndex(index)) == ref_st.label)
             .unwrap();
 
         c0qmc[idx] = c0[i];
@@ -481,7 +475,7 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
     );
 }
 
-/// Test that a short LiH STO-3G DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// Test that a short LiH STO-3G SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -492,8 +486,8 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
 /// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_direct_overlap() {
-    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_s_apply() {
+    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_S_APPLY");
 }
 
 /// Test that a short LiH STO-3G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
@@ -511,7 +505,7 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
     assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
 }
 
-/// Test that a short LiH 6-31G DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// Test that a short LiH 6-31G SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -522,8 +516,8 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
 /// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_direct_overlap() {
-    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+fn qmc_lih_6_31g_2_8_ang_trajectory_s_apply() {
+    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_S_APPLY");
 }
 
 /// Test that a short LiH 6-31G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
@@ -541,7 +535,7 @@ fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
     assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
 }
 
-/// Test that an H6 STO-3G SDT Wick DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// Test that an H6 STO-3G SDT Wick SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -553,7 +547,7 @@ fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
 #[test]
 #[serial]
 fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
-    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_DIRECT_OVERLAP_WICKS_SDT");
+    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_WICKS_SDT");
 }
 
 /// Test that a short H6 STO-3G overlap-weighted Wick QMC trajectory reproduces the stored

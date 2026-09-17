@@ -5,8 +5,8 @@ use ndarray_linalg::{Determinant, SVD};
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::AoData;
 use crate::maths::{adjoint, real2_as};
-use crate::{AoData, DetState};
 
 // Parent/sibling imports.
 use super::types::{NOCIScalar, Pair};
@@ -228,9 +228,10 @@ pub(crate) fn pair_density<T: NOCIScalar>(
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// # Returns:
 /// - `(Array2<T>, Array2<T>)`: Alpha and beta AO density matrices.
-pub fn noci_density<T: NOCIScalar>(
+pub(crate) fn noci_density<T: NOCIScalar>(
     ao: &AoData,
-    states: &[DetState<T>],
+    space: &crate::noci::NOCISpace<T>,
+    states: &[crate::noci::NOCIIndex],
     c: &Array1<T>,
     tol: f64,
 ) -> (Array2<T>, Array2<T>) {
@@ -242,15 +243,19 @@ pub fn noci_density<T: NOCIScalar>(
             let mut da_loc = Array2::<T>::zeros((nao, nao));
             let mut db_loc = Array2::<T>::zeros((nao, nao));
 
-            let ldet = &states[i];
-            let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-            let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
+            let ldet = states[i];
+            let lparent = space.parent(ldet);
+            let (loa, lob) = space.occupations(ldet);
+            let l_ca_occ = occ_coeffs(&lparent.ca, loa);
+            let l_cb_occ = occ_coeffs(&lparent.cb, lob);
 
             for j in 0..nst {
-                let gdet = &states[j];
+                let gdet = states[j];
+                let gparent = space.parent(gdet);
+                let (goa, gob) = space.occupations(gdet);
 
-                let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-                let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+                let g_ca_occ = occ_coeffs(&gparent.ca, goa);
+                let g_cb_occ = occ_coeffs(&gparent.cb, gob);
 
                 let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &ao.s, tol);
                 let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &ao.s, tol);
@@ -258,8 +263,7 @@ pub fn noci_density<T: NOCIScalar>(
                 let rhoa = pair_density(&pa, nao);
                 let rhob = pair_density(&pb, nao);
 
-                let det_phase =
-                    <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
+                let det_phase = <T as From<f64>>::from(space.phase(ldet) * space.phase(gdet));
 
                 let cij = c[i].conj() * c[j] * det_phase;
                 da_loc.scaled_add(cij * pb.s, &rhoa);

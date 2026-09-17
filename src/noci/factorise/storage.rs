@@ -390,6 +390,132 @@ impl OverlapFactorStorage {
                 .expect("failed to flush overlap factor map");
         }
     }
+
+    /// Append source-spin columns to the existing row-major factor tables.
+    /// `A^{QP}` and `B^{QP}` gain columns for newly interned physical occupations while all
+    /// retained columns remain byte-for-byte in their original order. The same RAM or disk
+    /// representation is retained after extension.
+    /// # Arguments:
+    /// - `self`: Existing overlap-factor storage.
+    /// - `nta`: Number of target alpha components.
+    /// - `ntb`: Number of target beta components.
+    /// - `nsa`: Number of occupied alpha source columns before insertion.
+    /// - `nsb`: Number of occupied beta source columns before insertion.
+    /// - `alpha`: New alpha columns, each with `nta` target-row values.
+    /// - `beta`: New beta columns, each with `ntb` target-row values.
+    /// # Returns
+    /// - `()`: Extends the factor tables in the selected storage backend.
+    pub(super) fn append_source_columns(
+        &mut self,
+        nta: usize,
+        ntb: usize,
+        nsa: usize,
+        nsb: usize,
+        alpha: &[Vec<f64>],
+        beta: &[Vec<f64>],
+    ) {
+        if alpha.is_empty() && beta.is_empty() {
+            return;
+        }
+
+        match self {
+            Self::Ram(storage) => {
+                let old_nsa = storage.afac.len() / nta;
+                let old_nsb = storage.bfac.len() / ntb;
+                let new_nsa = old_nsa.max((nsa + alpha.len()).next_power_of_two());
+                let new_nsb = old_nsb.max((nsb + beta.len()).next_power_of_two());
+                if new_nsa == old_nsa && new_nsb == old_nsb {
+                    for row in 0..nta {
+                        for (column, values) in alpha.iter().enumerate() {
+                            storage.afac[row * old_nsa + nsa + column] = values[row];
+                        }
+                    }
+                    for row in 0..ntb {
+                        for (column, values) in beta.iter().enumerate() {
+                            storage.bfac[row * old_nsb + nsb + column] = values[row];
+                        }
+                    }
+                    return;
+                }
+                let mut afac = vec![0.0; nta * new_nsa];
+                let mut bfac = vec![0.0; ntb * new_nsb];
+                for row in 0..nta {
+                    afac[row * new_nsa..row * new_nsa + old_nsa]
+                        .copy_from_slice(&storage.afac[row * old_nsa..(row + 1) * old_nsa]);
+                    for (column, values) in alpha.iter().enumerate() {
+                        afac[row * new_nsa + nsa + column] = values[row];
+                    }
+                }
+                for row in 0..ntb {
+                    bfac[row * new_nsb..row * new_nsb + old_nsb]
+                        .copy_from_slice(&storage.bfac[row * old_nsb..(row + 1) * old_nsb]);
+                    for (column, values) in beta.iter().enumerate() {
+                        bfac[row * new_nsb + nsb + column] = values[row];
+                    }
+                }
+                storage.afac = afac;
+                storage.bfac = bfac;
+            }
+            Self::Disk(storage) => {
+                if storage.build_cdfs {
+                    panic!("cannot extend overlap factors with proposal CDFs");
+                }
+                let old_nsa = storage.na / nta;
+                let old_nsb = storage.nb / ntb;
+                let new_nsa = old_nsa.max((nsa + alpha.len()).next_power_of_two());
+                let new_nsb = old_nsb.max((nsb + beta.len()).next_power_of_two());
+                if new_nsa == old_nsa && new_nsb == old_nsb {
+                    let (afac, bfac, _, _) = self.factors_mut();
+                    for row in 0..nta {
+                        for (column, values) in alpha.iter().enumerate() {
+                            afac[row * old_nsa + nsa + column] = values[row];
+                        }
+                    }
+                    for row in 0..ntb {
+                        for (column, values) in beta.iter().enumerate() {
+                            bfac[row * old_nsb + nsb + column] = values[row];
+                        }
+                    }
+                    return;
+                }
+                let full = unsafe {
+                    std::slice::from_raw_parts(
+                        storage.map.as_ptr() as *const f64,
+                        storage.na + storage.nb,
+                    )
+                };
+                let old_afac = full[..storage.na].to_vec();
+                let old_bfac = full[storage.na..].to_vec();
+                let path = storage.path.clone();
+                storage.path = PathBuf::new();
+                let old = std::mem::replace(
+                    self,
+                    Self::Disk(OverlapDiskFactors::create(
+                        &path,
+                        nta * new_nsa,
+                        ntb * new_nsb,
+                        false,
+                    )),
+                );
+                drop(old);
+                let (new_afac, new_bfac, _, _) = self.factors_mut();
+                for row in 0..nta {
+                    new_afac[row * new_nsa..row * new_nsa + old_nsa]
+                        .copy_from_slice(&old_afac[row * old_nsa..(row + 1) * old_nsa]);
+                    for (column, values) in alpha.iter().enumerate() {
+                        new_afac[row * new_nsa + nsa + column] = values[row];
+                    }
+                }
+                for row in 0..ntb {
+                    new_bfac[row * new_nsb..row * new_nsb + old_nsb]
+                        .copy_from_slice(&old_bfac[row * old_nsb..(row + 1) * old_nsb]);
+                    for (column, values) in beta.iter().enumerate() {
+                        new_bfac[row * new_nsb + nsb + column] = values[row];
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Anonymous RAM storage for the four raw one-body factor tables.

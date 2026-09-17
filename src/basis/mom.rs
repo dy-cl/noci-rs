@@ -73,7 +73,6 @@ pub(crate) fn run_mom_scf_state(
         input,
         &recipe.label,
         recipe.noci,
-        i,
         (recipe.mom, scfexcitation, None),
     )
     .expect("SCF did not converge")
@@ -140,7 +139,7 @@ fn generate_hscf_states_mom(
 
     let mut tracks: Vec<HSCFState> = Vec::new();
 
-    for (i, recipe) in recipes.iter().enumerate() {
+    for recipe in recipes {
         if !recipe.holomorphic {
             continue;
         }
@@ -148,7 +147,7 @@ fn generate_hscf_states_mom(
         let previous = prev_track_map.get(recipe.label.as_str()).copied();
 
         let track = if let Some(previous) = previous {
-            continue_hscf_track(previous, ao, input, &recipe.label, i)
+            continue_hscf_track(previous, ao, input, &recipe.label)
         } else {
             let seed_label = recipe.partner.as_deref().unwrap_or(recipe.label.as_str());
 
@@ -159,11 +158,11 @@ fn generate_hscf_states_mom(
                 )
             });
 
-            initialise_hscf_track(seed, ao, input, &recipe.label, i)
+            initialise_hscf_track(seed, ao, input, &recipe.label)
         }
         .unwrap_or_else(|| panic!("Failed to track holomorphic SCF state '{}'.", recipe.label));
 
-        let state = physical_hscf_state(&track, ao, input, &recipe.label, i, recipe.noci)
+        let state = physical_hscf_state(&track, ao, input, &recipe.label, recipe.noci)
             .unwrap_or_else(|| {
                 panic!(
                     "Failed to relax holomorphic SCF state '{}' to lambda = 1.",

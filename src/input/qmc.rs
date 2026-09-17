@@ -47,11 +47,14 @@ pub struct QMCOptions {
     pub initial_population: f64,
     /// Shift-control activation population and, when restoring is enabled, persistent target.
     pub target_population: f64,
+    /// Total number of determinants retained in the projected-energy trial state.
+    /// `None` uses exactly the number of NOCI reference determinants.
+    pub n_projected: Option<usize>,
     /// FRI configuration for each stochastic compression site.
     pub fri: FriOptions,
     /// Damping `\zeta` of the population-control Newton update.
     pub shift_damping: f64,
-    /// Dimensionless target-restoring strength `\kappa` for DirectOverlap.
+    /// Dimensionless target-restoring strength `\kappa` for range propagators.
     pub population_restoring: f64,
     /// Number of QMC cycles per report block.
     pub ncycles: usize,
@@ -61,6 +64,10 @@ pub struct QMCOptions {
     pub excitation_gen: ExcitationGen,
     /// Storage strategy for persistent overlap factor tables.
     pub factor_tables: SNOCIStorage,
+    /// SApply storage strategy for persistent overlap factors and proposal CDFs.
+    pub sapply_factor_tables: SNOCIStorage,
+    /// BApply storage strategy for persistent overlap factors.
+    pub bapply_factor_tables: SNOCIStorage,
     /// Mixture weight for the factorised-overlap excitation proposal.
     pub overlap_weight: f64,
     /// Whether to optimise the overlap mixture weight during propagation.
@@ -78,7 +85,7 @@ pub struct FriOptions {
     pub spawn_cutoff: f64,
     /// Per-MPI-rank target NNZ for the physical pre-overlap report vector.
     pub pre_overlap_target_nnz: usize,
-    /// Per-MPI-rank target NNZ for the DirectOverlap shift tangent.
+    /// Per-MPI-rank target NNZ for a range-propagator shift tangent.
     pub shift_tangent_target_nnz: usize,
 }
 
@@ -102,15 +109,16 @@ impl Default for FriOptions {
 
 impl Default for QMCOptions {
     /// Return default stochastic QMC options.
+    /// # Arguments:
+    /// - None.
     /// # Returns:
-    /// - `Self`: Default population, propagation, excitation, and FRI configuration.
+    /// - `Self`: Default population, projection, propagation, excitation, and FRI configuration.
     fn default() -> Self {
-        // Keep global excitation-generator default uniform. Parsing changes only an omitted
-        // DirectOverlap generator to overlap-weighted because that path already builds overlap
-        // factors needed by its explicit metric action.
+        // Resolve the default projection size from the actual reference count during QMC setup.
         Self {
             initial_population: 100.0,
             target_population: 100000.0,
+            n_projected: None,
             fri: FriOptions::default(),
             shift_damping: 5e-4,
             population_restoring: 0.0,
@@ -118,6 +126,8 @@ impl Default for QMCOptions {
             nreports: 1000,
             excitation_gen: ExcitationGen::default(),
             factor_tables: SNOCIStorage::RAM,
+            sapply_factor_tables: SNOCIStorage::RAM,
+            bapply_factor_tables: SNOCIStorage::RAM,
             overlap_weight: 0.0,
             optimise_overlap_weight: false,
             seed: None,

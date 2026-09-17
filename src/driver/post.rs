@@ -18,7 +18,7 @@ use crate::nocc::run_noccmc;
 use crate::noci::NOCIData;
 #[cfg(feature = "nocc")]
 use crate::orbitals::noci_natural_orbitals;
-use crate::{AoData, PostSCFData, SCFState};
+use crate::{AoData, PostSCFData};
 
 /// Results from optional post-reference calculations.
 pub struct PostReferenceResults {
@@ -60,7 +60,6 @@ impl PostReferenceResults {
 /// - `PostReferenceResults`: Optional post-reference energies.
 pub fn run_real_post_reference(
     ao: &AoData,
-    states: &[SCFState],
     reference: &mut ReferenceRun<f64>,
     input: &mut Input,
     tol: f64,
@@ -69,8 +68,7 @@ pub fn run_real_post_reference(
     let mut out = PostReferenceResults::empty();
     let post = PostSCFData {
         ao,
-        states,
-        noci_reference_basis: &reference.basis,
+        space: &reference.space,
         mocache: &reference.mocache,
         tol,
     };
@@ -90,7 +88,7 @@ pub fn run_real_post_reference(
     if input.noccmc.is_some() {
         let no = {
             let wicks = reference.wicks.as_ref().map(|ws| ws.view());
-            let data = NOCIData::new(post.ao, post.noci_reference_basis, input, post.tol, wicks)
+            let data = NOCIData::new(post.ao, post.space, input, post.tol, wicks)
                 .withmocache(post.mocache);
             let coeffs = Array1::from_vec(reference.c0.clone());
 
@@ -107,7 +105,7 @@ pub fn run_real_post_reference(
         let (e_snoci, e_pt2) = if snoci.imag_shifts.iter().any(|&x| x != 0.0) {
             run_snoci::<f64, Complex64>(
                 &post,
-                &reference.basis,
+                &reference.space,
                 input,
                 reference.wicks.as_mut(),
                 world,
@@ -115,7 +113,7 @@ pub fn run_real_post_reference(
         } else {
             run_snoci::<f64, f64>(
                 &post,
-                &reference.basis,
+                &reference.space,
                 input,
                 reference.wicks.as_mut(),
                 world,
@@ -170,8 +168,7 @@ pub fn run_holomorphic_post_reference(
 
     let post = PostSCFData {
         ao,
-        states: &reference.basis,
-        noci_reference_basis: &reference.basis,
+        space: &reference.space,
         mocache: &reference.mocache,
         tol,
     };
@@ -190,7 +187,7 @@ pub fn run_holomorphic_post_reference(
     if input.snoci.is_some() {
         let (e_snoci, e_pt2) = run_snoci::<Complex64, Complex64>(
             &post,
-            &reference.basis,
+            &reference.space,
             input,
             reference.wicks.as_mut(),
             world,

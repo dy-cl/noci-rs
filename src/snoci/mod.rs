@@ -38,15 +38,15 @@ mod types;
 // Public type re-exports.
 pub use types::{SNOCIPT2Result, SNOCIState};
 
-// Public function re-exports.
-pub use step::snoci_step;
-
 // Restricted type re-exports.
 pub(in crate::snoci) use candidate::CandidatePool;
 pub(in crate::snoci) use types::{
     ArnoldiCycle, ArnoldiParams, GMRESResult, PT2ProjectedOperator, PT2Projection, Preconditioner,
     SNOCIFocks, SNOCIOverlaps,
 };
+
+// Public function re-exports.
+pub use step::snoci_step;
 
 // Restricted function re-exports.
 pub(in crate::snoci) use gmres::gmres;

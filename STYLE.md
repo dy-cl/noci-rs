@@ -1,5 +1,24 @@
 # Style Guide
 
+## Rust Function Bodies
+
+Function bodies should read as sequences of conceptual stages. Separate setup, transformation,
+accumulation, and finalisation with blank lines where that improves readability; cohesive dense
+expressions need no artificial breaks. Begin nontrivial blocks with concise comments describing
+their purpose, invariant, or mathematical operation. Comments should explain why or what
+transformation is performed, not restate obvious Rust syntax.
+
+Scientific code should use mathematical notation directly in comments when it helps verification,
+matching notation in Rustdoc and associated theory. For example:
+
+```rust
+// `dN/dE_s = sign(N)^T T` supplies the population-control Jacobian.
+```
+
+Long functions should form a visible sequence of named or commented logical stages. This is a
+readability preference, not a rigid line-count rule; short cohesive blocks and straightforward
+individual statements remain together.
+
 ## Rust Module Headers
 
 Use this order, omitting empty sections:

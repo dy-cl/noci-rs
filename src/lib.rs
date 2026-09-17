@@ -11,8 +11,8 @@
 //! A calculation proceeds from user-defined Lua input and libcint atomic-orbital data through
 //! SCF-state generation, reference-basis selection, molecular-orbital and nonorthogonal Wick
 //! preparation, and the requested post-SCF method. The common [`PostSCFData`] structure
-//! provides the atomic-orbital data, converged states, selected reference basis, molecular-
-//! orbital caches and numerical tolerance shared by these post-SCF calculations.
+//! provides atomic-orbital data, the retained NOCI space, molecular-orbital caches and
+//! numerical tolerance shared by these post-SCF calculations.
 //!
 //! Hamiltonian, overlap, generalised-Fock and transition-density quantities are evaluated
 //! using orthogonal Slater-Condon shortcuts, the generalised Slater-Condon rules, or the
@@ -43,6 +43,7 @@ pub mod utils;
 pub mod write;
 
 mod config;
+mod determinant;
 
 // External crate imports.
 use ndarray::{Array1, Array2, Array4};
@@ -50,10 +51,11 @@ use serde::{Deserialize, Serialize};
 
 // Crate-root imports.
 use crate::config::MAXEXCIT;
+use crate::determinant::SpinDeterminantState;
 use crate::noci::{MOCache, NOCIScalar};
 
 pub use error::{Error, Result};
-pub use scalar::{DetState, HSCFState, SCFState, StateScalar};
+pub use scalar::{HSCFState, SCFState, StateScalar};
 
 #[derive(Serialize, Deserialize)]
 pub struct AoData {
@@ -178,83 +180,69 @@ pub struct ExcitationCache {
     pub beta: ExcitationSpinCache,
 }
 
-/// Reduced one-spin determinant metadata used by fixed-rank determinant-space contractions.
+/// Identity-free one-spin numerical state used by fixed-rank determinant-space contractions.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedOneSpinDetState {
-    /// Global determinant index used to recover the full `DetState` when required.
-    pub(crate) det: usize,
+pub(crate) struct ReducedOneSpinState {
     /// Fermionic phase `\phi` relative to the parent determinant for this spin sector.
     pub(crate) phase: f64,
     /// Cached excitation rank and orbital labels for this spin sector.
     pub(crate) excitation_cache: ExcitationSpinCache,
 }
 
-impl ReducedOneSpinDetState {
-    /// Construct reduced determinant metadata for one spin sector.
+impl ReducedOneSpinState {
+    /// Construct the minimal numerical payload for one spin sector.
     /// # Arguments:
-    /// - `det`: Global determinant index `I`.
-    /// - `phase`: Fermionic phase `\phi_I` relative to the parent determinant.
+    /// - `phase`: Fermionic phase `\phi` relative to the parent determinant.
     /// - `excitation_cache`: Cached excitation rank and orbital labels.
     /// # Returns
-    /// - `ReducedOneSpinDetState`: Reduced metadata for determinant `I`.
+    /// - `Self`: Identity-free fixed-rank kernel payload.
     #[inline(always)]
     pub(crate) fn new(
-        det: usize,
         phase: f64,
         excitation_cache: ExcitationSpinCache,
     ) -> Self {
         Self {
-            det,
             phase,
             excitation_cache,
         }
     }
-
-    /// Construct reduced alpha-spin metadata from a full determinant state.
-    /// # Arguments:
-    /// - `det`: Global determinant index `I`.
-    /// - `state`: Full determinant state containing alpha-spin phase and excitation metadata.
-    /// # Returns
-    /// - `ReducedOneSpinDetState`: Reduced alpha-spin metadata for determinant `I`.
-    #[inline(always)]
-    pub(crate) fn from_alpha<T: StateScalar>(
-        det: usize,
-        state: &DetState<T>,
-    ) -> Self {
-        Self::new(det, state.pha, state.excitation_cache.alpha)
-    }
-
-    /// Construct reduced beta-spin metadata from a full determinant state.
-    /// # Arguments:
-    /// - `det`: Global determinant index `I`.
-    /// - `state`: Full determinant state containing beta-spin phase and excitation metadata.
-    /// # Returns
-    /// - `ReducedOneSpinDetState`: Reduced beta-spin metadata for determinant `I`.
-    #[inline(always)]
-    pub(crate) fn from_beta<T: StateScalar>(
-        det: usize,
-        state: &DetState<T>,
-    ) -> Self {
-        Self::new(det, state.phb, state.excitation_cache.beta)
-    }
 }
 
-/// Reduced determinant metadata for fixed-rank two-spin contractions.
+/// Identity-free determinant metadata for fixed-rank two-spin contractions.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReducedTwoSpinDetState {
+pub(crate) struct ReducedTwoSpinState {
     /// Product of alpha- and beta-spin fermionic phases relative to the parent determinant.
     pub(crate) phase: f64,
     /// Cached excitation ranks and orbital labels for both spin sectors.
     pub(crate) excitation_cache: ExcitationCache,
 }
 
-impl ReducedTwoSpinDetState {
+impl ReducedTwoSpinState {
+    /// Combine canonical spin-component phases and fixed-rank caches for one determinant.
+    /// # Arguments:
+    /// - `alpha`: Parent-local alpha component.
+    /// - `beta`: Parent-local beta component.
+    /// # Returns:
+    /// - `Self`: Identity-free two-spin numerical payload.
+    pub(crate) fn from_spin_states(
+        alpha: &SpinDeterminantState,
+        beta: &SpinDeterminantState,
+    ) -> Self {
+        Self::new(
+            alpha.reduced.phase * beta.reduced.phase,
+            ExcitationCache {
+                alpha: alpha.reduced.excitation_cache,
+                beta: beta.reduced.excitation_cache,
+            },
+        )
+    }
+
     /// Construct reduced determinant metadata for both spin sectors.
     /// # Arguments:
     /// - `phase`: Product of alpha- and beta-spin fermionic phases for determinant `I`.
     /// - `excitation_cache`: Cached excitation ranks and orbital labels for both spin sectors.
     /// # Returns
-    /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
+    /// - `ReducedTwoSpinState`: Identity-free two-spin numerical payload.
     #[inline(always)]
     pub(crate) fn new(
         phase: f64,
@@ -266,14 +254,31 @@ impl ReducedTwoSpinDetState {
         }
     }
 
-    /// Construct reduced two-spin metadata from a full determinant state.
+    /// Construct reduced two-spin metadata for an excitation from one orthogonal source.
+    /// The phase is `p = p_\alpha p_\beta`, evaluated from the source occupations and the
+    /// existing excitation masks, while the fixed-rank labels are `C = excitation.cache()`.
     /// # Arguments:
-    /// - `state`: Full determinant state containing both spin phases and excitation metadata.
+    /// - `source`: Source alpha and beta occupation bitstrings.
+    /// - `excitation`: Existing excitation masks connecting the source to its child.
     /// # Returns
-    /// - `ReducedTwoSpinDetState`: Reduced two-spin metadata for determinant `I`.
+    /// - `ReducedTwoSpinState`: Identity-free phase and fixed-rank excitation cache.
     #[inline(always)]
-    pub(crate) fn from_state<T: StateScalar>(state: &DetState<T>) -> Self {
-        Self::new(state.pha * state.phb, state.excitation_cache)
+    pub(crate) fn from_excitation(
+        source: (u128, u128),
+        excitation: &Excitation,
+    ) -> Self {
+        let phase_a = crate::basis::excitation_phase_bits(
+            source.0,
+            excitation.alpha.holes,
+            excitation.alpha.parts,
+        );
+        let phase_b = crate::basis::excitation_phase_bits(
+            source.1,
+            excitation.beta.holes,
+            excitation.beta.parts,
+        );
+
+        Self::new(phase_a * phase_b, excitation.cache())
     }
 }
 
@@ -281,10 +286,8 @@ impl ReducedTwoSpinDetState {
 pub struct PostSCFData<'a, T: NOCIScalar> {
     /// AO integrals and other system data.
     pub ao: &'a AoData,
-    /// All converged SCF states generated by the reference-basis routine.
-    pub states: &'a [DetState<T>],
-    /// SCF states filtered for those requested to be in the NOCI basis.
-    pub noci_reference_basis: &'a [DetState<T>],
+    /// Authoritative retained reference topology and parent orbital frames.
+    pub space: &'a crate::noci::NOCISpace<T>,
     /// MO-basis one and two-electron integral caches.
     pub mocache: &'a [MOCache<T>],
     /// Tolerance up to which a number is considered zero.

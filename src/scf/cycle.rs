@@ -13,7 +13,7 @@ use crate::input::{Input, SCFExcitation, Spin, StateType};
 use crate::maths::general_evp_x;
 use crate::utils::print_array2_indexed;
 use crate::write::write_orbitals;
-use crate::{AoData, Excitation, ExcitationCache, SCFState};
+use crate::{AoData, SCFState};
 
 // Parent/sibling imports.
 use super::bias::metadynamics_bias;
@@ -206,7 +206,6 @@ fn finalise(
 /// - `input`: Contains user specified input data.
 /// - `label`: Label for current scf state.
 /// - `noci_basis`: Whether or not to use this state in the NOCI basis.
-/// - `i`: Index of the SCF state.
 /// - `controls`: Explicit MOM flag, requested excited state, and metadynamics bias states.
 /// # Returns
 /// - `Option<SCFState>`: Converged SCF state if the SCF cycle succeeds, otherwise `None`.
@@ -216,7 +215,6 @@ pub fn scf_cycle(
     input: &Input,
     label: &str,
     noci_basis: bool,
-    i: usize,
     controls: (bool, Option<&SCFExcitation>, Option<&[SCFState]>),
 ) -> Option<SCFState> {
     let (da0, db0) = d0;
@@ -328,17 +326,12 @@ pub fn scf_cycle(
                 e: e_new,
                 oa: occvec_to_bits(&idx_a),
                 ob: occvec_to_bits(&idx_b),
-                pha: 1.0,
-                phb: 1.0,
                 ca: Arc::new(ca),
                 cb: Arc::new(cb),
                 da: Arc::new(da_new),
                 db: Arc::new(db_new),
                 label: label.to_string(),
                 noci_basis,
-                parent: i,
-                excitation: Excitation::empty(),
-                excitation_cache: ExcitationCache::default(),
             };
             return Some(finalise(state, &ea, &eb, ao, input));
         }

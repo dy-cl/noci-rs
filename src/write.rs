@@ -190,6 +190,10 @@ pub fn print_input(input: &Input) {
             println!("ENABLED: true");
             println!("INITIAL_POPULATION: {}", q.initial_population);
             println!("TARGET_POPULATION: {}", q.target_population);
+            match q.n_projected {
+                Some(n) => println!("N_PROJECTED: {}", n),
+                None => println!("N_PROJECTED: NREF"),
+            }
             println!("NCYCLES: {}", q.ncycles);
             println!("NREPORTS: {}", q.nreports);
             println!("FRI_POPULATION_CUTOFF: {}", q.fri.population_cutoff);
@@ -212,6 +216,8 @@ pub fn print_input(input: &Input) {
             };
             println!("EXCITATION_GEN: {}", excitation_gen);
             println!("FACTOR_TABLES: {}", q.factor_tables.as_str());
+            println!("SAPPLY_FACTOR_TABLES: {}", q.sapply_factor_tables.as_str());
+            println!("BAPPLY_FACTOR_TABLES: {}", q.bapply_factor_tables.as_str());
             println!("OVERLAP_WEIGHT: {}", q.overlap_weight);
             println!("OPTIMISE_OVERLAP_WEIGHT: {}", q.optimise_overlap_weight);
             println!("SEED: {:?}", q.seed);

@@ -7,18 +7,21 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 // Crate-root imports.
+use crate::determinant::ParentDeterminant;
 use crate::input::Input;
 use crate::mpiutils::broadcast;
-use crate::noci::{MOCache, NOCIScalar, build_mo_cache, build_wicks_shared, calculate_noci_energy};
+use crate::noci::{
+    MOCache, NOCIScalar, NOCISpace, build_mo_cache, build_wicks_shared, calculate_noci_energy,
+};
 use crate::nonorthogonalwicks::{WicksShared, WicksView};
 use crate::scf::occ_first;
 use crate::time_call;
-use crate::{AoData, DetState};
+use crate::{AoData, SCFState};
 
 /// Reference-space NOCI intermediates owned for post-reference work.
 pub struct ReferenceRun<T: NOCIScalar> {
-    /// Reference determinant basis after NOCI filtering.
-    pub basis: Vec<DetState<T>>,
+    /// Authoritative retained reference topology.
+    pub(crate) space: NOCISpace<T>,
     /// Reference-space NOCI energy.
     pub e_noci: f64,
     /// Reference-space NOCI coefficients.
@@ -77,7 +80,7 @@ impl ReferenceKind {
 pub fn run_reference_space<T>(
     ao: &AoData,
     input: &Input,
-    basis: Vec<DetState<T>>,
+    basis: Vec<SCFState<T>>,
     tol: f64,
     kind: ReferenceKind,
     world: &impl Communicator,
@@ -93,18 +96,20 @@ where
     world.barrier();
     broadcast(world, &mut basis);
 
-    let wicks = build_reference_wicks(ao, input, &basis, tol, kind, world);
+    let space = NOCISpace::from_scf(&basis);
+
+    let wicks = build_reference_wicks(ao, input, &space.parents, tol, kind, world);
 
     if world.rank() == 0 {
         println!("Constructing {} MO basis....", kind.mo_label());
     }
-    let mocache = build_mo_cache(ao, &basis, tol);
+    let mocache = build_mo_cache(ao, &space.parents, tol);
 
     let mut e_noci = 0.0;
     let mut c0 = Vec::new();
     if world.rank() == 0 {
         let wicks_view = wicks.as_ref().map(|ws| ws.view());
-        let (e_ref, c0v) = solve_reference_noci(ao, input, &basis, tol, &mocache, wicks_view);
+        let (e_ref, c0v) = solve_reference_noci(ao, input, &space, tol, &mocache, wicks_view);
         e_noci = e_ref;
         c0 = c0v;
     }
@@ -114,7 +119,7 @@ where
     broadcast(world, &mut e_noci);
 
     ReferenceRun {
-        basis,
+        space,
         e_noci,
         c0,
         mocache,
@@ -126,18 +131,12 @@ where
 /// # Arguments:
 /// - `states`: Candidate reference determinant states.
 /// # Returns:
-/// - `Vec<DetState<T>>`: Filtered and reindexed reference determinant basis.
-fn filter_reference_basis<T>(states: Vec<DetState<T>>) -> Vec<DetState<T>>
+/// - `Vec<SCFState<T>>`: Filtered SCF reference solutions.
+fn filter_reference_basis<T>(states: Vec<SCFState<T>>) -> Vec<SCFState<T>>
 where
     T: NOCIScalar,
 {
-    let mut basis: Vec<_> = states.into_iter().filter(|st| st.noci_basis).collect();
-
-    for (i, st) in basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
-
-    basis
+    states.into_iter().filter(|st| st.noci_basis).collect()
 }
 
 /// Build optional Wick's intermediates for reference-space work.
@@ -153,7 +152,7 @@ where
 fn build_reference_wicks<T: NOCIScalar>(
     ao: &AoData,
     input: &Input,
-    basis: &[DetState<T>],
+    basis: &[ParentDeterminant<T>],
     tol: f64,
     kind: ReferenceKind,
     world: &impl Communicator,
@@ -184,14 +183,14 @@ fn build_reference_wicks<T: NOCIScalar>(
 fn solve_reference_noci<T: NOCIScalar>(
     ao: &AoData,
     input: &Input,
-    basis: &[DetState<T>],
+    space: &NOCISpace<T>,
     tol: f64,
     mocache: &[MOCache<T>],
     wicks: Option<&WicksView<T>>,
 ) -> (f64, Vec<T>) {
     time_call!(crate::timers::general::add_run_reference_noci, {
         let (e_noci, c0, _) = time_call!(crate::timers::general::add_calculate_noci_energy, {
-            calculate_noci_energy(ao, input, basis, tol, mocache, wicks)
+            calculate_noci_energy(ao, input, space, tol, mocache, wicks)
         });
 
         (e_noci, c0.to_vec())

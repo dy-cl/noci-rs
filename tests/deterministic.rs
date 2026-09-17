@@ -2,10 +2,11 @@ mod common;
 
 // External crate imports.
 use ndarray::Array1;
-use noci_rs::basis::{generate_excited_basis, generate_reference_noci_basis};
+use noci_rs::basis::generate_reference_noci_basis;
 use noci_rs::deterministic::{projected_energy, propagate};
 use noci_rs::noci::{
-    NOCIData, build_mo_cache, build_noci_hs, build_wicks_shared, calculate_noci_energy,
+    NOCIData, NOCIIndex, NOCISpace, build_mo_cache, build_noci_hs, build_wicks_shared,
+    calculate_noci_energy,
 };
 use noci_rs::scf::occ_first;
 use serde::Deserialize;
@@ -40,31 +41,30 @@ fn run_deterministic_fixture(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
     let noci_reference_basis: Vec<_> = noci_reference_basis.iter().map(occ_first).collect();
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let (e_ref, c0, _dt_hs_ref) =
-        calculate_noci_energy(&ao, &input, &noci_reference_basis, 1e-12, &mocache, None);
+        calculate_noci_energy(&ao, &input, &reference_space, 1e-12, &mocache, None);
 
-    let include_refs = true;
-    let basis = generate_excited_basis(&noci_reference_basis, &input, include_refs);
+    let sources = (0..reference_space.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let basis = reference_space.excited_from(&sources, &input, true);
+    let indices = (0..basis.len()).map(NOCIIndex).collect::<Vec<_>>();
 
     let symmetric = true;
     let data = NOCIData::new(&ao, &basis, &input, 1e-12, None).withmocache(&mocache);
-    let (h, s, _d_hs) = build_noci_hs(&data, &basis, &basis, symmetric);
+    let (h, s, _d_hs) = build_noci_hs(&data, &indices, &indices, symmetric);
 
     let n = basis.len();
     let mut c0qmc = Array1::<f64>::zeros(n);
     if !input.write.write_deterministic_coeffs {
         for (i, ref_st) in noci_reference_basis.iter().enumerate() {
-            let idx = basis
-                .iter()
-                .position(|qmc_st| qmc_st.label == ref_st.label)
+            let idx = (0..basis.len())
+                .find(|&index| basis.label(NOCIIndex(index)) == ref_st.label)
                 .unwrap();
             c0qmc[idx] = c0[i];
         }
@@ -97,43 +97,42 @@ fn run_deterministic_fixture_wicks(fixture: &str) -> (Vec<f64>, f64, f64) {
     let mut scf_energies: Vec<f64> = states.iter().map(|s| s.e).collect();
     scf_energies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let mut noci_reference_basis: Vec<_> =
-        states.iter().filter(|s| s.noci_basis).cloned().collect();
-    for (i, st) in noci_reference_basis.iter_mut().enumerate() {
-        st.parent = i;
-    }
+    let noci_reference_basis: Vec<_> = states.iter().filter(|s| s.noci_basis).cloned().collect();
     let noci_reference_basis: Vec<_> = noci_reference_basis.iter().map(occ_first).collect();
-    let mocache = build_mo_cache(&ao, &noci_reference_basis, input.scf.d_tol);
+    let reference_space = NOCISpace::from_scf(&noci_reference_basis);
+    let mocache = build_mo_cache(&ao, reference_space.parents(), input.scf.d_tol);
 
     let (_mpi_lock, universe) = mpi_universe();
     let world = universe.world();
 
-    let wicks = build_wicks_shared::<f64>(&world, &ao, &noci_reference_basis, 1e-12, &input);
+    let wicks = build_wicks_shared::<f64>(&world, &ao, reference_space.parents(), 1e-12, &input);
     let wicks_view = wicks.view();
 
     let (e_ref, c0, _dt_hs_ref) = calculate_noci_energy(
         &ao,
         &input,
-        &noci_reference_basis,
+        &reference_space,
         1e-12,
         &mocache,
         Some(wicks_view),
     );
 
-    let include_refs = true;
-    let basis = generate_excited_basis(&noci_reference_basis, &input, include_refs);
+    let sources = (0..reference_space.len())
+        .map(NOCIIndex)
+        .collect::<Vec<_>>();
+    let basis = reference_space.excited_from(&sources, &input, true);
+    let indices = (0..basis.len()).map(NOCIIndex).collect::<Vec<_>>();
 
     let symmetric = true;
     let data = NOCIData::new(&ao, &basis, &input, 1e-12, Some(wicks_view)).withmocache(&mocache);
-    let (h, s, _d_hs) = build_noci_hs(&data, &basis, &basis, symmetric);
+    let (h, s, _d_hs) = build_noci_hs(&data, &indices, &indices, symmetric);
 
     let n = basis.len();
     let mut c0qmc = Array1::<f64>::zeros(n);
     if !input.write.write_deterministic_coeffs {
         for (i, ref_st) in noci_reference_basis.iter().enumerate() {
-            let idx = basis
-                .iter()
-                .position(|qmc_st| qmc_st.label == ref_st.label)
+            let idx = (0..basis.len())
+                .find(|&index| basis.label(NOCIIndex(index)) == ref_st.label)
                 .unwrap();
             c0qmc[idx] = c0[i];
         }

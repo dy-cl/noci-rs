@@ -4,29 +4,37 @@
 use std::collections::HashSet;
 
 // Crate-root imports.
-use crate::basis::generate_excited_basis;
-use crate::noci::NOCIScalar;
+use crate::input::Input;
+use crate::noci::{NOCIIndex, NOCIScalar, NOCISpace};
 use crate::time_call;
-use crate::{DetState, input::Input};
 
-pub(in crate::snoci) struct CandidatePool<T: NOCIScalar> {
+pub(in crate::snoci) struct CandidatePool {
     /// Current pool candidates.
-    pub(in crate::snoci) candidates: Vec<DetState<T>>,
+    pub(in crate::snoci) candidates: Vec<NOCIIndex>,
 }
 
-impl<T: NOCIScalar> CandidatePool<T> {
+impl CandidatePool {
     /// Construct the initial candidate pool of determinants from the current selected space.
     /// # Arguments
     /// - `selected_space`: Current selected nonorthogonal determinant space.
     /// - `input`: User-defined input options.
     /// # Returns
     /// - `CandidatePool`: Initial candidate pool containing all generated candidates.
-    pub(in crate::snoci) fn new(
-        selected_space: &[DetState<T>],
+    pub(in crate::snoci) fn new<T: NOCIScalar>(
+        space: &mut NOCISpace<T>,
+        selected_space: &[NOCIIndex],
         input: &Input,
     ) -> Self {
         time_call!(crate::timers::snoci::add_candidate_pool_new, {
-            let candidates = generate_excited_basis(selected_space, input, false);
+            let generated = space.excited_from(selected_space, input, false);
+            let candidates = (0..generated.len())
+                .map(|index| {
+                    let state = generated.state(NOCIIndex(index));
+                    let (oa, ob) = generated.occupations(NOCIIndex(index));
+                    space.push(state.parent, oa, ob, generated.labels[index].clone())
+                })
+                .collect();
+
             Self { candidates }
         })
     }
@@ -36,13 +44,17 @@ impl<T: NOCIScalar> CandidatePool<T> {
     /// - `selected`: Newly selected determinants that should no longer remain in the pool.
     /// # Returns
     /// - `()`: Updates the candidate pool in place.
-    pub(in crate::snoci) fn remove_selected(
+    pub(in crate::snoci) fn remove_selected<T: NOCIScalar>(
         &mut self,
-        selected: &[DetState<T>],
+        selected: &[NOCIIndex],
+        space: &NOCISpace<T>,
     ) {
-        let selected_keys: HashSet<&str> = selected.iter().map(|st| st.label.as_str()).collect();
+        let selected_keys: HashSet<&str> = selected
+            .iter()
+            .map(|&index| space.labels[index.0].as_str())
+            .collect();
         self.candidates
-            .retain(|st| !selected_keys.contains(st.label.as_str()));
+            .retain(|&index| !selected_keys.contains(space.labels[index.0].as_str()));
     }
 
     /// Update the candidate pool once the selected space has grown.
@@ -53,10 +65,11 @@ impl<T: NOCIScalar> CandidatePool<T> {
     /// # Returns
     /// - `()`: Updates the pool in place by removing newly selected states and appending
     ///   genuinely new candidate determinants.
-    pub(in crate::snoci) fn update(
+    pub(in crate::snoci) fn update<T: NOCIScalar>(
         &mut self,
-        selected_space: &[DetState<T>],
-        newly_selected: &[DetState<T>],
+        space: &mut NOCISpace<T>,
+        selected_space: &[NOCIIndex],
+        newly_selected: &[NOCIIndex],
         input: &Input,
     ) {
         time_call!(crate::timers::snoci::add_candidate_pool_update, {
@@ -64,16 +77,24 @@ impl<T: NOCIScalar> CandidatePool<T> {
                 return;
             }
 
-            self.remove_selected(newly_selected);
+            self.remove_selected(newly_selected, space);
 
-            let mut new_candidates = generate_excited_basis(newly_selected, input, false);
-            let existing: HashSet<&str> = selected_space
+            let generated = space.excited_from(newly_selected, input, false);
+            let existing: HashSet<String> = selected_space
                 .iter()
                 .chain(self.candidates.iter())
-                .map(|st| st.label.as_str())
+                .map(|&index| space.labels[index.0].clone())
                 .collect();
 
-            new_candidates.retain(|st| !existing.contains(st.label.as_str()));
+            let new_candidates = (0..generated.len())
+                .filter(|&index| !existing.contains(generated.labels[index].as_str()))
+                .map(|index| {
+                    let state = generated.state(NOCIIndex(index));
+                    let (oa, ob) = generated.occupations(NOCIIndex(index));
+                    space.push(state.parent, oa, ob, generated.labels[index].clone())
+                })
+                .collect::<Vec<_>>();
+
             self.candidates.extend(new_candidates);
         })
     }
