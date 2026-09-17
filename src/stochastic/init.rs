@@ -11,7 +11,7 @@ use crate::time_call;
 
 // Parent/sibling imports.
 use super::common::{find_s, gather_all_populations, projected_energy};
-use super::restart::read_restart_hdf5;
+use super::restart::{population_representation, read_restart_hdf5};
 use super::state::{
     ExcitationHist, MCState, NOCIMPIScratch, NOCIPopulationUpdate, PopulationStats,
     PropagationState, QMCRunInfo, SparsePopulations,
@@ -109,7 +109,14 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             println!("Reading restart from {path}");
         }
 
-        let restart = read_restart_hdf5(path, world, run.ndets, run.basis_hash).unwrap();
+        let restart = read_restart_hdf5(
+            path,
+            world,
+            run.ndets,
+            run.basis_hash,
+            population_representation(data.input.prop_ref().propagator),
+        )
+        .unwrap();
         if restart.populations.len() != run.owned.len() {
             panic!(
                 "Restart population length mismatch on rank {}: saved {}, current {}.",
@@ -138,14 +145,24 @@ pub(in crate::stochastic) fn initialise_qmc_state(
 
         let pe = projected_energy(&mc.populations, run, world);
 
-        let prev_pop = PopulationStats::new(restart.nwprev, restart.nrefprev, 0.0, 0);
+        let prev_pop = PopulationStats::new(
+            restart.nwprev,
+            restart.nrefprev,
+            restart.nsampledprev,
+            restart.nsampledoprev,
+        );
         let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
         return PropagationState::new(
             mc,
             pe,
             restart.report + 1,
-            restart.nwprev >= qmc.target_population,
+            restart.reached.unwrap_or_else(|| {
+                if run.irank == 0 {
+                    println!("Warning: legacy restart lacks population-control activation state; inferring from saved population.");
+                }
+                restart.nwprev >= qmc.target_population
+            }),
             prev_pop,
             overlap_weight,
         );

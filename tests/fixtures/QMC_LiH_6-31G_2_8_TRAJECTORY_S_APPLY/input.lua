@@ -7,11 +7,11 @@ scf = {
 }
 
 mol = {
-    basis = 'STO-3G',
-    r = {1.5},
+    basis = '6-31G',
+    r = {2.8},
     unit = 'Ang',
     atoms = function(r)
-        return {string.format("H 0 0 %g", -r / 2), string.format("H 0 0 %g",  r / 2),}
+        return {string.format("Li 0 0 %g", -r / 2), string.format("H 0 0 %g",  r / 2),}
         end,
 }
 
@@ -19,7 +19,7 @@ states = {
     mom = {
         {
             label = "RHF (0, 0)",
-            noci = true,
+            noci = false,
         },
         {
             label = "UHF (1, -1)",
@@ -52,24 +52,24 @@ excit = {
 }
 
 prop = {
-    dt = 1e-4,
-    propagator = "difference-doubly-shifted-u2",
+    dt = 1e-3,
+    propagator = "s-apply",
 }
 
 qmc = {
-    initial_population = 10,
-    target_population = 100,
+    initial_population = 200,
+    target_population = 500,
 
     ncycles = 1,
-    nreports = 1,
+    nreports = 15,
 
     fri = {
         population = {
-            cutoff = 0.0,
+            cutoff = 1.0,
         },
 
         spawn = {
-            cutoff = 0.0,
+            cutoff = 0.25,
         },
 
         pre_overlap = {

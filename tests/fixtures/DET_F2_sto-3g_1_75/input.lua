@@ -17,10 +17,27 @@ mol = {
 
 states = {
     mom = {
-        {label = "RHF (0, 0)", noci = true},
-        {label = "UHF (1, -1)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
-        {label = "UHF (-1, 1)", spin_bias = {pattern = {-1, 1}, pol = 0.75}, noci = true},
-    }
+        {
+            label = "RHF (0, 0)",
+            noci = true,
+        },
+        {
+            label = "UHF (1, -1)",
+            spin_bias = {
+                pattern = {1, -1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-1, 1)",
+            spin_bias = {
+                pattern = {-1, 1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+    },
 }
 
 prop = {

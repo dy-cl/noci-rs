@@ -4,7 +4,7 @@ mol = {
     unit = 'Ang',
     atoms = function(r)
         return {
-            string.format("Li 0 0 %g", -r / 2), 
+            string.format("Li 0 0 %g", -r / 2),
             string.format("H 0 0 %g",  r / 2),
         }
         end,
@@ -12,13 +12,32 @@ mol = {
 
 states = {
     mom = {
-        {label = "RHF (0, 0)", noci = false},
-        {label = "UHF (1, -1)", spin_bias = {pattern = {1, -1}, pol = 0.75}, noci = true},
-        {label = "UHF (-1, 1)", spin_bias = {pattern = {-1, 1}, pol = 0.75}, noci = true},
-    }
+        {
+            label = "RHF (0, 0)",
+            noci = false,
+        },
+        {
+            label = "UHF (1, -1)",
+            spin_bias = {
+                pattern = {1, -1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-1, 1)",
+            spin_bias = {
+                pattern = {-1, 1},
+                pol = 0.75,
+            },
+            noci = true,
+        },
+    },
 }
 
-excit = {orders = {1, 2}}
+excit = {
+    orders = {1, 2},
+}
 
 prop = {
     dt = 1e-4,
@@ -28,16 +47,32 @@ prop = {
 qmc = {
     initial_population = 1e3,
     target_population = 1e5,
+
     ncycles = 1e1,
     nreports = 5e3,
+
     shift_damping = 5e-4,
+
     fri = {
-        population = { cutoff = 1e0 },
-        spawn = { cutoff = 0.25 },
-        pre_overlap = { target_nnz = 2048 },
-        shift_tangent = { target_nnz = 1024 },
+        population = {
+            cutoff = 1e0,
+        },
+
+        spawn = {
+            cutoff = 0.25,
+        },
+
+        pre_overlap = {
+            target_nnz = 2048,
+        },
+
+        shift_tangent = {
+            target_nnz = 1024,
+        },
     },
+
     excitation_gen = 'uniform',
+
     seed = 1e0,
 }
 

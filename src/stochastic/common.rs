@@ -26,7 +26,7 @@ use crate::time_call;
 // Parent/sibling imports.
 use super::excit::OrthogonalUniformGenerator;
 use super::overlapweighted::OverlapWeightedGenerator;
-use super::restart::basis_hash;
+use super::restart::{basis_hash, population_representation, restart_base_seed};
 use super::state::{
     AuxiliaryPropagationResult, AuxiliaryThreadPropagation, MCState, NOCIMPIScratch,
     NOCIPopulationUpdate, NOCIPropagationResult, NOCIThreadPropagation, PopulationStats,
@@ -668,7 +668,21 @@ pub(in crate::stochastic) fn construct_qmc_run(
     }
 
     // Preserve the established deterministic rank-dependent RNG construction.
-    let base_seed = qmc.seed.unwrap_or_else(rand::random);
+    let compatibility_hash = basis_hash(data.space);
+    let representation = population_representation(data.input.prop_ref().propagator);
+    let restart_seed =
+        data.input.write.read_restart.as_deref().and_then(|path| {
+            restart_base_seed(path, world, ndets, compatibility_hash, representation)
+        });
+    let base_seed = restart_seed.unwrap_or_else(|| qmc.seed.unwrap_or_else(rand::random));
+    if let (Some(restart_seed), Some(input_seed)) = (restart_seed, qmc.seed)
+        && restart_seed != input_seed
+        && irank == 0
+    {
+        println!(
+            "Warning: restart base seed {restart_seed} overrides input qmc.seed {input_seed}."
+        );
+    }
     let rank_seed = base_seed.wrapping_add((irank as u64).wrapping_mul(0x9E3779B9));
 
     // Determine the largest Wick scratch dimensions required by the stochastic basis.
@@ -788,11 +802,13 @@ pub(in crate::stochastic) fn construct_qmc_run(
             irank,
             nranks,
             ndets,
-            basis_hash: basis_hash(data.space),
+            basis_hash: compatibility_hash,
             det_owner,
             owned,
             base_seed,
             rank_seed,
+            representation,
+            target_population: qmc.target_population,
             projection_hs,
             diagonal_hs,
         },

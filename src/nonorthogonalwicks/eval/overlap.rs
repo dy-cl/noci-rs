@@ -73,7 +73,7 @@ pub fn xw_overlap<T: NOCIScalar>(
 /// `\langle{}^x\Psi_{i\cdots}^{a\cdots}|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
 /// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_L\\m_1+\cdots+m_L = m}}`
 /// `\det\mathbf D_{\mathrm{ov}}(m_1,\ldots,m_L).`
-/// For `m = 0`, the direct overlap-only path evaluates the single determinant without preparing
+/// For `m = 0`, the overlap-only path evaluates the single determinant without preparing
 /// reusable Hamiltonian scratch data. Other cases use `prepare_same` followed by the general
 /// overlap evaluator.
 /// # Arguments:

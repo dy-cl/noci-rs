@@ -252,11 +252,9 @@ pub(in crate::stochastic) fn sample_populations(
                     sampled.insert_nonzero(det, population);
                 } else {
                     // Fractional entries use `p_i=|N_i|/c` and selected value `sign(N_i)c`.
-                    if let Some((det, population)) = pivotal_push(
-                        &mut pending,
-                        cutoff_candidate(det, population, cutoff),
-                        rng,
-                    ) {
+                    if let Some((det, population)) =
+                        pivotal_push(&mut pending, cutoff_candidate(det, population, cutoff), rng)
+                    {
                         sampled.insert_nonzero(det, population);
                     }
                 }

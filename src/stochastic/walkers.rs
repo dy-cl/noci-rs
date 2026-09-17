@@ -23,7 +23,7 @@ use super::excit::update_overlap_weight;
 use super::fri::sample_populations;
 use super::overlapweighted::OverlapWeightedGenerator;
 use super::report::{check_stop, print_header, print_initial_row, print_row, write_restart};
-use super::restart::read_restart_hdf5;
+use super::restart::{population_representation, read_restart_hdf5};
 use super::shift::update_shift;
 use super::state::{
     ExcitationHist, MCState, NOCIMPIScratch, NOCIPropagationResult, NOCIThreadPropagation,
@@ -153,7 +153,14 @@ pub fn qmc_step(
             println!("Reading restart from {path}");
         }
 
-        let restart = read_restart_hdf5(path, world, run.ndets, run.basis_hash).unwrap();
+        let restart = read_restart_hdf5(
+            path,
+            world,
+            run.ndets,
+            run.basis_hash,
+            population_representation(data.input.prop_ref().propagator),
+        )
+        .unwrap();
         if restart.populations.len() != run.owned.len() {
             panic!(
                 "Restart population length mismatch on rank {}: saved {}, current {}.",
@@ -179,14 +186,24 @@ pub fn qmc_step(
             excitation_hist,
         };
         let (_, pe) = population_stats_projected_energy(&mc, &isref, &run, world);
-        let prev_pop = PopulationStats::new(restart.nwprev, restart.nrefprev, 0.0, 0);
+        let prev_pop = PopulationStats::new(
+            restart.nwprev,
+            restart.nrefprev,
+            restart.nsampledprev,
+            restart.nsampledoprev,
+        );
         let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
         PropagationState::new(
             mc,
             pe,
             restart.report + 1,
-            restart.nwprev >= qmc.target_population,
+            restart.reached.unwrap_or_else(|| {
+                if run.irank == 0 {
+                    println!("Warning: legacy restart lacks population-control activation state; inferring from saved population.");
+                }
+                restart.nwprev >= qmc.target_population
+            }),
             prev_pop,
             overlap_weight,
         )

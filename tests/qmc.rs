@@ -475,7 +475,7 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
     );
 }
 
-/// Test that a short LiH STO-3G DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// Test that a short LiH STO-3G SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -486,8 +486,8 @@ fn qmc_h2_3_21g_1_5_ang_energies_agree() {
 /// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_sto_3g_2_8_ang_trajectory_direct_overlap() {
-    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+fn qmc_lih_sto_3g_2_8_ang_trajectory_s_apply() {
+    assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_S_APPLY");
 }
 
 /// Test that a short LiH STO-3G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
@@ -505,7 +505,7 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
     assert_qmc_trajectory("QMC_LiH_STO-3G_2_8_TRAJECTORY_DDS2");
 }
 
-/// Test that a short LiH 6-31G DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// Test that a short LiH 6-31G SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -516,8 +516,8 @@ fn qmc_lih_sto_3g_2_8_ang_trajectory_dds2() {
 /// - If any report energy differs from the stored trajectory outside tolerance.
 #[test]
 #[serial]
-fn qmc_lih_6_31g_2_8_ang_trajectory_direct_overlap() {
-    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DIRECT_OVERLAP");
+fn qmc_lih_6_31g_2_8_ang_trajectory_s_apply() {
+    assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_S_APPLY");
 }
 
 /// Test that a short LiH 6-31G DDS2 QMC trajectory reproduces the stored deterministic QMC trajectory.
@@ -535,7 +535,7 @@ fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
     assert_qmc_trajectory("QMC_LiH_6-31G_2_8_TRAJECTORY_DDS2");
 }
 
-/// Test that an H6 STO-3G SDT Wick DirectOverlap QMC trajectory reproduces the stored deterministic QMC trajectory.
+/// Test that an H6 STO-3G SDT Wick SApply QMC trajectory reproduces the stored deterministic QMC trajectory.
 /// # Arguments:
 /// - None.
 /// # Returns
@@ -547,7 +547,7 @@ fn qmc_lih_6_31g_2_8_ang_trajectory_dds2() {
 #[test]
 #[serial]
 fn qmc_h6_sto_3g_1_5_ang_sdt_wicks_trajectory() {
-    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_DIRECT_OVERLAP_WICKS_SDT");
+    assert_qmc_trajectory("QMC_H6_STO-3G_1_5_TRAJECTORY_S_APPLY_WICKS_SDT");
 }
 
 /// Test that a short H6 STO-3G overlap-weighted Wick QMC trajectory reproduces the stored

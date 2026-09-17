@@ -65,6 +65,7 @@ def isQMCHeader(header: str) -> bool:
     if columns[:6] != ["Iter", "EProjNum", "EProjDen", "EProj", "ECorr", "EShift"]:
         return False
 
+    # NMetric names are legacy output compatibility only; new output uses NRange.
     return columns[6:] in (
         ["NWalk", "NRef", "-", "-"],
         ["NMetric", "NMetricRef", "NSample", "NSampleOcc"],
@@ -194,6 +195,7 @@ def readQMC(path: Path) -> pd.DataFrame:
     else:
         df.columns = header
 
+    # Translate historical schema-1 output columns at input boundary only.
     df = df.rename(
         columns={
             "NMetric": "NRange",
@@ -389,6 +391,15 @@ def shiftChange(series: pd.Series):
     return None, None
 
 
+def firstNonzeroShift(series: pd.Series):
+    """Find first row with nonzero printed population-control shift."""
+    active = np.asarray(series, dtype=float) != 0.0
+    if not active.any():
+        return None, None
+    index = int(np.flatnonzero(active)[0])
+    return index, np.asarray(series)[index]
+
+
 def qmcShiftCorrelation(df: pd.DataFrame):
     """
     Convert the total QMC shift to a correlation-energy shift.
@@ -396,7 +407,7 @@ def qmcShiftCorrelation(df: pd.DataFrame):
     Before population control begins, the printed shift is zero. Those
     entries are returned as NaN so they are not drawn as physical shifts.
     """
-    iterShift, _ = shiftChange(df["EShift"])
+    iterShift, _ = firstNonzeroShift(df["EShift"])
 
     shiftCorr = pd.Series(
         np.nan,
@@ -1503,7 +1514,7 @@ def plotNW(args):
                     color=color,
                 )
 
-            iterShift, _ = shiftChange(df["EShift"])
+            iterShift, _ = firstNonzeroShift(df["EShift"])
 
             if iterShift is not None:
                 plt.axvline(
@@ -1592,7 +1603,7 @@ def plotNW(args):
         else:
             lineSampled.set_visible(False)
 
-        iterShift, _ = shiftChange(df["EShift"])
+        iterShift, _ = firstNonzeroShift(df["EShift"])
 
         if iterShift is not None:
             value = df["Iter"].iloc[iterShift]
@@ -1932,7 +1943,7 @@ def plotShoulder(args):
     )
 
 
-def plotReferenceOverlap(args):
+def plotTrialOverlap(args):
     """
     Plot the normalised projected-energy denominator against iteration.
     """
@@ -2314,7 +2325,7 @@ def buildParser():
 
     p.set_defaults(func=plotShoulder)
 
-    p = subparsers.add_parser("reference-overlap")
+    p = subparsers.add_parser("trial-overlap")
 
     p.add_argument(
         "paths",
@@ -2331,7 +2342,7 @@ def buildParser():
 
     addTrajectoryArgs(p, overlay=True)
 
-    p.set_defaults(func=plotReferenceOverlap)
+    p.set_defaults(func=plotTrialOverlap)
 
     return parser
 

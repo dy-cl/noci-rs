@@ -20,35 +20,74 @@ mol = {
             string.format("H 0 0 %g", zs[5]),
             string.format("H 0 0 %g", zs[6]),
         }
-        end,
+    end,
 }
 
-excit = {orders = {1, 2, 3}}
+excit = {
+    orders = {1, 2, 3},
+}
 
 prop = {
     dt = 5e-7,
-    propagator = "b-apply"
+    propagator = "s-apply",
 }
 
 qmc = {
     initial_population = 1e3,
     target_population = 3e5,
+
     shift_damping = 1e-3,
+
     fri = {
-        population = { cutoff = 1e0 },
-        spawn = { cutoff = 0.25 },
-        pre_overlap = { target_nnz = 512 },
-        shift_tangent = { target_nnz = 1024 },
+        population = {
+            cutoff = 1e0,
+        },
+
+        spawn = {
+            cutoff = 0.25,
+        },
+
+        pre_overlap = {
+            target_nnz = 512,
+        },
+
+        shift_tangent = {
+            target_nnz = 1024,
+        },
     },
+
     ncycles = 1e1,
     nreports = 562962,
 }
 
 states = {
     mom = {
-        {label = "RHF (0, 0, 0, 0, 0, 0)", noci = true},
-        {label = "UHF (1, -1, 1, -1, 1, -1)", spin_bias = {pattern = {1, -1, 1, -1, 1, -1}, pol = 0.75}, noci = true},
-        {label = "UHF (-1 , 1, -1, 1, -1, 1)", spin_bias = {pattern = {-1, 1, -1, 1, -1, 1}, pol = 0.75}, noci = true},
+        {
+            label = "RHF (0, 0, 0, 0, 0, 0)",
+            noci = true,
+        },
+        {
+            label = "UHF (1, -1, 1, -1, 1, -1)",
+            spin_bias = {
+                pattern = {
+                    1, -1, 1,
+                    -1, 1, -1,
+                },
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-1 , 1, -1, 1, -1, 1)",
+            spin_bias = {
+                pattern = {
+                    -1, 1, -1,
+                    1, -1, 1,
+                },
+                pol = 0.75,
+            },
+            noci = true,
+        },
     },
 }
 

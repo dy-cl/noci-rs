@@ -65,7 +65,7 @@ impl FromStr for Propagator {
             "doubly-shifted" => Ok(Self::DoublyShifted),
             "difference-doubly-shifted-u1" => Ok(Self::DifferenceDoublyShiftedU1),
             "difference-doubly-shifted-u2" => Ok(Self::DifferenceDoublyShiftedU2),
-            "s-apply" | "direct-overlap" => Ok(Self::SApply),
+            "s-apply" => Ok(Self::SApply),
             "b-apply" => Ok(Self::BApply),
             _ => Err(format!("invalid propagator: {s}")),
         }

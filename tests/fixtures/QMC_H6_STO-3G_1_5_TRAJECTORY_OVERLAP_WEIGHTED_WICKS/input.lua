@@ -24,15 +24,28 @@ mol = {
 
 states = {
     mom = {
-        {label = "RHF", noci = true},
+        {
+            label = "RHF",
+            noci = true,
+        },
         {
             label = "UHF (+-+-+-)",
-            spin_bias = {pattern = {1, -1, 1, -1, 1, -1}, pol = 0.75},
+            spin_bias = {
+                pattern = {
+                    1, -1, 1, -1, 1, -1,
+                },
+                pol = 0.75,
+            },
             noci = true,
         },
         {
             label = "UHF (-+-+-+)",
-            spin_bias = {pattern = {-1, 1, -1, 1, -1, 1}, pol = 0.75},
+            spin_bias = {
+                pattern = {
+                    -1, 1, -1, 1, -1, 1,
+                },
+                pol = 0.75,
+            },
             noci = true,
         },
     },
@@ -51,23 +64,41 @@ excit = {
 
 prop = {
     dt = 1e-4,
-    propagator = "direct-overlap",
+    propagator = "s-apply",
 }
 
 qmc = {
     initial_population = 10000,
     target_population = 1e9,
+
     ncycles = 1,
     nreports = 5,
+
     fri = {
-        population = { cutoff = 0.0 },
-        spawn = { cutoff = 0.0 },
-        pre_overlap = { target_nnz = 1000000000 },
-        shift_tangent = { target_nnz = 1000000000 },
+        population = {
+            cutoff = 0.0,
+        },
+
+        spawn = {
+            cutoff = 0.0,
+        },
+
+        pre_overlap = {
+            target_nnz = 1000000000,
+        },
+
+        shift_tangent = {
+            target_nnz = 1000000000,
+        },
     },
+
     excitation_gen = "overlap-weighted",
+
     factor_tables = "ram",
+
     overlap_weight = 0.5,
+
     optimise_overlap_weight = true,
+
     seed = 2,
 }

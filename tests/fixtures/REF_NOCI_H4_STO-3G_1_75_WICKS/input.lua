@@ -24,12 +24,40 @@ mol = {
 states = {
     mom = {
         ---------------------------------------- RHF -----------------------------------------------------
-        {label = "RHF (1, 1, -1, -1)", noci = true, spatial_bias = {pattern = {1, 1, -1, -1}, pol = 1e-2}},
-        {label = "RHF (1, -1, 1, -1)", noci = true, spatial_bias = {pattern = {1, -1, 1, -1}, pol = 1e-2}},
+        {
+            label = "RHF (1, 1, -1, -1)",
+            noci = true,
+            spatial_bias = {
+                pattern = {1, 1, -1, -1},
+                pol = 1e-2,
+            },
+        },
+        {
+            label = "RHF (1, -1, 1, -1)",
+            noci = true,
+            spatial_bias = {
+                pattern = {1, -1, 1, -1},
+                pol = 1e-2,
+            },
+        },
         ---------------------------------------- UHF -----------------------------------------------------
         --- No zeros. These are the four-fold degenerate states.
-        {label = "UHF (1, 1, -1, -1)", noci = true, spin_bias = {pattern = {1, 1, -1, -1}, pol = 0.75}},
-        {label = "UHF (-1, -1, 1, 1)", noci = true, spin_bias = {pattern = {-1, -1, 1, 1}, pol = 0.75}},
+        {
+            label = "UHF (1, 1, -1, -1)",
+            noci = true,
+            spin_bias = {
+                pattern = {1, 1, -1, -1},
+                pol = 0.75,
+            },
+        },
+        {
+            label = "UHF (-1, -1, 1, 1)",
+            noci = true,
+            spin_bias = {
+                pattern = {-1, -1, 1, 1},
+                pol = 0.75,
+            },
+        },
     },
 }
 

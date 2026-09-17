@@ -74,7 +74,7 @@ pub(in crate::stochastic) fn update_shift_tangent(
         .zip(tangent.par_iter())
         .map(|(&population, &derivative)| (population.signum() * derivative, derivative.abs()))
         .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
-    let (metric_derivative, tangent_norm) = if run.nranks == 1 {
+    let (range_derivative, tangent_norm) = if run.nranks == 1 {
         local
     } else {
         let mut global = [0.0; 2];
@@ -94,10 +94,10 @@ pub(in crate::stochastic) fn update_shift_tangent(
         && current > 0.0
         && previous.is_finite()
         && previous > 0.0
-        && metric_derivative.is_finite()
+        && range_derivative.is_finite()
         && tangent_norm.is_finite()
         && tangent_norm > 0.0
-        && metric_derivative.abs() > f64::EPSILON * tangent_norm;
+        && range_derivative.abs() > f64::EPSILON * tangent_norm;
 
     if usable {
         // The supplied tangent contains every report-cycle `dt` factor. No additional
@@ -108,7 +108,7 @@ pub(in crate::stochastic) fn update_shift_tangent(
         } else {
             growth + qmc.population_restoring * (previous / qmc.target_population).ln()
         };
-        let next = *shift - qmc.shift_damping * current / metric_derivative * residual;
+        let next = *shift - qmc.shift_damping * current / range_derivative * residual;
 
         if next.is_finite() {
             *shift = next;

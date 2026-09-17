@@ -1,6 +1,6 @@
 scf = {
-    max_cycle = 1e4, 
-    e_tol = 1e-12, 
+    max_cycle = 1e4,
+    e_tol = 1e-12,
     diis = {
         space = 8,
     },
@@ -8,7 +8,7 @@ scf = {
 
 mol = {
     basis = 'cc-pVDZ',
-    r = {1.5}, 
+    r = {1.5},
     unit = 'Ang',
     atoms = function(r)
         local zs = {-2.5 * r, -1.5 * r, -0.5 * r, 0.5 * r, 1.5 * r, 2.5 * r}
@@ -23,38 +23,78 @@ mol = {
         end,
 }
 
-excit = {orders = {1, 2, 3}}
+excit = {
+    orders = {1, 2, 3},
+}
 
 prop = {
     dt = 1e-6,
-    propagator = "direct-overlap"
+    propagator = "s-apply"
 }
 
 qmc = {
     initial_population = 5e2,
     target_population = 2e5,
+
     shift_damping = 1e-3,
+
     fri = {
-        population = { cutoff = 1e0 },
-        spawn = { cutoff = 0.25 },
-        pre_overlap = { target_nnz = 512 },
-        shift_tangent = { target_nnz = 1024 },
+        population = {
+            cutoff = 1e0,
+        },
+
+        spawn = {
+            cutoff = 0.25,
+        },
+
+        pre_overlap = {
+            target_nnz = 512,
+        },
+
+        shift_tangent = {
+            target_nnz = 1024,
+        },
     },
+
     ncycles = 1e1,
     nreports = 1e3,
+
     excitation_gen = "uniform",
 }
 
 states = {
     mom = {
-        {label = "RHF (0, 0, 0, 0, 0, 0)", noci = true},
-        {label = "UHF (1, -1, 1, -1, 1, -1)", spin_bias = {pattern = {1, -1, 1, -1, 1, -1}, pol = 0.75}, noci = true},
-        {label = "UHF (-1 , 1, -1, 1, -1, 1)", spin_bias = {pattern = {-1, 1, -1, 1, -1, 1}, pol = 0.75}, noci = true},
+        {
+            label = "RHF (0, 0, 0, 0, 0, 0)",
+            noci = true,
+        },
+        {
+            label = "UHF (1, -1, 1, -1, 1, -1)",
+            spin_bias = {
+                pattern = {
+                    1, -1, 1,
+                    -1, 1, -1,
+                },
+                pol = 0.75,
+            },
+            noci = true,
+        },
+        {
+            label = "UHF (-1 , 1, -1, 1, -1, 1)",
+            spin_bias = {
+                pattern = {
+                    -1, 1, -1,
+                    1, -1, 1,
+                },
+                pol = 0.75,
+            },
+            noci = true,
+        },
     },
 }
 
 wicks = {
-    enabled = true, 
+    enabled = true,
     compare = false,
     storage = "ram",
     cachedir = ".",

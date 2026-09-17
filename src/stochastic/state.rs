@@ -20,6 +20,27 @@ use super::overlapweighted::{OverlapProposal, OverlapWeightedGenerator};
 /// Stable RNG used by seeded QMC streams.
 pub(crate) type QmcRng = rand_xoshiro::Xoshiro256PlusPlus;
 
+/// Population representation persisted by a stochastic propagator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::stochastic) enum PopulationRepresentation {
+    /// Population stores signed coefficient coordinates.
+    Coefficient,
+    /// Population stores signed coordinates in `range(S)`.
+    Range,
+}
+
+impl PopulationRepresentation {
+    /// Return restart metadata spelling for this representation.
+    /// # Returns:
+    /// - `&'static str`: Stable representation name stored in HDF5 metadata.
+    pub(in crate::stochastic) fn as_str(self) -> &'static str {
+        match self {
+            Self::Coefficient => "coefficient",
+            Self::Range => "range",
+        }
+    }
+}
+
 /// Storage for QMC timings.
 #[derive(Default, Clone)]
 pub struct QMCTimings {
@@ -63,6 +84,10 @@ pub(in crate::stochastic) struct QMCRunInfo {
     pub(in crate::stochastic) base_seed: u64,
     /// Rank-specific seed derived from the base seed.
     pub(in crate::stochastic) rank_seed: u64,
+    /// Population representation used by this run.
+    pub(in crate::stochastic) representation: PopulationRepresentation,
+    /// Target population used by this run.
+    pub(in crate::stochastic) target_population: f64,
     /// Projected-energy Hamiltonian and overlap contractions aligned with `owned`.
     pub(in crate::stochastic) projection_hs: Vec<(f64, f64)>,
     /// Cached diagonal Hamiltonian and overlap matrix elements for each determinant.
