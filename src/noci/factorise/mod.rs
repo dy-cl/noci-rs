@@ -172,10 +172,12 @@ pub(super) fn ordered_parent_pair(
 /// # Returns:
 /// - `Vec<ParentSpinSpace>`: Parent-local factor orders and retained entries.
 fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSpinSpace> {
+    // Allocate one independent factor topology per reference parent.
     let mut parents = (0..space.parents.len())
         .map(|_| ParentSpinSpace::default())
         .collect::<Vec<_>>();
 
+    // Index each retained determinant by both of its one-spin component identities.
     for (det, state) in space.states.iter().enumerate() {
         let parent = &mut parents[state.parent];
         let aid = state.aid.0;
@@ -198,6 +200,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
         parent.entries_by_b[bid].push(det);
     }
 
+    // Materialise canonical reduced representatives and contraction evaluation orders.
     for (parent_id, parent) in parents.iter_mut().enumerate() {
         let components = space.parent_components(parent_id);
 
@@ -260,6 +263,7 @@ fn build_parent_spin_spaces<T: NOCIScalar>(space: &NOCISpace<T>) -> Vec<ParentSp
             .map(|&id| parent.areps[id].state.phase)
             .collect();
 
+        // Mirror the rank-and-hole grouping for beta-spin contraction rows.
         parent.b_eval_order = (0..parent.breps.len()).collect();
         parent.b_eval_order.sort_unstable_by(|&i, &j| {
             let ic = parent.breps[i].state.excitation_cache;

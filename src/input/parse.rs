@@ -159,6 +159,7 @@ fn read_state_recipe(t: Table) -> StateRecipe {
 /// # Returns:
 /// - `MolOptions`: Parsed molecular options.
 fn read_mol(mol_tbl: Table) -> MolOptions {
+    // Read required basis/unit fields and normalise scalar or tabulated geometry parameters.
     let basis: String = mol_tbl.get("basis").unwrap();
     let unit: String = mol_tbl.get("unit").unwrap();
     let r_val: Value = mol_tbl.get("r").unwrap();
@@ -176,6 +177,7 @@ fn read_mol(mol_tbl: Table) -> MolOptions {
             std::process::exit(1);
         }
     }
+    // Expand either one static atom list or a Lua geometry function over every r value.
     let atoms_val: Value = mol_tbl.get("atoms").unwrap();
     let geoms: Vec<Vec<String>> = match atoms_val {
         Value::Table(t) => {
@@ -202,6 +204,7 @@ fn read_mol(mol_tbl: Table) -> MolOptions {
             std::process::exit(1);
         }
     };
+    // Return geometry parameters and atom lists with matching outer lengths.
     MolOptions {
         basis,
         unit,
@@ -291,6 +294,7 @@ fn read_write(write_tbl: Option<Table>) -> WriteOptions {
 /// # Returns:
 /// - `StateType`: Parsed state search options.
 fn read_states(state_tbl: Table) -> StateType {
+    // Read mutually exclusive MOM and metadynamics state-search configurations.
     let mom_tbl: Option<Table> = state_tbl.get::<_, Option<Table>>("mom").unwrap_or(None);
     let meta_tbl: Option<Table> = state_tbl
         .get::<_, Option<Table>>("metadynamics")
@@ -302,6 +306,7 @@ fn read_states(state_tbl: Table) -> StateType {
             std::process::exit(1);
         }
         (Some(mom_tbl), None) => {
+            // Preserve Lua recipe order while applying the shared recipe parser.
             let mut recipes: Vec<StateRecipe> = Vec::new();
             for st in mom_tbl.sequence_values::<rlua::Table>() {
                 let t = st.unwrap();
@@ -310,6 +315,7 @@ fn read_states(state_tbl: Table) -> StateType {
             StateType::Mom(recipes)
         }
         (None, Some(meta_tbl)) => {
+            // Resolve metadynamics controls and synthesize stable labels for generated states.
             let defaults = Metadynamics::default();
             let nstates_rhf: usize = meta_tbl.get("nstates_rhf").unwrap_or(defaults.nstates_rhf);
             let nstates_uhf: usize = meta_tbl.get("nstates_uhf").unwrap_or(defaults.nstates_uhf);
@@ -333,6 +339,7 @@ fn read_states(state_tbl: Table) -> StateType {
             let spatial_patterns_rhf = vec![None; nstates_rhf];
             let spin_patterns_uhf = vec![None; nstates_uhf];
 
+            // Initialise pattern slots for later metadynamics search updates.
             StateType::Metadynamics(Metadynamics {
                 nstates_rhf,
                 nstates_uhf,

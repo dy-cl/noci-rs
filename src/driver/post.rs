@@ -51,7 +51,6 @@ impl PostReferenceResults {
 /// Run optional real-reference post-reference calculations.
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
-/// - `states`: Real SCF states generated for this geometry.
 /// - `reference`: Reference-space intermediates and solution.
 /// - `input`: User input specifications.
 /// - `tol`: Tolerance up to which a number is considered zero.
@@ -65,6 +64,7 @@ pub fn run_real_post_reference(
     tol: f64,
     world: &impl Communicator,
 ) -> PostReferenceResults {
+    // Assemble the immutable post-SCF view shared by all optional methods.
     let mut out = PostReferenceResults::empty();
     let post = PostSCFData {
         ao,
@@ -73,6 +73,7 @@ pub fn run_real_post_reference(
         tol,
     };
 
+    // Deterministic NOCI-QMC is replicated only on the root rank.
     if world.rank() == 0 && input.det.is_some() {
         let wicks = reference.wicks.as_ref().map(|ws| ws.view());
         out.e_noci_qmc_det = Some(run_qmc_deterministic_noci(
@@ -86,6 +87,7 @@ pub fn run_real_post_reference(
 
     #[cfg(feature = "nocc")]
     if input.noccmc.is_some() {
+        // Build natural orbitals before releasing Wick storage for the NOCCMC calculation.
         let no = {
             let wicks = reference.wicks.as_ref().map(|ws| ws.view());
             let data = NOCIData::new(post.ao, post.space, input, post.tol, wicks)
@@ -99,6 +101,7 @@ pub fn run_real_post_reference(
         run_noccmc(&post, input, &reference.c0, &no, world);
     }
 
+    // Select real or complex PT2 arithmetic according to the requested imaginary shifts.
     if input.snoci.is_some() {
         let snoci = input.snoci.as_ref().unwrap();
 
@@ -120,12 +123,14 @@ pub fn run_real_post_reference(
             )
         };
 
+        // Only root publishes the replicated selected-NOCI results.
         if world.rank() == 0 {
             out.e_snoci = Some(e_snoci);
             out.e_pt2 = Some(e_pt2);
         }
     }
 
+    // Stochastic NOCI-QMC uses all MPI ranks and returns its global estimate.
     if input.qmc.is_some() {
         let wicks = reference.wicks.as_ref().map(|ws| ws.view());
         out.e_noci_qmc_stoch = Some(run_qmc_stochastic_noci(
@@ -158,6 +163,7 @@ pub fn run_holomorphic_post_reference(
     warn_qmc: bool,
     world: &impl Communicator,
 ) -> PostReferenceResults {
+    // Holomorphic references currently support deterministic and selected post-reference paths.
     let mut out = PostReferenceResults::empty();
 
     if world.rank() == 0 && warn_qmc && input.qmc.is_some() {
@@ -166,6 +172,7 @@ pub fn run_holomorphic_post_reference(
         );
     }
 
+    // Assemble the complex post-SCF view after issuing any unsupported-QMC warning.
     let post = PostSCFData {
         ao,
         space: &reference.space,
@@ -173,6 +180,7 @@ pub fn run_holomorphic_post_reference(
         tol,
     };
 
+    // Run deterministic NOCI-QMC only on root, as for real references.
     if world.rank() == 0 && input.det.is_some() {
         let wicks = reference.wicks.as_ref().map(|ws| ws.view());
         out.e_noci_qmc_det = Some(run_qmc_deterministic_noci(
@@ -184,6 +192,7 @@ pub fn run_holomorphic_post_reference(
         ));
     }
 
+    // Complex references and imaginary shifts require complex selected-NOCI arithmetic.
     if input.snoci.is_some() {
         let (e_snoci, e_pt2) = run_snoci::<Complex64, Complex64>(
             &post,

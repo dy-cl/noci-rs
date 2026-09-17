@@ -960,6 +960,9 @@ impl NOCIThreadPropagation {
     }
 
     /// Generate off-diagonal real population changes from one sampled determinant.
+    /// Each of `n_attempts = ceil(|N_gamma|)` trials carries population
+    /// `N_gamma/n_attempts`, so a sampled coupling contributes the unbiased weight
+    /// `-dt K_{lambda gamma} N_gamma/(n_attempts P_gen(lambda|gamma))`.
     /// # Arguments:
     /// - `gamma`: Parent determinant index.
     /// - `population`: Real sampled population on `gamma`.
@@ -980,12 +983,14 @@ impl NOCIThreadPropagation {
             f64,
         ),
     ) {
+        // Resolve optional overlap-weighted proposal data and discard empty parents early.
         let (overlap_factors, overlap_generator, overlap_weight) = overlap;
 
         if population == 0.0 {
             return;
         }
 
+        // Split the parent population over independent trials without changing total weight.
         let qmc = data.input.qmc.as_ref().unwrap();
         let dt = data.input.prop_ref().dt;
         let write_excitation_hist = data.input.write.write_excitation_hist;
@@ -993,6 +998,7 @@ impl NOCIThreadPropagation {
         let nattempts = population.abs().ceil().max(1.0) as usize;
         let parent_population = population / nattempts as f64;
 
+        // Uniform generation samples every determinant except the parent with equal probability.
         if let ExcitationGen::Uniform = qmc.excitation_gen {
             let ndets = data.space.len();
             let pgen = 1.0 / (ndets - 1) as f64;
@@ -1014,6 +1020,7 @@ impl NOCIThreadPropagation {
             return;
         }
 
+        // Overlap-weighted generation samples the configured overlap/uniform mixture exactly.
         if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
             let ndets = data.space.len();
             let generator = overlap_generator.expect("overlap-weighted generator must be present");
@@ -1022,6 +1029,7 @@ impl NOCIThreadPropagation {
 
             for _ in 0..nattempts {
                 if self.rng.r#gen::<f64>() < overlap_weight {
+                    // Draw from the overlap channel, whose sampler returns the full mixture pgen.
                     match generator.sample_overlap(
                         gamma,
                         overlap_factors,
@@ -1039,6 +1047,7 @@ impl NOCIThreadPropagation {
                         OverlapProposal::Null => {}
                     }
                 } else {
+                    // Draw uniformly, then evaluate the full mixture probability for reweighting.
                     let mut lambda = self.rng.gen_range(0..ndets - 1);
                     if lambda >= gamma {
                         lambda += 1;
@@ -1062,6 +1071,7 @@ impl NOCIThreadPropagation {
             return;
         }
 
+        // Cache parent-specific heat-bath normalisation once for all attempts from this parent.
         let heat_bath = if let ExcitationGen::HeatBath = qmc.excitation_gen {
             Some(init_heat_bath(
                 gamma,
@@ -1073,6 +1083,7 @@ impl NOCIThreadPropagation {
             None
         };
 
+        // Generate and retain raw importance-sampled events for later batching and coalescing.
         for _ in 0..nattempts {
             let (pgen, k, lambda) = match qmc.excitation_gen {
                 ExcitationGen::HeatBath => pgen_heat_bath(
@@ -1090,12 +1101,14 @@ impl NOCIThreadPropagation {
                 ExcitationGen::OverlapWeighted => unreachable!(),
             };
 
+            // Apply `1/P_gen` so the expected spawned change equals the exact propagator action.
             let raw = -dt * k * parent_population / pgen;
 
             if write_excitation_hist {
                 self.samples.push(raw.abs());
             }
 
+            // Preserve individual events until the common compression/communication stage.
             self.raw_spawn_updates.push(NOCIPopulationUpdate {
                 det: lambda as u64,
                 dn: raw,

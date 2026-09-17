@@ -27,7 +27,7 @@ impl OrthogonalUniformGenerator {
     /// The table enumerates `O_\alpha V_\alpha`, `O_\beta V_\beta`, same-spin pair products,
     /// and `O_\alpha V_\alpha O_\beta V_\beta` using orbital ranks rather than labels.
     /// # Arguments:
-    /// - `source`: Representative determinant defining fixed electron counts.
+    /// - `occupations`: Representative alpha and beta occupations defining fixed electron counts.
     /// - `cache`: Representative MO cache defining common alpha and beta orbital dimensions.
     /// # Returns
     /// - `Self`: System-wide flat uniform connection table and valid-orbital masks.
@@ -35,10 +35,12 @@ impl OrthogonalUniformGenerator {
         occupations: (u128, u128),
         cache: &MOCache<f64>,
     ) -> Self {
+        // Derive occupied/virtual dimensions shared by every parent-orthogonal determinant.
         let noa = occupations.0.count_ones() as usize;
         let nob = occupations.1.count_ones() as usize;
         let nva = cache.ha.nrows() - noa;
         let nvb = cache.hb.nrows() - nob;
+        // Count each Slater-Condon connection class and reserve the exact combined capacity.
         let nas = noa * nva;
         let nbs = nob * nvb;
         let naa = (noa * noa.saturating_sub(1) / 2) * (nva * nva.saturating_sub(1) / 2);
@@ -46,6 +48,7 @@ impl OrthogonalUniformGenerator {
         let nab = nas * nbs;
         let mut connections = Vec::with_capacity(nas + nbs + naa + nbb + nab);
 
+        // Enumerate alpha and beta single excitations in occupied/virtual rank coordinates.
         for occupied in 0..noa {
             for virtual_ in 0..nva {
                 connections.push(OrthogonalConnection::AlphaSingle {
@@ -62,6 +65,7 @@ impl OrthogonalUniformGenerator {
                 });
             }
         }
+        // Enumerate unique same-spin doubles with ordered occupied and virtual pairs.
         for occupied_i in 0..noa {
             for occupied_j in occupied_i + 1..noa {
                 for virtual_a in 0..nva {
@@ -86,6 +90,7 @@ impl OrthogonalUniformGenerator {
                 }
             }
         }
+        // Enumerate all Cartesian products of alpha and beta single excitations.
         for occupied_a in 0..noa {
             for virtual_a in 0..nva {
                 for occupied_b in 0..nob {
@@ -101,6 +106,7 @@ impl OrthogonalUniformGenerator {
             }
         }
 
+        // Every retained topology has the same exact generation probability.
         let pgen = if connections.is_empty() {
             0.0
         } else {

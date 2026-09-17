@@ -225,15 +225,20 @@ fn validate_restart_metadata(
 /// - `state`: Restart state to write.
 /// # Returns:
 /// - `hdf5::Result<()>`: Result of writing the restart file.
+/// # Errors
+/// - Returns an HDF5 error if the file, groups, or datasets cannot be created or written.
 pub(in crate::stochastic) fn write_restart_hdf5(
     path: &str,
     world: &impl Communicator,
     state: &RestartState,
 ) -> hdf5::Result<()> {
+    // Resolve the rank topology used for root metadata and serialized rank-local writes.
     let irank = world.rank() as usize;
     let nranks = world.size() as usize;
 
+    // Rank zero creates the file and writes propagation-wide restart metadata.
     if irank == 0 {
+        // Create a configured parent directory when the restart path is nested.
         if let Some(parent) = Path::new(path).parent()
             && !parent.as_os_str().is_empty()
         {
@@ -243,6 +248,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(
         let file = File::create(path)?;
         let meta = file.create_group("meta")?;
 
+        // Store the report, shift, and previous population-controller observables.
         meta.new_dataset_builder()
             .with_data(&[state.report as u64])
             .create("report")?;
@@ -267,6 +273,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(
             .with_data(&[state.nsampledoprev])
             .create("nsampledoprev")?;
 
+        // Preserve optional controls used by reproducible and overlap-weighted propagation.
         if let Some(seed) = state.base_seed {
             meta.new_dataset_builder()
                 .with_data(&[seed])
@@ -279,6 +286,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(
                 .create("overlap_weight")?;
         }
 
+        // Record schema and basis invariants required to reject incompatible restarts.
         meta.new_dataset_builder()
             .with_data(&[2_u64])
             .create("schema_version")?;
@@ -308,13 +316,16 @@ pub(in crate::stochastic) fn write_restart_hdf5(
             .create("basis_hash")?;
     }
 
+    // Ensure the file and global metadata exist before any rank opens its local group.
     world.barrier();
 
+    // Serialize rank-local writes because this HDF5 file is not opened with parallel I/O.
     for rank in 0..nranks {
         if irank == rank {
             let file = File::open_rw(path)?;
             let group = file.create_group(&format!("rank_{irank:02}"))?;
 
+            // Store the owned population shard and an explicit consistency length.
             group
                 .new_dataset_builder()
                 .with_data(&state.populations)
@@ -325,6 +336,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(
                 .with_data(&[state.populations.len() as u64])
                 .create("population_len")?;
 
+            // Persist the optional spawning histogram with all binning metadata.
             if let Some(hist) = &state.excitation_hist {
                 let h = group.create_group("excitation_hist")?;
 
@@ -358,6 +370,7 @@ pub(in crate::stochastic) fn write_restart_hdf5(
             }
         }
 
+        // Hand file ownership to the next rank only after the current handle is dropped.
         world.barrier();
     }
 
@@ -370,8 +383,11 @@ pub(in crate::stochastic) fn write_restart_hdf5(
 /// - `world`: MPI communicator.
 /// - `expected_ndets`: Current number of global stochastic determinants.
 /// - `expected_hash`: Current deterministic basis hash.
+/// - `expected_representation`: Population convention required by the active propagator.
 /// # Returns:
 /// - `hdf5::Result<RestartState>`: Rank-local restart state.
+/// # Errors
+/// - Returns an HDF5 error if required restart groups or datasets cannot be opened or read.
 pub(in crate::stochastic) fn read_restart_hdf5(
     path: &str,
     world: &impl Communicator,
@@ -379,6 +395,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
     expected_hash: [u64; 2],
     expected_representation: PopulationRepresentation,
 ) -> hdf5::Result<RestartState> {
+    // Open the shared file and reject incompatible schema, basis, or population conventions.
     let irank = world.rank() as usize;
 
     let file = File::open(path)?;
@@ -391,6 +408,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         expected_representation,
     );
 
+    // Restore required propagation-controller scalars.
     let report = meta.dataset("report")?.read_1d::<u64>()?[0] as usize;
 
     let shift = meta.dataset("shift")?.read_1d::<f64>()?[0];
@@ -399,6 +417,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
 
     let nrefprev = meta.dataset("nrefprev")?.read_1d::<f64>()?[0];
 
+    // Read fields added after the original schema with legacy-compatible defaults.
     let nsampledprev = meta
         .dataset("nsampledprev")
         .ok()
@@ -426,6 +445,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         .ok()
         .map(|dataset| dataset.read_1d::<f64>().unwrap()[0]);
 
+    // Decode optional controller and population-representation metadata.
     let representation = meta
         .dataset("population_representation")
         .ok()
@@ -446,6 +466,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         .ok()
         .map(|dataset| dataset.read_1d::<f64>().unwrap()[0]);
 
+    // Load this rank's population shard and verify its recorded length when available.
     let group = file.group(&format!("rank_{irank:02}"))?;
 
     let populations = group.dataset("populations")?.read_1d::<f64>()?.to_vec();
@@ -459,6 +480,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         }
     }
 
+    // Reconstruct the optional spawning histogram from its binning state and counts.
     let excitation_hist = if let Ok(h) = group.group("excitation_hist") {
         let logmin = h.dataset("logmin")?.read_1d::<f64>()?[0];
 
@@ -481,6 +503,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         None
     };
 
+    // Assemble a complete rank-local state, retaining expected basis invariants in memory.
     Ok(RestartState {
         report,
         shift,

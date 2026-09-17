@@ -353,12 +353,19 @@ pub struct WickScratch<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> Default for WickScratch<T> {
+    /// Construct empty reusable storage for same- and different-spin Wick contractions.
+    /// All buffers start without allocation and are sized on demand by the `ensure_*` methods.
+    /// # Returns
+    /// - `Self`: Empty contraction-determinant, cofactor, and factorisation workspaces.
     fn default() -> Self {
         Self {
+            // Determinant index maps and cached excitation-rank identities.
             rows: IndexVec::default(),
             cols: IndexVec::default(),
             same_rank: None,
             diff_rank: None,
+
+            // Same-spin endpoint, mixed determinant, and one-column workspaces.
             det0: Vec2::default(),
             det1: Vec2::default(),
             det_mix: Vec2::default(),
@@ -367,29 +374,41 @@ impl<T: NOCIScalar> Default for WickScratch<T> {
             v1: Vec1::default(),
             dv1: Vec1::default(),
             dv1m: Vec1::default(),
+
+            // Same-spin two-column and secondary mixed-determinant workspaces.
             jslice_full: Vec2::default(),
             jslice2: Vec2::default(),
             det_mix2: Vec2::default(),
+
+            // Alpha and beta endpoint and mixed determinants for different-spin terms.
             deta0: Vec2::default(),
             deta1: Vec2::default(),
             deta_mix: Vec2::default(),
             detb0: Vec2::default(),
             detb1: Vec2::default(),
             detb_mix: Vec2::default(),
+
+            // Different-spin one- and two-column intermediate workspaces.
             v1a: Vec1::default(),
             v1b: Vec1::default(),
             dv1a: Vec1::default(),
             dv1b: Vec1::default(),
             iislicea: Vec2::default(),
             iisliceb: Vec2::default(),
+
+            // Minor determinants retained by singular and higher-rank fallback kernels.
             deta_mix_minor: Vec2::default(),
             detb_mix_minor: Vec2::default(),
+
+            // Adjugate-transpose matrices used for Laplace column replacements.
             adjt_det: Vec2::default(),
             adjt_deta: Vec2::default(),
             adjt_detb: Vec2::default(),
             adjt_det2: Vec2::default(),
             adjt_deta_mix_minor: Vec2::default(),
             adjt_detb_mix_minor: Vec2::default(),
+
+            // Singular-value and LU workspaces for determinant/cofactor evaluation.
             invs: Vec1::default(),
             invsla: Vec1::default(),
             invslb: Vec1::default(),

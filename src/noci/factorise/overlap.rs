@@ -498,13 +498,16 @@ impl SpinFactorisation {
         storage: SNOCIStorage,
         build_cdfs: bool,
     ) -> OverlapFactors {
+        // Allocate one optional factor block per ordered parent pair and select its backend.
         let nparent = self.parents.len();
         let mut factor_blocks = (0..nparent * nparent).map(|_| None).collect::<Vec<_>>();
         let mut storage_plan = OverlapStoragePlan::new(cache, rank, storage);
+        // Persistent tables require enabled Wick intermediates and a RAM or disk backend.
         if !matches!(storage, SNOCIStorage::None)
             && data.input.wicks.enabled
             && let Some(wicks) = data.wicks
         {
+            // Build every nonempty ordered cross-parent block `Q <- P` independently.
             for target_parent in 0..nparent {
                 let target = &self.parents[target_parent];
                 if target.entries.is_empty() {
@@ -512,6 +515,7 @@ impl SpinFactorisation {
                 }
 
                 for source_parent in 0..nparent {
+                    // Equal-parent overlaps use the orthogonal path and need no factor table.
                     if target_parent == source_parent {
                         continue;
                     }
@@ -521,6 +525,7 @@ impl SpinFactorisation {
                         continue;
                     }
 
+                    // Resolve component dimensions, Wick orientation, and checked storage sizes.
                     let nta = target.areps.len();
                     let ntb = target.breps.len();
                     let nsa = source.areps.len();
@@ -537,6 +542,7 @@ impl SpinFactorisation {
                     let mut factors =
                         storage_plan.allocate(target_parent, source_parent, na, nb, build_cdfs);
 
+                    // Materialise `A^{QP}` for all retained alpha target/source components.
                     {
                         let (afac, _, _, _) = factors.factors_mut();
                         build_spin_overlap_factors(
@@ -551,6 +557,7 @@ impl SpinFactorisation {
                     }
                     factors.flush();
 
+                    // Materialise the corresponding retained beta table `B^{QP}`.
                     {
                         let (_, bfac, _, _) = factors.factors_mut();
                         build_spin_overlap_factors(
@@ -565,6 +572,7 @@ impl SpinFactorisation {
                     }
                     factors.flush();
 
+                    // Convert source columns into cumulative `|A|` and `|B|` proposal weights.
                     if build_cdfs {
                         let (afac, bfac, acdf, bcdf) = factors.factors_mut();
                         for sa in 0..nsa {
@@ -585,6 +593,7 @@ impl SpinFactorisation {
                     }
                     factors.flush();
 
+                    // Publish dimensions, storage, and identity maps for retained source columns.
                     factor_blocks[target_parent * nparent + source_parent] =
                         Some(OverlapFactorBlock {
                             nta,
@@ -601,6 +610,7 @@ impl SpinFactorisation {
             }
         }
 
+        // Missing blocks intentionally select transient or same-parent overlap evaluation.
         OverlapFactors {
             blocks: factor_blocks,
         }
@@ -626,6 +636,7 @@ impl SpinFactorisation {
         source: &AuxiliaryParentUpdates,
         context: (&NOCIData<'_, f64>, &WicksPairView<'_, f64>, bool),
     ) -> Option<&'a OverlapFactorBlock> {
+        // Resolve the persistent parent-pair block and canonical one-spin component spaces.
         let (data, pair, target_left) = context;
         let source_parent = source.parent;
         let nparent = self.parents.len();
@@ -634,6 +645,7 @@ impl SpinFactorisation {
         let target_breps = self.parents[target_parent].breps.as_slice();
         let components = auxiliary.parent_components(source_parent);
 
+        // Initialise physical-component to stored-column maps with retained columns as identity.
         if block.alpha_columns.is_empty() {
             block.alpha_columns.resize(components.na(), usize::MAX);
             for id in 0..block.retained_nsa {
@@ -647,6 +659,7 @@ impl SpinFactorisation {
             }
         }
 
+        // Identify, batch-evaluate, and transpose previously unseen alpha source columns.
         let mut missing_alpha = source
             .aids
             .iter()
@@ -692,6 +705,7 @@ impl SpinFactorisation {
             }
         }
 
+        // Repeat the same materialisation for beta source components.
         let mut missing_beta = source
             .bids
             .iter()
@@ -737,6 +751,7 @@ impl SpinFactorisation {
             }
         }
 
+        // Append new columns atomically, persist them, and publish their stable column indices.
         if !alpha_columns.is_empty() || !beta_columns.is_empty() {
             block.factors.append_source_columns(
                 block.nta,
@@ -839,17 +854,20 @@ impl SpinFactorisation {
     ) where
         I: IntoIterator<Item = (AuxiliaryIndex, f64)>,
     {
+        // Resolve physical/auxiliary spaces and reject empty rank-local targets.
         let (data, auxiliary) = spaces;
 
         if populations.is_empty() {
             return;
         }
 
+        // Clear only source-parent buckets that were active in the previous application.
         for &parent in &scratch.active_parents {
             scratch.updates[parent].clear();
         }
         scratch.active_parents.clear();
 
+        // Group realised auxiliary residuals by parent and active spin components.
         for (det, dn) in updates {
             if dn == 0.0 {
                 continue;
@@ -869,6 +887,7 @@ impl SpinFactorisation {
             return;
         }
 
+        // Reuse rank-local target topology and apply every active source/target parent pair.
         let target_blocks =
             self.take_overlap_target_blocks(targets, data, &mut scratch.contraction);
         let mut active_parents = std::mem::take(&mut scratch.active_parents);
@@ -883,6 +902,7 @@ impl SpinFactorisation {
             );
 
             for target in &target_blocks {
+                // Same-parent auxiliary occupations map exactly without Wick factorisation.
                 if target.parent == source.parent {
                     Self::apply_auxiliary_source_exact(populations, target, &source, auxiliary);
                     continue;
@@ -894,6 +914,7 @@ impl SpinFactorisation {
                 let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
                 let pair = wicks.pair(lp, gp);
 
+                // Prefer persistent factors, interning unseen physical source components once.
                 let persistent = self.intern_auxiliary_source_columns(
                     factors,
                     auxiliary,
@@ -913,6 +934,7 @@ impl SpinFactorisation {
                     continue;
                 }
 
+                // Otherwise build transient active factors and choose the cheapest contraction.
                 let factorised = source.factorised_source();
                 self.build_auxiliary_overlap_factor_tables(
                     target,
@@ -953,6 +975,7 @@ impl SpinFactorisation {
             scratch.updates[parent] = source;
         }
 
+        // Return all moved buffers to scratch while retaining their allocations.
         active_parents.clear();
         scratch.active_parents = active_parents;
         scratch.contraction.target_blocks = target_blocks;
@@ -990,15 +1013,18 @@ impl SpinFactorisation {
     ) where
         I: IntoIterator<Item = (usize, f64)>,
     {
+        // Reject empty rank-local targets before grouping sparse source updates.
         if populations.is_empty() {
             return;
         }
 
+        // Build sparse parent-local source matrices `D^P` for this application.
         self.group_overlap_updates(updates, data, scratch);
         if scratch.active_parents.is_empty() {
             return;
         }
 
+        // Reuse target topology and dispatch every active ordered parent pair.
         let target_blocks =
             self.take_overlap_target_blocks(targets, data, &mut scratch.contraction);
         let mut active_parents = std::mem::take(&mut scratch.active_parents);
@@ -1026,6 +1052,7 @@ impl SpinFactorisation {
             scratch.updates[source_parent] = source;
         }
 
+        // Return moved source/target buffers and temporary factors to reusable scratch.
         active_parents.clear();
         scratch.active_parents = active_parents;
         scratch.contraction.target_blocks = target_blocks;
@@ -1219,6 +1246,7 @@ impl SpinFactorisation {
         factors: &OverlapFactors,
         scratch: &mut OverlapContractionScratch,
     ) {
+        // Prefer exact same-parent kernels before considering cross-parent factorisation.
         if target.parent == source.parent
             && let Some(mocache) = data.mocache
             && mocache[target.parent].orthogonal_slater_condon
@@ -1231,6 +1259,7 @@ impl SpinFactorisation {
             return;
         }
 
+        // Without Wick intermediates, the general direct evaluator is the only valid fallback.
         if !data.input.wicks.enabled {
             self.apply_overlap_direct(output, target, source, data, scratch);
             return;
@@ -1241,6 +1270,7 @@ impl SpinFactorisation {
             return;
         };
 
+        // Apply a persistent parent-pair block when RAM or disk factors were materialised.
         let factors = factors.blocks[target.parent * self.parents.len() + source.parent].as_ref();
         if let Some(factors) = factors {
             self.apply_persistent_overlap_parent_pair(
@@ -1254,6 +1284,7 @@ impl SpinFactorisation {
             return;
         }
 
+        // For transient storage, select sparse rows or one of the blocked spin contractions.
         let factorised = source.factorised_source();
         let contraction = self.select_overlap_contraction(target, factorised);
         let (lp, gp, target_left) = ordered_parent_pair(self, target.parent, source.parent);
@@ -1303,8 +1334,10 @@ impl SpinFactorisation {
         factors: &OverlapFactorBlock,
         scratch: &mut OverlapContractionScratch,
     ) {
+        // Resolve sparse amplitudes and active physical source-component IDs.
         let (source, source_ids) = source;
 
+        // Dispatch to sparse rows or a blocked spin contraction using persistent factors.
         match self.select_overlap_contraction(target, source) {
             OverlapContraction::FactorisedRows => {
                 let (alpha, beta, _, _) = factors.factors.factors();
@@ -1361,6 +1394,7 @@ impl SpinFactorisation {
                 }
             }
             OverlapContraction::AFirst => {
+                // Gather active factor submatrices before alpha-first blocked contraction.
                 Self::gather_overlap_factor_tables(
                     target,
                     source_ids.0,
@@ -1374,6 +1408,7 @@ impl SpinFactorisation {
                 self.apply_overlap_a_first_scratch(output, target, source, scratch);
             }
             OverlapContraction::BFirst => {
+                // Gather the same active factors for the symmetric beta-first contraction.
                 Self::gather_overlap_factor_tables(
                     target,
                     source_ids.0,
@@ -1408,9 +1443,11 @@ impl SpinFactorisation {
         factors: FactorisedFactors<'_>,
         values: &mut Vec<f64>,
     ) {
+        // Allocate one independent contraction slot per active target determinant.
         values.clear();
         values.resize(target.targets.len(), 0.0);
 
+        // Contract persistent/active factor rows against sparse source amplitudes in parallel.
         values
             .par_iter_mut()
             .zip(target.targets.par_iter())
@@ -1426,6 +1463,7 @@ impl SpinFactorisation {
                 *value = dp;
             });
 
+        // Scatter nonzero row contractions into rank-local populations.
         for (value, target) in values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {
                 output[target.local] += value;
@@ -1455,6 +1493,7 @@ impl SpinFactorisation {
         target_left: bool,
         scratch: &mut OverlapContractionScratch,
     ) {
+        // Resolve active source representatives once; each target row reuses the same columns.
         let (target, source) = blocks;
         let factorised = source.factorised_source();
         let nsa = source.aids.len();
@@ -1470,9 +1509,11 @@ impl SpinFactorisation {
             .map(|&b| self.parents[source.parent].breps[b])
             .collect::<Vec<_>>();
 
+        // Allocate one independent output slot per retained target determinant.
         scratch.values.clear();
         scratch.values.resize(target.targets.len(), 0.0);
 
+        // Build alpha/beta factor rows per target and contract the sparse source immediately.
         scratch
             .values
             .par_iter_mut()
@@ -1514,6 +1555,7 @@ impl SpinFactorisation {
                 },
             );
 
+        // Accumulate nonzero target-row contractions into rank-local populations.
         for (value, target) in scratch.values.iter().zip(target.targets.iter()) {
             if *value != 0.0 {
                 output[target.local] += value;
@@ -1537,6 +1579,7 @@ impl SpinFactorisation {
         source: FactorisedSource<'_>,
         scratch: &mut OverlapContractionScratch,
     ) {
+        // Move active factor tables out temporarily so values and factors can be borrowed together.
         let afac = std::mem::take(&mut scratch.afac);
         let bfac = std::mem::take(&mut scratch.bfac);
         let factors = FactorisedFactors {
@@ -1549,6 +1592,7 @@ impl SpinFactorisation {
             source_alpha_ids: None,
             source_beta_ids: None,
         };
+        // Reuse the shared sparse-row contraction with compact active row/column numbering.
         Self::apply_overlap_factorised_rows_tables(
             output,
             target,
@@ -1556,6 +1600,7 @@ impl SpinFactorisation {
             factors,
             &mut scratch.values,
         );
+        // Return allocations to scratch for the next parent-pair application.
         scratch.afac = afac;
         scratch.bfac = bfac;
     }
@@ -1835,6 +1880,7 @@ impl SpinFactorisation {
         context: (&WicksPairView<'_, f64>, bool),
         scratch: &mut OverlapContractionScratch,
     ) {
+        // Resolve active retained targets and the ordered parent-pair Wick orientation.
         let (pair, target_left) = context;
         let target_areps = target
             .aids
@@ -1846,6 +1892,7 @@ impl SpinFactorisation {
             .iter()
             .map(|&b| self.parents[target.parent].breps[b])
             .collect::<Vec<_>>();
+        // Gather active auxiliary source representatives and their explicit excitations.
         let components = auxiliary.parent_components(source.parent);
         let source_areps = source
             .aids
@@ -1867,6 +1914,7 @@ impl SpinFactorisation {
             .iter()
             .map(|&b| components.beta(AuxiliarySpinIndex(b)).excitation)
             .collect::<Vec<_>>();
+        // Size transient row-major tables to the active target/source Cartesian products.
         let nsa = source_areps.len();
         let nsb = source_breps.len();
 
@@ -1875,6 +1923,7 @@ impl SpinFactorisation {
         scratch.afac.resize(target_areps.len() * nsa, 0.0);
         scratch.bfac.resize(target_breps.len() * nsb, 0.0);
 
+        // Build alpha factors in parallel over independent target-component rows.
         scratch
             .afac
             .par_chunks_mut(nsa)
@@ -1894,6 +1943,7 @@ impl SpinFactorisation {
                     &mut wick.aa,
                 );
             });
+        // Build the symmetric beta factor table with beta Wick data and coefficients.
         scratch
             .bfac
             .par_chunks_mut(nsb)
@@ -1937,6 +1987,7 @@ impl SpinFactorisation {
         target_left: bool,
         scratch: &mut OverlapContractionScratch,
     ) {
+        // Gather active retained target and source representatives in factor-table order.
         let target_areps = target
             .aids
             .iter()
@@ -1958,6 +2009,7 @@ impl SpinFactorisation {
             .map(|&b| self.parents[source.parent].breps[b])
             .collect::<Vec<_>>();
 
+        // Size reusable row-major alpha and beta tables to their active products.
         let nta = target_areps.len();
         let ntb = target_breps.len();
         let nsa = source_areps.len();
@@ -1968,6 +2020,7 @@ impl SpinFactorisation {
         scratch.afac.resize(nta * nsa, 0.0);
         scratch.bfac.resize(ntb * nsb, 0.0);
 
+        // Evaluate alpha and beta factors with identical orientation and spin-specific Wick data.
         build_spin_overlap_factors(
             pair,
             data,

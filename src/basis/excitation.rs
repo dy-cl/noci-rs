@@ -60,6 +60,12 @@ pub(crate) fn excitation_phase_bits(
     mut holes: u128,
     mut parts: u128,
 ) -> f64 {
+    /// Determine whether the occupied population below `p` has odd parity.
+    /// # Arguments:
+    /// - `bits`: Occupancy bitstring after any preceding operators have acted.
+    /// - `p`: Orbital index defining the exclusive upper bound.
+    /// # Returns
+    /// - `bool`: Whether an odd number of occupied orbitals have index below `p`.
     #[inline(always)]
     fn below(
         bits: u128,

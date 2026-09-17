@@ -58,16 +58,19 @@ pub fn build_mo_cache<T: NOCIScalar>(
         parents
             .iter()
             .map(|st| {
+                // Resolve spin-orbital coefficients and represent the one-electron AO operator in T.
                 let ca = st.ca.as_ref();
                 let cb = st.cb.as_ref();
                 let h = real2_as::<T>(&ao.h);
 
+                // Transform `h^sigma = (C^sigma)^dagger h C^sigma` for both spin sectors.
                 let ha = adjoint(ca).dot(&h).dot(ca);
                 let hb = adjoint(cb).dot(&h).dot(cb);
 
                 let ca_conj = ca.mapv(|z| z.conj());
                 let cb_conj = cb.mapv(|z| z.conj());
 
+                // Transform antisymmetrized same-spin ERIs into the alpha MO basis.
                 let nmo_a = ca.ncols();
                 let nmo_b = cb.ncols();
                 let mut eri_aa_asym = Array4::<T>::zeros((nmo_a, nmo_a, nmo_a, nmo_a));
@@ -82,6 +85,7 @@ pub fn build_mo_cache<T: NOCIScalar>(
                     eri_aa_asym.view_mut(),
                     &mut scratch,
                 );
+                // Repeat the antisymmetrized transformation in the beta MO basis.
                 let mut eri_bb_asym = Array4::<T>::zeros((nmo_b, nmo_b, nmo_b, nmo_b));
                 let mut scratch =
                     T::new_eri_ao2mo_scratch(&ao.eri_asym, nmo_b, nmo_b, nmo_b, nmo_b);
@@ -94,6 +98,7 @@ pub fn build_mo_cache<T: NOCIScalar>(
                     eri_bb_asym.view_mut(),
                     &mut scratch,
                 );
+                // Transform the alpha-beta Coulomb tensor without same-spin antisymmetrization.
                 let mut eri_ab_coul = Array4::<T>::zeros((nmo_a, nmo_a, nmo_b, nmo_b));
                 let mut scratch =
                     T::new_eri_ao2mo_scratch(&ao.eri_coul, nmo_a, nmo_a, nmo_b, nmo_b);
@@ -107,6 +112,7 @@ pub fn build_mo_cache<T: NOCIScalar>(
                     &mut scratch,
                 );
 
+                // Enable orthogonal Slater-Condon kernels only when both MO metrics are identity.
                 let orthogonal_slater_condon = hermitian_orthonormal_error(ca, &ao.s) < tol
                     && hermitian_orthonormal_error(cb, &ao.s) < tol;
 
@@ -143,11 +149,13 @@ pub(crate) fn build_fock_mo_cache<T: NOCIScalar>(
         parents
             .iter()
             .map(|st| {
+                // Transform each spin Fock matrix into this parent's corresponding MO basis.
                 let ca = st.ca.as_ref();
                 let cb = st.cb.as_ref();
 
                 let fa_mo = adjoint(ca).dot(fa).dot(ca);
                 let fb_mo = adjoint(cb).dot(fb).dot(cb);
+                // Keep dispatch consistent with the integral cache's orthogonality criterion.
                 let orthogonal_slater_condon = hermitian_orthonormal_error(ca, s) < tol
                     && hermitian_orthonormal_error(cb, s) < tol;
 

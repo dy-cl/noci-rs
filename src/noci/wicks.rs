@@ -138,6 +138,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
     tol: f64,
     input: &Input,
 ) -> WicksShared<T> {
+    // Plan one contiguous tensor slab and immutable offsets for every parent pair.
     let nref = parents.len();
     let nmo = parents[0].ca.ncols();
     let irank = world.rank();
@@ -147,6 +148,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
     drop(plans);
     let nbytes = tensor_len * std::mem::size_of::<T>();
 
+    // Report the shared storage requirement once per MPI world.
     if irank == 0 {
         println!("Number of MOs: {}", ao.n);
         println!(
@@ -157,6 +159,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
 
     match input.wicks.storage {
         crate::input::WicksStorage::RAM => {
+            // Allocate one slab per shared-memory node; only its local leader populates it.
             let shared = Sharedffi::allocate(world, nbytes);
             let shared_rank = shared.shared_rank;
 
@@ -164,6 +167,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
             let mut meta = vec![PairMeta::<T>::default(); nref * nref];
 
             if shared_rank == 0 {
+                // Build every ordered parent pair directly into its assigned slab slices.
                 let tensor: &mut [T] =
                     unsafe { std::slice::from_raw_parts_mut(tensor_ptr, tensor_len) };
                 tensor.fill(<T as From<f64>>::from(f64::NAN));
@@ -190,9 +194,11 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 }
             }
 
+            // Publish completed tensor data and identical pair metadata to all ranks.
             shared.barrier();
             broadcast(world, &mut meta);
 
+            // Couple the owning shared allocation to a typed immutable Wick view.
             let rma = WicksRma::<T> {
                 base_ptr: shared.base,
                 _nbytes: nbytes,
@@ -212,6 +218,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
         }
 
         crate::input::WicksStorage::Disk => {
+            // Resolve stable slab and metadata paths for the file-backed cache.
             let cache_dir = PathBuf::from(
                 input
                     .wicks
@@ -224,10 +231,12 @@ pub fn build_wicks_shared<T: NOCIScalar>(
             let slab_path = cache_dir.join("wicks.bin");
             let meta_path = cache_dir.join("wicks.meta");
 
+            // Use a minimal shared allocation solely to elect and synchronize a node leader.
             let shared = Sharedffi::allocate(world, 1);
             let shared_rank = shared.shared_rank;
 
             if shared_rank == 0 {
+                // Materialise all ordered parent pairs in the writable memory map.
                 println!(
                     "Building Wick's intermediates and writing disk cache on world rank {}: {:?}",
                     world.rank(),
@@ -260,6 +269,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                     }
                 }
 
+                // Flush numerical data before publishing the matching serialized layout metadata.
                 wicks.flush_mmap().unwrap();
 
                 let view = wicks.view();
@@ -273,6 +283,7 @@ pub fn build_wicks_shared<T: NOCIScalar>(
                 std::fs::write(&meta_path, bincode::serialize(&disk_meta).unwrap()).unwrap();
             }
 
+            // Open read-only views only after the node leader has completed both cache files.
             shared.barrier();
             load_wicks_mmap::<T>(&slab_path, &meta_path).unwrap()
         }

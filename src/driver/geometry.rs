@@ -47,6 +47,7 @@ pub fn run_geometry(
     prev_htracks: &[HSCFState],
     world: &impl Communicator,
 ) -> Result<GeometryResults> {
+    // Reset per-geometry diagnostics and distribute the root-generated AO data.
     let tol = 1e-8;
     timers::reset_all();
 
@@ -61,6 +62,7 @@ pub fn run_geometry(
     broadcast(world, &mut ao);
     let ao: AoData = ao.unwrap();
 
+    // Build and distribute either holomorphic-tracking or ordinary SCF references.
     if should_run_holomorphic(input) {
         let mut prep = if world.rank() == 0 {
             generate_holomorphic_references(&ao, input, prev_states, prev_htracks)
@@ -76,11 +78,13 @@ pub fn run_geometry(
         broadcast(world, &mut prep.states);
         broadcast(world, &mut prep.hstates);
 
+        // Use complex NOCI only when a newly generated holomorphic state survives selection.
         let holomorphic = prep.hstates[prep.states.len()..]
             .iter()
             .any(|state| state.noci_basis);
 
         if holomorphic {
+            // Run the complex reference and post-reference paths, then snapshot global timings.
             let mut reference =
                 run_reference_space(&ao, input, prep.basis, tol, ReferenceKind::Complex, world);
             let post =
@@ -95,6 +99,7 @@ pub fn run_geometry(
                 timings,
             ))
         } else {
+            // Fall back to real NOCI while retaining holomorphic states for branch tracking.
             let mut reference = run_reference_space(
                 &ao,
                 input,
@@ -118,6 +123,7 @@ pub fn run_geometry(
             Ok(results)
         }
     } else {
+        // Run the ordinary real-reference path when no holomorphic recipe is requested.
         let mut prep = if world.rank() == 0 {
             generate_real_references(&ao, input, prev_states)
         } else {

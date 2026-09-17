@@ -268,6 +268,9 @@ pub(crate) fn xw_overlap_orthogonal_prepared_batched(
         alpha,
         out,
     } = batch;
+
+    // Orthogonal-source batches still evaluate the nonorthogonal reference-pair factor
+    // `{}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; only source metadata is transient.
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 {
         unsafe {
@@ -285,6 +288,7 @@ pub(crate) fn xw_overlap_orthogonal_prepared_batched(
         }
     }
 
+    // Requests not covered by fixed-rank packets retain the complete constrained determinant sum.
     for (col, source) in sources.iter().enumerate() {
         out[col] = xw_overlap_prepared_scalar_value_source(
             w,
@@ -326,6 +330,9 @@ pub(crate) fn xw_overlap_prepared_batched<T: NOCIScalar>(
         alpha,
         out,
     } = batch;
+
+    // The `m = 0` path may use fixed-width kernels; every other case retains the scalar
+    // prepared evaluator so arbitrary excitation rank and zero-overlap distributions remain valid.
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 && TypeId::of::<T>() == TypeId::of::<f64>() {
         unsafe {
@@ -371,6 +378,7 @@ pub(crate) fn xw_overlap_prepared_batched<T: NOCIScalar>(
         }
     }
 
+    // SIMD is an optional fast path. Fall back without changing request or source-column order.
     xw_overlap_prepared_scalar_row(
         w,
         basis,
@@ -407,6 +415,9 @@ fn xw_overlap_prepared_scalar_row<T: NOCIScalar>(
 ) {
     let (target, sources) = reps;
     let (target_left, alpha) = flags;
+    // Each source column contributes one same-spin factor
+    // `{}^{xw}\tilde S \sum_{m_1+\cdots+m_L=m} \det \mathbf D_{\mathrm{ov}}`.
+    // Preserve source order while evaluating each requested target/source pair.
     for (col, source) in sources.iter().enumerate() {
         out[col] = xw_overlap_prepared_scalar_value(
             w,
@@ -473,6 +484,9 @@ where
 {
     let (target, source) = reps;
     let (target_left, alpha) = flags;
+
+    // Recover full excitation masks only at the scalar boundary; packed paths use cached ranks and
+    // orbital labels directly.
     let target_ex = if alpha {
         &basis
             .parent_components(target.parent)
@@ -485,11 +499,16 @@ where
             .excitation
     };
     let source_ex = source.excitation(basis, source_excitations, col, alpha);
+
+    // Orient excitations consistently with the ordered reference pair `(x,w)` before constructing
+    // `\mathbf D_{\mathrm{ov}}`.
     let (x_ex, w_ex) = if target_left {
         (target_ex, source_ex)
     } else {
         (source_ex, target_ex)
     };
+
+    // Excitation phases multiply the reduced-overlap determinant after Wick evaluation.
     let source = source.reduced();
     T::from_real(target.state.phase * source.phase) * xw_overlap_prepared(w, x_ex, w_ex, scratch)
 }
@@ -529,6 +548,7 @@ unsafe fn try_xw_overlap_prepared_f64_simd(
     scratch: &mut WickScratch<f64>,
     out: &mut [f64],
 ) -> bool {
+    // Prefer the widest available packet width; AVX2/FMA supplies the four-lane fallback.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_overlap_prepared_f64x8_row(w, basis, reps, flags, scratch, out);
@@ -567,6 +587,7 @@ unsafe fn try_xw_overlap_prepared_f64_orthogonal_simd(
     scratch: &mut WickScratch<f64>,
     out: &mut [f64],
 ) -> bool {
+    // Prefer the widest available packet width; unsupported CPUs return to the scalar path.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_overlap_prepared_simd_row::<f64, ReducedOneSpinState, 8>(
@@ -622,6 +643,7 @@ unsafe fn try_xw_overlap_prepared_c64_simd(
     scratch: &mut WickScratch<Complex64>,
     out: &mut [Complex64],
 ) -> bool {
+    // Prefer the widest available packet width; AVX2/FMA supplies the four-lane fallback.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_overlap_prepared_c64x8_row(w, basis, reps, flags, scratch, out);
@@ -666,6 +688,8 @@ unsafe fn xw_overlap_prepared_simd_row<T, S, const N: usize>(
     T: NOCIScalar,
     S: ReducedOneSpinSource<T>,
 {
+    // Group source excitations by rank so every packet shares one compile-time determinant shape
+    // `(R_x,R_w,L)` and therefore one `\mathbf D_{\mathrm{ov}}` kernel.
     let (target, sources) = reps;
     let (basis, source_excitations) = fallback;
     let (target_left, _) = flags;
@@ -686,6 +710,8 @@ unsafe fn xw_overlap_prepared_simd_row<T, S, const N: usize>(
             (source_rank, target_rank)
         };
 
+        // Empty determinants and ranks beyond generated limits use the scalar evaluator. Supported
+        // non-empty ranks accumulate until one complete `N`-lane packet is available.
         if target_rank <= MAXEXCIT && source_rank <= MAXEXCIT && target_rank + source_rank != 0 {
             let count = counts[source_rank];
             bins[source_rank][count] = source_cache;
@@ -694,6 +720,8 @@ unsafe fn xw_overlap_prepared_simd_row<T, S, const N: usize>(
             counts[source_rank] += 1;
 
             if counts[source_rank] == N {
+                // Evaluate `N` determinants together and restore excitation phases when scattering
+                // lane results to source-column order.
                 let mut overlap = [T::from_real(0.0); N];
                 unsafe {
                     kernel(
@@ -725,6 +753,8 @@ unsafe fn xw_overlap_prepared_simd_row<T, S, const N: usize>(
         }
     }
 
+    // Incomplete rank bins use the scalar path rather than padded packets, preserving exact source
+    // metadata and source-column order.
     for source_rank in 0..=MAXEXCIT {
         for &col in &outputs[source_rank][..counts[source_rank]] {
             out[col] = xw_overlap_prepared_scalar_value_source(
@@ -893,6 +923,9 @@ unsafe fn xw_overlap_prepared_c64x8_row(
 }
 
 /// Evaluate packed fixed-rank overlaps using one packed arithmetic implementation.
+/// Each lane evaluates
+/// `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}(0,\ldots,0)`, with `X^{(0)}` contractions
+/// on/below the diagonal and `Y^{(0)}` contractions above it.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `fixed`: Excitation cache shared by all lanes.
@@ -919,6 +952,8 @@ unsafe fn xw_overlap_m0_prepared_simd_const<
     varying: &[ExcitationSpinCache; LANES],
     overlap: &mut [T; LANES],
 ) {
+    // Map every packed lane to ordered labels
+    // `(r,c) \in (V_x\cup O_w)\times(O_x\cup V_w)`.
     let n = w.n();
     let x0 = w.x_slice(0);
     let y0 = w.y_slice(0);
@@ -955,6 +990,8 @@ unsafe fn xw_overlap_m0_prepared_simd_const<
     let zero = V::zero();
     let mut d = [zero; D];
 
+    // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)`: lower entries use `X^{(0)}` and upper
+    // entries use `Y^{(0)}`. Entries fixed across lanes are broadcast instead of gathered.
     for eta in 0..L {
         for z in 0..L {
             let matrix = if eta >= z { x0 } else { y0 };
@@ -974,6 +1011,7 @@ unsafe fn xw_overlap_m0_prepared_simd_const<
         }
     }
 
+    // `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}`; `w.phase` carries orbital-pairing sign.
     let determinant = det_simd_const::<V, LANES, L, D>(&d);
     let pref = w.phase * T::from_real(w.tilde_s_prod);
     V::store(V::mul(determinant, V::splat(pref)), overlap);
@@ -1335,6 +1373,8 @@ fn xw_overlap_m0_direct_const<
     x_ex: &ExcitationSpin,
     w_ex: &ExcitationSpin,
 ) -> T {
+    // Map fixed-rank bra and ket excitations onto the ordered determinant label spaces
+    // `(V_x \cup O_w) x (O_x \cup V_w)`.
     let nocc = w.nocc;
     let nvirt = w.nmo - nocc;
     let mut rows = [0usize; L];
@@ -1347,6 +1387,7 @@ fn xw_overlap_m0_direct_const<
         x_holes &= x_holes - 1;
         x_parts &= x_parts - 1;
     }
+
     let mut w_holes = w_ex.holes;
     let mut w_parts = w_ex.parts;
     for i in 0..RW {
@@ -1395,6 +1436,8 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
     w_ex: &ExcitationSpin,
     l: usize,
 ) -> T {
+    // Construct runtime labels for `\mathbf D_{\mathrm{ov}}` when `(R_x,R_w)` lies outside the
+    // generated const-rank table.
     let n = w.n();
     let x0 = w.x_slice(0);
     let y0 = w.y_slice(0);
@@ -1404,6 +1447,7 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
     let mut d = vec![zero; l * l];
     construct_determinant_indices(x_ex, w_ex, w, &mut rows, &mut cols);
 
+    // Fill `D_{ij}` from `X^{(0)}` on/below the diagonal and `Y^{(0)}` above it.
     for i in 0..l {
         let row = rows[i] * n;
         for j in 0..l {
@@ -1415,6 +1459,7 @@ fn xw_overlap_m0_direct_gen<T: NOCIScalar>(
         }
     }
 
+    // Multiply the runtime determinant by the reduced reference overlap `{}^{xw}\tilde S`.
     w.phase * <T as From<f64>>::from(w.tilde_s_prod) * det_dynamic(&d, l).unwrap_or(zero)
 }
 

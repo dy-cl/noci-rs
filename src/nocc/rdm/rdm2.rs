@@ -212,6 +212,12 @@ fn rdm2_pair_naive<T: NOCIScalar>(
 }
 
 /// Calculate spin-free two-body RDM matrix elements using extended non-orthogonal Wick's theorem.
+///
+/// The returned tensor is the spin sum
+/// `Gamma^{pq}_{rs} = sum_{sigma,tau}<a^+_{p sigma} a^+_{q tau}
+/// a_{s tau} a_{r sigma}>`. Same-spin blocks are antisymmetrized products when
+/// their one-body transition densities are nonsingular; mixed-spin blocks are
+/// direct products of the alpha and beta one-body transition densities.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be evaluated.
@@ -223,6 +229,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM2<T>) {
+    // Resolve the determinant pair, parent Wick data, and excitation ranks.
     let ldet = pair.ldet;
     let gdet = pair.gdet;
     let n = data.ao.h.nrows();
@@ -246,6 +253,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
     let do2bb = w.bb.m <= lb + 2;
     let do2ab = w.aa.m <= la + 1 && w.bb.m <= lb + 1;
 
+    // Prepare each spin sector only when its overlap contraction can survive.
     let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
     let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
     let det_phase = pha * phb;
@@ -263,12 +271,14 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
         sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
     }
 
+    // Allocate the spin-free transition tensor and retain the phased pair overlap.
     let sxw = det_phase * sa * sb;
     let mut gamma = RDM2 {
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(4)],
     };
 
+    // Batch all one-body transition densities used by the product reconstructions.
     let requests1: Vec<_> = (0..n)
         .flat_map(|p| (0..n).map(move |q| ([p], [q])))
         .collect();
@@ -304,6 +314,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
         None
     };
 
+    // Add the alpha-alpha block, using its antisymmetrized one-body product when stable.
     if sb.abs() > data.tol && do2aa {
         if sa.abs() > data.tol
             && let Some(g1a) = g1a.as_ref()
@@ -323,6 +334,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
                 }
             }
         } else {
+            // Evaluate Gamma2 directly when division by the alpha overlap is singular.
             let requests2: Vec<_> = (0..n)
                 .flat_map(|p| {
                     (0..n).flat_map(move |q| {
@@ -347,6 +359,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
         }
     }
 
+    // Add the beta-beta block by the spin-mirrored construction.
     if sa.abs() > data.tol && do2bb {
         if sb.abs() > data.tol
             && let Some(g1b) = g1b.as_ref()
@@ -366,6 +379,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
                 }
             }
         } else {
+            // Evaluate Gamma2 directly when division by the beta overlap is singular.
             let requests2: Vec<_> = (0..n)
                 .flat_map(|p| {
                     (0..n).flat_map(move |q| {
@@ -390,6 +404,7 @@ fn rdm2_pair_wicks<T: NOCIScalar>(
         }
     }
 
+    // Add both alpha-beta orderings; unlike same-spin blocks these have no exchange term.
     if do2ab && let (Some(g1a), Some(g1b)) = (g1a.as_ref(), g1b.as_ref()) {
         for p in 0..n {
             for q in 0..n {

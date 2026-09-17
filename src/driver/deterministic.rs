@@ -21,6 +21,7 @@ use crate::utils::wavefunction_sparsity;
 /// - `post`: Data shared by post-SCF methods.
 /// - `input`: User input specifications.
 /// - `c0`: Initial coefficient vector of basis states.
+/// - `e_shift0`: Initial propagation energy shift.
 /// - `wicks`: Optional precomputed Wick's intermediates.
 /// # Returns:
 /// - `f64`: Propagated energy.
@@ -34,6 +35,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
     time_call!(
         crate::timers::deterministic::add_run_qmc_deterministic_noci,
         {
+            // Expand the reference space into the deterministic NOCI-QMC excitation basis.
             println!("{}", "=".repeat(100));
             println!("Building NOCI-QMC basis....");
 
@@ -50,6 +52,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
                 n * n
             );
 
+            // Materialise symmetric Hamiltonian and overlap matrices in the expanded basis.
             let symmetric = true;
             let data =
                 NOCIData::new(post.ao, &basis, input, post.tol, wicks).withmocache(post.mocache);
@@ -61,6 +64,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
 
             println!("Running deterministic NOCI-QMC propagation....");
 
+            // Embed reference coefficients, or use the requested uniform diagnostic ansatz.
             let mut c0qmc = Array1::<T>::zeros(n);
             if !input.write.write_deterministic_coeffs {
                 for (i, ref_st) in post.space.labels.iter().enumerate() {
@@ -78,6 +82,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
             println!("Initial wavefunction ansatz (C0-QMC): {}", c0qmc);
             println!("{}", "=".repeat(100));
 
+            // Locate reference determinants in the expanded basis for population diagnostics.
             let ref_indices: Vec<usize> = post
                 .space
                 .labels
@@ -93,6 +98,7 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
 
             let mut coefficients = Vec::new();
 
+            // Propagate in the nonorthogonal metric while retaining optional iteration history.
             let c = time_call!(crate::timers::deterministic::add_propagate, {
                 propagate(&h, &s, &c0qmc, e_shift0, &mut coefficients, input, &basis)
             });
@@ -105,9 +111,11 @@ pub fn run_qmc_deterministic_noci<T: NOCIScalar>(
                 }
             };
 
+            // Evaluate the final projected energy and wavefunction sparsity.
             let e = projected_energy(&h, &s, &cfinal);
             wavefunction_sparsity(cfinal.as_slice().unwrap(), &ref_indices);
 
+            // Write retained/null canonical coefficients only when iteration output is requested.
             if input.write.write_deterministic_coeffs {
                 println!("Writing coefficients to file...");
                 let filepath = format!("{}/{}", input.write.write_dir, "coefficients");

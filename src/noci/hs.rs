@@ -243,10 +243,12 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
     g_occ: (u128, u128),
 ) -> T {
     time_call!(crate::timers::noci::add_calculate_hs_pair_orthogonal, {
+        // Determine the spin-resolved excitation taking the ket occupation into the bra.
         let (alpha_holes, alpha_parts) = excitation_between(g_occ.0, l_occ.0);
         let (beta_holes, beta_parts) = excitation_between(g_occ.1, l_occ.1);
         let ra = alpha_holes.count_ones() as usize;
         let rb = beta_holes.count_ones() as usize;
+        // Particle-number changes and excitation ranks above two have zero Hamiltonian coupling.
         if alpha_parts.count_ones() as usize != ra
             || beta_parts.count_ones() as usize != rb
             || ra + rb > 2
@@ -254,6 +256,7 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
             return T::from_real(0.0);
         }
 
+        // Convert the valid connection to the reduced Slater-Condon representation.
         let excitation = Excitation {
             alpha: ExcitationSpin {
                 holes: alpha_holes,
@@ -274,8 +277,6 @@ pub(crate) fn calculate_h_pair_orthogonal<T: NOCIScalar>(
 /// packet contains one double-excitation sector while `out` remains ordered by compact request.
 /// # Arguments:
 /// - `data`: Shared NOCI basis, AO data, and parent MO caches.
-/// - `factorisation`: Canonical parent-local source component IDs.
-/// - `components`: Prepared occupied and virtual labels for those canonical components.
 /// - `connections`: Relative orthogonal connection topology.
 /// - `pairs`: Compact `(source, connection)` requests in stochastic request order.
 /// - `scratch`: Reusable source-parent and rank-sector grouping storage.
@@ -289,12 +290,14 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
     scratch: &mut OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
+    // Group output positions by parent and Slater-Condon sector without reordering `out`.
     scratch.clear();
     for (output, &(source, connection)) in pairs.iter().enumerate() {
         let parent = data.space.state(source).parent;
         scratch.groups[parent * 5 + connections[connection].sector()].push(output);
     }
 
+    // Select the widest runtime-supported packet size for double-excitation kernels.
     let mocache = data
         .mocache
         .expect("orthogonal Hamiltonian batching requires parent MO caches");
@@ -309,6 +312,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
     #[cfg(not(target_arch = "x86_64"))]
     let width = 1;
 
+    // Evaluate each parent/sector group using homogeneous SIMD packets and a scalar tail.
     for (parent, cache) in mocache.iter().enumerate().take(data.space.parents.len()) {
         for sector in 0..5 {
             let outputs = &scratch.groups[parent * 5 + sector];
@@ -316,6 +320,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
                 continue;
             }
             let mut start = 0usize;
+            // Only double sectors use the prepared vector kernels; singles remain scalar.
             while sector >= 2 && width > 1 && start + width <= outputs.len() {
                 let mut occupations = [(0u128, 0u128); 8];
                 let mut states = [ReducedTwoSpinState::new(1.0, ExcitationCache::default()); 8];
@@ -327,6 +332,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
                     states[lane] = connections[connection]
                         .reduced(data.space.alpha(source), data.space.beta(source));
                 }
+                // Evaluate one full packet, then scatter values back to request order.
                 xw_hamiltonian_orthogonal_prepared_batched(
                     data.ao,
                     cache,
@@ -339,6 +345,7 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
                 }
                 start += width;
             }
+            // Handle singles and any incomplete SIMD packet with the scalar kernel.
             for &output in &outputs[start..] {
                 let (source, connection) = pairs[output];
                 let state = connections[connection]

@@ -187,7 +187,9 @@ fn print_misc_diagnostics(
     println!("NOCI energy from RDMs in NO basis: {:.12}", erdm);
 }
 
-/// Print spin-free RDM consistency diagnostics.
+/// Print spin-free RDM trace and contraction consistency diagnostics.
+/// Checks `Tr(Gamma_k) = N!/(N-k)!` and the recursive contraction
+/// `sum_t Gamma_k[...,t;...,t] = (N-k+1) Gamma_{k-1}` in the relevant orbital space.
 /// # Arguments:
 /// - `gamma1`: Full-space spin-free one-body RDM.
 /// - `gamma2`: Full-space spin-free two-body RDM.
@@ -203,8 +205,10 @@ fn print_rdm_diagnostics(
     gamma4: &RDM4<f64>,
     active: &[usize],
 ) {
+    // Resolve the active-space dimension used by Gamma3 and Gamma4.
     let n = active.len();
 
+    // Trace full and active Gamma1 to obtain the corresponding electron counts.
     let mut nelec = 0.0;
     for p in 0..gamma1.n {
         nelec += gamma1.data[p * gamma1.n + p];
@@ -215,6 +219,7 @@ fn print_rdm_diagnostics(
         nact += gamma1.data[p * gamma1.n + p];
     }
 
+    // Evaluate `Tr(Gamma_2) = sum_pq Gamma_2[pq;pq]` in the full orbital space.
     let mut tr2 = 0.0;
     for p in 0..gamma2.n {
         for q in 0..gamma2.n {
@@ -223,6 +228,7 @@ fn print_rdm_diagnostics(
         }
     }
 
+    // Evaluate the analogous active-space traces of Gamma3 and Gamma4.
     let mut tr3a = 0.0;
     for p in 0..gamma3.n {
         for q in 0..gamma3.n {
@@ -254,6 +260,7 @@ fn print_rdm_diagnostics(
         }
     }
 
+    // Check `sum_q Gamma_2[pq;rq] = (N-1) Gamma_1[p;r]` elementwise.
     let mut g2_contract_err: f64 = 0.0;
     for p in 0..gamma1.n {
         for r in 0..gamma1.n {
@@ -269,6 +276,7 @@ fn print_rdm_diagnostics(
         }
     }
 
+    // Contract active Gamma3 to full Gamma2 restricted to active indices.
     let mut g3_active_contract_err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
@@ -297,6 +305,7 @@ fn print_rdm_diagnostics(
         }
     }
 
+    // Check the active-space recursion from Gamma4 to Gamma3.
     let mut g4_active_contract_err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
@@ -335,6 +344,7 @@ fn print_rdm_diagnostics(
         }
     }
 
+    // Report traces, their fixed-particle-number references, and maximum residuals.
     println!("{}", "=".repeat(100));
     println!("NOCI spin-free RDM diagnostics");
     println!("Trace Gamma1: {:.10}", nelec);
@@ -402,6 +412,7 @@ fn print_cumulant_diagnostics(
             lambda.lambda4.get(&[p, q, r, w], &[s, t, u, v])
         };
 
+    // Verify the defining identity `lambda_1 = Gamma_1` in the active space.
     let mut l1err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
@@ -410,6 +421,7 @@ fn print_cumulant_diagnostics(
         }
     }
 
+    // Reconstruct `lambda_2` by subtracting the spin-free disconnected Gamma1 products.
     let mut l2err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
@@ -433,6 +445,7 @@ fn print_cumulant_diagnostics(
         }
     }
 
+    // Reconstruct `lambda_3` from Gamma3, lambda1 products, and lambda1-lambda2 terms.
     let mut l3err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
@@ -490,6 +503,7 @@ fn print_cumulant_diagnostics(
         }
     }
 
+    // Reconstruct `lambda_4` by subtracting every lower-rank disconnected partition.
     let mut l4err: f64 = 0.0;
     for p in 0..n {
         for q in 0..n {
@@ -662,6 +676,7 @@ fn print_cumulant_diagnostics(
         }
     }
 
+    // Report the maximum elementwise residual for each defining cumulant identity.
     println!("{}", "=".repeat(100));
     println!("NOCI spin-free cumulant diagnostics");
     println!("Max Lambda1 - active Gamma1 error: {:.6e}", l1err);

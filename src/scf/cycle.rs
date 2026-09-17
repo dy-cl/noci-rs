@@ -217,12 +217,14 @@ pub fn scf_cycle(
     noci_basis: bool,
     controls: (bool, Option<&SCFExcitation>, Option<&[SCFState]>),
 ) -> Option<SCFState> {
+    // Unpack controls and establish the spin occupations for this SCF branch.
     let (da0, db0) = d0;
     let (use_mom, scfexcitation, biases) = controls;
 
     let na = usize::try_from(ao.nelec[0]).unwrap();
     let nb = usize::try_from(ao.nelec[1]).unwrap();
 
+    // Initialise the physical densities, convergence state, and DIIS history.
     let mut e = f64::INFINITY;
     let mut da = da0.clone();
     let mut db = db0.clone();
@@ -235,6 +237,7 @@ pub fn scf_cycle(
 
     print_header(input, scfexcitation);
 
+    // Resolve optional metadynamics and maximum-overlap controls once per cycle.
     let lambda = match &input.states {
         StateType::Metadynamics(meta) => Some(meta.lambda),
         _ => None,
@@ -242,10 +245,12 @@ pub fn scf_cycle(
 
     let (mom_a, mom_b) = mom_flags(use_mom, scfexcitation);
 
+    // Build the unbiased physical Fock matrices from the initial densities.
     let (mut fa_phys, mut fb_phys) = fock(&ao.h, &ao.eri_coul, &da, &db);
 
     let mut iter = 0;
     while iter < input.scf.max_cycle {
+        // Form this iteration's trial Fock, adding bias only to the diagonalisation problem.
         let mut fa_curr = fa_phys.clone();
         let mut fb_curr = fb_phys.clone();
 
@@ -257,6 +262,7 @@ pub fn scf_cycle(
             fb_curr = fb_curr + bb;
         }
 
+        // Extrapolate the trial Fock from commutator errors when sufficient history exists.
         if use_diis {
             diis.push(&fa_curr, &fb_curr, &da, &db, &ao.s, &ao.x);
         }
@@ -267,6 +273,7 @@ pub fn scf_cycle(
             (fa_curr.clone(), fb_curr.clone())
         };
 
+        // Solve both spin eigenproblems and select occupied orbitals by Aufbau or MOM.
         let ((ea, ca), (eb, cb)) = rayon::join(
             || general_evp_x(&fa_use, &ao.x),
             || general_evp_x(&fb_use, &ao.x),
@@ -293,6 +300,7 @@ pub fn scf_cycle(
         ca_occ_old = Some(ca_occ.clone());
         cb_occ_old = Some(cb_occ.clone());
 
+        // Rebuild physical densities, Fock matrices, and the unbiased SCF energy.
         let (da_new, db_new) = rayon::join(
             || density(&ca_occ, na, DensityMode::Hermitian),
             || density(&cb_occ, nb, DensityMode::Hermitian),
@@ -302,6 +310,7 @@ pub fn scf_cycle(
 
         let e_new = energy(&ao.h, ao.enuc, &da_new, &db_new, &fa_new, &fb_new);
 
+        // Evaluate energy, commutator, and orbital-gradient convergence diagnostics.
         let err = if use_diis {
             diis.last_error_norm2().unwrap_or(f64::INFINITY).sqrt()
         } else {
@@ -321,6 +330,7 @@ pub fn scf_cycle(
             );
         }
 
+        // Finalise immediately once both configured convergence criteria are satisfied.
         if d_e < input.scf.e_tol && err < input.scf.fds_sdf_tol {
             let state = SCFState {
                 e: e_new,
@@ -336,6 +346,7 @@ pub fn scf_cycle(
             return Some(finalise(state, &ea, &eb, ao, input));
         }
 
+        // Commit the physical iterate for the next cycle.
         da = da_new;
         db = db_new;
         fa_phys = fa_new;
@@ -344,6 +355,7 @@ pub fn scf_cycle(
         iter += 1;
     }
 
+    // Exhausting the iteration budget leaves this requested state unavailable.
     println!("SCF not converged.");
     None
 }

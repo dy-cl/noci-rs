@@ -222,6 +222,7 @@ pub fn qmc_step(
     ref_indices: &[usize],
     world: &impl Communicator,
 ) -> (f64, Option<ExcitationHist>) {
+    // Validate BApply-specific generator, checkpoint, and parent-orbital requirements.
     let qmc = data.input.qmc.as_ref().unwrap();
     if qmc.excitation_gen != ExcitationGen::Uniform {
         panic!("BApply supports only excitation_gen = \"uniform\"");
@@ -237,6 +238,7 @@ pub fn qmc_step(
     if mocache.iter().any(|cache| !cache.orthogonal_slater_condon) {
         panic!("BApply requires orthonormal orbitals within every parent MO basis");
     }
+    // Build retained/auxiliary spin spaces and reusable overlap-factor storage.
     let (isref, _, run) = construct_qmc_run(data, c0, ref_indices, world);
     let factorisation = SpinFactorisation::new(data);
     let auxiliary = AuxiliarySpace::new(data.space);
@@ -256,6 +258,7 @@ pub fn qmc_step(
         false,
     );
     let initial_factor_bytes = overlap_factors.storage_bytes().0;
+    // Allocate persistent contraction, communication, and propagation state.
     let mut overlap_scratch = factorisation.overlap_scratch();
     let mut auxiliary_scratch = factorisation.auxiliary_overlap_scratch();
     let mut mpi = NOCIMPIScratch::new(run.nranks);
@@ -273,6 +276,7 @@ pub fn qmc_step(
         propagator,
     );
 
+    // Give each Rayon worker independent RNG and auxiliary propagation scratch.
     let mut workers = (0..rayon::current_num_threads())
         .map(|tid| {
             Mutex::new(AuxiliaryThreadPropagation::new(
@@ -290,6 +294,7 @@ pub fn qmc_step(
     let mut chi_cutoff_hint = 0.0;
     let mut tangent_cutoff_hint = 0.0;
 
+    // Advance one report block at a time so communication and compression remain amortised.
     for report in state.start_report..qmc.nreports {
         local_updates.clear();
         auxiliary_mpi.send_ranked.clear();
@@ -325,6 +330,7 @@ pub fn qmc_step(
                 &mut state.mc.excitation_hist,
             );
         }
+        // Coalesce generated auxiliary amplitudes on their owning MPI ranks.
         coalesce_auxiliary_population_updates(&mut local_updates);
         let mut owner_updates = if run.nranks == 1 {
             // Preserve allocation across reports while avoiding MPI scratch and a second coalesce.
@@ -340,6 +346,7 @@ pub fn qmc_step(
             coalesce_auxiliary_population_updates(&mut updates);
             updates
         };
+        // Compress the auxiliary vector before applying `B^dagger` to physical populations.
         let chi_cutoff = target_cutoff(
             &owner_updates,
             qmc.fri.pre_overlap_target_nnz,
@@ -372,6 +379,7 @@ pub fn qmc_step(
                 &mut auxiliary_scratch,
             );
         }
+        // Collect and compress `d chi / d E_s` in the representation local to this MPI mode.
         if run.nranks == 1 {
             local_updates = owner_updates;
         } else {
@@ -423,6 +431,7 @@ pub fn qmc_step(
             &mut overlap_scratch,
         );
 
+        // Update projected-energy statistics and the tangent-aware population-control shift.
         let end = (report + 1) * qmc.ncycles;
         let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
         state.pe = pe;
@@ -437,6 +446,7 @@ pub fn qmc_step(
             world,
             data.input,
         );
+        // Honour convergence stops and periodic restart checkpoints before reporting.
         if let Some(result) = check_stop(
             report,
             &mut state,
@@ -476,6 +486,7 @@ pub fn qmc_step(
         );
     }
 
+    // Report final factor-table growth and return the last projected estimate.
     print_bapply_storage(
         run.irank,
         qmc.bapply_factor_tables,

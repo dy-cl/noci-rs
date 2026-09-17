@@ -32,6 +32,7 @@ pub fn run_qmc_stochastic_noci(
     wicks: Option<&WicksView<f64>>,
 ) -> f64 {
     time_call!(crate::timers::stochastic::add_run_qmc_stochastic_noci, {
+        // Identify root for user-facing output while all ranks build identical basis metadata.
         let irank = world.rank();
 
         if irank == 0 {
@@ -39,12 +40,14 @@ pub fn run_qmc_stochastic_noci(
             println!("Building NOCI-QMC basis....");
         }
 
+        // Expand reference determinants into the stochastic NOCI-QMC basis.
         let references = (0..post.space.len()).map(NOCIIndex).collect::<Vec<_>>();
         let basis = time_call!(crate::timers::stochastic::add_generate_excited_basis, {
             post.space.excited_from(&references, input, true)
         });
         let n = basis.len();
 
+        // Locate reference states and embed their coefficients in the expanded basis.
         let ref_indices: Vec<usize> = post
             .space
             .labels
@@ -73,12 +76,14 @@ pub fn run_qmc_stochastic_noci(
             println!("Running stochastic NOCI-QMC propagation....");
         }
 
+        // Construct matrix-element data and run distributed stochastic propagation.
         let mut es = basis.parents[0].e;
         let data = NOCIData::new(post.ao, &basis, input, post.tol, wicks).withmocache(post.mocache);
         let (e, local_hist) = time_call!(crate::timers::stochastic::add_qmc_step, {
             qmc_step(&data, &c0qmc, &mut es, &ref_indices, world)
         });
 
+        // Write rank-local spawning histograms when diagnostic sampling is enabled.
         if let Some(hist) = local_hist.as_ref()
             && input.write.write_excitation_hist
         {

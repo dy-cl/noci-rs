@@ -58,6 +58,7 @@ impl OverlapWeightedGenerator {
         spin: &SpinFactorisation,
         factors: &OverlapFactors,
     ) -> Self {
+        // Build dense parent-local `(alpha,beta) -> determinant` lookup tables.
         let det_by_ab = (0..spin.nparents())
             .map(|parent| {
                 let (na, nb) = spin.parent_component_counts(parent);
@@ -72,6 +73,7 @@ impl OverlapWeightedGenerator {
             })
             .collect();
 
+        // Precompute each source determinant's cross-parent overlap proposal normalisation.
         let nparent = spin.nparents();
         let det_meta = (0..data.space.len())
             .map(|det| {
@@ -81,6 +83,7 @@ impl OverlapWeightedGenerator {
                 let source_b = source.bid.0;
                 let mut ztotal = 0.0;
 
+                // Factorisation gives `Z_x = sum_Q Z_A^{QP}(a_x) Z_B^{QP}(b_x)`.
                 for target_parent in 0..nparent {
                     if target_parent == source_parent {
                         continue;
@@ -99,6 +102,7 @@ impl OverlapWeightedGenerator {
             })
             .collect();
 
+        // Retain immutable lookup and normalisation data for every subsequent proposal.
         Self {
             det_by_ab,
             det_meta,

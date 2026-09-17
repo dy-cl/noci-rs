@@ -36,6 +36,12 @@ pub(in crate::snoci) enum CandidateM<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> CandidateM<T> {
+    /// Borrow the packed upper-triangular candidate matrix as scalar values.
+    /// Disk storage is reinterpreted using the scalar type and byte length fixed at creation.
+    /// # Arguments:
+    /// - `self`: Candidate matrix stored in RAM or a memory map.
+    /// # Returns
+    /// - `&[T]`: Immutable packed upper triangle in row-major packed order.
     pub(in crate::snoci) fn as_slice(&self) -> &[T] {
         match self {
             Self::Ram(m) => m.as_slice(),
@@ -49,6 +55,12 @@ impl<T: NOCIScalar> CandidateM<T> {
         }
     }
 
+    /// Mutably borrow the packed upper-triangular candidate matrix as scalar values.
+    /// Disk storage is reinterpreted using the scalar type and byte length fixed at creation.
+    /// # Arguments:
+    /// - `self`: Candidate matrix stored in RAM or a writable memory map.
+    /// # Returns
+    /// - `&mut [T]`: Mutable packed upper triangle in row-major packed order.
     pub(in crate::snoci) fn as_mut_slice(&mut self) -> &mut [T] {
         match self {
             Self::Ram(m) => m.as_mut_slice(),
@@ -259,10 +271,18 @@ pub(in crate::snoci) fn build_candidate_m_disk<T: NOCIScalar>(
     })
 }
 
+/// Evaluate every upper-triangular unprojected candidate matrix element in parallel.
+/// Stores `M_ab = <Phi_a|(F - E_0)|Phi_b>` in packed row-major order for `a <= b`.
+/// # Arguments:
+/// - `op`: Matrix-element data, candidates, Fock operator, and zeroth-order energy.
+/// - `m`: Mutable packed upper-triangular destination of length `n(n+1)/2`.
+/// # Returns
+/// - `()`: Fills every packed candidate matrix entry.
 fn fill_candidate_m<T: NOCIScalar>(
     op: &PT2ProjectedOperator<'_, '_, '_, T>,
     m: &mut [T],
 ) {
+    // Share the destination address because each parallel task owns one disjoint packed row.
     let n = op.candidates.len();
     let m_addr = m.as_mut_ptr() as usize;
 

@@ -414,16 +414,20 @@ impl OverlapFactorStorage {
         alpha: &[Vec<f64>],
         beta: &[Vec<f64>],
     ) {
+        // Preserve the existing allocation when there is nothing to append.
         if alpha.is_empty() && beta.is_empty() {
             return;
         }
 
         match self {
             Self::Ram(storage) => {
+                // Grow each row stride geometrically so repeated interning is amortised.
                 let old_nsa = storage.afac.len() / nta;
                 let old_nsb = storage.bfac.len() / ntb;
                 let new_nsa = old_nsa.max((nsa + alpha.len()).next_power_of_two());
                 let new_nsb = old_nsb.max((nsb + beta.len()).next_power_of_two());
+
+                // Fill unused capacity in place when both row strides are large enough.
                 if new_nsa == old_nsa && new_nsb == old_nsb {
                     for row in 0..nta {
                         for (column, values) in alpha.iter().enumerate() {
@@ -437,6 +441,8 @@ impl OverlapFactorStorage {
                     }
                     return;
                 }
+
+                // Repack old rows and append new columns into the enlarged strides.
                 let mut afac = vec![0.0; nta * new_nsa];
                 let mut bfac = vec![0.0; ntb * new_nsb];
                 for row in 0..nta {
@@ -457,13 +463,18 @@ impl OverlapFactorStorage {
                 storage.bfac = bfac;
             }
             Self::Disk(storage) => {
+                // Proposal CDFs share the mapped layout and cannot be extended safely.
                 if storage.build_cdfs {
                     panic!("cannot extend overlap factors with proposal CDFs");
                 }
+
+                // Apply the same geometric row-stride policy to the mapped backend.
                 let old_nsa = storage.na / nta;
                 let old_nsb = storage.nb / ntb;
                 let new_nsa = old_nsa.max((nsa + alpha.len()).next_power_of_two());
                 let new_nsb = old_nsb.max((nsb + beta.len()).next_power_of_two());
+
+                // Fill spare mapped columns directly when no remapping is required.
                 if new_nsa == old_nsa && new_nsb == old_nsb {
                     let (afac, bfac, _, _) = self.factors_mut();
                     for row in 0..nta {
@@ -478,6 +489,8 @@ impl OverlapFactorStorage {
                     }
                     return;
                 }
+
+                // Snapshot values before replacing the map, because its old slices become invalid.
                 let full = unsafe {
                     std::slice::from_raw_parts(
                         storage.map.as_ptr() as *const f64,
@@ -488,6 +501,8 @@ impl OverlapFactorStorage {
                 let old_bfac = full[storage.na..].to_vec();
                 let path = storage.path.clone();
                 storage.path = PathBuf::new();
+
+                // Recreate the backing file at the enlarged size without deleting its path.
                 let old = std::mem::replace(
                     self,
                     Self::Disk(OverlapDiskFactors::create(
@@ -498,6 +513,8 @@ impl OverlapFactorStorage {
                     )),
                 );
                 drop(old);
+
+                // Restore retained columns and append the newly interned source columns.
                 let (new_afac, new_bfac, _, _) = self.factors_mut();
                 for row in 0..nta {
                     new_afac[row * new_nsa..row * new_nsa + old_nsa]

@@ -15,6 +15,13 @@ pub fn print_report(
     res: &GeometryResults,
     input: &Input,
 ) {
+    /// Print one absolute timer with call count and mean duration.
+    /// # Arguments:
+    /// - `lbl`: Human-readable timer label.
+    /// - `c`: Accumulated timer duration and invocation count.
+    /// - `indent`: Number of spaces preceding the label.
+    /// # Returns
+    /// - `()`: Prints one formatted timer row to stdout.
     fn print_counter(
         lbl: &str,
         c: crate::timers::Counter,
@@ -35,6 +42,14 @@ pub fn print_report(
         );
     }
 
+    /// Print one child timer and its percentage of a parent timer.
+    /// # Arguments:
+    /// - `label`: Human-readable child timer label.
+    /// - `counter`: Accumulated child duration and invocation count.
+    /// - `parent`: Parent duration used as the relative-time denominator.
+    /// - `indent`: Number of spaces preceding the label.
+    /// # Returns
+    /// - `()`: Prints one formatted relative timer row to stdout.
     fn print_relative_counter(
         label: &str,
         counter: crate::timers::Counter,
@@ -61,6 +76,7 @@ pub fn print_report(
         );
     }
 
+    // Resolve labels once so all state and energy tables use the same filtering.
     let nthreads = rayon::current_num_threads();
     let hlabels: Vec<&str> = match &input.states {
         StateType::Mom(recipes) => recipes
@@ -88,6 +104,7 @@ pub fn print_report(
         }
     };
 
+    // Form aggregate timers used by several detailed timing sections.
     let s_pair_total = res.timings.noci.calculate_s_pair;
     let f_pair_total = res.timings.noci.calculate_f_pair;
     let hs_pair_total = res.timings.noci.calculate_hs_pair;
@@ -100,6 +117,7 @@ pub fn print_report(
             + res.timings.noci.calculate_hs_pair_wicks.calls,
     };
 
+    // Print execution resources and top-level wall-clock categories.
     println!("{}", "=".repeat(100));
     println!("Number of MPI ranks: {}", res.nranks);
     println!("Number of Rayon threads per rank: {}", nthreads);
@@ -134,6 +152,7 @@ pub fn print_report(
     println!("{}", "-".repeat(100));
 
     if input.qmc.is_some() {
+        // Report stochastic NOCI-QMC setup, propagation, and communication costs.
         println!("Stochastic NOCI-QMC timings");
         print_counter(
             "Total stochastic NOCI-QMC time",
@@ -180,6 +199,7 @@ pub fn print_report(
     }
 
     if input.snoci.is_some() {
+        // Report selected-NOCI and perturbative-selection costs when requested.
         print_counter("Total SNOCI time", res.timings.snoci.run_snoci, 0);
         print_counter("Full SNOCI step", res.timings.snoci.snoci_step, 2);
         print_counter(
@@ -268,6 +288,7 @@ pub fn print_report(
         println!("{}", "-".repeat(100));
     }
 
+    // Break shared matrix construction down into overlap and Hamiltonian kernels.
     println!("Shared full matrix build timings");
     print_counter(
         "Full Fock matrix build",
@@ -360,6 +381,7 @@ pub fn print_report(
 
     println!("{}", "-".repeat(100));
 
+    // Report reusable orbital-cache and nonorthogonal-Wick construction costs.
     println!("Shared NOCI MO cache timings");
     print_counter(
         "MO integral cache build",
@@ -556,6 +578,7 @@ pub fn print_report(
 
     println!("{}", "-".repeat(100));
 
+    // Print geometry, retained states, and final variational energies.
     println!("R: {}", res.r);
 
     let ref_energy = if res.states.is_empty() {
@@ -655,6 +678,7 @@ pub fn print_report(
     }
 
     if res.e_noci_qmc_stoch.is_some() {
+        // Stochastic estimates require external blocking analysis for uncertainties.
         println!("State(NOCI-qmc-qmc): Blocking analysis must be performed");
     }
 
