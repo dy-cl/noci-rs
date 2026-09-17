@@ -214,6 +214,7 @@ pub fn print_input(input: &Input) {
             );
             println!("SHIFT_DAMPING: {}", q.shift_damping);
             println!("POPULATION_RESTORING: {}", q.population_restoring);
+            println!("MOMENTUM_BETA: {}", q.momentum_beta);
             let excitation_gen = match q.excitation_gen {
                 ExcitationGen::Uniform => "uniform",
                 ExcitationGen::HeatBath => "heat-bath",

@@ -201,6 +201,7 @@ pub fn qmc_step(
 
         PropagationState::new(
             mc,
+            None,
             pe,
             restart.report + 1,
             restart.reached.unwrap_or_else(|| {
@@ -228,6 +229,7 @@ pub fn qmc_step(
                 changed: Vec::new(),
                 excitation_hist,
             },
+            None,
             ProjectedEnergyUpdate { num: 0.0, den: 1.0 },
             0,
             false,

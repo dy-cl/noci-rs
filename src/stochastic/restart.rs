@@ -31,6 +31,8 @@ pub(in crate::stochastic) struct RestartState {
     pub(in crate::stochastic) nsampledoprev: i64,
     /// Rank-local persistent real populations.
     pub(in crate::stochastic) populations: Vec<f64>,
+    /// Optional report-level heavy-ball velocity in the rank-local population layout.
+    pub(in crate::stochastic) momentum: Option<Vec<f64>>,
     /// Optional excitation histogram.
     pub(in crate::stochastic) excitation_hist: Option<ExcitationHist>,
     /// Optional base RNG seed.
@@ -336,6 +338,14 @@ pub(in crate::stochastic) fn write_restart_hdf5(
                 .with_data(&[state.populations.len() as u64])
                 .create("population_len")?;
 
+            // Store BApply report-level heavy-ball state only when momentum is active.
+            if let Some(momentum) = &state.momentum {
+                group
+                    .new_dataset_builder()
+                    .with_data(momentum)
+                    .create("momentum")?;
+            }
+
             // Persist the optional spawning histogram with all binning metadata.
             if let Some(hist) = &state.excitation_hist {
                 let h = group.create_group("excitation_hist")?;
@@ -480,6 +490,13 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         }
     }
 
+    // Momentum is optional so existing schema-2 restart files remain readable.
+    let momentum = if let Ok(dataset) = group.dataset("momentum") {
+        Some(dataset.read_1d::<f64>()?.to_vec())
+    } else {
+        None
+    };
+
     // Reconstruct the optional spawning histogram from its binning state and counts.
     let excitation_hist = if let Ok(h) = group.group("excitation_hist") {
         let logmin = h.dataset("logmin")?.read_1d::<f64>()?[0];
@@ -512,6 +529,7 @@ pub(in crate::stochastic) fn read_restart_hdf5(
         nsampledprev,
         nsampledoprev,
         populations,
+        momentum,
         excitation_hist,
         base_seed,
         overlap_weight,

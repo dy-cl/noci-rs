@@ -32,6 +32,15 @@ libcint = {version = "=0.3.2", features = ["build_from_source", "static"]}
 [dev-dependencies]
 serial_test = {version = "3"}
 
+[lints.rust]
+#missing_docs = "deny"
+
+[lints.clippy]
+#missing_docs_in_private_items = "deny"
+#missing_errors_doc = "deny"
+#missing_panics_doc = "deny"
+#missing_safety_doc = "deny"
+
 [workspace]
 members = [
     ".",

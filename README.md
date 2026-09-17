@@ -484,6 +484,7 @@ qmc = {
     target_population = 1e5,
     shift_damping = 5e-4,
     population_restoring = 0.0,
+    momentum_beta = 0.0,
     ncycles = 1e1,
     nreports = 1e3,
     fri = {
@@ -517,7 +518,9 @@ BApply currently supports uniform generation only; improved generation is future
 `shift_damping` damps Newton range-population shift updates. `population_restoring` is dimensionless
 target-restoring strength \(\kappa\) in Newton range-population controller: `0` gives zero-growth
 control; positive values restore toward `target_population`, with larger values restoring more
-strongly. `fri.population.cutoff`, `fri.spawn.cutoff`, `fri.pre_overlap.target_nnz`, and
+strongly. `momentum_beta` is dimensionless BApply-only report-level heavy-ball coefficient
+\(0 \le \beta < 1\); `0` disables momentum. `fri.population.cutoff`, `fri.spawn.cutoff`,
+`fri.pre_overlap.target_nnz`, and
 `fri.shift_tangent.target_nnz` control pivotal-FRI population/spawn compression and retained sparse
 sizes. Pivotal FRI preserves conditional expectation; variance reduction is not universal.
 

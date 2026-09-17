@@ -662,6 +662,20 @@ fn read_qmc(
             std::process::exit(1);
         }
 
+        let momentum_beta = qmc_tbl
+            .get("momentum_beta")
+            .unwrap_or(defaults.momentum_beta);
+
+        if !momentum_beta.is_finite() || !(0.0..1.0).contains(&momentum_beta) {
+            eprintln!("qmc.momentum_beta must satisfy 0.0 <= momentum_beta < 1.0");
+            std::process::exit(1);
+        }
+
+        if momentum_beta != 0.0 && !b_apply {
+            eprintln!("qmc.momentum_beta is supported only by the BApply propagator");
+            std::process::exit(1);
+        }
+
         // `None` is resolved from the actual number of references after basis construction.
         let n_projected = qmc_tbl
             .get::<_, Option<usize>>("n_projected")
@@ -684,6 +698,7 @@ fn read_qmc(
                 .get("shift_damping")
                 .unwrap_or(defaults.shift_damping),
             population_restoring,
+            momentum_beta,
             ncycles: qmc_tbl.get("ncycles").unwrap_or(defaults.ncycles),
             nreports: qmc_tbl.get("nreports").unwrap_or(defaults.nreports),
             excitation_gen,

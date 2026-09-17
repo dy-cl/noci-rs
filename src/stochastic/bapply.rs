@@ -206,7 +206,9 @@ fn print_bapply_storage(
 
 /// Perform BApply stochastic range propagation.
 /// `\chi \simeq -dt(\hat H-E_s)B N` is sampled in parent-orthogonal determinant spaces and the
-/// persistent real range population is updated exactly as `N' = N + B^\dagger\chi`.
+/// persistent real range population is updated as `N_{r+1} = N_r + B^\dagger\chi_r`, or with
+/// report-level heavy-ball momentum as `V_{r+1} = \beta V_r + B^\dagger\chi_r` and
+/// `N_{r+1} = N_r + V_{r+1}`.
 /// # Arguments:
 /// - `data`: Immutable stochastic propagation data.
 /// - `c0`: Initial determinant coefficient vector.
@@ -356,11 +358,18 @@ pub fn qmc_step(
         chi_cutoff_hint = chi_cutoff;
         let mut fri_rng = QmcRng::seed_from_u64(run.rank_seed ^ 0xA0761D6478BD642F ^ report as u64);
         compress_sparse(&mut owner_updates, chi_cutoff, &mut fri_rng);
-        if run.nranks == 1 {
+
+        let physical_updates: &[AuxiliaryPopulationUpdate] = if run.nranks == 1 {
+            &owner_updates
+        } else {
+            gather_all_auxiliary_updates(&owner_updates, &mut auxiliary_mpi, world)
+        };
+
+        if qmc.momentum_beta == 0.0 {
             factorisation.apply_auxiliary_overlap_sparse(
                 &mut state.mc.populations,
                 &run.owned,
-                owner_updates
+                physical_updates
                     .iter()
                     .map(|update| (update.index(), update.dn)),
                 (data, &auxiliary),
@@ -368,17 +377,32 @@ pub fn qmc_step(
                 &mut auxiliary_scratch,
             );
         } else {
-            let gathered = gather_all_auxiliary_updates(&owner_updates, &mut auxiliary_mpi, world);
+            let Some(momentum) = state.momentum.as_mut() else {
+                panic!("BApply heavy-ball momentum state is not initialised");
+            };
+
+            // Heavy-ball update: `V_{r+1} = \beta V_r + \Delta_r`, then
+            // `N_{r+1} = N_r + V_{r+1}`.
+            for velocity in momentum.iter_mut() {
+                *velocity *= qmc.momentum_beta;
+            }
 
             factorisation.apply_auxiliary_overlap_sparse(
-                &mut state.mc.populations,
+                momentum.as_mut_slice(),
                 &run.owned,
-                gathered.iter().map(|update| (update.index(), update.dn)),
+                physical_updates
+                    .iter()
+                    .map(|update| (update.index(), update.dn)),
                 (data, &auxiliary),
                 &mut overlap_factors,
                 &mut auxiliary_scratch,
             );
+
+            for (population, velocity) in state.mc.populations.iter_mut().zip(momentum.iter()) {
+                *population += *velocity;
+            }
         }
+
         // Collect and compress `d chi / d E_s` in the representation local to this MPI mode.
         if run.nranks == 1 {
             local_updates = owner_updates;

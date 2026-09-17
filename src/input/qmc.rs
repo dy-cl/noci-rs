@@ -56,6 +56,8 @@ pub struct QMCOptions {
     pub shift_damping: f64,
     /// Dimensionless target-restoring strength `\kappa` for range propagators.
     pub population_restoring: f64,
+    /// Dimensionless report-level heavy-ball coefficient `\beta` for BApply.
+    pub momentum_beta: f64,
     /// Number of QMC cycles per report block.
     pub ncycles: usize,
     /// Number of report blocks.
@@ -122,6 +124,7 @@ impl Default for QMCOptions {
             fri: FriOptions::default(),
             shift_damping: 5e-4,
             population_restoring: 0.0,
+            momentum_beta: 0.0,
             ncycles: 10,
             nreports: 1000,
             excitation_gen: ExcitationGen::default(),
