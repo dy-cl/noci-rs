@@ -1,6 +1,8 @@
 // noci/orthogonal/eval/dispatch.rs
 
 /// Dispatch one orthogonal alpha/beta excitation-rank pair to compile-time constants.
+/// The supported set is exactly the Slater-Condon support of a two-body Hamiltonian:
+/// `(0,0)`, `(1,0)`, `(0,1)`, `(2,0)`, `(1,1)`, and `(0,2)`.
 macro_rules! dispatch_orthogonal_ranks {
     (
         $ranks:expr,

@@ -15,6 +15,12 @@ use super::cumulants3::Cumulant3;
 pub(crate) type Cumulant4<T> = CumulantTensor<T>;
 
 /// Build the active-space spin-free four-cumulant.
+///
+/// The spin-free generalized-normal-order decomposition is
+/// `Gamma_4 = lambda_4 + A(lambda_1^4 + lambda_1^2 lambda_2
+/// + lambda_1 lambda_3 + lambda_2^2)`, where `A` denotes the generated
+/// spin-adapted permutations and their coefficients. This routine subtracts
+/// that complete disconnected part from `Gamma_4` element by element.
 /// # Arguments:
 /// - `gamma4`: Active-space spin-free four-body RDM.
 /// - `lambda1`: Active-space one-cumulant.
@@ -28,9 +34,11 @@ pub(crate) fn cumulants4<T: NOCIScalar>(
     lambda2: &Cumulant2<T>,
     lambda3: &Cumulant3<T>,
 ) -> Cumulant4<T> {
+    // Allocate `lambda_4` in the same active orbital space as `Gamma_4`.
     let n = gamma4.n;
     let mut lambda = CumulantTensor::zeros(4, n);
 
+    // Traverse every upper and lower four-index tuple in row-major order.
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {
@@ -39,6 +47,7 @@ pub(crate) fn cumulants4<T: NOCIScalar>(
                         for t in 0..n {
                             for u in 0..n {
                                 for v in 0..n {
+                                    // Flatten `Gamma_4[pqrs;tuvw]` using its native layout.
                                     let g4i =
                                         ((((((p * gamma4.n + q) * gamma4.n + r) * gamma4.n + w)
                                             * gamma4.n
@@ -50,6 +59,8 @@ pub(crate) fn cumulants4<T: NOCIScalar>(
                                             * gamma4.n
                                             + v;
 
+                                    // Sum all lower-rank disconnected partitions generated for
+                                    // the spin-free generalized-normal-order convention.
                                     let disconnected = lambda1.get(&[p], &[s])
                                         * lambda1.get(&[q], &[t])
                                         * lambda1.get(&[r], &[u])
@@ -574,6 +585,7 @@ pub(crate) fn cumulants4<T: NOCIScalar>(
                                             * lambda2.get(&[p, w], &[u, v])
                                             * lambda2.get(&[q, r], &[t, s]);
 
+                                    // Retain only the connected rank-four contribution.
                                     lambda.set(
                                         &[p, q, r, w],
                                         &[s, t, u, v],

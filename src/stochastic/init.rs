@@ -101,9 +101,11 @@ pub(in crate::stochastic) fn initialise_qmc_state(
     scratch: &mut WickScratchSpin<f64>,
     mpi: (&impl Communicator, &mut NOCIMPIScratch),
 ) -> PropagationState {
+    // Resolve shared MPI scratch and stochastic controls once for both startup paths.
     let (world, mpiscratch) = mpi;
     let qmc = data.input.qmc.as_ref().unwrap();
 
+    // Restore a checkpoint when requested, preserving its report and controller history.
     if let Some(path) = data.input.write.read_restart.as_deref() {
         if run.irank == 0 {
             println!("Reading restart from {path}");
@@ -117,6 +119,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             population_representation(data.input.prop_ref().propagator),
         )
         .unwrap();
+        // The saved rank-local shard must match the current MPI determinant partition.
         if restart.populations.len() != run.owned.len() {
             panic!(
                 "Restart population length mismatch on rank {}: saved {}, current {}.",
@@ -126,6 +129,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             );
         }
 
+        // Restore shift and histogram state, creating a requested legacy-missing histogram.
         *es = restart.shift;
 
         let excitation_hist =
@@ -135,6 +139,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
                 restart.excitation_hist
             };
 
+        // Reconstruct transient sampling buffers around the persistent population vector.
         let mc = MCState {
             populations: restart.populations,
             sampled: SparsePopulations::new(run.ndets),
@@ -143,6 +148,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
             excitation_hist,
         };
 
+        // Recompute projected energy but retain saved population-controller observables.
         let pe = projected_energy(&mc.populations, run, world);
 
         let prev_pop = PopulationStats::new(
@@ -153,6 +159,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
         );
         let overlap_weight = restart.overlap_weight.unwrap_or(qmc.overlap_weight);
 
+        // Resume at the report following the checkpoint, inferring legacy activation if needed.
         return PropagationState::new(
             mc,
             pe,
@@ -168,6 +175,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
         );
     }
 
+    // Without a checkpoint, construct and globally normalise fresh initial populations.
     if run.irank == 0 {
         println!("Initialising populations.....");
     }
@@ -182,6 +190,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
         mpiscratch,
     );
 
+    // Allocate optional diagnostics and empty per-iteration population buffers.
     let excitation_hist = if data.input.write.write_excitation_hist {
         Some(ExcitationHist::new(-60.0, 1e-12, 100))
     } else {
@@ -196,6 +205,7 @@ pub(in crate::stochastic) fn initialise_qmc_state(
         excitation_hist,
     };
 
+    // Evaluate the initial projected energy and rank-local total/reference norms.
     let pe = projected_energy(&mc.populations, run, world);
 
     let nw_local = mc
@@ -215,9 +225,11 @@ pub(in crate::stochastic) fn initialise_qmc_state(
     let local = [nw_local, nref_local];
     let mut global = [0.0; 2];
 
+    // Sum population norms across ranks for the initial shift-controller state.
     world.all_reduce_into(&local, &mut global, SystemOperation::sum());
 
     let stats = PopulationStats::new(global[0], global[1], 0.0, 0);
 
+    // Start a fresh run at report zero with population control inactive.
     PropagationState::new(mc, pe, 0, false, stats, qmc.overlap_weight)
 }

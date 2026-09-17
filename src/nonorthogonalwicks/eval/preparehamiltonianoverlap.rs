@@ -73,6 +73,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
             let (x_ex, w_ex) = ex;
             let (x_cache, w_cache) = cache;
 
+            // For `m_\alpha=m_\beta=0`, try fixed-rank determinant/cofactor formulas before the
+            // generic evaluator. Any other zero-overlap distribution requires the general path.
             if w.aa.m == 0 && w.bb.m == 0 {
                 let ranks = (
                     usize::from(x_cache.alpha.rank),
@@ -89,9 +91,12 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                     excitation_phase,
                     enuc,
                 ) {
+                    // Fixed-rank path evaluates `(H,S)` from stored `X^{(m_i)}` and `Y^{(m_i)}`
+                    // contractions.
                     return value;
                 }
 
+                // Unsupported excitation ranks fall back to the generic augmented determinant.
                 return xw_hamiltonian_overlap_m0_gen_prepared(
                     w,
                     x_ex,
@@ -103,6 +108,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared<T: NOCIScalar>(
                 );
             }
 
+            // Nonzero `m_\alpha` or `m_\beta` requires the constrained sum over binary
+            // contraction assignments, evaluated by the general prepared path.
             xw_hamiltonian_overlap_gen_prepared(w, x_ex, w_ex, excitation_phase, enuc, scratch, tol)
         }
     )
@@ -139,6 +146,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
         {
             #[cfg(target_arch = "x86_64")]
             if w.aa.m == 0 && w.bb.m == 0 {
+                // Fixed-rank `m=0` requests can be packetised by the four excitation ranks and
+                // dispatched to the widest supported real or complex SIMD kernel.
                 unsafe {
                     if TypeId::of::<T>() == TypeId::of::<f64>() {
                         let w_f64 = &*std::ptr::from_ref(w).cast::<WicksPairView<'_, f64>>();
@@ -218,6 +227,8 @@ pub(crate) fn xw_hamiltonian_overlap_prepared_batched<T: NOCIScalar>(
             }
 
             let (space, reduced_states) = basis;
+            // Scalar fallback reconstructs full excitations only for requests outside the
+            // generated fixed-rank region; `output` preserves original request order.
             for &(output, a, b) in requests {
                 let x_det = &reduced_states[a];
                 let w_det = &reduced_states[b];
@@ -296,6 +307,8 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
     let mut outputs = [[0usize; N]; HAMNRANKS];
     let mut counts = [0usize; HAMNRANKS];
 
+    // Bin requests by `(R_{x,\alpha},R_{w,\alpha},R_{x,\beta},R_{w,\beta})` so every SIMD packet
+    // shares one fixed-rank determinant/cofactor expression.
     unsafe {
         for &(output, a, b) in requests {
             let x_det = &reduced_states[a];
@@ -329,6 +342,8 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
                 counts[bin] += 1;
 
                 if counts[bin] == N {
+                    // Complete packet: evaluate all lanes with one fixed-rank kernel, then scatter
+                    // results back to their original output positions.
                     let mut h = [T::from_real(0.0); N];
                     let mut s = [T::from_real(0.0); N];
                     kernel(
@@ -346,6 +361,7 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
                     counts[bin] = 0;
                 }
             } else {
+                // Unsupported rank: preserve correctness through the scalar prepared evaluator.
                 let (xa, xb) = basis.excitations(NOCIIndex(a));
                 let (wa, wb) = basis.excitations(NOCIIndex(b));
                 let x_state = Excitation {
@@ -378,6 +394,8 @@ unsafe fn xw_hamiltonian_overlap_prepared_simd<T: NOCIScalar, const N: usize>(
             let fill_x = x_bins[bin][0];
             let fill_w = w_bins[bin][0];
             let fill_phase = phases[bin][0];
+            // Pad incomplete packets with a valid lane only for SIMD evaluation; write back only
+            // the genuine `count` requests.
             for lane in count..N {
                 x_bins[bin][lane] = fill_x;
                 w_bins[bin][lane] = fill_w;
@@ -469,16 +487,19 @@ fn construct_hamiltonian_indices<const RX: usize, const RW: usize, const L: usiz
     rows: &mut [usize; L],
     cols: &mut [usize; L],
 ) {
+    // Bra-reference pairs occupy the `V_x x O_x` block.
     for i in 0..RX {
         rows[i] = usize::from(x_ex.particles[i]) - nocc;
         cols[i] = usize::from(x_ex.holes[i]);
     }
 
+    // Ket-reference pairs append the `O_w x V_w` block.
     for i in 0..RW {
         rows[RX + i] = nvirt + usize::from(w_ex.holes[i]);
         cols[RX + i] = usize::from(w_ex.particles[i]);
     }
 }
+
 /// Evaluate the fixed-rank `(L_\alpha, L_\beta)` Hamiltonian and overlap for
 /// `m_\alpha = m_\beta = 0`.
 /// The contraction determinants, cofactors and required second minors are evaluated
@@ -537,6 +558,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_hamiltonian_overlap_m0_prepared_const,
         {
+            // Build alpha-spin `\mathbf D_{\alpha,\mathrm{ov}}`, its determinant/cofactors, and
+            // labels `(r_\eta,c_z) \in (V_x\cup O_w)\times(O_x\cup V_w)`.
             let zero = T::from_real(0.0);
             let half = T::from_real(0.5);
             let mut rows_a = [0usize; LA];
@@ -557,6 +580,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 
             let x0_a = w.aa.x_slice(0);
             let y0_a = w.aa.y_slice(0);
+
+            // `D^\alpha_{\eta z}=X^{(0)}_{r_\eta c_z}` for `\eta\geq z`, otherwise
+            // `D^\alpha_{\eta z}=Y^{(0)}_{r_\eta c_z}`.
             for i in 0..LA {
                 let row = rows_a[i] * n_a;
                 for j in 0..LA {
@@ -568,6 +594,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // Same-spin two-column class:
+            // `\sum_{z<y}\sum_{\eta<\xi}\phi_{\eta\xi}^{zy}`
+            // `\mathcal J^\alpha_{\eta z,\xi y}\det\mathbf D_\alpha[\eta,\xi|z,y]`.
             let det_a = adjugate_transpose_const::<T, LA, DA>(&mut cof_a, &d_a);
             let mut j_a = zero;
             let jsl_a = w.aa.j_slice(0);
@@ -597,6 +626,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // One-column alpha contribution combines one-body and same-spin two-body intermediates:
+            // `\sum_{\eta z}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+            // `\mathcal H^\alpha_{\eta z}`.
             let mut replacement_a = zero;
             let hcol0_a = w.aa.hcol0_t_slice();
             for z in 0..LA {
@@ -606,6 +638,7 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // Repeat determinant, `\mathcal J`, and one-column stages for beta spin.
             let mut rows_b = [0usize; LB];
             let mut cols_b = [0usize; LB];
             let mut d_b = [zero; DB];
@@ -624,6 +657,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 
             let x0_b = w.bb.x_slice(0);
             let y0_b = w.bb.y_slice(0);
+
+            // `D^\beta_{\eta z}=X^{(0)}_{r_\eta c_z}` on/below diagonal and `Y^{(0)}` above it.
             for i in 0..LB {
                 let row = rows_b[i] * n_b;
                 for j in 0..LB {
@@ -635,6 +670,7 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // Contract beta second minors with stored same-spin `\mathcal J^\beta` intermediates.
             let det_b = adjugate_transpose_const::<T, LB, DB>(&mut cof_b, &d_b);
             let mut j_b = zero;
             let jsl_b = w.bb.j_slice(0);
@@ -664,6 +700,7 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // Contract beta cofactors with precombined one-column Hamiltonian intermediates.
             let mut replacement_b = zero;
             let hcol0_b = w.bb.hcol0_t_slice();
             for z in 0..LB {
@@ -673,6 +710,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // Different-spin two-column class:
+            // `\sum_{\eta z\xi y}\operatorname{cof}[\mathbf D_\alpha]_{\eta z}`
+            // `\mathcal{II}_{\eta z,\xi y}\operatorname{cof}[\mathbf D_\beta]_{\xi y}`.
             let mut ii_term = zero;
             let iisl = w.ab.iiab_slice(0, 0, 0, 0);
             let n = w.ab.n();
@@ -708,6 +748,9 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
                 }
             }
 
+            // Combine scalar, one-column, same-spin two-column, and mixed-spin two-column classes.
+            // `g_0` contains `E_\mathrm{nuc}+F^\alpha_0+F^\beta_0`
+            // `+\tfrac12(V^{\alpha\alpha}_0+V^{\beta\beta}_0)+V^{\alpha\beta}_0`.
             let det_ab = det_a * det_b;
             let g0 = T::from_real(enuc)
                 + w.aa.f0h[0]
@@ -721,6 +764,8 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
             core += j_a * det_b;
             core += j_b * det_a;
             core += ii_term;
+
+            // Apply excitation phase and reduced overlaps only after forming unscaled `(H,S)`.
             let pref = T::from_real(excitation_phase)
                 * w.aa.phase
                 * T::from_real(w.aa.tilde_s_prod)
@@ -732,6 +777,10 @@ fn xw_hamiltonian_overlap_m0_prepared_const<
 }
 
 /// Evaluate packed fixed-rank Hamiltonian and overlap matrix elements.
+/// Every lane evaluates the `m_\alpha=m_\beta=0` cofactor form: overlap is
+/// `S=p\det\mathbf D_\alpha\det\mathbf D_\beta`, same-spin terms use scalar, one-column, and
+/// `\mathcal J` second-minor classes, and different spin uses
+/// `\sum\operatorname{cof}(\mathbf D_\alpha)\mathcal{II}\operatorname{cof}(\mathbf D_\beta)`.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
 /// - `x_ex`: Cached bra excitations in lane order.
@@ -772,6 +821,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     s: &mut [T; LANES],
 ) {
     let zero = V::zero();
+
+    // Map every SIMD lane onto the alpha-spin rows and columns of
+    // `D_{alpha,ov}`; lanes share ranks but retain their own excitation labels.
     let mut rows_a = [[0usize; LA]; LANES];
     let mut cols_a = [[0usize; LA]; LANES];
     let nocc_a = w.aa.nocc;
@@ -795,6 +847,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     let y0_a = w.aa.y_slice(0);
     let mut d_a = [zero; DA];
     let mut cof_a = [zero; DA];
+
+    // Form each packed alpha determinant from `X` on/below the diagonal and
+    // `Y` above it, retaining `cof(D_alpha)` for column replacements.
     for i in 0..LA {
         for j in 0..LA {
             let matrix = if i >= j { x0_a } else { y0_a };
@@ -812,6 +867,9 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     let jsl_a = w.aa.j_slice(0);
     let n2_a = n_a * n_a;
     let n3_a = n2_a * n_a;
+
+    // Accumulate the same-spin two-column class
+    // `sum phi J_{eta z,xi y} det D_alpha[eta,xi|z,y]`.
     for eta in 0..LA {
         for xi in (eta + 1)..LA {
             for z in 0..LA {
@@ -846,6 +904,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
 
     let hcol0_a = w.aa.hcol0_t_slice();
     let mut replacement_a = zero;
+
+    // Contract the alpha one-column intermediate with `cof(D_alpha)`.
     for z in 0..LA {
         for eta in 0..LA {
             let mut values = [T::from_real(0.0); LANES];
@@ -857,6 +917,7 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
         }
     }
 
+    // Repeat the determinant, two-column, and one-column construction for beta spin.
     let mut rows_b = [[0usize; LB]; LANES];
     let mut cols_b = [[0usize; LB]; LANES];
     let nocc_b = w.bb.nocc;
@@ -880,6 +941,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     let y0_b = w.bb.y_slice(0);
     let mut d_b = [zero; DB];
     let mut cof_b = [zero; DB];
+
+    // `D_beta` obeys the same lower-`X`/upper-`Y` convention as `D_alpha`.
     for i in 0..LB {
         for j in 0..LB {
             let matrix = if i >= j { x0_b } else { y0_b };
@@ -897,6 +960,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     let jsl_b = w.bb.j_slice(0);
     let n2_b = n_b * n_b;
     let n3_b = n2_b * n_b;
+
+    // Accumulate the beta same-spin two-column replacement class.
     for eta in 0..LB {
         for xi in (eta + 1)..LB {
             for z in 0..LB {
@@ -931,6 +996,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
 
     let hcol0_b = w.bb.hcol0_t_slice();
     let mut replacement_b = zero;
+
+    // Contract the beta one-column intermediate with `cof(D_beta)`.
     for z in 0..LB {
         for eta in 0..LB {
             let mut values = [T::from_real(0.0); LANES];
@@ -947,6 +1014,10 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     let n2 = n * n;
     let n3 = n2 * n;
     let mut ii_term = zero;
+
+    // Mixed spin factorises into one cofactor from each spin sector:
+    // `sum cof(D_alpha) II^{alpha beta} cof(D_beta)`.
+    // Put the smaller determinant outside to reduce repeated packed work.
     if LA <= LB {
         for z in 0..LA {
             for eta in 0..LA {
@@ -989,8 +1060,11 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
         }
     }
 
+    // Combine scalar, one-column, same-spin two-column, and mixed-spin classes.
     let det_ab = V::mul(det_a, det_b);
     let half = T::from_real(0.5);
+
+    // `g0` is the unexcited nuclear, one-body, same-spin, and mixed-spin scalar.
     let g0 = T::from_real(enuc)
         + w.aa.f0h[0]
         + half * w.aa.v0[0]
@@ -1003,6 +1077,8 @@ unsafe fn xw_hamiltonian_overlap_m0_prepared_simd_const<
     core = V::madd(core, j_a, det_b);
     core = V::madd(core, j_b, det_a);
     core = V::add(core, ii_term);
+
+    // Apply excitation phases and reduced overlaps after forming unscaled `(H,S)`.
     let reference_pref =
         w.aa.phase * T::from_real(w.aa.tilde_s_prod) * w.bb.phase * T::from_real(w.bb.tilde_s_prod);
     let mut pref = [T::from_real(0.0); LANES];
@@ -1470,6 +1546,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
             prepare_same(&w.aa, &x_ex.alpha, &w_ex.alpha, &mut scratch.aa);
             prepare_same(&w.bb, &x_ex.beta, &w_ex.beta, &mut scratch.bb);
 
+            // Evaluate `D_{\alpha,\mathrm{ov}}` and its cofactors; retain the determinant even
+            // when the tolerance rejects cofactor-based operator replacements.
             let (det_a, have_a) = if la == 0 {
                 (<T as From<f64>>::from(1.0), true)
             } else if let Some(value) = adjugate_transpose_dynamic(
@@ -1488,6 +1566,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                 )
             };
 
+            // Evaluate `D_{\beta,\mathrm{ov}}` and its cofactors under the same tolerance rule.
             let (det_b, have_b) = if lb == 0 {
                 (<T as From<f64>>::from(1.0), true)
             } else if let Some(value) = adjugate_transpose_dynamic(
@@ -1505,12 +1584,17 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                     false,
                 )
             };
+
             let mut same_a = zero;
             let mut same_b = zero;
             let mut h2ab = zero;
 
+            // Alpha spin: combine its scalar intermediate, one-column replacements, and
+            // same-spin `J` second-minor class.
             if have_a {
                 same_a = (w.aa.f0h[0] + half * w.aa.v0[0]) * det_a;
+
+                // The alpha one-column class is a cofactor contraction with `H_{eta z}`.
                 if la > 0 {
                     let cof = scratch.aa.adjt_det.as_slice();
                     let n = w.aa.n();
@@ -1535,6 +1619,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                         }
                     }
                 }
+
+                // The alpha two-column class contracts `J` with signed second minors.
                 if la >= 2 {
                     let d = scratch.aa.det0.as_slice();
                     let rows = scratch.aa.rows.as_slice();
@@ -1569,8 +1655,11 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                 }
             }
 
+            // Beta spin is the spin-swapped alpha construction.
             if have_b {
                 same_b = (w.bb.f0h[0] + half * w.bb.v0[0]) * det_b;
+
+                // Contract beta one-column intermediates against `cof(D_beta)`.
                 if lb > 0 {
                     let cof = scratch.bb.adjt_det.as_slice();
                     let n = w.bb.n();
@@ -1595,6 +1684,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                         }
                     }
                 }
+
+                // Contract beta `J` intermediates against signed second minors.
                 if lb >= 2 {
                     let d = scratch.bb.det0.as_slice();
                     let rows = scratch.bb.rows.as_slice();
@@ -1629,6 +1720,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                 }
             }
 
+            // Different spin: contract `II` between one cofactor from each spin determinant.
             if have_a && have_b {
                 h2ab = w.ab.vab0[0][0] * det_a * det_b;
                 let n = w.ab.n();
@@ -1655,6 +1747,8 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
                 }
             }
 
+            // Restore excitation phases and both reduced reference overlaps only after the
+            // unscaled overlap and Hamiltonian classes have been assembled.
             let sa_pref = w.aa.phase * <T as From<f64>>::from(w.aa.tilde_s_prod);
             let sb_pref = w.bb.phase * <T as From<f64>>::from(w.bb.tilde_s_prod);
             let excitation = <T as From<f64>>::from(excitation_phase);

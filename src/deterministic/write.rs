@@ -283,6 +283,8 @@ fn format_determinant_label(
 /// - `basis`: Original NOCI-QMC determinant basis in the ordering used for H and S.
 /// - `nstates`: Maximum number of canonical states to print.
 /// - `nterms`: Maximum number of original-basis terms to print for each canonical state.
+/// # Returns
+/// - `()`: Prints the dominant canonical and original-basis components to stdout.
 pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
     ground_state: &Array1<T>,
     p: &Projectors<T>,
@@ -290,6 +292,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
     nstates: usize,
     nterms: usize,
 ) {
+    // Refuse to attach determinant labels when projector and basis dimensions disagree.
     if basis.len() != p.ur.nrows() {
         println!(
             "Cannot print canonical-state labels: basis dimension {} does not match overlap dimension {}.",
@@ -299,6 +302,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
         return;
     }
 
+    // Rank canonical states by their orthonormal-basis probability weights `|v_i|^2`.
     let mut canonical: Vec<usize> = (0..ground_state.len()).collect();
     canonical.sort_by(|&i, &j| {
         ground_state[j]
@@ -308,6 +312,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
             .unwrap()
     });
 
+    // Bound requested output and measure how much canonical weight it represents.
     let nstates_print = nstates.min(ground_state.len());
     let nterms_print = nterms.min(p.ur.nrows());
     let norm = ground_state.iter().map(|z| z.abs().powi(2)).sum::<f64>();
@@ -317,6 +322,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
         .map(|&i| ground_state[i].abs().powi(2))
         .sum::<f64>();
 
+    // Print shared interpretation and truncation information once.
     println!("{}", "=".repeat(100));
     println!("Dominant canonical components of retained ground state");
     println!(
@@ -330,6 +336,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
     println!("Displayed canonical weight: {:.16e}", displayed_weight);
     println!();
 
+    // Expand each selected canonical state as `A_{mu i}=U^r_{mu i}/sqrt(lambda_i)`.
     for &i in canonical.iter().take(nstates_print) {
         let lambda_i = p.lambda_r[i];
         let vi = ground_state[i];
@@ -357,6 +364,7 @@ pub(super) fn print_canonical_wavefunction<T: NOCIScalar>(
         );
         println!("  {}", "-".repeat(146));
 
+        // Rank original nonorthogonal basis coefficients by magnitude for this state.
         let mut terms: Vec<usize> = (0..p.ur.nrows()).collect();
         terms.sort_by(|&mu, &nu| {
             let ai_mu = p.ur[(mu, i)] / T::from_real(lambda_i.sqrt());

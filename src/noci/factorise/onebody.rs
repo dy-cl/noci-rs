@@ -1016,6 +1016,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
 /// # Arguments:
 /// - `spin`: Shared determinant-space factorisation.
 /// - `data`: Shared NOCI data containing Wick intermediates.
+/// - `storage_plan`: Selected RAM or disk allocation plan for factor tables.
 /// - `target_parent`: Target parent `Q`.
 /// - `source_parent`: Source parent `P`.
 /// # Returns
@@ -1027,6 +1028,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     target_parent: usize,
     source_parent: usize,
 ) -> FactorisedOneBodyBlock<T> {
+    // Resolve ordered target/source parent topologies and spin-component dimensions.
     let target = &spin.parents[target_parent];
     let source = &spin.parents[source_parent];
 
@@ -1036,6 +1038,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     let nsa = source.areps.len();
     let nsb = source.breps.len();
 
+    // Map `Q <- P` to the canonical Wick pair and remember whether Q is the left reference.
     let (lp, gp, target_left) = ordered_parent_pair(spin, target_parent, source_parent);
 
     let pair = data
@@ -1043,6 +1046,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
         .expect("factorised one-body requires Wick intermediates")
         .pair(lp, gp);
 
+    // Allocate checked row-major alpha and beta `(S,F)` factor tables.
     let na = nta
         .checked_mul(nsa)
         .expect("alpha one-body factor length overflow");
@@ -1053,6 +1057,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
 
     let mut factors = storage_plan.allocate::<T>(target_parent, source_parent, na, nb);
 
+    // Build and persist all alpha target rows in fixed-rank source evaluation order.
     {
         let out = factors.alpha_mut();
         build_spin_one_body_factors(
@@ -1073,6 +1078,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     }
     factors.flush();
 
+    // Build the symmetric beta tables with beta representatives and evaluation metadata.
     {
         let out = factors.beta_mut();
         build_spin_one_body_factors(
@@ -1093,6 +1099,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
     }
     factors.flush();
 
+    // Select the cheaper alpha-first or beta-first contraction for this block shape.
     let contraction = select_one_body_contraction(
         nta,
         ntb,
@@ -1102,6 +1109,7 @@ fn build_one_body_factor_tables<T: NOCIScalar>(
         source.entries.len(),
     );
 
+    // Publish the factor dimensions, contraction plan, and owned storage together.
     FactorisedOneBodyBlock {
         target_parent,
         source_parent,
@@ -1124,6 +1132,7 @@ fn build_orthogonal_one_body_block(
     spin: &SpinFactorisation,
     parent_id: usize,
 ) -> OrthogonalOneBodyBlock {
+    // Group retained determinants by their exact parent-local alpha/beta component pair.
     let parent = &spin.parents[parent_id];
     let mut opos = HashMap::new();
     let mut groups = Vec::new();
@@ -1143,6 +1152,7 @@ fn build_orthogonal_one_body_block(
         });
     }
 
+    // Store a direct occupation-pair lookup for same-parent Slater-Condon application.
     OrthogonalOneBodyBlock {
         parent: parent_id,
         opos,

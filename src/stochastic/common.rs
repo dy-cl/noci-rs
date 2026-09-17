@@ -204,6 +204,7 @@ pub(in crate::stochastic) fn propagate_iteration(
     workers: &mut [Mutex<NOCIThreadPropagation>],
     result: &mut NOCIPropagationResult,
 ) {
+    // Resolve cycle data and prepare optional SApply shift-tangent accumulation.
     let (iteration, sampled) = sample;
     let (overlap_factors, overlap_generator, overlap_weight, optimise_overlap_weight) = overlap;
     let accumulate_tangent = matches!(shift.propagator, Propagator::SApply);
@@ -213,18 +214,23 @@ pub(in crate::stochastic) fn propagate_iteration(
             worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
         }
     }
+
+    // Reset report-independent output buffers before processing occupied sampled determinants.
     result.clear();
     let occupied = sampled.occ();
     if !occupied.is_empty() {
+        // Distribute fixed-size chunks dynamically across persistent Rayon workers.
         let next = AtomicUsize::new(0);
         let workers_shared: &[Mutex<NOCIThreadPropagation>] = workers;
         rayon::broadcast(|context| {
+            // Reset this worker and derive a deterministic cycle/thread-local random stream.
             let tid = context.index();
             let mut worker = workers_shared[tid].lock().unwrap();
             worker.clear();
             worker.rng = QmcRng::seed_from_u64(
                 run.rank_seed ^ tid as u64 ^ (iteration as u64).wrapping_mul(0x9E3779B97F4A7C15),
             );
+            // Generate diagonal, tangent, and off-diagonal contributions for assigned sources.
             loop {
                 let start = next.fetch_add(8, Ordering::Relaxed);
                 if start >= occupied.len() {
@@ -257,6 +263,7 @@ pub(in crate::stochastic) fn propagate_iteration(
                     );
                 }
             }
+            // Batch-evaluate generated matrix elements and route realised updates by ownership.
             worker.resolve_batched_spawning(
                 shift,
                 accumulate_tangent,
@@ -271,6 +278,7 @@ pub(in crate::stochastic) fn propagate_iteration(
             );
         });
     }
+    // Gather thread-local physical updates, samples, and overlap-weight derivatives.
     for worker in workers.iter_mut() {
         let worker = worker.get_mut().unwrap();
         result.local.append(&mut worker.local);
@@ -301,18 +309,22 @@ pub(in crate::stochastic) fn propagate_iteration_auxiliary(
     workers: &mut [Mutex<AuxiliaryThreadPropagation>],
     result: &mut AuxiliaryPropagationResult,
 ) {
+    // Resolve auxiliary topology and initialise every worker's physical shift tangent.
     let (iteration, sampled) = sample;
     let (generator, auxiliary_space) = auxiliary;
     let dt = data.input.prop_ref().dt;
     for worker in workers.iter_mut() {
         worker.get_mut().unwrap().shift_tangent.prepare(run.ndets);
     }
+
+    // Reset shared outputs and distribute occupied sampled determinants dynamically.
     result.clear();
     let occupied = sampled.occ();
     if !occupied.is_empty() {
         let next = AtomicUsize::new(0);
         let workers_shared: &[Mutex<AuxiliaryThreadPropagation>] = workers;
         rayon::broadcast(|context| {
+            // Reset this worker and derive the same deterministic cycle/thread RNG partition.
             let tid = context.index();
             let mut worker = workers_shared[tid].lock().unwrap();
             worker.clear();
@@ -320,6 +332,7 @@ pub(in crate::stochastic) fn propagate_iteration_auxiliary(
                 run.rank_seed ^ tid as u64 ^ (iteration as u64).wrapping_mul(0x9E3779B97F4A7C15),
             );
 
+            // Generate auxiliary diagonal, tangent, and off-diagonal residual contributions.
             loop {
                 let start = next.fetch_add(8, Ordering::Relaxed);
                 if start >= occupied.len() {
@@ -345,9 +358,12 @@ pub(in crate::stochastic) fn propagate_iteration_auxiliary(
                 }
             }
 
+            // Resolve generated orthogonal connections and route auxiliary updates by owner.
             worker.resolve_batched_spawning(data, generator, auxiliary_space, run);
         });
     }
+
+    // Gather thread-local auxiliary updates and generation diagnostics.
     for worker in workers.iter_mut() {
         let worker = worker.get_mut().unwrap();
         result.local.append(&mut worker.local);

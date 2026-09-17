@@ -64,6 +64,7 @@ fn print_banner() {
 /// # Returns
 /// - `()`: Prints the parsed input options to stdout.
 pub fn print_input(input: &Input) {
+    // Print the program banner and molecular specification.
     print_banner();
     let left = "=".repeat(45);
     let right = "=".repeat(46);
@@ -79,6 +80,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print SCF convergence controls and concise branch-tracking metadata.
     println!("SCF");
     println!("MAX_CYCLE: {}", input.scf.max_cycle);
     println!("ETOL: {}", input.scf.e_tol);
@@ -96,6 +98,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Expand the selected state-generation model and all of its recipes.
     println!("STATES");
     match &input.states {
         StateType::Mom(recipes) => {
@@ -152,6 +155,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print determinant-space excitation and propagation settings.
     println!("EXCIT");
     println!("LEVEL (ORDER): {:?}", input.excit.orders);
     println!("ALL: {}", input.excit.all);
@@ -166,6 +170,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print deterministic projector controls when enabled.
     println!("DET");
     match &input.det {
         Some(d) => {
@@ -184,6 +189,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print stochastic propagation, compression, and factor-storage controls.
     println!("QMC");
     match &input.qmc {
         Some(q) => {
@@ -228,6 +234,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print selected-NOCI and linear-solver controls.
     println!("SNOCI");
     match &input.snoci {
         Some(s) => {
@@ -253,6 +260,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print the NOCC Monte Carlo enablement state.
     println!("NOCCMC");
     match &input.noccmc {
         Some(_) => {
@@ -264,6 +272,7 @@ pub fn print_input(input: &Input) {
     }
     println!();
 
+    // Print output and restart policy.
     println!("WRITE");
     println!("VERBOSE: {}", input.write.verbose);
     println!("WRITE_DIR: {}", input.write.write_dir);
@@ -285,6 +294,7 @@ pub fn print_input(input: &Input) {
     println!("READ_RESTART: {:?}", input.write.read_restart);
     println!();
 
+    // Print nonorthogonal-Wick comparison and storage policy.
     println!("WICKS");
     println!("ENABLED: {}", input.wicks.enabled);
     println!("COMPARE: {}", input.wicks.compare);
@@ -305,14 +315,10 @@ pub fn print_input(input: &Input) {
 /// - `path`: Filepath for the HDF5 file.
 /// - `label`: Sanitised label of the SCF state.
 /// - `ao`: Contains AO integrals and metadata.
-/// - `ca`: MO coefficients spin alpha.  
-/// - `cb`: MO coefficients spin beta.
-/// - `ea`: MO energies spin alpha.
-/// - `eb`: MO energies spin beta.
-/// - `oa`: MO occupancies spin alpha.
-/// - `ob`: MO occupancies spin beta.
-/// - `da`: Spin alpha density matrix.
-/// - `db`: Spin beta density matrix.
+/// - `c`: Alpha and beta MO coefficient matrices `(C^alpha, C^beta)`.
+/// - `e`: Alpha and beta MO energy vectors `(epsilon^alpha, epsilon^beta)`.
+/// - `occ`: Alpha and beta MO occupation vectors `(n^alpha, n^beta)`.
+/// - `d`: Alpha and beta AO density matrices `(D^alpha, D^beta)`.
 /// # Returns
 /// - `()`: Writes orbital data to the HDF5 file at `path`.
 pub fn write_orbitals(
@@ -324,13 +330,16 @@ pub fn write_orbitals(
     occ: (&[f64], &[f64]),
     d: (&Array2<f64>, &Array2<f64>),
 ) {
+    // Unpack spin pairs while preserving the common alpha-then-beta file convention.
     let (ca, cb) = c;
     let (ea, eb) = e;
     let (oa, ob) = occ;
     let (da, db) = d;
 
+    // Create a fresh HDF5 container for this SCF state.
     let f = File::create(path).unwrap();
 
+    // Store scalar/string metadata required to identify and interpret the AO basis.
     let vlabel: VarLenUnicode = label.parse().unwrap();
     f.new_dataset::<VarLenUnicode>()
         .create("label")
@@ -345,6 +354,7 @@ pub fn write_orbitals(
         .write(&labelsvlu)
         .unwrap();
 
+    // Store electron counts in a portable integer representation.
     let neleci64: Vec<i64> = ao.nelec.iter().copied().collect();
     f.new_dataset::<i64>()
         .shape(neleci64.len())
@@ -353,6 +363,7 @@ pub fn write_orbitals(
         .write(&neleci64)
         .unwrap();
 
+    // Store the AO metric and all spin-resolved orbital quantities with explicit shapes.
     let n = ao.s.ncols();
     f.new_dataset::<f64>()
         .shape((n, n))

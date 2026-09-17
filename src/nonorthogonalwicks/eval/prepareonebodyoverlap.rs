@@ -123,6 +123,9 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
         fock,
     } = batch;
 
+    // Each request evaluates overlap and one-body factors from augmented determinant
+    // `\mathbf D_f^{(pq)}`. Grouped `m = 0` requests may use SIMD; unsupported requests use the
+    // scalar Laplace-expansion path below, preserving output order.
     #[cfg(target_arch = "x86_64")]
     if w.m == 0 && TypeId::of::<T>() == TypeId::of::<f64>() {
         unsafe {
@@ -195,6 +198,7 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
         }
     }
 
+    // SIMD dispatch is opportunistic; scalar evaluation remains the complete-rank fallback.
     xw_f_overlap_prepared_scalar_row(
         w,
         basis,
@@ -207,6 +211,11 @@ pub(crate) fn xw_f_overlap_prepared_batched<T: NOCIScalar>(
 }
 
 /// Evaluate one same-spin one-body factor row through the scalar prepared Wick path.
+/// Each source evaluates
+/// `F = {}^{xw}\tilde S\sum_{\sum_i m_i=m}`
+/// `[F_0^{(m_1)}\det\mathbf D_{\mathrm{ov}}`
+/// `-\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}]`
+/// together with the corresponding overlap.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `basis`: Determinant basis containing full excitation masks.
@@ -229,6 +238,7 @@ fn xw_f_overlap_prepared_scalar_row<T: NOCIScalar>(
     tol: f64,
     out: (&mut [T], &mut [T]),
 ) {
+    // Resolve the target excitation once; only source excitation and phase vary across the row.
     let (target_rep, sources) = reps;
     let (target_left, alpha) = flags;
     let (overlap, fock) = out;
@@ -245,6 +255,8 @@ fn xw_f_overlap_prepared_scalar_row<T: NOCIScalar>(
             .excitation
     };
 
+    // Orient each pair as `(x,w)`, evaluate the determinant/cofactor expressions, then restore the
+    // target and source excitation phases in output-column order.
     for (col, source_rep) in sources.iter().enumerate() {
         let source_ex = if alpha {
             &basis
@@ -292,6 +304,8 @@ fn xw_f_overlap_prepared_scalar_value<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
     tol: f64,
 ) -> (T, T) {
+    // Recover full excitation masks at the scalar boundary and orient them as the ordered
+    // nonorthogonal reference pair `(x,w)`.
     let (target_rep, source_rep) = reps;
     let (target_left, alpha) = flags;
     let (target_ex, source_ex) = if alpha {
@@ -317,11 +331,14 @@ fn xw_f_overlap_prepared_scalar_value<T: NOCIScalar>(
                 .excitation,
         )
     };
+
     let (x_ex, w_ex) = if target_left {
         (target_ex, source_ex)
     } else {
         (source_ex, target_ex)
     };
+
+    // Return the unphased overlap and one-body factor; the row caller applies determinant phases.
     xw_f_overlap_prepared(w, x_ex, w_ex, scratch, tol)
 }
 
@@ -346,6 +363,7 @@ unsafe fn try_xw_f_overlap_prepared_f64_simd(
     tol: f64,
     out: (&mut [f64], &mut [f64]),
 ) -> bool {
+    // Prefer widest available packets; absence of AVX support leaves evaluation to scalar path.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_f_overlap_prepared_f64x8_row(w, basis, input, scratch, tol, out);
@@ -382,6 +400,7 @@ unsafe fn try_xw_f_overlap_prepared_c64_simd(
     tol: f64,
     out: (&mut [Complex64], &mut [Complex64]),
 ) -> bool {
+    // Prefer widest available packets; absence of AVX support leaves evaluation to scalar path.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_f_overlap_prepared_c64x8_row(w, basis, input, scratch, tol, out);
@@ -421,6 +440,8 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
     out: (&mut [T], &mut [T]),
     select: PreparedSimdSelector<T, N>,
 ) {
+    // Source groups already share one excitation rank. Select one fixed-rank kernel for each group
+    // so every packet evaluates the same augmented determinant/cofactor expression.
     let SameSpinSimdInput {
         target: target_rep,
         sources,
@@ -445,12 +466,16 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
             (source_rank, target_rank)
         };
 
+        // Generated non-empty ranks may use packed kernels. Empty or unsupported ranks remain on
+        // scalar path, which covers arbitrary `L` and all determinant edge cases.
         if target_rank <= MAXEXCIT && source_rank <= MAXEXCIT && target_rank + source_rank != 0 {
             let kernel = select(ranks, target_left);
             let mut packet_start = group_start;
 
             if let Some(kernel) = kernel {
                 while group_end - packet_start >= N {
+                    // Evaluate one complete packet and scatter `(S,F)` with excitation phases to
+                    // original source-column positions.
                     let packet = unsafe {
                         &*source_caches
                             .as_ptr()
@@ -477,6 +502,7 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
                 }
             }
 
+            // Evaluate incomplete packet tails through scalar determinant/cofactor formulas.
             for ordered in packet_start..group_end {
                 let col = unsafe { *source_order.get_unchecked(ordered) };
                 let (s, f) = xw_f_overlap_prepared_scalar_value(
@@ -492,6 +518,7 @@ unsafe fn xw_f_overlap_prepared_simd_row<T: NOCIScalar, const N: usize>(
                 fock[col] = phase * f;
             }
         } else {
+            // Generated dispatch has no kernel for this rank; retain full generic-rank evaluation.
             for ordered in group_start..group_end {
                 let col = unsafe { *source_order.get_unchecked(ordered) };
                 let (s, f) = xw_f_overlap_prepared_scalar_value(
@@ -651,6 +678,11 @@ unsafe fn xw_f_overlap_prepared_c64x8_row(
 }
 
 /// Evaluate the prepared overlap and generalised-Fock matrix element.
+/// The overlap is
+/// `S = {}^{xw}\tilde S\sum_{\sum_i m_i=m}\det\mathbf D_{\mathrm{ov}}`, and the one-body factor is
+/// `F = {}^{xw}\tilde S\sum_{\sum_i m_i=m}`
+/// `[F_0^{(m_1)}\det\mathbf D_{\mathrm{ov}}`
+/// `-\sum_z\det\mathbf D_{\mathrm{ov}}^{z\rightarrow\boldsymbol{\mathcal F}_z}]`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `x_ex`: Excitation defining the bra determinant.
@@ -668,6 +700,8 @@ pub(crate) fn xw_f_overlap_prepared<T: NOCIScalar>(
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap, {
+        // With `m = 0`, one determinant and its cofactors suffice. Nonzero nullity requires the
+        // constrained sum over binary fundamental-contraction assignments.
         if w.m == 0 {
             xw_f_overlap_m0_prepared(w, x_ex, w_ex, scratch, tol)
         } else {
@@ -699,6 +733,7 @@ fn xw_f_overlap_m0_prepared<T: NOCIScalar>(
     tol: f64,
 ) -> (T, T) {
     time_call!(crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0, {
+        // `L = R_x + R_w` chooses empty, generated fixed-rank, or runtime-rank evaluation.
         let rx = x_ex.holes.count_ones() as usize;
         let rw = w_ex.holes.count_ones() as usize;
 
@@ -751,8 +786,10 @@ fn xw_f_overlap_m0_prepared_const<
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0_const,
         {
+            // Allocate the rank-`L` determinant, label, and cofactor storage.
             scratch.ensure_same(L);
 
+            // Map bra labels into `V_x x O_x` and ket labels into `O_w x V_w`.
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
             let rows = scratch.rows.as_mut_slice();
@@ -829,6 +866,7 @@ fn xw_f_overlap_m0_prepared_const<
         }
     )
 }
+
 /// Select one four-lane real fixed-rank one-body kernel.
 /// # Arguments:
 /// - `ranks`: Bra and ket excitation ranks.
@@ -934,6 +972,10 @@ fn select_xw_f_overlap_c64x8(
 }
 
 /// Evaluate packed fixed-rank overlap and generalised-Fock factors.
+/// Lane-wise, `S = {}^{xw}\tilde S\det\mathbf D_{\mathrm{ov}}` and
+/// `F = {}^{xw}\tilde S[F_0^{(0)}\det\mathbf D_{\mathrm{ov}}`
+/// `-\sum_{\eta z}\operatorname{cof}[\mathbf D_{\mathrm{ov}}]_{\eta z}`
+/// `\mathcal F_{\eta z}^{(0,0)}]`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates.
 /// - `fixed`: Excitation cache shared by all lanes.
@@ -965,6 +1007,8 @@ unsafe fn xw_f_overlap_m0_prepared_simd_const<
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_f_overlap_m0_const,
         {
+            // Map each lane to ordered determinant labels. `XFIX` identifies whether bra or ket
+            // excitation labels are invariant and can be broadcast across the packet.
             let n = w.n();
             let nocc = w.nocc;
             let nvirt = w.nmo - nocc;
@@ -1023,6 +1067,8 @@ unsafe fn xw_f_overlap_m0_prepared_simd_const<
             let mut d = [zero; D];
             let mut cof = [zero; D];
 
+            // Build packed `\mathbf D_{\mathrm{ov}}(0,\ldots,0)` with `X^{(0)}` on/below the
+            // diagonal and `Y^{(0)}` above it.
             for eta in 0..L {
                 for z in 0..L {
                     let matrix = if eta >= z { x0 } else { y0 };
@@ -1030,6 +1076,9 @@ unsafe fn xw_f_overlap_m0_prepared_simd_const<
                 }
             }
 
+            // Reuse `\operatorname{cof}[\mathbf D_{\mathrm{ov}}]` for every one-body replacement:
+            // `F = \tilde S(F_0\det\mathbf D_{\mathrm{ov}}`
+            // `-\sum_{\eta z}\operatorname{cof}[\mathbf D]_{\eta z}\mathcal F_{\eta z})`.
             let determinant = adjugate_transpose_simd_const::<V, LANES, L, D>(&mut cof, &d);
             let mut replacement = zero;
 
@@ -1039,6 +1088,7 @@ unsafe fn xw_f_overlap_m0_prepared_simd_const<
                 }
             }
 
+            // Apply reduced-overlap phase and singular-value product after packed determinant work.
             let fock_value = V::sub(V::mul(determinant, V::splat(w.f0f[0])), replacement);
             let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
             let overlap_value = V::mul(pref, determinant);
@@ -1302,6 +1352,7 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
         let l = x_ex.holes.count_ones() as usize + w_ex.holes.count_ones() as usize;
         scratch.ensure_same(l);
 
+        // Encode the overlap determinant's annihilation rows and creation columns.
         construct_determinant_indices(
             x_ex,
             w_ex,
@@ -1310,6 +1361,7 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
             scratch.cols.as_mut_slice(),
         );
 
+        // Build endpoint determinants so mixed zero-overlap assignments can copy columns cheaply.
         let x0 = w.x(0);
         let y0 = w.y(0);
         build_d_dynamic(
@@ -1332,6 +1384,7 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
             scratch.cols.as_slice(),
         );
 
+        // Accumulate overlap and one-body matrix elements over all valid `m_i` distributions.
         let zero = <T as From<f64>>::from(0.0);
         let n = w.n();
         let mut overlap_acc = zero;
@@ -1340,6 +1393,7 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
         mix_dets_same(w, l, 1, scratch, |bits, scratch| {
             let mi = bit(bits, 0);
 
+            // Use the adjugate to evaluate every one-column Laplace replacement together.
             if let Some(det_det) = adjugate_transpose_generic(
                 scratch.adjt_det.as_mut_slice(),
                 scratch.det_mix.as_slice(),
@@ -1354,6 +1408,7 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
                 let f0 = w.ff_t_slice(mi, 0);
                 let f1 = w.ff_t_slice(mi, 1);
 
+                // Replace each excitation column by its precomputed one-body intermediate.
                 for b in 0..l {
                     let mj = bit(bits, b + 1);
                     let cb = scratch.cols[b];
@@ -1371,10 +1426,12 @@ fn xw_f_overlap_gen_prepared<T: NOCIScalar>(
 
                 fock_acc += contrib;
             } else if mi == 0 {
+                // Singular cofactors still contribute to the ordinary overlap determinant.
                 overlap_acc += det_dynamic(scratch.det_mix.as_slice(), l).unwrap_or(zero);
             }
         });
 
+        // Restore the reduced-overlap and excitation-phase prefactor common to both results.
         let pref = w.phase * <T as From<f64>>::from(w.tilde_s_prod);
         (pref * overlap_acc, pref * fock_acc)
     })

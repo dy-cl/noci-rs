@@ -1,3 +1,7 @@
+// nonorthogonalwicks/eval/mod.rs
+
+//! Prepared and batched extended nonorthogonal Wick evaluators.
+
 mod dispatch;
 mod helpers;
 mod overlap;

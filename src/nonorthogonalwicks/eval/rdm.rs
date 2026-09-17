@@ -72,6 +72,8 @@ pub(crate) fn xw_rdmk_same_prepared<T: NOCIScalar, const K: usize>(
                 return xw_overlap_prepared(w, ex.0, ex.1, scratch);
             }
 
+            // Extend compact contraction determinants into the external RDM basis. The resulting
+            // determinant evaluates `\det \mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
             let (l_c, g_c) = coeff;
             let nrdm = l_c.nrows();
             let ext_n = w.nmo + nrdm;
@@ -151,6 +153,8 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
         return;
     }
 
+    // Build the `m_i = 0` fundamental contractions once for the whole batch. The external RDM
+    // basis adds `n_{\mathrm{RDM}}` rows and columns to the compact `n_{\mathrm{mo}}` determinant.
     let (l_c, g_c) = coeff;
     let nrdm = l_c.nrows();
     let ext_n = w.nmo + nrdm;
@@ -206,6 +210,8 @@ pub(crate) fn xw_rdmk_same_prepared_batched<T: NOCIScalar, const K: usize>(
         }
     }
 
+    // If no fixed-width kernel accepts the batch, construct the optional `m_i = 1` contractions
+    // and evaluate every request through the scalar or const-generic determinant path.
     let one = if w.m == 0 {
         None
     } else {
@@ -260,12 +266,15 @@ unsafe fn try_xw_rdmk_same_prepared_f64_simd<const K: usize>(
     tol: f64,
     out: &mut [f64],
 ) -> bool {
+    // Generated packets cover external rank `K <= 4` and cached excitation ranks up to
+    // `MAXEXCIT`; preserve scalar evaluation outside that region.
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
     if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
         return false;
     }
 
+    // Prefer the widest supported packet for the augmented `D_{RDM}` determinant.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_rdmk_same_prepared_simd_batch::<f64, K, 8>(
@@ -318,12 +327,14 @@ unsafe fn try_xw_rdmk_same_prepared_c64_simd<const K: usize>(
     tol: f64,
     out: &mut [Complex64],
 ) -> bool {
+    // Complex packets use the same generated rank region as the real evaluator.
     let rx = ex.0.holes.count_ones() as usize;
     let rw = ex.1.holes.count_ones() as usize;
     if K > 4 || rx > MAXEXCIT || rw > MAXEXCIT {
         return false;
     }
 
+    // Prefer the widest supported complex packet for the augmented `D_{RDM}` determinant.
     if is_x86_feature_detected!("avx512f") {
         unsafe {
             xw_rdmk_same_prepared_simd_batch::<Complex64, K, 8>(
@@ -379,6 +390,8 @@ unsafe fn xw_rdmk_same_prepared_simd_batch<T: NOCIScalar, const K: usize, const 
     out: &mut [T],
     kernel: RdmSimdPacket<T, K, N>,
 ) {
+    // Process complete `N`-lane packets. Final packet repeats one valid request in unused lanes,
+    // but writes only genuine requests back to `out`.
     let count = requests.len().min(out.len());
     let mut start = 0usize;
     while start < count {
@@ -401,6 +414,10 @@ unsafe fn xw_rdmk_same_prepared_simd_batch<T: NOCIScalar, const K: usize, const 
 }
 
 /// Evaluate packed fixed-rank same-spin RDM determinants.
+/// Each lane evaluates
+/// `\Gamma^{\mathbf p}_{\mathbf q} = {}^{xw}\tilde S`
+/// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)`, where the external RDM
+/// contractions precede the excitation contractions in the augmented determinant.
 /// # Arguments:
 /// - `w`: Same-spin Wick intermediates.
 /// - `ex`: Bra and ket excitations.
@@ -432,6 +449,8 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
     tol: f64,
     out: &mut [T; LANES],
 ) {
+    // External creation/annihilation labels occupy first `K` rows and columns and vary by lane.
+    // Excitation labels occupy remaining `L = R_x + R_w` positions and are shared by all lanes.
     let (x0, y0, ext_n) = fundamental;
     let mut rows = [[0usize; D]; LANES];
     let mut cols = [[0usize; D]; LANES];
@@ -471,6 +490,9 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
 
     let zero = V::zero();
     let mut determinant = [zero; DD];
+
+    // Build packed augmented determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` with
+    // `X^{(0)}` on/below diagonal and `Y^{(0)}` above it.
     for i in 0..D {
         for j in 0..D {
             let matrix = if i >= j { x0 } else { y0 };
@@ -483,6 +505,7 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
         }
     }
 
+    // Multiply each determinant by `{}^{xw}\tilde S`, then apply tolerance lane by lane.
     let value = det_simd_const::<V, LANES, D, DD>(&determinant);
     let pref = V::splat(w.phase * T::from_real(w.tilde_s_prod));
     let mut lanes = [T::from_real(0.0); LANES];
@@ -847,6 +870,8 @@ fn xw_rdmk_same_prepared_scalar_batch<T: NOCIScalar, const K: usize>(
     tol: f64,
     out: &mut [T],
 ) {
+    // Scalar requests share transformed fundamental contractions but build distinct external-index
+    // rows and columns in `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
     for (request, value) in requests.iter().zip(out.iter_mut()) {
         *value = xw_rdmk_same_prepared_scalar_value(w, ex, fundamental, request, scratch, tol);
     }
@@ -878,9 +903,15 @@ fn xw_rdmk_same_prepared_scalar_value<T: NOCIScalar, const K: usize>(
     let rx = x_ex.holes.count_ones() as usize;
     let rw = w_ex.holes.count_ones() as usize;
     let l = rx + rw;
+
+    // Augmented determinant has `K + L` contractions, so no assignment can absorb `m > K + L`
+    // zero-overlap pairs.
     if w.m > l + K {
         return <T as From<f64>>::from(0.0);
     }
+
+    // `m = 0` needs one determinant; `m > 0` sums all binary column assignments with
+    // `\sum_i m_i = m`.
     if w.m == 0 {
         xw_rdmk_same_m0_prepared(w, ex, fundamental, request, scratch, tol)
     } else {
@@ -915,6 +946,8 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared,
         {
+            // Dispatch by `(K,R_x,R_w)` so generated dimensions use stack-allocated determinants;
+            // arbitrary ranks preserve the same augmented determinant in runtime storage.
             let rx = ex.0.holes.count_ones() as usize;
             let rw = ex.1.holes.count_ones() as usize;
             dispatch_rdm_scalar_ranks!(
@@ -977,6 +1010,8 @@ fn xw_rdmk_same_m0_prepared_const<
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_prepared_const,
         {
+            // Place external RDM labels first, followed by bra and ket excitation labels. This is
+            // the operator ordering defining `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
             scratch.ensure_same(D);
             let rows = scratch.rows.as_mut_slice();
             let cols = scratch.cols.as_mut_slice();
@@ -1007,6 +1042,9 @@ fn xw_rdmk_same_m0_prepared_const<
 
             let (x0, y0, ext_n) = fundamental;
             let d = &mut scratch.det0.as_mut_slice()[..DD];
+
+            // Build augmented `m_i = 0` determinant using `X^{(0)}` on/below diagonal and
+            // `Y^{(0)}` above it.
             for i in 0..D {
                 let row = rows[i] * ext_n;
                 for j in 0..D {
@@ -1018,6 +1056,7 @@ fn xw_rdmk_same_m0_prepared_const<
                 }
             }
 
+            // Apply reduced reference overlap and numerical threshold to determinant contribution.
             let zero = <T as From<f64>>::from(0.0);
             let value = det_const::<T, D, DD>(d);
             if value.abs() > tol {
@@ -1053,6 +1092,7 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_m0_gen_prepared,
         {
+            // Runtime-rank path uses same external-first label ordering as fixed-rank evaluator.
             let l = ex.0.holes.count_ones() as usize + ex.1.holes.count_ones() as usize;
             let d_rank = K + l;
             scratch.ensure_same(d_rank);
@@ -1066,6 +1106,8 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
 
             let (x0, y0, ext_n) = fundamental;
             let d = scratch.det0.as_mut_slice();
+
+            // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime.
             for i in 0..d_rank {
                 let row = rows[i] * ext_n;
                 for j in 0..d_rank {
@@ -1077,6 +1119,7 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
                 }
             }
 
+            // Multiply accepted determinant by `{}^{xw}\tilde S`.
             let zero = <T as From<f64>>::from(0.0);
             if let Some(value) = det_dynamic(d, d_rank)
                 && value.abs() > tol
@@ -1115,6 +1158,7 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_same_gen_prepared,
         {
+            // Build external-first labels for augmented rank `D = K + L`.
             let l = ex.0.holes.count_ones() as usize + ex.1.holes.count_ones() as usize;
             let d_rank = K + l;
             scratch.ensure_same(d_rank);
@@ -1128,6 +1172,9 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
 
             let (x0, y0, one, ext_n) = fundamental;
             let (x1, y1) = one.unwrap_or((x0, y0));
+
+            // Prepare all-`m_i=0` and all-`m_i=1` endpoint determinants. Each allowed distribution
+            // later selects whole columns from these endpoints.
             for i in 0..d_rank {
                 let row = rows[i] * ext_n;
                 for j in 0..d_rank {
@@ -1144,6 +1191,9 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
 
             let zero = <T as From<f64>>::from(0.0);
             let mut acc = zero;
+
+            // Sum `\det\mathbf D_{\mathrm{RDM}}(m_1,\ldots,m_D)` over every binary assignment
+            // satisfying `\sum_i m_i = m`.
             for_each_m_combination(d_rank, w.m, |bits| {
                 mix_columns_dynamic(
                     scratch.det_mix.as_mut_slice(),
@@ -1193,10 +1243,14 @@ pub(crate) fn xw_rdmk_diff_prepared<T: NOCIScalar, const KA: usize, const KB: us
     time_call!(
         crate::timers::nonorthogonalwicks::add_xw_rdmk_diff_prepared,
         {
+            // Different-spin rank factorises; either spin sector exceeding its electron count makes
+            // the complete transition-density contribution zero.
             if KA > w.aa.nocc || KB > w.bb.nocc {
                 return <T as From<f64>>::from(0.0);
             }
 
+            // Evaluate spin-sector determinants independently and combine
+            // `\Gamma_{\alpha\beta}=\Gamma_\alpha\Gamma_\beta`.
             let alpha = xw_rdmk_same_prepared(
                 &w.aa,
                 (&ex.0.alpha, &ex.1.alpha),
@@ -1213,6 +1267,7 @@ pub(crate) fn xw_rdmk_diff_prepared<T: NOCIScalar, const KA: usize, const KB: us
                 scratch.1,
                 tol,
             );
+
             alpha * beta
         }
     )

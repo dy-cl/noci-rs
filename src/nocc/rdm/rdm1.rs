@@ -132,6 +132,8 @@ fn compare_rdm1_pair_wicks_naive<T: NOCIScalar>(
 }
 
 /// Calculate spin-free one-body RDM matrix elements using generalised Slater-Condon rules.
+/// Forms `Gamma^p_q = S_beta rho^alpha[p,q] + S_alpha rho^beta[p,q]`, including the
+/// determinant excitation phase, from the two spin-resolved transition densities.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be evaluated.
@@ -141,21 +143,25 @@ fn rdm1_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
     pair: DetPair<'_, T>,
 ) -> (T, RDM1<T>) {
+    // Resolve the determinant pair and external AO-basis tensor dimension.
     let ldet = pair.ldet;
     let gdet = pair.gdet;
     let n = data.ao.h.nrows();
 
+    // Extract occupied MO coefficients for each bra/ket spin sector.
     let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
     let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
     let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
     let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
 
+    // Build nonorthogonal spin overlaps and their transition-density intermediates.
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
     let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
     let sxw = det_phase * pa.s * pb.s;
 
+    // Transform spin transition densities to the AO basis and combine their spin complements.
     let da = pair_density(&pa, n);
     let db = pair_density(&pb, n);
     let mut gamma = RDM1 {
@@ -174,6 +180,8 @@ fn rdm1_pair_naive<T: NOCIScalar>(
 }
 
 /// Calculate spin-free one-body RDM matrix elements using extended non-orthogonal Wick's theorem.
+/// Evaluates `Gamma^p_q = Gamma^{alpha,p}_q S_beta + S_alpha Gamma^{beta,p}_q`
+/// from batched rank-one fundamental contractions.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose RDM matrix elements are to be evaluated.
@@ -185,6 +193,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
     pair: DetPair<'_, T>,
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM1<T>) {
+    // Resolve the determinant pair, AO dimension, and ordered parent-pair Wick data.
     let ldet = pair.ldet;
     let gdet = pair.gdet;
     let n = data.ao.h.nrows();
@@ -192,6 +201,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
     let wicks = data.wicks.unwrap();
     let w = wicks.pair(ldet.parent, gdet.parent);
 
+    // Cache spin excitations and determine which zero-overlap distributions can contribute.
     let ex_la = &ldet.excitation.alpha;
     let ex_ga = &gdet.excitation.alpha;
     let ex_lb = &ldet.excitation.beta;
@@ -205,6 +215,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
     let do1a = w.aa.m <= la + 1;
     let do1b = w.bb.m <= lb + 1;
 
+    // Prepare surviving spin overlap determinants and retain their excitation phases.
     let pha = <T as From<f64>>::from(ldet.pha * gdet.pha);
     let phb = <T as From<f64>>::from(ldet.phb * gdet.phb);
     let det_phase = pha * phb;
@@ -222,6 +233,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
         sb = xw_overlap(&w.bb, ex_lb, ex_gb, &mut scratch.bb);
     }
 
+    // Allocate the AO-basis spin-free tensor and its complete rank-one request batch.
     let sxw = det_phase * sa * sb;
     let mut gamma = RDM1 {
         n,
@@ -231,6 +243,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
         .flat_map(|p| (0..n).map(move |q| ([p], [q])))
         .collect();
 
+    // Add alpha transition density weighted by the complementary beta overlap.
     if sb.abs() > data.tol && do1a {
         let mut g1a = vec![<T as From<f64>>::from(0.0); requests.len()];
         xw_rdmk_same_prepared_batched::<T, 1>(
@@ -248,6 +261,7 @@ fn rdm1_pair_wicks<T: NOCIScalar>(
         }
     }
 
+    // Add the symmetric beta contribution weighted by the alpha overlap.
     if sa.abs() > data.tol && do1b {
         let mut g1b = vec![<T as From<f64>>::from(0.0); requests.len()];
         xw_rdmk_same_prepared_batched::<T, 1>(

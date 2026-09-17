@@ -185,6 +185,11 @@ fn rdm4_pair_naive<T: NOCIScalar>(
 }
 
 /// Calculate active-space spin-free four-body RDM matrix elements using Wick's theorem.
+///
+/// This evaluates `Gamma^{pqrs}_{tuvw} = sum_{sigma_1...sigma_4}
+/// <a^+_{p sigma_1}...a^+_{s sigma_4} a_{w sigma_4}...a_{t sigma_1}>`
+/// by summing all sixteen alpha/beta assignments while preserving the external
+/// operator order within each spin sector.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose transition RDM is to be evaluated.
@@ -198,6 +203,7 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
     active: &[usize],
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM4<T>) {
+    // Resolve the determinant pair and its parent-pair Wick intermediates.
     let ldet = pair.ldet;
     let gdet = pair.gdet;
     let n = active.len();
@@ -205,6 +211,7 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
     let wicks = data.wicks.unwrap();
     let w = wicks.pair(ldet.parent, gdet.parent);
 
+    // Prepare both spin contraction determinants for repeated rank-four queries.
     prepare_same(
         &w.aa,
         &ldet.excitation.alpha,
@@ -218,6 +225,7 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
         &mut scratch.bb,
     );
 
+    // Evaluate spin-sector overlaps and the determinant excitation phase.
     let sa = xw_overlap(
         &w.aa,
         &ldet.excitation.alpha,
@@ -233,6 +241,8 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
 
     let det_phase = <T as From<f64>>::from((ldet.pha * gdet.pha) * (ldet.phb * gdet.phb));
     let sxw = det_phase * sa * sb;
+
+    // Allocate the active-space tensor and shared arguments for mixed-spin contractions.
     let mut gamma = RDM4 {
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(8)],
@@ -243,6 +253,7 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
         (ldet.cb.as_ref(), gdet.cb.as_ref()),
     );
 
+    // Evaluate every active upper/lower index tuple.
     for a in 0..n {
         for b in 0..n {
             for c in 0..n {
@@ -437,6 +448,7 @@ fn rdm4_pair_wicks<T: NOCIScalar>(
                                             data.tol,
                                         );
 
+                                    // Store the phased spin sum in row-major RDM order.
                                     let i = (((((((a * n + b) * n + c) * n + d) * n + e) * n + f)
                                         * n
                                         + g)

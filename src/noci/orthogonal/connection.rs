@@ -5,7 +5,9 @@ use crate::basis::excitation_phase_bits;
 use crate::determinant::SpinDeterminantState;
 use crate::{ExcitationCache, ExcitationSpinCache, ReducedTwoSpinState};
 
-/// Relative occupied/virtual-rank topology of one orthogonal Hamiltonian connection.
+/// Relative occupied/virtual-rank topology of one nonzero orthogonal Slater-Condon connection.
+/// A one- plus two-body Hamiltonian connects only sectors
+/// `(R_\alpha,R_\beta) \in \{(1,0),(0,1),(2,0),(0,2),(1,1)\}` in addition to the diagonal.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum OrthogonalConnection {
     /// Replace one alpha electron.
@@ -66,7 +68,9 @@ impl OrthogonalConnection {
         }
     }
 
-    /// Resolve occupied/virtual ranks into the fixed-rank physical-orbital cache.
+    /// Resolve occupied/virtual ranks into physical hole labels `i,j` and particle labels `a,b`.
+    /// Relative occupied and virtual positions are translated through the canonical source
+    /// component, producing the fixed-rank cache consumed by the Slater-Condon evaluator.
     /// # Arguments:
     /// - `self`: Compact source-relative connection.
     /// - `alpha`: Canonical alpha source component.
@@ -79,8 +83,13 @@ impl OrthogonalConnection {
         alpha: &SpinDeterminantState,
         beta: &SpinDeterminantState,
     ) -> ExcitationCache {
+        // Initialise both spin sectors as rank zero; the connection variant fills only the active
+        // single- or double-excitation labels.
         let mut alpha_cache = ExcitationSpinCache::default();
         let mut beta_cache = ExcitationSpinCache::default();
+
+        // Resolve relative occupied/virtual ranks into physical orbital labels while preserving
+        // the canonical hole and particle ordering used to compute the fermionic phase.
         match self {
             Self::AlphaSingle { occupied, virtual_ } => {
                 alpha_cache.rank = 1;
@@ -120,13 +129,18 @@ impl OrthogonalConnection {
                 beta_cache.particles[0] = beta.virtuals[virtual_b as usize];
             }
         }
+
+        // Return the spin-resolved `(R_\alpha,R_\beta)` payload expected by fixed-rank kernels.
         ExcitationCache {
             alpha: alpha_cache,
             beta: beta_cache,
         }
     }
 
-    /// Evaluate the source-relative fermionic phase and fixed-rank H payload.
+    /// Evaluate the source-relative fermionic phase and fixed-rank Hamiltonian payload.
+    /// For spin `\sigma`, the excitation operator replacing holes `I_\sigma` by particles
+    /// `A_\sigma` contributes phase `p_\sigma`; the two-spin phase is
+    /// `p = p_\alpha p_\beta`.
     /// # Arguments:
     /// - `self`: Compact source-relative connection.
     /// - `alpha`: Canonical alpha source component.
@@ -139,7 +153,10 @@ impl OrthogonalConnection {
         alpha: &SpinDeterminantState,
         beta: &SpinDeterminantState,
     ) -> ReducedTwoSpinState {
+        // Resolve physical hole/particle labels before evaluating occupation-string parity.
         let cache = self.excitation_cache(alpha, beta);
+
+        // Compute alpha and beta phases independently in their source occupation strings.
         let phase_a = excitation_phase_bits(
             alpha.occupation,
             fixed_rank_mask(cache.alpha.holes, cache.alpha.rank),
@@ -150,10 +167,14 @@ impl OrthogonalConnection {
             fixed_rank_mask(cache.beta.holes, cache.beta.rank),
             fixed_rank_mask(cache.beta.particles, cache.beta.rank),
         );
+
+        // Spin sectors commute in this representation, so the determinant phase factorises.
         ReducedTwoSpinState::new(phase_a * phase_b, cache)
     }
 
     /// Construct physical child occupations from the resolved connection cache.
+    /// Each spin sector applies
+    /// `O'_\sigma = (O_\sigma \setminus I_\sigma) \cup A_\sigma`.
     /// # Arguments:
     /// - `self`: Compact source-relative connection.
     /// - `alpha`: Canonical alpha source component.
@@ -166,7 +187,10 @@ impl OrthogonalConnection {
         alpha: &SpinDeterminantState,
         beta: &SpinDeterminantState,
     ) -> (u128, u128) {
+        // Resolve relative connection ranks before editing physical occupation masks.
         let cache = self.excitation_cache(alpha, beta);
+
+        // Clear every hole and set every particle independently in alpha and beta sectors.
         (
             (alpha.occupation & !fixed_rank_mask(cache.alpha.holes, cache.alpha.rank))
                 | fixed_rank_mask(cache.alpha.particles, cache.alpha.rank),
@@ -176,7 +200,8 @@ impl OrthogonalConnection {
     }
 }
 
-/// Convert fixed-rank orbital labels to the physical occupation mask.
+/// Convert fixed-rank orbital labels to the physical occupation mask
+/// `M = \sum_{k=0}^{R-1}2^{p_k}`.
 /// # Arguments:
 /// - `orbitals`: Cached physical orbital labels.
 /// - `rank`: Number of active labels.
@@ -187,6 +212,7 @@ fn fixed_rank_mask(
     orbitals: [u8; crate::MAXEXCIT],
     rank: u8,
 ) -> u128 {
+    // Only the first `rank` entries are active; remaining fixed-capacity cache entries are padding.
     let mut bits = 0u128;
     for &orbital in orbitals.iter().take(usize::from(rank)) {
         bits |= 1u128 << orbital;

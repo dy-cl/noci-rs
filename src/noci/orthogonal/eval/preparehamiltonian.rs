@@ -40,6 +40,8 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared<T: NOCIScalar>(
         usize::from(state.excitation_cache.beta.rank),
     );
 
+    // Dispatch by fixed spin excitation rank. This keeps Slater-Condon formulas compile-time
+    // specialised while returning zero for ranks unsupported by a two-body Hamiltonian.
     dispatch_orthogonal_ranks!(
         ranks,
         |RA, RB| xw_hamiltonian_orthogonal_prepared_const::<T, RA, RB>(ao, cache, source, state,),
@@ -50,6 +52,8 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared<T: NOCIScalar>(
 /// Evaluate a fixed-rank orthogonal Slater-Condon Hamiltonian matrix element.
 /// The compile-time branch implements the diagonal, alpha/beta singles, and three double sectors
 /// without rediscovering excitation masks or fermionic phases.
+/// For excitation phase `p`, singles use `p(h_ai + sum_j (ai||jj))`; same-spin doubles use
+/// `p(ai||jb)`, mixed-spin doubles use `p(ai|jb)`, and ranks above two vanish.
 /// # Arguments:
 /// - `ao`: AO data containing `E_\mathrm{nuc}`.
 /// - `cache`: Parent-specific one- and two-electron MO integrals.
@@ -69,6 +73,8 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     let phase = T::from_real(state.phase);
 
     if RA == 0 && RB == 0 {
+        // Diagonal element: accumulate nuclear, one-electron, same-spin, and opposite-spin terms
+        // from occupied source orbitals.
         // `H_xx = E_\mathrm{nuc} + \sum_{i\sigma}h^\sigma_{ii}`
         // `+ \frac12\sum_{ij\sigma}\langle ii||jj\rangle`
         // `+ \sum_{i\in O_\alpha,j\in O_\beta}(ii|jj)`.
@@ -127,6 +133,8 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     }
 
     if RA == 1 && RB == 0 {
+        // Alpha single: remove the hole from alpha Coulomb/exchange sums while retaining every
+        // beta occupied contribution.
         let i = usize::from(alpha.holes[0]);
         let a = usize::from(alpha.particles[0]);
         // `H_{a\leftarrow i,x} = p[h^\alpha_{ai}`
@@ -151,6 +159,7 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     }
 
     if RA == 0 && RB == 1 {
+        // Beta single is the spin-swapped alpha-single expression.
         let i = usize::from(beta.holes[0]);
         let a = usize::from(beta.particles[0]);
         // `H_{a\leftarrow i,x} = p[h^\beta_{ai}`
@@ -175,6 +184,7 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     }
 
     if RA == 2 && RB == 0 {
+        // Same-spin alpha double: only the antisymmetrised two-electron contribution remains.
         let i = usize::from(alpha.holes[0]);
         let j = usize::from(alpha.holes[1]);
         let a = usize::from(alpha.particles[0]);
@@ -184,6 +194,7 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     }
 
     if RA == 0 && RB == 2 {
+        // Same-spin beta double is the spin-swapped alpha-double expression.
         let i = usize::from(beta.holes[0]);
         let j = usize::from(beta.holes[1]);
         let a = usize::from(beta.particles[0]);
@@ -193,6 +204,7 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
     }
 
     if RA == 1 && RB == 1 {
+        // Mixed-spin double: only the Coulomb coupling between alpha and beta replacements remains.
         let i = usize::from(alpha.holes[0]);
         let j = usize::from(beta.holes[0]);
         let a = usize::from(alpha.particles[0]);
@@ -225,6 +237,8 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
 ) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
+        // Try packed kernels only after checking scalar type and CPU features. These kernels write
+        // results in the same order as `occupations` and `states`.
         if TypeId::of::<T>() == TypeId::of::<f64>() {
             let cache_f64 = &*std::ptr::from_ref(cache).cast::<MOCache<f64>>();
             let out_f64 = std::slice::from_raw_parts_mut(out.as_mut_ptr().cast::<f64>(), out.len());
@@ -281,6 +295,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
         }
     }
 
+    // Scalar fallback handles unsupported CPUs and any request not accepted by packed kernels.
     for ((&occupation, state), value) in occupations.iter().zip(states).zip(out) {
         *value = xw_hamiltonian_orthogonal_prepared(ao, cache, occupation, state);
     }
@@ -315,6 +330,8 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
         return;
     }
 
+    // Group requests by fixed excitation rank so one packed kernel evaluates one Slater-Condon
+    // formula across all lanes. Incomplete groups are padded internally and truncated on writeback.
     let mut bins = [[states[0]; N]; 3];
     let mut outputs = [[0usize; N]; 3];
     let mut counts = [0usize; 3];
@@ -329,6 +346,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
             (1, 1) => 1,
             (0, 2) => 2,
             _ => {
+                // Diagonal and single sectors need occupied-orbital sums, so evaluate them scalar.
                 out[output] = xw_hamiltonian_orthogonal_prepared(ao, cache, occupation, state);
                 continue;
             }
@@ -339,6 +357,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
         counts[bin] += 1;
 
         if counts[bin] == N {
+            // Evaluate and scatter a complete same-rank packet immediately.
             let mut values = [T::from_real(0.0); N];
             unsafe { kernel(cache, ranks, &bins[bin], &mut values) };
             for lane in 0..N {
@@ -354,6 +373,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd<T: NOCIScalar, const N: usize>
             continue;
         }
 
+        // Duplicate one valid lane to fill the final packet; only genuine lanes are written back.
         let fill = bins[bin][0];
         for lane in count..N {
             bins[bin][lane] = fill;
@@ -399,6 +419,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd_const<
     let mut phases = [1.0f64; N];
 
     if RA == 2 && RB == 0 {
+        // Alpha double: gather `p(ai||jb)` from antisymmetrised alpha ERIs.
         let shape = cache.eri_aa_asym.shape();
         for lane in 0..N {
             let ex = &states[lane].excitation_cache.alpha;
@@ -419,6 +440,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd_const<
     }
 
     if RA == 0 && RB == 2 {
+        // Beta double: gather the spin-swapped `p(ai||jb)` contribution.
         let shape = cache.eri_bb_asym.shape();
         for lane in 0..N {
             let ex = &states[lane].excitation_cache.beta;
@@ -439,6 +461,7 @@ unsafe fn xw_hamiltonian_orthogonal_prepared_simd_const<
     }
 
     if RA == 1 && RB == 1 {
+        // Mixed-spin double: exchange is absent, leaving the Coulomb term `p(ai|jb)`.
         let shape = cache.eri_ab_coul.shape();
         for lane in 0..N {
             let alpha = &states[lane].excitation_cache.alpha;

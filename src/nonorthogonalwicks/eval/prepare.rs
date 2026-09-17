@@ -61,14 +61,20 @@ fn prepare_same_m0<T: NOCIScalar>(
     scratch: &mut WickScratch<T>,
 ) {
     time_call!(crate::timers::nonorthogonalwicks::add_prepare_same_m0, {
+        // Split the determinant dimension into bra and ket excitation ranks,
+        // `L = L_x + L_w`.
         let rx = l_ex.holes.count_ones() as usize;
         let rw = g_ex.holes.count_ones() as usize;
 
+        // The empty contraction determinant has `det \mathbf D_{\mathrm{ov}} = 1`; only its
+        // rank needs to be recorded in scratch storage.
         if rx == 0 && rw == 0 {
             scratch.ensure_same(0);
             return;
         }
 
+        // Generated ranks use a compile-time determinant fill; larger ranks preserve the same
+        // `X^{(0)}`-lower/`Y^{(0)}`-upper convention with runtime storage.
         dispatch_overlap_scalar_ranks!(
             (rx, rw),
             |_RX, _RW, L, _D| {
@@ -122,8 +128,10 @@ fn prepare_same_m0_const<T: NOCIScalar, const L: usize>(
     time_call!(
         crate::timers::nonorthogonalwicks::add_prepare_same_m0_const,
         {
+            // Allocate the fixed-rank label and determinant storage once.
             scratch.ensure_same(L);
 
+            // Map bra pairs into `V_x x O_x` and ket pairs into `O_w x V_w`.
             construct_determinant_indices(
                 l_ex,
                 g_ex,
@@ -182,6 +190,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 
         let x0 = w.x(0);
         let y0 = w.y(0);
+
+        // Build the all-zero endpoint used whenever a determinant column has `m_i = 0`.
         build_d_dynamic(
             scratch.det0.as_mut_slice(),
             l,
@@ -193,6 +203,8 @@ pub fn prepare_same_gen<T: NOCIScalar>(
 
         let x1 = w.x(1);
         let y1 = w.y(1);
+
+        // Build the all-one endpoint used whenever a determinant column has `m_i = 1`.
         build_d_dynamic(
             scratch.det1.as_mut_slice(),
             l,
@@ -236,6 +248,7 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
             let mut wh = w_ex.holes;
             let mut wp = w_ex.parts;
             let mut i = 0usize;
+
             // Map the x-reference pairs to the `V_x` row block and `O_x` column block.
             while xh != 0 {
                 let hole = xh.trailing_zeros() as usize;
@@ -246,6 +259,7 @@ pub(super) fn construct_determinant_indices<T: NOCIScalar>(
                 cols[i] = hole;
                 i += 1;
             }
+
             // Append the w-reference pairs in the `O_w` row block and `V_w` column block.
             while wh != 0 {
                 let hole = wh.trailing_zeros() as usize;

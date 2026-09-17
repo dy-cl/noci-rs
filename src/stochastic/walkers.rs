@@ -102,6 +102,7 @@ pub fn qmc_step(
     ref_indices: &[usize],
     world: &impl Communicator,
 ) -> (f64, Option<ExcitationHist>) {
+    // Validate report-aligned checkpointing and construct the rank-local run topology.
     let qmc = data.input.qmc.as_ref().unwrap();
 
     if let Some(write_restart_interval) = data.input.write.write_restart_interval
@@ -113,6 +114,7 @@ pub fn qmc_step(
 
     let (isref, scratchsize, run) = super::common::construct_qmc_run(data, c0, ref_indices, world);
 
+    // Build overlap-weighted proposal factors only for the corresponding generator.
     let overlap_generation = if let ExcitationGen::OverlapWeighted = qmc.excitation_gen {
         let overlap_factor = SpinFactorisation::new(data);
         let factor_cache = data.input.wicks.cachedir.as_deref().unwrap_or(".");
@@ -130,11 +132,13 @@ pub fn qmc_step(
         None
     };
 
+    // Map global determinant indices to this rank's compact population vector.
     let mut local_pos = vec![usize::MAX; run.ndets];
     for (k, &det) in run.owned.iter().enumerate() {
         local_pos[det] = k;
     }
 
+    // Allocate thread-local propagation and rank-level communication scratch.
     let mut workers = (0..rayon::current_num_threads())
         .map(|tid| {
             Mutex::new(NOCIThreadPropagation::with_sizes(
@@ -148,6 +152,7 @@ pub fn qmc_step(
     let mut propagation_result = NOCIPropagationResult::new();
     let mut mpiscratch = NOCIMPIScratch::new(run.nranks);
 
+    // Restore a compatible checkpoint or initialise a fresh stochastic population.
     let mut state = if let Some(path) = data.input.write.read_restart.as_deref() {
         if run.irank == 0 {
             println!("Reading restart from {path}");
@@ -238,6 +243,7 @@ pub fn qmc_step(
         state
     };
 
+    // Print the initial observable row from the restored or newly constructed state.
     let propagator = data.input.prop_ref().propagator;
     print_header(run.irank, propagator);
     print_initial_row(
@@ -253,6 +259,7 @@ pub fn qmc_step(
     let mut sample_chunks = Vec::new();
     let mut overlap_derivatives = OverlapDerivativeSums::default();
 
+    // Propagate in report blocks, accumulating spawned changes before MPI exchange.
     for report in state.start_report..qmc.nreports {
         for cycle in 0..qmc.ncycles {
             let iter = report * qmc.ncycles + cycle;
@@ -298,6 +305,7 @@ pub fn qmc_step(
             );
         }
 
+        // Route spawned amplitudes to owners, coalesce duplicates, and update populations.
         exchange_accumulated_updates(&mut state.mc, &mut mpiscratch, world, &run);
 
         take_population_changes(&mut state.mc, &mut population_changes);
@@ -305,6 +313,7 @@ pub fn qmc_step(
         coalesce_population_updates(&mut population_changes);
         apply_population_changes(&mut state.mc.populations, &population_changes, &local_pos);
 
+        // Recompute projected observables and adapt shift and overlap-generator weight.
         let end = (report + 1) * qmc.ncycles;
         let (stats, pe) = population_stats_projected_energy(&state.mc, &isref, &run, world);
         state.pe = pe;
@@ -320,6 +329,7 @@ pub fn qmc_step(
             world,
         );
 
+        // Honour convergence stops and periodic restart checkpoints before reporting.
         if let Some(ret) = check_stop(
             report,
             &mut state,

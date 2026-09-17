@@ -276,7 +276,8 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
     col: usize,
     mut new_at: impl FnMut(usize) -> T,
 ) -> T {
-    // Contract the difference between the new and original columns with the cofactors of column c.
+    // Contract the difference between the new and original columns with the cofactors of column c;
+    // unroll the small determinant ranks used by generated evaluators.
     match (n, col) {
         (0, _) => return <T as From<f64>>::from(0.0),
         (1, 0) => return (new_at(0) - old[0]) * cof[0],
@@ -328,6 +329,7 @@ pub(super) fn column_replacement_correction<T: NOCIScalar>(
         _ => {}
     }
 
+    // Preserve the same Laplace contraction for arbitrary runtime determinant rank.
     let mut correction = <T as From<f64>>::from(0.0);
     for r in 0..n {
         let i = idx(n, r, col);
@@ -355,7 +357,8 @@ pub(super) fn column_replacement_det<T: NOCIScalar>(
     col: usize,
     mut new_at: impl FnMut(usize) -> T,
 ) -> T {
-    // Apply the Laplace expansion of the replacement determinant along column c.
+    // Apply the Laplace expansion along column `c`, with explicit small-rank forms for generated
+    // evaluator hot paths.
     match (n, col) {
         (0, _) => return <T as From<f64>>::from(0.0),
         (1, 0) => return new_at(0) * cof[0],
@@ -391,6 +394,7 @@ pub(super) fn column_replacement_det<T: NOCIScalar>(
         _ => {}
     }
 
+    // Fall back to the direct runtime-rank cofactor contraction.
     let mut value = <T as From<f64>>::from(0.0);
     for r in 0..n {
         let i = idx(n, r, col);
@@ -600,11 +604,13 @@ pub(super) fn for_each_m_combination(
     if m > l {
         return;
     }
+
     // The unique `m = 0` distribution has every `m_i = 0`.
     if m == 0 {
         f(0);
         return;
     }
+
     // The unique `m = L` distribution has every `m_i = 1`.
     if m == l {
         f((1u64 << l) - 1);
