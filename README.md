@@ -31,18 +31,33 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
+    <img src="https://raw.githubusercontent.com/dy-cl/noci-rs/benchmark-results/badges/sapply.svg" alt="H6 SApply benchmark time and runner specifications" width="900">
+  </a>
+  <br>
+  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
+    <img src="https://raw.githubusercontent.com/dy-cl/noci-rs/benchmark-results/badges/bapply.svg" alt="H6 BApply benchmark time and runner specifications" width="900">
+  </a>
+  <br>
+  <a href="https://github.com/dy-cl/noci-rs/actions/workflows/benchmarks.yml">
+    <img src="https://raw.githubusercontent.com/dy-cl/noci-rs/benchmark-results/badges/pt2.svg" alt="H6 PT2 benchmark time and runner specifications" width="900">
+  </a>
+</p>
+
+<p align="center">
   <a href="#example-results">Results</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#methods">Methods</a> ·
+  <a href="#features">Features</a> ·
   <a href="#input-reference">Input reference</a> ·
   <a href="#citation">Citation</a>
 </p>
 
 ---
 
-`noci-rs` is an electronic-structure package for calculations in nonorthogonal determinant spaces. It supports reference nonorthogonal configuration interaction calculations, NOCI-PT2 corrections, selected NOCI calculations, and stochastic NOCI-QMC propagation. Experimental nonorthogonal coupled-cluster and NOCCMC methods are also under development [19–21].
+`noci-rs` is an electronic-structure package for calculations in nonorthogonal determinant spaces. It supports reference nonorthogonal configuration interaction calculations, NOCI-PT2 corrections, selected NOCI calculations, and stochastic NOCIQMC propagation. Nonorthogonal coupled-cluster and NOCCMC methods are also under development [19–21].
 
-The package uses libcint [S1] to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Nonorthogonal matrix elements are evaluated using the generalised Slater–Condon rules, the extended nonorthogonal Wick's theorem, or orthogonal shortcuts where possible. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCI-QMC and SNOCI/NOCI-PT2.
+The package uses libcint [S1] to generate molecular integrals and provides RHF and UHF reference-state generation through maximum-overlap methods, SCF metadynamics, and holomorphic continuation. Matrix elements use the standard orthogonal Slater–Condon rules for determinants from the same orbital frame, and the generalised Slater–Condon rules or extended nonorthogonal Wick's theorem for nonorthogonal pairs. Shared-memory parallelism is available through Rayon and distributed-memory parallelism via MPI, and both may be used with NOCIQMC and SNOCI/NOCI-PT2.
 
 ## Example Results
 
@@ -81,11 +96,11 @@ The package uses libcint [S1] to generate molecular integrals and provides RHF a
 
 <p align="center">
   <em>
-    Typical evolution of the projected energy, overlap-transformed shift, and non-overlap-transformed shift in a LiH/cc-pVDZ NOCISD(3)-QMC calculation at 2.8 Å.
+    Historical LiH/cc-pVDZ NOCISD(3)-QMC calculation at 2.8 Å using a legacy difference-doubly-shifted propagator: projected energy and both population-control shifts.
   </em>
 </p>
 
-The corresponding input files are available in [`inputs/examples/`](inputs/examples/).
+An F<sub>2</sub> scan input is available in [`inputs/examples/`](inputs/examples/).
 
 ## Project Status
 
@@ -137,6 +152,8 @@ Detailed timing counters can be enabled with:
 cargo build --release --features timings
 ```
 
+Timing instrumentation perturbs short kernel timings. Use this build primarily to inspect how call counts are distributed across routines.
+
 > [!WARNING]
 > Do not currently build using `--features nocc` or `--all-features` unless developing the experimental NOCC implementation. Compile-time generation of the NOCC overlap and residual terms can take a substantial amount of time. This is currently being optimised.
 
@@ -164,6 +181,7 @@ mol = {
     basis = "cc-pVDZ",
     r = 1.5,
     unit = "Ang",
+
     atoms = function(r)
         return {
             string.format("H 0 0 %g", -r / 2),
@@ -179,30 +197,36 @@ states = {
             label = "RHF",
             noci = true,
         },
+
         {
             label = "UHF (+, -)",
+
             spin_bias = {
                 pattern = {1, -1},
                 pol = 0.75,
             },
+
             noci = true,
         },
+
         {
             label = "UHF (-, +)",
+
             spin_bias = {
                 pattern = {-1, 1},
                 pol = 0.75,
             },
+
             noci = true,
         },
     },
 }
 ```
 
-Run this input with:
+Save this input as `h2.lua`, then run it with:
 
 ```bash
-RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua > output.out
+RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs h2.lua > output.out
 ```
 
 ## Methods
@@ -213,16 +237,15 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 - Superposition-of-atomic-densities initial guesses [15].
 - MOM-guided SCF state generation [3], with spin-density bias, spatial-density bias, and occupied–virtual excitation recipes.
 - SCF metadynamics for discovering multiple RHF and UHF solutions [2].
-- Holomorphic SCF \(\lambda\) tracking through complex electron–electron interaction scaling, initialised from selected real MOM states [10, 11, 16].
+- Holomorphic SCF $\lambda$ tracking through complex electron–electron interaction scaling, initialised from selected real MOM states [10, 11, 16].
 - Geometry scans that reuse converged states as guesses at subsequent geometries [11].
 
 ### Nonorthogonal Configuration Interaction
 
 - Reference NOCI using selected real or holomorphic SCF states [9, 11].
 - Hamiltonian, overlap, and generalised Fock matrix construction.
-- Generalised Slater–Condon matrix elements [4].
-- Extended nonorthogonal Wick's theorem matrix elements for arbitrary excitations [5, 12], with orthogonal shortcuts where applicable.
-- Wick's intermediates stored in memory or using a disk-backed cache.
+- Standard orthogonal Slater–Condon rules for determinants from the same parent orbital frame [4].
+- Generalised Slater–Condon rules and extended nonorthogonal Wick's theorem for nonorthogonal determinant pairs [5, 12].
 
 ### Selected NOCI and NOCI-PT2
 
@@ -231,23 +254,50 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 - GMRES solution of projected candidate-space equations [14].
 - Optional diagonal and Woodbury GMRES preconditioners.
 - Optional NOCI-PT2 imaginary shifts [8].
+- Precomputed nonorthogonal Wick intermediates, held in memory or a disk-backed cache, for candidate matrix elements [5, 12].
 - Can use holomorphic SCF states.
 
-### NOCI-QMC
+### NOCIQMC
 
 - Deterministic imaginary-time propagation with an optional dynamic shift.
-- Signed-walker stochastic propagation [13].
-- Unshifted, shifted, doubly-shifted, and difference-doubly-shifted propagators for nonorthogonal and overcomplete spaces [17].
-- SApply and BApply stochastic propagation using real range populations.
-- Uniform and overlap-weighted excitation generators.
-- Exact heat-bath sampling [6].
-- MPI and Rayon parallelism.
-- Currently only supports real SCF states.
+- Stochastic propagation with real-valued population amplitudes.
+- SApply and BApply propagators for nonorthogonal and overcomplete spaces, using range populations.
+- Pivotal Fast Randomized Iteration compression of persistent populations and sampled updates [7].
+- Range-population shift control with optional target restoring and BApply momentum.
+- Uniform and overlap-weighted excitation generators; exact heat-bath sampling where supported [6].
+- Precomputed nonorthogonal Wick intermediates, held in memory or a disk-backed cache, for on-demand matrix elements [5, 12].
+- Deterministic propagation also supports holomorphic SCF states; stochastic propagation currently supports real SCF states only.
 
-### Experimental NOCC and NOCCMC
+The SApply and BApply propagators store the overlap-transformed population $\mathbf N=\mathbf S\mathbf c$ and begin from $\mathbf N_0=\mathbf S\mathbf c_0$. A sparse sample $\widetilde{\mathbf N}$ supplies each stochastic update.
 
-- Generalised-normal-ordered, spin-free coupled cluster over a correlated NOCI reference [19, 21].
+For SApply, the sampled residual and persistent update are
+
+$$
+\boldsymbol\Delta \simeq -\Delta\tau(\mathbf H-E_{\mathrm s}\mathbf S)\widetilde{\mathbf N},
+\qquad
+\mathbf N' = \mathbf N+\mathbf S\boldsymbol\Delta.
+$$
+
+For BApply, an auxiliary orthogonal-space factor $\mathbf B$ obeys $\mathbf B^\dagger\mathbf B=\mathbf S$ and $\mathbf B^\dagger\hat{\mathbf H}\mathbf B=\mathbf H$. Its sampled update is
+
+$$
+\boldsymbol\chi \simeq -\Delta\tau(\hat{\mathbf H}-E_{\mathrm s}\mathbf I)\mathbf B\widetilde{\mathbf N},
+\qquad
+\mathbf N' = \mathbf N+\mathbf B^\dagger\boldsymbol\chi.
+$$
+
+Both updates keep $\mathbf N$ in $\operatorname{range}(\mathbf S)$, avoiding population in the overlap null space. SApply uses the NOCI basis directly and supports overlap-weighted generation, but its outer $\mathbf S$ slows small range directions in an ill-conditioned basis. BApply avoids that extra overlap action by sampling an auxiliary NOCI basis.
+
+### NOCC and NOCCMC
+
+- Generalised-normal-ordered, spin-free coupled cluster over a NOCI reference [19, 21].
 - Stochastic NOCCMC propagation under active development [20].
+
+## Features
+
+### Inputs
+
+Lua input files specify the molecule, reference states, and optional post-SCF calculations. The [input reference](#input-reference) lists their tables and options; example and benchmark inputs are under [`inputs/`](inputs/).
 
 ### Parallelism
 
@@ -256,16 +306,15 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs inputs/examples/h2.lua
 - Shared-memory Rayon parallelism within each MPI process for stochastic propagation and NOCI-PT2/SNOCI calculations.
 - Shared-memory Wick's theorem intermediates across MPI ranks on each node.
 
-### Output and Restart Support
+### Outputs and Restarts
 
 - Text reports for SCF, reference NOCI, SNOCI, NOCI-PT2, and stochastic propagation.
-- Optional detailed timing counters when built with the `timings` feature.
+- Optional timing call counts and routine-level timing summaries when built with the `timings` feature.
 - Optional HDF5 orbital output.
 - Optional plain-text Hamiltonian and overlap matrices.
 - Deterministic coefficient and excitation-histogram output.
 - Stochastic restart input and output.
 - Flyvbjerg–Petersen blocking analysis through [`scripts/blocking.py`](scripts/blocking.py) [18].
-
 
 ## Input Reference
 
@@ -279,10 +328,10 @@ The required top-level tables are:
 The optional top-level tables are:
 
 - `scf`: conventional and holomorphic SCF convergence settings.
-- `excit`: excitation orders for SNOCI and NOCI-QMC spaces.
+- `excit`: excitation orders for SNOCI and NOCIQMC spaces.
 - `prop`: timestep and propagator shared by deterministic and stochastic propagation.
 - `det`: deterministic propagation.
-- `qmc`: stochastic NOCI-QMC.
+- `qmc`: stochastic NOCIQMC.
 - `snoci`: selected NOCI and NOCI-PT2.
 - `write`: optional output files and restart settings.
 - `wicks`: extended nonorthogonal Wick settings.
@@ -296,6 +345,7 @@ mol = {
     basis = "cc-pVDZ",
     r = {0.8, 1.0, 1.2},
     unit = "Ang",
+
     atoms = function(r)
         return {
             string.format("H 0 0 %g", -r / 2),
@@ -307,7 +357,7 @@ mol = {
 
 ### SCF
 
-The optional `scf` table controls convergence of conventional RHF and UHF calculations together with the inner optimisation used at each step of holomorphic SCF \(\lambda\) tracking [16].
+The optional `scf` table controls convergence of conventional RHF and UHF calculations together with the inner optimisation used at each step of holomorphic SCF $\lambda$ tracking [16].
 
 ```lua
 scf = {
@@ -333,7 +383,7 @@ scf = {
 }
 ```
 
-The outer entries control conventional SCF convergence. The nested `scf.h` table controls the inner holomorphic SCF solve at each \(\lambda\) step, including the gradient threshold, SR1 updates, maximum orbital-rotation step, backtracking line search, and optimisation history.
+The outer entries control conventional SCF convergence. The nested `scf.h` table controls the inner holomorphic SCF solve at each $\lambda$ step, including the gradient threshold, SR1 updates, maximum orbital-rotation step, backtracking line search, and optimisation history.
 
 ### States
 
@@ -347,39 +397,51 @@ states = {
             label = "RHF",
             noci = true,
         },
+
         {
             label = "UHF (+, -)",
+
             spin_bias = {
                 pattern = {1, -1},
                 pol = 0.75,
             },
+
             noci = true,
         },
+
         {
             label = "UHF (-, +)",
+
             spin_bias = {
                 pattern = {-1, 1},
                 pol = 0.75,
             },
+
             noci = true,
         },
+
         {
             label = "h-UHF (+, -)",
             holomorphic = true,
+
             spin_bias = {
                 pattern = {1, -1},
                 pol = 0.75,
             },
+
             partner = "UHF (+, -)",
             noci = true,
         },
+
         {
             label = "h-UHF (-, +)",
             holomorphic = true,
+
             spin_bias = {
                 pattern = {-1, 1},
                 pol = 0.75,
             },
+
             partner = "UHF (-, +)",
             noci = true,
         },
@@ -394,8 +456,10 @@ states = {
     metadynamics = {
         nstates_rhf = 1,
         nstates_uhf = 2,
+
         spinpol = 0.75,
         spatialpol = 0.75,
+
         lambda = 0.5,
         max_attempts = 1e2,
     },
@@ -406,7 +470,7 @@ This avoids requiring *a priori* knowledge of the SCF states.
 
 ### Excitations
 
-The `excit` table defines the excitation orders used to construct post-reference determinant spaces for deterministic and stochastic NOCI-QMC calculations and for SNOCI candidate generation.
+The `excit` table defines the excitation orders used to construct post-reference determinant spaces for deterministic and stochastic NOCIQMC calculations and for SNOCI candidate generation.
 
 ```lua
 excit = {
@@ -418,24 +482,22 @@ Use `excit.all = true` instead of `orders` to generate every supported excitatio
 
 ### Propagation
 
-The `prop` table specifies the imaginary-time timestep and propagator used by deterministic or stochastic NOCI-QMC calculations. It is required when either the `det` or `qmc` table is present.
+The `prop` table specifies the imaginary-time timestep and propagator used by deterministic or stochastic NOCIQMC calculations. It is required when either the `det` or `qmc` table is present.
 
 ```lua
 prop = {
     dt = 1e-4,
-    propagator = "difference-doubly-shifted-u2",
+    propagator = "s-apply",
 }
 ```
 
-Available propagators are:
+The range propagators are `s-apply` (deterministic or stochastic) and `b-apply` (stochastic only). Legacy coefficient-population propagators remain available for reproducing older calculations [17]:
 
 - `unshifted`
 - `shifted`
 - `doubly-shifted`
 - `difference-doubly-shifted-u1`
 - `difference-doubly-shifted-u2`
-- `s-apply`
-- `b-apply`
 
 ### Deterministic Propagation
 
@@ -444,10 +506,13 @@ The `det` table enables deterministic imaginary-time propagation over the genera
 ```lua
 det = {
     max_steps = 1e5,
+
     dynamic_shift = true,
     dynamic_shift_alpha = 1e-1,
+
     e_tol = 1e-10,
     projector_eps = 1e-12,
+
     canonical_states_n = 10,
     canonical_terms_m = 10,
 }
@@ -457,46 +522,40 @@ These options control the maximum number of propagation steps, convergence thres
 
 ### Stochastic Propagation
 
-The `qmc` table enables stochastic imaginary-time propagation. Legacy shifted propagators use coefficient populations. SApply and BApply use real range populations \(N = S c\) and pivotal FRI compression [7].
-
-#### Range propagators
-
-SApply uses \(N = S c\), \(\Delta \simeq -dt(H-E_sS)N\), and \(N' = N + S\Delta\).
-Persistent populations stay in \(\operatorname{range}(S)\), preventing stochastic accumulation in
-\(\operatorname{null}(S)\). SApply is simple, uses retained NOCI space directly, and naturally
-supports cheap overlap-weighted generation. Its extra outer \(S\) makes small range directions slow
-in ill-conditioned or overcomplete bases.
-
-BApply uses \(\chi \simeq -dt(\hat H-E_s)BN\), \(N' = N+B^\dagger\chi\), with
-\(B^\dagger B=S\) and \(B^\dagger\hat H B=H\). It preserves the range and removes SApply's extra
-leading \(S\), usually improving spectrum/conditioning. It samples parent-orthogonal auxiliary
-spaces, needs more factor-table work, and currently supports uniform generation only. BApply is
-preferred general propagator where applicable; SApply remains useful and safer than coefficient
-propagation in overcomplete spaces.
+The `qmc` table enables stochastic NOCIQMC. SApply and BApply store real-valued range populations and support pivotal FRI compression [7]. Their equations are given in the [NOCIQMC methods section](#nociqmc). BApply requires auxiliary factor tables and currently supports uniform generation only. Legacy propagators use coefficient populations.
 
 `n_projected` sets projected-energy trial dimension. Enlarged trials select residual-important
-determinants and rediagonalise the projected state. Trial overlap \(EProjDen/NRange\) is useful
-convergence diagnostic, not proof every stochastic-wavefunction component converged.
+determinants and rediagonalise the projected state. Trial overlap `EProjDen/NRange` is a useful
+convergence diagnostic, but does not establish convergence of every stochastic-wavefunction component.
 
 ```lua
 qmc = {
     initial_population = 1e2,
     target_population = 1e5,
+
     shift_damping = 5e-4,
     population_restoring = 0.0,
     momentum_beta = 0.0,
+
     ncycles = 1e1,
     nreports = 1e3,
+
     fri = {
         population = { cutoff = 1.0 },
+
         spawn = { cutoff = 0.25 },
+
         pre_overlap = { target_nnz = 2048 },
+
         shift_tangent = { target_nnz = 1024 },
     },
+
     excitation_gen = "uniform",
-    factor_tables = "ram",
     overlap_weight = 0.0,
     optimise_overlap_weight = false,
+
+    factor_tables = "ram",
+
     seed = 92774801300236626,
 }
 ```
@@ -509,17 +568,17 @@ Available excitation generators are:
 
 Exact heat-bath sampling is very expensive.
 
-The `overlap-weighted` generator mixes uniform sampling with a factorised proposal proportional to the absolute determinant overlap, \(|S_{wx}|\). `overlap_weight` sets the overlap branch probability in the range \(0 \le p < 1\), while `optimise_overlap_weight = true` adapts it between report blocks using the sampled second moment. The required overlap factor tables may use `factor_tables = "ram"` or `factor_tables = "disk"`.
+The `overlap-weighted` generator mixes uniform sampling with a factorised proposal proportional to the absolute determinant overlap, $|S_{wx}|$. `overlap_weight` sets the overlap branch probability in the range $0 \le p < 1$, while `optimise_overlap_weight = true` adapts it between report blocks using the sampled second moment. The required overlap factor tables may use `factor_tables = "ram"` or `factor_tables = "disk"`.
 
 For `s-apply`, omitted `excitation_gen` selects overlap/uniform mixture with `overlap_weight = 0.5`.
 SApply rejects heat-bath generation because tangent needs separately realised overlap elements.
 BApply currently supports uniform generation only; improved generation is future work.
 
 `shift_damping` damps Newton range-population shift updates. `population_restoring` is dimensionless
-target-restoring strength \(\kappa\) in Newton range-population controller: `0` gives zero-growth
+target-restoring strength $\kappa$ in Newton range-population controller: `0` gives zero-growth
 control; positive values restore toward `target_population`, with larger values restoring more
 strongly. `momentum_beta` is dimensionless BApply-only report-level heavy-ball coefficient
-\(0 \le \beta < 1\); `0` disables momentum. `fri.population.cutoff`, `fri.spawn.cutoff`,
+$0 \le \beta < 1$; `0` disables momentum. `fri.population.cutoff`, `fri.spawn.cutoff`,
 `fri.pre_overlap.target_nnz`, and
 `fri.shift_tangent.target_nnz` control pivotal-FRI population/spawn compression and retained sparse
 sizes. Pivotal FRI preserves conditional expectation; variance reduction is not universal.
@@ -527,7 +586,7 @@ sizes. Pivotal FRI preserves conditional expectation; variance reduction is not 
 `sapply_factor_tables` and `bapply_factor_tables` select factor-table storage. Range output columns
 are `NRange`, `NRangeRef`, `NSample`, and `NSampleOcc`. SApply/BApply restarts are compatible through
 shared range representation. Legacy propagators remain for reproducibility; coefficient population
-can accumulate meaningless \(\operatorname{null}(S)\) population in overcomplete spaces.
+can accumulate meaningless $\operatorname{null}(\mathbf S)$ population in overcomplete spaces.
 
 ### Selected NOCI and NOCI-PT2
 
@@ -537,13 +596,13 @@ The `snoci` table enables iterative selected NOCI calculations. Excited determin
 snoci = {
     sigma = 1e-6,
     tol = 1e-8,
+
     max_iter = 1e2,
     max_add = 5e0,
     max_dim = 1e2,
+
     preconditioner = "woodbury",
-    imag_shift = {
-      0.0
-    },
+    imag_shift = {0.0},
 
     gmres = {
         max_iter = 1e2,
@@ -569,10 +628,12 @@ The `write` table controls optional output files, restart files, and the amount 
 write = {
     verbose = 1,
     write_dir = "outputs/",
+
     write_orbitals = false,
     write_matrices = false,
     write_deterministic_coeffs = false,
     write_excitation_hist = false,
+
     write_restart = nil,
     write_restart_interval = nil,
     read_restart = nil,
@@ -591,6 +652,7 @@ The `wicks` table controls evaluation and storage of intermediates used by the e
 wicks = {
     enabled = true,
     compare = false,
+
     storage = "ram",
     cachedir = ".",
 }

@@ -20,7 +20,7 @@ mol = {
             string.format("H 0 0 %g", zs[5]),
             string.format("H 0 0 %g", zs[6]),
         }
-        end,
+    end,
 }
 
 excit = {
@@ -28,38 +28,37 @@ excit = {
 }
 
 prop = {
-    dt = 1e-6,
-    propagator = "difference-doubly-shifted-u2",
+    dt = 5e-7,
+    propagator = "s-apply",
 }
 
 qmc = {
-    initial_population = 5e2,
-    target_population = 2e5,
+    initial_population = 1e3,
+    target_population = 3e5,
 
     shift_damping = 1e-3,
 
-    ncycles = 1e1,
-    nreports = 1e3,
-
     fri = {
         population = {
-            cutoff = 0.0,
+            cutoff = 1e0,
         },
 
         spawn = {
-            cutoff = 0.0,
+            cutoff = 0.25,
         },
 
         pre_overlap = {
-            target_nnz = 1000000000,
+            target_nnz = 512,
         },
 
         shift_tangent = {
-            target_nnz = 1000000000,
+            target_nnz = 1024,
         },
     },
 
-    excitation_gen = "uniform",
+    ncycles = 1e1,
+    -- The checkpoint starts after report 562861; run five more reports.
+    nreports = 562866,
 }
 
 states = {
@@ -91,6 +90,10 @@ states = {
             noci = true,
         },
     },
+}
+
+write = {
+    read_restart = "inputs/benchmarks/restarts/H6_cc-pVDZ_NOCISDT3_1_5_restart.h5",
 }
 
 wicks = {

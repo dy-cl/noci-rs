@@ -1,0 +1,71 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: benchmark-results-main
+  cancel-in-progress: false
+
+jobs:
+  benchmarks:
+    name: H6 benchmark report
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+
+    env:
+      BSE_DATA_DIR: ${{ github.workspace }}/basis_set_exchange/basis_set_exchange/data
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      RUSTFLAGS: -Ctarget-cpu=x86-64
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.90.0
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin libopenblas-dev liblapacke-dev libhdf5-dev pkg-config
+
+      - name: Install basis set data
+        uses: actions/checkout@v7
+        with:
+          repository: MolSSI-BSE/basis_set_exchange
+          ref: 4adaf1372c7101620ca1a9f3130be9ae97fb8f30
+          path: basis_set_exchange
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-22.04-benchmarks-v1-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release executable
+        run: cargo build --locked --release -p noci-rs --no-default-features
+
+      - name: Run informational benchmarks
+        if: always()
+        run: python3 .github/benchmarks.py run --binary target/release/noci-rs --result "$RUNNER_TEMP/benchmark-results.json" --logs "$RUNNER_TEMP/benchmark-logs" --timeout 120
+
+      - name: Publish results and badges
+        if: always()
+        run: python3 .github/benchmarks.py publish --result "$RUNNER_TEMP/benchmark-results.json" --worktree "$RUNNER_TEMP/benchmark-results-branch"
+
+      - name: Upload benchmark logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/benchmark-logs/
+          if-no-files-found: ignore
