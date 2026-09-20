@@ -73,9 +73,7 @@ The package uses libcint [S1] to generate molecular integrals and provides RHF a
 
 <div align="center">
 
-$$N_w\ \text{against}\ N_H$$
-
-*Shoulder population against hydrogen chain length for NOCISD(3)QMC and accuracy matched CIQMC in the STO-3G basis. The measured shoulders are extrapolated, demonstrating the large compression of NOCIQMC relative to CIQMC at comparable accuracy.*
+Shoulder population $N_w$ against hydrogen chain length $N_H$ for NOCISD(3)QMC and accuracy matched CIQMC in the STO-3G basis. The measured shoulders are extrapolated, demonstrating the large compression of NOCIQMC relative to CIQMC at comparable accuracy.
 
 </div>
 
@@ -88,9 +86,7 @@ $$N_w\ \text{against}\ N_H$$
 
 <div align="center">
 
-$$E_{\mathrm{Proj}}(\tau)\quad\text{and}\quad E_s^S(\tau)$$
-
-*Typical evolution of the projected energy and shift for the H₂₀ linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same trajectories can also be seen for `s-apply`.*
+Typical evolution of the projected energy $E_{\mathrm{Proj}}(\tau)$ and shift $E_s^S(\tau)$ for the H<sub>20</sub> linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same trajectories can also be seen for `s-apply`.
 
 </div>
 
@@ -101,11 +97,11 @@ $$E_{\mathrm{Proj}}(\tau)\quad\text{and}\quad E_s^S(\tau)$$
   >
 </p>
 
-<p align="center">
-  <em>
-    NOCI-PT2(3) calculation for F<sub>2</sub> in the cc-pVDZ basis. The NOCI-PT2 method recovers much of the dynamical correlation absent from reference NOCI, shown by good agreement with the CCSD(T) energies. Use of the non-orthogonal Wick's theorem for matrix elements allows larger first-order spaces to be treated than was previously possible.
-  </em>
-</p>
+<div align="center">
+
+NOCI-PT2(3) calculation for F<sub>2</sub> in the cc-pVDZ basis. The NOCI-PT2 method recovers much of the dynamical correlation absent from reference NOCI, shown by good agreement with the CCSD(T) energies. Use of the non-orthogonal Wick's theorem for matrix elements allows larger first-order spaces to be treated than was previously possible.
+
+</div>
 
 An F<sub>2</sub> scan input is available in [`inputs/examples/`](inputs/examples/).
 
