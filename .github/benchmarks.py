@@ -17,15 +17,15 @@ from pathlib import Path
 
 BENCHMARKS = {
     "sapply": (
-        "H6 cc-pVDZ · NOCISDT3 · SApply",
+        "H6 cc-pVDZ · NOCISDT(3) · SApply",
         "inputs/benchmarks/H6_cc-pVDZ_NOCISDT3_1_5_SApply.lua",
     ),
     "bapply": (
-        "H6 cc-pVDZ · NOCISDT3 · BApply",
+        "H6 cc-pVDZ · NOCISDT(3) · BApply",
         "inputs/benchmarks/H6_cc-pVDZ_NOCISDT3_1_5_BApply.lua",
     ),
     "pt2": (
-        "H6 cc-pVDZ · NOCISD3 · PT2",
+        "H6 cc-pVDZ · NOCISD(3) · PT2",
         "inputs/benchmarks/H6_cc-pVDZ_NOCISD3_1_5_PT2.lua",
     ),
 }
@@ -167,7 +167,7 @@ def readPrevious(path):
 
 
 def formatSpecs(specs):
-    """Format runner specifications for the badge's second line."""
+    """Format the runner specifications for their shared badge."""
     parts = [specs.get("os") or "Unknown OS", specs.get("cpu") or "Unknown CPU"]
     if specs.get("vcpus"):
         parts.append(f"{specs['vcpus']} vCPU")
@@ -175,6 +175,24 @@ def formatSpecs(specs):
         parts.append(f"{specs['memory_gib']:g} GiB RAM")
 
     return " · ".join(parts)
+
+
+def renderPill(label, message, color, labelWidth, width, details):
+    """Render a compact two-part badge with an accessible description."""
+    label = html.escape(label)
+    message = html.escape(message)
+    details = html.escape(details)
+    messageWidth = width - labelWidth
+
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="24" viewBox="0 0 {width} 24" role="img" aria-label="{details}">
+  <title>{details}</title>
+  <rect width="{width}" height="24" rx="4" fill="#555"/>
+  <rect x="{labelWidth}" width="{messageWidth}" height="24" rx="4" fill="{color}"/>
+  <rect x="{labelWidth}" width="4" height="24" fill="{color}"/>
+  <text x="12" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">{label}</text>
+  <text x="{labelWidth + 12}" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">{message}</text>
+</svg>
+"""
 
 
 def renderBadge(label, current, previous, specs):
@@ -204,20 +222,14 @@ def renderBadge(label, current, previous, specs):
             "#6e7781",
         )
 
-    label = html.escape(label)
-    comparison = html.escape(comparison)
-    specs = html.escape(formatSpecs(specs))
+    details = f"{label}: {comparison}; {formatSpecs(specs)}"
+    return renderPill(label, comparison, color, 260, 530, details)
 
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="900" height="51" viewBox="0 0 900 51" role="img" aria-label="{label}: {comparison}">
-  <title>{label}: {comparison}; {specs}</title>
-  <rect width="900" height="51" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
-  <rect x="0" y="0" width="330" height="32" rx="6" fill="#24292f"/>
-  <rect x="324" y="0" width="6" height="32" fill="#24292f"/>
-  <text x="12" y="21" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="13">{label}</text>
-  <text x="344" y="21" fill="{color}" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="bold">{comparison}</text>
-  <text x="12" y="45" fill="#57606a" font-family="DejaVu Sans, Arial, sans-serif" font-size="11">{specs}</text>
-</svg>
-"""
+
+def renderRunnerBadge(specs):
+    """Render the common runner specifications once below the timings."""
+    details = formatSpecs(specs)
+    return renderPill("runner", details, "#57606a", 76, 820, f"Runner: {details}")
 
 
 def publish(resultPath, repo, branchDir):
@@ -270,6 +282,7 @@ def publish(resultPath, repo, branchDir):
             badge = renderBadge(label, currentRun, previousRun, current["system"])
             (badgeDir / f"{key}.svg").write_text(badge)
 
+        (badgeDir / "runner.svg").write_text(renderRunnerBadge(current["system"]))
         (branchDir / "latest.json").write_text(serialized)
 
     # Publish the informational results independently of the source branch.
