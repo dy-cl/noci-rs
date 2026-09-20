@@ -1,9 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="51" viewBox="0 0 900 51" role="img" aria-label="H6 cc-pVDZ · NOCISDT3 · SApply: 15.68 s">
-  <title>H6 cc-pVDZ · NOCISDT3 · SApply: 15.68 s; Ubuntu 22.04.5 LTS · AMD EPYC 7763 64-Core Processor · 4 vCPU · 15.6 GiB RAM</title>
-  <rect width="900" height="51" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
-  <rect x="0" y="0" width="330" height="32" rx="6" fill="#24292f"/>
-  <rect x="324" y="0" width="6" height="32" fill="#24292f"/>
-  <text x="12" y="21" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="13">H6 cc-pVDZ · NOCISDT3 · SApply</text>
-  <text x="344" y="21" fill="#6e7781" font-family="DejaVu Sans, Arial, sans-serif" font-size="14" font-weight="bold">15.68 s</text>
-  <text x="12" y="45" fill="#57606a" font-family="DejaVu Sans, Arial, sans-serif" font-size="11">Ubuntu 22.04.5 LTS · AMD EPYC 7763 64-Core Processor · 4 vCPU · 15.6 GiB RAM</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="530" height="24" viewBox="0 0 530 24" role="img" aria-label="H6 cc-pVDZ · NOCISDT(3) · SApply: ↑ 15.33 s (previous 15.68 s); Ubuntu 22.04.5 LTS · AMD EPYC 7763 64-Core Processor · 4 vCPU · 15.6 GiB RAM">
+  <title>H6 cc-pVDZ · NOCISDT(3) · SApply: ↑ 15.33 s (previous 15.68 s); Ubuntu 22.04.5 LTS · AMD EPYC 7763 64-Core Processor · 4 vCPU · 15.6 GiB RAM</title>
+  <rect width="530" height="24" rx="4" fill="#555"/>
+  <rect x="260" width="270" height="24" rx="4" fill="#1a7f37"/>
+  <rect x="260" width="4" height="24" fill="#1a7f37"/>
+  <text x="12" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">H6 cc-pVDZ · NOCISDT(3) · SApply</text>
+  <text x="272" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">↑ 15.33 s (previous 15.68 s)</text>
 </svg>
