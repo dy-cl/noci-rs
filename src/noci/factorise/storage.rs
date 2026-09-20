@@ -58,6 +58,8 @@ impl OneBodyStoragePlan {
     /// - `nb`: Number of beta factor entries.
     /// # Returns
     /// - `OneBodyFactorStorage<T>`: RAM or disk storage for the raw factor tables.
+    /// # Panics
+    /// - Panics if the selected backend cannot store factors.
     pub(super) fn allocate<T: NOCIScalar>(
         &mut self,
         target_parent: usize,
@@ -125,6 +127,8 @@ impl OverlapStoragePlan {
     /// - `build_cdfs`: Whether to allocate alpha and beta CDF tables.
     /// # Returns
     /// - `OverlapFactorStorage`: RAM or disk storage for the overlap factor tables.
+    /// # Panics
+    /// - Panics if the selected backend cannot store factors.
     pub(super) fn allocate(
         &mut self,
         target_parent: usize,
@@ -405,6 +409,8 @@ impl OverlapFactorStorage {
     /// - `beta`: New beta columns, each with `ntb` target-row values.
     /// # Returns
     /// - `()`: Extends the factor tables in the selected storage backend.
+    /// # Panics
+    /// - Panics if disk-backed factors already contain proposal CDFs that cannot be extended.
     pub(super) fn append_source_columns(
         &mut self,
         nta: usize,
@@ -622,6 +628,10 @@ impl<T: NOCIScalar> OneBodyDiskFactors<T> {
 
 impl<T: NOCIScalar> Drop for OneBodyDiskFactors<T> {
     /// Remove the temporary factor file after the mapping is destroyed.
+    /// # Arguments:
+    /// - `self`: File-backed factor storage being destroyed.
+    /// # Returns
+    /// - `()`: Attempts to remove the temporary file.
     fn drop(&mut self) {
         let _ = remove_file(&self.path);
     }
@@ -697,6 +707,10 @@ impl OverlapDiskFactors {
 
 impl Drop for OverlapDiskFactors {
     /// Remove the temporary overlap factor file after the mapping is destroyed.
+    /// # Arguments:
+    /// - `self`: File-backed overlap storage being destroyed.
+    /// # Returns
+    /// - `()`: Attempts to remove the temporary file.
     fn drop(&mut self) {
         let _ = remove_file(&self.path);
     }

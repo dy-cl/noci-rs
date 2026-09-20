@@ -132,6 +132,8 @@ pub(crate) fn build_spaces(
         active_map[p] = Some(i);
     }
 
+    // Outside the explicit active set, classify orbitals by diagonal natural
+    // occupation: core near two electrons and virtual near zero.
     for p in 0..nmo {
         if active_map[p].is_some() {
             continue;
@@ -148,6 +150,8 @@ pub(crate) fn build_spaces(
         }
     }
 
+    // The excitation manifold creates in `A \cup V` and annihilates from
+    // `C \cup A`.
     let mut creators = active_sorted.clone();
     creators.extend(virtuals.iter().copied());
 
@@ -260,6 +264,7 @@ fn double_excitation_class(
 pub(crate) fn build_excitations(spaces: &Spaces) -> Vec<Excitation> {
     let mut out = Vec::new();
 
+    // Enumerate supported creator-annihilator class pairs for singles.
     for &p in spaces.creators.iter() {
         for &q in spaces.annihilators.iter() {
             if single_excitation_class(spaces, p, q).is_some() {
@@ -268,6 +273,8 @@ pub(crate) fn build_excitations(spaces: &Spaces) -> Vec<Excitation> {
         }
     }
 
+    // Doubles retain the creator and annihilator order required by the
+    // spin-free excitation operator `E^{pq}_{rs}`.
     for &p in spaces.creators.iter() {
         for &q in spaces.creators.iter() {
             for &r in spaces.annihilators.iter() {
@@ -289,6 +296,8 @@ pub(crate) fn build_excitations(spaces: &Spaces) -> Vec<Excitation> {
 /// - `ex`: Spin-free excitation.
 /// # Returns:
 /// - `ExcitationClass`: Excitation class used for overlap dispatch.
+/// # Panics
+/// - Panics if the excitation has an unsupported orbital-space class.
 pub(in crate::nocc) fn excitation_class(
     spaces: &Spaces,
     ex: Excitation,
@@ -335,6 +344,8 @@ pub(crate) fn build_fois_basis(
     excitations: &[Excitation],
     tol: f64,
 ) -> FoisBasis {
+    // Build the symmetric raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from
+    // its upper triangle; each row is independent for parallel evaluation.
     let nexc = excitations.len();
     let upper_rows: Vec<Vec<f64>> = (0..nexc)
         .into_par_iter()
@@ -355,6 +366,7 @@ pub(crate) fn build_fois_basis(
         }
     }
 
+    // Form the weighted metric `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
     let h = hamiltonian_weights(ao, gamma1, excitations);
     let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
 
@@ -364,6 +376,8 @@ pub(crate) fn build_fois_basis(
         }
     }
 
+    // Löwdin orthogonalisation removes small weighted-metric eigenmodes;
+    // `Y = \operatorname{diag}(h) \tilde X` maps orthogonal columns to the raw FOIS basis.
     let xtilde = loewdin_x(&stilde, true, tol);
     let mut y = xtilde.clone();
 
@@ -397,6 +411,8 @@ fn hamiltonian_weights(
     let mut da = Array2::<f64>::zeros((n, n));
     let mut db = Array2::<f64>::zeros((n, n));
 
+    // Split the spin-free one-body density equally between `\alpha` and
+    // `\beta` when forming the spin-resolved Fock matrix.
     for p in 0..n {
         for q in 0..n {
             let value = 0.5 * gamma1.data[p * n + q];
@@ -408,6 +424,8 @@ fn hamiltonian_weights(
     let (fa, _fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
     let mut h = Array1::zeros(excitations.len());
 
+    // Single excitations use `F_{qp}`; doubles use half the corresponding
+    // Coulomb integral `(rs|pq)` in the weighted FOIS metric.
     for (i, &ex) in excitations.iter().enumerate() {
         h[i] = match ex {
             Excitation::Single { p, q } => fa[(q, p)],

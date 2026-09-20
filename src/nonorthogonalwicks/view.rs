@@ -270,7 +270,8 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// `[z,r]` ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi, mj`: Fundamental-contraction assignments `m_i,m_j \in \{0,1\}`.
+    /// - `mi`: First fundamental-contraction assignment.
+    /// - `mj`: Second fundamental-contraction assignment.
     /// # Returns
     /// - `&[T]`: `Flat transposed \mathcal F^{(m_i,m_j)} matrix.`
     #[inline(always)]
@@ -287,7 +288,8 @@ impl<'a, T: NOCIScalar> SameSpinView<'a, T> {
     /// stored `[z,r]` ordering makes the replacement column with fixed z contiguous.
     /// # Arguments:
     /// - `self`: Same-spin Wick view.
-    /// - `mi, mj`: Fundamental-contraction assignments `m_i,m_j \in \{0,1\}`.
+    /// - `mi`: First fundamental-contraction assignment.
+    /// - `mj`: Second fundamental-contraction assignment.
     /// # Returns
     /// - `&[T]`: `Flat transposed \mathcal F^{(m_i,m_j)} matrix.`
     #[inline(always)]

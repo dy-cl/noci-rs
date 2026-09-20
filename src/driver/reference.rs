@@ -88,6 +88,8 @@ pub fn run_reference_space<T>(
 where
     T: NOCIScalar + Serialize + DeserializeOwned,
 {
+    // Give every rank the same retained, occupied-first determinant basis
+    // before constructing reference-pair intermediates.
     let mut basis: Vec<_> = filter_reference_basis(basis)
         .iter()
         .map(occ_first)
@@ -105,6 +107,8 @@ where
     }
     let mocache = build_mo_cache(ao, &space.parents, tol);
 
+    // Rank zero solves `H c = E S c`; broadcast the eigenpair so subsequent
+    // propagation starts from identical reference data on every rank.
     let mut e_noci = 0.0;
     let mut c0 = Vec::new();
     if world.rank() == 0 {
@@ -174,7 +178,7 @@ fn build_reference_wicks<T: NOCIScalar>(
 /// # Arguments:
 /// - `ao`: Contains AO integrals and other system data.
 /// - `input`: User input specifications.
-/// - `basis`: Filtered reference NOCI basis.
+/// - `space`: Filtered reference NOCI determinant space.
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `mocache`: MO-basis one and two-electron integral caches.
 /// - `wicks`: Optional precomputed Wick's intermediates.

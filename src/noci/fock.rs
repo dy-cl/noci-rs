@@ -97,6 +97,7 @@ pub(in crate::noci) fn compare_f_pair_wicks_naive<T: NOCIScalar>(
 /// - `cache`: MO-basis Fock cache for the shared parent determinant.
 /// - `ldet`: Bra-reference state x.
 /// - `gdet`: Ket-reference state w.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Fock matrix element between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
@@ -114,7 +115,10 @@ pub(in crate::noci) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
         let na = xa.count_ones() as usize;
         let nb = xb.count_ones() as usize;
 
+        // The one-body Fock operator connects only identical determinants
+        // and single excitations in one spin sector.
         if na == 0 && nb == 0 {
+            // Diagonal element: sum the occupied `\alpha` and `\beta` MO Fock energies.
             let mut f = <T as From<f64>>::from(0.0);
 
             for p in 0..128 {
@@ -128,6 +132,7 @@ pub(in crate::noci) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
             return f;
         }
 
+        // One hole and one particle give the signed `\alpha` Fock coupling.
         if na == 2 && nb == 0 {
             let hole = (goa & xa).trailing_zeros() as usize;
             let part = (loa & xa).trailing_zeros() as usize;
@@ -135,6 +140,7 @@ pub(in crate::noci) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
             return phase * cache.fa[(part, hole)];
         }
 
+        // The `\beta` single has the analogous Slater-Condon matrix element.
         if na == 0 && nb == 2 {
             let hole = (gob & xb).trailing_zeros() as usize;
             let part = (lob & xb).trailing_zeros() as usize;
@@ -153,6 +159,8 @@ pub(in crate::noci) fn calculate_f_pair_orthogonal<T: NOCIScalar>(
 /// - `gdet`: Ket-reference state w.
 /// - `fa`: NOCI Fock matrix spin alpha.
 /// - `fb`: NOCI Fock matrix spin beta.
+/// - `space`: Determinant space containing the bra and ket states.
+/// - `tol`: Numerical tolerance for the determinant overlap.
 /// # Returns:
 /// - `T`: Fock matrix element between `ldet` and `gdet`.
 fn calculate_f_pair_naive<T: NOCIScalar>(
@@ -191,6 +199,7 @@ fn calculate_f_pair_naive<T: NOCIScalar>(
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `scratch`: Scratch space for Wick's calculations.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Fock matrix element between the determinant pair.
 fn calculate_f_pair_wicks<T: NOCIScalar>(
@@ -216,6 +225,8 @@ fn calculate_f_pair_wicks<T: NOCIScalar>(
         let phb =
             <T as From<f64>>::from(space.beta(ldet).reduced.phase * space.beta(gdet).reduced.phase);
 
+        // The one-body Fock element separates into spin sectors as
+        // `F_{xw} = F^\alpha_{xw} S^\beta_{xw} + S^\alpha_{xw} F^\beta_{xw}`.
         let (sa, f1a) = xw_f_overlap_prepared(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
         let (sb, f1b) = xw_f_overlap_prepared(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
         let sa = pha * sa;

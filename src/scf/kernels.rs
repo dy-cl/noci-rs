@@ -52,6 +52,8 @@ pub fn fock<T: StateScalar>(
     let n = h.nrows();
     let d = da + db;
 
+    // Form only the lower triangle in parallel. `J_{pq} = \sum_{rs} D_{rs}(pq|rs)`
+    // uses total density, while `K^\sigma_{pq} = \sum_{rs} D^\sigma_{rs}(pr|qs)`.
     let rows: Vec<(Vec<T>, Vec<T>)> = (0..n)
         .into_par_iter()
         .map(|p| {
@@ -82,6 +84,7 @@ pub fn fock<T: StateScalar>(
     let mut fa = Array2::<T>::zeros((n, n));
     let mut fb = Array2::<T>::zeros((n, n));
 
+    // Assemble `F^\sigma = H + J - K^\sigma` and reflect the computed triangle.
     for p in 0..n {
         for q in 0..=p {
             fa[(p, q)] = rows[p].0[q];
@@ -118,6 +121,8 @@ pub fn fock_lambda<T: StateScalar>(
     let n = h.nrows();
     let d = da + db;
 
+    // Reuse the same `J` and spin-specific `K` contractions, scaling only
+    // the electron-electron term: `F^\sigma = H + \lambda (J - K^\sigma)`.
     let rows: Vec<(Vec<T>, Vec<T>)> = (0..n)
         .into_par_iter()
         .map(|p| {
@@ -149,6 +154,7 @@ pub fn fock_lambda<T: StateScalar>(
     let mut fa = Array2::<T>::zeros((n, n));
     let mut fb = Array2::<T>::zeros((n, n));
 
+    // Assemble the lower triangle and copy it to the upper triangle.
     for p in 0..n {
         for q in 0..=p {
             fa[(p, q)] = rows[p].0[q];

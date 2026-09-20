@@ -126,6 +126,8 @@ fn atomic_core_density(
     let x = loewdin_x(&s, false, 1e-12);
     let (e, c) = general_evp_x(&h, &x);
 
+    // Fill each degenerate eigenspace uniformly: `n_i = N_{\text{shell}} / g` for
+    // shell multiplicity `g`, with at most two electrons per orbital.
     let mut occ = Array1::zeros(e.len());
     let mut remaining = nelec as f64;
     let mut i = 0;
@@ -146,6 +148,8 @@ fn atomic_core_density(
         i = j;
     }
 
+    // Transform the fractional occupations back to the AO basis as
+    // `D = C diag(n) C^T`.
     let mut weighted = c.clone();
 
     for (mut column, &occupation) in weighted.axis_iter_mut(Axis(1)).zip(occ.iter()) {
@@ -170,6 +174,8 @@ fn sad_density(
     let mut cache: HashMap<String, Array2<f64>> = HashMap::new();
     let mut dm = Array2::zeros((cint.nao(), cint.nao()));
 
+    // Place each non-ghost isolated-atom density on its molecular AO block;
+    // atoms of the same element share the cached atomic calculation.
     for (a, atom) in mol.atoms.iter().enumerate() {
         if atom.is_ghost {
             continue;
@@ -217,6 +223,8 @@ pub fn generate_ao_data(
     ));
     let cint = &mol.cint;
 
+    // Build the AO metric and core Hamiltonian `H_{\text{core}} = T + V_{\text{nuc}}`, then
+    // orthogonalise the metric for subsequent generalised eigenproblems.
     let s = integral2(cint, "int1e_ovlp");
     let t = integral2(cint, "int1e_kin");
     let v = integral2(cint, "int1e_nuc");
@@ -224,6 +232,8 @@ pub fn generate_ao_data(
     let x = loewdin_x(&s, false, 1e-12);
     let dm = sad_density(&mol, basis);
 
+    // Retain both Coulomb ERIs and their antisymmetrised form for later
+    // contractions; the atomic SAD supplies the initial molecular density.
     let eri_coul = integral4(cint, "int2e");
     let eri_asym = antisymmetrise(&eri_coul);
 

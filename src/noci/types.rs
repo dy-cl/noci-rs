@@ -21,6 +21,10 @@ use super::space::{NOCIIndex, NOCISpace};
 /// Scalar type accepted by generic NOCI matrix-element code.
 pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
     /// Construct a purely imaginary scalar.
+    /// # Arguments:
+    /// - `x`: Imaginary component.
+    /// # Returns
+    /// - `Self`: Purely imaginary scalar.
     fn from_imag(x: f64) -> Self;
 
     /// `Calculate Einstein summation of scalar matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
@@ -79,6 +83,13 @@ pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
 }
 
 impl NOCIScalar for f64 {
+    /// Convert a zero imaginary component to a real scalar.
+    /// # Arguments:
+    /// - `x`: Imaginary component, which must be zero.
+    /// # Returns
+    /// - `f64`: Zero when `x` is zero.
+    /// # Panics
+    /// - Panics if `x` is nonzero because `f64` cannot represent an imaginary value.
     fn from_imag(x: f64) -> Self {
         if x == 0.0 {
             0.0
@@ -151,6 +162,11 @@ impl NOCIScalar for f64 {
 }
 
 impl NOCIScalar for Complex64 {
+    /// Construct a purely imaginary complex scalar.
+    /// # Arguments:
+    /// - `x`: Imaginary component.
+    /// # Returns
+    /// - `Complex64`: Complex number with zero real part.
     fn from_imag(x: f64) -> Self {
         Complex64::new(0.0, x)
     }
@@ -351,6 +367,8 @@ pub(in crate::noci) trait ScatterValue: Sized + Copy {
     /// - `i`: Row index.
     /// - `j`: Column index.
     /// - `val`: Matrix element value.
+    /// # Returns
+    /// - `()`: Writes the matrix element into `out`.
     fn write(
         out: &mut Self::Output,
         i: usize,
@@ -388,6 +406,8 @@ impl<T: NOCIScalar> ScatterValue for T {
     /// - `i`: Row index.
     /// - `j`: Column index.
     /// - `val`: Value to write.
+    /// # Returns
+    /// - `()`: Writes the scalar into the matrix.
     fn write(
         out: &mut Self::Output,
         i: usize,
@@ -429,6 +449,8 @@ impl<T: NOCIScalar> ScatterValue for (T, T) {
     /// - `i`: Row index.
     /// - `j`: Column index.
     /// - `val`: Pair of values to write.
+    /// # Returns
+    /// - `()`: Writes both scalars into their matrices.
     fn write(
         out: &mut Self::Output,
         i: usize,

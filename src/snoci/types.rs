@@ -195,6 +195,8 @@ impl<R: NOCIScalar> Preconditioner<R> {
         kind: SNOCIPreconditioner,
         imag_shift: f64,
     ) -> Self {
+        // Regularise `D^{-1}` below a scale-relative floor so near-zero candidate
+        // diagonals cannot dominate the preconditioned Krylov vector.
         let dmax = m_diag.iter().fold(0.0_f64, |a, &x| a.max(x.abs()));
         let dfloor = (1e-12_f64 * dmax).max(1e-14_f64);
 
@@ -224,6 +226,8 @@ impl<R: NOCIScalar> Preconditioner<R> {
             };
         }
 
+        // Write the projected correction as `M^\Omega \approx D + U V^T`, with
+        // `U = [u0, u1]` and `V = [v0, v1]` from the reference couplings.
         let u0 = Array1::from_iter(
             p.f_a0
                 .iter()
@@ -234,6 +238,7 @@ impl<R: NOCIScalar> Preconditioner<R> {
         let v0 = p.s_0a.clone();
         let v1 = p.f_0a.clone();
 
+        // Woodbury reduces the inverse to the 2x2 core `C = I + V^T D^{-1} U`.
         let z0 = Array1::from_iter(dinv.iter().zip(u0.iter()).map(|(&d, &u)| d * u));
         let z1 = Array1::from_iter(dinv.iter().zip(u1.iter()).map(|(&d, &u)| d * u));
 
@@ -242,6 +247,8 @@ impl<R: NOCIScalar> Preconditioner<R> {
         let c10 = bilinear_dot(&v1, &z0);
         let c11 = R::from_real(1.0) + bilinear_dot(&v1, &z1);
 
+        // Disable the rank correction when `C` is nearly singular; the
+        // regularised diagonal inverse remains available as a fallback.
         let det = c00 * c11 - c01 * c10;
         let active = det.abs() > 1e-14_f64;
 
@@ -285,6 +292,7 @@ impl<R: NOCIScalar> Preconditioner<R> {
             return y;
         }
 
+        // `(D + U V^T)^{-1}v = D^{-1}v - D^{-1}U C^{-1}V^T D^{-1}v`.
         let t0 = self.v0.dot(&y);
         let t1 = self.v1.dot(&y);
 
@@ -300,6 +308,11 @@ impl<R: NOCIScalar> Preconditioner<R> {
 
 /// Compute the unconjugated vector contraction used by the projected operator's
 /// rank updates.
+/// # Arguments:
+/// - `x`: First projected vector.
+/// - `y`: Second projected vector.
+/// # Returns
+/// - `T`: Bilinear dot product `\sum_i x_i y_i`.
 fn bilinear_dot<T: NOCIScalar>(
     x: &Array1<T>,
     y: &Array1<T>,

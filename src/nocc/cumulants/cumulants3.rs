@@ -28,6 +28,8 @@ pub(crate) fn cumulants3<T: NOCIScalar>(
     let n = gamma3.n;
     let mut lambda = CumulantTensor::zeros(3, n);
 
+    // `\lambda_3 = \Gamma_3 - \operatorname{disconnected}(\lambda_1, \lambda_2)`; the explicit
+    // products below retain the spin-free index order of the RDM.
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {

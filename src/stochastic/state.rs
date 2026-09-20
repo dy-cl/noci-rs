@@ -31,6 +31,8 @@ pub(in crate::stochastic) enum PopulationRepresentation {
 
 impl PopulationRepresentation {
     /// Return restart metadata spelling for this representation.
+    /// # Arguments:
+    /// - `self`: Population representation.
     /// # Returns:
     /// - `&'static str`: Stable representation name stored in HDF5 metadata.
     pub(in crate::stochastic) fn as_str(self) -> &'static str {
@@ -1192,6 +1194,7 @@ impl AuxiliaryThreadPropagation {
     /// - `population`: Sampled real population `\tilde N_x`.
     /// - `shift`: Current physical shift `E_s`.
     /// - `data`: Shared input containing the timestep.
+    /// - `auxiliary`: Auxiliary determinant space used to index the orthogonal update.
     /// - `run`: Rank-local metadata containing cached diagonal `H_{xx}`.
     /// # Returns
     /// - `()`: Appends a nonzero diagonal orthogonal update.
@@ -1231,6 +1234,8 @@ impl AuxiliaryThreadPropagation {
             return;
         }
 
+        // Split a large signed population over `\lceil|\tilde N_x|\rceil`
+        // independent connection draws while preserving its total weight.
         let nattempts = population.abs().ceil().max(1.0) as usize;
         let parent_population = population / nattempts as f64;
         for _ in 0..nattempts {
@@ -1267,6 +1272,8 @@ impl AuxiliaryThreadPropagation {
             return;
         }
 
+        // Gather all requested orthogonal couplings for one batched Hamiltonian
+        // evaluation before constructing individual spawn amplitudes.
         self.spawn_pairs.clear();
         self.spawn_pairs.extend(
             self.spawn_requests
@@ -1286,6 +1293,9 @@ impl AuxiliaryThreadPropagation {
         let qmc = data.input.qmc.as_ref().unwrap();
         let dt = data.input.prop_ref().dt;
         let record_samples = data.input.write.write_excitation_hist;
+
+        // Each raw event contributes `-\Delta t\, H_{Dx}\tilde N_x / P_{\text{gen}}(D|x)` to its
+        // connected auxiliary determinant, before pivotal compression.
         for i in 0..self.spawn_requests.len() {
             let request = &self.spawn_requests[i];
             let raw = -dt * self.spawn_h[i] * request.parent_population / request.pgen;
@@ -1312,6 +1322,9 @@ impl AuxiliaryThreadPropagation {
             qmc.fri.spawn_cutoff,
             &mut self.rng,
         );
+
+        // Route compressed events to their owning MPI ranks, then release
+        // iteration-local batch storage.
         for i in 0..self.raw_spawn_updates.len() {
             let update = self.raw_spawn_updates[i];
             self.route_update(update.index(), update.dn, run);

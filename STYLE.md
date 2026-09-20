@@ -95,7 +95,7 @@ This is a good function doc because it:
 1. Starts with the mathematical operation being performed.
 2. Gives the governing equation, `X = S^{-1/2}`, before implementation details.
 3. Uses LaTeX-style notation for branch-specific formulas, such as
-   `X = U_+ Lambda_+^{-1/2}` and `X = U Lambda^{-1/2} U^\dagger`.
+   `X = U_+ \Lambda_+^{-1/2}` and `X = U \Lambda^{-1/2} U^\dagger`.
 4. Documents numerical conventions, such as using only the lower triangle of a Hermitian
    matrix and applying a tolerance to identify the positive subspace.
 5. Lists each argument and the return value using the same `# Arguments` and `# Returns`
@@ -105,6 +105,10 @@ Use equations where they make the scientific meaning clearer. In function docs, 
 LaTeX-style notation with backticks so Rustdoc treats it as code and preserves underscores,
 backslashes and spacing. Prefer notation such as `H C = S C E`, `C^\dagger S C = I`,
 `\sum_i x_i y_i`, or tensor index order like `[p, q, r, s]` when it is more precise than prose.
+In both Rustdoc and function-body comments, write Greek symbols with LaTeX commands such as
+`\alpha`, `\beta`, and `\lambda`. Brace multi-character descriptive subscripts with `\text{}`:
+write `x_{\text{start}}` and `H_{\text{raw}}`. Keep Rust identifiers and literal input values in
+their actual spelling.
 
 Use optional sections only when applicable:
 

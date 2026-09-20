@@ -9,7 +9,6 @@ mod storage;
 pub(crate) use onebody::{OneBodyFactorisation, OneBodyScratch};
 pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 
-// Standard library imports.
 // Crate-root imports.
 use crate::ExcitationSpinCache;
 

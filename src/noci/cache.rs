@@ -21,6 +21,7 @@ fn hermitian_orthonormal_error<T: NOCIScalar>(
     c: &Array2<T>,
     s: &Array2<f64>,
 ) -> f64 {
+    // Measure the largest elementwise deviation in `C^\dagger S C - I`.
     let smat = real2_as::<T>(s);
     let ov = adjoint(c).dot(&smat).dot(c);
     let mut err = 0.0;

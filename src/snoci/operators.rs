@@ -79,6 +79,7 @@ impl<T: NOCIScalar> CandidateM<T> {
 /// generalised eigenvalue problem.
 /// # Arguments:
 /// - `ao`: AO integrals and other system data.
+/// - `space`: Full determinant space containing the selected states.
 /// - `current_space`: Current selected nonorthogonal determinant space.
 /// - `input`: User-defined input options.
 /// - `wicks`: Optional shared Wick's intermediates.
@@ -248,6 +249,8 @@ pub(in crate::snoci) fn build_candidate_m_disk<T: NOCIScalar>(
 ) -> CandidateM<T> {
     time_call!(crate::timers::snoci::add_build_candidate_m, {
         let n = op.candidates.len();
+        // Packed upper-triangle storage has `n(n+1)/2` elements; check the
+        // element and byte counts before sizing the memory-mapped file.
         let len = n
             .checked_mul(n + 1)
             .and_then(|x| x.checked_div(2))
@@ -323,6 +326,8 @@ pub(in crate::snoci) fn build_candidate_m_diag<T: NOCIScalar>(
     time_call!(crate::timers::snoci::add_build_candidate_m_diag, {
         let n = op.candidates.len();
 
+        // In packed upper-triangle storage, diagonal `i` begins at
+        // `i (2n - i + 1) / 2`; otherwise evaluate each pair `(i,i)`.
         if let Some(m) = m {
             let mut diag = Array1::from_elem(n, T::from_real(0.0));
 
@@ -373,6 +378,7 @@ pub(in crate::snoci) fn build_candidate_s_diag<T: NOCIScalar>(
 
 /// Build unprojected candidate-candidate diagonals from factorised `F + \lambda S` and `S`.
 /// # Arguments:
+/// - `op`: Candidate operator whose diagonals are requested.
 /// - `one_body`: Cached spin-factorised one-body operator.
 /// - `lambda`: Scalar overlap shift in `F + \lambda S`.
 /// # Returns:
@@ -416,6 +422,7 @@ where
 
         // `y_a = \sum_b M_{ab} x_b`: `M_{ab}` uses chemistry scalar `T`
         // and the Krylov vector `x_b` uses scalar `R`.
+        // Use the packed upper triangle when it is already available.
         if let Some(m) = m {
             let y = (0..n)
                 .into_par_iter()
@@ -455,6 +462,7 @@ where
             return Array1::from_vec(y);
         }
 
+        // Evaluate the upper triangle on demand, skipping pairs with zero input amplitudes.
         let y = (0..n)
             .into_par_iter()
             .with_min_len(min_len)
@@ -503,6 +511,7 @@ where
                     lhs
                 },
             );
+
         Array1::from_vec(y)
     })
 }
@@ -539,6 +548,8 @@ where
 
         let mut y = vec![zero; n];
 
+        // Each rank owns every `n_{\text{ranks}}`-th output row. Recover `M_{ab}` below
+        // the packed upper triangle through Hermitian symmetry `M_{ab} = M_{ba}^*`.
         if let Some(m) = m {
             for a in (irank..n).step_by(nranks) {
                 let mut ya = zero;
@@ -557,11 +568,14 @@ where
                 y[a] = ya;
             }
 
+            // Sum disjoint row contributions into the replicated result.
             return all_reduce_array1(world, Array1::from_vec(y));
         }
 
         let mut scratch = WickScratchSpin::new();
 
+        // Without a packed matrix, evaluate each owned upper-triangle pair
+        // once and scatter `M_{ab} x_b` and `M_{ab}^* x_a` to both output rows.
         for a in (irank..n).step_by(nranks) {
             let xa = xs[a];
             let ldet = op.candidates[a];
@@ -591,6 +605,7 @@ where
             }
         }
 
+        // Pair ownership partitions the work; the output rows may overlap.
         all_reduce_array1(world, Array1::from_vec(y))
     })
 }
@@ -698,6 +713,8 @@ where
     let mut y = vec![zero; n];
     let mut scratch = WickScratchSpin::new();
 
+    // Partition upper-triangle pairs by their first index. Each rank adds
+    // `S_{ab} x_b` and, for `a \ne b`, the Hermitian partner `S_{ab}^* x_a`.
     for a in (irank..n).step_by(nranks) {
         let xa = xs[a];
         let ldet = op.candidates[a];
@@ -721,6 +738,7 @@ where
         }
     }
 
+    // Pair contributions to output rows overlap across ranks.
     all_reduce_array1(world, Array1::from_vec(y))
 }
 

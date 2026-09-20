@@ -422,6 +422,8 @@ pub fn einsum_ba_abcd_cd_complex(
 
     let mut acc = Complex64::new(0.0, 0.0);
 
+    // Reuse thread-local buffers and transpose `g_{ba}` into `[a,b]` storage
+    // so both `g` and the innermost `d` contraction are read contiguously.
     CHT_SCRATCH.with(|hbuf| {
         CGT_SCRATCH.with(|gbuf| {
             let mut ht = hbuf.borrow_mut();
@@ -447,6 +449,8 @@ pub fn einsum_ba_abcd_cd_complex(
                 }
             }
 
+            // Evaluate `\sum_{abc} g_{ba}\sum_d t_{abcd}h_{cd}`; a zero
+            // `g_{ba}` skips its entire `[c,d]` tensor slab.
             unsafe {
                 let ts_ptr = ts.as_ptr();
                 let ht_ptr = ht.as_ptr();
@@ -501,6 +505,8 @@ pub fn einsum_ba_abcd_cd_complex_real(
 
     let mut acc = Complex64::new(0.0, 0.0);
 
+    // Use the same `[a,b]` reordered `g` and contiguous `[c,d]` slices of
+    // the real tensor while keeping complex weights in the thread-local buffers.
     CHT_SCRATCH.with(|hbuf| {
         CGT_SCRATCH.with(|gbuf| {
             let mut ht = hbuf.borrow_mut();
@@ -526,6 +532,8 @@ pub fn einsum_ba_abcd_cd_complex_real(
                 }
             }
 
+            // Contract the real `t_{abcd}` with complex `h_{cd}` along `d`, then
+            // accumulate `g_{ba}` times the result over `a`, `b`, and `c`.
             unsafe {
                 let ts_ptr = ts.as_ptr();
                 let ht_ptr = ht.as_ptr();

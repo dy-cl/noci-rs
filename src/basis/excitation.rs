@@ -33,11 +33,15 @@ pub fn excitation_phase(
 
     let mut odd = false;
 
+    // Annihilate in reverse operator order; each occupied orbital below an
+    // index contributes one fermionic exchange sign.
     for &i in holes.iter().rev() {
         odd ^= below(occ, i);
         occ &= !(1u128 << i);
     }
 
+    // Create in the supplied order. The final insertion cannot affect any
+    // later parity calculation and need not update the bitstring.
     for (k, &a) in parts.iter().enumerate() {
         odd ^= below(occ, a);
         if k + 1 != parts.len() {
@@ -80,6 +84,8 @@ pub(crate) fn excitation_phase_bits(
 
     let mut odd = false;
 
+    // Apply annihilators from highest to lowest occupied index, updating
+    // `(-1)^{N_{<i}}` after each removal.
     while holes != 0 {
         let i = 127 - holes.leading_zeros() as usize;
         odd ^= below(occ, i);
@@ -87,6 +93,8 @@ pub(crate) fn excitation_phase_bits(
         holes &= !(1u128 << i);
     }
 
+    // Apply creators from lowest to highest index. The last insertion need
+    // not change `occ` because no later operator uses its occupancy.
     while parts != 0 {
         let a = parts.trailing_zeros() as usize;
         odd ^= below(occ, a);

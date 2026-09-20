@@ -213,6 +213,7 @@ pub(in crate::noci) fn compare_hs_pair_wicks_naive<T: NOCIScalar>(
 /// - `cache`: MO-basis one and two-electron integral cache for the shared parent determinant.
 /// - `ldet`: Bra-reference state x.
 /// - `gdet`: Ket-reference state w.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 fn calculate_hs_pair_orthogonal<T: NOCIScalar>(
@@ -367,6 +368,8 @@ pub(crate) fn calculate_h_pairs_orthogonal_batched(
 /// - `ao`: Contains AO integrals and other system data.
 /// - `ldet`: Bra-reference state x.
 /// - `gdet`: Ket-reference state w.
+/// - `space`: Determinant space containing the bra and ket states.
+/// - `tol`: Numerical tolerance for the determinant overlap.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
@@ -421,6 +424,7 @@ pub(in crate::noci) fn calculate_hs_pair_naive<T: NOCIScalar>(
 /// - `tol`: Tolerance up to which a number is considered zero.
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `scratch`: Scratch space for Wick's calculations.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `(T, T)`: Hamiltonian and overlap matrix elements for the pair.
 pub(in crate::noci) fn calculate_hs_pair_wicks<T: NOCIScalar>(

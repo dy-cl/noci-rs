@@ -68,6 +68,8 @@ pub(crate) fn overlap_element(
     let lclass = excitation_class(spaces, left);
     let rclass = excitation_class(spaces, right);
 
+    // Orthogonal excitation-class pairs have zero metric coupling; the
+    // remaining pairs select one generated contraction block by class.
     let Some((name, swap)) = block(lclass, rclass) else {
         return 0.0;
     };
@@ -87,6 +89,8 @@ pub(crate) fn overlap_element(
         t2: None,
     };
 
+    // Swap the free-index operators when the selected block is stored in the
+    // opposite class order.
     let (left, right) = if swap { (right, left) } else { (left, right) };
 
     eval(

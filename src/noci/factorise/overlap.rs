@@ -1700,6 +1700,8 @@ impl SpinFactorisation {
         let nsa = source.nalpha;
         let nsb = source.nbeta;
 
+        // Estimate factor evaluations and scalar products separately for
+        // direct rows, `\alpha`-first, and `\beta`-first contraction orderings.
         let row_factors = nt.saturating_mul(nsa.saturating_add(nsb));
         let row_products = nt.saturating_mul(ne);
         let a_factors = nta
@@ -1713,6 +1715,8 @@ impl SpinFactorisation {
             .saturating_mul(ne)
             .saturating_add(nt.saturating_mul(nsa));
 
+        // Charge each Wick factor more than a multiply-add, then choose the
+        // lowest weighted score without risking count overflow.
         let wick_factor_cost = 32usize;
         let row_score = row_factors
             .saturating_mul(wick_factor_cost)
@@ -1790,6 +1794,8 @@ impl SpinFactorisation {
         scratch.values.clear();
         scratch.values.resize(target.targets.len(), 0.0);
 
+        // Evaluate `\Delta N_I = \sum_J S_{IJ}\Delta_J` independently for each
+        // target, sharing one reusable Wick scratch per Rayon worker.
         scratch
             .values
             .par_iter_mut()

@@ -70,7 +70,8 @@ fn pivotal_push<T: Copy>(
     let b = candidate.probability;
     let sum = a + b;
 
-    // Pivotal pairing preserves both marginal inclusion probabilities while fixing one 0/1 decision.
+    // For `a+b<1`, carry one unresolved candidate with mass `a+b`; choosing
+    // the first with probability `a/(a+b)` preserves both original marginals.
     if sum < 1.0 {
         if rng.r#gen::<f64>() < a / sum {
             *pending = Some(PivotalCandidate {
@@ -86,6 +87,8 @@ fn pivotal_push<T: Copy>(
         return None;
     }
 
+    // For `a+b>=1`, resolve one inclusion now and carry excess mass
+    // `a+b-1`; probability `(1-b)/(2-a-b)` preserves the first marginal.
     let select_first = rng.r#gen::<f64>() < (1.0 - b) / (2.0 - sum);
     let remaining_probability = sum - 1.0;
     if select_first {
@@ -344,6 +347,8 @@ pub(in crate::stochastic) fn compress_sparse<T: FriAmplitude>(
         return;
     }
 
+    // Retain amplitudes above the cutoff exactly; send smaller amplitudes
+    // through pivotal pairing with inclusion mass `|x_i| / cutoff`.
     let mut out = 0usize;
     let mut pending = None;
 
@@ -366,6 +371,8 @@ pub(in crate::stochastic) fn compress_sparse<T: FriAmplitude>(
             out += 1;
         }
     }
+    // Resolve the final fractional candidate, then keep only compacted
+    // selected events in the original sparse buffer.
     if let Some((mut selected, amplitude)) = resolve_pivotal(pending, rng) {
         selected.set_amplitude(amplitude);
         updates[out] = selected;

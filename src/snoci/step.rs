@@ -237,9 +237,11 @@ where
             let (fa, fb) = time_call!(crate::timers::snoci::add_build_generalised_fock, {
                 fock(&post.ao.h, &post.ao.eri_coul, &da, &db)
             });
+
             // Transform Focks into MO basis for each reference.
             let fock_mocache =
                 build_fock_mo_cache(&fa, &fb, &post.space.parents, &post.ao.s, post.tol);
+
             // Update the Wick's intermediates if using them.
             if input.wicks.enabled
                 && let Some(ws) = wicks.as_deref_mut()
@@ -345,6 +347,7 @@ where
             };
 
             let m_slice = m.as_ref().map(|m| m.as_slice());
+
             // Candidate diagonals are needed only for actual preconditioners.
             let (m_diag, factorised_s_diag) = match opts.preconditioner {
                 SNOCIPreconditioner::None => (None, None),

@@ -27,6 +27,8 @@ pub(crate) fn cumulants2<T: NOCIScalar>(
     let n = active.len();
     let mut lambda = CumulantTensor::zeros(2, n);
 
+    // Subtract disconnected one-body products from the active-index block:
+    // `\lambda^{pq}_{rs} = \Gamma^{pq}_{rs} - \lambda^p_r\lambda^q_s + \frac12\lambda^p_s\lambda^q_r`.
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {

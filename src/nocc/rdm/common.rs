@@ -56,6 +56,8 @@ pub(super) fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
     let gdet = pair.gdet;
     let zero = <T as From<f64>>::from(0.0);
 
+    // Fixed spin assignments factor into independent `\alpha` and `\beta`
+    // determinant matrix elements; the spin-free RDM sums these assignments.
     let (pa, qa, pb, qb) = split_spin_assignment(ps, qs, mask);
     let nela = ldet.oa.count_ones() as usize;
     let nelb = ldet.ob.count_ones() as usize;
@@ -105,6 +107,8 @@ fn same_spin_rdm_element_naive<T: NOCIScalar>(
 
     let norb = g_c.nrows();
 
+    // Expand the ket Slater determinant over occupation bitstrings; each
+    // coefficient is the corresponding occupied-orbital minor of `g_c`.
     let mut acc = zero;
     let limit = 1u128 << norb;
 
@@ -118,6 +122,8 @@ fn same_spin_rdm_element_naive<T: NOCIScalar>(
         let mut phase = one;
         let mut valid = true;
 
+        // Apply the annihilators in the supplied order. An operator crossing
+        // each occupied orbital below `q` contributes one fermionic minus sign.
         for &q in qs {
             if ((bra >> q) & 1) == 0 {
                 valid = false;
@@ -134,6 +140,8 @@ fn same_spin_rdm_element_naive<T: NOCIScalar>(
             continue;
         }
 
+        // Creation acts in reverse index order on the intermediate bitstring;
+        // the same occupied-below parity determines its sign.
         for &p in ps.iter().rev() {
             if ((bra >> p) & 1) == 1 {
                 valid = false;
@@ -146,6 +154,7 @@ fn same_spin_rdm_element_naive<T: NOCIScalar>(
             bra |= 1u128 << p;
         }
 
+        // Contract the resulting bra configuration with its determinant minor.
         if valid {
             let cl = det_occupied_minor_dynamic(l_c, bra, nel);
             acc += phase * cl * cg;

@@ -42,6 +42,8 @@ pub(crate) fn metadynamics_bias(
         noci_basis: false,
     };
 
+    // Each prior state contributes a density-shaped Gaussian repulsion with
+    // weight `N\lambda\exp(-\lambda d^2)` at the current density distance.
     for bias in biases {
         let d2 = electron_distance(&tmpscf, bias, &ao.s);
         let nlambda = (bias.da.dot(&ao.s)).diag().sum() + (bias.db.dot(&ao.s)).diag().sum();

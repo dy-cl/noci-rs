@@ -71,8 +71,12 @@ pub struct Input {
 impl Input {
     /// Return immutable reference to propagation options. Will panic if propagation options are
     /// missing when doing QMC or deterministic propagation.
+    /// # Arguments:
+    /// - `self`: Parsed input options.
     /// # Returns:
     /// - `&PropagationOptions`: Immutable reference to propagation options.
+    /// # Panics
+    /// - Panics if propagation options are absent.
     pub fn prop_ref(&self) -> &PropagationOptions {
         self.prop.as_ref().unwrap_or_else(|| {
             panic!("Propagation options are required when running deterministic or QMC propagation")
@@ -81,8 +85,12 @@ impl Input {
 
     /// Return mutable reference to propagation options. Will panic if propagation options are
     /// missing when doing QMC or deterministic propagation.
+    /// # Arguments:
+    /// - `self`: Parsed input options.
     /// # Returns:
     /// - `&mut PropagationOptions`: Mutable reference to propagation options.
+    /// # Panics
+    /// - Panics if propagation options are absent.
     pub fn prop_mut(&mut self) -> &mut PropagationOptions {
         self.prop.as_mut().unwrap_or_else(|| {
             panic!("Propagation options are required when running deterministic or QMC propagation")

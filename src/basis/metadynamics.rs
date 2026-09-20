@@ -370,6 +370,8 @@ pub(crate) fn generate_states_metadynamics(
 /// - `meta`: SCF metadynamics parameters.
 /// # Returns:
 /// - `ReferenceBasis`: Real SCF states found by metadynamics and no h-SCF states.
+/// # Panics
+/// - Panics if holomorphic SCF metadynamics is requested.
 pub(crate) fn generate_reference_basis_metadynamics(
     ao: &AoData,
     input: &Input,

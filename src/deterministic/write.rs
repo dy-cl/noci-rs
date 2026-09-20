@@ -11,6 +11,8 @@ use crate::noci::NOCIScalar;
 /// Print the largest gaps between adjacent positive overlap eigenvalues.
 /// # Arguments
 /// - `lambda`: Overlap eigenvalues in ascending order.
+/// # Returns
+/// - `()`: Prints the largest gaps.
 pub(super) fn print_overlap_spectrum_gaps(lambda: &Array1<f64>) {
     // Enumerate all positive eigenvalues.
     let positive = lambda
@@ -53,6 +55,8 @@ pub(super) fn print_overlap_spectrum_gaps(lambda: &Array1<f64>) {
 /// - `negativetol`: Negative overlap eigenvalue tolerance.
 /// - `relevant`: Indices of retained overlap eigenvalues.
 /// - `null`: Indices of discarded overlap eigenvalues.
+/// # Returns
+/// - `()`: Prints the overlap-spectrum partition.
 pub(super) fn print_projector_spectrum_diagnostics(
     eps: f64,
     lambda: &Array1<f64>,
@@ -88,6 +92,8 @@ pub(super) fn print_projector_spectrum_diagnostics(
 /// # Arguments
 /// - `retained_e`: Retained-subspace eigenvalues.
 /// - `retained_c`: Retained-subspace eigenvectors.
+/// # Returns
+/// - `()`: Prints the retained eigensystem.
 pub(super) fn print_retained_subspace_diagnostics<T: NOCIScalar>(
     retained_e: &Array1<f64>,
     retained_c: &Array2<T>,
@@ -110,6 +116,8 @@ pub(super) fn print_retained_subspace_diagnostics<T: NOCIScalar>(
 /// - `snn`: S projected into the null subspace.
 /// - `hnn`: H projected into the null subspace.
 /// - `hrn`: H coupling from null to relevant subspace.
+/// # Returns
+/// - `()`: Prints the projected matrix norms.
 pub(super) fn print_projected_matrix_norms<T: NOCIScalar>(
     sun: &Array2<T>,
     hun: &Array2<T>,
@@ -132,6 +140,8 @@ pub(super) fn print_projected_matrix_norms<T: NOCIScalar>(
 /// - `sc0n`: S acting on the initial null-space component.
 /// - `hc0n`: H acting on the initial null-space component.
 /// - `cn_norm`: Norm of the initial null-space component.
+/// # Returns
+/// - `()`: Prints the initial null-space diagnostics.
 pub(super) fn print_initial_null_diagnostics<T: NOCIScalar>(
     sc0n: &Array1<T>,
     hc0n: &Array1<T>,
@@ -156,6 +166,8 @@ pub(super) fn print_initial_null_diagnostics<T: NOCIScalar>(
 /// - `es`: Initial value of the non-overlap shift.
 /// - `es_s`: Initial value of the overlap-transformed shift.
 /// - `sapply`: Whether S-apply propagation is active.
+/// # Returns
+/// - `()`: Prints the projected propagator diagnostics.
 pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
     propagator: &ProjPropagator<T>,
     es: f64,
@@ -192,6 +204,8 @@ pub(super) fn print_projected_propagator_diagnostics<T: NOCIScalar>(
 /// Print the deterministic propagation table header.
 /// # Arguments
 /// - `sapply`: Whether S-apply propagation is active.
+/// # Returns
+/// - `()`: Prints the selected table headings.
 pub(super) fn print_propagation_table_header(sapply: bool) {
     let (
         identity_shift_label,
@@ -226,6 +240,8 @@ pub(super) fn print_propagation_table_header(sapply: bool) {
 /// - `shifts`: Current non-overlap and overlap-transformed shifts.
 /// - `populations`: Current coefficient and overlap-weighted populations.
 /// - `den`: Current overlap metric.
+/// # Returns
+/// - `()`: Prints one propagation row.
 pub(super) fn print_propagation_table_row(
     iter: usize,
     energy: (f64, f64),

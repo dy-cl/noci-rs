@@ -44,6 +44,9 @@ pub(crate) struct SameSpinMeta<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> Default for SameSpinMeta<T> {
+    /// Construct zero-initialised same-spin metadata.
+    /// # Returns
+    /// - `SameSpinMeta<T>`: Metadata with empty scalar intermediates.
     fn default() -> Self {
         Self {
             tilde_s_prod: 0.0,
@@ -74,6 +77,9 @@ pub(crate) struct DiffSpinMeta<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> Default for DiffSpinMeta<T> {
+    /// Construct zero-initialised different-spin metadata.
+    /// # Returns
+    /// - `DiffSpinMeta<T>`: Metadata with empty scalar intermediates.
     fn default() -> Self {
         Self {
             nmo: 0,
@@ -153,6 +159,9 @@ pub(crate) struct PairMeta<T: NOCIScalar> {
 }
 
 impl<T: NOCIScalar> Default for PairMeta<T> {
+    /// Construct zero-initialised metadata for both spin sectors and their coupling.
+    /// # Returns
+    /// - `PairMeta<T>`: Default `\alpha`, `\beta`, and different-spin metadata.
     fn default() -> Self {
         Self {
             aa: SameSpinMeta::default(),

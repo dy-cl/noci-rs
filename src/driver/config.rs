@@ -8,7 +8,9 @@ use crate::input::{Input, load_input};
 /// # Arguments:
 /// - None.
 /// # Returns:
-/// - `Input`: Parsed user input specifications.
+/// - `Result<Input>`: Parsed user input specifications.
+/// # Errors
+/// - Returns an error if the input file cannot be read or its Lua code fails to execute.
 pub fn load_config() -> Result<Input> {
     let input_path = match std::env::args().nth(1) {
         Some(p) => p,

@@ -56,6 +56,8 @@ pub struct Coefficients<T: NOCIScalar> {
 /// - `es`: Non-overlap-transformed shift.
 /// # Returns
 /// - `(f64, f64)`: Overlap shift and identity shift.
+/// # Panics
+/// - Panics if a range propagator is passed to the deterministic path.
 fn propagator_shifts(
     prop: &Propagator,
     es_s: f64,
@@ -98,17 +100,16 @@ fn diagonalise_retained_hamiltonian<T: NOCIScalar>(
 }
 
 impl<T: NOCIScalar> Projectors<T> {
-    /// Calculate projectors onto the relevant and null subsapces of the overlap matrix S by
-    /// `diagonalising S as S = U x U^\dagger and paritioning the eigenvectors by an`
-    /// `eigenvalue threshold. The null subspace is spanned by eigenvectors with \lambda < eps and`
-    /// `the relevant subsapces by eigenvectors with \lambda > eps. The partioned eigenvector`
-    /// `matrices U_r (relevant) and U_n (null) are used to form the projectors as:`
-    ///     `P_r = U_r U_r^\dagger, P_n = U_n U_n^\dagger.`
-    /// # Arguments
-    /// `s`: Array2, overlap matrix in full NOCI-QMC basis.
-    /// `eps`: f64, tolerance for an eigenvalue being null or relevant.
+    /// Construct relevant and null projectors from `S = U \Lambda U^\dagger`.
+    /// Eigenvectors above the cutoff span `P_r = U_r U_r^\dagger`; the remaining vectors span
+    /// `P_n = U_n U_n^\dagger`.
+    /// # Arguments:
+    /// - `s`: Overlap matrix in the full NOCI-QMC basis.
+    /// - `eps`: Relative cutoff separating relevant and null eigenvectors.
     /// # Returns
-    /// `Projectors`, projectors onto the relevant and null subspaces of the overlap matrix.
+    /// - `Projectors`: Relevant and null subspace projectors.
+    /// # Panics
+    /// - Panics if the overlap spectrum contains a significantly negative eigenvalue.
     pub fn calculate_projectors(
         s: &Array2<T>,
         eps: f64,
@@ -207,18 +208,20 @@ impl<T: NOCIScalar> Projectors<T> {
 }
 
 impl<T: NOCIScalar> ProjPropagator<T> {
-    /// `Express a propjector in the null and relevant subspace basis by forming the matrix (U_{rr},`
-    /// `U_{nr} \\ U_{rn} U_{nn}). All elements of the propragator can be projected by doing for`
-    /// `example: H_{rn} = U_r^\dagger H U_n.`
-    /// # Arguments
-    /// `h`: Array2, NOCI Hamiltonian in the full NOCI-QMC basis.
-    /// `s`: Array2, overlap matrix in the full NOCI-QMC basis.
-    /// `p`: Projectors, projectors onto the relevant and null subspaces.
-    /// `es`: f64, energy shift.
-    /// `dt`: f64, propagation time step.
-    /// `prop`: Propagator, propagator choice.
+    /// Express the propagator in relevant and null subspace blocks, such as
+    /// `H_{rn} = U_r^\dagger H U_n`.
+    /// # Arguments:
+    /// - `h`: Hamiltonian in the full NOCI-QMC basis.
+    /// - `s`: Overlap matrix in the full NOCI-QMC basis.
+    /// - `p`: Relevant and null subspace projectors.
+    /// - `es_s`: Overlap-transformed energy shift.
+    /// - `es`: Identity energy shift.
+    /// - `dt`: Propagation time step.
+    /// - `prop`: Propagator choice.
     /// # Returns
-    /// `ProjPropagator`, propagator blocks expressed in the relevant and null subspace basis.
+    /// - `ProjPropagator`: Propagator blocks in the relevant and null subspace basis.
+    /// # Panics
+    /// - Panics if BApply is selected; deterministic BApply is unsupported.
     pub fn calculate_projected_propagator(
         h: &Array2<T>,
         s: &Array2<T>,
@@ -325,6 +328,8 @@ impl<T: NOCIScalar> ProjPropagator<T> {
 /// - `prop`: Propagator choice.
 /// # Returns
 /// - `Array1<T>`: Updated NOCI-QMC coefficient vector.
+/// # Panics
+/// - Panics if BApply is selected; deterministic BApply is unsupported.
 pub fn propagate_step<T: NOCIScalar>(
     h: &Array2<T>,
     s: &Array2<T>,
@@ -336,6 +341,7 @@ pub fn propagate_step<T: NOCIScalar>(
 ) -> Array1<T> {
     match prop {
         Propagator::SApply => {
+            // `c' = c - \Delta t\, S (H - E_s S)c` in the overlap-applied propagator.
             let es_s = T::from_real(es_s);
             let dt = T::from_real(dt);
 
@@ -354,6 +360,8 @@ pub fn propagate_step<T: NOCIScalar>(
         }
 
         _ => {
+            // Other deterministic propagators use
+            // `c' = c - \Delta t\, [(H - E_s^S S)c - E_s c]` after shift selection.
             let (es_s, es) = propagator_shifts(prop, es_s, es);
 
             let es_s = T::from_real(es_s);
@@ -381,6 +389,8 @@ pub fn propagate_step<T: NOCIScalar>(
 /// - `basis`: Original NOCI-QMC determinant basis in the ordering used for H and S.
 /// # Returns
 /// - `Option<Array1<T>>`: Converged coefficient vector if propagation succeeds, otherwise `None`.
+/// # Panics
+/// - Panics if BApply is selected; deterministic BApply is unsupported.
 pub fn propagate<T: NOCIScalar>(
     h: &Array2<T>,
     s: &Array2<T>,

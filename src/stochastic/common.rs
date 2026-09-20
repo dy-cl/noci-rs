@@ -116,6 +116,8 @@ pub(in crate::stochastic) fn prepare_spawn_update_exchange(
     nranks: usize,
     scratch: &mut NOCIMPIScratch,
 ) {
+    // Sort by destination and determinant so repeated spawn events can be
+    // coalesced before MPI transmission.
     scratch.send_counts.fill(0);
     scratch.send_displacements.fill(0);
     scratch
@@ -134,6 +136,9 @@ pub(in crate::stochastic) fn prepare_spawn_update_exchange(
             out += 1;
         }
     }
+
+    // Keep nonzero coalesced events in per-rank contiguous segments and
+    // record the counts and displacements used by the collective exchange.
     scratch.send_ranked.truncate(out);
     scratch.send_contig.clear();
     for &(peer, update) in &scratch.send_ranked {
@@ -424,6 +429,8 @@ fn build_projection_hs(
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `f64`: Reference-space NOCI energy `E_0`.
+/// # Panics
+/// - Panics if the reference Rayleigh quotient is not finite.
 fn reference_projected_energy(
     c0: &[f64],
     projection_hs: &[(f64, f64)],
@@ -476,6 +483,8 @@ fn reference_projected_energy(
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `Vec<usize>`: Ordered projection-space determinant indices with references first.
+/// # Panics
+/// - Panics if the requested number of external determinants is unavailable.
 fn select_projected_determinants(
     projection_hs: &[(f64, f64)],
     reference_energy: f64,
@@ -645,6 +654,8 @@ fn solve_projected_state(
 /// - `world`: MPI communicator.
 /// # Returns:
 /// - `(Vec<bool>, ScratchSize, QMCRunInfo)`: Reference mask, Wick scratch bounds, and run metadata.
+/// # Panics
+/// - Panics if `qmc.n_projected` excludes any reference or exceeds the determinant space.
 pub(in crate::stochastic) fn construct_qmc_run(
     data: &NOCIData<'_, f64>,
     c0: &[f64],
@@ -1023,6 +1034,8 @@ pub(in crate::stochastic) fn find_hs_batched(
         let loa = data.space.occupations(crate::noci::NOCIIndex(a));
         let goa = data.space.occupations(crate::noci::NOCIIndex(b));
 
+        // A one- or two-body Hamiltonian cannot connect same-parent states
+        // differing by more than two excitations (four occupation bits).
         if ldet.parent == gdet.parent
             && (loa.0 ^ goa.0).count_ones() + (loa.1 ^ goa.1).count_ones() > 4
         {
@@ -1058,7 +1071,7 @@ pub(in crate::stochastic) fn find_h_orthogonal_batched(
 /// Determine the maximum scratch sizes required for computation of matrix elements using extended
 /// non-orthogonal Wick's theorem depending on the maximum excitation rank present in the basis.
 /// # Arguments:
-/// - `basis`: Full list of the NOCI-QMC basis.
+/// - `space`: Full NOCI-QMC determinant space.
 /// # Returns
 /// - `(usize, usize, usize)`: Maximum same-spin scratch size, alpha excitation size, and beta
 ///   excitation size.
@@ -1166,6 +1179,8 @@ pub(crate) fn gather_all_populations<'a>(
     scratch: &'a mut NOCIMPIScratch,
 ) -> &'a [NOCIPopulationUpdate] {
     time_call!(crate::timers::stochastic::add_gather_all_populations, {
+        // Exchange per-rank lengths first to build displacements for the
+        // variable-count gather into reusable contiguous storage.
         let nsend = send.len() as i32;
         world.all_gather_into(&nsend, &mut scratch.gather_counts[..]);
 

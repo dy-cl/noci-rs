@@ -186,8 +186,8 @@ impl<T: NOCIScalar> ReducedOneSpinSource<T> for ReducedOneSpinNOCIDeterminantSta
     /// # Arguments:
     /// - `self`: Identity-bearing retained spin metadata.
     /// - `basis`: Retained determinant basis.
-    /// - `transient`: Unused transient excitation storage.
-    /// - `col`: Unused source column.
+    /// - `_transient`: Unused transient excitation storage.
+    /// - `_col`: Unused source column.
     /// - `alpha`: Whether alpha-spin rather than beta-spin factors are evaluated.
     /// # Returns
     /// - `&ExcitationSpin`: Full retained source excitation.
@@ -227,10 +227,10 @@ impl<T: NOCIScalar> ReducedOneSpinSource<T> for ReducedOneSpinState {
     /// Recover a transient full excitation from its aligned side storage.
     /// # Arguments:
     /// - `self`: Identity-free transient spin payload.
-    /// - `basis`: Unused retained determinant basis.
+    /// - `_basis`: Unused retained determinant basis.
     /// - `transient`: Full transient source excitations aligned with source columns.
     /// - `col`: Current source column.
-    /// - `alpha`: Unused spin flag because the side storage is already spin-specific.
+    /// - `_alpha`: Unused spin flag because the side storage is already spin-specific.
     /// # Returns
     /// - `&ExcitationSpin`: Full transient source excitation.
     #[inline(always)]
@@ -662,18 +662,17 @@ unsafe fn try_xw_overlap_prepared_c64_simd(
 /// Evaluate one same-spin overlap row using packed fixed-rank kernels and scalar tails.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
-/// - `basis`: Determinant basis used by scalar fallback evaluation.
+/// - `fallback`: Determinant basis and transient excitations used by scalar fallback evaluation.
 /// - `reps`: Target representative and source representatives in output-column order.
 /// - `flags`: Whether the target is left, and whether alpha-spin factors are evaluated.
 /// - `scratch`: Reusable same-spin Wick evaluator workspace.
 /// - `out`: Overlap output row.
 /// - `kernel`: Fixed-rank packed kernel behind the active target-feature boundary.
-/// - `source_excitations`: Transient source masks, or an empty slice for retained sources.
 /// # Returns
 /// - `()`: Writes one complete same-spin overlap-factor row.
 /// # Safety
 /// - `kernel` must support the current CPU and use `N` packed lanes.
-/// - Transient `source_excitations` must align one-to-one with source payloads.
+/// - Transient excitations in `fallback` must align one-to-one with source payloads.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 unsafe fn xw_overlap_prepared_simd_row<T, S, const N: usize>(

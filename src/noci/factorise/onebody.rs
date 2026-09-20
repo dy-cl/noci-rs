@@ -145,6 +145,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let mut blocks = Vec::with_capacity(nparent * nparent);
         let mut storage_plan = OneBodyStoragePlan::new(cache, rank, iteration, storage);
 
+        // Choose a representation per ordered parent pair: exact orthogonal
+        // Slater-Condon blocks, transient evaluation, or persistent spin factors.
         for target_parent in 0..nparent {
             for source_parent in 0..nparent {
                 if target_parent == source_parent
@@ -216,6 +218,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let spin = SpinFactorisation::new(data);
         let nparent = spin.parents.len();
 
+        // Each nonorthogonal parent pair stores `\alpha` and `\beta` `S` and `F`
+        // factors; same-parent orthogonal blocks need no dense factor table.
         let mut nentries = 0usize;
         for target_parent in 0..nparent {
             let target = &spin.parents[target_parent];
@@ -351,6 +355,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let mut m_diag = vec![zero; ndet];
         let mut s_diag = vec![zero; ndet];
 
+        // Only same-parent blocks contribute to determinant diagonals.
+        // Dispatch through the representation chosen for each parent.
         for (parent_id, parent) in self.spin.parents.iter().enumerate() {
             if parent.entries.is_empty() {
                 continue;
@@ -440,6 +446,7 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
     /// - `cache`: MO-basis Fock cache for the parent.
     /// - `lambda`: Scalar overlap shift.
     /// - `partition`: Worker index and worker count for target rows.
+    /// - `space`: Candidate determinant space used for occupations and indices.
     /// # Returns
     /// - `()`: Adds this same-parent contribution into `y`.
     fn apply_one_body_orthogonal<R>(
@@ -458,6 +465,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
         let source_parent = &self.spin.parents[block.parent];
         let (worker, nworker) = partition;
 
+        // Identical occupations contribute `(F + \lambda S)_{II} x_I` to
+        // every retained target sharing the source spin components.
         for entry in &source_parent.entries {
             let xe = x[entry.det];
             if xe == zero {
@@ -479,6 +488,8 @@ impl<T: NOCIScalar> OneBodyFactorisation<T> {
                 }
             }
 
+            // A one-body operator also connects `\alpha` or `\beta` single
+            // excitations; the helpers enumerate only retained targets.
             apply_orthogonal_alpha_singles(block, source, xe, y, space, cache, partition);
             apply_orthogonal_beta_singles(block, source, xe, y, space, cache, partition);
         }
@@ -1226,6 +1237,7 @@ fn fill_orthogonal_one_body_diagonal_block<T: NOCIScalar>(
 /// - `basis`: Candidate determinant basis.
 /// - `cache`: MO-basis Fock cache for the parent.
 /// - `partition`: Worker index and worker count for target rows.
+/// - `space`: Candidate determinant space used for occupations and indices.
 /// # Returns
 /// - `()`: Adds alpha single-excitation Fock contributions into `y`.
 fn apply_orthogonal_alpha_singles<T, R>(
@@ -1244,6 +1256,8 @@ fn apply_orthogonal_alpha_singles<T, R>(
     let nmo = cache.fa.nrows();
     let state = space.state(source);
     let (oa, _) = space.occupations(source);
+    // Enumerate `\alpha` excitations `i \to a` with `i` occupied and `a`
+    // virtual, leaving the `\beta` occupation unchanged.
     let mut holes = oa;
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
@@ -1263,6 +1277,8 @@ fn apply_orthogonal_alpha_singles<T, R>(
                 continue;
             };
 
+            // Preserve every retained target with this occupation, but let
+            // only its assigned worker update the output element.
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
                     let target_det = NOCIIndex(target.det);
@@ -1284,6 +1300,7 @@ fn apply_orthogonal_alpha_singles<T, R>(
 /// - `basis`: Candidate determinant basis.
 /// - `cache`: MO-basis Fock cache for the parent.
 /// - `partition`: Worker index and worker count for target rows.
+/// - `space`: Candidate determinant space used for occupations and indices.
 /// # Returns
 /// - `()`: Adds beta single-excitation Fock contributions into `y`.
 fn apply_orthogonal_beta_singles<T, R>(
@@ -1302,6 +1319,7 @@ fn apply_orthogonal_beta_singles<T, R>(
     let nmo = cache.fb.nrows();
     let state = space.state(source);
     let (_, ob) = space.occupations(source);
+    // Enumerate `\beta` excitations `i \to a` while `\alpha` occupation stays fixed.
     let mut holes = ob;
     while holes != 0 {
         let hole = holes.trailing_zeros() as usize;
@@ -1321,6 +1339,7 @@ fn apply_orthogonal_beta_singles<T, R>(
                 continue;
             };
 
+            // Preserve duplicate retained targets under worker ownership.
             for target in &orthogonal.groups[opos].targets {
                 if target.a % nworker == worker {
                     let target_det = NOCIIndex(target.det);

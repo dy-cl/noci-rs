@@ -91,6 +91,8 @@ fn redistribute_population_updates_auxiliary(
     scratch: &mut AuxiliaryMPIScratch,
     world: &impl Communicator,
 ) {
+    // Sort events by destination rank, then build contiguous per-rank send
+    // segments and their displacements for the variable-count exchange.
     scratch
         .send_ranked
         .sort_unstable_by_key(|(peer, update)| (*peer, update.det));
@@ -106,6 +108,8 @@ fn redistribute_population_updates_auxiliary(
         scratch.send_displacements[peer] = nsend as i32;
         nsend += scratch.send_counts[peer] as usize;
     }
+
+    // Exchange counts first so every rank can size its receive segments.
     world.all_to_all_into(&scratch.send_counts[..], &mut scratch.recv_counts[..]);
     let mut nrecv = 0usize;
     for peer in 0..scratch.recv_counts.len() {
@@ -126,6 +130,9 @@ fn redistribute_population_updates_auxiliary(
         &scratch.recv_counts[..],
         &scratch.recv_displacements[..],
     );
+
+    // Exchange remote events and append already-owned local events to the
+    // same owner-local buffer.
     world.all_to_all_varcount_into(&send, &mut recv);
     scratch.recv_contig.append(local);
     scratch.send_ranked.clear();
@@ -217,6 +224,9 @@ fn print_bapply_storage(
 /// - `world`: MPI communicator.
 /// # Returns
 /// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional spawning histogram.
+/// # Panics
+/// - Panics for unsupported excitation generation, invalid restart intervals, nonorthogonal
+///   parent orbitals, missing MO caches or Wick data, or an uninitialised momentum state.
 pub fn qmc_step(
     data: &NOCIData<'_, f64>,
     c0: &[f64],

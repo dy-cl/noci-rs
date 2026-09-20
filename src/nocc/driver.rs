@@ -109,18 +109,22 @@ pub(crate) fn run_noccmc(
     if world.rank() == 0 {
         // Check orthonormality of NOCI natural orbitals and energy from RDMs.
         print_misc_diagnostics(post, &nodata, &noao, no, &coeffs, &gamma1, &gamma2);
+
         // Check trace of 1RDM is electron number N, 2RDM is N(N-1), and higher rank identities.
         print_rdm_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
+
         // Check 1Cumulant is 1RDM and verify higher ranks according to known definitions.
         print_cumulant_diagnostics(&gamma1, &gamma2, &gamma3, &gamma4, &lambdas, &no.active);
 
         // Check orbital counts for each type of space.
         print_space_diagnostics(&spaces, &excitations);
+
         // Check orthnormalisation of FOIS metric.
         print_fois_metric_diagnostics(&spaces, &excitations, &fois);
 
         // Check known equality for zeroth order residual.
         print_r0_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
+
         // Check linearity of first-order residual.
         print_r1_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
     }
@@ -146,6 +150,7 @@ fn print_misc_diagnostics(
     gamma1: &RDM1<f64>,
     gamma2: &RDM2<f64>,
 ) {
+    // Verify the natural-orbital transform preserves `C^T S_{\text{AO}} C = I`.
     let mut scheck = no.c.t().dot(&post.ao.s).dot(&no.c);
     for i in 0..scheck.nrows() {
         scheck[(i, i)] -= 1.0;
@@ -153,6 +158,8 @@ fn print_misc_diagnostics(
 
     let serr = scheck.iter().map(|x| x.abs()).fold(0.0, f64::max);
 
+    // Compare the NOCI Rayleigh quotient and lowest generalised eigenvalue
+    // with the energy reconstructed from the one- and two-body RDMs.
     let (h, s, _) = build_noci_hs(nodata, nodata.basis, nodata.basis, true);
     let e_coeff = coeffs.dot(&h.dot(coeffs)) / coeffs.dot(&s.dot(coeffs));
     let (evals, _) = general_evp(&h, &s, true, post.tol);
@@ -177,6 +184,7 @@ fn print_misc_diagnostics(
         }
     }
 
+    // `E = E_{\text{nuc}} + \sum_{ab} h_{ab}\Gamma_{1,ba} + \frac12\sum_{abcd}(ab|cd)\Gamma_{2,bcad}`.
     let erdm = noao.enuc + e1 + 0.5 * e2;
 
     println!("{}", "=".repeat(100));
@@ -751,6 +759,8 @@ pub(crate) fn print_fois_metric_diagnostics(
     let stilde = &fois.weighted_metric;
     let y = &fois.y;
 
+    // Measure raw-metric symmetry before diagonalising `S` and
+    // `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
     let mut asym: f64 = 0.0;
     for i in 0..s.nrows() {
         for j in 0..s.ncols() {
@@ -768,6 +778,7 @@ pub(crate) fn print_fois_metric_diagnostics(
         .eigh(UPLO::Upper)
         .expect("weighted FOIS overlap diagonalisation failed");
 
+    // Check the retained FOIS columns satisfy `Y^T S Y = I`.
     let nkeep = y.ncols();
     let nnull = h.len() - nkeep;
     let ytsy = y.t().dot(s).dot(y);
@@ -820,6 +831,8 @@ fn print_block_diagnostics(
     spaces: &Spaces,
     excitations: &[Excitation],
 ) {
+    // Group excitation indices by class before extracting each raw metric
+    // block for symmetry and eigenvalue diagnostics.
     let mut blocks = BTreeMap::new();
 
     for (i, &left) in excitations.iter().enumerate() {
@@ -932,6 +945,8 @@ fn print_r0_diagnostics(
 ) {
     let nexc = excitations.len();
 
+    // Compare the direct zeroth-order residual with the metric identity
+    // `R_0 = S h`, first in the raw basis and then after projection by `Y^T`.
     let r0_direct = residual::r0(ao, gamma1, lambdas, spaces, excitations);
     let r0_sh = fois.metric.dot(&fois.h);
     let diff_raw = &r0_direct - &r0_sh;
@@ -959,6 +974,7 @@ fn print_r0_diagnostics(
         fois_max_diff = fois_max_diff.max(diff_fois[i].abs());
     }
 
+    // Report the orthogonality residual alongside the two R0 discrepancies.
     let ytsy = fois.y.t().dot(&fois.metric).dot(&fois.y);
     let mut orth_err: f64 = 0.0;
     for i in 0..ytsy.nrows() {
@@ -998,6 +1014,8 @@ fn print_r1_diagnostics(
     let nexc = excitations.len();
     let nfois = fois.y.ncols();
 
+    // Probe the linear first-order residual with a deterministic FOIS
+    // amplitude vector, then compare its raw and `Y^T`-projected sizes.
     let mut t_fois = Array1::<f64>::zeros(nfois);
 
     for i in 0..nfois {

@@ -94,6 +94,14 @@ def addTrajectoryArgs(parser, overlay=False):
             action="store_true",
             help="Plot each input file as a separate curve instead of combining files as one continued trajectory.",
         )
+        parser.add_argument(
+            "--label",
+            action="append",
+            help=(
+                "Legend label for an overlaid input file. Repeat once per input "
+                "file, in the same order as the paths."
+            ),
+        )
     parser.add_argument(
         "--live",
         action="store_true",
@@ -252,7 +260,20 @@ def stochasticTrajectoryFrames(args, defaultLabel):
     Return stochastic QMC frames for continued or overlaid trajectory plots.
     """
     if args.overlay:
-        return [(readQMC(path), excitationGenLabel(path)) for path in args.paths]
+        if args.label is None:
+            labels = [excitationGenLabel(path) for path in args.paths]
+        else:
+            labels = args.label
+            if len(labels) != len(args.paths):
+                raise ValueError(
+                    "--label must be repeated once per input file when --overlay "
+                    "is used"
+                )
+
+        return [(readQMC(path), label) for path, label in zip(args.paths, labels)]
+
+    if args.label is not None:
+        raise ValueError("--label can only be used with --overlay")
 
     return [(readQMCFiles(args.paths), defaultLabel)]
 
@@ -2082,6 +2103,152 @@ def plotTrialOverlap(args):
     )
 
 
+def plotTrialOverlapRelaxation(args):
+    """
+    Plot trial-overlap relaxation relative to its late-time mean.
+    """
+    if not 0.0 < args.late_fraction <= 1.0:
+        raise ValueError("--late-fraction must be greater than 0 and at most 1")
+
+    if not args.live:
+        setStyle()
+        plt.figure()
+
+        defaultLabel = r"$O_T(\tau)-\overline{O}_{T,\mathrm{late}}$"
+        for df, label in stochasticTrajectoryFrames(args, defaultLabel):
+            population, _, _, _ = qmcPopulationColumns(df)
+            df = df.dropna(subset=["Iter", "EProjDen", population])
+            df = df[df[population] != 0.0]
+            if df.empty:
+                continue
+
+            overlap = df["EProjDen"] / df[population]
+            lateCount = max(1, int(np.ceil(args.late_fraction * len(overlap))))
+            lateOverlap = overlap.iloc[-lateCount:].mean()
+            relaxation = overlap - lateOverlap
+            average = relaxation.rolling(window=args.window, min_periods=1).mean()
+            (rawLine,) = plt.plot(
+                df["Iter"],
+                relaxation,
+                linewidth=1,
+                alpha=0.18 if args.overlay else 0.25,
+                label=None if args.overlay else defaultLabel,
+            )
+            averageLabel = (
+                rf"{label}, rolling mean"
+                if args.overlay
+                else rf"Rolling mean, ${args.window}$ samples"
+            )
+            plt.plot(
+                df["Iter"],
+                average,
+                linewidth=LINEWIDTH,
+                color=rawLine.get_color(),
+                label=averageLabel,
+            )
+
+        plt.axhline(
+            0.0,
+            color="black",
+            linewidth=0.5 * LINEWIDTH,
+            linestyle="--",
+        )
+
+        formatAxes(
+            xlabel=r"Iteration / $\tau$",
+            ylabel=r"$O_T(\tau)-\overline{O}_{T,\mathrm{late}}$",
+            legend=True,
+            legendLoc="best" if args.overlay else None,
+        )
+
+        plt.grid(True)
+        finish(args)
+        return
+
+    setStyle()
+    fig, ax = plt.subplots()
+
+    (lineRelaxation,) = ax.plot(
+        [],
+        [],
+        linewidth=1,
+        alpha=0.7,
+        color="tab:blue",
+        label=r"$O_T(\tau)-\overline{O}_{T,\mathrm{late}}$",
+    )
+
+    (lineAverage,) = ax.plot(
+        [],
+        [],
+        linewidth=LINEWIDTH,
+        color="tab:orange",
+        label=r"$\overline{O_T(\tau)-\overline{O}_{T,\mathrm{late}}}$",
+    )
+
+    ax.axhline(
+        0.0,
+        color="black",
+        linewidth=0.5 * LINEWIDTH,
+        linestyle="--",
+    )
+
+    formatAxes(
+        xlabel=r"Iteration / $\tau$",
+        ylabel=r"$O_T(\tau)-\overline{O}_{T,\mathrm{late}}$",
+        legend=True,
+    )
+
+    ax.grid(True)
+
+    def update():
+        df = readQMCFiles(args.paths)
+
+        population, _, _, _ = qmcPopulationColumns(df)
+
+        df = df.dropna(
+            subset=[
+                "Iter",
+                "EProjDen",
+                population,
+            ]
+        )
+
+        df = df[df[population] != 0.0]
+
+        if df.empty:
+            return
+
+        x = df["Iter"].to_numpy()
+
+        overlap = df["EProjDen"] / df[population]
+        lateCount = max(1, int(np.ceil(args.late_fraction * len(overlap))))
+        lateOverlap = overlap.iloc[-lateCount:].mean()
+        relaxation = overlap - lateOverlap
+        average = relaxation.rolling(
+            window=args.window,
+            min_periods=1,
+        ).mean()
+
+        lineRelaxation.set_data(
+            x,
+            relaxation.to_numpy(),
+        )
+
+        lineAverage.set_data(
+            x,
+            average.to_numpy(),
+        )
+
+        ax.relim()
+        ax.autoscale_view()
+
+    showLive(
+        args,
+        fig,
+        update,
+    )
+
+
 def setStyle():
     """
     Choose a uniform font for all plotting purposes.
@@ -2343,6 +2510,35 @@ def buildParser():
     addTrajectoryArgs(p, overlay=True)
 
     p.set_defaults(func=plotTrialOverlap)
+
+    p = subparsers.add_parser("trial-overlap-relaxation")
+
+    p.add_argument(
+        "paths",
+        nargs="+",
+        type=Path,
+    )
+
+    p.add_argument(
+        "--window",
+        type=int,
+        default=1000,
+        help=("Number of output samples used in the rolling mean."),
+    )
+
+    p.add_argument(
+        "--late-fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "Fraction of the final available trajectory used to define the "
+            "zero of the trial-overlap relaxation."
+        ),
+    )
+
+    addTrajectoryArgs(p, overlay=True)
+
+    p.set_defaults(func=plotTrialOverlapRelaxation)
 
     return parser
 

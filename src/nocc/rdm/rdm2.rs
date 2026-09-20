@@ -39,6 +39,8 @@ pub(crate) fn rdm2<T: NOCIScalar>(
     let mut td = 0.0;
     let mut md = 0.0;
 
+    // Accumulate coefficient-weighted pair RDMs and the reference norm
+    // `\sum_{xw} c_x^L c_w^R S_{xw}` before normalisation.
     for x in 0..data.basis.len() {
         for w in 0..data.basis.len() {
             let pair = DetPair::new(&data.basis[x], &data.basis[w]);
@@ -70,6 +72,7 @@ pub(crate) fn rdm2<T: NOCIScalar>(
         );
     }
 
+    // Convert the unnormalised pair sum into the state RDM.
     for v in gamma.data.iter_mut() {
         *v /= norm;
     }
@@ -164,6 +167,9 @@ fn rdm2_pair_naive<T: NOCIScalar>(
         data: vec![<T as From<f64>>::from(0.0); n.pow(4)],
     };
 
+    // Same-spin terms are antisymmetrised products `A_{pr} B_{qs} - A_{ps} B_{qr}`.
+    // Zero, one, or two zero singular values select `W`, `P_i`, or `P_j`
+    // transition co-densities in the generalised Slater-Condon expansion.
     for (spin_pair, other_s) in [(&pa, pb.s), (&pb, pa.s)] {
         let fac = det_phase * other_s * spin_pair.phase * <T as From<f64>>::from(spin_pair.s_red);
 
@@ -196,6 +202,8 @@ fn rdm2_pair_naive<T: NOCIScalar>(
         }
     }
 
+    // Opposite-spin terms factor into `\alpha` and `\beta` one-body densities:
+    // `\Gamma_{pqrs} += D^\alpha_{pr} D^\beta_{qs} + D^\beta_{pr} D^\alpha_{qs}`.
     for p in 0..n {
         for q in 0..n {
             for r in 0..n {

@@ -14,6 +14,8 @@ use super::cycle::spin_label;
 /// # Arguments
 /// - `input`: Contains user specified input data.
 /// - `scfexcitation`: Optional excited SCF occupation request.
+/// # Returns
+/// - `()`: Prints the header when verbose output is enabled.
 pub(in crate::scf) fn print_header(
     input: &Input,
     scfexcitation: Option<&SCFExcitation>,
@@ -41,6 +43,7 @@ pub(in crate::scf) fn print_header(
 /// # Arguments:
 /// - `input`: User input specifications.
 /// - `label`: Label for the h-SCF state.
+/// - `lambda`: Holomorphic continuation parameter `\lambda`.
 /// # Returns:
 /// - `()`: Prints header if verbose output is enabled.
 pub(in crate::scf) fn print_header_h(
@@ -65,6 +68,8 @@ pub(in crate::scf) fn print_header_h(
 /// - `title`: Title for this spin channel.
 /// - `e`: MO energies.
 /// - `occ`: MO occupation vector.
+/// # Returns
+/// - `()`: Prints the orbital table.
 pub(in crate::scf) fn print_mos(
     title: &str,
     e: &Array1<f64>,

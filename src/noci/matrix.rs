@@ -131,6 +131,8 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
         let nl = left.len();
         let nr = right.len();
 
+        // In comparison mode, build with Wick's theorem while accumulating
+        // discrepancies against the generalised Slater-Condon elements.
         if data.input.wicks.enabled && data.input.wicks.compare {
             let (vals, dt) = calculate_matrix_elements(
                 left,
@@ -163,6 +165,8 @@ pub(crate) fn build_noci_fock<T: NOCIScalar>(
             return (f, dt);
         }
 
+        // Otherwise evaluate each determinant pair once and scatter its
+        // result into the requested symmetric or rectangular matrix.
         let (vals, dt) =
             calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
                 calculate_f_pair(data, fock, DetPair::new(ldet, gdet), scratch)
@@ -222,6 +226,7 @@ pub fn build_noci_hs<T: NOCIScalar>(
         let nl = left.len();
         let nr = right.len();
 
+        // Compare both H and S pair elements before scattering the Wick values.
         if data.input.wicks.enabled && data.input.wicks.compare {
             let (vals, dt) = calculate_matrix_elements(
                 left,
@@ -249,6 +254,7 @@ pub fn build_noci_hs<T: NOCIScalar>(
             return (h, s, dt);
         }
 
+        // Assemble ordinary H and S pair elements with the selected evaluator.
         let (vals, dt) =
             calculate_matrix_elements(left, right, data.input, symmetric, |ldet, gdet, scratch| {
                 calculate_hs_pair(data, DetPair::new(ldet, gdet), scratch)
@@ -287,6 +293,8 @@ pub fn calculate_noci_energy<T: NOCIScalar>(
     let indices = (0..space.len()).map(NOCIIndex).collect::<Vec<_>>();
     let (h, s, d_hs) = build_noci_hs(&data, &indices, &indices, true);
 
+    // The shifted matrix is diagnostic; the physical energy comes from
+    // solving the unshifted generalised eigenproblem `Hc = ESc`.
     let h_shift = &h - &s.mapv(|x| space.parents[0].e * x);
     if input.write.verbose >= 2 {
         println!("{}", "=".repeat(100));

@@ -39,6 +39,8 @@ pub(in crate::stochastic) fn initialise_populations(
     mpiscratch: &mut NOCIMPIScratch,
 ) -> Vec<f64> {
     time_call!(crate::timers::stochastic::add_initialise_populations, {
+        // Each rank submits only its owned nonzero coefficients; gather them
+        // before applying the NOCI overlap to the initial state.
         let local = c0
             .iter()
             .enumerate()
@@ -53,6 +55,8 @@ pub(in crate::stochastic) fn initialise_populations(
 
         let mut populations = vec![0.0; run.owned.len()];
 
+        // Persistent populations are `N_\gamma = \sum_j S_{\gamma j} c_j` for each
+        // determinant owned by this rank.
         for (k, &gamma) in run.owned.iter().enumerate() {
             let mut population = 0.0;
 
@@ -72,6 +76,7 @@ pub(in crate::stochastic) fn initialise_populations(
 
         world.all_reduce_into(&local_norm, &mut global_norm, SystemOperation::sum());
 
+        // Set the global `L1` population to the requested initial value.
         let scale = initial_population / global_norm;
 
         for population in &mut populations {
@@ -93,6 +98,9 @@ pub(in crate::stochastic) fn initialise_populations(
 /// - `mpi`: MPI communicator and reusable MPI scratch storage.
 /// # Returns:
 /// - `PropagationState`: Initialised stochastic propagation state.
+/// # Panics
+/// - Panics if restart loading fails or saved populations or momentum do not match this rank's
+///   determinant layout.
 pub(in crate::stochastic) fn initialise_qmc_state(
     c0: &[f64],
     es: &mut f64,
@@ -262,13 +270,12 @@ pub(in crate::stochastic) fn initialise_qmc_state(
     let stats = PopulationStats::new(global[0], global[1], 0.0, 0);
 
     // Fresh BApply momentum starts from `V_0 = 0` in the rank-local range-space layout.
-    let momentum = if data.input.prop_ref().propagator == Propagator::BApply
-        && qmc.momentum_beta > 0.0
-    {
-        Some(vec![0.0; run.owned.len()])
-    } else {
-        None
-    };
+    let momentum =
+        if data.input.prop_ref().propagator == Propagator::BApply && qmc.momentum_beta > 0.0 {
+            Some(vec![0.0; run.owned.len()])
+        } else {
+            None
+        };
 
     // Start a fresh run at report zero with population control inactive.
     PropagationState::new(mc, momentum, pe, 0, false, stats, qmc.overlap_weight)

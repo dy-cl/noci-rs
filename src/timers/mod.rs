@@ -424,6 +424,11 @@ macro_rules! time_call {
             }
 
             impl Drop for __TimeCallGuard {
+                /// Record the elapsed time when the guarded region ends.
+                /// # Arguments:
+                /// - `self`: Timer guard for the measured region.
+                /// # Returns
+                /// - `()`: Adds the elapsed nanoseconds to the selected counter.
                 fn drop(&mut self) {
                     (self.add)(self.t0.elapsed().as_nanos() as u64);
                 }

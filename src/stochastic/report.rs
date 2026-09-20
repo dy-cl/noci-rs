@@ -205,6 +205,8 @@ pub(in crate::stochastic) fn check_stop(
     world: &impl Communicator,
     restart_path: Option<&String>,
 ) -> Option<(f64, Option<ExcitationHist>)> {
+    // Rank zero observes the stop request and broadcasts one decision so all
+    // ranks enter the collective restart write together.
     let mut stop = 0;
 
     if run.irank == 0 && Path::new("STOP").exists() {
@@ -219,6 +221,7 @@ pub(in crate::stochastic) fn check_stop(
         return None;
     }
 
+    // Transfer owned population and history buffers into the restart record.
     let restart = RestartState {
         report,
         shift,

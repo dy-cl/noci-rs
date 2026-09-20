@@ -1,5 +1,4 @@
 // noci/orthogonal/mod.rs
-// noci/orthogonal/mod.rs
 
 //! Prepared Slater-Condon evaluation in one parent's orthonormal MO determinant basis.
 

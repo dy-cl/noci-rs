@@ -226,6 +226,7 @@ pub(crate) fn pair_density<T: NOCIScalar>(
 /// - `states`: Determinant basis of the NOCI wavefunction.
 /// - `c`: Coefficients of the NOCI wavefunction.
 /// - `tol`: Tolerance up to which a number is considered zero.
+/// - `space`: Determinant space whose transition densities are combined.
 /// # Returns:
 /// - `(Array2<T>, Array2<T>)`: Alpha and beta AO density matrices.
 pub(crate) fn noci_density<T: NOCIScalar>(
@@ -237,6 +238,9 @@ pub(crate) fn noci_density<T: NOCIScalar>(
 ) -> (Array2<T>, Array2<T>) {
     let nao = ao.h.nrows();
     let nst = states.len();
+
+    // `D^\sigma = \sum_{ij} c_i^* c_j \langle i|a_\sigma^\dagger a_\sigma|j\rangle`.
+    // Partition bra states across threads and reduce their local AO densities.
     (0..nst)
         .into_par_iter()
         .map(|i| {
@@ -265,6 +269,8 @@ pub(crate) fn noci_density<T: NOCIScalar>(
 
                 let det_phase = <T as From<f64>>::from(space.phase(ldet) * space.phase(gdet));
 
+                // The spectator-spin overlap multiplies each spin's
+                // transition density in the determinant product state.
                 let cij = c[i].conj() * c[j] * det_phase;
                 da_loc.scaled_add(cij * pb.s, &rhoa);
                 db_loc.scaled_add(cij * pa.s, &rhob);

@@ -66,6 +66,14 @@ pub(in crate::stochastic) fn population_representation(
 }
 
 /// Read restart validation metadata needed before constructing RNG streams.
+/// # Arguments:
+/// - `path`: Restart file path.
+/// - `world`: MPI communicator used to validate metadata across ranks.
+/// - `expected_ndets`: Expected number of determinants.
+/// - `expected_hash`: Expected determinant-basis hash.
+/// - `expected_representation`: Expected population representation.
+/// # Returns
+/// - `Option<u64>`: Base seed from valid restart metadata, if present.
 pub(in crate::stochastic) fn restart_base_seed(
     path: &str,
     world: &impl Communicator,
@@ -92,13 +100,15 @@ pub(in crate::stochastic) fn restart_base_seed(
 /// bitstrings, phase convention, and each parent orbital convention. This is a deterministic
 /// compatibility checksum rather than a cryptographic hash.
 /// # Arguments:
-/// - `basis`: Ordered stochastic determinant basis used by the current executable.
+/// - `space`: Ordered stochastic determinant basis used by the current executable.
 /// # Returns:
 /// - `[u64; 2]`: Two-lane deterministic basis hash.
 pub(in crate::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
     let mut hash = [0xcbf29ce484222325, 0x84222325cbf29ce4];
     let mut seen_parent = vec![false; space.parents.len()];
 
+    // Mix each structural value into two deterministic lanes using wrapping
+    // arithmetic so the checksum is stable across runs and rank counts.
     let mut mix = |value: u64| {
         hash[0] ^= value;
         hash[0] = hash[0].wrapping_mul(0x00000100000001b3);
@@ -106,6 +116,7 @@ pub(in crate::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
         hash[1] = hash[1].wrapping_mul(0x00000100000001b3);
     };
 
+    // Hash determinant order, occupations, phases, and excitation keys.
     mix(space.len() as u64);
     for i in 0..space.len() {
         let index = NOCIIndex(i);
@@ -130,6 +141,8 @@ pub(in crate::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
             mix(value as u64);
             mix((value >> 64) as u64);
         }
+        // Parent MO frames may be shared by many determinants; include each
+        // frame once at its first appearance in the ordered basis.
         if !seen_parent[det.parent] {
             seen_parent[det.parent] = true;
             let parent = &space.parents[det.parent];
@@ -157,8 +170,12 @@ pub(in crate::stochastic) fn basis_hash(space: &NOCISpace<f64>) -> [u64; 2] {
 /// - `world`: MPI communicator used to compare the saved MPI rank count.
 /// - `expected_ndets`: Current number of global stochastic determinants.
 /// - `expected_hash`: Current deterministic basis hash.
+/// - `expected_representation`: Population convention required by the current propagator.
 /// # Returns:
-/// - `()`: Panics if stored metadata is present and incompatible.
+/// - `()`: Completes when saved metadata matches the current run.
+/// # Panics
+/// - Panics if saved schema, MPI rank count, determinant count, basis hash, or population
+///   representation is incompatible with the current run.
 fn validate_restart_metadata(
     meta: &hdf5::Group,
     world: &impl Communicator,
@@ -398,6 +415,8 @@ pub(in crate::stochastic) fn write_restart_hdf5(
 /// - `hdf5::Result<RestartState>`: Rank-local restart state.
 /// # Errors
 /// - Returns an HDF5 error if required restart groups or datasets cannot be opened or read.
+/// # Panics
+/// - Panics if saved population metadata is invalid or conflicts with this rank's shard.
 pub(in crate::stochastic) fn read_restart_hdf5(
     path: &str,
     world: &impl Communicator,

@@ -97,7 +97,7 @@ pub(crate) fn sr1_step(
 /// - `nocc`: Number of occupied alpha- and beta-spin orbitals.
 /// - `p`: Alpha- and beta-spin occupied-virtual steps.
 /// - `g0`: Current occupied-virtual gradient norm.
-/// - `opts`: h-SCF quasi-Newton options.
+/// - `lambda`: Current holomorphic continuation parameter `\lambda`.
 /// # Returns:
 /// - `(f64, Array2<Complex64>, Array2<Complex64>)`: Step length and updated alpha/beta orbitals.
 pub(crate) fn line_search(
@@ -152,13 +152,11 @@ pub(crate) fn line_search(
 
 /// Build and solve a finite-difference local Newton equation for stalled h-SCF iterations.
 /// # Arguments:
-/// - `ca`: Current alpha-spin MO coefficients.
-/// - `cb`: Current beta-spin MO coefficients.
+/// - `c`: Current `\alpha`- and `\beta`-spin MO coefficients.
 /// - `ao`: AO data.
-/// - `na`: Number of occupied alpha-spin orbitals.
-/// - `nb`: Number of occupied beta-spin orbitals.
-/// - `ga`: Current alpha-spin occupied-virtual gradient.
-/// - `gb`: Current beta-spin occupied-virtual gradient.
+/// - `nocc`: Numbers of occupied `\alpha`- and `\beta`-spin orbitals.
+/// - `g`: Current `\alpha`- and `\beta`-spin occupied-virtual gradients.
+/// - `lambda`: Current holomorphic continuation parameter `\lambda`.
 /// # Returns:
 /// - `Option<(Array2<Complex64>, Array2<Complex64>)>`: Newton step if the linear solve succeeds.
 pub(crate) fn finite_difference_newton_step(
@@ -184,13 +182,11 @@ pub(crate) fn finite_difference_newton_step(
 
 /// Build a finite-difference internal h-SCF Hessian in occupied-virtual coordinates.
 /// # Arguments:
-/// - `ca`: Current alpha-spin MO coefficients.
-/// - `cb`: Current beta-spin MO coefficients.
+/// - `c`: Current `\alpha`- and `\beta`-spin MO coefficients.
 /// - `ao`: AO data.
-/// - `na`: Number of occupied alpha-spin orbitals.
-/// - `nb`: Number of occupied beta-spin orbitals.
-/// - `ga`: Current alpha-spin occupied-virtual gradient.
-/// - `gb`: Current beta-spin occupied-virtual gradient.
+/// - `nocc`: Numbers of occupied `\alpha`- and `\beta`-spin orbitals.
+/// - `g`: Current `\alpha`- and `\beta`-spin occupied-virtual gradients.
+/// - `lambda`: Current holomorphic continuation parameter `\lambda`.
 /// # Returns:
 /// - `Array2<Complex64>`: Finite-difference Jacobian of the h-SCF gradient.
 pub(crate) fn finite_difference_hessian(
@@ -209,6 +205,9 @@ pub(crate) fn finite_difference_hessian(
     let eps = 1.0e-4;
     let mut h = Array2::<Complex64>::zeros((n, n));
 
+    // Column `j` is the forward difference
+    // `H_{:,j} = [g(C_j(\epsilon)) - g(C)] / \epsilon` in packed
+    // `\alpha`-`\beta` occupied-virtual coordinates.
     for j in 0..n {
         let mut va = Array2::<Complex64>::zeros(ga.raw_dim());
         let mut vb = Array2::<Complex64>::zeros(gb.raw_dim());
@@ -230,9 +229,13 @@ pub(crate) fn finite_difference_hessian(
             }
         }
 
+        // Perturb the occupied-virtual tangent direction along the orbital
+        // geodesic so the trial MO frames retain their orthonormality.
         let cat = geodesic_step(ca, &va, na, 1.0);
         let cbt = geodesic_step(cb, &vb, nb, 1.0);
 
+        // Rebuild the holomorphic densities and Fock matrices at the trial
+        // orbitals before evaluating the displaced gradient.
         let da = density(&cat, na, DensityMode::Holomorphic);
         let db = density(&cbt, nb, DensityMode::Holomorphic);
 

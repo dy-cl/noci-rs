@@ -11,6 +11,8 @@ pub enum Spin {
 
 impl Spin {
     /// Return excitation spin as input string.
+    /// # Arguments:
+    /// - `self`: Excitation spin selection.
     /// # Returns:
     /// - `&'static str`: String representation used in input parsing.
     pub(crate) fn as_str(&self) -> &'static str {
@@ -30,6 +32,8 @@ impl FromStr for Spin {
     /// - `s`: String specifying the excitation spin.
     /// # Returns:
     /// - `Result<Self, Self::Err>`: Parsed spin if valid string, otherwise error message.
+    /// # Errors
+    /// - Returns an error if `s` is not `alpha`, `beta`, or `both`.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "alpha" => Ok(Self::Alpha),

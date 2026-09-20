@@ -39,6 +39,8 @@ pub(crate) fn rdm1<T: NOCIScalar>(
     let mut td = 0.0;
     let mut md = 0.0;
 
+    // Accumulate `\Gamma_{pq} = \sum_{xw} c_x^L c_w^R \Gamma_{pq}(x,w)` and the
+    // corresponding reference norm `\sum_{xw} c_x^L c_w^R S_{xw}`.
     for x in 0..data.basis.len() {
         for w in 0..data.basis.len() {
             let pair = DetPair::new(&data.basis[x], &data.basis[w]);
@@ -70,6 +72,7 @@ pub(crate) fn rdm1<T: NOCIScalar>(
         );
     }
 
+    // Normalise the transition RDM by the reference overlap.
     for v in gamma.data.iter_mut() {
         *v /= norm;
     }

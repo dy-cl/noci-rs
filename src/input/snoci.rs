@@ -46,6 +46,8 @@ pub enum SNOCIStorage {
 
 impl SNOCIStorage {
     /// Return SNOCI storage strategy as input string.
+    /// # Arguments:
+    /// - `self`: Storage strategy.
     /// # Returns:
     /// - `&'static str`: String representation used in input parsing and printing.
     pub fn as_str(&self) -> &'static str {
@@ -65,6 +67,8 @@ impl FromStr for SNOCIStorage {
     /// - `s`: String specifying SNOCI storage.
     /// # Returns:
     /// - `Result`: Parsed storage strategy if valid string, otherwise error message.
+    /// # Errors
+    /// - Returns an error if `s` does not name a supported storage strategy.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "none" => Ok(Self::None),
@@ -87,6 +91,8 @@ pub enum SNOCIPreconditioner {
 
 impl SNOCIPreconditioner {
     /// Return SNOCI preconditioner as input string.
+    /// # Arguments:
+    /// - `self`: Preconditioner selection.
     /// # Returns:
     /// - `&'static str`: String representation used in input parsing.
     pub fn as_str(&self) -> &'static str {
@@ -106,6 +112,8 @@ impl FromStr for SNOCIPreconditioner {
     /// - `s`: String specifying the SNOCI preconditioner.
     /// # Returns:
     /// - `Result`: Parsed preconditioner if valid string, otherwise error message.
+    /// # Errors
+    /// - Returns an error if `s` does not name a supported preconditioner.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "none" => Ok(Self::None),

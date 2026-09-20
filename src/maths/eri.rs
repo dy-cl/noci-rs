@@ -69,6 +69,8 @@ pub trait ERIScalar: LinalgScalar + From<f64> {
     /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
     /// - `out`: Output ERIs in `[p, q, r, s]` order.
     /// - `scratch`: Reusable transformation scratch storage.
+    /// # Returns
+    /// - `()`: Writes transformed ERIs into `out`.
     fn eri_ao2mo_hermitian_into(
         eri: &Array4<f64>,
         c_mu_p: &Array2<Self>,
@@ -125,6 +127,8 @@ impl ERIScalar for f64 {
     /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
     /// - `out`: Output ERIs in `[p, q, r, s]` order.
     /// - `scratch`: Reusable transformation scratch storage.
+    /// # Returns
+    /// - `()`: Writes transformed ERIs into `out`.
     fn eri_ao2mo_hermitian_into(
         eri: &Array4<f64>,
         c_mu_p: &Array2<Self>,
@@ -196,6 +200,8 @@ impl ERIScalar for Complex64 {
     /// - `c_sig_s`: `MO coefficients C_{\sigma,s}.`
     /// - `out`: Output ERIs in `[p, q, r, s]` order.
     /// - `scratch`: Reusable transformation scratch storage.
+    /// # Returns
+    /// - `()`: Writes transformed ERIs into `out`.
     fn eri_ao2mo_hermitian_into(
         _eri: &Array4<f64>,
         c_mu_p: &Array2<Self>,
@@ -210,6 +216,8 @@ impl ERIScalar for Complex64 {
         let nmop = c_mu_p.ncols();
         let nmor = c_lam_r.ncols();
 
+        // Hermitian MO integrals conjugate the bra-side coefficients
+        // `C_{\mu p}^*` and `C_{\lambda r}^*` before the four AO contractions.
         {
             let mut c_mu_p_conj =
                 ArrayViewMut2::from_shape((nbas, nmop), &mut scratch.c_mu_p_conj).unwrap();
@@ -255,6 +263,8 @@ impl ERIScalar for Complex64 {
 /// - `coefficients`: AO-to-MO coefficient matrices.
 /// - `out`: Output ERIs in `[p, q, r, s]` order.
 /// - `scratch`: Reusable contraction and permutation buffers.
+/// # Returns
+/// - `()`: Writes the `[p, q, r, s]` tensor into `out`.
 fn eri_ao2mo_into<T: ERIScalar>(
     eri: ArrayView4<'_, T>,
     coefficients: AO2MOCoefficients<'_, T>,
@@ -276,15 +286,18 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let t3len = nbas * nmos * nmor * nmoq;
     let t4len = nmos * nmor * nmoq * nmop;
 
+    // Contract the last AO index first: `(\mu\nu|\lambda\sigma) \to (\mu\nu|\lambda s)`.
     let erirows = eri.into_shape((nbas * nbas * nbas, nbas)).unwrap();
     let mut t1rows =
         ArrayViewMut2::from_shape((nbas * nbas * nbas, nmos), &mut worka[..t1len]).unwrap();
     general_mat_mul(alpha, &erirows, &coefficients.c_sig_s, beta, &mut t1rows);
 
+    // Move `\lambda` to the contiguous axis for the next matrix multiplication.
     let src = ArrayView4::from_shape((nbas, nbas, nbas, nmos), &worka[..t1len]).unwrap();
     let mut dst = ArrayViewMut4::from_shape((nbas, nbas, nmos, nbas), &mut workb[..t1len]).unwrap();
     dst.assign(&src.permuted_axes([0, 1, 3, 2]));
 
+    // Contract `\lambda \to r`, then rotate `\nu` into the contiguous axis.
     let t1rows = ArrayView2::from_shape((nbas * nbas * nmos, nbas), &workb[..t1len]).unwrap();
     let mut t2rows =
         ArrayViewMut2::from_shape((nbas * nbas * nmos, nmor), &mut worka[..t2len]).unwrap();
@@ -294,6 +307,7 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let mut dst = ArrayViewMut4::from_shape((nbas, nmos, nmor, nbas), &mut workb[..t2len]).unwrap();
     dst.assign(&src.permuted_axes([0, 2, 3, 1]));
 
+    // Contract `\nu \to q`, then expose `\mu` for the final contraction.
     let t2rows = ArrayView2::from_shape((nbas * nmos * nmor, nbas), &workb[..t2len]).unwrap();
     let mut t3rows =
         ArrayViewMut2::from_shape((nbas * nmos * nmor, nmoq), &mut worka[..t3len]).unwrap();
@@ -303,6 +317,7 @@ fn eri_ao2mo_into<T: ERIScalar>(
     let mut dst = ArrayViewMut4::from_shape((nmos, nmor, nmoq, nbas), &mut workb[..t3len]).unwrap();
     dst.assign(&src.permuted_axes([1, 2, 3, 0]));
 
+    // Contract `\mu \to p` and permute temporary `[s,r,q,p]` into `[p,q,r,s]`.
     let t3rows = ArrayView2::from_shape((nmos * nmor * nmoq, nbas), &workb[..t3len]).unwrap();
     let mut t4rows =
         ArrayViewMut2::from_shape((nmos * nmor * nmoq, nmop), &mut worka[..t4len]).unwrap();

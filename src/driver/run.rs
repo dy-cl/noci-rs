@@ -22,13 +22,19 @@ use crate::{Error, HSCFState, Result, SCFState};
 /// # Arguments:
 /// - `input`: User input specifications.
 /// # Returns:
-/// - `()`: Runs all requested geometries and prints reports.
+/// - `Result<()>`: Runs all requested geometries and prints reports on success.
+/// # Errors
+/// - Returns an error if the output directory cannot be created or a geometry run fails.
+/// # Panics
+/// - Panics if the global Rayon pool or MPI runtime cannot be initialised.
 pub fn run(mut input: Input) -> Result<()> {
+    // Configure worker stacks before any geometry starts parallel evaluation.
     ThreadPoolBuilder::new()
         .stack_size(128 * 1024 * 1024)
         .build_global()
         .unwrap();
 
+    // Resolve output and Wick-cache paths once for the whole geometry scan.
     let paths = RunPaths::from_input(&input);
     if input.wicks.cachedir.is_none() {
         input.wicks.cachedir = Some(paths.wicks_cache_dir.to_string_lossy().into_owned());
@@ -45,6 +51,7 @@ pub fn run(mut input: Input) -> Result<()> {
     let mut prev_states: Vec<SCFState> = Vec::new();
     let mut prev_htracks: Vec<HSCFState> = Vec::new();
 
+    // Initialise MPI before reporting input or running collective geometry work.
     let universe = mpi::initialize().unwrap();
     let world = universe.world();
     let irank = world.rank();
@@ -57,6 +64,8 @@ pub fn run(mut input: Input) -> Result<()> {
     let rlist = input.mol.r_list.clone();
     let geoms = input.mol.geoms.clone();
 
+    // Carry converged real states and holomorphic tracking states to the next
+    // geometry so the scan follows the same physical solutions.
     for (i, r) in rlist.iter().copied().enumerate() {
         println!("\n");
 

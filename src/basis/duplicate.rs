@@ -64,6 +64,7 @@ pub fn density_distance<T: NOCIScalar>(
 /// - `states`: Determinant states to deduplicate.
 /// - `s`: AO overlap matrix.
 /// - `d_tol`: Tolerance below which two states are treated as duplicates.
+/// - `verbose`: Output level for duplicate-state diagnostics.
 /// # Returns:
 /// - `()`: Mutates duplicate states in place by setting `noci_basis = false`.
 pub(crate) fn mark_duplicate_noci_states<T: NOCIScalar>(
@@ -75,6 +76,8 @@ pub(crate) fn mark_duplicate_noci_states<T: NOCIScalar>(
     if verbose >= 1 {
         println!("{}", "=".repeat(100));
     }
+    // Keep the earliest selected representative: a later state leaves the
+    // NOCI basis if either electron or density distance is below tolerance.
     for i in 0..states.len() {
         if !states[i].noci_basis {
             continue;

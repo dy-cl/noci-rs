@@ -270,6 +270,8 @@ impl AuxiliarySpace {
 /// # Arguments:
 /// - `state`: Source component with rank-to-orbital lookup tables.
 /// - `out`: Accumulator for occupations subsequently sorted and deduplicated.
+/// # Returns
+/// - `()`: Appends reachable occupations to `out`.
 fn reachable_spin_occupations(
     state: &SpinDeterminantState,
     out: &mut Vec<u128>,
@@ -279,6 +281,8 @@ fn reachable_spin_occupations(
             out.push((state.occupation & !(1u128 << hole)) | (1u128 << particle));
         }
     }
+    // Choose unordered hole and particle pairs so each same-spin double
+    // occupation is generated once before the caller deduplicates results.
     for i in 0..state.occupied.len() {
         for j in i + 1..state.occupied.len() {
             for a in 0..state.virtuals.len() {

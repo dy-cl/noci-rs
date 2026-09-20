@@ -93,6 +93,8 @@ impl<T: NOCIScalar> WicksShared<T> {
     /// - `self`: Wick storage and associated view.
     /// # Returns
     /// - `std::io::Result<()>`: Success when no flush is required or the writable map is flushed.
+    /// # Errors
+    /// - Returns an I/O error if flushing a writable map fails.
     pub(crate) fn flush_mmap(&mut self) -> std::io::Result<()> {
         match &mut self.backing {
             WicksBacking::MmapCow(map) => map.flush(),
@@ -186,6 +188,8 @@ pub(crate) struct WicksDiskMeta<T: NOCIScalar> {
 /// - `slab_len`: Total slab length in units of `T`.
 /// # Returns
 /// - `std::io::Result<WicksShared<T>>`: Writable file-backed Wick storage and slab view.
+/// # Errors
+/// - Returns an I/O error if the slab file cannot be created, resized, or mapped.
 pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
     slab_path: &std::path::Path,
     nref: usize,
@@ -224,6 +228,10 @@ pub(crate) fn create_wicks_mmap<T: NOCIScalar>(
 /// - `meta_path`: Path to the serialised `WicksDiskMeta` object.
 /// # Returns
 /// - `std::io::Result<WicksShared<T>>`: Read-only file-backed Wick storage and slab view.
+/// # Errors
+/// - Returns an I/O error if metadata or slab data cannot be read or mapped, or if the cache version is incompatible.
+/// # Panics
+/// - Panics if the metadata file cannot be deserialised.
 pub(crate) fn load_wicks_mmap<T: NOCIScalar>(
     slab_path: &std::path::Path,
     meta_path: &std::path::Path,

@@ -1,5 +1,4 @@
 // noci/orthogonal/eval/mod.rs
-// noci/orthogonal/eval/mod.rs
 
 //! Scalar, batched, and SIMD prepared orthogonal Hamiltonian kernels.
 

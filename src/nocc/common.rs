@@ -74,6 +74,8 @@ pub(super) fn active(
 /// - `kind`: Generated orbital-space id.
 /// # Returns:
 /// - `&[usize]`: Orbital indices in the requested space.
+/// # Panics
+/// - Panics if `kind` does not identify a known orbital space.
 pub(super) fn orbs(
     spaces: &Spaces,
     kind: u8,
@@ -206,7 +208,7 @@ fn term(
 /// `where each \Omega_d_k is an allowed orbital space for the given dummy index.`
 /// # Arguments:
 /// - `item`: Generated overlap term.
-/// - `block`: Generated terms for the overlap block.
+/// - `indices`: Symbolic dummy indices and their orbital-space kinds.
 /// - `depth`: Current dummy-loop depth.
 /// - `idx`: Block-local orbital index values.
 /// - `tensors`: Reference tensors needed by the overlap evaluator.
@@ -246,6 +248,8 @@ fn sum(
 /// - `tensors`: Runtime tensors needed by the generated-term evaluator.
 /// # Returns:
 /// - `f64`: Tensor element.
+/// # Panics
+/// - Panics if the tensor kind is unknown or a required runtime tensor is absent.
 pub(super) fn factor(
     tensor: &TensorFactor,
     idx: &[usize],
@@ -317,9 +321,9 @@ pub(super) fn factor(
 /// `\mathbf{d}_\alpha is a vector of dummy indices, and \mathbf{i} is a vector of free indices.`
 /// # Arguments:
 /// - `nidx`: Number of block/class-local symbolic indices.
+/// - `indices`: Symbolic dummy indices and their orbital-space kinds.
 /// - `terms`: Generated terms for the block/class.
 /// - `sources`: Pairs of generated free-index IDs and the excitation that supplies them.
-/// - `kind`: Function returning the orbital-space kind for a symbolic index.
 /// - `tensors`: Runtime tensors needed by the generated-term evaluator.
 /// # Returns:
 /// - `f64`: Generated element.

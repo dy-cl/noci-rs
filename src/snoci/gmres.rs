@@ -45,6 +45,8 @@ fn print_gmres_header() {
 /// - `restart_id`: GMRES restart cycle index.
 /// - `iter`: Total GMRES iteration index.
 /// - `residual_est`: Arnoldi/Givens residual estimate for the current Krylov solve.
+/// - `e2_hyl`: Current Hylleraas energy estimate.
+/// - `delta_hyl_proj`: Difference between Hylleraas and projected energy estimates.
 /// - `apply_secs`: Time spent applying the matrix-free operator on this iteration.
 /// - `elapsed_secs`: Total elapsed GMRES wall time.
 /// # Returns:
@@ -161,6 +163,8 @@ fn orthogonalise_arnoldi_vector<T: NOCIScalar>(
     w: &mut Array1<T>,
     k: usize,
 ) {
+    // Reorthogonalise twice to control loss of Krylov-basis orthogonality;
+    // accumulate both passes in the same Hessenberg column.
     for _ in 0..2 {
         for j in 0..=k {
             let hjk = inner_product(&q[j], w);
@@ -198,14 +202,12 @@ fn extend_arnoldi_basis<T: NOCIScalar>(
 
 /// Compute current GMRES Hylleraas diagnostics using Arnoldi data already generated this iteration.
 /// # Arguments:
-/// - `b`: Right-hand side vector.
-/// - `x_start`: Solution at the start of the restart cycle.
+/// - `params`: Right-hand side, restart solution, and cycle settings.
 /// - `q`: Arnoldi basis.
 /// - `z_basis`: Cached right-preconditioned Krylov basis.
 /// - `h_raw`: Raw Arnoldi Hessenberg matrix.
 /// - `h_rot`: Rotated Hessenberg matrix.
 /// - `g`: Rotated residual right-hand side.
-/// - `kfinal`: Number of completed Arnoldi iterations in the current cycle.
 /// - `beta`: Norm of the restart-cycle initial residual.
 /// # Returns:
 /// - `(f64, f64)`: `E2_Hyl` and `E2_Hyl - E2_Proj`.
@@ -221,6 +223,8 @@ fn hylleraas_diagnostic<T: NOCIScalar + Into<Complex64>>(
     let kfinal = z_basis.len();
     let y = back_solve(h_rot, g, kfinal);
 
+    // Recover the physical correction `a = x_{\text{start}} + Z y` from the
+    // right-preconditioned Krylov basis and least-squares coefficients.
     let mut a = params.x_start.clone();
     for j in 0..kfinal {
         for i in 0..a.len() {
@@ -228,6 +232,8 @@ fn hylleraas_diagnostic<T: NOCIScalar + Into<Complex64>>(
         }
     }
 
+    // Reconstruct the residual `r = Q (\beta e_1 - H_{\text{raw}} y)` in the original
+    // vector space, without the Givens-rotated Hessenberg matrix.
     let mut rho = Array1::<T>::from_elem(kfinal + 1, T::from_real(0.0));
     rho[0] = T::from_real(beta);
     for j in 0..kfinal {
@@ -243,6 +249,8 @@ fn hylleraas_diagnostic<T: NOCIScalar + Into<Complex64>>(
         }
     }
 
+    // `E_{2,\text{Hyl}} = -\Re(b^\dagger a) - \Re(a^\dagger r)`; the residual term
+    // measures the difference from the projected second-order energy.
     let b_dot_a: Complex64 = inner_product(params.b, &a).into();
     let a_dot_r: Complex64 = inner_product(&a, &r).into();
     let e2_proj = -b_dot_a.re;
@@ -294,6 +302,8 @@ fn apply_current_givens<T: NOCIScalar>(
     let ay = y.abs();
     let denom = (ax * ax + ay * ay).sqrt();
 
+    // Choose the complex Givens rotation that annihilates `H_{k+1,k}`;
+    // use the identity when both inputs are numerically zero.
     if denom > SMALL {
         cs[k] = ax / denom;
         sn[k] = if ax > SMALL {
@@ -309,6 +319,8 @@ fn apply_current_givens<T: NOCIScalar>(
     let csk = T::from_real(cs[k]);
     let snk = sn[k];
 
+    // Apply the same unitary 2x2 rotation to the Hessenberg column and
+    // residual right-hand side so the least-squares problem stays equivalent.
     let h0 = h[(k, k)];
     let h1 = h[(k + 1, k)];
     h[(k, k)] = csk * h0 + snk * h1;
@@ -327,6 +339,7 @@ fn apply_current_givens<T: NOCIScalar>(
 /// - `rtrue`: True residual at the start of the restart cycle.
 /// - `params`: Parameters for the current Arnoldi cycle.
 /// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
+/// - `print_iterations`: Whether to print each Arnoldi iteration.
 /// # Returns:
 /// - `ArnoldiCycle`: Krylov basis, Hessenberg matrix, rotated residual vector, and final inner iteration count.
 fn run_arnoldi_cycle<F, P, T>(
@@ -454,6 +467,8 @@ fn back_solve<T: NOCIScalar>(
 ) -> Array1<T> {
     let mut y = Array1::<T>::from_elem(kfinal, T::from_real(0.0));
 
+    // Back-substitute through the rotated upper-triangular Hessenberg block;
+    // zero pivots yield zero coefficients for dependent Krylov directions.
     for ii in 0..kfinal {
         let i = kfinal - 1 - ii;
         let mut rhs = g[i];
@@ -478,6 +493,7 @@ fn back_solve<T: NOCIScalar>(
 /// - `precondition`: Right-preconditioner callback.
 /// - `b`: Right-hand side vector.
 /// - `opts`: GMRES options controlling restart size, iteration limit, and residual tolerance.
+/// - `world`: MPI communicator used for distributed diagnostics.
 /// # Returns:
 /// - `GMRES`: Approximate solution vector together with final residual RMS, number of
 ///   iterations performed, and convergence flag.

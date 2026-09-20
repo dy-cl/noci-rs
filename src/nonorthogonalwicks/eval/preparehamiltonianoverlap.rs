@@ -47,10 +47,8 @@ use super::prepare::prepare_same;
 /// `H_{2,\alpha\beta}` together so determinants, cofactors and second minors are reused.
 /// # Arguments:
 /// - `w`: Wick intermediates for one ordered nonorthogonal reference pair.
-/// - `x_ex`: Full bra excitation used by the generic fallback.
-/// - `w_ex`: Full ket excitation used by the generic fallback.
-/// - `x_cache`: Cached bra excitation ranks and orbital labels per spin.
-/// - `w_cache`: Cached ket excitation ranks and orbital labels per spin.
+/// - `ex`: Bra and ket excitations used by the generic fallback.
+/// - `cache`: Cached bra and ket excitation ranks and orbital labels per spin.
 /// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
 /// - `enuc`: Nuclear repulsion energy.
 /// - `scratch`: Reusable Wick workspace for generic-rank and nonzero-`m` evaluation.
@@ -1770,7 +1768,7 @@ fn xw_hamiltonian_overlap_m0_gen_prepared<T: NOCIScalar>(
 /// - `x_ex`: Full bra excitation.
 /// - `w_ex`: Full ket excitation.
 /// - `excitation_phase`: Product of the alpha- and beta-spin excitation phases.
-/// - `enuc`: Nuclear repulsion energy; retained for the common interface.
+/// - `_enuc`: Unused nuclear repulsion energy retained for the common interface.
 /// - `scratch`: Reusable spin-resolved Wick workspace.
 /// - `tol`: Numerical tolerance used by generic determinant and adjugate evaluation.
 /// # Returns:

@@ -16,6 +16,7 @@ pub(in crate::snoci) struct CandidatePool {
 impl CandidatePool {
     /// Construct the initial candidate pool of determinants from the current selected space.
     /// # Arguments
+    /// - `space`: Mutable determinant space used to generate candidates.
     /// - `selected_space`: Current selected nonorthogonal determinant space.
     /// - `input`: User-defined input options.
     /// # Returns
@@ -42,6 +43,7 @@ impl CandidatePool {
     /// Remove any candidates from the pool that have just been selected.
     /// # Arguments
     /// - `selected`: Newly selected determinants that should no longer remain in the pool.
+    /// - `space`: Determinant space used to compare candidate labels.
     /// # Returns
     /// - `()`: Updates the candidate pool in place.
     pub(in crate::snoci) fn remove_selected<T: NOCIScalar>(
@@ -59,6 +61,7 @@ impl CandidatePool {
 
     /// Update the candidate pool once the selected space has grown.
     /// # Arguments
+    /// - `space`: Mutable determinant space used to generate new candidates.
     /// - `selected_space`: Updated selected nonorthogonal determinant space.
     /// - `newly_selected`: Determinants added on the most recent SNOCI iteration.
     /// - `input`: User-defined input options.
@@ -79,6 +82,8 @@ impl CandidatePool {
 
             self.remove_selected(newly_selected, space);
 
+            // Generate excitations from the newly selected states, excluding
+            // labels already present in either the selected or candidate set.
             let generated = space.excited_from(newly_selected, input, false);
             let existing: HashSet<String> = selected_space
                 .iter()

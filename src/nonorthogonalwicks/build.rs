@@ -89,6 +89,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// - `tol`: `Singular values satisfying |{}^{xw}\tilde S_i| \leq \mathtt{tol} are treated as zero.`
     /// # Returns
     /// - `SameSpinBuild<T>`: Same-spin intermediates for the reference determinant pair.
+    /// # Panics
+    /// - Panics if `spin` is `Spin::Both` instead of a single spin sector.
     pub fn new(
         ao: &AoData,
         g: &ParentDeterminant<T>,
@@ -581,6 +583,8 @@ impl<T: NOCIScalar> SameSpinBuild<T> {
     /// # Returns
     /// - `([T; 2], [[Array2<T>; 2]; 2])`: Scalar intermediates `F_0^{(m_i)}` and
     ///   column intermediates `\mathcal F^{(m_i,m_j)}` for `m_i,m_j \in \{0,1\}`.
+    /// # Panics
+    /// - Panics if `spin` is `Spin::Both` instead of a single spin sector.
     pub fn construct_f_scalar(
         s_munu: &Array2<f64>,
         f_munu: &Array2<T>,

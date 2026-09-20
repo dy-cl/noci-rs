@@ -121,6 +121,8 @@ pub(crate) fn biased_density_guess(
         return ((*state.da).clone(), (*state.db).clone());
     }
 
+    // Split the spin-summed atomic SAD density equally before applying any
+    // recipe-specific spin or spatial polarisation.
     let mut da = ao.dm.clone() * 0.5;
     let mut db = ao.dm.clone() * 0.5;
 
@@ -142,6 +144,8 @@ pub(crate) fn biased_density_guess(
         }
     }
 
+    // One Fock diagonalisation turns the biased SAD into a molecular density
+    // built from the lowest occupied `\alpha` and `\beta` orbitals.
     let (fa, fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
     let (_, ca) = general_evp_x(&fa, &ao.x);
     let (_, cb) = general_evp_x(&fb, &ao.x);

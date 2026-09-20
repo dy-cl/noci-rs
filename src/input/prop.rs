@@ -35,6 +35,8 @@ pub enum Propagator {
 
 impl Propagator {
     /// Return propagator as input string.
+    /// # Arguments:
+    /// - `self`: Propagator selection.
     /// # Returns:
     /// - `&'static str`: String representation used in input parsing.
     pub fn as_str(&self) -> &'static str {
@@ -58,6 +60,8 @@ impl FromStr for Propagator {
     /// - `s`: String specifying the propagator type.
     /// # Returns:
     /// - `Result<Self, Self::Err>`: Parsed propagator if valid string, otherwise error message.
+    /// # Errors
+    /// - Returns an error if `s` does not name a supported propagator.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "unshifted" => Ok(Self::Unshifted),

@@ -46,6 +46,8 @@ fn build_wicks_pair<T: NOCIScalar>(
     DiffSpinBuild<T>,
     PairMeta<T>,
 ) {
+    // Build `\alpha`, `\beta`, and mixed-spin contractions for one ordered parent
+    // pair; the evaluator reads them through the paired metadata below.
     let aa = SameSpinBuild::new(ao, rj, ri, Spin::Alpha, tol);
     let bb = SameSpinBuild::new(ao, rj, ri, Spin::Beta, tol);
     let ab = DiffSpinBuild::new(ao, rj, ri, tol);
@@ -296,6 +298,8 @@ pub fn build_wicks_shared<T: NOCIScalar>(
 /// - `fa`: Fock matrix spin alpha.
 /// - `fb`: Fock matrix spin beta.
 /// - `parents`: Selected parent orbital frames in reference order.
+/// - `s`: AO overlap matrix used to update paired orbitals.
+/// - `tol`: Numerical tolerance for the Wick contractions.
 /// - `wicks`: Shared memory Wick's intermediates storage.
 /// # Returns:
 /// - `()`: Updates the stored Fock-related Wick's intermediates in `wicks` in place.
@@ -309,6 +313,8 @@ pub(crate) fn update_wicks_fock<T: NOCIScalar>(
 ) {
     let nref = parents.len();
 
+    // Refresh only Fock-dependent scalars and rank-two contractions for each
+    // ordered parent pair; overlap and Coulomb intermediates remain reusable.
     for (i, ri) in parents.iter().enumerate().take(nref) {
         for (j, rj) in parents.iter().enumerate().take(nref) {
             let idx = i * nref + j;
@@ -330,6 +336,8 @@ pub(crate) fn update_wicks_fock<T: NOCIScalar>(
                 view.meta[idx].bb.f0f = f0fb;
             }
 
+            // Store all binary fundamental-contraction assignments in the
+            // existing pair slab offsets.
             let slab = wicks.slab_mut();
             for mi in 0..2 {
                 for mj in 0..2 {

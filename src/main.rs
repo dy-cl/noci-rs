@@ -5,6 +5,8 @@ use noci_rs::driver::{load_config, run};
 /// Parse the input, initialise the runtime, and execute the requested calculation.
 /// # Returns
 /// - `Result<()>`: Success after all geometries finish, or the propagated driver error.
+/// # Errors
+/// - Propagates input-loading, output-directory, or geometry-run errors from the driver.
 fn main() -> Result<()> {
     let config = load_config()?;
     run(config)

@@ -25,9 +25,6 @@ mod occupation;
 mod print;
 mod select;
 
-// Restricted function re-exports
-pub(crate) use h::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};
-
 // Public type re-exports.
 pub use kernels::DensityMode;
 pub use occupation::SpinOccupation;
@@ -37,3 +34,6 @@ pub use cycle::scf_cycle;
 pub use h::normalise_hermitian;
 pub use kernels::{density, energy, fock, fock_lambda, orbital_energies, orbital_gradient};
 pub use occupation::{occ_first, spin_occupation};
+
+// Restricted function re-exports.
+pub(crate) use h::{continue_hscf_track, initialise_hscf_track, physical_hscf_state};

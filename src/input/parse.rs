@@ -93,6 +93,8 @@ fn read_snoci_storage(
 /// # Returns:
 /// - `StateRecipe`: Parsed state recipe with optional spin bias, spatial bias, and SCF excitation data.
 fn read_state_recipe(t: Table) -> StateRecipe {
+    // Read scalar recipe fields first, then parse the optional bias and
+    // excitation tables against their own defaults.
     let defaults = StateRecipe::default();
     let label: String = t.get("label").unwrap_or(defaults.label);
     let noci: bool = t.get("noci").unwrap_or(defaults.noci);
@@ -177,6 +179,7 @@ fn read_mol(mol_tbl: Table) -> MolOptions {
             std::process::exit(1);
         }
     }
+
     // Expand either one static atom list or a Lua geometry function over every r value.
     let atoms_val: Value = mol_tbl.get("atoms").unwrap();
     let geoms: Vec<Vec<String>> = match atoms_val {
@@ -204,6 +207,7 @@ fn read_mol(mol_tbl: Table) -> MolOptions {
             std::process::exit(1);
         }
     };
+
     // Return geometry parameters and atom lists with matching outer lengths.
     MolOptions {
         basis,
@@ -250,6 +254,9 @@ fn read_scf(scf_tbl: Option<Table>) -> SCFInfo {
 fn read_write(write_tbl: Option<Table>) -> WriteOptions {
     if let Some(write_tbl) = write_tbl {
         let defaults = WriteOptions::default();
+
+        // Check the bounded verbosity setting, then inherit defaults for
+        // every other omitted write option.
         let verbose = match write_tbl.get::<_, Value>("verbose").unwrap_or(Value::Nil) {
             Value::Nil => defaults.verbose,
             Value::Integer(v) if (0..=2).contains(&v) => v as u8,
@@ -368,6 +375,9 @@ fn read_states(state_tbl: Table) -> StateType {
 fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
     det_tbl.map(|det_tbl| {
         let defaults = DeterministicOptions::default();
+
+        // Validate positive projector and canonical-subspace parameters before
+        // copying the remaining optional settings from Lua.
         let projector_eps = det_tbl
             .get("projector_eps")
             .unwrap_or(defaults.projector_eps);
@@ -412,7 +422,10 @@ fn read_det(det_tbl: Option<Table>) -> Option<DeterministicOptions> {
 /// - `qmc_tbl`: Lua `qmc` table containing the optional `fri` table.
 /// # Returns:
 /// - `Result<FriOptions, String>`: Validated FRI configuration or a clear schema error.
+/// # Errors
+/// - Returns an error for unsupported legacy fields, invalid FRI settings, or Lua table access failures.
 fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
+    // Reject legacy root-level cutoffs before reading site-specific policies.
     for legacy in [
         "sampling_cutoff",
         "sampling_cutoff1",
@@ -439,6 +452,7 @@ fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
         return Ok(defaults);
     };
 
+    // Validate fixed cutoffs for cycle-local population sampling and spawning.
     let population_tbl = fri_tbl
         .get::<_, Option<Table>>("population")
         .map_err(|_| "qmc.fri.population must be a table".to_string())?;
@@ -483,6 +497,7 @@ fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
         return Err("qmc.fri.spawn.cutoff must be finite and non-negative".to_string());
     }
 
+    // Validate per-rank target sizes for the two adaptive compression sites.
     let pre_overlap_tbl = fri_tbl
         .get::<_, Option<Table>>("pre_overlap")
         .map_err(|_| "qmc.fri.pre_overlap must be a table".to_string())?;
@@ -529,6 +544,7 @@ fn read_fri(qmc_tbl: &Table<'_>) -> std::result::Result<FriOptions, String> {
         return Err("qmc.fri.shift_tangent.target_nnz must be positive".to_string());
     }
 
+    // Preserve the validated policy in site order.
     Ok(FriOptions {
         population_cutoff,
         spawn_cutoff,
@@ -599,6 +615,7 @@ fn read_qmc(
             std::process::exit(1);
         }
 
+        // Resolve storage choices for factorised QMC operator applications.
         let factor_tables = read_snoci_storage(
             "qmc.factor_tables",
             qmc_tbl.get::<_, Value>("factor_tables"),
@@ -626,7 +643,7 @@ fn read_qmc(
             std::process::exit(1);
         }
 
-        // Use a genuine overlap/uniform proposal mixture by default for SApply.
+        // SApply defaults to an equal overlap/uniform mixture; validate any supplied weight.
         let default_overlap_weight =
             if s_apply && excitation_gen == ExcitationGen::OverlapWeighted {
                 0.5
@@ -651,6 +668,7 @@ fn read_qmc(
             std::process::exit(1);
         }
 
+        // Validate population-control parameters against the selected propagator.
         let population_restoring = qmc_tbl
             .get("population_restoring")
             .unwrap_or(defaults.population_restoring);
@@ -723,6 +741,8 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
         let defaults = SNOCIOptions::default();
         let gmres_defaults = GMRESOptions::default();
 
+        // Nested GMRES settings inherit defaults independently of the outer
+        // SNOCI table, including its two storage modes.
         let gmres_tbl: Option<Table> = snoci_tbl.get::<_, Option<Table>>("gmres").unwrap_or(None);
 
         let gmres = if let Some(gmres_tbl) = gmres_tbl {
@@ -751,6 +771,7 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
             gmres_defaults
         };
 
+        // Validate the preconditioner name before assembling the final options.
         let preconditioner_str: String = snoci_tbl
             .get("preconditioner")
             .unwrap_or_else(|_| defaults.preconditioner.as_str().to_string());
@@ -802,6 +823,8 @@ fn read_excit(excit_tbl: Option<Table>) -> ExcitationOptions {
     if let Some(excit_tbl) = excit_tbl {
         let defaults = ExcitationOptions::default();
 
+        // Read an explicit order list separately from the `all` shortcut so
+        // their incompatible combination can be rejected below.
         let orders: Option<Vec<usize>> = match excit_tbl.get::<_, Value>("orders") {
             Ok(Value::Nil) => None,
             Ok(_) => Some(excit_tbl.get("orders").unwrap_or_else(|msg| {
@@ -826,6 +849,7 @@ fn read_excit(excit_tbl: Option<Table>) -> ExcitationOptions {
             }
         };
 
+        // `all` and an explicit order list select incompatible excitation sets.
         if all && orders.is_some() {
             eprintln!("Cannot specify both excit.orders and excit.all = true");
             std::process::exit(1);
@@ -872,6 +896,8 @@ fn read_prop(prop_tbl: Option<Table>) -> Option<PropagationOptions> {
 /// - `wicks_tbl`: Optional Lua wicks table.
 /// # Returns:
 /// - `WicksOptions`: Parsed Wick's theorem options.
+/// # Panics
+/// - Panics if `wicks.storage` has an unsupported value or invalid Lua type.
 fn read_wicks(wicks_tbl: Option<Table>) -> WicksOptions {
     if let Some(wicks_tbl) = wicks_tbl {
         let defaults = WicksOptions::default();
@@ -898,7 +924,9 @@ fn read_wicks(wicks_tbl: Option<Table>) -> WicksOptions {
 /// # Arguments
 /// - `path`: File path to input file.
 /// # Returns:
-/// - `Input`: Parsed input options.
+/// - `Result<Input>`: Parsed input options.
+/// # Errors
+/// - Returns an error if the file cannot be read or the Lua script fails to execute.
 pub fn load_input(path: impl AsRef<Path>) -> Result<Input> {
     let path = path.as_ref();
     let src = fs::read_to_string(path)

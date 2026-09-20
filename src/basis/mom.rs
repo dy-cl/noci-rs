@@ -116,6 +116,8 @@ pub(crate) fn generate_states_mom(
 /// - `prev_htracks`: Tracking states from the previous geometry.
 /// # Returns:
 /// - `(Vec<HSCFState>, Vec<HSCFState>)`: Physical states and tracking states.
+/// # Panics
+/// - Panics if a real seed is missing or a holomorphic state cannot be tracked or relaxed.
 fn generate_hscf_states_mom(
     ao: &AoData,
     input: &Input,
@@ -146,6 +148,8 @@ fn generate_hscf_states_mom(
 
         let previous = prev_track_map.get(recipe.label.as_str()).copied();
 
+        // Continue a labelled off-axis branch when available; otherwise
+        // initialise it from the real seed named by this recipe.
         let track = if let Some(previous) = previous {
             continue_hscf_track(previous, ao, input, &recipe.label)
         } else {
@@ -162,6 +166,7 @@ fn generate_hscf_states_mom(
         }
         .unwrap_or_else(|| panic!("Failed to track holomorphic SCF state '{}'.", recipe.label));
 
+        // Relax the tracked branch to the physical `\lambda = 1` state.
         let state = physical_hscf_state(&track, ao, input, &recipe.label, recipe.noci)
             .unwrap_or_else(|| {
                 panic!(
@@ -184,7 +189,7 @@ fn generate_hscf_states_mom(
 /// - `ao`: Contains AO integrals and other system data.
 /// - `input`: Contains user inputted options.
 /// - `prev`: Previous real states, if available for continuation.
-/// - `prev_h`: Previous h-SCF states, if available for holomorphic continuation.
+/// - `prev_htracks`: Previous h-SCF tracking states, if available for continuation.
 /// - `prev_map`: Previous real SCF states keyed by label.
 /// - `recipes`: Instructions for how to construct each state.
 /// # Returns

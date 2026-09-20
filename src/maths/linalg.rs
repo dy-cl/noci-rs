@@ -74,6 +74,8 @@ fn dot_f64_scalar(
 /// - `y`: Second real vector.
 /// # Returns
 /// - `f64`: Dot product `\sum_i x_i y_i`, truncated to the shorter input length.
+/// # Safety
+/// - The caller must ensure the CPU supports AVX instructions.
 #[cfg(target_arch = "x86")]
 #[target_feature(enable = "avx")]
 unsafe fn dot_f64_avx(
@@ -112,6 +114,8 @@ unsafe fn dot_f64_avx(
 /// - `y`: Second real vector.
 /// # Returns
 /// - `f64`: Dot product `\sum_i x_i y_i`, truncated to the shorter input length.
+/// # Safety
+/// - The caller must ensure the CPU supports AVX instructions.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx")]
 unsafe fn dot_f64_avx(
@@ -306,6 +310,8 @@ pub fn solve_pseudoinverse(
 
     let mut x = Array1::zeros(b.len());
 
+    // Retained eigenmodes contribute `v_k(v_k^T b)/\lambda_k`; discarded
+    // near-null modes contribute zero to the minimum-norm solution.
     for k in 0..evals.len() {
         if evals[k] <= tol {
             continue;
@@ -340,6 +346,8 @@ pub fn symmetric_evp_complex(a: &Array2<Complex64>) -> (Array1<Complex64>, Array
         );
     }
 
+    // Sort complex-symmetric eigenpairs deterministically by real, then
+    // imaginary eigenvalue; the transpose metric is restored below.
     let (vals, vecs) = a.eig().unwrap();
     let mut order: Vec<usize> = (0..vals.len()).collect();
     order.sort_by(|&i, &j| {
@@ -376,6 +384,8 @@ fn transpose_orthonormalize_columns(u: &mut Array2<Complex64>) {
     for j in 0..ncols {
         let mut col = u.column(j).to_owned();
 
+        // Modified Gram-Schmidt uses the bilinear `q_i^T v`, without complex
+        // conjugation, to enforce `U^T U = I` for holomorphic orbitals.
         for i in 0..j {
             let qi = u.column(i).to_owned();
             let proj = qi.dot(&col);
@@ -383,6 +393,8 @@ fn transpose_orthonormalize_columns(u: &mut Array2<Complex64>) {
         }
 
         let mut nrm = col.dot(&col).sqrt();
+        // A self-orthogonal or nearly dependent column needs a replacement
+        // direction before transpose normalisation can succeed.
         if nrm.norm() <= 1e-14 {
             col.fill(Complex64::new(0.0, 0.0));
             for k in 0..nrows {

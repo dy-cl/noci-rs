@@ -153,6 +153,8 @@ fn finalise(
     ao: &AoData,
     input: &Input,
 ) -> SCFState {
+    // Compute overlap-aware MO occupations once for both reporting and the
+    // optional orbital file.
     let oaprint = mo_occupancies(state.ca.as_ref(), state.da.as_ref(), &ao.s);
     let obprint = mo_occupancies(state.cb.as_ref(), state.db.as_ref(), &ao.s);
 
@@ -173,6 +175,7 @@ fn finalise(
         print_array2_indexed(state.cb.as_ref());
     }
 
+    // Sanitise the state label before using it as an orbital filename.
     if input.write.write_orbitals {
         let orbitalsdir: PathBuf = Path::new(&input.write.write_dir).join("orbitals");
         let _ = fs::create_dir_all(&orbitalsdir);
@@ -200,8 +203,7 @@ fn finalise(
 /// Unrestricted SCF cycle.
 /// Uses AO integrals from AoData struct.
 /// # Arguments
-/// - `da0`: Initial spin a density matrix.
-/// - `db0`: Initial spin b density matrix.
+/// - `d0`: Initial `\alpha`- and `\beta`-spin density matrices.
 /// - `ao`: Contains AO integrals and metadata.
 /// - `input`: Contains user specified input data.
 /// - `label`: Label for current scf state.

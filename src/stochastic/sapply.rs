@@ -76,11 +76,9 @@ fn apply_population_changes_local<I>(
 /// `\operatorname{range}(S)` provided the initial vector is in
 /// `\operatorname{range}(S)`, therefore avoiding population growth in the null space.
 /// # Arguments:
-/// - `populations`: Rank-local persistent populations.
-/// - `dlocal`: Local determinant population changes.
+/// - `changes`: Rank-local persistent populations and local determinant population changes.
 /// - `data`: Immutable stochastic propagation data.
-/// - `overlap_factor`: Reusable spin overlap factors.
-/// - `overlap_factors`: Persistent cross-parent overlap factors.
+/// - `overlap`: Spin factorisation and persistent cross-parent overlap factors.
 /// - `run`: Rank-local run metadata.
 /// - `mpi`: MPI communicator and reusable MPI scratch storage.
 /// - `scratch`: `Reusable overlap allocation storage for grouped S\Delta application.`

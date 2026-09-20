@@ -38,7 +38,12 @@ pub fn should_run_holomorphic(input: &Input) -> bool {
 /// - `prev_htracks`: Converged h-SCF states at previous r, used for complex branch tracking.
 /// - `world`: MPI communicator object.
 /// # Returns:
-/// - `GeometryResults`: Calculated energies, timings, and SCF states for the current geometry.
+/// - `Result<GeometryResults>`: Calculated energies, timings, and SCF states.
+/// # Errors
+/// - The current geometry paths return `Ok`; no error is produced here.
+/// # Panics
+/// - Panics if the root-generated AO data is missing after broadcast or the generated state
+///   lists violate the holomorphic-reference ordering assumptions.
 pub fn run_geometry(
     r: f64,
     atoms: &Atoms,

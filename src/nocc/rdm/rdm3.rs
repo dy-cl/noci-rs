@@ -44,6 +44,8 @@ pub(crate) fn rdm3<T: NOCIScalar>(
     let mut td = 0.0;
     let mut md = 0.0;
 
+    // Sum each determinant-pair contribution with weight `c_x^L c_w^R`,
+    // recording `\sum_{xw} c_x^L c_w^R S_{xw}` for final normalisation.
     for x in 0..data.basis.len() {
         for w in 0..data.basis.len() {
             let pair = DetPair::new(&data.basis[x], &data.basis[w]);
@@ -81,6 +83,7 @@ pub(crate) fn rdm3<T: NOCIScalar>(
         );
     }
 
+    // Divide the accumulated active-space RDM by the reference norm.
     for v in gamma.data.iter_mut() {
         *v /= norm;
     }
@@ -149,6 +152,9 @@ fn rdm3_pair_naive<T: NOCIScalar>(
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(6)],
     };
+
+    // Sum all `2^3` `\alpha`/`\beta` assignments for each active-index sextuplet;
+    // the assignment helper includes the fermionic operator signs.
     for a in 0..n {
         for b in 0..n {
             for c in 0..n {

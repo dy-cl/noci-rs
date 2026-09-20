@@ -95,6 +95,8 @@ fn apply_population_changes(
 /// # Returns:
 /// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional
 ///   spawning-magnitude histogram.
+/// # Panics
+/// - Panics if restart populations do not match this rank's determinant layout.
 pub fn qmc_step(
     data: &NOCIData<'_, f64>,
     c0: &[f64],

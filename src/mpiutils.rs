@@ -201,6 +201,8 @@ where
         return local;
     }
 
+    // Transfer both real and imaginary lanes because `T` may be complex;
+    // every rank receives the same summed vector after reconstruction.
     let n = local.len();
     let mut send = Vec::with_capacity(2 * n);
 

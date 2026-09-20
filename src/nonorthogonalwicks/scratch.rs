@@ -61,6 +61,8 @@ impl Deref for IndexVec {
     type Target = [usize];
 
     /// Return the active indices as an immutable slice.
+    /// # Arguments:
+    /// - `self`: Reusable index storage.
     /// # Returns
     /// - `&[usize]`: Immutable slice containing the active indices.
     #[inline(always)]
@@ -71,6 +73,8 @@ impl Deref for IndexVec {
 
 impl DerefMut for IndexVec {
     /// Return the active indices as a mutable slice.
+    /// # Arguments:
+    /// - `self`: Reusable index storage.
     /// # Returns
     /// - `&mut [usize]`: Mutable slice containing the active indices.
     #[inline(always)]
@@ -226,6 +230,9 @@ impl<T: NOCIScalar> WickScratchSpin<T> {
         Self::default()
     }
 
+    /// Construct empty workspaces for both same-spin sectors and the different-spin sector.
+    /// # Returns
+    /// - `WickScratchSpin<T>`: Empty spin-resolved workspaces.
     fn default() -> Self {
         Self {
             aa: WickScratch::default(),

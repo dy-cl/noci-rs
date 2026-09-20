@@ -222,8 +222,7 @@ fn xw_hamiltonian_orthogonal_prepared_const<T: NOCIScalar, const RA: usize, cons
 /// # Arguments:
 /// - `ao`: AO data containing the nuclear-repulsion energy.
 /// - `cache`: Parent-specific orthogonal MO Hamiltonian integrals.
-/// - `basis`: Retained determinant basis used to recover source occupations.
-/// - `sources`: Source determinant indices aligned with `states` and `out`.
+/// - `occupations`: `\alpha` and `\beta` occupations aligned with `states` and `out`.
 /// - `states`: Prepared phase/cache payloads for source-relative excitations.
 /// - `out`: Hamiltonian results in request order.
 /// # Returns
@@ -307,8 +306,7 @@ pub(crate) fn xw_hamiltonian_orthogonal_prepared_batched<T: NOCIScalar>(
 /// # Arguments:
 /// - `ao`: AO data containing the nuclear-repulsion energy.
 /// - `cache`: Parent-specific orthogonal MO Hamiltonian integrals.
-/// - `basis`: Retained determinant basis used by scalar single-excitation fallbacks.
-/// - `sources`: Source determinant indices.
+/// - `occupations`: `\alpha` and `\beta` occupations aligned with `states` and `out`.
 /// - `states`: Prepared excitation phases and caches.
 /// - `out`: Hamiltonian results in request order.
 /// - `kernel`: CPU-specific fixed-width double-excitation dispatcher.

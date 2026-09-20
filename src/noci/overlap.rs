@@ -57,6 +57,7 @@ pub(crate) fn calculate_s_pair<T: NOCIScalar>(
 /// # Arguments:
 /// - `ldet`: Bra-reference state x.
 /// - `gdet`: Ket-reference state w.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Overlap matrix element between `ldet` and `gdet`.
 pub(in crate::noci) fn calculate_s_pair_orthogonal<T: NOCIScalar>(
@@ -112,6 +113,7 @@ pub(in crate::noci) fn calculate_s_pair_naive<T: NOCIScalar>(
 /// - `gdet`: Ket-reference state w.
 /// - `wicks`: View to the intermediates required for non-orthogonal Wick's theorem.
 /// - `scratch`: Scratch space for Wick's calculations.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Overlap matrix element.
 fn calculate_s_pair_wicks<T: NOCIScalar>(
@@ -132,6 +134,8 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
         let la = ex_la.holes.count_ones() as usize + ex_ga.holes.count_ones() as usize;
         let lb = ex_lb.holes.count_ones() as usize + ex_gb.holes.count_ones() as usize;
 
+        // A zero-overlap count larger than the available excitation rank
+        // makes the corresponding Wick determinant vanish.
         if w.aa.m > la || w.bb.m > lb {
             return <T as From<f64>>::from(0.0);
         }
@@ -148,6 +152,8 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
             return zero;
         }
 
+        // The determinant product factorises into `\alpha` and `\beta`
+        // same-spin overlap contributions.
         sa * sb
     })
 }
@@ -158,6 +164,7 @@ fn calculate_s_pair_wicks<T: NOCIScalar>(
 /// - `gdet`: Right determinant.
 /// - `w`: Wick intermediates for the ordered parent pair.
 /// - `scratch`: Scratch space for Wick's calculations.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Alpha same-spin overlap including determinant phases.
 #[inline(always)]
@@ -187,6 +194,7 @@ pub(in crate::noci) fn calculate_s_alpha_pair_wicks<T: NOCIScalar>(
 /// - `gdet`: Right determinant.
 /// - `w`: Wick intermediates for the ordered parent pair.
 /// - `scratch`: Scratch space for Wick's calculations.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Beta same-spin overlap including determinant phases.
 #[inline(always)]

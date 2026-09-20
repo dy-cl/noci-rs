@@ -73,6 +73,8 @@ fn orbital_occupation(
 /// # Returns
 /// - `SCFState<T>`: Clone of `st` in occupied-first orbital order.
 pub fn occ_first<T: StateScalar>(st: &SCFState<T>) -> SCFState<T> {
+    // Reorder each spin's MO columns as occupied followed by virtual, while
+    // preserving order within both groups.
     let (aocc, avirt) = orbital_occupation(st.ca.ncols(), st.oa);
     let naocc = aocc.len();
 
@@ -81,8 +83,12 @@ pub fn occ_first<T: StateScalar>(st: &SCFState<T>) -> SCFState<T> {
     let ca = st.ca.select(Axis(1), &aorder);
     let ca_occ = ca.slice(s![.., 0..naocc]).to_owned();
 
+    // Rebuild the density from the reordered occupied columns,
+    // `D^\sigma = C_{\text{occ}}^\sigma (C_{\text{occ}}^\sigma)^\dagger`.
     let da = ca_occ.dot(&adjoint(&ca_occ));
 
+    // Encode contiguous occupied columns in the new bitstring; handle the
+    // full 128-bit case without an overflowing shift.
     let oa = if naocc == 128 {
         u128::MAX
     } else {

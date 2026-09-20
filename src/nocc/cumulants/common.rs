@@ -16,6 +16,7 @@ pub(crate) struct CumulantTensor<T: NOCIScalar> {
 impl<T: NOCIScalar> CumulantTensor<T> {
     /// Allocate a zero-filled active-space cumulant tensor.
     /// # Arguments:
+    /// - `rank`: Cumulant rank.
     /// - `n`: Number of active orbitals.
     /// # Returns:
     /// - `CumulantTensor<T>`: Zero-filled cumulant tensor.
@@ -49,6 +50,8 @@ impl<T: NOCIScalar> CumulantTensor<T> {
     /// - `upper`: Upper active-space indices.
     /// - `lower`: Lower active-space indices.
     /// - `value`: Tensor element.
+    /// # Returns
+    /// - `()`: Stores the tensor element.
     pub(super) fn set(
         &mut self,
         upper: &[usize],

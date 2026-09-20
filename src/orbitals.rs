@@ -33,7 +33,7 @@ pub(crate) struct NOCINaturalOrbitals {
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `coeffs`: NOCI coefficient vector.
 /// - `ctol`: Occupation tolerance for assigning core orbitals.
-/// - `vitol`: Occupation tolerance for assigning virtual orbitals.
+/// - `vtol`: Occupation tolerance for assigning virtual orbitals.
 /// # Returns:
 /// - `NaturalOrbitalBasis`: Natural orbitals and core/active/virtual partition.
 pub(crate) fn noci_natural_orbitals(
@@ -127,6 +127,7 @@ pub(crate) fn transform_noci_basis<T: NOCIScalar>(
     c: &Array2<T>,
     s: &Array2<f64>,
 ) -> NOCISpace<T> {
+    // Transform each parent orbital frame with `C^\dagger S_{\text{AO}} C_{\text{parent}}`.
     let s = real2_as::<T>(s);
     let cdag_s = adjoint(c).dot(&s);
 
@@ -142,6 +143,8 @@ pub(crate) fn transform_noci_basis<T: NOCIScalar>(
         .collect();
     let mut out = NOCISpace::from_parents(parents);
 
+    // Reattach the original determinant occupations and labels to their
+    // transformed parent frames.
     for index in 0..basis.len() {
         let state = basis.state(NOCIIndex(index));
         let (oa, ob) = basis.occupations(NOCIIndex(index));
@@ -161,11 +164,15 @@ pub(crate) fn transform_ao_data(
     ao: &AoData,
     c: &Array2<f64>,
 ) -> AoData {
+    // Transform one-body quantities into the supplied orbital frame;
+    // density uses both AO metric factors, `C^T S D S C`.
     let s = c.t().dot(&ao.s).dot(c);
     let x = crate::maths::loewdin_x(&s, false, 1e-12);
     let h = c.t().dot(&ao.h).dot(c);
     let dm = c.t().dot(&ao.s).dot(&ao.dm).dot(&ao.s).dot(c);
 
+    // Apply the same four-index AO-to-MO transform to Coulomb and
+    // antisymmetrised ERIs, retaining `[p,q,r,s]` output order.
     let nmo = c.ncols();
     let mut eri_coul = ndarray::Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
     let mut scratch = f64::new_eri_ao2mo_scratch(&ao.eri_coul, nmo, nmo, nmo, nmo);

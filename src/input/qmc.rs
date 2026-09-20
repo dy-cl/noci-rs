@@ -22,6 +22,8 @@ impl FromStr for ExcitationGen {
     /// - `s`: String specifying the excitation generator.
     /// # Returns:
     /// - `Result<Self, Self::Err>`: Parsed excitation generator if valid string, otherwise error message.
+    /// # Errors
+    /// - Returns an error if `s` does not name a supported excitation generator.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "uniform" => Ok(Self::Uniform),

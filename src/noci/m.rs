@@ -59,6 +59,7 @@ pub(crate) fn calculate_m_pair<T: NOCIScalar>(
 /// - `ldet`: State `a`.
 /// - `gdet`: State `b`.
 /// - `e0`: Zeroth-order energy shift.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Shifted matrix element `M_{ab}`.
 fn calculate_m_pair_orthogonal<T: NOCIScalar>(
@@ -75,7 +76,10 @@ fn calculate_m_pair_orthogonal<T: NOCIScalar>(
     let na = xa.count_ones() as usize;
     let nb = xb.count_ones() as usize;
 
+    // A one-body Fock operator connects identical determinants or a single
+    // excitation in one spin sector; higher excitation ranks vanish.
     if na == 0 && nb == 0 {
+        // `M_{aa} = \sum_{i\in\text{occ}_\alpha} F^\alpha_{ii} + \sum_{i\in\text{occ}_\beta} F^\beta_{ii} - E_0 S_{aa}`.
         let mut f = <T as From<f64>>::from(0.0);
 
         let mut bits = goa;
@@ -96,6 +100,7 @@ fn calculate_m_pair_orthogonal<T: NOCIScalar>(
         return f - <T as From<f64>>::from(e0) * s;
     }
 
+    // Two differing occupation bits identify one `\alpha` hole and one particle.
     if na == 2 && nb == 0 {
         let hole = (goa & xa).trailing_zeros() as usize;
         let part = (loa & xa).trailing_zeros() as usize;
@@ -103,6 +108,7 @@ fn calculate_m_pair_orthogonal<T: NOCIScalar>(
         return phase * cache.fa[(part, hole)];
     }
 
+    // The `\beta` single excitation has the analogous signed matrix element.
     if na == 0 && nb == 2 {
         let hole = (gob & xb).trailing_zeros() as usize;
         let part = (lob & xb).trailing_zeros() as usize;
@@ -144,6 +150,9 @@ fn calculate_m_pair_naive<T: NOCIScalar>(
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
 
+    // Factorise the one-body matrix element over spin sectors, then apply
+    // the reference shift:
+    // `M_{ab} = F^\alpha_{ab}S^\beta_{ab} + S^\alpha_{ab}F^\beta_{ab} - E_0 S_{ab}`.
     let s = pa.s * pb.s;
     let f = pb.s * one_electron_scalar(fock.fa, &pa) + pa.s * one_electron_scalar(fock.fb, &pb);
 
@@ -159,6 +168,7 @@ fn calculate_m_pair_naive<T: NOCIScalar>(
 /// - `wicks`: Precomputed Wick's intermediates.
 /// - `e0`: Zeroth-order energy shift.
 /// - `scratch`: Scratch space for Wick's calculations.
+/// - `space`: Determinant space containing the bra and ket states.
 /// # Returns:
 /// - `T`: Shifted matrix element `M_{ab}`.
 fn calculate_m_pair_wicks<T: NOCIScalar>(
@@ -182,6 +192,8 @@ fn calculate_m_pair_wicks<T: NOCIScalar>(
     let phb =
         <T as From<f64>>::from(space.beta(ldet).reduced.phase * space.beta(gdet).reduced.phase);
 
+    // Prepared Wick contractions supply spin overlaps and Fock elements;
+    // combine them as `M_{ab} = F_{ab} - E_0 S_{ab}`.
     let (sa, f1a) = xw_f_overlap_prepared(&w.aa, ex_la, ex_ga, &mut scratch.aa, tol);
     let (sb, f1b) = xw_f_overlap_prepared(&w.bb, ex_lb, ex_gb, &mut scratch.bb, tol);
     let sa = pha * sa;
