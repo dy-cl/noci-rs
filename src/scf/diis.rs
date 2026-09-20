@@ -1,4 +1,11 @@
 // diis.rs
+//! Direct inversion in the iterative subspace for SCF acceleration.
+//!
+//! # References
+//!
+//! - Hamilton and Pulay, *J. Chem. Phys.* **84**, 5728 (1986),
+//!   [doi:10.1063/1.449880](https://doi.org/10.1063/1.449880).
+
 // External crate imports.
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{EighInto, UPLO};

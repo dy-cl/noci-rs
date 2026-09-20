@@ -32,6 +32,15 @@
 //! than production calculations. Its equations, truncations, interfaces and stochastic
 //! propagation remain subject to substantial change and require further validation. Enabling
 //! the `nocc` feature also performs extensive build-time equation generation.
+//!
+//! # References
+//!
+//! - Generalised normal ordering and extended Wick theory: Kutzelnigg and Mukherjee,
+//!   *J. Chem. Phys.* **107**, 432 (1997), [doi:10.1063/1.474405](https://doi.org/10.1063/1.474405).
+//! - Stochastic coupled cluster: Thom, *Phys. Rev. Lett.* **105**, 263004 (2010),
+//!   [doi:10.1103/PhysRevLett.105.263004](https://doi.org/10.1103/PhysRevLett.105.263004).
+//! - Spin-free generalised normal-ordered coupled cluster: Lee and Tew, *J. Chem. Phys.*
+//!   **164**, 134118 (2026), [doi:10.1063/5.0311996](https://doi.org/10.1063/5.0311996).
 
 mod common;
 mod cumulants;

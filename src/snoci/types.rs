@@ -1,4 +1,5 @@
 // snoci/types.rs
+//! SNOCI projected operators and their low-rank preconditioners.
 
 // Standard library imports.
 use std::time::Instant;
@@ -157,6 +158,9 @@ pub(in crate::snoci) struct ArnoldiParams<'a, T: NOCIScalar> {
 }
 
 /// Rank-2 Woodbury preconditioner for the projected NOCI-PT2 shifted Fock matrix.
+/// # References
+/// - Woodbury, *Inverting Modified Matrices*, Statistical Research Group Memorandum Report 42,
+///   Princeton University (1950).
 pub(in crate::snoci) struct Preconditioner<T: NOCIScalar> {
     /// Inverse diagonal of the unprojected candidate-candidate matrix.
     dinv: Array1<T>,

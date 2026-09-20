@@ -188,6 +188,11 @@ pub(in crate::stochastic) fn coupling(
 /// - `scratch`: Scratch space for nonorthogonal Wick quantities.
 /// # Returns:
 /// - `HeatBath`: Couplings and cumulative weights for sampling children.
+/// # References
+/// - Coupling-magnitude heat-bath proposal (adapted here by exact enumeration):
+///   Holmes, Changlani, and Umrigar,
+///   *J. Chem. Theory Comput.* **12**, 1561 (2016),
+///   [doi:10.1021/acs.jctc.5b01170](https://doi.org/10.1021/acs.jctc.5b01170).
 pub(in crate::stochastic) fn init_heat_bath(
     gamma: usize,
     shift: f64,

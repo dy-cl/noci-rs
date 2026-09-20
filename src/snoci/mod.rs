@@ -28,6 +28,11 @@
 //! Candidate importance is obtained from the NOCI-PT2 amplitudes and couplings. Determinants
 //! above the configured threshold are added to the selected space until the perturbative
 //! correction, selection, iteration or dimension stopping condition is reached.
+//!
+//! # References
+//!
+//! - NOCI-PT2: Burton and Thom, *J. Chem. Theory Comput.* **16**, 5586 (2020),
+//!   [doi:10.1021/acs.jctc.0c00468](https://doi.org/10.1021/acs.jctc.0c00468).
 
 mod candidate;
 mod gmres;

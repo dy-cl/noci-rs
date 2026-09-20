@@ -23,6 +23,13 @@
 //! `\mathbf H\mathbf c = E\mathbf S\mathbf c`
 //!
 //! is then solved.
+//!
+//! # References
+//!
+//! - NOCI reference-state construction: Thom and Head-Gordon, *J. Chem. Phys.* **131**, 124113
+//!   (2009), [doi:10.1063/1.3236841](https://doi.org/10.1063/1.3236841); Burton and Thom,
+//!   *J. Chem. Theory Comput.* **15**, 4851 (2019),
+//!   [doi:10.1021/acs.jctc.9b00441](https://doi.org/10.1021/acs.jctc.9b00441).
 
 mod auxiliary;
 mod cache;

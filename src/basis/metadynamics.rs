@@ -1,4 +1,10 @@
 // basis/metadynamics.rs
+//! Metadynamics-inspired searches for distinct SCF solutions.
+//!
+//! # References
+//!
+//! - Thom and Head-Gordon, *Phys. Rev. Lett.* **101**, 193001 (2008),
+//!   [doi:10.1103/PhysRevLett.101.193001](https://doi.org/10.1103/PhysRevLett.101.193001).
 
 // Standard library imports.
 use std::collections::HashMap;

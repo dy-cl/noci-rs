@@ -1,4 +1,11 @@
 // noci/naive.rs
+//! Generalised Slater–Condon matrix elements for nonorthogonal determinants.
+//!
+//! # References
+//!
+//! - Burton, *J. Chem. Phys.* **154**, 144109 (2021),
+//!   [doi:10.1063/5.0045442](https://doi.org/10.1063/5.0045442).
+
 // External crate imports.
 use ndarray::{Array1, Array2, Array4, Axis};
 use ndarray_linalg::{Determinant, SVD};

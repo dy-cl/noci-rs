@@ -1,4 +1,6 @@
 // nonorthogonalwicks/build.rs
+//! Construction of Löwdin-paired nonorthogonal Wick intermediates.
+
 // External crate imports.
 use ndarray::{Array1, Array2, Array4, Axis, s};
 use ndarray_linalg::{Determinant, SVD};

@@ -24,6 +24,12 @@
 //! - Once the reference-pair intermediates have been constructed, the subsequent evaluation
 //!   cost depends on the excitation ranks and the allowed `m_i` distributions rather than
 //!   directly on the number of electrons or basis functions.
+//!
+//! # References
+//!
+//! - Generalized nonorthogonal matrix elements: Burton, *J. Chem. Phys.* **154**, 144109 (2021),
+//!   [doi:10.1063/5.0045442](https://doi.org/10.1063/5.0045442); **157**, 204109 (2022),
+//!   [doi:10.1063/5.0122094](https://doi.org/10.1063/5.0122094).
 
 mod build;
 mod eval;

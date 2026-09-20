@@ -224,6 +224,10 @@ fn print_bapply_storage(
 /// - `world`: MPI communicator.
 /// # Returns
 /// - `(f64, Option<ExcitationHist>)`: Final projected energy and optional spawning histogram.
+/// # References
+/// - Polyak, *USSR Comput. Math. Math. Phys.* **4**, 1–17 (1964),
+///   [doi:10.1016/0041-5553(64)90137-5](https://doi.org/10.1016/0041-5553(64)90137-5),
+///   for the optional heavy-ball momentum update.
 /// # Panics
 /// - Panics for unsupported excitation generation, invalid restart intervals, nonorthogonal
 ///   parent orbitals, missing MO caches or Wick data, or an uninitialised momentum state.

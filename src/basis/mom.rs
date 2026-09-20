@@ -1,4 +1,10 @@
 // basis/mom.rs
+//! Maximum-overlap SCF state construction.
+//!
+//! # References
+//!
+//! - Gilbert *et al.*, *J. Phys. Chem. A* **112**, 13164 (2008),
+//!   [doi:10.1021/jp801738f](https://doi.org/10.1021/jp801738f).
 
 // Standard library imports.
 use std::collections::HashMap;

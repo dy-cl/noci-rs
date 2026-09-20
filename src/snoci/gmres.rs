@@ -1,4 +1,10 @@
 // snoci/gmres.rs
+//! Restarted GMRES for the NOCI-PT2 linear equations.
+//!
+//! # References
+//!
+//! - Saad and Schultz, *SIAM J. Sci. Stat. Comput.* **7**, 856 (1986),
+//!   [doi:10.1137/0907058](https://doi.org/10.1137/0907058).
 
 // Standard library imports.
 use std::time::Instant;

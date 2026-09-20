@@ -58,6 +58,10 @@ pub struct Coefficients<T: NOCIScalar> {
 /// - `(f64, f64)`: Overlap shift and identity shift.
 /// # Panics
 /// - Panics if a range propagator is passed to the deterministic path.
+/// # References
+/// - Baumgarten, *Nonorthogonal and Overcomplete Hilbert Spaces for Quantum Monte Carlo Methods*
+///   (M.Sc. thesis, Cambridge, 2023), for the unshifted, shifted, doubly shifted and
+///   difference-doubly-shifted propagator definitions.
 fn propagator_shifts(
     prop: &Propagator,
     es_s: f64,

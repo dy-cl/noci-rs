@@ -1,5 +1,10 @@
 // integrals/mod.rs
 //! In-memory atomic-orbital integral generation.
+//!
+//! # References
+//!
+//! - Integral evaluation uses libcint: Sun, *J. Comput. Chem.* **36**, 1664 (2015),
+//!   [doi:10.1002/jcc.23981](https://doi.org/10.1002/jcc.23981).
 
 // Standard library imports.
 use std::collections::HashMap;
@@ -165,6 +170,9 @@ fn atomic_core_density(
 /// - `basis`: Molecular basis-set name.
 /// # Returns:
 /// - `Array2<f64>`: Spin-summed SAD density matrix.
+/// # References
+/// - van Lenthe *et al.*, *J. Comput. Chem.* **27**, 926 (2006),
+///   [doi:10.1002/jcc.20393](https://doi.org/10.1002/jcc.20393).
 fn sad_density(
     mol: &CIntMol,
     basis: &str,

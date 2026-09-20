@@ -607,7 +607,7 @@ Defaults are defined by the input structures under
 
 `noci-rs` is not yet associated with a dedicated software publication. Until one is available, cite the repository and the relevant method publications listed below.
 
-Markers [1]–[21] refer to method publications; [S1]–[S2] refer to software and data publications.
+Markers [1]–[24] refer to method publications; [S1]–[S2] refer to software and data publications.
 
 ### Method References
 
@@ -651,7 +651,13 @@ Markers [1]–[21] refer to method publications; [S1]–[S2] refer to software a
 
 20. Alex J. W. Thom. Stochastic coupled cluster theory. *Physical Review Letters* **105**, 263004 (2010).
 
-21. Nicholas Lee and David P. Tew. Spin-free generalized normal ordered coupled cluster. *The Journal of Chemical Physics* **164**, 134118 (2026).
+21. Nicholas Lee and David P. Tew. Spin-free generalized normal ordered coupled cluster. *The Journal of Chemical Physics* **164**, 134118 (2026). [doi:10.1063/5.0311996](https://doi.org/10.1063/5.0311996).
+
+22. Per-Olov Löwdin. On the non-orthogonality problem connected with the use of atomic wave functions in the theory of molecules and crystals. *The Journal of Chemical Physics* **18**, 365–375 (1950). [doi:10.1063/1.1747632](https://doi.org/10.1063/1.1747632).
+
+23. Max A. Woodbury. *Inverting Modified Matrices*. Statistical Research Group, Princeton University, Memorandum Report 42 (1950).
+
+24. Boris T. Polyak. Some methods of speeding up the convergence of iteration methods. *USSR Computational Mathematics and Mathematical Physics* **4**, 1–17 (1964). [doi:10.1016/0041-5553(64)90137-5](https://doi.org/10.1016/0041-5553(64)90137-5).
 
 ### Software and Data References
 

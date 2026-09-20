@@ -66,6 +66,21 @@ use super::types::{FockMOCache, MOCache, NOCIScalar};
 In `mod.rs` files, keep the module-header order above. Private imports used only by the
 `mod.rs` implementation come after submodules and re-exports.
 
+## References
+
+Place literature references at the narrowest scope that covers their use:
+
+1. If an entire module or folder uses the same reference, put it in the owning `mod.rs` module
+   documentation, such as a `//! # References` section in `nonorthogonalwicks/eval/mod.rs`.
+2. If a reference applies to one implementation file, put it in that file's banner or top-level
+   module documentation.
+3. If a reference applies to one function, put it in that function's `///` documentation, using a
+   `# References` section.
+
+Do not repeat a reference in child files or functions when a module-level reference already covers
+the same implementation. Keep references close enough to the documented code that their scope is
+clear, and use the same LaTeX notation rules for equations in reference descriptions.
+
 ## Rust Function Documentation
 
 Every function should have a `///` documentation block. Function docs should look like the

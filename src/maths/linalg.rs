@@ -203,7 +203,7 @@ pub fn positive_subspace<T: StateScalar>(
     (vals, vecs)
 }
 
-/// Loewdin symmetric orthogonalizer, computes `X = S^{-1/2}`.
+/// Construct an orthogonalizer from the overlap matrix.
 /// If `project` is true, returns the rectangular orthogonalizer `X = U_+ Lambda_+^{-1/2}`.
 /// If `project` is false, returns the square orthogonalizer `X = U Lambda^{-1/2} U^\dagger`.
 /// # Arguments:
@@ -212,6 +212,9 @@ pub fn positive_subspace<T: StateScalar>(
 /// - `tol`: Tolerance for whether a number is considered zero.
 /// # Returns
 /// - `Array2<T>`: Orthogonalizer.
+/// # References
+/// - Löwdin's symmetric orthogonalization: *J. Chem. Phys.* **18**, 365–375 (1950),
+///   [doi:10.1063/1.1747632](https://doi.org/10.1063/1.1747632).
 pub fn loewdin_x<T: StateScalar>(
     s: &Array2<T>,
     project: bool,

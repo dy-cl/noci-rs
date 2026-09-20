@@ -1,4 +1,13 @@
 // stochastic/walkers.rs
+//! Signed-integer walker propagation for the unshifted, shifted, doubly shifted and
+//! difference-doubly-shifted coefficient propagators.
+//!
+//! # References
+//!
+//! - Fermion Monte Carlo walker dynamics: Booth, Thom, and Alavi, *J. Chem. Phys.* **131**,
+//!   054106 (2009), [doi:10.1063/1.3193710](https://doi.org/10.1063/1.3193710).
+//! - Baumgarten, *Nonorthogonal and Overcomplete Hilbert Spaces for Quantum Monte Carlo Methods*
+//!   (M.Sc. thesis, Cambridge, 2023).
 
 // Standard library imports.
 use std::path::Path;
