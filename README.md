@@ -1,4 +1,3 @@
-
 <p align="center">
   <img src="assets/logo.png" alt="noci-rs logo" width="180">
 </p>
@@ -67,40 +66,44 @@ The package uses libcint [S1] to generate molecular integrals and provides RHF a
 
 <p align="center">
   <img
-    src="assets/results/ErrorFromFCI.png"
+    src="assets/results/HChain_STO-3G_1_5_Compression.png"
     width="820"
   >
 </p>
 
-<p align="center">
-  <em>
-    Absolute correlation-energy error relative to FCI, |E<sub>corr</sub> − E<sub>corr</sub><sup>FCI</sup>|, as a function of determinant count for linear H<sub>n</sub> chains (n = 2, 4, 6, 8, 10) in the cc-pVDZ basis at an interatomic separation of 1.5 Å. NOCISD(3)-QMC and NOCISDT(3)-QMC improve upon truncated CI calculations of comparable excitation rank.
-  </em>
-</p>
+<div align="center">
+
+$$N_w\ \text{against}\ N_H$$
+
+*Shoulder population against hydrogen chain length for NOCISD(3)QMC and accuracy matched CIQMC in the STO-3G basis. The measured shoulders are extrapolated, demonstrating the large compression of NOCIQMC relative to CIQMC at comparable accuracy.*
+
+</div>
 
 <p align="center">
   <img
-    src="assets/results/F2_cc-pVDZ_NOCIPT2_Holomorphic_SCAN.png"
+    src="assets/results/H20_STO-3G_b-apply_NOCISD3_1_5.png"
     width="820"
   >
 </p>
 
-<p align="center">
-  <em>
-    NOCI-PT2(3) calculation for F<sub>2</sub> in the cc-pVDZ basis. The NOCI-PT2 method recovers much of the dynamical correlation absent from reference NOCI, shown by good agreement with the CCSD(T) energies.
-  </em>
-</p>
+<div align="center">
+
+$$E_{\mathrm{Proj}}(\tau)\quad\text{and}\quad E_s^S(\tau)$$
+
+*Typical evolution of the projected energy and shift for the H₂₀ linear chain at 1.5 Å in the STO-3G basis using the `b-apply` propagator. The same trajectories can also be seen for `s-apply`.*
+
+</div>
 
 <p align="center">
   <img
-    src="assets/results/LiH_cc-pVDZ_difference-doubly-shifted_2_8.png"
+    src="assets/results/F2_cc-pVDZ_NOCIPT2_Holomorphic_Scan.png"
     width="820"
   >
 </p>
 
 <p align="center">
   <em>
-    Historical LiH/cc-pVDZ NOCISD(3)-QMC calculation at 2.8 Å using a legacy difference-doubly-shifted propagator: projected energy and both population-control shifts.
+    NOCI-PT2(3) calculation for F<sub>2</sub> in the cc-pVDZ basis. The NOCI-PT2 method recovers much of the dynamical correlation absent from reference NOCI, shown by good agreement with the CCSD(T) energies. Use of the non-orthogonal Wick's theorem for matrix elements allows larger first-order spaces to be treated than was previously possible.
   </em>
 </p>
 
@@ -272,25 +275,25 @@ RAYON_NUM_THREADS=X mpirun -np X ./target/release/noci-rs h2.lua > output.out
 - Precomputed nonorthogonal Wick intermediates, held in memory or a disk-backed cache, for on-demand matrix elements [5, 12].
 - Deterministic propagation also supports holomorphic SCF states; stochastic propagation currently supports real SCF states only.
 
-The SApply and BApply propagators store the overlap-transformed population $\mathbf N=\mathbf S\mathbf c$ and begin from $\mathbf N_0=\mathbf S\mathbf c_0$. A sparse sample $\widetilde{\mathbf N}$ supplies each stochastic update.
+The SApply and BApply propagators store the overlap-transformed population $N_w=S_{wx}c_x$ and begin from $N_w(0)=S_{wx}c_x(0)$. A sparse sample $\widetilde N_y$ supplies each stochastic update.
 
 For SApply, the sampled residual and persistent update are
 
 $$
-\boldsymbol\Delta \simeq -\Delta\tau(\mathbf H-E_{\mathrm s}\mathbf S)\widetilde{\mathbf N},
+\Delta b_x \simeq -\Delta\tau[H_{xy}-E_{\mathrm s}S_{xy}]\widetilde N_y,
 \qquad
-\mathbf N' = \mathbf N+\mathbf S\boldsymbol\Delta.
+N_w' = N_w+S_{wx}\Delta b_x.
 $$
 
-For BApply, an auxiliary orthogonal-space factor $\mathbf B$ obeys $\mathbf B^\dagger\mathbf B=\mathbf S$ and $\mathbf B^\dagger\hat{\mathbf H}\mathbf B=\mathbf H$. Its sampled update is
+For BApply, an auxiliary orthogonal-space factor $B_{pw}$ obeys $B_{pw}^*B_{px}=S_{wx}$ and $B_{pw}^*H_{pq}B_{qx}=H_{wx}$, where $p$ and $q$ index the auxiliary orthogonal space. Its sampled update is
 
 $$
-\boldsymbol\chi \simeq -\Delta\tau(\hat{\mathbf H}-E_{\mathrm s}\mathbf I)\mathbf B\widetilde{\mathbf N},
+\chi_p \simeq -\Delta\tau[H_{pq}-E_{\mathrm s}\delta_{pq}]B_{qy}\widetilde N_y,
 \qquad
-\mathbf N' = \mathbf N+\mathbf B^\dagger\boldsymbol\chi.
+N_w' = N_w+B_{pw}^*\chi_p.
 $$
 
-Both updates keep $\mathbf N$ in $\operatorname{range}(\mathbf S)$, avoiding population in the overlap null space. SApply uses the NOCI basis directly and supports overlap-weighted generation, but its outer $\mathbf S$ slows small range directions in an ill-conditioned basis. BApply avoids that extra overlap action by sampling an auxiliary NOCI basis.
+Both updates keep $N_w$ in $\text{range}(S_{wx})$, avoiding population in the overlap null space. SApply uses the NOCI basis directly and supports overlap-weighted generation, but its outer $S_{wx}$ action slows small range directions in an ill-conditioned basis. BApply avoids that extra overlap action by sampling an auxiliary NOCI basis.
 
 ### NOCC and NOCCMC
 
@@ -590,7 +593,7 @@ sizes. Pivotal FRI preserves conditional expectation; variance reduction is not 
 `sapply_factor_tables` and `bapply_factor_tables` select factor-table storage. Range output columns
 are `NRange`, `NRangeRef`, `NSample`, and `NSampleOcc`. SApply/BApply restarts are compatible through
 shared range representation. Legacy propagators remain for reproducibility; coefficient population
-can accumulate meaningless $\operatorname{null}(\mathbf S)$ population in overcomplete spaces.
+can accumulate meaningless $\text{null}(S_{wx})$ population in overcomplete spaces.
 
 ### Selected NOCI and NOCI-PT2
 
