@@ -91,7 +91,7 @@ pub(super) fn extend_rdm_d<T: NOCIScalar>(
 
     // Construct the transformations connecting the external RDM basis to the compact row and
     // column orbital spaces.
-    let (row_c, col_c) = contraction_orbitals(l_c, g_c, w.nocc);
+    let (row_c, col_c) = super::super::build::contraction_orbitals(l_c, g_c, w.nocc);
 
     // Form the external-row/compact-column and compact-row/external-column contraction blocks:
     // `\mathbf D_{\mathrm{RDM}}^{(m)}\mathbf C_{\mathrm{col}}` and

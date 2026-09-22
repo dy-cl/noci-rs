@@ -10,9 +10,7 @@ use ndarray_linalg::{Eigh, UPLO};
 // Crate-root imports.
 use crate::AoData;
 use crate::maths::{ERIScalar, adjoint, loewdin_x, real2_as};
-use crate::noci::{
-    NOCIData, NOCIIndex, NOCIScalar, NOCISpace, build_noci_s, noci_density, occ_coeffs,
-};
+use crate::noci::{NOCIData, NOCIIndex, NOCIScalar, NOCISpace, build_noci_s, noci_density};
 
 /// Stores a common orthonormal natural-orbital basis and its occupation partition.
 pub(crate) struct NOCINaturalOrbitals {

@@ -40,6 +40,12 @@ pub struct SameSpinBuild<T: NOCIScalar> {
     pub x: [Array2<T>; 2],
     /// `Fundamental contraction matrices Y^{(m_i)} for m_i = 0 and m_i = 1.`
     pub y: [Array2<T>; 2],
+    /// `Fundamental contraction matrices X^{(m_i)} represented in the external RDM basis.`
+    #[cfg(feature = "nocc")]
+    pub xrdm: [Array2<T>; 2],
+    /// `Fundamental contraction matrices Y^{(m_i)} represented in the external RDM basis.`
+    #[cfg(feature = "nocc")]
+    pub yrdm: [Array2<T>; 2],
     /// `Scalar Fock one-body intermediates {}^x F_0^{(m_i)}.`
     pub f0f: [T; 2],
     /// `Scalar Hamiltonian one-body intermediates {}^x F_0^{(m_i)}.`

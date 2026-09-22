@@ -41,9 +41,9 @@ pub(crate) fn rdm2<T: NOCIScalar>(
 
     // Accumulate coefficient-weighted pair RDMs and the reference norm
     // `\sum_{xw} c_x^L c_w^R S_{xw}` before normalisation.
-    for x in 0..data.basis.len() {
-        for w in 0..data.basis.len() {
-            let pair = DetPair::new(&data.basis[x], &data.basis[w]);
+    for x in 0..data.space.len() {
+        for w in 0..data.space.len() {
+            let pair = DetPair::new(crate::noci::NOCIIndex(x), crate::noci::NOCIIndex(w));
             let weight = coeff_l[x] * coeff_r[w];
 
             let (sxw, gxw) = if data.input.wicks.enabled && data.input.wicks.compare {
@@ -89,13 +89,13 @@ pub(crate) fn rdm2<T: NOCIScalar>(
 /// - `(T, RDM2<T>)`: Pair overlap and spin-free two-body RDM.
 fn rdm2_pair<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     scratch: Option<&mut WickScratchSpin<T>>,
 ) -> (T, RDM2<T>) {
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
+    let lstate = data.space.state(pair.ldet);
+    let gstate = data.space.state(pair.gdet);
 
-    if ldet.parent != gdet.parent && data.input.wicks.enabled {
+    if lstate.parent != gstate.parent && data.input.wicks.enabled {
         rdm2_pair_wicks(
             data,
             pair,
@@ -116,7 +116,7 @@ fn rdm2_pair<T: NOCIScalar>(
 ///   path, total discrepancy from the naive path, and max elementwise discrepancy.
 fn compare_rdm2_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     scratch: &mut WickScratchSpin<T>,
 ) -> ((T, RDM2<T>), (f64, f64)) {
     let (sn, g2n) = rdm2_pair_naive(data, pair);
@@ -142,16 +142,16 @@ fn compare_rdm2_pair_wicks_naive<T: NOCIScalar>(
 /// - `(T, RDM2<T>)`: Pair overlap and spin-free two-body RDM.
 fn rdm2_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
 ) -> (T, RDM2<T>) {
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
+    let ldet = super::common::resolve_rdm_determinant(data.space, pair.ldet);
+    let gdet = super::common::resolve_rdm_determinant(data.space, pair.gdet);
     let n = data.ao.h.nrows();
 
-    let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-    let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-    let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-    let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
+    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
+    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
+    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
@@ -234,12 +234,12 @@ fn rdm2_pair_naive<T: NOCIScalar>(
 /// - `(T, RDM2<T>)`: Pair overlap and spin-free two-body RDM.
 fn rdm2_pair_wicks<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM2<T>) {
     // Resolve the determinant pair, parent Wick data, and excitation ranks.
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
+    let ldet = super::common::resolve_rdm_determinant(data.space, pair.ldet);
+    let gdet = super::common::resolve_rdm_determinant(data.space, pair.gdet);
     let n = data.ao.h.nrows();
 
     let wicks = data.wicks.unwrap();

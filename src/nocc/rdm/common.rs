@@ -5,7 +5,58 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::maths::det_occupied_minor_dynamic;
-use crate::noci::{DetPair, NOCIScalar, occ_coeffs};
+use crate::noci::{NOCIScalar, occ_coeffs};
+
+/// Determinant data required by the NOCC RDM evaluators, resolved from the authoritative
+/// NOCI space.
+pub(super) struct RDMDeterminantView<'a, T: NOCIScalar> {
+    /// Parent-reference index used to select ordered Wick intermediates.
+    pub(super) parent: usize,
+    /// Alpha-spin occupation of the retained determinant.
+    pub(super) oa: u128,
+    /// Beta-spin occupation of the retained determinant.
+    pub(super) ob: u128,
+    /// Alpha-spin parent orbital coefficients.
+    pub(super) ca: &'a std::sync::Arc<Array2<T>>,
+    /// Beta-spin parent orbital coefficients.
+    pub(super) cb: &'a std::sync::Arc<Array2<T>>,
+    /// Alpha- and beta-spin excitations relative to the parent determinant.
+    pub(super) excitation: crate::Excitation,
+    /// Alpha-spin fermionic excitation phase.
+    pub(super) pha: f64,
+    /// Beta-spin fermionic excitation phase.
+    pub(super) phb: f64,
+}
+
+/// Resolve a retained determinant into the orbital and excitation data required by the RDM code.
+/// # Arguments:
+/// - `space`: Authoritative retained NOCI determinant space.
+/// - `index`: Retained determinant index to resolve.
+/// # Returns
+/// - `RDMDeterminantView<'a, T>`: Borrowed orbital data and copied determinant metadata.
+pub(super) fn resolve_rdm_determinant<'a, T: NOCIScalar>(
+    space: &'a crate::noci::NOCISpace<T>,
+    index: crate::noci::NOCIIndex,
+) -> RDMDeterminantView<'a, T> {
+    let state = space.state(index);
+    let parent = space.parent(index);
+    let alpha = space.alpha(index);
+    let beta = space.beta(index);
+
+    RDMDeterminantView {
+        parent: state.parent,
+        oa: alpha.occupation,
+        ob: beta.occupation,
+        ca: &parent.ca,
+        cb: &parent.cb,
+        excitation: crate::Excitation {
+            alpha: alpha.excitation,
+            beta: beta.excitation,
+        },
+        pha: alpha.reduced.phase,
+        phb: beta.reduced.phase,
+    }
+}
 
 /// Split creation and annihilation indices by spin assignment mask.
 /// # Arguments:
@@ -40,20 +91,20 @@ fn split_spin_assignment(
 
 /// Calculate one spin-assignment contribution to a spin-free RDM element by determinant expansion.
 /// # Arguments:
-/// - `pair`: Pair of determinants whose transition RDM element is to be evaluated.
+/// - `ldet`: Resolved bra determinant data.
+/// - `gdet`: Resolved ket determinant data.
 /// - `ps`: Creation indices in the full RDM basis.
 /// - `qs`: Annihilation indices in the full RDM basis.
 /// - `mask`: Spin assignment mask, where bit `i` selects beta for operator `i`.
 /// # Returns
 /// - `T`: Spin-assignment contribution to the spin-free RDM element.
 pub(super) fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
-    pair: DetPair<'_, T>,
+    ldet: &RDMDeterminantView<'_, T>,
+    gdet: &RDMDeterminantView<'_, T>,
     ps: &[usize],
     qs: &[usize],
     mask: usize,
 ) -> T {
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
     let zero = <T as From<f64>>::from(0.0);
 
     // Fixed spin assignments factor into independent `\alpha` and `\beta`
@@ -70,10 +121,10 @@ pub(super) fn spin_assignment_rdm_element_naive<T: NOCIScalar>(
         return zero;
     }
 
-    let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-    let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-    let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-    let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
+    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
+    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
+    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
 
     let va = same_spin_rdm_element_naive(&l_ca_occ, &g_ca_occ, nela, &pa, &qa);
     let vb = same_spin_rdm_element_naive(&l_cb_occ, &g_cb_occ, nelb, &pb, &qb);

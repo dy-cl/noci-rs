@@ -160,7 +160,10 @@ fn print_misc_diagnostics(
 
     // Compare the NOCI Rayleigh quotient and lowest generalised eigenvalue
     // with the energy reconstructed from the one- and two-body RDMs.
-    let (h, s, _) = build_noci_hs(nodata, nodata.basis, nodata.basis, true);
+    let indices = (0..nodata.space.len())
+        .map(crate::noci::NOCIIndex)
+        .collect::<Vec<_>>();
+    let (h, s, _) = build_noci_hs(nodata, &indices, &indices, true);
     let e_coeff = coeffs.dot(&h.dot(coeffs)) / coeffs.dot(&s.dot(coeffs));
     let (evals, _) = general_evp(&h, &s, true, post.tol);
 

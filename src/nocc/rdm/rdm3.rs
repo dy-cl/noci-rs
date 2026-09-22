@@ -46,9 +46,9 @@ pub(crate) fn rdm3<T: NOCIScalar>(
 
     // Sum each determinant-pair contribution with weight `c_x^L c_w^R`,
     // recording `\sum_{xw} c_x^L c_w^R S_{xw}` for final normalisation.
-    for x in 0..data.basis.len() {
-        for w in 0..data.basis.len() {
-            let pair = DetPair::new(&data.basis[x], &data.basis[w]);
+    for x in 0..data.space.len() {
+        for w in 0..data.space.len() {
+            let pair = DetPair::new(crate::noci::NOCIIndex(x), crate::noci::NOCIIndex(w));
             let weight = coeff_l[x] * coeff_r[w];
 
             let (sxw, gxw) = if data.input.wicks.enabled && data.input.wicks.compare {
@@ -103,7 +103,7 @@ pub(crate) fn rdm3<T: NOCIScalar>(
 ///   discrepancy.
 fn compare_rdm3_pair_wicks_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     active: &[usize],
     scratch: &mut WickScratchSpin<T>,
 ) -> ((T, RDM3<T>), (f64, f64)) {
@@ -131,17 +131,17 @@ fn compare_rdm3_pair_wicks_naive<T: NOCIScalar>(
 /// - `(T, RDM3<T>)`: Pair overlap and active-space spin-free three-body RDM.
 fn rdm3_pair_naive<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     active: &[usize],
 ) -> (T, RDM3<T>) {
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
+    let ldet = super::common::resolve_rdm_determinant(data.space, pair.ldet);
+    let gdet = super::common::resolve_rdm_determinant(data.space, pair.gdet);
     let n = active.len();
 
-    let l_ca_occ = occ_coeffs(&ldet.ca, ldet.oa);
-    let g_ca_occ = occ_coeffs(&gdet.ca, gdet.oa);
-    let l_cb_occ = occ_coeffs(&ldet.cb, ldet.ob);
-    let g_cb_occ = occ_coeffs(&gdet.cb, gdet.ob);
+    let l_ca_occ = occ_coeffs(ldet.ca.as_ref(), ldet.oa);
+    let g_ca_occ = occ_coeffs(gdet.ca.as_ref(), gdet.oa);
+    let l_cb_occ = occ_coeffs(ldet.cb.as_ref(), ldet.ob);
+    let g_cb_occ = occ_coeffs(gdet.cb.as_ref(), gdet.ob);
 
     let pa = build_s_pair(&l_ca_occ, &g_ca_occ, &data.ao.s, data.tol);
     let pb = build_s_pair(&l_cb_occ, &g_cb_occ, &data.ao.s, data.tol);
@@ -166,7 +166,8 @@ fn rdm3_pair_naive<T: NOCIScalar>(
                             let mut val = <T as From<f64>>::from(0.0);
 
                             for mask in 0..8 {
-                                val += spin_assignment_rdm_element_naive(pair, &ps, &qs, mask);
+                                val +=
+                                    spin_assignment_rdm_element_naive(&ldet, &gdet, &ps, &qs, mask);
                             }
 
                             let i = (((((a * n + b) * n + c) * n + d) * n + e) * n) + f;
@@ -196,13 +197,13 @@ fn rdm3_pair_naive<T: NOCIScalar>(
 /// - `(T, RDM3<T>)`: Pair overlap and active-space spin-free three-body RDM.
 fn rdm3_pair_wicks<T: NOCIScalar>(
     data: &NOCIData<'_, T>,
-    pair: DetPair<'_, T>,
+    pair: DetPair,
     active: &[usize],
     scratch: &mut WickScratchSpin<T>,
 ) -> (T, RDM3<T>) {
     // Resolve the determinant pair and its parent-pair Wick intermediates.
-    let ldet = pair.ldet;
-    let gdet = pair.gdet;
+    let ldet = super::common::resolve_rdm_determinant(data.space, pair.ldet);
+    let gdet = super::common::resolve_rdm_determinant(data.space, pair.gdet);
     let n = active.len();
 
     let wicks = data.wicks.unwrap();
