@@ -29,6 +29,11 @@ fn data(
 }
 
 /// Build dense spin-free amplitude tensors.
+/// Doubles enter as `T_2 = \tfrac12 \sum_X t_X \hat E_X` over the excitation list. The generated
+/// tables use a pair-symmetric `\bar t` with `T_2 = \tfrac12 \sum \bar t^{rs}_{pq} \hat E^{pq}_{rs}`
+/// over all orbitals, so each amplitude is shared between `X` and its pair swap
+/// `\hat E^{qp}_{sr} = \hat E^{pq}_{rs}`: `\bar t_X = \bar t_{PX} = \tfrac12 (t_X + t_{PX})`, where
+/// `t_{PX}` is zero when the swapped excitation is not in the list.
 /// # Arguments:
 /// - `n`: Number of molecular orbitals.
 /// - `excitations`: Raw spin-free excitation list defining the amplitude ordering.
@@ -49,7 +54,8 @@ fn amps(
                 t1[(q, p)] = amplitudes[nu];
             }
             Excitation::Double { p, q, r, s } => {
-                t2[(r, s, p, q)] = amplitudes[nu];
+                t2[(r, s, p, q)] += 0.5 * amplitudes[nu];
+                t2[(s, r, q, p)] += 0.5 * amplitudes[nu];
             }
         }
     }

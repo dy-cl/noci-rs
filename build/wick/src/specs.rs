@@ -1,7 +1,16 @@
 // specs.rs
+//! Orbital spaces, spin-free excitation classes and FOIS metric blocks.
 
-use crate::gno::{e1, e2};
-use crate::ir::{Group, Idx, Product, Space};
+/// Orbital reference space.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub enum Space {
+    /// Core orbital.
+    Core,
+    /// Active orbital.
+    Active,
+    /// Virtual orbital.
+    Virtual,
+}
 
 /// One overlap block metadata row.
 #[derive(Clone, Copy, Debug)]
@@ -23,19 +32,11 @@ pub struct BlockSpec {
 pub struct ExcSpec {
     /// Excitation class name.
     pub name: &'static str,
-    /// Free-index names in annihilator-first order.
+    /// Free-index names, created indices first.
     pub f: &'static [&'static str],
 }
 
-/// One concrete residual projector.
-#[derive(Clone, Copy, Debug)]
-pub struct Exc {
-    /// Excitation class name.
-    pub class: &'static str,
-    /// Free-index names in annihilator-first order.
-    pub f: &'static [&'static str],
-}
-
+/// FOIS metric blocks of Lee and Tew Appendix C, extended by the `C \to V` couplings.
 pub const BLOCKS: &[BlockSpec] = &[
     BlockSpec {
         name: "C1",
@@ -172,6 +173,7 @@ pub const BLOCKS: &[BlockSpec] = &[
     },
 ];
 
+/// Spin-free excitation classes with free-index names in created-then-annihilated order.
 pub const EXCS: &[ExcSpec] = &[
     ExcSpec {
         name: "CToA",
@@ -227,11 +229,13 @@ pub const EXCS: &[ExcSpec] = &[
     },
 ];
 
-/// Find one overlap block specification.
+/// Find one metric block specification.
 /// # Arguments:
 /// - `name`: Block name.
 /// # Returns:
 /// - `BlockSpec`: Matching block specification.
+/// # Panics
+/// - Panics if `name` is not a known block.
 pub fn block(name: &str) -> BlockSpec {
     *BLOCKS
         .iter()
@@ -239,280 +243,16 @@ pub fn block(name: &str) -> BlockSpec {
         .unwrap_or_else(|| panic!("unknown block {name}"))
 }
 
-/// Return one residual projector.
-/// # Arguments:
-/// - `name`: Excitation class name or metric block name.
-/// # Returns:
-/// - `Exc`: Excitation projector.
-pub fn exc(name: &str) -> Exc {
-    if let Some(x) = EXCS.iter().find(|x| x.name == name) {
-        return Exc {
-            class: x.name,
-            f: x.f,
-        };
-    }
-
-    let x = block(name);
-    Exc {
-        class: x.left,
-        f: x.lf,
-    }
-}
-
-/// Build the daggered residual projector.
-/// # Arguments:
-/// - `x`: Excitation projector.
-/// - `g`: GNO group id.
-/// # Returns:
-/// - `Product`: One-group projector product.
-pub fn bra(
-    x: &Exc,
-    g: usize,
-) -> Product {
-    Product {
-        groups: vec![left(x.class, x.f, g)],
-    }
-}
-
-/// Build a left metric group.
-/// # Arguments:
-/// - `class`: Excitation class name.
-/// - `f`: Free-index names.
-/// - `g`: GNO group id.
-/// # Returns:
-/// - `Group`: Spin-expanded GNO group.
-pub fn left(
-    class: &str,
-    f: &[&'static str],
-    g: usize,
-) -> Group {
-    match f.len() {
-        2 => e1(idx(f[1]), idx(f[0]), g),
-        4 => e2(idx(f[2]), idx(f[3]), idx(f[0]), idx(f[1]), g),
-        _ => panic!("unsupported left excitation {class}"),
-    }
-}
-
-/// Build a right metric group.
-/// # Arguments:
-/// - `class`: Excitation class name.
-/// - `f`: Free-index names.
-/// - `g`: GNO group id.
-/// # Returns:
-/// - `Group`: Spin-expanded GNO group.
-pub fn right(
-    class: &str,
-    f: &[&'static str],
-    g: usize,
-) -> Group {
-    match f.len() {
-        2 => e1(idx(f[0]), idx(f[1]), g),
-        4 => e2(idx(f[0]), idx(f[1]), idx(f[2]), idx(f[3]), g),
-        _ => panic!("unsupported right excitation {class}"),
-    }
-}
-
-/// Build one metric block product from metadata.
-/// # Arguments:
-/// - `name`: Block name.
-/// # Returns:
-/// - `Product`: GNO product for this metric block.
-pub fn product(name: &str) -> Product {
-    let x = block(name);
-
-    Product {
-        groups: vec![left(x.left, x.lf, 0), right(x.right, x.rf, 1)],
-    }
-}
-
-/// Infer index space from symbolic name.
+/// Return the orbital space of one free-index name.
+/// Core indices are `i, j, k, l`, virtual indices `a, b, c, d`, and all others are active.
 /// # Arguments:
 /// - `name`: Index name.
 /// # Returns:
 /// - `Space`: Orbital space.
 pub fn space(name: &str) -> Space {
-    if name.starts_with("hc")
-        || name.starts_with("tc")
-        || name.starts_with("lc")
-        || name.starts_with("rc")
-    {
-        return Space::Core;
-    }
-
-    if name.starts_with("ha")
-        || name.starts_with("ta")
-        || name.starts_with("la")
-        || name.starts_with("ra")
-    {
-        return Space::Active;
-    }
-
-    if name.starts_with("hv")
-        || name.starts_with("tv")
-        || name.starts_with("lv")
-        || name.starts_with("rv")
-    {
-        return Space::Virtual;
-    }
-
     match name {
         "i" | "j" | "k" | "l" => Space::Core,
         "a" | "b" | "c" | "d" => Space::Virtual,
         _ => Space::Active,
     }
-}
-
-/// Construct an index from a name.
-/// # Arguments:
-/// - `name`: Index name.
-/// # Returns:
-/// - `Idx`: Index with inferred space.
-pub fn idx(name: &'static str) -> Idx {
-    Idx {
-        name,
-        space: space(name),
-    }
-}
-
-/// Orbital-space balance vector in `(core, active, virtual)` order.
-pub type Balance = [i8; 3];
-
-/// Return the slot of an orbital space in a balance vector.
-/// # Arguments:
-/// - `x`: Orbital space.
-/// # Returns:
-/// - `usize`: Balance-vector slot.
-fn sid(x: Space) -> usize {
-    match x {
-        Space::Core => 0,
-        Space::Active => 1,
-        Space::Virtual => 2,
-    }
-}
-
-/// Add two orbital-space balances.
-/// # Arguments:
-/// - `a`: First balance.
-/// - `b`: Second balance.
-/// # Returns:
-/// - `Balance`: Elementwise sum.
-pub fn add(
-    mut a: Balance,
-    b: Balance,
-) -> Balance {
-    for i in 0..3 {
-        a[i] += b[i];
-    }
-
-    a
-}
-
-/// Negate an orbital-space balance.
-/// # Arguments:
-/// - `a`: Input balance.
-/// # Returns:
-/// - `Balance`: Elementwise negation.
-pub fn neg(a: Balance) -> Balance {
-    [-a[0], -a[1], -a[2]]
-}
-
-/// Compute the orbital-space balance of an excitation pattern.
-/// # Arguments:
-/// - `xs`: Free-index names, with creation labels first and annihilation labels second.
-/// - `daggered`: Whether to compute the balance of the daggered operator.
-/// # Returns:
-/// - `Balance`: Net `(core, active, virtual)` balance.
-pub fn bal(
-    xs: &[&'static str],
-    daggered: bool,
-) -> Balance {
-    let mut out = [0, 0, 0];
-    let r = xs.len() / 2;
-
-    for &x in &xs[..r] {
-        let s = sid(space(x));
-        out[s] += if daggered { -1 } else { 1 };
-    }
-
-    for &x in &xs[r..] {
-        let s = sid(space(x));
-        out[s] += if daggered { 1 } else { -1 };
-    }
-
-    out
-}
-
-/// Construct a Hamiltonian dummy-index name.
-/// # Arguments:
-/// - `space`: Orbital space.
-/// - `slot`: Dummy slot.
-/// # Returns:
-/// - `&'static str`: Hamiltonian dummy-index name.
-pub fn hname(
-    space: Space,
-    slot: usize,
-) -> &'static str {
-    const HC: [&str; 4] = ["hc0", "hc1", "hc2", "hc3"];
-    const HA: [&str; 4] = ["ha0", "ha1", "ha2", "ha3"];
-    const HV: [&str; 4] = ["hv0", "hv1", "hv2", "hv3"];
-
-    match space {
-        Space::Core => HC[slot],
-        Space::Active => HA[slot],
-        Space::Virtual => HV[slot],
-    }
-}
-
-// Construct a cluster dummy-index name.
-/// # Arguments:
-/// - `space`: Orbital space.
-/// - `slot`: Dummy-index slot.
-/// - `tag`: Cluster tag, one of `'t'`, `'l'`, or `'r'`.
-/// # Returns:
-/// - `&'static str`: Cluster dummy-index name.
-pub fn tname(
-    space: Space,
-    slot: usize,
-    tag: char,
-) -> &'static str {
-    const TC: [&str; 4] = ["tc0", "tc1", "tc2", "tc3"];
-    const TA: [&str; 4] = ["ta0", "ta1", "ta2", "ta3"];
-    const TV: [&str; 4] = ["tv0", "tv1", "tv2", "tv3"];
-
-    const LC: [&str; 4] = ["lc0", "lc1", "lc2", "lc3"];
-    const LA: [&str; 4] = ["la0", "la1", "la2", "la3"];
-    const LV: [&str; 4] = ["lv0", "lv1", "lv2", "lv3"];
-
-    const RC: [&str; 4] = ["rc0", "rc1", "rc2", "rc3"];
-    const RA: [&str; 4] = ["ra0", "ra1", "ra2", "ra3"];
-    const RV: [&str; 4] = ["rv0", "rv1", "rv2", "rv3"];
-
-    match (tag, space) {
-        ('t', Space::Core) => TC[slot],
-        ('t', Space::Active) => TA[slot],
-        ('t', Space::Virtual) => TV[slot],
-        ('l', Space::Core) => LC[slot],
-        ('l', Space::Active) => LA[slot],
-        ('l', Space::Virtual) => LV[slot],
-        ('r', Space::Core) => RC[slot],
-        ('r', Space::Active) => RA[slot],
-        ('r', Space::Virtual) => RV[slot],
-        _ => panic!("unsupported cluster tag {tag}"),
-    }
-}
-
-/// Convert excitation labels into cluster dummy labels.
-/// # Arguments:
-/// - `xs`: Excitation-class free-index names.
-/// - `tag`: Cluster tag, one of `'t'`, `'l'`, or `'r'`.
-/// # Returns:
-/// - `Vec<&'static str>`: Cluster dummy labels with matching spaces.
-pub fn tlabels(
-    xs: &[&'static str],
-    tag: char,
-) -> Vec<&'static str> {
-    xs.iter()
-        .enumerate()
-        .map(|(i, &x)| tname(space(x), i, tag))
-        .collect()
 }

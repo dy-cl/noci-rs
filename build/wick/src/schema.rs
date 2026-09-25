@@ -10,23 +10,6 @@ pub type Coeff = [i64; 2];
 /// Kronecker delta factor.
 pub type Delta = [u16; 2];
 
-/// Compact generated residual term table.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ResidualTermSet {
-    /// Schema version.
-    pub version: u32,
-    /// Residual order in cluster amplitudes.
-    pub order: u8,
-    /// Orbital-space ids.
-    #[serde(rename = "spaceKinds")]
-    pub space_kinds: BTreeMap<String, u8>,
-    /// Tensor-kind ids.
-    #[serde(rename = "tensorKinds")]
-    pub tensor_kinds: BTreeMap<String, u8>,
-    /// Residual classes.
-    pub classes: BTreeMap<String, ResidualClassTerms>,
-}
-
 /// Compact terms for one residual class.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResidualClassTerms {

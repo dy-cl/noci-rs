@@ -1,0 +1,5 @@
+-1/2 R^{a2,v0}_{a0,a1} eta1^{a3}_{a2} gamma1^{a1}_{a4} gamma1^{a0}_{a5} v^{a4,a5}_{a3,v0}
++1/4 R^{a2,v0}_{a0,a1} eta1^{a3}_{a2} lambda2^{a0,a1}_{a4,a5} v^{a4,a5}_{a3,v0}
++1/2 R^{a2,v0}_{a0,a1} f^{a3}_{v0} lambda2^{a0,a1}_{a2,a3}
+-R^{a2,v0}_{a0,a1} gamma1^{a1}_{a3} lambda2^{a0,a5}_{a2,a4} v^{a3,a4}_{a5,v0}
+-1/4 R^{a2,v0}_{a0,a1} lambda3^{a0,a1,a5}_{a2,a3,a4} v^{a3,a4}_{a5,v0}

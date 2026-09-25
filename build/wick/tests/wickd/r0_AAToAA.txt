@@ -1,0 +1,14 @@
+1/4 R^{a2,a3}_{a0,a1} eta1^{a4}_{a3} eta1^{a5}_{a2} gamma1^{a1}_{a6} gamma1^{a0}_{a7} v^{a6,a7}_{a4,a5}
+-1/8 R^{a2,a3}_{a0,a1} eta1^{a4}_{a3} eta1^{a5}_{a2} lambda2^{a0,a1}_{a6,a7} v^{a6,a7}_{a4,a5}
++1/2 R^{a2,a3}_{a0,a1} eta1^{a4}_{a3} f^{a5}_{a4} lambda2^{a0,a1}_{a2,a5}
++R^{a2,a3}_{a0,a1} eta1^{a4}_{a3} gamma1^{a1}_{a5} lambda2^{a0,a7}_{a2,a6} v^{a5,a6}_{a4,a7}
++1/4 R^{a2,a3}_{a0,a1} eta1^{a4}_{a3} lambda3^{a0,a1,a7}_{a2,a5,a6} v^{a5,a6}_{a4,a7}
+-1/2 R^{a2,a3}_{a0,a1} f^{a5}_{a4} gamma1^{a1}_{a5} lambda2^{a0,a4}_{a2,a3}
++1/4 R^{a2,a3}_{a0,a1} f^{a5}_{a4} lambda3^{a0,a1,a4}_{a2,a3,a5}
+-1/8 R^{a2,a3}_{a0,a1} gamma1^{a1}_{a4} gamma1^{a0}_{a5} lambda2^{a6,a7}_{a2,a3} v^{a4,a5}_{a6,a7}
+-1/4 R^{a2,a3}_{a0,a1} gamma1^{a1}_{a4} lambda3^{a0,a6,a7}_{a2,a3,a5} v^{a4,a5}_{a6,a7}
++1/2 R^{a2,a3}_{a0,a1} lambda2^{a1,a5}_{a3,a4} lambda2^{a0,a7}_{a2,a6} v^{a4,a6}_{a5,a7}
++1/4 R^{a2,a3}_{a0,a1} lambda2^{a5,a6}_{a3,a4} lambda2^{a0,a1}_{a2,a7} v^{a4,a7}_{a5,a6}
++1/16 R^{a2,a3}_{a0,a1} lambda2^{a0,a1}_{a4,a5} lambda2^{a6,a7}_{a2,a3} v^{a4,a5}_{a6,a7}
++1/4 R^{a2,a3}_{a0,a1} lambda2^{a1,a6}_{a4,a5} lambda2^{a0,a7}_{a2,a3} v^{a4,a5}_{a6,a7}
++1/16 R^{a2,a3}_{a0,a1} lambda4^{a0,a1,a6,a7}_{a2,a3,a4,a5} v^{a4,a5}_{a6,a7}

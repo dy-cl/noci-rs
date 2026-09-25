@@ -1,17 +1,105 @@
 // target.rs
+//! Appendix C metric blocks of Lee and Tew, used to check the generated FOIS metric.
+//!
+//! Each block is written over the free indices of its left and right excitations. Generated
+//! and target blocks are compared in canonical form, modulo the spin-\tfrac12 cumulant
+//! relations under which different spin-free representations of one block are equal.
+//!
+//! # References
+//!
+//! - Lee and Tew, *Spin-free Generalised Normal Ordered Coupled Cluster*, arXiv:2507.13472
+//!   (2025), Appendix C.
 
-use crate::ir::{Delta, Expr, Product, Rational, Space, Tensor, TensorKind, Term, a, c, v};
-use rayon::prelude::*;
+// External crate imports.
+use num_rational::Ratio;
+use smallvec::SmallVec;
 
-const SPACES: [Space; 3] = [Space::Core, Space::Active, Space::Virtual];
+// Crate-root imports.
+use crate::canon::{self, Factor, Form, Key};
+use crate::specs::{self, Space};
+use crate::{emit, reduce, spin};
+
+/// One named orbital index.
+#[derive(Clone, Copy, Debug)]
+struct Idx {
+    /// Symbolic name.
+    name: &'static str,
+    /// Orbital space.
+    space: Space,
+}
+
+/// One Kronecker delta.
+#[derive(Clone, Copy, Debug)]
+struct Delta(Idx, Idx);
+
+/// One spin-free tensor factor.
+#[derive(Clone, Debug)]
+struct Tensor {
+    /// Spin-free tensor kind id.
+    kind: u8,
+    /// Upper indices.
+    upper: Vec<Idx>,
+    /// Lower indices.
+    lower: Vec<Idx>,
+}
+
+/// One target term.
+#[derive(Clone, Debug)]
+struct Term {
+    /// Rational coefficient.
+    coeff: Ratio<i64>,
+    /// Delta factors.
+    deltas: Vec<Delta>,
+    /// Tensor factors.
+    tensors: Vec<Tensor>,
+}
+
+/// Target expression as a sum of terms.
+type Expr = Vec<Term>;
+
+/// Build a core index.
+/// # Arguments:
+/// - `name`: Symbolic name.
+/// # Returns:
+/// - `Idx`: Core index.
+fn c(name: &'static str) -> Idx {
+    Idx {
+        name,
+        space: Space::Core,
+    }
+}
+
+/// Build an active index.
+/// # Arguments:
+/// - `name`: Symbolic name.
+/// # Returns:
+/// - `Idx`: Active index.
+fn a(name: &'static str) -> Idx {
+    Idx {
+        name,
+        space: Space::Active,
+    }
+}
+
+/// Build a virtual index.
+/// # Arguments:
+/// - `name`: Symbolic name.
+/// # Returns:
+/// - `Idx`: Virtual index.
+fn v(name: &'static str) -> Idx {
+    Idx {
+        name,
+        space: Space::Virtual,
+    }
+}
 
 /// Build an integer rational coefficient.
 /// # Arguments:
 /// - `n`: Numerator.
 /// # Returns:
-/// - `Rational`: Integer coefficient.
-fn r(n: i64) -> Rational {
-    Rational { num: n, den: 1 }
+/// - `Ratio<i64>`: Integer coefficient.
+fn r(n: i64) -> Ratio<i64> {
+    Ratio::from_integer(n)
 }
 
 /// Build a rational coefficient.
@@ -19,12 +107,12 @@ fn r(n: i64) -> Rational {
 /// - `n`: Numerator.
 /// - `d`: Denominator.
 /// # Returns:
-/// - `Rational`: Rational coefficient.
+/// - `Ratio<i64>`: Rational coefficient.
 fn q(
     n: i64,
     d: i64,
-) -> Rational {
-    Rational { num: n, den: d }
+) -> Ratio<i64> {
+    Ratio::new(n, d)
 }
 
 /// Build one term.
@@ -33,9 +121,9 @@ fn q(
 /// - `deltas`: Delta factors.
 /// - `tensors`: Tensor factors.
 /// # Returns:
-/// - `Term`: Symbolic term.
+/// - `Term`: Target term.
 fn term(
-    coeff: Rational,
+    coeff: Ratio<i64>,
     deltas: Vec<Delta>,
     tensors: Vec<Tensor>,
 ) -> Term {
@@ -53,99 +141,98 @@ fn term(
 /// # Returns:
 /// - `Delta`: Kronecker delta.
 fn d(
-    left: crate::ir::Idx,
-    right: crate::ir::Idx,
+    left: Idx,
+    right: Idx,
 ) -> Delta {
-    Delta { left, right }
+    Delta(left, right)
 }
 
-/// Build a Gamma1 tensor.
+/// Build one spin-free tensor.
+/// # Arguments:
+/// - `kind`: Spin-free tensor kind id.
+/// - `upper`: Upper indices.
+/// - `lower`: Lower indices.
+/// # Returns:
+/// - `Tensor`: Tensor factor.
+fn tensor(
+    kind: u8,
+    upper: &[Idx],
+    lower: &[Idx],
+) -> Tensor {
+    Tensor {
+        kind,
+        upper: upper.to_vec(),
+        lower: lower.to_vec(),
+    }
+}
+
+/// Build a one-particle density `\Gamma^u_l`.
 /// # Arguments:
 /// - `upper`: Upper active index.
 /// - `lower`: Lower active index.
 /// # Returns:
-/// - `Tensor`: Gamma1 tensor.
+/// - `Tensor`: Density factor.
 fn g(
-    upper: crate::ir::Idx,
-    lower: crate::ir::Idx,
+    upper: Idx,
+    lower: Idx,
 ) -> Tensor {
-    Tensor {
-        kind: TensorKind::Gamma1,
-        upper: vec![upper],
-        lower: vec![lower],
-    }
+    tensor(spin::GAMMA, &[upper], &[lower])
 }
 
-/// Build a Theta tensor.
+/// Build a one-hole density `\Theta^u_l`.
 /// # Arguments:
 /// - `upper`: Upper active index.
 /// - `lower`: Lower active index.
 /// # Returns:
-/// - `Tensor`: Theta tensor.
+/// - `Tensor`: Hole-density factor.
 fn th(
-    upper: crate::ir::Idx,
-    lower: crate::ir::Idx,
+    upper: Idx,
+    lower: Idx,
 ) -> Tensor {
-    Tensor {
-        kind: TensorKind::Theta,
-        upper: vec![upper],
-        lower: vec![lower],
-    }
+    tensor(spin::THETA, &[upper], &[lower])
 }
 
-/// Build a Lambda2 tensor.
+/// Build a two-body cumulant `\Lambda^{u_1u_2}_{l_1l_2}`.
 /// # Arguments:
 /// - `u1`: First upper active index.
 /// - `u2`: Second upper active index.
 /// - `l1`: First lower active index.
-/// - `l2`: Second lower active index.
+/// - `l2_`: Second lower active index.
 /// # Returns:
-/// - `Tensor`: Lambda2 tensor.
+/// - `Tensor`: Cumulant factor.
 fn l2(
-    u1: crate::ir::Idx,
-    u2: crate::ir::Idx,
-    l1: crate::ir::Idx,
-    l2_: crate::ir::Idx,
+    u1: Idx,
+    u2: Idx,
+    l1: Idx,
+    l2_: Idx,
 ) -> Tensor {
-    Tensor {
-        kind: TensorKind::Lambda2,
-        upper: vec![u1, u2],
-        lower: vec![l1, l2_],
-    }
+    tensor(spin::LAMBDA2, &[u1, u2], &[l1, l2_])
 }
 
-/// Build a Lambda3 tensor.
+/// Build a three-body cumulant.
 /// # Arguments:
 /// - `u`: Upper active indices.
 /// - `l`: Lower active indices.
 /// # Returns:
-/// - `Tensor`: Lambda3 tensor.
+/// - `Tensor`: Cumulant factor.
 fn l3(
-    u: [crate::ir::Idx; 3],
-    l: [crate::ir::Idx; 3],
+    u: [Idx; 3],
+    l: [Idx; 3],
 ) -> Tensor {
-    Tensor {
-        kind: TensorKind::Lambda3,
-        upper: u.to_vec(),
-        lower: l.to_vec(),
-    }
+    tensor(spin::LAMBDA3, &u, &l)
 }
 
-/// Build a Lambda4 tensor.
+/// Build a four-body cumulant.
 /// # Arguments:
 /// - `u`: Upper active indices.
 /// - `l`: Lower active indices.
 /// # Returns:
-/// - `Tensor`: Lambda4 tensor.
+/// - `Tensor`: Cumulant factor.
 fn l4(
-    u: [crate::ir::Idx; 4],
-    l: [crate::ir::Idx; 4],
+    u: [Idx; 4],
+    l: [Idx; 4],
 ) -> Tensor {
-    Tensor {
-        kind: TensorKind::Lambda4,
-        upper: u.to_vec(),
-        lower: l.to_vec(),
-    }
+    tensor(spin::LAMBDA4, &u, &l)
 }
 
 /// Return the Appendix C1 target expression.
@@ -1026,72 +1113,12 @@ fn c16() -> Expr {
     ]
 }
 
-/// Multiply a term by a scalar tensor coefficient.
-/// # Arguments:
-/// - `x`: Input term.
-/// - `c`: Scalar prefactor.
-/// - `fac`: Coefficient tensor.
-/// # Returns:
-/// - `Term`: Updated term.
-fn mulf(
-    mut x: Term,
-    c: Rational,
-    fac: Tensor,
-) -> Term {
-    let a = num_rational::Ratio::new(x.coeff.num, x.coeff.den);
-    let b = num_rational::Ratio::new(c.num, c.den);
-    let q = a * b;
-
-    x.coeff = Rational {
-        num: *q.numer(),
-        den: *q.denom(),
-    };
-    x.tensors.push(fac);
-    x
-}
-
-/// Multiply two rational coefficients.
-/// # Arguments:
-/// - `a`: First coefficient.
-/// - `b`: Second coefficient.
-/// # Returns:
-/// - `Rational`: Product coefficient.
-fn mulr(
-    a: Rational,
-    b: Rational,
-) -> Rational {
-    let x = num_rational::Ratio::new(a.num, a.den);
-    let y = num_rational::Ratio::new(b.num, b.den);
-    let q = x * y;
-
-    Rational {
-        num: *q.numer(),
-        den: *q.denom(),
-    }
-}
-
-/// Concatenate two spin-free products.
-/// # Arguments:
-/// - `x`: Left product.
-/// - `y`: Right product.
-/// # Returns:
-/// - `Product`: Concatenated product.
-fn join(
-    x: &Product,
-    y: &Product,
-) -> Product {
-    let mut groups = x.groups.clone();
-    groups.extend(y.groups.clone());
-
-    Product { groups }
-}
-
-/// Return the Appendix C target expression if available.
+/// Return the Appendix C target expression of one metric block.
 /// # Arguments:
 /// - `name`: Metric block name.
 /// # Returns:
-/// - `Option<Expr>`: Target expression if implemented.
-fn tblock(name: &str) -> Option<Expr> {
+/// - `Option<Expr>`: Target expression, or `None` for blocks not listed in Appendix C.
+fn target(name: &str) -> Option<Expr> {
     match name {
         "C1" => Some(c1()),
         "C2" => Some(c2()),
@@ -1113,287 +1140,68 @@ fn tblock(name: &str) -> Option<Expr> {
     }
 }
 
-/// Return the Appendix C target expression for one metric block.
+/// Test whether one generated metric block equals its Appendix C target.
+/// Target indices are identified with the block free indices by name, left then right.
 /// # Arguments:
 /// - `name`: Metric block name.
 /// # Returns:
-/// - `Expr`: Target expression.
-pub fn block(name: &str) -> Expr {
-    tblock(name).unwrap_or_else(|| panic!("no Appendix C target for {name}"))
-}
-
-/// Build Hamiltonian dummy labels from orbital spaces.
-/// # Arguments:
-/// - `xs`: Orbital spaces.
-/// # Returns:
-/// - `Vec<&'static str>`: Hamiltonian dummy labels.
-fn hlabels(xs: &[Space]) -> Vec<&'static str> {
-    xs.iter()
-        .enumerate()
-        .map(|(i, &x)| crate::specs::hname(x, i))
-        .collect()
-}
-
-/// Build all general one- and two-body Hamiltonian target terms.
-/// # Arguments:
-/// - `g`: Group id.
-/// # Returns:
-/// - `Vec<crate::hamiltonian::HTerm>`: General Hamiltonian terms.
-fn hterms(g: usize) -> Vec<crate::hamiltonian::HTerm> {
-    let mut out = Vec::new();
-
-    for &p in &SPACES {
-        for &q_ in &SPACES {
-            let xs = hlabels(&[p, q_]);
-            out.push(crate::hamiltonian::term(&xs, g));
-        }
-    }
-
-    for &p in &SPACES {
-        for &q_ in &SPACES {
-            for &r_ in &SPACES {
-                for &s in &SPACES {
-                    let xs = hlabels(&[p, q_, r_, s]);
-                    out.push(crate::hamiltonian::term(&xs, g));
-                }
-            }
-        }
-    }
-
-    out
-}
-
-/// Canonicalise one target chunk from parallel Hamiltonian-term contributions.
-/// # Arguments:
-/// - `items`: Hamiltonian terms.
-/// - `make`: Function generating terms for one Hamiltonian term.
-/// # Returns:
-/// - `Expr`: Canonical chunk expression.
-fn hchunk<T: Sync>(
-    items: &[T],
-    make: impl Fn(&T) -> Expr + Sync,
-) -> Expr {
-    items
-        .par_iter()
-        .fold(crate::canonical::Acc::new, |mut acc, h| {
-            for x in make(h) {
-                acc.addterm(x);
-            }
-
-            acc
-        })
-        .reduce(crate::canonical::Acc::new, |mut a, b| {
-            a.merge(b);
-            a
-        })
-        .finish()
-}
-
-/// Number of Hamiltonian terms to evaluate in parallel per batch.
-/// # Arguments:
-/// - None.
-/// # Returns:
-/// - `usize`: H-term batch size.
-fn hbatch() -> usize {
-    std::env::var("WICK_H_BATCH")
-        .ok()
-        .and_then(|x| x.parse::<usize>().ok())
-        .filter(|&x| x > 0)
-        .unwrap_or(4)
-}
-
-/// Build a stable Hamiltonian-term chunk key.
-/// # Arguments:
-/// - `h`: Hamiltonian term.
-/// # Returns:
-/// - `String`: Hamiltonian chunk key.
-fn hkey(h: &crate::hamiltonian::HTerm) -> String {
-    let kind = match h.fac.kind {
-        crate::ir::TensorKind::Fock => "f",
-        crate::ir::TensorKind::ERI => "g",
-        _ => "x",
+/// - `bool`: Whether the generated and target blocks differ by spin relations only.
+/// # Panics
+/// - Panics if `name` has no Appendix C target or uses an index outside the block.
+pub fn check(name: &str) -> bool {
+    let want = target(name).unwrap_or_else(|| panic!("no Appendix C target for {name}"));
+    let b = specs::block(name);
+    let names = [b.lf, b.rf].concat();
+    let spaces = names
+        .iter()
+        .map(|&n| specs::space(n) as u8)
+        .collect::<Vec<_>>();
+    let id = |x: &Idx| {
+        names
+            .iter()
+            .position(|&n| n == x.name)
+            .unwrap_or_else(|| panic!("index {} is not free in {name}", x.name)) as u16
     };
-    let up = h
-        .fac
-        .upper
-        .iter()
-        .map(|x| x.name)
-        .collect::<Vec<_>>()
-        .join("_");
-    let lo = h
-        .fac
-        .lower
-        .iter()
-        .map(|x| x.name)
-        .collect::<Vec<_>>()
-        .join("_");
 
-    format!("{kind}_{up}_{lo}")
-}
-
-/// Build zeroth-order residual target chunks from metric targets.
-/// # Arguments:
-/// - `name`: Excitation class name.
-/// - `emit`: Callback receiving `(chunk_key, expression)`.
-/// # Returns:
-/// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r0(
-    name: &str,
-    mut emit: impl FnMut(String, Expr),
-) {
-    let x = crate::specs::exc(name);
-    let blocks: Vec<_> = crate::specs::BLOCKS
-        .iter()
-        .filter(|b| b.left == x.class)
-        .collect();
-    let prog = crate::progress::Prog::new(format!("target::r0({name}) blocks"), blocks.len());
-
-    let chunks: Vec<_> = blocks
-        .par_iter()
-        .filter_map(|b| {
-            let Some(expr) = tblock(b.name) else {
-                prog.tick();
-                return None;
-            };
-
-            let (c, fac) = crate::hamiltonian::fac(b.rf);
-            let mut out = Vec::new();
-
-            for t in expr {
-                out.push(mulf(t, c, fac.clone()));
-            }
-
-            let e = crate::canonical::canon(out);
-            prog.tick();
-
-            if e.is_empty() {
-                None
-            } else {
-                Some((b.name.to_string(), e))
-            }
-        })
-        .collect();
-
-    for (k, e) in chunks {
-        emit(k, e);
-    }
-}
-
-/// Build first-order residual target chunks by unfiltered Hamiltonian enumeration.
-/// # Arguments:
-/// - `name`: Excitation class name.
-/// - `emit`: Callback receiving `(chunk_key, expression)`.
-/// # Returns:
-/// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r1(
-    name: &str,
-    mut emit: impl FnMut(String, Expr),
-) {
-    let spec = crate::specs::exc(name);
-    let bra = crate::specs::bra(&spec, 0);
-    let hs = hterms(1);
-    let ts = crate::cluster::terms(2, 't');
-    let prog = crate::progress::Prog::new(format!("target::r1({name}) T terms"), ts.len());
-
-    for (ti, t) in ts.iter().enumerate() {
-        let e = hchunk(&hs, |h| {
-            let p = join(&join(&bra, &h.op), &t.op);
-            let mut out = Vec::new();
-
-            for x in crate::wick::evalc(&p) {
-                let x = mulf(x, h.coeff, h.fac.clone());
-                out.push(mulf(x, t.coeff, t.fac.clone()));
-            }
-
-            out
-        });
-
-        if !e.is_empty() {
-            emit(format!("t{ti}"), e);
+    // Difference between generated and target blocks in canonical form.
+    let mut diff = emit::metric(name).terms;
+    for t in &want {
+        let deltas = t.deltas.iter().map(|x| (spin::DELTA, vec![x.0], vec![x.1]));
+        let tensors = t
+            .tensors
+            .iter()
+            .map(|x| (x.kind, x.upper.clone(), x.lower.clone()));
+        // Target indices carry their own spaces, so a mislabelled index cannot match.
+        let mut own = spaces.clone();
+        for x in t.deltas.iter().flat_map(|x| [x.0, x.1]) {
+            own[id(&x) as usize] = x.space as u8;
         }
-
-        prog.tick();
-    }
-}
-
-/// Build one second-order residual target Hamiltonian subchunk.
-/// # Arguments:
-/// - `bra`: Residual bra product.
-/// - `l`: Left cluster term.
-/// - `r`: Right cluster term.
-/// - `h`: Hamiltonian term.
-/// # Returns:
-/// - `Expr`: Canonical target subchunk expression.
-fn r2hterm(
-    bra: &Product,
-    l: &crate::cluster::TTerm,
-    r: &crate::cluster::TTerm,
-    h: &crate::hamiltonian::HTerm,
-) -> Expr {
-    let p = join(&join(&join(bra, &h.op), &l.op), &r.op);
-
-    crate::wick::evalc(&p)
-        .into_par_iter()
-        .fold(crate::canonical::Acc::new, |mut acc, x| {
-            let x = mulf(x, h.coeff, h.fac.clone());
-            let x = mulf(x, l.coeff, l.fac.clone());
-            let c = mulr(q(1, 2), r.coeff);
-
-            acc.addterm(mulf(x, c, r.fac.clone()));
-            acc
-        })
-        .reduce(crate::canonical::Acc::new, |mut a, b| {
-            a.merge(b);
-            a
-        })
-        .finish()
-}
-
-/// Build second-order residual target chunks by unfiltered Hamiltonian enumeration.
-/// # Arguments:
-/// - `name`: Excitation class name.
-/// - `emit`: Callback receiving `(chunk_key, expression)`.
-/// # Returns:
-/// - `()`: Calls `emit` once per non-empty chunk.
-pub fn r2(
-    name: &str,
-    mut emit: impl FnMut(String, Expr),
-) {
-    let spec = crate::specs::exc(name);
-    let bra = crate::specs::bra(&spec, 0);
-    let hs = hterms(1);
-    let ls = crate::cluster::terms(2, 'l');
-    let rs = crate::cluster::terms(3, 'r');
-    let total = ls.len() * rs.len();
-    let prog = crate::progress::Prog::new(format!("target::r2({name}) T-pairs"), total);
-    let batch = hbatch();
-
-    for (li, l) in ls.iter().enumerate() {
-        for (ri, r) in rs.iter().enumerate() {
-            for hs in hs.chunks(batch) {
-                let chunks: Vec<_> = hs
-                    .par_iter()
-                    .filter_map(|h| {
-                        let key = format!("l{li}_r{ri}_h{}", hkey(h));
-                        crate::progress::mem(format!("target::r2({name}) start {key}"));
-
-                        let e = r2hterm(&bra, l, r, h);
-
-                        crate::progress::mem(format!(
-                            "target::r2({name}) end {key} terms={}",
-                            e.len()
-                        ));
-
-                        if e.is_empty() { None } else { Some((key, e)) }
-                    })
-                    .collect();
-
-                for (k, e) in chunks {
-                    emit(k, e);
-                }
-            }
-
-            prog.tick();
+        for x in t
+            .tensors
+            .iter()
+            .flat_map(|x| x.upper.iter().chain(&x.lower))
+        {
+            own[id(x) as usize] = x.space as u8;
+        }
+        let form = Form {
+            spaces: own,
+            nfree: names.len(),
+            factors: deltas
+                .chain(tensors)
+                .map(|(kind, upper, lower)| Factor {
+                    kind,
+                    sym: spin::sym(kind),
+                    upper: upper.iter().map(id).collect::<SmallVec<_>>(),
+                    lower: lower.iter().map(id).collect::<SmallVec<_>>(),
+                })
+                .collect(),
+        };
+        let (key, sign): (Key, i8) = canon::canonical(&form);
+        if sign != 0 {
+            *diff.entry(key).or_insert_with(|| r(0)) -= t.coeff * r(sign as i64);
         }
     }
+    diff.retain(|_, x| *x != r(0));
+
+    reduce::vanishes(&spaces, &diff)
 }

@@ -18,7 +18,7 @@ mod nocc {
     use serde::Serialize;
 
     const CLASSES: &[&str] = &[
-        "CToA", "AToA", "AToV", "CAToAV", "CAToVA", "CAToVV", "CCToAV", "CCToAA", "CAToAA",
+        "CToA", "AToA", "AToV", "CToV", "CAToAV", "CAToVA", "CAToVV", "CCToAV", "CCToAA", "CAToAA",
         "AAToAV", "AAToVV", "AAToAA",
     ];
 
@@ -26,9 +26,9 @@ mod nocc {
     /// # Arguments:
     /// - None.
     /// # Returns:
-    /// - `bool`: True when `WICK_FORCE_REGENERATE=1`.
+    /// - `bool`: True when `WICKFORCEREGENERATE=1`.
     fn force() -> bool {
-        env::var("WICK_FORCE_REGENERATE")
+        env::var("WICKFORCEREGENERATE")
             .map(|x| x == "1")
             .unwrap_or(false)
     }
@@ -104,7 +104,7 @@ mod nocc {
 
         if cache.exists() {
             status(format!(
-                "regenerating terms because WICK_FORCE_REGENERATE=1: {name}"
+                "regenerating terms because WICKFORCEREGENERATE=1: {name}"
             ));
         } else {
             status(format!("generated terms missing, generating now: {name}"));
@@ -152,7 +152,7 @@ mod nocc {
             &format!("R{order}({class})"),
             &cache_file,
             &out_file,
-            || wick_build::encode::residual_class(order, class),
+            || wick_build::emit::residual_class(order, class),
         );
     }
 
@@ -220,15 +220,7 @@ mod nocc {
     pub(super) fn run() {
         println!("cargo:rerun-if-changed=build/wick");
         println!("cargo:rerun-if-changed=build/generated");
-        println!("cargo:rerun-if-env-changed=WICK_FORCE_REGENERATE");
-        println!("cargo:rerun-if-env-changed=WICK_PROGRESS");
-        println!("cargo:rerun-if-env-changed=WICK_PROGRESS_STEP");
-        println!("cargo:rerun-if-env-changed=WICK_H_BATCH");
-        println!("cargo:rerun-if-env-changed=WICK_SPIN_BATCH");
-        println!("cargo:rerun-if-env-changed=WICK_SPIN_PAR");
-        println!("cargo:rerun-if-env-changed=WICK_STREAM_QUEUE");
-        println!("cargo:rerun-if-env-changed=WICK_ACC_FLUSH");
-        println!("cargo:rerun-if-env-changed=WICK_SPIN_SPLIT_CHUNKS");
+        println!("cargo:rerun-if-env-changed=WICKFORCEREGENERATE");
 
         let manifest =
             PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
@@ -242,7 +234,7 @@ mod nocc {
             "overlap",
             &cache.join("overlapterms.bin"),
             &out.join("overlapterms.bin"),
-            wick_build::encode::overlap_terms,
+            wick_build::emit::overlap_terms,
         );
 
         for order in 0..=2 {

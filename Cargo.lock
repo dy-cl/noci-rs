@@ -2330,11 +2330,10 @@ dependencies = [
 name = "wick-build"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "itertools 0.13.0",
  "num-rational",
- "num-traits",
  "rayon",
+ "rustc-hash 2.1.1",
  "serde",
  "smallvec",
 ]
