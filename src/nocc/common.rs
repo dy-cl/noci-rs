@@ -272,12 +272,13 @@ pub(super) fn factor(
         ),
         // f_{i_l}^{i_u}.
         2 => tensors.f.unwrap()[(idx[upper[0] as usize], idx[lower[0] as usize])],
-        // g_{i_l_1, i_l_2}^{i_u_1, i_u_2}.
+        // g_{i_l_1, i_l_2}^{i_u_1, i_u_2} = (i_u_1 i_l_1 | i_u_2 i_l_2), columns share an
+        // electron and the integrals are stored in chemists' order.
         3 => {
             tensors.ao.unwrap().eri_coul[(
                 idx[upper[0] as usize],
-                idx[upper[1] as usize],
                 idx[lower[0] as usize],
+                idx[upper[1] as usize],
                 idx[lower[1] as usize],
             )]
         }
