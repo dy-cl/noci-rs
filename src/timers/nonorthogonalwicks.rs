@@ -47,8 +47,6 @@ pub struct Totals {
     pub xw_hamiltonian_overlap_m0_gen_prepared: Counter,
     /// Total time spent in `xw_hamiltonian_overlap_gen_prepared`.
     pub xw_hamiltonian_overlap_gen_prepared: Counter,
-    /// Total time spent in `xw_rdmk_same_prepared`.
-    pub xw_rdmk_same_prepared: Counter,
     /// Total time spent in `xw_rdmk_same_m0_prepared`.
     pub xw_rdmk_same_m0_prepared: Counter,
     /// Total time spent in `xw_rdmk_same_m0_prepared_const`.
@@ -57,8 +55,6 @@ pub struct Totals {
     pub xw_rdmk_same_m0_gen_prepared: Counter,
     /// Total time spent in `xw_rdmk_same_gen_prepared`.
     pub xw_rdmk_same_gen_prepared: Counter,
-    /// Total time spent in `xw_rdmk_diff_prepared`.
-    pub xw_rdmk_diff_prepared: Counter,
     /// Total time spent in `prepare_same_m0_const`.
     pub prepare_same_m0_const: Counter,
     /// Total time spent in `xw_f_overlap`.
@@ -118,8 +114,6 @@ impl Totals {
             .merge_from(&other.xw_hamiltonian_overlap_m0_gen_prepared);
         self.xw_hamiltonian_overlap_gen_prepared
             .merge_from(&other.xw_hamiltonian_overlap_gen_prepared);
-        self.xw_rdmk_same_prepared
-            .merge_from(&other.xw_rdmk_same_prepared);
         self.xw_rdmk_same_m0_prepared
             .merge_from(&other.xw_rdmk_same_m0_prepared);
         self.xw_rdmk_same_m0_prepared_const
@@ -128,8 +122,6 @@ impl Totals {
             .merge_from(&other.xw_rdmk_same_m0_gen_prepared);
         self.xw_rdmk_same_gen_prepared
             .merge_from(&other.xw_rdmk_same_gen_prepared);
-        self.xw_rdmk_diff_prepared
-            .merge_from(&other.xw_rdmk_diff_prepared);
         self.prepare_same_m0_const
             .merge_from(&other.prepare_same_m0_const);
         self.xw_f_overlap.merge_from(&other.xw_f_overlap);
@@ -396,16 +388,6 @@ pub fn add_xw_hamiltonian_overlap_gen_prepared(ns: u64) {
     });
 }
 
-/// Add one timed call to the `xw_rdmk_same_prepared` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_rdmk_same_prepared`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_rdmk_same_prepared` counter.
-#[inline(always)]
-pub fn add_xw_rdmk_same_prepared(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_rdmk_same_prepared.add_ns(ns));
-}
-
 /// Add one timed call to the `xw_rdmk_same_m0_prepared` counter.
 /// # Arguments:
 /// - `ns`: Elapsed time in nanoseconds for one call to `xw_rdmk_same_m0_prepared`.
@@ -448,16 +430,6 @@ pub fn add_xw_rdmk_same_m0_gen_prepared(ns: u64) {
 #[inline(always)]
 pub fn add_xw_rdmk_same_gen_prepared(ns: u64) {
     with_totals(|t| t.nonorthogonalwicks.xw_rdmk_same_gen_prepared.add_ns(ns));
-}
-
-/// Add one timed call to the `xw_rdmk_diff_prepared` counter.
-/// # Arguments:
-/// - `ns`: Elapsed time in nanoseconds for one call to `xw_rdmk_diff_prepared`.
-/// # Returns:
-/// - `()`: Updates the current thread local `xw_rdmk_diff_prepared` counter.
-#[inline(always)]
-pub fn add_xw_rdmk_diff_prepared(ns: u64) {
-    with_totals(|t| t.nonorthogonalwicks.xw_rdmk_diff_prepared.add_ns(ns));
 }
 
 /// Add one timed call to the `prepare_same_m0_const` counter.

@@ -12,17 +12,17 @@ use ndarray::Array2;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::ExcitationSpin;
 use crate::config::MAXEXCIT;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::{C64x4, C64x8, F64x4, F64x8, Simd, det_simd_const};
 use crate::maths::{det_const, det_dynamic, mix_columns_dynamic};
 use crate::noci::NOCIScalar;
 use crate::time_call;
-use crate::{Excitation, ExcitationSpin};
 
 // Parent/sibling imports.
 use super::super::scratch::WickScratch;
-use super::super::view::{SameSpinView, WicksPairView};
+use super::super::view::SameSpinView;
 use super::dispatch::{
     dispatch_overlap_ranks, dispatch_overlap_scalar_ranks, dispatch_pair_ranks, dispatch_rdm_ranks,
     dispatch_rdm_scalar_ranks,
@@ -30,83 +30,6 @@ use super::dispatch::{
 use super::helpers::{extend_rdm_d, for_each_m_combination};
 use super::overlap::xw_overlap_prepared;
 use super::prepare::construct_determinant_indices;
-
-/// Evaluate one unnormalised same-spin rank-`K` transition-density element:
-/// `{}^{xw}\Gamma_\sigma{}^{p_1\cdots p_K}_{q_1\cdots q_K}`
-/// ` = \langle{}^x\Psi_{i\cdots}^{a\cdots}|\hat a^\dagger_{p_1\sigma}\cdots`
-/// `\hat a^\dagger_{p_K\sigma}\hat a_{q_K\sigma}\cdots\hat a_{q_1\sigma}`
-/// `|{}^w\Psi_{j\cdots}^{b\cdots}\rangle`
-/// ` = {}^{xw}\tilde S\sum_{\substack{m_1,\ldots,m_{L+K}\\m_1+\cdots+m_{L+K} = m}}`
-/// `\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(m_1,\ldots,m_{L+K}).`
-/// The first `K` contraction columns belong to the external creation-annihilation pairs and the
-/// remaining `L = RX + RW` columns belong to the bra and ket excitations. Expanding the determinant
-/// generates every fully contracted term with its fermionic sign, while the constrained sum
-/// distributes the `m` zero-overlap orbital pairs among the contraction columns.
-/// For `K = 0`, the empty external operator string reduces exactly to the prepared overlap.
-/// The element is zero when `K > N_\sigma`.
-/// # Arguments:
-/// - `w`: Same-spin reference-pair Wick intermediates.
-/// - `ex`: Excitations defining the bra and ket determinants respectively.
-/// - `coeff`: Bra- and ket-reference orbital coefficients in the external RDM basis.
-/// - `indices`: Const-sized creation indices `\mathbf p` and annihilation indices `\mathbf q`.
-/// - `scratch`: Reusable determinant storage.
-/// - `tol`: Numerical threshold applied to individual determinant contributions.
-/// # Returns
-/// - `T`: Unnormalised same-spin rank-`K` transition-density element.
-#[inline(always)]
-pub(crate) fn xw_rdmk_same_prepared<T: NOCIScalar, const K: usize>(
-    w: &SameSpinView<'_, T>,
-    ex: (&ExcitationSpin, &ExcitationSpin),
-    coeff: (&Array2<T>, &Array2<T>),
-    indices: (&[usize; K], &[usize; K]),
-    scratch: &mut WickScratch<T>,
-    tol: f64,
-) -> T {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_same_prepared,
-        {
-            if K > w.nocc {
-                return <T as From<f64>>::from(0.0);
-            }
-            if K == 0 {
-                return xw_overlap_prepared(w, ex.0, ex.1, scratch);
-            }
-
-            // Extend compact contraction determinants into the external RDM basis. The resulting
-            // determinant evaluates `\det \mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
-            let (l_c, g_c) = coeff;
-            let nrdm = l_c.nrows();
-            let ext_n = w.nmo + nrdm;
-            let x0 = w.x(0);
-            let y0 = w.y(0);
-            let x0rdm = w.xrdm(0, nrdm);
-            let y0rdm = w.yrdm(0, nrdm);
-            let x0p = extend_rdm_d(w, &x0, &x0rdm, l_c, g_c).into_raw_vec();
-            let y0p = extend_rdm_d(w, &y0, &y0rdm, l_c, g_c).into_raw_vec();
-            let one = if w.m == 0 {
-                None
-            } else {
-                let x1 = w.x(1);
-                let y1 = w.y(1);
-                let x1rdm = w.xrdm(1, nrdm);
-                let y1rdm = w.yrdm(1, nrdm);
-                Some((
-                    extend_rdm_d(w, &x1, &x1rdm, l_c, g_c).into_raw_vec(),
-                    extend_rdm_d(w, &y1, &y1rdm, l_c, g_c).into_raw_vec(),
-                ))
-            };
-            let fundamental = (
-                x0p.as_slice(),
-                y0p.as_slice(),
-                one.as_ref()
-                    .map(|(x1p, y1p)| (x1p.as_slice(), y1p.as_slice())),
-                ext_n,
-            );
-            let request = (*indices.0, *indices.1);
-            xw_rdmk_same_prepared_scalar_value(w, ex, fundamental, &request, scratch, tol)
-        }
-    )
-}
 
 /// Evaluate a batch of unnormalised same-spin rank-`K` transition-density elements.
 /// Every request evaluates
@@ -1220,66 +1143,6 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
                 }
             });
             w.phase * <T as From<f64>>::from(w.tilde_s_prod) * acc
-        }
-    )
-}
-
-/// Evaluate one different-spin rank-`(KA,KB)` transition-density contribution.
-/// Operators of different spin commute after an even fermionic permutation, and the determinant
-/// product state separates into spin sectors, giving
-/// `{}^{xw}\Gamma_{\alpha\beta}^{\mathbf p_\alpha\mathbf p_\beta}`
-/// `{}_{\mathbf q_\alpha\mathbf q_\beta}`
-/// ` = {}^{xw}\Gamma_\alpha^{\mathbf p_\alpha}{}_{\mathbf q_\alpha}`
-/// `{}^{xw}\Gamma_\beta^{\mathbf p_\beta}{}_{\mathbf q_\beta}`.
-/// Both factors use the same rank-`K` same-spin determinant evaluator.
-/// The contribution is zero when `KA > N_\alpha` or `KB > N_\beta`.
-/// # Arguments:
-/// - `w`: Alpha-, beta-, and different-spin intermediates for one reference pair.
-/// - `ex`: Bra and ket excitations containing both spin sectors.
-/// - `coeff`: Alpha and beta pairs of bra- and ket-reference orbital coefficients.
-/// - `indices`: Alpha and beta creation-annihilation index pairs.
-/// - `scratch`: Reusable alpha- and beta-spin determinant storage.
-/// - `tol`: Numerical threshold applied to individual determinant contributions.
-/// # Returns
-/// - `T`: Product of the unnormalised alpha- and beta-spin transition-density elements.
-#[allow(clippy::type_complexity)]
-pub(crate) fn xw_rdmk_diff_prepared<T: NOCIScalar, const KA: usize, const KB: usize>(
-    w: &WicksPairView<'_, T>,
-    ex: (&Excitation, &Excitation),
-    coeff: ((&Array2<T>, &Array2<T>), (&Array2<T>, &Array2<T>)),
-    indices: ((&[usize; KA], &[usize; KA]), (&[usize; KB], &[usize; KB])),
-    scratch: (&mut WickScratch<T>, &mut WickScratch<T>),
-    tol: f64,
-) -> T {
-    time_call!(
-        crate::timers::nonorthogonalwicks::add_xw_rdmk_diff_prepared,
-        {
-            // Different-spin rank factorises; either spin sector exceeding its electron count makes
-            // the complete transition-density contribution zero.
-            if KA > w.aa.nocc || KB > w.bb.nocc {
-                return <T as From<f64>>::from(0.0);
-            }
-
-            // Evaluate spin-sector determinants independently and combine
-            // `\Gamma_{\alpha\beta}=\Gamma_\alpha\Gamma_\beta`.
-            let alpha = xw_rdmk_same_prepared(
-                &w.aa,
-                (&ex.0.alpha, &ex.1.alpha),
-                coeff.0,
-                indices.0,
-                scratch.0,
-                tol,
-            );
-            let beta = xw_rdmk_same_prepared(
-                &w.bb,
-                (&ex.0.beta, &ex.1.beta),
-                coeff.1,
-                indices.1,
-                scratch.1,
-                tol,
-            );
-
-            alpha * beta
         }
     )
 }

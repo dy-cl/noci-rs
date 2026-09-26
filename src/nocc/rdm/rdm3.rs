@@ -2,15 +2,16 @@
 
 // External crate imports.
 use ndarray::Array1;
+use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::noci::{DetPair, NOCIData, NOCIScalar, build_s_pair, occ_coeffs};
-use crate::nonorthogonalwicks::{
-    WickScratchSpin, prepare_same, xw_overlap, xw_rdmk_diff_prepared, xw_rdmk_same_prepared,
-};
+use crate::nonorthogonalwicks::{WickScratchSpin, prepare_same, xw_overlap};
 
 // Parent/sibling imports.
-use super::common::spin_assignment_rdm_element_naive;
+use super::common::{
+    same_spin_transition_rdms, spin_assignment_rdm_element_naive, spin_free_element,
+};
 
 /// `Active-space spin-free three-body RDM stored as \Gamma[p, q, r, s, t, u].`
 pub(crate) struct RDM3<T> {
@@ -250,102 +251,49 @@ fn rdm3_pair_wicks<T: NOCIScalar>(
         n,
         data: vec![<T as From<f64>>::from(0.0); n.pow(6)],
     };
-    let ex = (&ldet.excitation, &gdet.excitation);
     let coeff = (
         (ldet.ca.as_ref(), gdet.ca.as_ref()),
         (ldet.cb.as_ref(), gdet.cb.as_ref()),
     );
 
-    // Evaluate every active upper/lower index tuple.
-    for a in 0..n {
-        for b in 0..n {
-            for c in 0..n {
-                for d in 0..n {
-                    for e in 0..n {
-                        for f in 0..n {
-                            let ps = [active[a], active[b], active[c]];
-                            let qs = [active[d], active[e], active[f]];
-                            let mut val = <T as From<f64>>::from(0.0);
-
-                            // Sum the eight assignments in
-                            // `\sum_{\sigma_1\sigma_2\sigma_3}\Gamma_{\sigma_1\sigma_2\sigma_3}`;
-                            // each spin subsequence retains the original external-operator order.
-                            val += sb
-                                * xw_rdmk_same_prepared::<T, 3>(
-                                    &w.aa,
-                                    (&ldet.excitation.alpha, &gdet.excitation.alpha),
-                                    (ldet.ca.as_ref(), gdet.ca.as_ref()),
-                                    (&[ps[0], ps[1], ps[2]], &[qs[0], qs[1], qs[2]]),
-                                    &mut scratch.aa,
-                                    data.tol,
-                                );
-                            val += xw_rdmk_diff_prepared::<T, 2, 1>(
-                                &w,
-                                ex,
-                                coeff,
-                                ((&[ps[1], ps[2]], &[qs[1], qs[2]]), (&[ps[0]], &[qs[0]])),
-                                (&mut scratch.aa, &mut scratch.bb),
-                                data.tol,
-                            );
-                            val += xw_rdmk_diff_prepared::<T, 2, 1>(
-                                &w,
-                                ex,
-                                coeff,
-                                ((&[ps[0], ps[2]], &[qs[0], qs[2]]), (&[ps[1]], &[qs[1]])),
-                                (&mut scratch.aa, &mut scratch.bb),
-                                data.tol,
-                            );
-                            val += xw_rdmk_diff_prepared::<T, 1, 2>(
-                                &w,
-                                ex,
-                                coeff,
-                                ((&[ps[2]], &[qs[2]]), (&[ps[0], ps[1]], &[qs[0], qs[1]])),
-                                (&mut scratch.aa, &mut scratch.bb),
-                                data.tol,
-                            );
-                            val += xw_rdmk_diff_prepared::<T, 2, 1>(
-                                &w,
-                                ex,
-                                coeff,
-                                ((&[ps[0], ps[1]], &[qs[0], qs[1]]), (&[ps[2]], &[qs[2]])),
-                                (&mut scratch.aa, &mut scratch.bb),
-                                data.tol,
-                            );
-                            val += xw_rdmk_diff_prepared::<T, 1, 2>(
-                                &w,
-                                ex,
-                                coeff,
-                                ((&[ps[1]], &[qs[1]]), (&[ps[0], ps[2]], &[qs[0], qs[2]])),
-                                (&mut scratch.aa, &mut scratch.bb),
-                                data.tol,
-                            );
-                            val += xw_rdmk_diff_prepared::<T, 1, 2>(
-                                &w,
-                                ex,
-                                coeff,
-                                ((&[ps[0]], &[qs[0]]), (&[ps[1], ps[2]], &[qs[1], qs[2]])),
-                                (&mut scratch.aa, &mut scratch.bb),
-                                data.tol,
-                            );
-                            val += sa
-                                * xw_rdmk_same_prepared::<T, 3>(
-                                    &w.bb,
-                                    (&ldet.excitation.beta, &gdet.excitation.beta),
-                                    (ldet.cb.as_ref(), gdet.cb.as_ref()),
-                                    (&[ps[0], ps[1], ps[2]], &[qs[0], qs[1], qs[2]]),
-                                    &mut scratch.bb,
-                                    data.tol,
-                                );
-
-                            // Store the phased spin sum in row-major RDM order.
-                            let i = (((((a * n + b) * n + c) * n + d) * n + e) * n) + f;
-                            gamma.data[i] = det_phase * val;
-                        }
-                    }
-                }
+    // Evaluate every same-spin transition density once per rank and combine them into each
+    // spin-free element over all `2^3` spin assignments.
+    let alpha = same_spin_transition_rdms(
+        &w.aa,
+        (&ldet.excitation.alpha, &gdet.excitation.alpha),
+        coeff.0,
+        active,
+        sa,
+        3,
+        &mut scratch.aa,
+        data.tol,
+    );
+    let beta = same_spin_transition_rdms(
+        &w.bb,
+        (&ldet.excitation.beta, &gdet.excitation.beta),
+        coeff.1,
+        active,
+        sb,
+        3,
+        &mut scratch.bb,
+        data.tol,
+    );
+    let nk = n.pow(3);
+    gamma
+        .data
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(flat, value)| {
+            let (mut upper, mut lower) = ([0usize; 3], [0usize; 3]);
+            let (mut u, mut l) = (flat / nk, flat % nk);
+            for k in (0..3).rev() {
+                upper[k] = u % n;
+                lower[k] = l % n;
+                u /= n;
+                l /= n;
             }
-        }
-    }
+            *value = det_phase * spin_free_element(&alpha, &beta, n, &upper, &lower);
+        });
 
     (sxw, gamma)
 }

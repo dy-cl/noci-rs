@@ -28,4 +28,4 @@ pub(crate) use preparehamiltonianoverlap::{
 };
 pub(crate) use prepareonebodyoverlap::{xw_f_overlap_prepared, xw_f_overlap_prepared_batched};
 #[cfg(feature = "nocc")]
-pub(crate) use rdm::{xw_rdmk_diff_prepared, xw_rdmk_same_prepared, xw_rdmk_same_prepared_batched};
+pub(crate) use rdm::xw_rdmk_same_prepared_batched;
