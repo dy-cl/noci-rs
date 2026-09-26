@@ -16,9 +16,9 @@ use crate::nocc::space::{ExcitationManifold, excitation_class};
 use crate::nocc::terms::OverlapTermSet;
 
 /// Assemble a symmetric matrix over the raw excitations from its generated class-pair blocks.
-/// Each block is evaluated once as a dense tensor over its left then right free indices, and
-/// every listed pair of excitations is gathered from it. Class pairs without a block couple to
-/// zero, and each block also fills its transpose.
+/// Each block is evaluated once, with no cumulant truncation, as a dense tensor over its left then
+/// right free indices, and every listed pair of excitations is gathered from it. Class pairs
+/// without a block couple to zero, and each block also fills its transpose.
 /// # Arguments:
 /// - `reference`: Normal-ordered reference state.
 /// - `manifold`: Orbital spaces and raw excitation list.
@@ -49,7 +49,7 @@ pub(crate) fn assemble_block_matrix(
         .collect::<Vec<_>>();
     let plans = blocks
         .iter()
-        .map(|b| evaluator.table_plan((&b.terms, &b.indices)))
+        .map(|b| evaluator.exact_table_plan((&b.terms, &b.indices)))
         .collect::<Vec<_>>();
     let factors = FactorBlocks::build_factor_blocks(
         &plans.iter().map(|p| p.as_ref()).collect::<Vec<_>>(),

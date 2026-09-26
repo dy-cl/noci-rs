@@ -106,21 +106,51 @@ impl TermEvaluator {
         }
     }
 
-    /// Return the plan of one table, resolving it on first use.
+    /// Return the plan of one working-equation table, the energy or a residual, resolving it on
+    /// first use. Terms with cumulants above the truncation rank are dropped.
+    /// # Arguments:
+    /// - `table`: Terms and index spaces of the table.
+    /// # Returns:
+    /// - `Arc<TablePlan>`: Block of every factor of every kept term.
+    pub(crate) fn table_plan(
+        &self,
+        table: TermTable<'_>,
+    ) -> Arc<TablePlan> {
+        self.cached_plan(table, self.max_cumulant)
+    }
+
+    /// Return the plan of one reference-property table, such as the metric or the zeroth-order
+    /// coupling, keeping every term. These tables involve at most the four-body RDM, which the
+    /// reference provides exactly, so they are never truncated.
     /// # Arguments:
     /// - `table`: Terms and index spaces of the table.
     /// # Returns:
     /// - `Arc<TablePlan>`: Block of every factor of every term.
-    pub(crate) fn table_plan(
+    pub(crate) fn exact_table_plan(
         &self,
         table: TermTable<'_>,
+    ) -> Arc<TablePlan> {
+        self.cached_plan(table, usize::MAX)
+    }
+
+    /// Return the cached plan of one table at one truncation rank, resolving it on first use.
+    /// Each table is always evaluated at the same rank, so plans are keyed by table address.
+    /// # Arguments:
+    /// - `table`: Terms and index spaces of the table.
+    /// - `max_cumulant`: Highest cumulant rank kept.
+    /// # Returns:
+    /// - `Arc<TablePlan>`: Block of every factor of every kept term.
+    fn cached_plan(
+        &self,
+        table: TermTable<'_>,
+        max_cumulant: usize,
     ) -> Arc<TablePlan> {
         let address = table.0.as_ptr() as usize;
         if let Some(plan) = self.plans.lock().unwrap().get(&address) {
             return plan.clone();
         }
 
-        let plan = Arc::new(resolve_table_plan(table, self.max_cumulant));
+        let plan = Arc::new(resolve_table_plan(table, max_cumulant));
         self.plans.lock().unwrap().insert(address, plan.clone());
         plan
     }

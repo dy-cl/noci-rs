@@ -144,7 +144,8 @@ pub struct NOCCMCOptions {
     /// Natural-occupation tolerance for the active space: orbitals within this distance of two
     /// or zero electrons are core or virtual, and all others active.
     pub active_space_tol: f64,
-    /// Highest cumulant rank kept in the equations; terms with higher-rank cumulants are dropped.
+    /// Highest cumulant rank kept in the energy and residual equations; terms with higher-rank
+    /// cumulants are dropped. The metric and zeroth-order coupling are always evaluated exactly.
     pub max_cumulant: usize,
     /// Eigenvalue threshold of the weighted FOIS metric; directions below it are discarded as
     /// redundant.
