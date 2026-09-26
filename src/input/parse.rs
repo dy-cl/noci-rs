@@ -12,10 +12,10 @@ use crate::{Error, Result};
 
 // Parent/sibling imports.
 use super::{
-    DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FriOptions, GMRESOptions,
-    Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator, QMCOptions,
-    SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage, SpatialBias, Spin,
-    SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
+    DeterministicOptions, DiisOptions, ExcitationGen, ExcitationOptions, FoisWeighting, FriOptions,
+    GMRESOptions, Input, Metadynamics, MolOptions, NOCCMCOptions, PropagationOptions, Propagator,
+    QMCOptions, SCFExcitation, SCFInfo, SNOCIOptions, SNOCIPreconditioner, SNOCIStorage,
+    SpatialBias, Spin, SpinBias, StateRecipe, StateType, WicksOptions, WicksStorage, WriteOptions,
 };
 
 /// Read required table from Lua globals.
@@ -82,6 +82,36 @@ fn read_snoci_storage(
         Ok(Value::Nil) | Err(_) => default,
         Ok(_) => {
             eprintln!("{name} must be one of 'none', 'ram', or 'disk'");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Read FOIS weighting option `x \in {coupled,hamiltonian}` from a Lua value.
+/// # Arguments:
+/// - `value`: Lua value read from the input table.
+/// - `default`: Default weighting used for nil or missing values.
+/// # Returns:
+/// - `FoisWeighting`: Parsed FOIS weighting.
+fn read_fois_weighting(
+    value: rlua::Result<Value>,
+    default: FoisWeighting,
+) -> FoisWeighting {
+    match value {
+        Ok(Value::String(s)) => s
+            .to_str()
+            .unwrap_or_else(|msg| {
+                eprintln!("{msg}");
+                std::process::exit(1);
+            })
+            .parse()
+            .unwrap_or_else(|msg| {
+                eprintln!("noccmc.fois_weighting: {msg}");
+                std::process::exit(1);
+            }),
+        Ok(Value::Nil) | Err(_) => default,
+        Ok(_) => {
+            eprintln!("noccmc.fois_weighting must be one of 'coupled' or 'hamiltonian'");
             std::process::exit(1);
         }
     }
@@ -818,6 +848,10 @@ fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
                 .get("active_space_tol")
                 .unwrap_or(defaults.active_space_tol),
             max_cumulant: t.get("max_cumulant").unwrap_or(defaults.max_cumulant),
+            fois_weighting: read_fois_weighting(t.get("fois_weighting"), defaults.fois_weighting),
+            fois_coupling_tol: t
+                .get("fois_coupling_tol")
+                .unwrap_or(defaults.fois_coupling_tol),
             fois_tol: t.get("fois_tol").unwrap_or(defaults.fois_tol),
             max_macro: t.get("max_macro").unwrap_or(defaults.max_macro),
             max_micro: t.get("max_micro").unwrap_or(defaults.max_micro),

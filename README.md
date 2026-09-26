@@ -678,6 +678,9 @@ The `noccmc` table enables the spin-free generalised-normal-ordered coupled-clus
 noccmc = {
     active_space_tol = 1e-6,
     max_cumulant = 4,
+
+    fois_weighting = "coupled",
+    fois_coupling_tol = 1e-8,
     fois_tol = 1e-8,
 
     max_macro = 100,
@@ -691,7 +694,7 @@ noccmc = {
 }
 ```
 
-Natural orbitals within `active_space_tol` of two or zero electrons are treated as core or virtual, and all others as active. `max_cumulant` selects the GNOCCSD(`k`) truncation: every term containing a cumulant of rank above `k` is dropped from the energy and residual equations, while the metric and the zeroth-order coupling are always evaluated exactly. `fois_tol` is the eigenvalue threshold of the weighted FOIS metric below which redundant excitation directions are discarded. `residual_tol` is the convergence threshold on the norm of the residual projected onto the first-order interacting space, and `micro_tol` the threshold on the linearised update equation. `level_shift` is added to every orbital-energy denominator, and `diis_space` sets the number of vectors kept in both DIIS subspaces.
+Natural orbitals within `active_space_tol` of two or zero electrons are treated as core or virtual, and all others as active. `max_cumulant` selects the GNOCCSD(`k`) truncation: every term containing a cumulant of rank above `k` is dropped from the energy and residual equations, while the metric and the zeroth-order coupling are always evaluated exactly. `fois_weighting` selects the weights `w` of the FOIS metric `wSw` before canonical orthogonalisation: `"coupled"` keeps every excitation whose Hamiltonian coupling exceeds `fois_coupling_tol` in magnitude with unit weight and discards the rest, while `"hamiltonian"` uses the Hamiltonian couplings themselves, as in Lee and Tew. Both are size-consistent, since spectator excitations of separated fragments have vanishing coupling; the coupled weighting does not scale the metric eigenvalues of weakly coupled directions towards `fois_tol` and converges where the Hamiltonian weighting can fail. `fois_coupling_tol` should lie above the SCF convergence noise in the couplings. `fois_tol` is the eigenvalue threshold of the weighted FOIS metric below which redundant excitation directions are discarded. `residual_tol` is the convergence threshold on the norm of the residual projected onto the first-order interacting space, and `micro_tol` the threshold on the linearised update equation. `level_shift` is added to every orbital-energy denominator, and `diis_space` sets the number of vectors kept in both DIIS subspaces.
 
 ### Defaults
 

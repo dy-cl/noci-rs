@@ -268,6 +268,8 @@ pub fn print_input(input: &Input) {
             println!("ENABLED: true");
             println!("ACTIVE_SPACE_TOL: {:e}", n.active_space_tol);
             println!("MAX_CUMULANT: {}", n.max_cumulant);
+            println!("FOIS_WEIGHTING: {}", n.fois_weighting.as_str());
+            println!("FOIS_COUPLING_TOL: {:e}", n.fois_coupling_tol);
             println!("FOIS_TOL: {:e}", n.fois_tol);
             println!("MAX_MACRO: {}", n.max_macro);
             println!("MAX_MICRO: {}", n.max_micro);

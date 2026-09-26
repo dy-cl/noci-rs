@@ -5,6 +5,7 @@ use ndarray::{Array1, Array2, Array4};
 
 // Crate-root imports.
 use crate::AoData;
+use crate::input::{FoisWeighting, NOCCMCOptions};
 use crate::maths::linalg::loewdin_x;
 use crate::nocc::RDM1;
 use crate::nocc::contract::TermEvaluator;
@@ -150,9 +151,9 @@ pub(crate) struct FoisBasis {
     pub metric: Array2<f64>,
     /// Hamiltonian coupling weights h.
     pub h: Array1<f64>,
-    /// Weighted metric h S h.
+    /// Weighted metric `\tilde S = wSw`.
     pub weighted_metric: Array2<f64>,
-    /// `Canonical FOIS transformation Y = h X.`
+    /// Canonical FOIS transformation `Y = w\tilde X`.
     pub y: Array2<f64>,
 }
 
@@ -384,45 +385,57 @@ pub(in crate::nocc) fn excitation_class(
 }
 
 /// Build the weighted FOIS basis from the full raw excitation list.
+/// The weights `w_\mu` are either the Hamiltonian couplings `h_\mu` or, for coupled weighting,
+/// unit weights on excitations with `|h_\mu|` above the coupling threshold and zero otherwise.
+/// Both exclude spectator excitations of separated fragments, whose `h_\mu` vanish exactly.
 /// # Arguments:
 /// - `reference`: Normal-ordered reference state.
 /// - `manifold`: Orbital spaces and raw excitation list.
 /// - `evaluator`: Term-table evaluator.
-/// - `tol`: Weighted overlap eigenvalue threshold.
+/// - `options`: FOIS weighting, coupling threshold and weighted-metric eigenvalue threshold.
 /// # Returns:
 /// - `FoisBasis`: Raw metric, Hamiltonian weights, weighted metric, and Y.
+/// # References
+/// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (38)-(49).
 pub(crate) fn build_fois_basis(
     reference: &ReferenceState<'_>,
     manifold: &ExcitationManifold<'_>,
     evaluator: &TermEvaluator,
-    tol: f64,
+    options: &NOCCMCOptions,
 ) -> FoisBasis {
     // Raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from its class-pair blocks.
     let s = metric_matrix(reference, manifold, evaluator);
 
-    // Form the weighted metric `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
+    // Form the weighted metric `\tilde S = \operatorname{diag}(w) S \operatorname{diag}(w)`.
     let h = hamiltonian_weights(
         reference.ao,
         reference.gamma1,
         manifold.spaces,
         manifold.excitations,
     );
+    let w = match options.fois_weighting {
+        FoisWeighting::Coupled => {
+            let tol = options.fois_coupling_tol;
+            h.mapv(|x| if x.abs() > tol { 1.0 } else { 0.0 })
+        }
+        FoisWeighting::Hamiltonian => h.clone(),
+    };
     let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
 
     for i in 0..s.nrows() {
         for j in 0..s.ncols() {
-            stilde[(i, j)] = h[i] * s[(i, j)] * h[j];
+            stilde[(i, j)] = w[i] * s[(i, j)] * w[j];
         }
     }
 
     // Löwdin orthogonalisation removes small weighted-metric eigenmodes;
-    // `Y = \operatorname{diag}(h) \tilde X` maps orthogonal columns to the raw FOIS basis.
-    let xtilde = loewdin_x(&stilde, true, tol);
+    // `Y = \operatorname{diag}(w) \tilde X` maps orthogonal columns to the raw FOIS basis.
+    let xtilde = loewdin_x(&stilde, true, options.fois_tol);
     let mut y = xtilde.clone();
 
-    for mu in 0..h.len() {
+    for mu in 0..w.len() {
         for col in 0..y.ncols() {
-            y[(mu, col)] *= h[mu];
+            y[(mu, col)] *= w[mu];
         }
     }
 
