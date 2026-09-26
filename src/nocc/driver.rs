@@ -5,14 +5,13 @@ use std::collections::BTreeMap;
 
 // External crate imports.
 use mpi::topology::Communicator;
-use ndarray::{Array1, Array2};
-use ndarray_linalg::{Eigh, UPLO};
+use ndarray::{Array1, Array2, Axis};
 
 // Crate-root imports.
 use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;
-use crate::maths::general_evp;
+use crate::maths::{block_eigenvalues, general_evp, symmetric_blocks};
 use crate::nocc::contract::TermEvaluator;
 use crate::nocc::energy::reference_energy;
 use crate::nocc::reference::ReferenceState;
@@ -822,28 +821,16 @@ pub(crate) fn print_fois_metric_diagnostics(
         }
     }
 
-    let (s_evals, _) = s
-        .clone()
-        .eigh(UPLO::Upper)
-        .expect("raw FOIS overlap diagonalisation failed");
-
-    let (stilde_evals, _) = stilde
-        .clone()
-        .eigh(UPLO::Upper)
-        .expect("weighted FOIS overlap diagonalisation failed");
+    // Both metrics are block diagonal; rows the weights remove give zero eigenvalues.
+    let s_evals = block_eigenvalues(s, &fois.blocks);
+    let mut stilde_evals = block_eigenvalues(stilde, &fois.weighted_blocks);
+    let nweighted = fois.weighted_blocks.iter().map(|b| b.len()).sum::<usize>();
+    stilde_evals.extend(std::iter::repeat_n(0.0, s.nrows() - nweighted));
 
     // Check the retained FOIS columns satisfy `Y^T S Y = I`.
     let nkeep = y.ncols();
     let nnull = h.len() - nkeep;
-    let ytsy = y.t().dot(s).dot(y);
-    let mut orth_err: f64 = 0.0;
-
-    for i in 0..ytsy.nrows() {
-        for j in 0..ytsy.ncols() {
-            let target = if i == j { 1.0 } else { 0.0 };
-            orth_err = orth_err.max((ytsy[(i, j)] - target).abs());
-        }
-    }
+    let orth_err = fois_orthonormality_error(fois);
 
     println!("{}", "=".repeat(100));
     println!("GNOCC weighted FOIS metric diagnostics");
@@ -915,10 +902,7 @@ fn print_block_diagnostics(
             }
         }
 
-        let (evals, _) = block
-            .clone()
-            .eigh(UPLO::Upper)
-            .expect("raw FOIS block diagonalisation failed");
+        let evals = block_eigenvalues(&block, &symmetric_blocks(&block));
 
         println!(
             "{:?}: dim: {}, asym: {:.6e}, raw evals: [{:.6e}, {:.6e}]",
@@ -1025,14 +1009,7 @@ fn print_r0_diagnostics(
     }
 
     // Report the orthogonality residual alongside the two R0 discrepancies.
-    let ytsy = fois.y.t().dot(&fois.metric).dot(&fois.y);
-    let mut orth_err: f64 = 0.0;
-    for i in 0..ytsy.nrows() {
-        for j in 0..ytsy.ncols() {
-            let target = if i == j { 1.0 } else { 0.0 };
-            orth_err = orth_err.max((ytsy[(i, j)] - target).abs());
-        }
-    }
+    let orth_err = fois_orthonormality_error(fois);
 
     println!("{}", "=".repeat(100));
     println!("GNOCC zeroth-order residual diagnostics");
@@ -1041,6 +1018,36 @@ fn print_r0_diagnostics(
     println!("Max |Y^T S Y - I|: {:.6e}", orth_err);
     println!("||R0 - S h||: {:.6e}", raw_diff_norm2.sqrt());
     println!("||Y^T R0 - Y^T Sh||: {:.6e}", fois_diff_norm2.sqrt());
+}
+
+/// Return `\max|Y^\dagger S Y - I|`. Every column of `Y` is supported on one diagonal block of
+/// `S`, so `Y^\dagger S Y` is block diagonal and is formed block by block.
+/// # Arguments:
+/// - `fois`: FOIS basis data.
+/// # Returns:
+/// - `f64`: Largest deviation from orthonormality.
+fn fois_orthonormality_error(fois: &FoisBasis) -> f64 {
+    let y = &fois.y;
+    fois.weighted_blocks
+        .iter()
+        .map(|b| {
+            let rows = y.select(Axis(0), b);
+            let cols = (0..y.ncols())
+                .filter(|&c| rows.column(c).iter().any(|&x| x != 0.0))
+                .collect::<Vec<_>>();
+            let yb = rows.select(Axis(1), &cols);
+            let sb = fois.metric.select(Axis(0), b).select(Axis(1), b);
+            let m = yb.t().dot(&sb).dot(&yb);
+            let mut err: f64 = 0.0;
+            for i in 0..m.nrows() {
+                for j in 0..m.ncols() {
+                    let target = if i == j { 1.0 } else { 0.0 };
+                    err = err.max((m[(i, j)] - target).abs());
+                }
+            }
+            err
+        })
+        .fold(0.0, f64::max)
 }
 
 /// Print the first-order residual action diagnostic.

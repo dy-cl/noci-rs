@@ -203,6 +203,103 @@ pub fn positive_subspace<T: StateScalar>(
     (vals, vecs)
 }
 
+/// Partition the rows of a symmetric matrix into the connected components of its exact nonzero
+/// pattern, so the matrix is block diagonal over the components.
+/// # Arguments:
+/// - `m`: Symmetric matrix.
+/// # Returns
+/// - `Vec<Vec<usize>>`: Row indices of every component, each in increasing order.
+pub fn symmetric_blocks(m: &Array2<f64>) -> Vec<Vec<usize>> {
+    let n = m.nrows();
+
+    // Union-find over the rows, joining every nonzero off-diagonal pair.
+    let mut parent = (0..n).collect::<Vec<_>>();
+    fn root(
+        parent: &mut [usize],
+        mut i: usize,
+    ) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            if m[(i, j)] != 0.0 {
+                let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                if a != b {
+                    parent[a.max(b)] = a.min(b);
+                }
+            }
+        }
+    }
+
+    let mut blocks = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+    for i in 0..n {
+        let r = root(&mut parent, i);
+        blocks.entry(r).or_default().push(i);
+    }
+    blocks.into_values().collect()
+}
+
+/// Return the eigenvalues of a symmetric matrix from its diagonal blocks.
+/// # Arguments:
+/// - `m`: Symmetric matrix, uses only the lower triangle.
+/// - `blocks`: Row indices of every diagonal block, from `symmetric_blocks`.
+/// # Returns
+/// - `Vec<f64>`: Eigenvalues of every block, block by block.
+pub fn block_eigenvalues(
+    m: &Array2<f64>,
+    blocks: &[Vec<usize>],
+) -> Vec<f64> {
+    blocks
+        .par_iter()
+        .flat_map_iter(|b| {
+            let sub = m.select(Axis(0), b).select(Axis(1), b);
+            let (vals, _) = hermitian_eigh(&sub, UPLO::Lower);
+            vals.to_vec()
+        })
+        .collect()
+}
+
+/// Construct the rectangular orthogonalizer `X = U_+ \Lambda_+^{-1/2}` of a symmetric
+/// positive semidefinite matrix block by block over its diagonal blocks. The columns span the
+/// same space as `loewdin_x` with projection, and every column is supported on one block.
+/// # Arguments:
+/// - `s`: Symmetric matrix, uses only the lower triangle.
+/// - `blocks`: Row indices of every diagonal block, from `symmetric_blocks`.
+/// - `tol`: Tolerance for whether an eigenvalue is considered zero.
+/// # Returns
+/// - `Array2<f64>`: Orthogonalizer with one column per kept eigenvector.
+pub fn block_loewdin_x(
+    s: &Array2<f64>,
+    blocks: &[Vec<usize>],
+    tol: f64,
+) -> Array2<f64> {
+    let parts = blocks
+        .par_iter()
+        .map(|b| {
+            let sub = s.select(Axis(0), b).select(Axis(1), b);
+            (b, loewdin_x(&sub, true, tol))
+        })
+        .collect::<Vec<_>>();
+
+    let ncols = parts.iter().map(|(_, x)| x.ncols()).sum();
+    let mut x = Array2::<f64>::zeros((s.nrows(), ncols));
+    let mut col = 0;
+    for (b, part) in parts {
+        for (r, &row) in b.iter().enumerate() {
+            for c in 0..part.ncols() {
+                x[(row, col + c)] = part[(r, c)];
+            }
+        }
+        col += part.ncols();
+    }
+
+    x
+}
+
 /// Construct an orthogonalizer from the overlap matrix.
 /// If `project` is true, returns the rectangular orthogonalizer `X = U_+ Lambda_+^{-1/2}`.
 /// If `project` is false, returns the square orthogonalizer `X = U Lambda^{-1/2} U^\dagger`.

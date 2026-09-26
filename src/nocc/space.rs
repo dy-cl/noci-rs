@@ -6,7 +6,7 @@ use ndarray::{Array1, Array2, Array4};
 // Crate-root imports.
 use crate::AoData;
 use crate::input::{FoisWeighting, NOCCMCOptions};
-use crate::maths::linalg::loewdin_x;
+use crate::maths::linalg::{block_loewdin_x, symmetric_blocks};
 use crate::nocc::RDM1;
 use crate::nocc::contract::TermEvaluator;
 use crate::nocc::overlap::metric_matrix;
@@ -153,6 +153,10 @@ pub(crate) struct FoisBasis {
     pub h: Array1<f64>,
     /// Weighted metric `\tilde S = wSw`.
     pub weighted_metric: Array2<f64>,
+    /// Row indices of every diagonal block of the raw metric.
+    pub blocks: Vec<Vec<usize>>,
+    /// Row indices of every diagonal block of the weighted metric, excluding its zero rows.
+    pub weighted_blocks: Vec<Vec<usize>>,
     /// Canonical FOIS transformation `Y = w\tilde X`.
     pub y: Array2<f64>,
 }
@@ -428,9 +432,23 @@ pub(crate) fn build_fois_basis(
         }
     }
 
+    // The metric is block diagonal through its Kronecker deltas, and the weights only remove
+    // rows, so both are orthogonalised block by block.
+    let blocks = symmetric_blocks(&s);
+    let weighted_blocks = blocks
+        .iter()
+        .map(|b| {
+            b.iter()
+                .copied()
+                .filter(|&mu| w[mu] != 0.0)
+                .collect::<Vec<_>>()
+        })
+        .filter(|b| !b.is_empty())
+        .collect::<Vec<_>>();
+
     // Löwdin orthogonalisation removes small weighted-metric eigenmodes;
     // `Y = \operatorname{diag}(w) \tilde X` maps orthogonal columns to the raw FOIS basis.
-    let xtilde = loewdin_x(&stilde, true, options.fois_tol);
+    let xtilde = block_loewdin_x(&stilde, &weighted_blocks, options.fois_tol);
     let mut y = xtilde.clone();
 
     for mu in 0..w.len() {
@@ -443,6 +461,8 @@ pub(crate) fn build_fois_basis(
         metric: s,
         h,
         weighted_metric: stilde,
+        blocks,
+        weighted_blocks,
         y,
     }
 }
