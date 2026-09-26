@@ -28,11 +28,12 @@ use ndarray_linalg::Solve;
 
 // Crate-root imports.
 use crate::input::NOCCMCOptions;
-use crate::nocc::context::EvaluationContext;
+use crate::nocc::contract::TermEvaluator;
 use crate::nocc::dyall::{dyall_matrix, orbital_denominators};
 use crate::nocc::energy::correlation_energy;
+use crate::nocc::reference::ReferenceState;
 use crate::nocc::residual::residual_vector;
-use crate::nocc::space::{FoisBasis, metric_projector};
+use crate::nocc::space::{ExcitationManifold, FoisBasis, metric_projector};
 
 /// Converged or final state of the amplitude equations.
 pub(crate) struct AmplitudeSolution {
@@ -129,26 +130,32 @@ impl VectorDiis {
 /// linearised update equation for `\delta t` in micro-iterations, projects it with `P`, and
 /// updates the amplitudes with DIIS extrapolation.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
+/// - `evaluator`: Term-table evaluator.
 /// - `fois`: Weighted FOIS basis data.
 /// - `e0`: Reference energy, used only for printing total energies.
 /// - `options`: Iteration limits, tolerances, level shift and DIIS space.
 /// # Returns:
 /// - `AmplitudeSolution`: Final energy and convergence state.
 pub(crate) fn solve_amplitudes(
-    ctx: &EvaluationContext<'_>,
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+    evaluator: &TermEvaluator,
     fois: &FoisBasis,
     e0: f64,
     options: &NOCCMCOptions,
 ) -> AmplitudeSolution {
     let y = &fois.y;
-    let n = ctx.excitations.len();
+    let n = manifold.excitations.len();
 
     // Fixed parts of the update: `Y Y^\dagger A`, the projector `P` and the shifted
     // denominators `\Delta_\nu + \eta`.
-    let jacobian = y.dot(&y.t()).dot(&dyall_matrix(ctx));
+    let jacobian = y
+        .dot(&y.t())
+        .dot(&dyall_matrix(reference, manifold, evaluator));
     let projector = metric_projector(fois);
-    let denominators = orbital_denominators(ctx) + options.level_shift;
+    let denominators = orbital_denominators(reference, manifold) + options.level_shift;
 
     let mut amplitudes = Array1::<f64>::zeros(n);
     let mut diis = VectorDiis::new(options.diis_space);
@@ -169,9 +176,9 @@ pub(crate) fn solve_amplitudes(
 
     for iteration in 0..options.max_macro {
         // Energy and FOIS residual `R_i = \sum_\mu Y^\dagger_{i\mu} R_\mu` at the current amplitudes.
-        let dense = ctx.dense_amplitudes(&amplitudes);
-        let residual = residual_vector(ctx, &dense);
-        let ecorr = correlation_energy(ctx, &dense);
+        let dense = manifold.dense_amplitudes(&amplitudes);
+        let residual = residual_vector(reference, manifold, evaluator, &dense);
+        let ecorr = correlation_energy(reference, manifold, evaluator, &dense);
         let rfois = y.t().dot(&residual);
         let norm = rfois.dot(&rfois).sqrt();
 

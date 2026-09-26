@@ -16,36 +16,48 @@
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
-use crate::nocc::context::EvaluationContext;
+use crate::nocc::contract::TermEvaluator;
 use crate::nocc::loader::dyall_terms;
 use crate::nocc::overlap::assemble_block_matrix;
-use crate::nocc::space::Excitation;
+use crate::nocc::reference::ReferenceState;
+use crate::nocc::space::{Excitation, ExcitationManifold};
 
 /// Build the symmetric zeroth-order coupling matrix
 /// `A_{\mu\nu} = \langle\Phi|\hat\tau_\mu^\dagger\hat H_0\hat\tau_\nu|\Phi\rangle_c` in the raw
 /// excitation basis. The coupling vanishes between classes with different numbers of core
 /// holes or virtual particles, exactly as the metric does, so it shares the metric blocks.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
+/// - `evaluator`: Term-table evaluator.
 /// # Returns:
 /// - `Array2<f64>`: Coupling matrix `A_{\mu\nu}`.
-pub(crate) fn dyall_matrix(ctx: &EvaluationContext<'_>) -> Array2<f64> {
-    assemble_block_matrix(ctx, dyall_terms())
+pub(crate) fn dyall_matrix(
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+    evaluator: &TermEvaluator,
+) -> Array2<f64> {
+    assemble_block_matrix(reference, manifold, evaluator, dyall_terms())
 }
 
 /// Build the orbital-energy denominators of every excitation,
 /// `\Delta^{pq}_{rs} = f^p_p + f^q_q - f^r_r - f^s_s` for `\hat E^{pq}_{rs}` and
 /// `\Delta^p_q = f^p_p - f^q_q` for `\hat E^p_q`, from the generalised Fock diagonal.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
 /// # Returns:
 /// - `Array1<f64>`: One denominator per excitation.
 /// # References
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eq. (61).
-pub(crate) fn orbital_denominators(ctx: &EvaluationContext<'_>) -> Array1<f64> {
-    let f = |p: usize| ctx.fock[(p, p)];
+pub(crate) fn orbital_denominators(
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+) -> Array1<f64> {
+    let f = |p: usize| reference.fock[(p, p)];
 
-    ctx.excitations
+    manifold
+        .excitations
         .iter()
         .map(|&ex| match ex {
             Excitation::Single { p, q } => f(p) - f(q),

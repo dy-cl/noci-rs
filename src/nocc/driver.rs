@@ -13,10 +13,11 @@ use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;
 use crate::maths::general_evp;
-use crate::nocc::context::EvaluationContext;
+use crate::nocc::contract::TermEvaluator;
 use crate::nocc::energy::reference_energy;
+use crate::nocc::reference::ReferenceState;
 use crate::nocc::solver::{AmplitudeSolution, solve_amplitudes};
-use crate::nocc::space::{Excitation, FoisBasis, Spaces, excitation_class};
+use crate::nocc::space::{Excitation, ExcitationManifold, FoisBasis, Spaces, excitation_class};
 use crate::nocc::{Cumulants, RDM1, RDM2, RDM3, RDM4, cumulants, rdm1, rdm2, rdm3, rdm4};
 use crate::nocc::{residual, space};
 use crate::noci::{NOCIData, build_noci_hs, build_wicks_shared};
@@ -109,15 +110,13 @@ pub(crate) fn run_noccmc(
     let tol = options.active_space_tol;
     let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, tol, tol);
     let excitations = space::build_excitations(&spaces);
-    let ctx = EvaluationContext::new(
-        &noao,
-        &gamma1,
-        &lambdas,
-        &spaces,
-        &excitations,
-        options.max_cumulant,
-    );
-    let fois = space::build_fois_basis(&ctx, post.tol);
+    let reference = ReferenceState::new(&noao, &gamma1, &lambdas);
+    let manifold = ExcitationManifold {
+        spaces: &spaces,
+        excitations: &excitations,
+    };
+    let evaluator = TermEvaluator::new(options.max_cumulant);
+    let fois = space::build_fois_basis(&reference, &manifold, &evaluator, post.tol);
 
     if world.rank() == 0 {
         // Check orthonormality of NOCI natural orbitals and energy from RDMs.
@@ -136,14 +135,14 @@ pub(crate) fn run_noccmc(
         print_fois_metric_diagnostics(&spaces, &excitations, &fois);
 
         // Check known equality for zeroth order residual.
-        print_r0_diagnostics(&ctx, &fois);
+        print_r0_diagnostics(&reference, &manifold, &evaluator, &fois);
 
         // Check linearity of first-order residual.
-        print_r1_diagnostics(&ctx, &fois);
+        print_r1_diagnostics(&reference, &manifold, &evaluator, &fois);
 
         // Solve the amplitude equations and report the GNOCC energy.
         let e0 = reference_energy(&noao, &gamma1, &gamma2);
-        let solution = solve_amplitudes(&ctx, &fois, e0, options);
+        let solution = solve_amplitudes(&reference, &manifold, &evaluator, &fois, e0, options);
         print_solution(e0, &solution);
     }
 }
@@ -982,19 +981,23 @@ fn excitation_label(ex: Excitation) -> String {
 
 /// Print the zeroth-order residual projection diagnostic.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
+/// - `evaluator`: Term-table evaluator.
 /// - `fois`: Reusable weighted FOIS basis data.
 /// # Returns:
 /// - `()`: Prints raw and projected zeroth-order residual diagnostics.
 fn print_r0_diagnostics(
-    ctx: &EvaluationContext<'_>,
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+    evaluator: &TermEvaluator,
     fois: &space::FoisBasis,
 ) {
-    let nexc = ctx.excitations.len();
+    let nexc = manifold.excitations.len();
 
     // Compare the direct zeroth-order residual with the metric identity
     // `R_0 = S h`, first in the raw basis and then after projection by `Y^T`.
-    let r0_direct = residual::zeroth_order_residual(ctx);
+    let r0_direct = residual::zeroth_order_residual(reference, manifold, evaluator);
     let r0_sh = fois.metric.dot(&fois.h);
     let diff_raw = &r0_direct - &r0_sh;
 
@@ -1042,15 +1045,19 @@ fn print_r0_diagnostics(
 
 /// Print the first-order residual action diagnostic.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
+/// - `evaluator`: Term-table evaluator.
 /// - `fois`: Reusable weighted FOIS basis data.
 /// # Returns:
 /// - `()`: Prints raw and projected first-order residual diagnostics.
 fn print_r1_diagnostics(
-    ctx: &EvaluationContext<'_>,
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+    evaluator: &TermEvaluator,
     fois: &space::FoisBasis,
 ) {
-    let nexc = ctx.excitations.len();
+    let nexc = manifold.excitations.len();
     let nfois = fois.y.ncols();
 
     // Probe the linear first-order residual with a deterministic FOIS
@@ -1062,7 +1069,7 @@ fn print_r1_diagnostics(
     }
 
     let t_raw = fois.y.dot(&t_fois);
-    let r1_direct = residual::first_order_residual(ctx, &t_raw);
+    let r1_direct = residual::first_order_residual(reference, manifold, evaluator, &t_raw);
     let r1_direct_fois = fois.y.t().dot(&r1_direct);
 
     let mut r1_max: f64 = 0.0;

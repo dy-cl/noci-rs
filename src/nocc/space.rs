@@ -1,14 +1,15 @@
 // nocc/space.rs
 
 // External crate imports.
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Array4};
 
 // Crate-root imports.
 use crate::AoData;
 use crate::maths::linalg::loewdin_x;
 use crate::nocc::RDM1;
-use crate::nocc::context::EvaluationContext;
+use crate::nocc::contract::TermEvaluator;
 use crate::nocc::overlap::metric_matrix;
+use crate::nocc::reference::ReferenceState;
 use crate::scf::fock;
 
 /// NOCC orbital class in the NOCI natural-orbital basis.
@@ -88,6 +89,59 @@ pub(crate) struct Spaces {
     pub class_of: Vec<OrbitalClass>,
     /// Active local index lookup by full MO index.
     pub active_map: Vec<Option<usize>>,
+}
+
+/// Excitation manifold of the amplitudes and residuals: the orbital spaces and the raw
+/// spin-free excitation list whose order indexes every amplitude and residual vector.
+pub(crate) struct ExcitationManifold<'a> {
+    /// Core, active, and virtual orbital-space maps.
+    pub(crate) spaces: &'a Spaces,
+    /// Raw spin-free excitation list.
+    pub(crate) excitations: &'a [Excitation],
+}
+
+/// Dense spin-free amplitude tensors of one cluster operator.
+pub(crate) struct DenseAmplitudes {
+    /// Singles amplitudes `t^q_p`, stored as `[q, p]`.
+    pub(crate) t1: Array2<f64>,
+    /// Pair-symmetric doubles amplitudes `\bar t^{rs}_{pq}`, stored as `[r, s, p, q]`.
+    pub(crate) t2: Array4<f64>,
+}
+
+impl ExcitationManifold<'_> {
+    /// Build the dense amplitude tensors of one amplitude vector.
+    /// The cluster operator is `\hat T = \sum_\mu t_\mu \hat\tau_\mu` over the excitation list.
+    /// The generated tables use a pair-symmetric `\bar t` with
+    /// `\hat T_2 = \tfrac12 \sum \bar t^{rs}_{pq} \hat E^{pq}_{rs}` over all orbitals, and
+    /// `\hat E^{qp}_{sr} = \hat E^{pq}_{rs}`, so each amplitude enters both `X` and its pair swap
+    /// `PX`: `\bar t_X = \bar t_{PX} = t_X + t_{PX}`, where `t_{PX}` is zero when the swapped
+    /// excitation is not in the list.
+    /// # Arguments:
+    /// - `amplitudes`: Cluster amplitude vector in the same order as the excitation list.
+    /// # Returns:
+    /// - `DenseAmplitudes`: Dense `t_1` and `\bar t_2` tensors.
+    pub(crate) fn dense_amplitudes(
+        &self,
+        amplitudes: &Array1<f64>,
+    ) -> DenseAmplitudes {
+        let n = self.spaces.nmo;
+        let mut t1 = Array2::<f64>::zeros((n, n));
+        let mut t2 = Array4::<f64>::zeros((n, n, n, n));
+
+        for (nu, &ex) in self.excitations.iter().enumerate() {
+            match ex {
+                Excitation::Single { p, q } => {
+                    t1[(q, p)] = amplitudes[nu];
+                }
+                Excitation::Double { p, q, r, s } => {
+                    t2[(r, s, p, q)] += amplitudes[nu];
+                    t2[(s, r, q, p)] += amplitudes[nu];
+                }
+            }
+        }
+
+        DenseAmplitudes { t1, t2 }
+    }
 }
 
 /// Reusable raw and orthogonalized FOIS basis data.
@@ -331,19 +385,28 @@ pub(in crate::nocc) fn excitation_class(
 
 /// Build the weighted FOIS basis from the full raw excitation list.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
+/// - `evaluator`: Term-table evaluator.
 /// - `tol`: Weighted overlap eigenvalue threshold.
 /// # Returns:
 /// - `FoisBasis`: Raw metric, Hamiltonian weights, weighted metric, and Y.
 pub(crate) fn build_fois_basis(
-    ctx: &EvaluationContext<'_>,
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+    evaluator: &TermEvaluator,
     tol: f64,
 ) -> FoisBasis {
     // Raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from its class-pair blocks.
-    let s = metric_matrix(ctx);
+    let s = metric_matrix(reference, manifold, evaluator);
 
     // Form the weighted metric `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
-    let h = hamiltonian_weights(ctx.ao, ctx.gamma1, ctx.spaces, ctx.excitations);
+    let h = hamiltonian_weights(
+        reference.ao,
+        reference.gamma1,
+        manifold.spaces,
+        manifold.excitations,
+    );
     let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
 
     for i in 0..s.nrows() {

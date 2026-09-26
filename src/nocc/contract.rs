@@ -47,8 +47,9 @@ pub(crate) struct TablePlan {
     term_starts: Vec<u32>,
 }
 
-/// Table plans of one run, keyed by table address.
-pub(crate) struct PlanCache {
+/// Evaluator of generated term tables: the cumulant truncation and the plans of every table
+/// evaluated in one run, keyed by table address.
+pub(crate) struct TermEvaluator {
     /// Highest cumulant rank kept; terms with higher-rank cumulants are dropped.
     max_cumulant: usize,
     /// Cached plans.
@@ -92,12 +93,12 @@ struct Workspace {
     out: Vec<f64>,
 }
 
-impl PlanCache {
-    /// Build an empty plan cache.
+impl TermEvaluator {
+    /// Build an evaluator with no resolved plans.
     /// # Arguments:
     /// - `max_cumulant`: Highest cumulant rank kept in every table.
     /// # Returns:
-    /// - `Self`: Empty cache.
+    /// - `Self`: Evaluator.
     pub(crate) fn new(max_cumulant: usize) -> Self {
         Self {
             max_cumulant,

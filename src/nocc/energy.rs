@@ -2,9 +2,10 @@
 
 // Crate-root imports.
 use crate::AoData;
-use crate::nocc::context::{DenseAmplitudes, EvaluationContext};
-use crate::nocc::contract::{FactorBlocks, evaluate_dense_table};
+use crate::nocc::contract::{FactorBlocks, TermEvaluator, evaluate_dense_table};
 use crate::nocc::loader::{e1_terms, e2_terms};
+use crate::nocc::reference::ReferenceState;
+use crate::nocc::space::{DenseAmplitudes, ExcitationManifold};
 use crate::nocc::{RDM1, RDM2};
 
 /// Evaluate the reference energy from the one- and two-body RDMs,
@@ -47,19 +48,23 @@ pub(crate) fn reference_energy(
 /// Evaluate the correlation energy
 /// `E - E_0 = \langle\Phi|\hat H\hat T|\Phi\rangle_c + \tfrac12\langle\Phi|\hat H\{\hat T\hat T\}|\Phi\rangle_c`.
 /// # Arguments:
-/// - `ctx`: Reference evaluation context.
+/// - `reference`: Normal-ordered reference state.
+/// - `manifold`: Orbital spaces and raw excitation list.
+/// - `evaluator`: Term-table evaluator.
 /// - `amplitudes`: Dense amplitude tensors of the current cluster operator.
 /// # Returns:
 /// - `f64`: Correlation energy.
 /// # References
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eq. (35).
 pub(crate) fn correlation_energy(
-    ctx: &EvaluationContext<'_>,
+    reference: &ReferenceState<'_>,
+    manifold: &ExcitationManifold<'_>,
+    evaluator: &TermEvaluator,
     amplitudes: &DenseAmplitudes,
 ) -> f64 {
-    let tensors = ctx.tensors(Some(amplitudes));
+    let tensors = reference.tensors(manifold.spaces, Some(amplitudes));
     let tables = [e1_terms(), e2_terms()].map(|t| (t.terms.as_slice(), t.indices.as_slice()));
-    let plans = tables.map(|t| ctx.plans.table_plan(t));
+    let plans = tables.map(|t| evaluator.table_plan(t));
     let blocks = FactorBlocks::build_factor_blocks(
         &plans.iter().map(|p| p.as_ref()).collect::<Vec<_>>(),
         &tensors,
