@@ -491,11 +491,14 @@ unsafe fn xw_rdmk_same_m0_prepared_simd_const<
     let zero = V::zero();
     let mut determinant = [zero; DD];
 
-    // Build packed augmented determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` with
-    // `X^{(0)}` on/below diagonal and `Y^{(0)}` above it.
+    // Build packed augmented determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
+    // Entries use `X^{(0)}` where the row creator stands left of the column annihilator in the
+    // operator string, and `Y^{(0)}` otherwise. The external string is creators first,
+    // `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`, so its whole `K x K` block uses
+    // `X^{(0)}`; the remaining entries take `X^{(0)}` on and below the diagonal.
     for i in 0..D {
         for j in 0..D {
-            let matrix = if i >= j { x0 } else { y0 };
+            let matrix = if i >= j || j < K { x0 } else { y0 };
             let mut values = [T::from_real(0.0); LANES];
             for lane in 0..LANES {
                 let index = rows[lane][i] * ext_n + cols[lane][j];
@@ -978,8 +981,10 @@ fn xw_rdmk_same_m0_prepared<T: NOCIScalar, const K: usize>(
 }
 
 /// Evaluate one fixed-rank same-spin rank-`K` RDM determinant for `m = 0`.
-/// The augmented matrix has dimension `D = K + L`, with `X^{(0)}` on and below the diagonal and
-/// `Y^{(0)}` above it. Its first `K` labels are external RDM indices; its remaining labels use the
+/// The augmented matrix has dimension `D = K + L`, with `X^{(0)}` on and below the diagonal and in
+/// the external `K x K` block, and `Y^{(0)}` elsewhere above it, so the external operators form
+/// the creators-first string `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`. Its
+/// first `K` labels are external RDM indices; its remaining labels use the
 /// contraction-space ordering `V_x \cup O_w` by `O_x \cup V_w` for ranks `(RX,RW)`.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
@@ -1043,12 +1048,15 @@ fn xw_rdmk_same_m0_prepared_const<
             let (x0, y0, ext_n) = fundamental;
             let d = &mut scratch.det0.as_mut_slice()[..DD];
 
-            // Build augmented `m_i = 0` determinant using `X^{(0)}` on/below diagonal and
-            // `Y^{(0)}` above it.
+            // Build augmented `m_i = 0` determinant `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}`.
+            // Entries use `X^{(0)}` where the row creator stands left of the column annihilator in the
+            // operator string, and `Y^{(0)}` otherwise. The external string is creators first,
+            // `a^\dagger_{p_1}\cdots a^\dagger_{p_K} a_{q_K}\cdots a_{q_1}`, so its whole `K x K` block uses
+            // `X^{(0)}`; the remaining entries take `X^{(0)}` on and below the diagonal.
             for i in 0..D {
                 let row = rows[i] * ext_n;
                 for j in 0..D {
-                    d[i * D + j] = if i >= j {
+                    d[i * D + j] = if i >= j || j < K {
                         x0[row + cols[j]]
                     } else {
                         y0[row + cols[j]]
@@ -1070,7 +1078,8 @@ fn xw_rdmk_same_m0_prepared_const<
 
 /// Evaluate one same-spin rank-`K` `m = 0` element outside the const-dispatch table.
 /// This computes `{}^{xw}\tilde S\det\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}` with runtime
-/// augmented dimension `D = K + RX + RW` and the same `X`-lower/`Y`-upper convention.
+/// augmented dimension `D = K + RX + RW` and the same fill convention: `X` on and below the
+/// diagonal and in the creators-first external block, `Y` elsewhere above it.
 /// # Arguments:
 /// - `w`: Same-spin reference-pair Wick intermediates with `m = 0`.
 /// - `ex`: Excitations defining the bra and ket determinants respectively.
@@ -1107,11 +1116,12 @@ fn xw_rdmk_same_m0_gen_prepared<T: NOCIScalar, const K: usize>(
             let (x0, y0, ext_n) = fundamental;
             let d = scratch.det0.as_mut_slice();
 
-            // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime.
+            // Construct `\mathbf D_{\mathrm{RDM}}^{\mathbf p\mathbf q}(0,\ldots,0)` at runtime, with
+            // the creators-first external block entirely in `X^{(0)}`.
             for i in 0..d_rank {
                 let row = rows[i] * ext_n;
                 for j in 0..d_rank {
-                    d[i * d_rank + j] = if i >= j {
+                    d[i * d_rank + j] = if i >= j || j < K {
                         x0[row + cols[j]]
                     } else {
                         y0[row + cols[j]]
@@ -1174,12 +1184,13 @@ fn xw_rdmk_same_gen_prepared<T: NOCIScalar, const K: usize>(
             let (x1, y1) = one.unwrap_or((x0, y0));
 
             // Prepare all-`m_i=0` and all-`m_i=1` endpoint determinants. Each allowed distribution
-            // later selects whole columns from these endpoints.
+            // later selects whole columns from these endpoints. The creators-first external
+            // block lies entirely in `X`.
             for i in 0..d_rank {
                 let row = rows[i] * ext_n;
                 for j in 0..d_rank {
                     let index = i * d_rank + j;
-                    if i >= j {
+                    if i >= j || j < K {
                         scratch.det0.as_mut_slice()[index] = x0[row + cols[j]];
                         scratch.det1.as_mut_slice()[index] = x1[row + cols[j]];
                     } else {

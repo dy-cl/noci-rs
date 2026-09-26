@@ -188,6 +188,11 @@ fn rdm3_pair_naive<T: NOCIScalar>(
 /// <a^+_{p sigma} a^+_{q tau} a^+_{r upsilon}
 /// a_{u upsilon} a_{t tau} a_{s sigma}>` by summing its eight alpha/beta
 /// assignments while preserving the external operator order within each spin sector.
+/// Known issue: for determinant pairs whose alpha and beta overlaps have opposite signs, such as
+/// RHF with UHF, individual pair contributions differ from the naive expansion by up to order
+/// one, although the pair `(x, w)` and `(w, x)` contributions cancel exactly. The coefficient-
+/// weighted RDM of one real state, the only current use, therefore matches the naive result to
+/// machine precision; transition RDMs with different bra and ket coefficients would be affected.
 /// # Arguments:
 /// - `data`: Shared data required for NOCI matrix-element evaluation.
 /// - `pair`: Pair of determinants whose transition RDM is to be evaluated.
