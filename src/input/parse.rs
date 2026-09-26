@@ -811,7 +811,21 @@ fn read_snoci(snoci_tbl: Option<Table>) -> Option<SNOCIOptions> {
 /// # Returns:
 /// - `Option<NOCCMCOptions>`: Parsed NOCCMC options.
 fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
-    noccmc_tbl.map(|_| NOCCMCOptions::default())
+    noccmc_tbl.map(|t| {
+        let defaults = NOCCMCOptions::default();
+        NOCCMCOptions {
+            active_space_tol: t
+                .get("active_space_tol")
+                .unwrap_or(defaults.active_space_tol),
+            max_cumulant: t.get("max_cumulant").unwrap_or(defaults.max_cumulant),
+            max_macro: t.get("max_macro").unwrap_or(defaults.max_macro),
+            max_micro: t.get("max_micro").unwrap_or(defaults.max_micro),
+            residual_tol: t.get("residual_tol").unwrap_or(defaults.residual_tol),
+            micro_tol: t.get("micro_tol").unwrap_or(defaults.micro_tol),
+            level_shift: t.get("level_shift").unwrap_or(defaults.level_shift),
+            diis_space: t.get("diis_space").unwrap_or(defaults.diis_space),
+        }
+    })
 }
 
 /// Read excitation options from optional Lua table.

@@ -1,270 +1,147 @@
 // nocc/residual.rs
-//
+
+// Standard library imports.
+use std::collections::BTreeMap;
+
 // External crate imports.
-use ndarray::{Array1, Array2, Array4};
-use rayon::prelude::*;
+use ndarray::Array1;
 
 // Crate-root imports.
-use crate::AoData;
-use crate::nocc::common::{Tensors, class_name, eval};
+use crate::nocc::common::{Tensors, class_name, excitation_indices};
+use crate::nocc::context::{DenseAmplitudes, EvaluationContext};
+use crate::nocc::contract::{DenseBlock, FactorBlocks, evaluate_dense_table};
 use crate::nocc::loader::{r0_terms, r1_terms, r2_terms};
-use crate::nocc::space::{Excitation, ExcitationClass, Spaces, excitation_class};
-use crate::nocc::terms::{ResidualClassTerms, ResidualTermSet};
-use crate::nocc::{Cumulants, RDM1};
-use crate::scf::fock;
+use crate::nocc::space::{Excitation, Spaces, excitation_class};
+use crate::nocc::terms::ResidualTermSet;
 
-/// Return residual terms for one excitation class.
+/// Return the position of every orbital within its own orbital space.
 /// # Arguments:
-/// - `set`: Residual term table.
-/// - `class`: Excitation class.
+/// - `spaces`: Core, active, and virtual orbital-space maps.
 /// # Returns:
-/// - `&ResidualClassTerms`: Generated terms for the excitation class.
-fn data(
-    set: &ResidualTermSet,
-    class: ExcitationClass,
-) -> &ResidualClassTerms {
-    set.classes
-        .get(class_name(class))
-        .expect("missing residual class terms")
+/// - `Vec<usize>`: Position of each MO in the core, active or virtual list.
+pub(crate) fn orbital_positions(spaces: &Spaces) -> Vec<usize> {
+    let mut positions = vec![0; spaces.nmo];
+    for list in [&spaces.core, &spaces.active, &spaces.virtuals] {
+        for (i, &p) in list.iter().enumerate() {
+            positions[p] = i;
+        }
+    }
+    positions
 }
 
-/// Build dense spin-free amplitude tensors.
-/// Doubles enter as `T_2 = \tfrac12 \sum_X t_X \hat E_X` over the excitation list. The generated
-/// tables use a pair-symmetric `\bar t` with `T_2 = \tfrac12 \sum \bar t^{rs}_{pq} \hat E^{pq}_{rs}`
-/// over all orbitals, so each amplitude is shared between `X` and its pair swap
-/// `\hat E^{qp}_{sr} = \hat E^{pq}_{rs}`: `\bar t_X = \bar t_{PX} = \tfrac12 (t_X + t_{PX})`, where
-/// `t_{PX}` is zero when the swapped excitation is not in the list.
+/// Evaluate the sum of several residual orders at every raw excitation.
+/// Each excitation class is evaluated as one dense block over its free-index spaces, summed
+/// over the requested orders, and its listed elements are then gathered.
 /// # Arguments:
-/// - `n`: Number of molecular orbitals.
-/// - `excitations`: Raw spin-free excitation list defining the amplitude ordering.
-/// - `amplitudes`: Cluster amplitude vector in the same order as `excitations`.
+/// - `ctx`: Reference evaluation context.
+/// - `sets`: Residual term tables of the orders to sum.
+/// - `tensors`: Runtime tensors, including the amplitudes when any order needs them.
 /// # Returns:
-/// - `(Array2<f64>, Array4<f64>)`: Dense `t1` and `t2` amplitude tensors.
-fn amps(
-    n: usize,
-    excitations: &[Excitation],
-    amplitudes: &Array1<f64>,
-) -> (Array2<f64>, Array4<f64>) {
-    let mut t1 = Array2::<f64>::zeros((n, n));
-    let mut t2 = Array4::<f64>::zeros((n, n, n, n));
+/// - `Array1<f64>`: Summed residual in the raw excitation basis.
+/// # Panics
+/// - Panics if a table has no terms for an excitation class in the list.
+fn residual_orders(
+    ctx: &EvaluationContext<'_>,
+    sets: &[&ResidualTermSet],
+    tensors: &Tensors<'_>,
+) -> Array1<f64> {
+    // Group the raw excitations by class.
+    let mut classes = BTreeMap::<&'static str, Vec<usize>>::new();
+    for (mu, &ex) in ctx.excitations.iter().enumerate() {
+        classes
+            .entry(class_name(excitation_class(ctx.spaces, ex)))
+            .or_default()
+            .push(mu);
+    }
 
-    for (nu, &ex) in excitations.iter().enumerate() {
-        match ex {
-            Excitation::Single { p, q } => {
-                t1[(q, p)] = amplitudes[nu];
+    // Dense factor blocks shared by every table of every class.
+    let plans = classes
+        .keys()
+        .flat_map(|&name| sets.iter().map(move |set| &set.classes[name]))
+        .map(|c| ctx.plans.table_plan((&c.terms, &c.indices)))
+        .collect::<Vec<_>>();
+    let blocks = FactorBlocks::build_factor_blocks(
+        &plans.iter().map(|p| p.as_ref()).collect::<Vec<_>>(),
+        tensors,
+    );
+
+    let positions = orbital_positions(ctx.spaces);
+    let mut out = Array1::<f64>::zeros(ctx.excitations.len());
+
+    for (name, members) in &classes {
+        // `R = \sum_n R_n` over the requested orders, as one dense block.
+        let mut block: Option<DenseBlock> = None;
+        for set in sets {
+            let class = &set.classes[*name];
+            let table = (class.terms.as_slice(), class.indices.as_slice());
+            let plan = ctx.plans.table_plan(table);
+            let part = evaluate_dense_table(table, &class.free, &plan, &blocks);
+            match &mut block {
+                Some(b) => {
+                    for (x, y) in b.data.iter_mut().zip(part.data) {
+                        *x += y;
+                    }
+                }
+                None => block = Some(part),
             }
-            Excitation::Double { p, q, r, s } => {
-                t2[(r, s, p, q)] += 0.5 * amplitudes[nu];
-                t2[(s, r, q, p)] += 0.5 * amplitudes[nu];
-            }
+        }
+        let block = block.expect("at least one residual order");
+
+        // Gather each listed excitation from its free-index tuple.
+        for &mu in members {
+            let ex: Excitation = ctx.excitations[mu];
+            let (values, n) = excitation_indices(ex);
+            let flat = values[..n]
+                .iter()
+                .zip(&block.dims)
+                .fold(0, |acc, (&p, &d)| acc * d + positions[p]);
+            out[mu] = block.data[flat];
         }
     }
 
-    (t1, t2)
+    out
 }
 
-/// Build a spin-free Fock matrix from the reference one-particle density.
+/// Build the zeroth-order residual `R_{0,\mu} = \langle\Phi|\hat\tau_\mu^\dagger\hat H|\Phi\rangle_c`.
 /// # Arguments:
-/// - `ao`: Integrals in the NOCI natural-orbital basis.
-/// - `gamma1`: Spin-free one-particle RDM.
+/// - `ctx`: Reference evaluation context.
 /// # Returns:
-/// - `Array2<f64>`: Spin-free Fock matrix.
-fn fockm(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-) -> Array2<f64> {
-    let n = gamma1.n;
-    let mut da = Array2::<f64>::zeros((n, n));
-    let mut db = Array2::<f64>::zeros((n, n));
-
-    for p in 0..n {
-        for q in 0..n {
-            let value = 0.5 * gamma1.data[p * n + q];
-            da[(p, q)] = value;
-            db[(p, q)] = value;
-        }
-    }
-
-    fock(&ao.h, &ao.eri_coul, &da, &db).0
+/// - `Array1<f64>`: Zeroth-order residual in the raw excitation basis.
+pub(crate) fn zeroth_order_residual(ctx: &EvaluationContext<'_>) -> Array1<f64> {
+    residual_orders(ctx, &[r0_terms()], &ctx.tensors(None))
 }
 
-/// Evaluate one zeroth-order residual element.
+/// Build the first-order residual `R_{1,\mu} = \langle\Phi|\hat\tau_\mu^\dagger\hat H\hat T|\Phi\rangle_c`,
+/// linear in the amplitudes.
 /// # Arguments:
-/// - `ex`: Raw spin-free excitation.
-/// - `tensors`: Reference tensors needed by the residual evaluator.
+/// - `ctx`: Reference evaluation context.
+/// - `amplitudes`: Cluster amplitude vector in the raw excitation basis.
 /// # Returns:
-/// - `f64`: Zeroth-order residual element.
-fn r0e(
-    ex: Excitation,
-    tensors: &Tensors<'_>,
-) -> f64 {
-    let class = data(r0_terms(), excitation_class(tensors.spaces, ex));
-
-    eval(
-        class.indices.len(),
-        &class.indices,
-        &class.terms,
-        &[(class.free.as_slice(), ex)],
-        tensors,
-    )
-}
-
-/// Evaluate one first-order residual element.
-/// # Arguments:
-/// - `ex`: Raw spin-free excitation.
-/// - `tensors`: Reference tensors needed by the residual evaluator.
-/// - `amplitudes`: Cluster amplitude tensors.
-/// # Returns:
-/// - `f64`: First-order residual element.
-fn r1e(
-    ex: Excitation,
-    tensors: &Tensors<'_>,
-) -> f64 {
-    let class = data(r1_terms(), excitation_class(tensors.spaces, ex));
-
-    eval(
-        class.indices.len(),
-        &class.indices,
-        &class.terms,
-        &[(class.free.as_slice(), ex)],
-        tensors,
-    )
-}
-
-/// Evaluate one second-order residual element.
-/// # Arguments:
-/// - `ex`: Raw spin-free excitation.
-/// - `tensors`: Reference tensors needed by the residual evaluator.
-/// - `amplitudes`: Cluster amplitude tensors.
-/// # Returns:
-/// - `f64`: First-order residual element.
-fn r2e(
-    ex: Excitation,
-    tensors: &Tensors<'_>,
-) -> f64 {
-    let class = data(r2_terms(), excitation_class(tensors.spaces, ex));
-
-    eval(
-        class.indices.len(),
-        &class.indices,
-        &class.terms,
-        &[(class.free.as_slice(), ex)],
-        tensors,
-    )
-}
-
-/// Build the direct zeroth-order residual vector.
-/// # Arguments:
-/// - `ao`: Integrals in the NOCI natural-orbital basis.
-/// - `gamma1`: Spin-free one-particle RDM.
-/// - `lambdas`: Spin-free active-space cumulants.
-/// - `spaces`: Core, active, and virtual orbital-space maps.
-/// - `excitations`: Raw spin-free excitation list.
-/// # Returns:
-/// - `Array1<f64>`: Direct zeroth-order residual vector.
-pub(crate) fn r0(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-    lambdas: &Cumulants<f64>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
-) -> Array1<f64> {
-    let f = fockm(ao, gamma1);
-
-    let tensors = Tensors {
-        ao: Some(ao),
-        f: Some(&f),
-        spaces,
-        gamma1,
-        lambdas,
-        t1: None,
-        t2: None,
-    };
-
-    let out: Vec<f64> = excitations
-        .par_iter()
-        .map(|&ex| r0e(ex, &tensors))
-        .collect();
-
-    Array1::from_vec(out)
-}
-
-/// Build the first-order residual vector, linear in the supplied amplitudes.
-/// # Arguments:
-/// - `ao`: Integrals in the NOCI natural-orbital basis.
-/// - `gamma1`: Spin-free one-particle RDM.
-/// - `lambdas`: Spin-free active-space cumulants.
-/// - `spaces`: Core, active, and virtual orbital-space maps.
-/// - `excitations`: Raw spin-free excitation list.
-/// - `amplitudes`: Cluster amplitude vector in the same order as `excitations`.
-/// # Returns:
-/// - `Array1<f64>`: First-order residual contribution.
-pub(crate) fn r1(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-    lambdas: &Cumulants<f64>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
+/// - `Array1<f64>`: First-order residual in the raw excitation basis.
+pub(crate) fn first_order_residual(
+    ctx: &EvaluationContext<'_>,
     amplitudes: &Array1<f64>,
 ) -> Array1<f64> {
-    let n = gamma1.n;
-    let f = fockm(ao, gamma1);
-    let (t1, t2) = amps(n, excitations, amplitudes);
-
-    let tensors = Tensors {
-        ao: Some(ao),
-        f: Some(&f),
-        spaces,
-        gamma1,
-        lambdas,
-        t1: Some(&t1),
-        t2: Some(&t2),
-    };
-
-    let out: Vec<f64> = excitations
-        .par_iter()
-        .map(|&ex| r1e(ex, &tensors))
-        .collect();
-
-    Array1::from_vec(out)
+    let dense = ctx.dense_amplitudes(amplitudes);
+    residual_orders(ctx, &[r1_terms()], &ctx.tensors(Some(&dense)))
 }
 
-/// Build the first-order residual vector, quadratic in the supplied amplitudes.
+/// Build the full residual
+/// `R_\mu = \langle\Phi|\hat\tau_\mu^\dagger\hat H\{1 + \hat T + \tfrac12\hat T^2\}|\Phi\rangle_c`.
 /// # Arguments:
-/// - `ao`: Integrals in the NOCI natural-orbital basis.
-/// - `gamma1`: Spin-free one-particle RDM.
-/// - `lambdas`: Spin-free active-space cumulants.
-/// - `spaces`: Core, active, and virtual orbital-space maps.
-/// - `excitations`: Raw spin-free excitation list.
-/// - `amplitudes`: Cluster amplitude vector in the same order as `excitations`.
+/// - `ctx`: Reference evaluation context.
+/// - `amplitudes`: Dense amplitude tensors of the current cluster operator.
 /// # Returns:
-/// - `Array1<f64>`: First-order residual contribution.
-pub(crate) fn r2(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-    lambdas: &Cumulants<f64>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
-    amplitudes: &Array1<f64>,
+/// - `Array1<f64>`: Residual in the raw excitation basis.
+/// # References
+/// - Lee and Tew, arXiv:2507.13472 (2025), Eq. (36).
+pub(crate) fn residual_vector(
+    ctx: &EvaluationContext<'_>,
+    amplitudes: &DenseAmplitudes,
 ) -> Array1<f64> {
-    let n = gamma1.n;
-    let f = fockm(ao, gamma1);
-    let (t1, t2) = amps(n, excitations, amplitudes);
-
-    let tensors = Tensors {
-        ao: Some(ao),
-        f: Some(&f),
-        spaces,
-        gamma1,
-        lambdas,
-        t1: Some(&t1),
-        t2: Some(&t2),
-    };
-
-    let out: Vec<f64> = excitations
-        .par_iter()
-        .map(|&ex| r2e(ex, &tensors))
-        .collect();
-
-    Array1::from_vec(out)
+    residual_orders(
+        ctx,
+        &[r0_terms(), r1_terms(), r2_terms()],
+        &ctx.tensors(Some(amplitudes)),
+    )
 }

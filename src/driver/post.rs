@@ -94,7 +94,8 @@ pub fn run_real_post_reference(
                 .withmocache(post.mocache);
             let coeffs = Array1::from_vec(reference.c0.clone());
 
-            noci_natural_orbitals(&data, &coeffs, 1e-6, 1e-6)
+            let tol = input.noccmc.as_ref().map_or(1e-6, |n| n.active_space_tol);
+            noci_natural_orbitals(&data, &coeffs, tol, tol)
         };
 
         reference.wicks = None;

@@ -140,13 +140,40 @@ impl Default for QMCOptions {
     }
 }
 
-pub struct NOCCMCOptions {}
+pub struct NOCCMCOptions {
+    /// Natural-occupation tolerance for the active space: orbitals within this distance of two
+    /// or zero electrons are core or virtual, and all others active.
+    pub active_space_tol: f64,
+    /// Highest cumulant rank kept in the equations; terms with higher-rank cumulants are dropped.
+    pub max_cumulant: usize,
+    /// Maximum number of amplitude macro-iterations.
+    pub max_macro: usize,
+    /// Maximum number of micro-iterations per amplitude update.
+    pub max_micro: usize,
+    /// Convergence threshold on the FOIS residual norm `\lVert Y^\dagger R\rVert`.
+    pub residual_tol: f64,
+    /// Convergence threshold on the linearised update equation residual.
+    pub micro_tol: f64,
+    /// Level shift `\eta` added to the orbital-energy denominators.
+    pub level_shift: f64,
+    /// Number of vectors kept in each DIIS subspace.
+    pub diis_space: usize,
+}
 
 impl Default for NOCCMCOptions {
     /// Return default NOCCMC options.
     /// # Returns:
     /// - `Self`: NOCCMC options.
     fn default() -> Self {
-        Self {}
+        Self {
+            active_space_tol: 1e-6,
+            max_cumulant: 4,
+            max_macro: 100,
+            max_micro: 200,
+            residual_tol: 1e-8,
+            micro_tol: 1e-10,
+            level_shift: 0.5,
+            diis_space: 8,
+        }
     }
 }

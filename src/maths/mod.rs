@@ -7,13 +7,15 @@
 //! nonorthogonal Wick's theorem, deterministic and stochastic propagation, and NOCI-PT2/SNOCI.
 //!
 //! The `einsum` submodule contains scalar-generic tensor contractions used throughout the
-//! matrix-element implementations. The `eri` submodule transforms and contracts two-electron
+//! matrix-element implementations, and the `contract` submodule general pairwise contractions of
+//! strided, labelled tensors. The `eri` submodule transforms and contracts two-electron
 //! integrals. The `linalg` submodule provides determinant, adjugate, eigensolver and matrix-
 //! vector utilities. The `wick` submodule contains the low-level contraction-determinant
 //! construction and column-mixing operations used by the nonorthogonal Wick evaluators.
 //!
 //! Numerical kernels support real or complex scalar types where required by their callers.
 
+pub mod contract;
 pub mod einsum;
 pub mod eri;
 pub mod linalg;

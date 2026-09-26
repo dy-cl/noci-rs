@@ -10,6 +10,9 @@ use bincode::Options;
 // Parent/sibling imports.
 use super::terms::{OverlapTermSet, ResidualClassTerms, ResidualTermSet};
 
+static DYALL_TERMS: OnceLock<OverlapTermSet> = OnceLock::new();
+static E1_TERMS: OnceLock<ResidualClassTerms> = OnceLock::new();
+static E2_TERMS: OnceLock<ResidualClassTerms> = OnceLock::new();
 static OVERLAP_TERMS: OnceLock<OverlapTermSet> = OnceLock::new();
 static R0_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
 static R1_TERMS: OnceLock<ResidualTermSet> = OnceLock::new();
@@ -81,7 +84,7 @@ fn tensor_kinds() -> BTreeMap<String, u8> {
 /// - `items`: Class names and bincode class payloads.
 /// # Returns:
 /// - `ResidualTermSet`: Decoded residual term table.
-fn residual_terms(
+fn assemble_residual_terms(
     order: u8,
     items: &[(&str, &[u8])],
 ) -> ResidualTermSet {

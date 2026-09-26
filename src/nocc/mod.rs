@@ -43,12 +43,17 @@
 //!   **164**, 134118 (2026), [doi:10.1063/5.0311996](https://doi.org/10.1063/5.0311996).
 
 mod common;
+mod context;
+mod contract;
 mod cumulants;
 mod driver;
+mod dyall;
+mod energy;
 mod loader;
 mod overlap;
 mod rdm;
 mod residual;
+mod solver;
 mod space;
 mod terms;
 

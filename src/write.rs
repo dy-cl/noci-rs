@@ -264,8 +264,16 @@ pub fn print_input(input: &Input) {
     // Print the NOCC Monte Carlo enablement state.
     println!("NOCCMC");
     match &input.noccmc {
-        Some(_) => {
+        Some(n) => {
             println!("ENABLED: true");
+            println!("ACTIVE_SPACE_TOL: {:e}", n.active_space_tol);
+            println!("MAX_CUMULANT: {}", n.max_cumulant);
+            println!("MAX_MACRO: {}", n.max_macro);
+            println!("MAX_MICRO: {}", n.max_micro);
+            println!("RESIDUAL_TOL: {:e}", n.residual_tol);
+            println!("MICRO_TOL: {:e}", n.micro_tol);
+            println!("LEVEL_SHIFT: {}", n.level_shift);
+            println!("DIIS_SPACE: {}", n.diis_space);
         }
         None => {
             println!("ENABLED: false");

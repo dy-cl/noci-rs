@@ -13,6 +13,9 @@ use crate::AoData;
 use crate::PostSCFData;
 use crate::input::Input;
 use crate::maths::general_evp;
+use crate::nocc::context::EvaluationContext;
+use crate::nocc::energy::reference_energy;
+use crate::nocc::solver::{AmplitudeSolution, solve_amplitudes};
 use crate::nocc::space::{Excitation, FoisBasis, Spaces, excitation_class};
 use crate::nocc::{Cumulants, RDM1, RDM2, RDM3, RDM4, cumulants, rdm1, rdm2, rdm3, rdm4};
 use crate::nocc::{residual, space};
@@ -102,9 +105,19 @@ pub(crate) fn run_noccmc(
 
     let lambdas = cumulants(&gamma1, &gamma2, &gamma3, &gamma4, &no.active);
 
-    let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, 1.0e-6, 1.0e-6);
+    let options = input.noccmc.as_ref().expect("NOCCMC options are required");
+    let tol = options.active_space_tol;
+    let spaces = space::build_spaces(gamma1.n, &no.active, &gamma1, tol, tol);
     let excitations = space::build_excitations(&spaces);
-    let fois = space::build_fois_basis(&noao, &gamma1, &lambdas, &spaces, &excitations, post.tol);
+    let ctx = EvaluationContext::new(
+        &noao,
+        &gamma1,
+        &lambdas,
+        &spaces,
+        &excitations,
+        options.max_cumulant,
+    );
+    let fois = space::build_fois_basis(&ctx, post.tol);
 
     if world.rank() == 0 {
         // Check orthonormality of NOCI natural orbitals and energy from RDMs.
@@ -123,10 +136,15 @@ pub(crate) fn run_noccmc(
         print_fois_metric_diagnostics(&spaces, &excitations, &fois);
 
         // Check known equality for zeroth order residual.
-        print_r0_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
+        print_r0_diagnostics(&ctx, &fois);
 
         // Check linearity of first-order residual.
-        print_r1_diagnostics(&noao, &gamma1, &lambdas, &spaces, &excitations, &fois);
+        print_r1_diagnostics(&ctx, &fois);
+
+        // Solve the amplitude equations and report the GNOCC energy.
+        let e0 = reference_energy(&noao, &gamma1, &gamma2);
+        let solution = solve_amplitudes(&ctx, &fois, e0, options);
+        print_solution(e0, &solution);
     }
 }
 
@@ -167,28 +185,7 @@ fn print_misc_diagnostics(
     let e_coeff = coeffs.dot(&h.dot(coeffs)) / coeffs.dot(&s.dot(coeffs));
     let (evals, _) = general_evp(&h, &s, true, post.tol);
 
-    let mut e1 = 0.0;
-    for a in 0..gamma1.n {
-        for b in 0..gamma1.n {
-            let i = b * gamma1.n + a;
-            e1 += noao.h[(a, b)] * gamma1.data[i];
-        }
-    }
-
-    let mut e2 = 0.0;
-    for a in 0..gamma2.n {
-        for b in 0..gamma2.n {
-            for c in 0..gamma2.n {
-                for d in 0..gamma2.n {
-                    let i = (((b * gamma2.n + c) * gamma2.n + a) * gamma2.n) + d;
-                    e2 += noao.eri_coul[(a, b, c, d)] * gamma2.data[i];
-                }
-            }
-        }
-    }
-
-    // `E = E_{\text{nuc}} + \sum_{ab} h_{ab}\Gamma_{1,ba} + \frac12\sum_{abcd}(ab|cd)\Gamma_{2,bcad}`.
-    let erdm = noao.enuc + e1 + 0.5 * e2;
+    let erdm = reference_energy(noao, gamma1, gamma2);
 
     println!("{}", "=".repeat(100));
     println!("NOCI NOCCMC miscellaneous diagnostics");
@@ -703,6 +700,61 @@ fn print_cumulant_diagnostics(
         "Max Lambda4 explicit spin-free formula error: {:.6e}",
         l4err
     );
+
+    // An `SU(2)`-invariant spin ensemble has no totally antisymmetric three-spin component, so
+    // symmetrising any three lower indices of `\Lambda_3` or `\Lambda_4` gives zero. The spin-free
+    // equations are exact only when these relations hold.
+    let perms = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let mut s3err: f64 = 0.0;
+    let mut s3max: f64 = 0.0;
+    let mut s4err: f64 = 0.0;
+    let mut s4max: f64 = 0.0;
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for a in 0..n {
+                    for b in 0..n {
+                        for c in 0..n {
+                            let low = [a, b, c];
+                            let sum = perms
+                                .iter()
+                                .map(|x| l3(p, q, r, low[x[0]], low[x[1]], low[x[2]]))
+                                .sum::<f64>();
+                            s3err = s3err.max(sum.abs());
+                            s3max = s3max.max(l3(p, q, r, a, b, c).abs());
+
+                            // Symmetrise the first three lower indices of `\Lambda_4`.
+                            for w in 0..n {
+                                for d in 0..n {
+                                    let sum = perms
+                                        .iter()
+                                        .map(|x| l4(p, q, r, w, low[x[0]], low[x[1]], low[x[2]], d))
+                                        .sum::<f64>();
+                                    s4err = s4err.max(sum.abs());
+                                    s4max = s4max.max(l4(p, q, r, w, a, b, c, d).abs());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "Max Lambda3 spin-ensemble relation error: {:.6e} (max |Lambda3|: {:.6e})",
+        s3err, s3max
+    );
+    println!(
+        "Max Lambda4 spin-ensemble relation error: {:.6e} (max |Lambda4|: {:.6e})",
+        s4err, s4max
+    );
 }
 
 /// Print NOCC excitation-space diagnostics.
@@ -930,27 +982,19 @@ fn excitation_label(ex: Excitation) -> String {
 
 /// Print the zeroth-order residual projection diagnostic.
 /// # Arguments:
-/// - `ao`: Integrals in the NOCI natural-orbital basis.
-/// - `gamma1`: Spin-free one-particle RDM.
-/// - `lambdas`: Spin-free active-space cumulants.
-/// - `spaces`: Core, active, and virtual orbital-space maps.
-/// - `excitations`: Raw spin-free excitation list.
+/// - `ctx`: Reference evaluation context.
 /// - `fois`: Reusable weighted FOIS basis data.
 /// # Returns:
 /// - `()`: Prints raw and projected zeroth-order residual diagnostics.
 fn print_r0_diagnostics(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-    lambdas: &Cumulants<f64>,
-    spaces: &space::Spaces,
-    excitations: &[space::Excitation],
+    ctx: &EvaluationContext<'_>,
     fois: &space::FoisBasis,
 ) {
-    let nexc = excitations.len();
+    let nexc = ctx.excitations.len();
 
     // Compare the direct zeroth-order residual with the metric identity
     // `R_0 = S h`, first in the raw basis and then after projection by `Y^T`.
-    let r0_direct = residual::r0(ao, gamma1, lambdas, spaces, excitations);
+    let r0_direct = residual::zeroth_order_residual(ctx);
     let r0_sh = fois.metric.dot(&fois.h);
     let diff_raw = &r0_direct - &r0_sh;
 
@@ -998,23 +1042,15 @@ fn print_r0_diagnostics(
 
 /// Print the first-order residual action diagnostic.
 /// # Arguments:
-/// - `ao`: Integrals in the NOCI natural-orbital basis.
-/// - `gamma1`: Spin-free one-particle RDM.
-/// - `lambdas`: Spin-free active-space cumulants.
-/// - `spaces`: Core, active, and virtual orbital-space maps.
-/// - `excitations`: Raw spin-free excitation list.
+/// - `ctx`: Reference evaluation context.
 /// - `fois`: Reusable weighted FOIS basis data.
 /// # Returns:
 /// - `()`: Prints raw and projected first-order residual diagnostics.
 fn print_r1_diagnostics(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-    lambdas: &Cumulants<f64>,
-    spaces: &space::Spaces,
-    excitations: &[space::Excitation],
+    ctx: &EvaluationContext<'_>,
     fois: &space::FoisBasis,
 ) {
-    let nexc = excitations.len();
+    let nexc = ctx.excitations.len();
     let nfois = fois.y.ncols();
 
     // Probe the linear first-order residual with a deterministic FOIS
@@ -1026,7 +1062,7 @@ fn print_r1_diagnostics(
     }
 
     let t_raw = fois.y.dot(&t_fois);
-    let r1_direct = residual::r1(ao, gamma1, lambdas, spaces, excitations, &t_raw);
+    let r1_direct = residual::first_order_residual(ctx, &t_raw);
     let r1_direct_fois = fois.y.t().dot(&r1_direct);
 
     let mut r1_max: f64 = 0.0;
@@ -1046,4 +1082,25 @@ fn print_r1_diagnostics(
     println!("FOIS retained dimension: {}", nfois);
     println!("max |R1[t]|: {:.6e}", r1_max);
     println!("max |Y^T R1[t]|: {:.6e}", r1_fois_max);
+}
+
+/// Print the final GNOCC amplitude solution.
+/// # Arguments:
+/// - `e0`: Reference energy `\langle\Phi|\hat H|\Phi\rangle`.
+/// - `solution`: Final amplitude-equation state.
+/// # Returns:
+/// - `()`: Prints the reference, correlation and total energies.
+fn print_solution(
+    e0: f64,
+    solution: &AmplitudeSolution,
+) {
+    println!("{}", "=".repeat(100));
+    println!("GNOCC energy");
+    println!(
+        "Converged: {} after {} iterations (||Y^T R||: {:.4e})",
+        solution.converged, solution.iterations, solution.residual_norm
+    );
+    println!("Reference energy: {:.12}", e0);
+    println!("Correlation energy: {:.12}", solution.correlation_energy);
+    println!("Total energy: {:.12}", e0 + solution.correlation_energy);
 }

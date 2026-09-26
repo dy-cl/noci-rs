@@ -2,16 +2,14 @@
 
 // External crate imports.
 use ndarray::{Array1, Array2};
-use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::AoData;
 use crate::maths::linalg::loewdin_x;
-use crate::nocc::{Cumulants, RDM1};
+use crate::nocc::RDM1;
+use crate::nocc::context::EvaluationContext;
+use crate::nocc::overlap::metric_matrix;
 use crate::scf::fock;
-
-// Parent/sibling imports.
-use super::overlap;
 
 /// NOCC orbital class in the NOCI natural-orbital basis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,6 +51,8 @@ pub(crate) enum ExcitationClass {
     AAToVV,
     /// C -> V single excitation.
     CToV,
+    /// CC -> VV double excitation.
+    CCToVV,
 }
 
 /// Spin-free GNOCC excitation operator.
@@ -252,6 +252,9 @@ fn double_excitation_class(
             OrbitalClass::Virtual,
             OrbitalClass::Virtual,
         ) => Some(ExcitationClass::AAToVV),
+        (OrbitalClass::Core, OrbitalClass::Core, OrbitalClass::Virtual, OrbitalClass::Virtual) => {
+            Some(ExcitationClass::CCToVV)
+        }
         _ => None,
     }
 }
@@ -328,46 +331,19 @@ pub(in crate::nocc) fn excitation_class(
 
 /// Build the weighted FOIS basis from the full raw excitation list.
 /// # Arguments:
-/// - `ao`: Integrals transformed to the NOCI natural-orbital basis.
-/// - `gamma1`: Full-space spin-free one-body RDM.
-/// - `lambdas`: Active-space spin-free cumulants.
-/// - `spaces`: NOCC orbital spaces.
-/// - `excitations`: Raw spin-free excitation list.
+/// - `ctx`: Reference evaluation context.
 /// - `tol`: Weighted overlap eigenvalue threshold.
 /// # Returns:
 /// - `FoisBasis`: Raw metric, Hamiltonian weights, weighted metric, and Y.
 pub(crate) fn build_fois_basis(
-    ao: &AoData,
-    gamma1: &RDM1<f64>,
-    lambdas: &Cumulants<f64>,
-    spaces: &Spaces,
-    excitations: &[Excitation],
+    ctx: &EvaluationContext<'_>,
     tol: f64,
 ) -> FoisBasis {
-    // Build the symmetric raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from
-    // its upper triangle; each row is independent for parallel evaluation.
-    let nexc = excitations.len();
-    let upper_rows: Vec<Vec<f64>> = (0..nexc)
-        .into_par_iter()
-        .map(|i| {
-            let left = excitations[i];
-            (i..nexc)
-                .map(|j| overlap::overlap_element(left, excitations[j], spaces, gamma1, lambdas))
-                .collect()
-        })
-        .collect();
-    let mut s = Array2::zeros((nexc, nexc));
-
-    for (i, row) in upper_rows.iter().enumerate() {
-        for (offset, &value) in row.iter().enumerate() {
-            let j = i + offset;
-            s[(i, j)] = value;
-            s[(j, i)] = value;
-        }
-    }
+    // Raw FOIS metric `S_{\mu\nu} = \langle E_\mu^\dagger E_\nu\rangle` from its class-pair blocks.
+    let s = metric_matrix(ctx);
 
     // Form the weighted metric `\tilde S = \operatorname{diag}(h) S \operatorname{diag}(h)`.
-    let h = hamiltonian_weights(ao, gamma1, excitations);
+    let h = hamiltonian_weights(ctx.ao, ctx.gamma1, ctx.spaces, ctx.excitations);
     let mut stilde: Array2<f64> = Array2::zeros(s.raw_dim());
 
     for i in 0..s.nrows() {
@@ -405,6 +381,7 @@ pub(crate) fn build_fois_basis(
 fn hamiltonian_weights(
     ao: &AoData,
     gamma1: &RDM1<f64>,
+    spaces: &Spaces,
     excitations: &[Excitation],
 ) -> Array1<f64> {
     let n = gamma1.n;
@@ -424,14 +401,32 @@ fn hamiltonian_weights(
     let (fa, _fb) = fock(&ao.h, &ao.eri_coul, &da, &db);
     let mut h = Array1::zeros(excitations.len());
 
-    // Single excitations use `F_{qp}`; doubles use half the corresponding
-    // Coulomb integral `(rs|pq)` in the weighted FOIS metric.
+    // Weights are the coefficients of `\hat H = \sum_\mu h_\mu \hat\tau_\mu`: singles use `F_{qp}`
+    // and doubles `(pr|qs)`, halved when the pair swap `\hat E^{qp}_{sr}` is also in the list.
     for (i, &ex) in excitations.iter().enumerate() {
         h[i] = match ex {
             Excitation::Single { p, q } => fa[(q, p)],
-            Excitation::Double { p, q, r, s } => 0.5 * ao.eri_coul[(r, s, p, q)],
+            Excitation::Double { p, q, r, s } => {
+                let same = spaces.class_of[p] == spaces.class_of[q]
+                    && spaces.class_of[r] == spaces.class_of[s];
+                let w = if same { 0.5 } else { 1.0 };
+                w * ao.eri_coul[(p, r, q, s)]
+            }
         };
     }
 
     h
+}
+
+/// Build the amplitude projector onto the FOIS, `P_{\mu\sigma} = \sum_{i\nu} Y_{\mu i}
+/// Y^\dagger_{i\nu} S_{\nu\sigma}`. It is idempotent and leaves `t_\mu = \sum_i Y_{\mu i}\tilde t_i`
+/// unchanged, so it removes redundant components from an amplitude update.
+/// # Arguments:
+/// - `fois`: Weighted FOIS basis data.
+/// # Returns:
+/// - `Array2<f64>`: Projector `P = Y Y^\dagger S`.
+/// # References
+/// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (63)-(64).
+pub(crate) fn metric_projector(fois: &FoisBasis) -> Array2<f64> {
+    fois.y.dot(&fois.y.t()).dot(&fois.metric)
 }
