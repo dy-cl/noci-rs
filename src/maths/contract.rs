@@ -8,6 +8,9 @@
 //! products. Shapes are fixed-size and label sets are 64-bit masks, so contracting many small
 //! tensors does not touch the heap beyond the result buffer.
 
+// Standard library imports.
+use std::borrow::Cow;
+
 // External crate imports.
 use ndarray::linalg::general_mat_mul;
 use ndarray::{ArrayView2, ArrayViewMut2};
@@ -71,39 +74,186 @@ pub fn strided_tensor_shape(
     shape
 }
 
-/// Choose the operand pair whose joint index space is smallest.
-/// # Arguments:
-/// - `operands`: Remaining operands, at least two.
-/// - `extent`: Extent of every label, indexed by label.
-/// # Returns:
-/// - `(usize, usize)`: Positions of the chosen pair.
-pub fn cheapest_contraction_pair<T>(
-    operands: &[(T, TensorShape)],
-    extent: &[usize],
-) -> (usize, usize) {
-    let size = |mask: u64| {
-        let mut m = mask;
-        let mut p = 1usize;
-        while m != 0 {
-            p *= extent[m.trailing_zeros() as usize];
-            m &= m - 1;
-        }
-        p
-    };
+/// Largest number of operands whose contraction order is optimised exhaustively.
+const MAXOPTIMAL: usize = 14;
 
-    let mut best = (0, 1);
-    let mut cost = usize::MAX;
-    for i in 0..operands.len() {
-        for j in i + 1..operands.len() {
-            let joint = size(operands[i].1.mask | operands[j].1.mask);
-            if joint < cost {
-                cost = joint;
-                best = (i, j);
-            }
-        }
+/// Joint index-space sizes of label masks, `\prod_{l \in m} n_l`, from one product table per
+/// byte of the mask.
+pub struct LabelSizes {
+    /// Product of the extents of the labels set in every byte value, for each byte position.
+    bytes: Vec<[f64; 256]>,
+}
+
+impl LabelSizes {
+    /// Build the byte product tables of every label extent.
+    /// # Arguments:
+    /// - `extent`: Extent of every label, indexed by label; at most 64 labels.
+    /// # Returns:
+    /// - `Self`: Size tables.
+    pub fn new(extent: &[usize]) -> Self {
+        let bytes = (0..extent.len().div_ceil(8))
+            .map(|b| {
+                let mut table = [1.0; 256];
+                for (value, product) in table.iter_mut().enumerate() {
+                    for bit in 0..8 {
+                        let label = 8 * b + bit;
+                        if value & (1 << bit) != 0 && label < extent.len() {
+                            *product *= extent[label] as f64;
+                        }
+                    }
+                }
+                table
+            })
+            .collect();
+        Self { bytes }
     }
 
-    best
+    /// Return the joint index-space size of a label mask.
+    /// # Arguments:
+    /// - `mask`: Bit mask of labels.
+    /// # Returns:
+    /// - `f64`: Product of the label extents.
+    pub fn size(
+        &self,
+        mask: u64,
+    ) -> f64 {
+        self.bytes
+            .iter()
+            .enumerate()
+            .map(|(b, table)| table[((mask >> (8 * b)) & 0xff) as usize])
+            .product()
+    }
+}
+
+/// Find the pairwise contraction order of a product of operands that minimises the total
+/// number of multiply-adds, `\sum_{\text{steps}} \prod_{l \in A \cup B} n_l`, by dynamic
+/// programming over operand subsets. The intermediate of a subset keeps the labels it shares
+/// with its complement or with the final result. Products of more than `MAXOPTIMAL` operands
+/// fall back to repeatedly contracting the pair with the smallest joint index space.
+/// # Arguments:
+/// - `masks`: Label mask of every operand.
+/// - `kept`: Bit mask of labels kept in the final result.
+/// - `sizes`: Joint index-space sizes of label masks.
+/// - `steps`: Receives the steps in execution order as operand numbers; operands are numbered
+///   by position and each step's result takes the next number.
+/// # Returns:
+/// - `()`: Appends to `steps`.
+pub fn optimal_contraction_steps(
+    masks: &[u64],
+    kept: u64,
+    sizes: &LabelSizes,
+    steps: &mut Vec<(u8, u8)>,
+) {
+    let n = masks.len();
+    if n < 2 {
+        return;
+    }
+    if n > MAXOPTIMAL {
+        greedy_contraction_steps(masks, kept, sizes, steps);
+        return;
+    }
+
+    // Labels of every subset of operands.
+    let full = (1usize << n) - 1;
+    let mut labels = vec![0u64; full + 1];
+    for set in 1..=full {
+        labels[set] = labels[set & (set - 1)] | masks[set.trailing_zeros() as usize];
+    }
+    let external = |set: usize| labels[set] & (labels[full ^ set] | kept);
+
+    // Cheapest cost and split of every subset; each split puts the lowest operand in `part`
+    // so every unordered split is tried once.
+    let mut cost = vec![0.0f64; full + 1];
+    let mut split = vec![0usize; full + 1];
+    for set in 1..=full {
+        if set & (set - 1) == 0 {
+            continue;
+        }
+        let low = set & set.wrapping_neg();
+        let mut best = f64::INFINITY;
+        let mut part = (set - 1) & set;
+        while part != 0 {
+            if part & low != 0 {
+                let rest = set ^ part;
+                let c = cost[part] + cost[rest] + sizes.size(external(part) | external(rest));
+                if c < best {
+                    best = c;
+                    split[set] = part;
+                }
+            }
+            part = (part - 1) & set;
+        }
+        cost[set] = best;
+    }
+
+    let mut next = n as u8;
+    emit_contraction_steps(full, &split, &mut next, steps);
+}
+
+/// Emit the steps of an optimal contraction tree by post-order traversal.
+/// # Arguments:
+/// - `set`: Operand subset of the current subtree.
+/// - `split`: Optimal split of every subset.
+/// - `next`: Number of the next intermediate.
+/// - `steps`: Receives the steps.
+/// # Returns:
+/// - `u8`: Number of the operand holding the subtree.
+fn emit_contraction_steps(
+    set: usize,
+    split: &[usize],
+    next: &mut u8,
+    steps: &mut Vec<(u8, u8)>,
+) -> u8 {
+    if set & (set - 1) == 0 {
+        return set.trailing_zeros() as u8;
+    }
+    let a = emit_contraction_steps(split[set], split, next, steps);
+    let b = emit_contraction_steps(set ^ split[set], split, next, steps);
+    steps.push((a, b));
+    *next += 1;
+    *next - 1
+}
+
+/// Order a pairwise contraction by repeatedly contracting the pair with the smallest joint index
+/// space.
+/// # Arguments:
+/// - `masks`: Label mask of every operand.
+/// - `kept`: Bit mask of labels kept in the final result.
+/// - `sizes`: Joint index-space sizes of label masks.
+/// - `steps`: Receives the steps, numbered as in `optimal_contraction_steps`.
+/// # Returns:
+/// - `()`: Appends to `steps`.
+fn greedy_contraction_steps(
+    masks: &[u64],
+    kept: u64,
+    sizes: &LabelSizes,
+    steps: &mut Vec<(u8, u8)>,
+) {
+    let mut live = masks
+        .iter()
+        .enumerate()
+        .map(|(k, &m)| (k as u8, m))
+        .collect::<Vec<_>>();
+    let mut next = masks.len() as u8;
+    while live.len() > 1 {
+        let mut best = (0, 1);
+        let mut cost = f64::INFINITY;
+        for i in 0..live.len() {
+            for j in i + 1..live.len() {
+                let c = sizes.size(live[i].1 | live[j].1);
+                if c < cost {
+                    cost = c;
+                    best = (i, j);
+                }
+            }
+        }
+        let (b, mb) = live.swap_remove(best.1);
+        let (a, ma) = live.swap_remove(best.0);
+        let rest = live.iter().fold(kept, |m, &(_, x)| m | x);
+        steps.push((a, b));
+        live.push((next, (ma | mb) & rest));
+        next += 1;
+    }
 }
 
 /// Contract two operands, summing every label not kept for the output or later operands:
@@ -260,22 +410,46 @@ fn contract_by_matrix_product(
         return None;
     }
 
-    // Pack `A` as `[b][i][k]` and `B` as `[b][k][j]`.
+    // Order every group by decreasing stride in its operand, so operands already laid out as
+    // `[b][i][k]` or `[b][k][i]` (and `[b][k][j]` or `[b][j][k]`) are used in place.
+    batch.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
+    left.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
+    summed.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
+    right.sort_by_key(|&(k, _)| std::cmp::Reverse(sb[k]));
+
     let layout = |groups: &[&[(usize, usize)]], strides: &[usize]| {
         groups
             .iter()
             .flat_map(|g| g.iter().map(|&(k, d)| (d, strides[k])))
             .collect::<Vec<_>>()
     };
-    let pa = pack_strided(da, &layout(&[&batch, &left, &summed], sa));
-    let pb = pack_strided(db, &layout(&[&batch, &summed, &right], sb));
+
+    // Use the transposed matrix of an operand when only that order is contiguous.
+    let a_direct = layout(&[&batch, &left, &summed], sa);
+    let a_swapped = layout(&[&batch, &summed, &left], sa);
+    let a_transposed = !is_contiguous(&a_direct) && is_contiguous(&a_swapped);
+    let pa = pack_strided(da, if a_transposed { &a_swapped } else { &a_direct });
+    let b_direct = layout(&[&batch, &summed, &right], sb);
+    let b_swapped = layout(&[&batch, &right, &summed], sb);
+    let b_transposed = !is_contiguous(&b_direct) && is_contiguous(&b_swapped);
+    let pb = pack_strided(db, if b_transposed { &b_swapped } else { &b_direct });
 
     // One GEMM per batch element into the row-major result.
     buffer.clear();
     buffer.resize(nb * m * nn, 0.0);
     for (i, c) in buffer.chunks_mut(m * nn).enumerate() {
-        let av = ArrayView2::from_shape((m, kk), &pa[i * m * kk..(i + 1) * m * kk]).ok()?;
-        let bv = ArrayView2::from_shape((kk, nn), &pb[i * kk * nn..(i + 1) * kk * nn]).ok()?;
+        let sa_i = &pa[i * m * kk..(i + 1) * m * kk];
+        let sb_i = &pb[i * kk * nn..(i + 1) * kk * nn];
+        let av = if a_transposed {
+            ArrayView2::from_shape((kk, m), sa_i).ok()?.reversed_axes()
+        } else {
+            ArrayView2::from_shape((m, kk), sa_i).ok()?
+        };
+        let bv = if b_transposed {
+            ArrayView2::from_shape((nn, kk), sb_i).ok()?.reversed_axes()
+        } else {
+            ArrayView2::from_shape((kk, nn), sb_i).ok()?
+        };
         let mut cv = ArrayViewMut2::from_shape((m, nn), c).ok()?;
         general_mat_mul(1.0, &av, &bv, 0.0, &mut cv);
     }
@@ -303,38 +477,88 @@ fn contract_by_matrix_product(
     Some(shape)
 }
 
-/// Gather a strided tensor into a contiguous row-major array.
+/// Return whether a strided layout is one contiguous row-major run from the start of its data.
+/// # Arguments:
+/// - `layout`: Extent and source stride of every axis, outermost first.
+/// # Returns:
+/// - `bool`: Whether the layout addresses `0..\prod_k d_k` in order.
+fn is_contiguous(layout: &[(usize, usize)]) -> bool {
+    let mut expected = 1;
+    for &(d, st) in layout.iter().rev() {
+        if d != 1 && st != expected {
+            return false;
+        }
+        expected *= d;
+    }
+    true
+}
+
+/// Gather a strided tensor into a contiguous row-major array, borrowing the source when it is
+/// already contiguous in the requested order. Axes that are contiguous with their inner
+/// neighbour are merged first, and the innermost axis is copied as one run.
 /// # Arguments:
 /// - `data`: Source data.
 /// - `layout`: Extent and source stride of every output axis, outermost first.
 /// # Returns:
-/// - `Vec<f64>`: Row-major gathered elements.
-fn pack_strided(
-    data: &[f64],
+/// - `Cow<[f64]>`: Row-major elements, borrowed from `data` when no copy is needed.
+fn pack_strided<'a>(
+    data: &'a [f64],
     layout: &[(usize, usize)],
-) -> Vec<f64> {
-    let total = layout.iter().map(|&(d, _)| d).product::<usize>();
+) -> Cow<'a, [f64]> {
+    // Merge each axis into its inner neighbour when `s_{\text{outer}} = d_{\text{inner}}
+    // s_{\text{inner}}`, dropping unit axes.
+    let mut axes = [(1usize, 0usize); 2 * MAXLABELS];
+    let mut n = 0;
+    for &(d, st) in layout.iter().rev() {
+        if d == 1 {
+            continue;
+        }
+        if n > 0 && axes[n - 1].0 * axes[n - 1].1 == st {
+            axes[n - 1].0 *= d;
+        } else {
+            axes[n] = (d, st);
+            n += 1;
+        }
+    }
+    let axes = &mut axes[..n];
+    axes.reverse();
+    let total = axes.iter().map(|&(d, _)| d).product::<usize>();
+
+    // A single unit-stride run is the source itself.
+    if n == 0 {
+        return Cow::Borrowed(&data[..1]);
+    }
+    if n == 1 && axes[0].1 == 1 {
+        return Cow::Borrowed(&data[..total]);
+    }
+
+    let (inner, outer) = axes.split_last().unwrap();
+    let (d, st) = *inner;
+    let count = total / d;
     let mut out = Vec::with_capacity(total);
-    let mut idx = vec![0usize; layout.len()];
+    let mut idx = [0usize; 2 * MAXLABELS];
     let mut offset = 0;
+    for _ in 0..count {
+        if st == 1 {
+            out.extend_from_slice(&data[offset..offset + d]);
+        } else {
+            out.extend((0..d).map(|i| data[offset + i * st]));
+        }
 
-    for _ in 0..total {
-        out.push(data[offset]);
-
-        let mut k = layout.len();
+        let mut k = outer.len();
         while k > 0 {
             k -= 1;
             idx[k] += 1;
-            offset += layout[k].1;
-            if idx[k] < layout[k].0 {
+            offset += outer[k].1;
+            if idx[k] < outer[k].0 {
                 break;
             }
-            offset -= layout[k].1 * layout[k].0;
+            offset -= outer[k].1 * outer[k].0;
             idx[k] = 0;
         }
     }
 
-    out
+    Cow::Owned(out)
 }
 
 /// Sum `A B` over the summed labels for one result element,

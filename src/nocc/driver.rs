@@ -115,7 +115,7 @@ pub(crate) fn run_noccmc(
         spaces: &spaces,
         excitations: &excitations,
     };
-    let evaluator = TermEvaluator::new(options.max_cumulant);
+    let evaluator = TermEvaluator::new(options.max_cumulant, &spaces);
     let fois = space::build_fois_basis(&reference, &manifold, &evaluator, options);
 
     if world.rank() == 0 {
