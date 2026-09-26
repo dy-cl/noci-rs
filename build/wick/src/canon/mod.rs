@@ -19,4 +19,4 @@ mod graph;
 pub(crate) use form::{Factor, Form, Key, Sym};
 
 // Restricted function re-exports.
-pub(crate) use form::canonical;
+pub(crate) use form::canonical_key;

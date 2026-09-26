@@ -25,7 +25,7 @@ use crate::{reduce, so};
 /// - `class`: Spin-free excitation class name.
 /// # Returns:
 /// - `&str`: Spin-orbital class name.
-fn soclass(class: &str) -> &str {
+fn spin_orbital_class(class: &str) -> &str {
     if class == "CAToVA" { "CAToAV" } else { class }
 }
 
@@ -34,7 +34,7 @@ fn soclass(class: &str) -> &str {
 /// - `s`: Orbital space.
 /// # Returns:
 /// - `u8`: Runtime space id.
-fn spaceid(s: Space) -> u8 {
+fn space_id(s: Space) -> u8 {
     match s {
         Space::Core => 0,
         Space::Active => 1,
@@ -47,7 +47,7 @@ fn spaceid(s: Space) -> u8 {
 /// - None.
 /// # Returns:
 /// - `BTreeMap<String, u8>`: Space-name map.
-fn spacekinds() -> BTreeMap<String, u8> {
+fn space_kind_table() -> BTreeMap<String, u8> {
     [("core", 0), ("active", 1), ("virtual", 2)]
         .into_iter()
         .map(|(n, k)| (n.to_string(), k))
@@ -59,7 +59,7 @@ fn spacekinds() -> BTreeMap<String, u8> {
 /// - None.
 /// # Returns:
 /// - `BTreeMap<String, u8>`: Tensor-name map.
-fn tensorkinds() -> BTreeMap<String, u8> {
+fn tensor_kind_table() -> BTreeMap<String, u8> {
     [
         ("Gamma1", spin::GAMMA),
         ("Theta", spin::THETA),
@@ -84,19 +84,19 @@ fn tensorkinds() -> BTreeMap<String, u8> {
 /// - `ResidualClassTerms`: Runtime residual terms.
 /// # Panics
 /// - Panics if `class` is not a known excitation class.
-pub fn residual_class(
+pub fn residual_class_terms(
     order: u8,
     class: &str,
 ) -> ResidualClassTerms {
-    let bra = so::ops::class(soclass(class))
+    let bra = so::ops::projector_for_class(spin_orbital_class(class))
         .unwrap_or_else(|| panic!("unknown excitation class {class}"));
-    let expr = so::wick::residual(&bra, order as usize);
+    let expr = so::wick::residual_expression(&bra, order as usize);
 
-    let mut residual = spin::adapt(soclass(class), &expr)
+    let mut residual = spin::adapt_residual(spin_orbital_class(class), &expr)
         .into_iter()
         .find(|r| r.name == class)
         .unwrap_or_else(|| panic!("spin adaptation produced no {class} residual"));
-    reduce::cumulants(&mut residual);
+    reduce::reduce_by_cumulant_relations(&mut residual);
 
     let names = specs::EXCS
         .iter()
@@ -104,7 +104,7 @@ pub fn residual_class(
         .map(|x| x.f)
         .unwrap_or_else(|| panic!("unknown excitation class {class}"));
 
-    table(&residual, names)
+    encode_table(&residual, names)
 }
 
 /// Derive one spin-free FOIS metric block before reduction,
@@ -116,14 +116,19 @@ pub fn residual_class(
 /// - `Table`: Spin-free metric block.
 /// # Panics
 /// - Panics if `name` is not a known metric block.
-pub(crate) fn metric(name: &str) -> Table {
-    let b = specs::block(name);
-    let bra = so::ops::class(soclass(b.left))
+pub(crate) fn metric_table(name: &str) -> Table {
+    let b = specs::metric_block_spec(name);
+    let bra = so::ops::projector_for_class(spin_orbital_class(b.left))
         .unwrap_or_else(|| panic!("unknown excitation class {}", b.left));
-    let ket = so::ops::excitation(soclass(b.right))
+    let ket = so::ops::excitation_for_class(spin_orbital_class(b.right))
         .unwrap_or_else(|| panic!("unknown excitation class {}", b.right));
 
-    spin::metric(b.name, b.left, b.right, &so::wick::metric(&bra, &ket))
+    spin::adapt_metric_block(
+        b.name,
+        b.left,
+        b.right,
+        &so::wick::metric_expression(&bra, &ket),
+    )
 }
 
 /// Generate one spin-free FOIS metric block.
@@ -133,14 +138,104 @@ pub(crate) fn metric(name: &str) -> Table {
 /// - `OverlapBlockTerms`: Runtime metric terms.
 /// # Panics
 /// - Panics if `name` is not a known metric block.
-pub fn overlap_block(name: &str) -> OverlapBlockTerms {
-    let b = specs::block(name);
-    let mut block = metric(name);
-    reduce::cumulants(&mut block);
+pub fn overlap_block_terms(name: &str) -> OverlapBlockTerms {
+    let mut block = metric_table(name);
+    reduce::reduce_by_cumulant_relations(&mut block);
 
+    encode_block(name, &block)
+}
+
+/// Generate every spin-free FOIS metric block.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `OverlapTermSet`: Complete metric term table.
+pub fn overlap_terms() -> OverlapTermSet {
+    OverlapTermSet {
+        version: 1,
+        space_kinds: space_kind_table(),
+        tensor_kinds: tensor_kind_table(),
+        blocks: specs::BLOCKS
+            .par_iter()
+            .map(|b| (b.name.to_string(), overlap_block_terms(b.name)))
+            .collect(),
+    }
+}
+
+/// Generate one spin-free zeroth-order coupling block
+/// `\langle\Phi|\hat\tau_\mu^\dagger\hat H_0\hat\tau_\nu|\Phi\rangle_c` of the Dyall Hamiltonian.
+/// The blocks follow the metric blocks, since `\hat H_0` conserves the number of electrons in
+/// every orbital space.
+/// # Arguments:
+/// - `name`: Metric block name.
+/// # Returns:
+/// - `OverlapBlockTerms`: Runtime coupling terms.
+/// # Panics
+/// - Panics if `name` is not a known metric block.
+pub fn dyall_block_terms(name: &str) -> OverlapBlockTerms {
+    let b = specs::metric_block_spec(name);
+    let bra = so::ops::projector_for_class(spin_orbital_class(b.left))
+        .unwrap_or_else(|| panic!("unknown excitation class {}", b.left));
+    let ket = so::ops::excitation_for_class(spin_orbital_class(b.right))
+        .unwrap_or_else(|| panic!("unknown excitation class {}", b.right));
+
+    let mut block = spin::adapt_metric_block(
+        b.name,
+        b.left,
+        b.right,
+        &so::wick::dyall_coupling_expression(&bra, &ket),
+    );
+    reduce::reduce_by_cumulant_relations(&mut block);
+
+    encode_block(name, &block)
+}
+
+/// Generate every spin-free zeroth-order Dyall coupling block.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `OverlapTermSet`: Complete coupling term table.
+pub fn dyall_terms() -> OverlapTermSet {
+    OverlapTermSet {
+        version: 1,
+        space_kinds: space_kind_table(),
+        tensor_kinds: tensor_kind_table(),
+        blocks: specs::BLOCKS
+            .par_iter()
+            .map(|b| (b.name.to_string(), dyall_block_terms(b.name)))
+            .collect(),
+    }
+}
+
+/// Generate the spin-free correlation energy at one order in `T`,
+/// `E_1 = \langle\Phi|\hat H\hat T|\Phi\rangle_c` or
+/// `E_2 = \tfrac12\langle\Phi|\hat H\{\hat T\hat T\}|\Phi\rangle_c`.
+/// # Arguments:
+/// - `order`: Order in `T`, `1` or `2`.
+/// # Returns:
+/// - `ResidualClassTerms`: Runtime terms with no free indices.
+pub fn energy_terms(order: u8) -> ResidualClassTerms {
+    let expr = so::wick::energy_expression(order as usize);
+    let mut energy = spin::adapt_scalar("energy", &expr);
+    reduce::reduce_by_cumulant_relations(&mut energy);
+
+    encode_table(&energy, &[])
+}
+
+/// Encode one spin-free block with left and right free indices as runtime terms.
+/// # Arguments:
+/// - `name`: Metric block name.
+/// - `block`: Spin-free block over the left then right free indices.
+/// # Returns:
+/// - `OverlapBlockTerms`: Runtime block terms.
+fn encode_block(
+    name: &str,
+    block: &Table,
+) -> OverlapBlockTerms {
+    let b = specs::metric_block_spec(name);
     let names = [b.lf, b.rf].concat();
     let (nl, nr) = (b.lf.len() as u16, b.rf.len() as u16);
-    let t = table(&block, &names);
+    let t = encode_table(block, &names);
 
     OverlapBlockTerms {
         left: b.left.to_string(),
@@ -152,23 +247,6 @@ pub fn overlap_block(name: &str) -> OverlapBlockTerms {
     }
 }
 
-/// Generate every spin-free FOIS metric block.
-/// # Arguments:
-/// - None.
-/// # Returns:
-/// - `OverlapTermSet`: Complete metric term table.
-pub fn overlap_terms() -> OverlapTermSet {
-    OverlapTermSet {
-        version: 1,
-        space_kinds: spacekinds(),
-        tensor_kinds: tensorkinds(),
-        blocks: specs::BLOCKS
-            .par_iter()
-            .map(|b| (b.name.to_string(), overlap_block(b.name)))
-            .collect(),
-    }
-}
-
 /// Encode one spin-free table as runtime terms.
 /// Free indices keep ids `0..n` in layout order. Dummy indices of each term are mapped to
 /// shared indices by `(space, rank within that space)`, so terms reuse loop slots.
@@ -177,7 +255,7 @@ pub fn overlap_terms() -> OverlapTermSet {
 /// - `names`: Free-index names in layout order.
 /// # Returns:
 /// - `ResidualClassTerms`: Runtime terms in deterministic key order.
-fn table(
+fn encode_table(
     res: &Table,
     names: &[&str],
 ) -> ResidualClassTerms {
@@ -185,7 +263,7 @@ fn table(
     let mut indices = names
         .iter()
         .zip(&res.free)
-        .map(|(&n, &s)| (n.to_string(), spaceid(s)))
+        .map(|(&n, &s)| (n.to_string(), space_id(s)))
         .collect::<Vec<_>>();
     let mut slots = BTreeMap::<(u8, usize), u16>::new();
 
@@ -195,7 +273,7 @@ fn table(
 
     let terms = keys
         .into_iter()
-        .map(|(key, &c)| term(key, c, nfree, &mut slots, &mut indices))
+        .map(|(key, &c)| encode_term(key, c, nfree, &mut slots, &mut indices))
         .collect();
 
     ResidualClassTerms {
@@ -214,7 +292,7 @@ fn table(
 /// - `indices`: Class index table, extended with new dummy slots.
 /// # Returns:
 /// - `GeneratedTerm`: Runtime term.
-fn term(
+fn encode_term(
     key: &Key,
     c: Ratio<i64>,
     nfree: usize,

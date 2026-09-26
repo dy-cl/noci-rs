@@ -10,17 +10,17 @@ use super::{Expr, Kind, Space, Tensor, Term};
 /// Parse Wick&D's text output into a canonical spin-orbital expression.
 /// Each non-empty line is one term such as `-1/2 R^{a0}_{o0} f^{o0}_{o1} lambda2^{a0,a1}_{a2,a3}`:
 /// an optional rational coefficient followed by tensors `label^{upper}_{lower}` whose indices are
-/// named by space (`o`, `a`, `v`) and number.
+/// named by parse_index_space (`o`, `a`, `v`) and number.
 /// # Arguments:
 /// - `text`: Wick&D expression text.
 /// # Returns:
 /// - `Expr`: Canonically combined expression.
-pub(crate) fn parse(text: &str) -> Expr {
+pub(crate) fn parse_wickd_expression(text: &str) -> Expr {
     let mut acc = Expr::default();
 
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         // Split off the leading coefficient, if any.
-        let (coeff, rest) = coefficient(line);
+        let (coeff, rest) = parse_coefficient(line);
         let mut names = Vec::<String>::new();
         let mut spaces = Vec::new();
         let mut tensors = Vec::new();
@@ -40,7 +40,7 @@ pub(crate) fn parse(text: &str) -> Expr {
                     .map(|x| {
                         let pos = names.iter().position(|n| n == x).unwrap_or_else(|| {
                             names.push(x.to_string());
-                            spaces.push(space(x));
+                            spaces.push(parse_index_space(x));
                             names.len() - 1
                         });
                         pos as u16
@@ -51,13 +51,13 @@ pub(crate) fn parse(text: &str) -> Expr {
             let lower = ids(lower);
 
             tensors.push(Tensor {
-                kind: kind(label, upper.len()),
+                kind: parse_tensor_kind(label, upper.len()),
                 upper,
                 lower,
             });
         }
 
-        super::add(
+        super::add_term(
             &mut acc,
             &Term {
                 coeff,
@@ -75,7 +75,7 @@ pub(crate) fn parse(text: &str) -> Expr {
 /// - `line`: Term line.
 /// # Returns:
 /// - `(Ratio<i64>, &str)`: Coefficient and remaining tensor text.
-fn coefficient(line: &str) -> (Ratio<i64>, &str) {
+fn parse_coefficient(line: &str) -> (Ratio<i64>, &str) {
     let (first, rest) = line.split_once(' ').unwrap_or((line, ""));
 
     // A leading bare sign or rational is a coefficient; otherwise the coefficient is one.
@@ -107,7 +107,7 @@ fn coefficient(line: &str) -> (Ratio<i64>, &str) {
 /// - `name`: Index name such as `a3`.
 /// # Returns:
 /// - `Space`: Orbital space.
-fn space(name: &str) -> Space {
+fn parse_index_space(name: &str) -> Space {
     match name.as_bytes()[0] {
         b'o' => Space::Core,
         b'a' => Space::Active,
@@ -122,7 +122,7 @@ fn space(name: &str) -> Space {
 /// - `rank`: Number of upper indices.
 /// # Returns:
 /// - `Kind`: Spin-orbital tensor kind.
-fn kind(
+fn parse_tensor_kind(
     label: &str,
     rank: usize,
 ) -> Kind {

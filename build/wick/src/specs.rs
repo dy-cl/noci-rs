@@ -36,7 +36,8 @@ pub struct ExcSpec {
     pub f: &'static [&'static str],
 }
 
-/// FOIS metric blocks of Lee and Tew Appendix C, extended by the `C \to V` couplings.
+/// FOIS metric blocks of Lee and Tew Appendix C, extended by the `C \to V` and `CC \to VV`
+/// blocks, which need no redundancy handling and are not listed there.
 pub const BLOCKS: &[BlockSpec] = &[
     BlockSpec {
         name: "C1",
@@ -171,6 +172,13 @@ pub const BLOCKS: &[BlockSpec] = &[
         lf: &["a", "i"],
         rf: &["b", "x", "j", "w"],
     },
+    BlockSpec {
+        name: "C20",
+        left: "CCToVV",
+        right: "CCToVV",
+        lf: &["a", "b", "i", "j"],
+        rf: &["c", "d", "k", "l"],
+    },
 ];
 
 /// Spin-free excitation classes with free-index names in created-then-annihilated order.
@@ -227,6 +235,10 @@ pub const EXCS: &[ExcSpec] = &[
         name: "AAToAA",
         f: &["q", "s", "p", "r"],
     },
+    ExcSpec {
+        name: "CCToVV",
+        f: &["a", "b", "i", "j"],
+    },
 ];
 
 /// Find one metric block specification.
@@ -236,7 +248,7 @@ pub const EXCS: &[ExcSpec] = &[
 /// - `BlockSpec`: Matching block specification.
 /// # Panics
 /// - Panics if `name` is not a known block.
-pub fn block(name: &str) -> BlockSpec {
+pub fn metric_block_spec(name: &str) -> BlockSpec {
     *BLOCKS
         .iter()
         .find(|x| x.name == name)
@@ -249,7 +261,7 @@ pub fn block(name: &str) -> BlockSpec {
 /// - `name`: Index name.
 /// # Returns:
 /// - `Space`: Orbital space.
-pub fn space(name: &str) -> Space {
+pub fn index_space(name: &str) -> Space {
     match name {
         "i" | "j" | "k" | "l" => Space::Core,
         "a" | "b" | "c" | "d" => Space::Virtual,

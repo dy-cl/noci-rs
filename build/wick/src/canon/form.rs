@@ -73,7 +73,7 @@ const CATPORT: u32 = 4;
 /// - `pos`: Slot position or free-index label, `0` when not applicable.
 /// # Returns:
 /// - `u32`: Colour value.
-fn color(
+fn vertex_colour(
     cat: u32,
     kind: u32,
     side: u32,
@@ -94,10 +94,12 @@ fn color(
 /// # Returns:
 /// - `(Key, i8)`: Canonical key and the sign relating the term to it; the sign is `0` when an
 ///   odd automorphism makes the term vanish identically.
-pub(crate) fn canonical(form: &Form) -> (Key, i8) {
+pub(crate) fn canonical_key(form: &Form) -> (Key, i8) {
     // An antisymmetric set with a repeated index vanishes identically.
     for f in &form.factors {
-        if f.sym == Sym::Antisymmetric && (repeated(&f.upper) || repeated(&f.lower)) {
+        if f.sym == Sym::Antisymmetric
+            && (has_repeated_index(&f.upper) || has_repeated_index(&f.lower))
+        {
             return (
                 Key {
                     dummies: SmallVec::new(),
@@ -112,7 +114,7 @@ pub(crate) fn canonical(form: &Form) -> (Key, i8) {
     let mut g = Graph::default();
     for (id, &space) in form.spaces.iter().enumerate() {
         let label = if id < form.nfree { id as u32 + 1 } else { 0 };
-        g.vertex(color(CATINDEX, space as u32, 2, label));
+        g.add_vertex(vertex_colour(CATINDEX, space as u32, 2, label));
     }
 
     // Attach every factor through structure vertices matching its symmetry.
@@ -120,7 +122,7 @@ pub(crate) fn canonical(form: &Form) -> (Key, i8) {
     let mut columns = Vec::with_capacity(form.factors.len());
     for f in &form.factors {
         let kind = f.kind as u32;
-        let t = g.vertex(color(CATTENSOR, kind, 2, f.sym as u32));
+        let t = g.add_vertex(vertex_colour(CATTENSOR, kind, 2, f.sym as u32));
         let mut cols = SmallVec::<[u32; 4]>::new();
 
         match f.sym {
@@ -129,41 +131,41 @@ pub(crate) fn canonical(form: &Form) -> (Key, i8) {
                     if xs.is_empty() {
                         continue;
                     }
-                    let s = g.vertex(color(CATSET, kind, side, 0));
-                    g.edge(t, s);
+                    let s = g.add_vertex(vertex_colour(CATSET, kind, side, 0));
+                    g.add_edge(t, s);
                     for &x in xs.iter() {
-                        g.edge(s, x as u32);
+                        g.add_edge(s, x as u32);
                     }
                 }
             }
             Sym::Columns => {
                 for (&u, &l) in f.upper.iter().zip(&f.lower) {
-                    let c = g.vertex(color(CATCOLUMN, kind, 2, 0));
-                    let pu = g.vertex(color(CATPORT, kind, 0, 0));
-                    let pl = g.vertex(color(CATPORT, kind, 1, 0));
-                    g.edge(t, c);
-                    g.edge(c, pu);
-                    g.edge(c, pl);
-                    g.edge(pu, u as u32);
-                    g.edge(pl, l as u32);
+                    let c = g.add_vertex(vertex_colour(CATCOLUMN, kind, 2, 0));
+                    let pu = g.add_vertex(vertex_colour(CATPORT, kind, 0, 0));
+                    let pl = g.add_vertex(vertex_colour(CATPORT, kind, 1, 0));
+                    g.add_edge(t, c);
+                    g.add_edge(c, pu);
+                    g.add_edge(c, pl);
+                    g.add_edge(pu, u as u32);
+                    g.add_edge(pl, l as u32);
                     cols.push(c);
                 }
             }
             Sym::Pairs => {
                 for (&u, &l) in f.upper.iter().zip(&f.lower) {
-                    let c = g.vertex(color(CATCOLUMN, kind, 2, 0));
-                    g.edge(t, c);
-                    g.edge(c, u as u32);
-                    g.edge(c, l as u32);
+                    let c = g.add_vertex(vertex_colour(CATCOLUMN, kind, 2, 0));
+                    g.add_edge(t, c);
+                    g.add_edge(c, u as u32);
+                    g.add_edge(c, l as u32);
                     cols.push(c);
                 }
             }
             Sym::Ordered => {
                 for (side, xs) in [(0, &f.upper), (1, &f.lower)] {
                     for (pos, &x) in xs.iter().enumerate() {
-                        let p = g.vertex(color(CATPORT, kind, side, pos as u32 + 1));
-                        g.edge(t, p);
-                        g.edge(p, x as u32);
+                        let p = g.add_vertex(vertex_colour(CATPORT, kind, side, pos as u32 + 1));
+                        g.add_edge(t, p);
+                        g.add_edge(p, x as u32);
                     }
                 }
             }
@@ -179,11 +181,11 @@ pub(crate) fn canonical(form: &Form) -> (Key, i8) {
 
     // Build the key from the canonical labelling; every automorphic labelling must agree on
     // the sign, otherwise the term is its own negative and vanishes.
-    let canon = graph::canonical(&g);
-    let (key, sign) = build(form, &canon.label, &tensors, &columns);
+    let canon = graph::canonical_labelling(&g);
+    let (key, sign) = key_from_labelling(form, &canon.label, &tensors, &columns);
 
     for label in &canon.automorphs {
-        if build(form, label, &tensors, &columns).1 != sign {
+        if key_from_labelling(form, label, &tensors, &columns).1 != sign {
             return (key, 0);
         }
     }
@@ -199,7 +201,7 @@ pub(crate) fn canonical(form: &Form) -> (Key, i8) {
 /// - `columns`: Column vertices of every column-symmetric factor.
 /// # Returns:
 /// - `(Key, i8)`: Canonical key and sign.
-fn build(
+fn key_from_labelling(
     form: &Form,
     label: &[u32],
     tensors: &[u32],
@@ -225,8 +227,8 @@ fn build(
         let (upper, lower) = match f.sym {
             // Sort each set by canonical index position, tracking permutation parity.
             Sym::Antisymmetric => {
-                let (u, pu) = sorted(&f.upper, label);
-                let (l, pl) = sorted(&f.lower, label);
+                let (u, pu) = sort_by_label(&f.upper, label);
+                let (l, pl) = sort_by_label(&f.lower, label);
                 if pu ^ pl {
                     sign = -sign;
                 }
@@ -281,7 +283,7 @@ fn build(
 /// - `label`: Canonical position of every vertex.
 /// # Returns:
 /// - `(SmallVec<[u16; 4]>, bool)`: Sorted ids and whether the sorting permutation is odd.
-fn sorted(
+fn sort_by_label(
     xs: &[u16],
     label: &[u32],
 ) -> (SmallVec<[u16; 4]>, bool) {
@@ -306,6 +308,6 @@ fn sorted(
 /// - `xs`: Index ids.
 /// # Returns:
 /// - `bool`: Whether any index appears twice.
-fn repeated(xs: &[u16]) -> bool {
+fn has_repeated_index(xs: &[u16]) -> bool {
     xs.iter().enumerate().any(|(i, x)| xs[..i].contains(x))
 }

@@ -59,6 +59,10 @@ const CLUSTER: &[(&[Space], &[Space])] = &[
         &[Space::Active, Space::Active],
         &[Space::Active, Space::Active],
     ),
+    (
+        &[Space::Virtual, Space::Virtual],
+        &[Space::Core, Space::Core],
+    ),
 ];
 
 /// Every orbital space.
@@ -71,7 +75,7 @@ const SPACES: [Space; 3] = [Space::Core, Space::Active, Space::Virtual];
 /// - `ann`: Annihilated spaces.
 /// # Returns:
 /// - `Component`: Operator component.
-pub(crate) fn component(
+pub(crate) fn operator_component(
     kind: Kind,
     cre: &[Space],
     ann: &[Space],
@@ -103,12 +107,12 @@ pub(crate) fn component(
 /// - None.
 /// # Returns:
 /// - `Vec<Component>`: One-body Fock and antisymmetrised two-body components.
-pub(crate) fn hamiltonian() -> Vec<Component> {
+pub(crate) fn normal_ordered_hamiltonian() -> Vec<Component> {
     let mut out = Vec::new();
 
     for c in SPACES {
         for a in SPACES {
-            out.push(component(Kind::Fock, &[c], &[a]));
+            out.push(operator_component(Kind::Fock, &[c], &[a]));
         }
     }
 
@@ -120,9 +124,36 @@ pub(crate) fn hamiltonian() -> Vec<Component> {
         .collect::<Vec<_>>();
     for c in &pairs {
         for a in &pairs {
-            out.push(component(Kind::Eri, c, a));
+            out.push(operator_component(Kind::Eri, c, a));
         }
     }
+
+    out
+}
+
+/// Return the normal-ordered spin-orbital Dyall Hamiltonian.
+/// Normal ordering `\hat H_0 = \sum_{ij} f^j_i\hat E^i_j + \sum_{ab} f^b_a\hat E^a_b +
+/// \sum_{tu} f^u_t\hat E^t_u + \tfrac12\sum_{tuvw} g^{vw}_{tu}\hat E^{tu}_{vw}` with respect to the
+/// reference turns the active one-body part into the generalised Fock operator, so `\hat H_0`
+/// keeps the core-core, active-active and virtual-virtual Fock blocks and the all-active
+/// two-body block of the normal-ordered Hamiltonian.
+/// # Arguments:
+/// - None.
+/// # Returns:
+/// - `Vec<Component>`: Diagonal-block Fock and active two-body components.
+/// # References
+/// - Dyall, *J. Chem. Phys.* **102**, 4909 (1995); Lee and Tew, arXiv:2507.13472 (2025),
+///   Eq. (59).
+pub(crate) fn dyall_hamiltonian() -> Vec<Component> {
+    let mut out = SPACES
+        .iter()
+        .map(|&s| operator_component(Kind::Fock, &[s], &[s]))
+        .collect::<Vec<_>>();
+    out.push(operator_component(
+        Kind::Eri,
+        &[Space::Active, Space::Active],
+        &[Space::Active, Space::Active],
+    ));
 
     out
 }
@@ -132,12 +163,12 @@ pub(crate) fn hamiltonian() -> Vec<Component> {
 /// - None.
 /// # Returns:
 /// - `Vec<Component>`: Singles and doubles amplitude components.
-pub(crate) fn cluster() -> Vec<Component> {
+pub(crate) fn cluster_operator() -> Vec<Component> {
     CLUSTER
         .iter()
         .map(|&(cre, ann)| {
             let kind = if cre.len() == 1 { Kind::T1 } else { Kind::T2 };
-            component(kind, cre, ann)
+            operator_component(kind, cre, ann)
         })
         .collect()
 }
@@ -150,11 +181,11 @@ pub(crate) fn cluster() -> Vec<Component> {
 /// - `targets`: Spaces the excitation creates into.
 /// # Returns:
 /// - `Component`: Projector component with kind `Kind::Bra`.
-pub(crate) fn bra(
+pub(crate) fn projector_component(
     sources: &[Space],
     targets: &[Space],
 ) -> Component {
-    component(Kind::Bra, sources, targets)
+    operator_component(Kind::Bra, sources, targets)
 }
 
 /// Return the metric excitation `\tau` of one excitation class.
@@ -163,11 +194,11 @@ pub(crate) fn bra(
 /// - `targets`: Spaces the excitation creates into.
 /// # Returns:
 /// - `Component`: Excitation component with kind `Kind::Ket`.
-pub(crate) fn ket(
+pub(crate) fn excitation_component(
     sources: &[Space],
     targets: &[Space],
 ) -> Component {
-    component(Kind::Ket, targets, sources)
+    operator_component(Kind::Ket, targets, sources)
 }
 
 /// Return the residual projector of one spin-orbital excitation class by name.
@@ -176,8 +207,8 @@ pub(crate) fn ket(
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `Option<Component>`: Projector component, or `None` for an unknown class.
-pub(crate) fn class(name: &str) -> Option<Component> {
-    spaces(name).map(|(sources, targets)| bra(sources, targets))
+pub(crate) fn projector_for_class(name: &str) -> Option<Component> {
+    class_spaces(name).map(|(sources, targets)| projector_component(sources, targets))
 }
 
 /// Return the metric excitation of one spin-orbital excitation class by name.
@@ -185,8 +216,8 @@ pub(crate) fn class(name: &str) -> Option<Component> {
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `Option<Component>`: Excitation component, or `None` for an unknown class.
-pub(crate) fn excitation(name: &str) -> Option<Component> {
-    spaces(name).map(|(sources, targets)| ket(sources, targets))
+pub(crate) fn excitation_for_class(name: &str) -> Option<Component> {
+    class_spaces(name).map(|(sources, targets)| excitation_component(sources, targets))
 }
 
 /// Return the source and target spaces of one excitation class by name.
@@ -194,7 +225,7 @@ pub(crate) fn excitation(name: &str) -> Option<Component> {
 /// - `name`: Excitation class name.
 /// # Returns:
 /// - `Option<(&'static [Space], &'static [Space])>`: Annihilated and created spaces.
-fn spaces(name: &str) -> Option<(&'static [Space], &'static [Space])> {
+fn class_spaces(name: &str) -> Option<(&'static [Space], &'static [Space])> {
     const C: Space = Space::Core;
     const A: Space = Space::Active;
     const V: Space = Space::Virtual;
@@ -210,6 +241,7 @@ fn spaces(name: &str) -> Option<(&'static [Space], &'static [Space])> {
         "CAToAA" => (&[C, A], &[A, A]),
         "AAToAV" => (&[A, A], &[A, V]),
         "AAToVV" => (&[A, A], &[V, V]),
+        "CCToVV" => (&[C, C], &[V, V]),
         "AAToAA" => (&[A, A], &[A, A]),
         _ => return None,
     };

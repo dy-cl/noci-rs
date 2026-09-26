@@ -36,7 +36,7 @@ type Relation = Vec<(Key, i64)>;
 /// - `res`: Spin-free residual, reduced in place.
 /// # Returns:
 /// - `()`: Mutates `res.terms`.
-pub(crate) fn cumulants(res: &mut Table) {
+pub(crate) fn reduce_by_cumulant_relations(res: &mut Table) {
     let spaces = res.free.iter().map(|&s| s as u8).collect::<Vec<_>>();
     let mut seen = FxHashSet::<Key>::default();
 
@@ -55,12 +55,12 @@ pub(crate) fn cumulants(res: &mut Table) {
 
         let mut rels = fresh
             .par_iter()
-            .flat_map_iter(|k| relations(&spaces, k))
+            .flat_map_iter(|k| cumulant_relations(&spaces, k))
             .collect::<Vec<_>>();
         rels.par_sort_unstable();
         rels.dedup();
 
-        if !descend(&rels, &mut res.terms) {
+        if !greedy_descent(&rels, &mut res.terms) {
             break;
         }
     }
@@ -74,7 +74,7 @@ pub(crate) fn cumulants(res: &mut Table) {
 /// - `terms`: Coefficient of every canonical term.
 /// # Returns:
 /// - `bool`: Whether the combination is a sum of relations.
-pub(crate) fn vanishes(
+pub(crate) fn vanishes_modulo_relations(
     spaces: &[u8],
     terms: &FxHashMap<Key, Ratio<i64>>,
 ) -> bool {
@@ -84,7 +84,7 @@ pub(crate) fn vanishes(
     let mut rels = Vec::new();
 
     for _ in 0..ROUNDS {
-        if span(&rels, terms) {
+        if lies_in_span(&rels, terms) {
             return true;
         }
 
@@ -98,7 +98,7 @@ pub(crate) fn vanishes(
         }
         let more = fresh
             .par_iter()
-            .flat_map_iter(|k| relations(spaces, k))
+            .flat_map_iter(|k| cumulant_relations(spaces, k))
             .collect::<Vec<_>>();
         frontier.extend(
             more.iter()
@@ -109,7 +109,7 @@ pub(crate) fn vanishes(
         rels.extend(more);
     }
 
-    span(&rels, terms)
+    lies_in_span(&rels, terms)
 }
 
 /// Test whether one vector lies in the span of a set of relations by exact elimination.
@@ -118,7 +118,7 @@ pub(crate) fn vanishes(
 /// - `x`: Coefficient of every canonical term.
 /// # Returns:
 /// - `bool`: Whether `x` is a rational combination of `rels`.
-fn span(
+fn lies_in_span(
     rels: &[Relation],
     x: &FxHashMap<Key, Ratio<i64>>,
 ) -> bool {
@@ -138,7 +138,7 @@ fn span(
             let j = *ids.entry(k).or_insert(n);
             row.insert(j, Ratio::from_integer(*c));
         }
-        eliminate(&basis, &mut row);
+        eliminate_pivots(&basis, &mut row);
         if let Some((&p, &v)) = row.iter().next() {
             for w in row.values_mut() {
                 *w /= v;
@@ -153,7 +153,7 @@ fn span(
         let j = *ids.entry(k).or_insert(n);
         row.insert(j, *c);
     }
-    eliminate(&basis, &mut row);
+    eliminate_pivots(&basis, &mut row);
 
     row.is_empty()
 }
@@ -166,7 +166,7 @@ fn span(
 /// - `row`: Row to reduce, updated in place.
 /// # Returns:
 /// - `()`: Mutates `row`.
-fn eliminate(
+fn eliminate_pivots(
     basis: &BTreeMap<usize, BTreeMap<usize, Ratio<i64>>>,
     row: &mut BTreeMap<usize, Ratio<i64>>,
 ) {
@@ -198,7 +198,7 @@ fn eliminate(
 /// - `x`: Term coefficients, updated in place.
 /// # Returns:
 /// - `bool`: Whether any move was applied.
-fn descend(
+fn greedy_descent(
     rels: &[Relation],
     x: &mut FxHashMap<Key, Ratio<i64>>,
 ) -> bool {
@@ -276,7 +276,7 @@ fn descend(
 /// - `key`: Canonical term.
 /// # Returns:
 /// - `Vec<Relation>`: Nontrivial normalised relations.
-fn relations(
+fn cumulant_relations(
     spaces: &[u8],
     key: &Key,
 ) -> Vec<Relation> {
@@ -324,13 +324,13 @@ fn relations(
                 for (&s, &&q) in slots.iter().zip(&order) {
                     g.lower[s] = q;
                 }
-                let (variant, sign) = canon::canonical(&form);
+                let (variant, sign) = canon::canonical_key(&form);
                 if sign != 0 {
                     *rel.entry(variant).or_insert(0) += sign as i64;
                 }
             }
 
-            if let Some(rel) = normalise(rel) {
+            if let Some(rel) = normalise_relation(rel) {
                 out.push(rel);
             }
         }
@@ -345,14 +345,16 @@ fn relations(
 /// - `rel`: Coefficient of every term.
 /// # Returns:
 /// - `Option<Relation>`: Normalised relation, or `None` when it has fewer than two terms.
-fn normalise(rel: FxHashMap<Key, i64>) -> Option<Relation> {
+fn normalise_relation(rel: FxHashMap<Key, i64>) -> Option<Relation> {
     let mut rel = rel.into_iter().filter(|(_, c)| *c != 0).collect::<Vec<_>>();
     if rel.len() < 2 {
         return None;
     }
     rel.sort_unstable();
 
-    let g = rel.iter().fold(0i64, |g, (_, c)| gcd(g, c.abs()));
+    let g = rel
+        .iter()
+        .fold(0i64, |g, (_, c)| greatest_common_divisor(g, c.abs()));
     let s = if rel[0].1 < 0 { -g } else { g };
     for (_, c) in &mut rel {
         *c /= s;
@@ -366,10 +368,14 @@ fn normalise(rel: FxHashMap<Key, i64>) -> Option<Relation> {
 /// - `a`: First integer.
 /// - `b`: Second integer.
 /// # Returns:
-/// - `i64`: `\gcd(a, b)`.
-fn gcd(
+/// - `i64`: `\greatest_common_divisor(a, b)`.
+fn greatest_common_divisor(
     a: i64,
     b: i64,
 ) -> i64 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    if b == 0 {
+        a
+    } else {
+        greatest_common_divisor(b, a % b)
+    }
 }

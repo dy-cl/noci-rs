@@ -23,7 +23,7 @@ fn check(
         .join(format!("r{order}_{class}.txt"));
     let text = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    let c = so::compare(order, class, &text);
+    let c = so::compare_with_wickd(order, class, &text);
 
     assert_eq!(
         (c.matching, c.mismatched, c.missing, c.extra),

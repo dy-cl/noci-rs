@@ -31,7 +31,7 @@ impl Basis {
     /// - `&'static Self`: Permutations and Gram matrix.
     /// # Panics
     /// - Panics if `k > 4`.
-    pub(crate) fn cached(k: usize) -> &'static Self {
+    pub(crate) fn for_rank(k: usize) -> &'static Self {
         static BASES: OnceLock<[Basis; 5]> = OnceLock::new();
 
         &BASES.get_or_init(|| std::array::from_fn(Basis::new))[k]
@@ -49,8 +49,12 @@ impl Basis {
             .map(|p| {
                 ps.iter()
                     .map(|q| {
-                        let r = compose(&inverse(p), q);
-                        Ratio::from_integer(sign(p) * sign(q) * (1i64 << cycles(&r)))
+                        let r = permutation_compose(&permutation_inverse(p), q);
+                        Ratio::from_integer(
+                            permutation_sign(p)
+                                * permutation_sign(q)
+                                * (1i64 << permutation_cycles(&r)),
+                        )
                     })
                     .collect()
             })
@@ -67,7 +71,7 @@ impl Basis {
 /// # Returns:
 /// - `Option<Vec<Ratio<i64>>>`: Solution with free variables set to zero, or `None` when the
 ///   system is inconsistent.
-pub(crate) fn solve(
+pub(crate) fn solve_rational_system(
     mut a: Vec<Vec<Ratio<i64>>>,
     b: Vec<Ratio<i64>>,
 ) -> Option<Vec<Ratio<i64>>> {
@@ -122,7 +126,7 @@ pub(crate) fn solve(
 /// - `p`: Permutation.
 /// # Returns:
 /// - `i64`: Sign.
-pub(crate) fn sign(p: &[usize]) -> i64 {
+pub(crate) fn permutation_sign(p: &[usize]) -> i64 {
     let n = (0..p.len())
         .tuple_combinations()
         .filter(|&(i, j)| p[i] > p[j])
@@ -136,7 +140,7 @@ pub(crate) fn sign(p: &[usize]) -> i64 {
 /// - `p`: Permutation.
 /// # Returns:
 /// - `Vec<usize>`: Inverse permutation.
-fn inverse(p: &[usize]) -> Vec<usize> {
+fn permutation_inverse(p: &[usize]) -> Vec<usize> {
     let mut out = vec![0; p.len()];
     for (i, &x) in p.iter().enumerate() {
         out[x] = i;
@@ -150,7 +154,7 @@ fn inverse(p: &[usize]) -> Vec<usize> {
 /// - `q`: Inner permutation.
 /// # Returns:
 /// - `Vec<usize>`: Composition.
-fn compose(
+fn permutation_compose(
     p: &[usize],
     q: &[usize],
 ) -> Vec<usize> {
@@ -162,7 +166,7 @@ fn compose(
 /// - `p`: Permutation.
 /// # Returns:
 /// - `usize`: Number of cycles.
-fn cycles(p: &[usize]) -> usize {
+fn permutation_cycles(p: &[usize]) -> usize {
     let mut seen = vec![false; p.len()];
     let mut out = 0;
 

@@ -13,7 +13,11 @@ macro_rules! metric_test {
         /// - `()`: Panics if the block differs from Appendix C.
         #[test]
         fn $test() {
-            assert!(target::check($name), "{} differs from Appendix C", $name);
+            assert!(
+                target::matches_appendix_c($name),
+                "{} differs from Appendix C",
+                $name
+            );
         }
     };
 }

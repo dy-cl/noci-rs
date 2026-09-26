@@ -1,5 +1,8 @@
 // so/wick.rs
 
+// Standard library imports.
+use std::sync::OnceLock;
+
 // External crate imports.
 use num_rational::Ratio;
 use rayon::prelude::*;
@@ -55,7 +58,7 @@ struct Product {
 /// - `comps`: Components with their normal-ordered string ids.
 /// # Returns:
 /// - `Product`: Operators, tensors, index spaces and prefactor.
-fn instantiate(comps: &[(&Component, u8)]) -> Product {
+fn instantiate_product(comps: &[(&Component, u8)]) -> Product {
     let mut out = Product {
         ops: Vec::new(),
         tensors: Vec::new(),
@@ -122,8 +125,8 @@ fn instantiate(comps: &[(&Component, u8)]) -> Product {
 /// - `comps`: Components with their normal-ordered string ids.
 /// # Returns:
 /// - `Vec<Term>`: One term per complete connected contraction.
-pub(crate) fn contract(comps: &[(&Component, u8)]) -> Vec<Term> {
-    let p = instantiate(comps);
+pub(crate) fn contract_components(comps: &[(&Component, u8)]) -> Vec<Term> {
+    let p = instantiate_product(comps);
 
     // Every contraction consumes equal numbers of creators and annihilators per space.
     for s in [Space::Core, Space::Active, Space::Virtual] {
@@ -142,7 +145,7 @@ pub(crate) fn contract(comps: &[(&Component, u8)]) -> Vec<Term> {
         (1u32 << p.ops.len()) - 1
     };
 
-    cover(&p, full, &mut blocks, &mut out);
+    cover_operators(&p, full, &mut blocks, &mut out);
     out
 }
 
@@ -154,14 +157,14 @@ pub(crate) fn contract(comps: &[(&Component, u8)]) -> Vec<Term> {
 /// - `out`: Completed terms.
 /// # Returns:
 /// - `()`: Appends one term per connected complete contraction.
-fn cover(
+fn cover_operators(
     p: &Product,
     left: u32,
     blocks: &mut Vec<Block>,
     out: &mut Vec<Term>,
 ) {
     if left == 0 {
-        if let Some(t) = finish(p, blocks) {
+        if let Some(t) = finish_contraction(p, blocks) {
             out.push(t);
         }
         return;
@@ -185,7 +188,7 @@ fn cover(
                         order: SmallVec::from_slice(&[i as u8, j as u8]),
                         tensor: None,
                     });
-                    cover(p, left & !(1 << i) & !(1 << j), blocks, out);
+                    cover_operators(p, left & !(1 << i) & !(1 << j), blocks, out);
                     blocks.pop();
                 }
             }
@@ -196,7 +199,7 @@ fn cover(
                 .collect::<SmallVec<[usize; 16]>>();
 
             for k in 1..=MAXCUMULANT {
-                choose(p, i, k, &partners, left, blocks, out);
+                choose_combinations(p, i, k, &partners, left, blocks, out);
             }
         }
     }
@@ -213,7 +216,7 @@ fn cover(
 /// - `out`: Completed terms.
 /// # Returns:
 /// - `()`: Recurses once per admissible block.
-fn choose(
+fn choose_combinations(
     p: &Product,
     i: usize,
     k: usize,
@@ -243,10 +246,10 @@ fn choose(
         let mixed = groups.iter().any(|&g| g != groups[0]);
 
         if cre == k && mixed {
-            let block = active(p, &pos, k);
+            let block = active_blocks(p, &pos, k);
             let mask = pos.iter().fold(left, |m, &q| m & !(1 << q));
             blocks.push(block);
-            cover(p, mask, blocks, out);
+            cover_operators(p, mask, blocks, out);
             blocks.pop();
         }
 
@@ -275,7 +278,7 @@ fn choose(
 /// - `k`: Block rank.
 /// # Returns:
 /// - `Block`: Block with its value order and contraction tensor.
-fn active(
+fn active_blocks(
     p: &Product,
     pos: &[usize],
     k: usize,
@@ -338,7 +341,7 @@ fn active(
 /// - `blocks`: Complete set of contraction blocks.
 /// # Returns:
 /// - `Option<Term>`: Signed term with deltas eliminated, or `None` if disconnected.
-fn finish(
+fn finish_contraction(
     p: &Product,
     blocks: &[Block],
 ) -> Option<Term> {
@@ -446,43 +449,37 @@ fn finish(
 /// - `order`: Order in `T`.
 /// # Returns:
 /// - `Expr`: Canonically combined spin-orbital residual.
-pub(crate) fn residual(
+pub(crate) fn residual_expression(
     bra: &Component,
     order: usize,
 ) -> Expr {
-    let h = ops::hamiltonian();
-    let t = ops::cluster();
-
-    // Enumerate component products: the bra, one Hamiltonian block and `order` cluster types.
-    let mut products = h
+    let h = ops::normal_ordered_hamiltonian();
+    let products = h
         .iter()
         .map(|x| vec![(bra, 0u8), (x, 1u8)])
         .collect::<Vec<_>>();
-    for _ in 0..order {
-        products = products
-            .into_iter()
-            .flat_map(|p| t.iter().map(move |x| [p.clone(), vec![(x, 2u8)]].concat()))
-            .collect();
-    }
-    let scale = if order == 2 {
-        Ratio::new(1, 2)
-    } else {
-        Ratio::from_integer(1)
-    };
 
-    products
-        .par_iter()
-        .fold(Expr::default, |mut acc, comps| {
-            for mut term in contract(comps) {
-                term.coeff *= scale;
-                super::add(&mut acc, &term);
-            }
-            acc
-        })
-        .reduce(Expr::default, |mut a, b| {
-            super::merge(&mut a, b);
-            a
-        })
+    sum_products(
+        &append_cluster_operators(products, order),
+        taylor_factor(order),
+    )
+}
+
+/// Generate the spin-orbital correlation energy at one order in `T`,
+/// `E_1 = \langle\Phi|H T|\Phi\rangle_c` and `E_2 = \tfrac12\langle\Phi|H\{T T\}|\Phi\rangle_c`.
+/// The reference energy `E_0 = \langle\Phi|H|\Phi\rangle` is evaluated from the RDMs instead.
+/// # Arguments:
+/// - `order`: Order in `T`, `1` or `2`.
+/// # Returns:
+/// - `Expr`: Canonically combined spin-orbital energy contribution.
+pub(crate) fn energy_expression(order: usize) -> Expr {
+    let h = ops::normal_ordered_hamiltonian();
+    let products = h.iter().map(|x| vec![(x, 1u8)]).collect::<Vec<_>>();
+
+    sum_products(
+        &append_cluster_operators(products, order),
+        taylor_factor(order),
+    )
 }
 
 /// Derive the spin-orbital metric `\langle\Phi|\hat\tau_\mu^\dagger\hat\tau_\nu|\Phi\rangle` of two
@@ -492,13 +489,86 @@ pub(crate) fn residual(
 /// - `ket`: Right excitation component.
 /// # Returns:
 /// - `Expr`: Canonically combined spin-orbital metric block.
-pub(crate) fn metric(
+pub(crate) fn metric_expression(
     bra: &Component,
     ket: &Component,
 ) -> Expr {
-    let mut out = Expr::default();
-    for term in contract(&[(bra, 0), (ket, 1)]) {
-        super::add(&mut out, &term);
+    sum_products(&[vec![(bra, 0), (ket, 1)]], Ratio::from_integer(1))
+}
+
+/// Derive the connected zeroth-order coupling
+/// `\langle\Phi|\hat\tau_\mu^\dagger\hat H_0\hat\tau_\nu|\Phi\rangle_c` of two excitation classes
+/// for the normal-ordered Dyall Hamiltonian `\hat H_0`.
+/// # Arguments:
+/// - `bra`: Left projector component.
+/// - `ket`: Right excitation component.
+/// # Returns:
+/// - `Expr`: Canonically combined spin-orbital coupling block.
+pub(crate) fn dyall_coupling_expression(
+    bra: &Component,
+    ket: &Component,
+) -> Expr {
+    let h0 = ops::dyall_hamiltonian();
+    let products = h0
+        .iter()
+        .map(|x| vec![(bra, 0u8), (x, 1u8), (ket, 2u8)])
+        .collect::<Vec<_>>();
+
+    sum_products(&products, Ratio::from_integer(1))
+}
+
+/// Append `order` cluster operators, sharing one normal-ordered string, to every product.
+/// # Arguments:
+/// - `products`: Component products with their normal-ordered string ids.
+/// - `order`: Number of cluster operators to append.
+/// # Returns:
+/// - `Vec<Vec<(&Component, u8)>>`: Products with every combination of cluster types.
+fn append_cluster_operators(
+    mut products: Vec<Vec<(&Component, u8)>>,
+    order: usize,
+) -> Vec<Vec<(&Component, u8)>> {
+    static CLUSTER: OnceLock<Vec<Component>> = OnceLock::new();
+    let t = CLUSTER.get_or_init(ops::cluster_operator);
+
+    for _ in 0..order {
+        products = products
+            .into_iter()
+            .flat_map(|p| t.iter().map(move |x| [p.clone(), vec![(x, 2u8)]].concat()))
+            .collect();
     }
-    out
+    products
+}
+
+/// Return the Taylor prefactor `1 / n!` of the normal-ordered exponential at order `n`.
+/// # Arguments:
+/// - `order`: Order in `T`.
+/// # Returns:
+/// - `Ratio<i64>`: Prefactor.
+fn taylor_factor(order: usize) -> Ratio<i64> {
+    Ratio::new(1, (1..=order as i64).product::<i64>())
+}
+
+/// Contract every component product and combine the terms canonically.
+/// # Arguments:
+/// - `products`: Component products with their normal-ordered string ids.
+/// - `scale`: Prefactor applied to every term.
+/// # Returns:
+/// - `Expr`: Canonically combined spin-orbital expression.
+fn sum_products(
+    products: &[Vec<(&Component, u8)>],
+    scale: Ratio<i64>,
+) -> Expr {
+    products
+        .par_iter()
+        .fold(Expr::default, |mut acc, comps| {
+            for mut term in contract_components(comps) {
+                term.coeff *= scale;
+                super::add_term(&mut acc, &term);
+            }
+            acc
+        })
+        .reduce(Expr::default, |mut a, b| {
+            super::merge_expressions(&mut a, b);
+            a
+        })
 }

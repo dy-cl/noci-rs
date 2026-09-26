@@ -88,7 +88,7 @@ type Raw = (u8, SmallVec<[u16; 4]>, SmallVec<[u16; 4]>);
 /// - `k`: Spin-free kind id.
 /// # Returns:
 /// - `Sym`: Slot symmetry used by the canonical form.
-pub(crate) fn sym(k: u8) -> Sym {
+pub(crate) fn slot_symmetry(k: u8) -> Sym {
     match k {
         ERI | DELTA => Sym::Pairs,
         T2 | LAMBDA2 | LAMBDA3 | LAMBDA4 => Sym::Columns,
@@ -102,11 +102,11 @@ pub(crate) fn sym(k: u8) -> Sym {
 /// - `class`: Spin-orbital class name.
 /// # Returns:
 /// - `Vec<(&'static str, Vec<Space>)>`: Spin-free class names with free-index spaces.
-fn layouts(class: &str) -> Vec<(&'static str, Vec<Space>)> {
+fn class_layouts(class: &str) -> Vec<(&'static str, Vec<Space>)> {
     specs::EXCS
         .iter()
         .filter(|x| x.name == class || (class == "CAToAV" && x.name == "CAToVA"))
-        .map(|x| (x.name, x.f.iter().map(|&n| specs::space(n)).collect()))
+        .map(|x| (x.name, x.f.iter().map(|&n| specs::index_space(n)).collect()))
         .collect()
 }
 
@@ -116,7 +116,7 @@ fn layouts(class: &str) -> Vec<(&'static str, Vec<Space>)> {
 /// - `spin`: Spin bit of every index.
 /// # Returns:
 /// - `SmallVec<[(Ratio<i64>, Raw); 4]>`: Coefficients and spin-free factors.
-fn expand(
+fn expand_spin_block(
     f: &Factor,
     spin: &[u8],
 ) -> SmallVec<[(Ratio<i64>, Raw); 4]> {
@@ -159,7 +159,7 @@ fn expand(
             x if x == so::Kind::Lambda3 as u8 => LAMBDA3,
             _ => LAMBDA4,
         };
-        return rules::cumulant(k, upper, lower)
+        return rules::cumulant_replacement(k, upper, lower)
             .iter()
             .map(|(rho, c)| (*c, (name, f.upper.clone(), permute(rho))))
             .collect();
@@ -172,7 +172,7 @@ fn expand(
         x if x == so::Kind::Eri as u8 => ERI,
         _ => T2,
     };
-    rules::pair(upper, lower)
+    rules::pair_replacement(upper, lower)
         .into_iter()
         .map(|(rho, c)| (c, (name, f.upper.clone(), permute(&rho))))
         .collect()
@@ -196,7 +196,7 @@ fn is_cumulant(k: u8) -> bool {
 /// - `factors`: Spin-orbital factors.
 /// # Returns:
 /// - `Vec<Vec<u8>>`: Spin bits of every index for each assignment.
-fn assignments(
+fn spin_assignments(
     n: usize,
     factors: &[Factor],
 ) -> Vec<Vec<u8>> {
@@ -241,11 +241,11 @@ fn assignments(
 /// - `expr`: Canonical spin-orbital residual.
 /// # Returns:
 /// - `Vec<Table>`: Spin-free residual of every class covered by `class`.
-pub(crate) fn adapt(
+pub(crate) fn adapt_residual(
     class: &str,
     expr: &so::Expr,
 ) -> Vec<Table> {
-    let layouts = layouts(class);
+    let layouts = class_layouts(class);
     let outputs = layouts
         .iter()
         .map(|(_, free)| vec![free.clone()])
@@ -253,7 +253,7 @@ pub(crate) fn adapt(
 
     layouts
         .into_iter()
-        .zip(accumulate(&outputs, expr))
+        .zip(accumulate_outputs(&outputs, expr))
         .map(|((name, free), terms)| Table { name, free, terms })
         .collect()
 }
@@ -269,7 +269,7 @@ pub(crate) fn adapt(
 /// - `Table`: Spin-free metric block.
 /// # Panics
 /// - Panics if either class is unknown.
-pub(crate) fn metric(
+pub(crate) fn adapt_metric_block(
     name: &'static str,
     left: &str,
     right: &str,
@@ -279,15 +279,40 @@ pub(crate) fn metric(
         specs::EXCS
             .iter()
             .find(|x| x.name == class)
-            .map(|x| x.f.iter().map(|&n| specs::space(n)).collect::<Vec<_>>())
+            .map(|x| {
+                x.f.iter()
+                    .map(|&n| specs::index_space(n))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_else(|| panic!("unknown excitation class {class}"))
     };
     let outputs = vec![vec![layout(left), layout(right)]];
-    let terms = accumulate(&outputs, expr).pop().unwrap_or_default();
+    let terms = accumulate_outputs(&outputs, expr).pop().unwrap_or_default();
 
     Table {
         name,
         free: outputs[0].concat(),
+        terms,
+    }
+}
+
+/// Spin-adapt one spin-orbital scalar with no placeholders, such as an energy contribution.
+/// # Arguments:
+/// - `name`: Table name.
+/// - `expr`: Canonical spin-orbital scalar expression.
+/// # Returns:
+/// - `Table`: Spin-free terms with no free indices.
+pub(crate) fn adapt_scalar(
+    name: &'static str,
+    expr: &so::Expr,
+) -> Table {
+    let terms = accumulate_outputs(&[Vec::new()], expr)
+        .pop()
+        .unwrap_or_default();
+
+    Table {
+        name,
+        free: Vec::new(),
         terms,
     }
 }
@@ -298,7 +323,7 @@ pub(crate) fn metric(
 /// - `expr`: Canonical spin-orbital expression.
 /// # Returns:
 /// - `Vec<FxHashMap<Key, Ratio<i64>>>`: Nonzero canonical terms of every output.
-fn accumulate(
+fn accumulate_outputs(
     outputs: &[Vec<Vec<Space>>],
     expr: &so::Expr,
 ) -> Vec<FxHashMap<Key, Ratio<i64>>> {
@@ -308,9 +333,13 @@ fn accumulate(
         .fold(
             || vec![FxHashMap::<Key, Ratio<i64>>::default(); outputs.len()],
             |mut acc, (key, &coeff)| {
-                let spaces = key.dummies.iter().map(|&s| space(s)).collect::<Vec<_>>();
-                for (raw, c) in spinsum(key, coeff) {
-                    bind(outputs, &spaces, &raw, c, &mut acc);
+                let spaces = key
+                    .dummies
+                    .iter()
+                    .map(|&s| space_from_id(s))
+                    .collect::<Vec<_>>();
+                for (raw, c) in sum_over_spins(key, coeff) {
+                    bind_placeholders(outputs, &spaces, &raw, c, &mut acc);
                 }
                 acc
             },
@@ -339,7 +368,7 @@ fn accumulate(
 /// - `coeff`: Term coefficient.
 /// # Returns:
 /// - `FxHashMap<Vec<Raw>, Ratio<i64>>`: Spin-free products over the term's index ids.
-fn spinsum(
+fn sum_over_spins(
     key: &Key,
     coeff: Ratio<i64>,
 ) -> FxHashMap<Vec<Raw>, Ratio<i64>> {
@@ -349,11 +378,11 @@ fn spinsum(
     // Both spins of the first index contribute equally.
     let scale = coeff * Ratio::from_integer(if n > 0 { 2 } else { 1 });
 
-    for spin in assignments(n, &key.factors) {
+    for spin in spin_assignments(n, &key.factors) {
         let mut prods = vec![(scale, Vec::<Raw>::with_capacity(key.factors.len()))];
 
         for f in &key.factors {
-            let ex = expand(f, &spin);
+            let ex = expand_spin_block(f, &spin);
             prods = prods
                 .into_iter()
                 .flat_map(|(c, raw)| {
@@ -392,7 +421,7 @@ fn spinsum(
 /// - `acc`: Per-output canonical accumulators.
 /// # Returns:
 /// - `()`: Mutates `acc`.
-fn bind(
+fn bind_placeholders(
     outputs: &[Vec<Vec<Space>>],
     all: &[Space],
     raw: &[Raw],
@@ -430,7 +459,13 @@ fn bind(
             continue;
         }
 
-        for choice in orders.iter().multi_cartesian_product() {
+        // A scalar has no placeholders and binds once, with no free indices.
+        let choices = if orders.is_empty() {
+            vec![Vec::new()]
+        } else {
+            orders.iter().multi_cartesian_product().collect()
+        };
+        for choice in choices {
             if !choice
                 .iter()
                 .zip(layouts)
@@ -474,13 +509,13 @@ fn bind(
                 .filter(|&(m, _)| !holders.contains(&m))
                 .map(|(_, (k, u, l))| Factor {
                     kind: *k,
-                    sym: sym(*k),
+                    sym: slot_symmetry(*k),
                     upper: u.iter().map(|&x| rename[x as usize]).collect(),
                     lower: l.iter().map(|&x| rename[x as usize]).collect(),
                 })
                 .chain(deltas.iter().map(|&(a, b)| Factor {
                     kind: DELTA,
-                    sym: sym(DELTA),
+                    sym: slot_symmetry(DELTA),
                     upper: SmallVec::from_elem(a, 1),
                     lower: SmallVec::from_elem(b, 1),
                 }))
@@ -490,7 +525,7 @@ fn bind(
                 nfree: free.len(),
                 factors,
             };
-            let (key, sign) = canon::canonical(&form);
+            let (key, sign) = canon::canonical_key(&form);
 
             if sign != 0 {
                 *acc[n].entry(key).or_insert_with(|| Ratio::from_integer(0)) +=
@@ -505,7 +540,7 @@ fn bind(
 /// - `s`: Space id as stored in canonical keys.
 /// # Returns:
 /// - `Space`: Orbital space.
-fn space(s: u8) -> Space {
+fn space_from_id(s: u8) -> Space {
     match s {
         0 => Space::Core,
         1 => Space::Active,

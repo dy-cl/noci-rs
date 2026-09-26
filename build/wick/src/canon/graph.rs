@@ -32,7 +32,7 @@ impl Graph {
     /// - `color`: Vertex colour.
     /// # Returns:
     /// - `u32`: New vertex id.
-    pub(crate) fn vertex(
+    pub(crate) fn add_vertex(
         &mut self,
         color: u32,
     ) -> u32 {
@@ -47,7 +47,7 @@ impl Graph {
     /// - `b`: Second vertex.
     /// # Returns:
     /// - `()`: Mutates the adjacency lists.
-    pub(crate) fn edge(
+    pub(crate) fn add_edge(
         &mut self,
         a: u32,
         b: u32,
@@ -60,13 +60,13 @@ impl Graph {
 /// Return the canonical labelling of a vertex-coloured graph.
 /// Individualisation–refinement: the colouring is refined to an equitable partition; while
 /// cells remain non-singleton, every vertex of the first smallest cell is individualised in
-/// turn and refined again. Each discrete leaf yields a certificate (colours and edges under the
+/// turn and refined again. Each discrete leaf yields a labelling_certificate (colours and edges under the
 /// labelling), and the lexicographically smallest certificate defines the canonical form.
 /// # Arguments:
 /// - `g`: Graph with sorted colour classes of arbitrary values.
 /// # Returns:
 /// - `Canon`: Canonical labelling and all labellings attaining it.
-pub(crate) fn canonical(g: &Graph) -> Canon {
+pub(crate) fn canonical_labelling(g: &Graph) -> Canon {
     // Rank the input colours densely so cells are ordered by colour value.
     let mut values = g.colors.clone();
     values.sort_unstable();
@@ -84,7 +84,7 @@ pub(crate) fn canonical(g: &Graph) -> Canon {
         leaves: 0,
     };
 
-    search.descend(refine(g, initial));
+    search.search_branch(refine_colouring(g, initial));
 
     let (_, label) = search.best.unwrap_or_default();
 
@@ -116,7 +116,7 @@ impl Search<'_> {
     /// - `colors`: Equitable colouring with cells numbered in canonical order.
     /// # Returns:
     /// - `()`: Updates the best certificate and its automorphic labellings.
-    fn descend(
+    fn search_branch(
         &mut self,
         colors: Vec<u32>,
     ) {
@@ -126,7 +126,7 @@ impl Search<'_> {
         // A discrete colouring is a labelling; compare its certificate with the best.
         if ncell == n {
             self.leaves += 1;
-            let cert = certificate(self.g, &colors);
+            let cert = labelling_certificate(self.g, &colors);
 
             match &self.best {
                 Some((best, _)) if cert > *best => {}
@@ -170,7 +170,7 @@ impl Search<'_> {
                 })
                 .collect::<Vec<_>>();
 
-            self.descend(refine(self.g, split));
+            self.search_branch(refine_colouring(self.g, split));
         }
     }
 }
@@ -183,7 +183,7 @@ impl Search<'_> {
 /// - `colors`: Initial colouring with dense cell numbers.
 /// # Returns:
 /// - `Vec<u32>`: Equitable colouring with dense, canonically ordered cell numbers.
-fn refine(
+fn refine_colouring(
     g: &Graph,
     mut colors: Vec<u32>,
 ) -> Vec<u32> {
@@ -230,7 +230,7 @@ fn refine(
 /// - `label`: Canonical position of every vertex.
 /// # Returns:
 /// - `Vec<u32>`: Certificate comparable lexicographically.
-fn certificate(
+fn labelling_certificate(
     g: &Graph,
     label: &[u32],
 ) -> Vec<u32> {

@@ -33,7 +33,7 @@ mod wickd;
 pub(crate) use crate::specs::Space;
 
 // Restricted function re-exports.
-pub(crate) use wickd::parse;
+pub(crate) use wickd::parse_wickd_expression;
 
 // External crate imports.
 use num_rational::Ratio;
@@ -102,7 +102,7 @@ pub(crate) type Expr = FxHashMap<Key, Ratio<i64>>;
 /// - `t`: Spin-orbital term.
 /// # Returns:
 /// - `(Key, i8)`: Canonical key and sign, `0` when the term vanishes by symmetry.
-pub(crate) fn key(t: &Term) -> (Key, i8) {
+pub(crate) fn canonical_term_key(t: &Term) -> (Key, i8) {
     let form = Form {
         spaces: t.spaces.iter().map(|&s| s as u8).collect(),
         nfree: 0,
@@ -118,7 +118,7 @@ pub(crate) fn key(t: &Term) -> (Key, i8) {
             .collect(),
     };
 
-    canon::canonical(&form)
+    canon::canonical_key(&form)
 }
 
 /// Add one term to a canonical expression, dropping cancelled keys.
@@ -127,11 +127,11 @@ pub(crate) fn key(t: &Term) -> (Key, i8) {
 /// - `t`: Spin-orbital term.
 /// # Returns:
 /// - `()`: Mutates `acc`.
-pub(crate) fn add(
+pub(crate) fn add_term(
     acc: &mut Expr,
     t: &Term,
 ) {
-    let (k, sign) = key(t);
+    let (k, sign) = canonical_term_key(t);
 
     if sign == 0 || t.coeff == Ratio::from_integer(0) {
         return;
@@ -147,7 +147,7 @@ pub(crate) fn add(
 /// - `other`: Expression to add.
 /// # Returns:
 /// - `()`: Mutates `acc`.
-pub(crate) fn merge(
+pub(crate) fn merge_expressions(
     acc: &mut Expr,
     other: Expr,
 ) {
@@ -183,14 +183,15 @@ pub struct Comparison {
 /// - `Comparison`: Term-by-term agreement of the two canonical expressions.
 /// # Panics
 /// - Panics if `class` is not a known excitation class.
-pub fn compare(
+pub fn compare_with_wickd(
     order: usize,
     class: &str,
     reference: &str,
 ) -> Comparison {
-    let bra = ops::class(class).unwrap_or_else(|| panic!("unknown excitation class {class}"));
-    let ours = wick::residual(&bra, order);
-    let theirs = parse(reference);
+    let bra = ops::projector_for_class(class)
+        .unwrap_or_else(|| panic!("unknown excitation class {class}"));
+    let ours = wick::residual_expression(&bra, order);
+    let theirs = parse_wickd_expression(reference);
 
     let mut out = Comparison {
         generated: ours.len(),

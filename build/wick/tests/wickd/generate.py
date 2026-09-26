@@ -20,6 +20,7 @@ CLUSTERTYPES = [
     "a+ v+ a a",
     "v+ v+ a a",
     "a+ a+ a a",
+    "v+ v+ o o",
 ]
 
 # Residual projectors tau^dagger for every spin-orbital excitation class.
@@ -36,6 +37,7 @@ PROJECTORS = {
     "AAToAV": "a+ a+ a v",
     "AAToVV": "a+ a+ v v",
     "AAToAA": "a+ a+ a a",
+    "CCToVV": "o+ o+ v v",
 }
 
 # Largest cumulant rank kept in contractions.

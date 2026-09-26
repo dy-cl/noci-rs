@@ -62,7 +62,7 @@ type Expr = Vec<Term>;
 /// - `name`: Symbolic name.
 /// # Returns:
 /// - `Idx`: Core index.
-fn c(name: &'static str) -> Idx {
+fn core_index(name: &'static str) -> Idx {
     Idx {
         name,
         space: Space::Core,
@@ -74,7 +74,7 @@ fn c(name: &'static str) -> Idx {
 /// - `name`: Symbolic name.
 /// # Returns:
 /// - `Idx`: Active index.
-fn a(name: &'static str) -> Idx {
+fn active_index(name: &'static str) -> Idx {
     Idx {
         name,
         space: Space::Active,
@@ -86,7 +86,7 @@ fn a(name: &'static str) -> Idx {
 /// - `name`: Symbolic name.
 /// # Returns:
 /// - `Idx`: Virtual index.
-fn v(name: &'static str) -> Idx {
+fn virtual_index(name: &'static str) -> Idx {
     Idx {
         name,
         space: Space::Virtual,
@@ -98,7 +98,7 @@ fn v(name: &'static str) -> Idx {
 /// - `n`: Numerator.
 /// # Returns:
 /// - `Ratio<i64>`: Integer coefficient.
-fn r(n: i64) -> Ratio<i64> {
+fn integer_coefficient(n: i64) -> Ratio<i64> {
     Ratio::from_integer(n)
 }
 
@@ -108,7 +108,7 @@ fn r(n: i64) -> Ratio<i64> {
 /// - `d`: Denominator.
 /// # Returns:
 /// - `Ratio<i64>`: Rational coefficient.
-fn q(
+fn rational_coefficient(
     n: i64,
     d: i64,
 ) -> Ratio<i64> {
@@ -122,7 +122,7 @@ fn q(
 /// - `tensors`: Tensor factors.
 /// # Returns:
 /// - `Term`: Target term.
-fn term(
+fn target_term(
     coeff: Ratio<i64>,
     deltas: Vec<Delta>,
     tensors: Vec<Tensor>,
@@ -140,7 +140,7 @@ fn term(
 /// - `right`: Right index.
 /// # Returns:
 /// - `Delta`: Kronecker delta.
-fn d(
+fn kronecker_delta(
     left: Idx,
     right: Idx,
 ) -> Delta {
@@ -154,7 +154,7 @@ fn d(
 /// - `lower`: Lower indices.
 /// # Returns:
 /// - `Tensor`: Tensor factor.
-fn tensor(
+fn target_tensor(
     kind: u8,
     upper: &[Idx],
     lower: &[Idx],
@@ -172,11 +172,11 @@ fn tensor(
 /// - `lower`: Lower active index.
 /// # Returns:
 /// - `Tensor`: Density factor.
-fn g(
+fn particle_density(
     upper: Idx,
     lower: Idx,
 ) -> Tensor {
-    tensor(spin::GAMMA, &[upper], &[lower])
+    target_tensor(spin::GAMMA, &[upper], &[lower])
 }
 
 /// Build a one-hole density `\Theta^u_l`.
@@ -185,11 +185,11 @@ fn g(
 /// - `lower`: Lower active index.
 /// # Returns:
 /// - `Tensor`: Hole-density factor.
-fn th(
+fn hole_density(
     upper: Idx,
     lower: Idx,
 ) -> Tensor {
-    tensor(spin::THETA, &[upper], &[lower])
+    target_tensor(spin::THETA, &[upper], &[lower])
 }
 
 /// Build a two-body cumulant `\Lambda^{u_1u_2}_{l_1l_2}`.
@@ -200,13 +200,13 @@ fn th(
 /// - `l2_`: Second lower active index.
 /// # Returns:
 /// - `Tensor`: Cumulant factor.
-fn l2(
+fn two_body_cumulant(
     u1: Idx,
     u2: Idx,
     l1: Idx,
     l2_: Idx,
 ) -> Tensor {
-    tensor(spin::LAMBDA2, &[u1, u2], &[l1, l2_])
+    target_tensor(spin::LAMBDA2, &[u1, u2], &[l1, l2_])
 }
 
 /// Build a three-body cumulant.
@@ -215,11 +215,11 @@ fn l2(
 /// - `l`: Lower active indices.
 /// # Returns:
 /// - `Tensor`: Cumulant factor.
-fn l3(
+fn three_body_cumulant(
     u: [Idx; 3],
     l: [Idx; 3],
 ) -> Tensor {
-    tensor(spin::LAMBDA3, &u, &l)
+    target_tensor(spin::LAMBDA3, &u, &l)
 }
 
 /// Build a four-body cumulant.
@@ -228,11 +228,11 @@ fn l3(
 /// - `l`: Lower active indices.
 /// # Returns:
 /// - `Tensor`: Cumulant factor.
-fn l4(
+fn four_body_cumulant(
     u: [Idx; 4],
     l: [Idx; 4],
 ) -> Tensor {
-    tensor(spin::LAMBDA4, &u, &l)
+    target_tensor(spin::LAMBDA4, &u, &l)
 }
 
 /// Return the Appendix C1 target expression.
@@ -240,11 +240,11 @@ fn l4(
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for C -> A.
-fn c1() -> Expr {
-    vec![term(
-        r(1),
-        vec![d(c("i"), c("j"))],
-        vec![th(a("v"), a("u"))],
+fn appendix_c1() -> Expr {
+    vec![target_term(
+        integer_coefficient(1),
+        vec![kronecker_delta(core_index("i"), core_index("j"))],
+        vec![hole_density(active_index("v"), active_index("u"))],
     )]
 }
 
@@ -253,8 +253,12 @@ fn c1() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for A -> V.
-fn c2() -> Expr {
-    vec![term(r(1), vec![d(v("b"), v("a"))], vec![g(a("t"), a("u"))])]
+fn appendix_c2() -> Expr {
+    vec![target_term(
+        integer_coefficient(1),
+        vec![kronecker_delta(virtual_index("b"), virtual_index("a"))],
+        vec![particle_density(active_index("t"), active_index("u"))],
+    )]
 }
 
 /// Return the Appendix C3 target expression.
@@ -262,10 +266,26 @@ fn c2() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for A -> A.
-fn c3() -> Expr {
+fn appendix_c3() -> Expr {
     vec![
-        term(q(1, 2), vec![], vec![g(a("u"), a("w")), th(a("x"), a("v"))]),
-        term(r(1), vec![], vec![l2(a("u"), a("x"), a("v"), a("w"))]),
+        target_term(
+            rational_coefficient(1, 2),
+            vec![],
+            vec![
+                particle_density(active_index("u"), active_index("w")),
+                hole_density(active_index("x"), active_index("v")),
+            ],
+        ),
+        target_term(
+            integer_coefficient(1),
+            vec![],
+            vec![two_body_cumulant(
+                active_index("u"),
+                active_index("x"),
+                active_index("v"),
+                active_index("w"),
+            )],
+        ),
     ]
 }
 
@@ -274,17 +294,31 @@ fn c3() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CA -> AV.
-fn c4() -> Expr {
+fn appendix_c4() -> Expr {
     vec![
-        term(
-            r(1),
-            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
-            vec![g(a("u"), a("w")), th(a("x"), a("v"))],
+        target_term(
+            integer_coefficient(1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+            ],
+            vec![
+                particle_density(active_index("u"), active_index("w")),
+                hole_density(active_index("x"), active_index("v")),
+            ],
         ),
-        term(
-            r(-1),
-            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
-            vec![l2(a("u"), a("x"), a("w"), a("v"))],
+        target_term(
+            integer_coefficient(-1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+            ],
+            vec![two_body_cumulant(
+                active_index("u"),
+                active_index("x"),
+                active_index("w"),
+                active_index("v"),
+            )],
         ),
     ]
 }
@@ -294,17 +328,31 @@ fn c4() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CA -> VA.
-fn c5() -> Expr {
+fn appendix_c5() -> Expr {
     vec![
-        term(
-            r(1),
-            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
-            vec![g(a("u"), a("w")), th(a("x"), a("v"))],
+        target_term(
+            integer_coefficient(1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+            ],
+            vec![
+                particle_density(active_index("u"), active_index("w")),
+                hole_density(active_index("x"), active_index("v")),
+            ],
         ),
-        term(
-            r(2),
-            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
-            vec![l2(a("u"), a("x"), a("v"), a("w"))],
+        target_term(
+            integer_coefficient(2),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+            ],
+            vec![two_body_cumulant(
+                active_index("u"),
+                active_index("x"),
+                active_index("v"),
+                active_index("w"),
+            )],
         ),
     ]
 }
@@ -314,17 +362,25 @@ fn c5() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CA -> VV.
-fn c6() -> Expr {
+fn appendix_c6() -> Expr {
     vec![
-        term(
-            r(2),
-            vec![d(c("i"), c("j")), d(v("d"), v("b")), d(v("c"), v("a"))],
-            vec![g(a("u"), a("v"))],
+        target_term(
+            integer_coefficient(2),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("d"), virtual_index("b")),
+                kronecker_delta(virtual_index("c"), virtual_index("a")),
+            ],
+            vec![particle_density(active_index("u"), active_index("v"))],
         ),
-        term(
-            r(-1),
-            vec![d(c("i"), c("j")), d(v("d"), v("a")), d(v("c"), v("b"))],
-            vec![g(a("u"), a("v"))],
+        target_term(
+            integer_coefficient(-1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("d"), virtual_index("a")),
+                kronecker_delta(virtual_index("c"), virtual_index("b")),
+            ],
+            vec![particle_density(active_index("u"), active_index("v"))],
         ),
     ]
 }
@@ -334,17 +390,25 @@ fn c6() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CC -> AV.
-fn c7() -> Expr {
+fn appendix_c7() -> Expr {
     vec![
-        term(
-            r(2),
-            vec![d(v("b"), v("a")), d(c("i"), c("k")), d(c("j"), c("l"))],
-            vec![th(a("v"), a("u"))],
+        target_term(
+            integer_coefficient(2),
+            vec![
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+                kronecker_delta(core_index("i"), core_index("k")),
+                kronecker_delta(core_index("j"), core_index("l")),
+            ],
+            vec![hole_density(active_index("v"), active_index("u"))],
         ),
-        term(
-            r(-1),
-            vec![d(v("b"), v("a")), d(c("i"), c("l")), d(c("j"), c("k"))],
-            vec![th(a("v"), a("u"))],
+        target_term(
+            integer_coefficient(-1),
+            vec![
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+                kronecker_delta(core_index("i"), core_index("l")),
+                kronecker_delta(core_index("j"), core_index("k")),
+            ],
+            vec![hole_density(active_index("v"), active_index("u"))],
         ),
     ]
 }
@@ -354,37 +418,77 @@ fn c7() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CC -> AA.
-fn c8() -> Expr {
+fn appendix_c8() -> Expr {
     vec![
-        term(
-            r(1),
-            vec![d(c("i"), c("k")), d(c("j"), c("l"))],
-            vec![th(a("w"), a("u")), th(a("x"), a("v"))],
+        target_term(
+            integer_coefficient(1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("k")),
+                kronecker_delta(core_index("j"), core_index("l")),
+            ],
+            vec![
+                hole_density(active_index("w"), active_index("u")),
+                hole_density(active_index("x"), active_index("v")),
+            ],
         ),
-        term(
-            q(-1, 2),
-            vec![d(c("i"), c("k")), d(c("j"), c("l"))],
-            vec![th(a("w"), a("v")), th(a("x"), a("u"))],
+        target_term(
+            rational_coefficient(-1, 2),
+            vec![
+                kronecker_delta(core_index("i"), core_index("k")),
+                kronecker_delta(core_index("j"), core_index("l")),
+            ],
+            vec![
+                hole_density(active_index("w"), active_index("v")),
+                hole_density(active_index("x"), active_index("u")),
+            ],
         ),
-        term(
-            r(1),
-            vec![d(c("i"), c("k")), d(c("j"), c("l"))],
-            vec![l2(a("w"), a("x"), a("u"), a("v"))],
+        target_term(
+            integer_coefficient(1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("k")),
+                kronecker_delta(core_index("j"), core_index("l")),
+            ],
+            vec![two_body_cumulant(
+                active_index("w"),
+                active_index("x"),
+                active_index("u"),
+                active_index("v"),
+            )],
         ),
-        term(
-            r(1),
-            vec![d(c("i"), c("l")), d(c("j"), c("k"))],
-            vec![th(a("w"), a("v")), th(a("x"), a("u"))],
+        target_term(
+            integer_coefficient(1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("l")),
+                kronecker_delta(core_index("j"), core_index("k")),
+            ],
+            vec![
+                hole_density(active_index("w"), active_index("v")),
+                hole_density(active_index("x"), active_index("u")),
+            ],
         ),
-        term(
-            q(-1, 2),
-            vec![d(c("i"), c("l")), d(c("j"), c("k"))],
-            vec![th(a("w"), a("u")), th(a("x"), a("v"))],
+        target_term(
+            rational_coefficient(-1, 2),
+            vec![
+                kronecker_delta(core_index("i"), core_index("l")),
+                kronecker_delta(core_index("j"), core_index("k")),
+            ],
+            vec![
+                hole_density(active_index("w"), active_index("u")),
+                hole_density(active_index("x"), active_index("v")),
+            ],
         ),
-        term(
-            r(1),
-            vec![d(c("i"), c("l")), d(c("j"), c("k"))],
-            vec![l2(a("w"), a("x"), a("v"), a("u"))],
+        target_term(
+            integer_coefficient(1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("l")),
+                kronecker_delta(core_index("j"), core_index("k")),
+            ],
+            vec![two_body_cumulant(
+                active_index("w"),
+                active_index("x"),
+                active_index("v"),
+                active_index("u"),
+            )],
         ),
     ]
 }
@@ -394,51 +498,102 @@ fn c8() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CA -> AA.
-fn c9() -> Expr {
+fn appendix_c9() -> Expr {
     // Appendix C prints C9 without this factor, but the CA -> AA overlap
     // contains one core contraction and Wick evaluation gives delta_i_j.
-    let delta = vec![d(c("i"), c("j"))];
+    let delta = vec![kronecker_delta(core_index("i"), core_index("j"))];
 
     vec![
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             delta.clone(),
-            vec![g(a("u"), a("x")), th(a("y"), a("v")), th(a("z"), a("w"))],
+            vec![
+                particle_density(active_index("u"), active_index("x")),
+                hole_density(active_index("y"), active_index("v")),
+                hole_density(active_index("z"), active_index("w")),
+            ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             delta.clone(),
-            vec![g(a("u"), a("x")), th(a("y"), a("w")), th(a("z"), a("v"))],
+            vec![
+                particle_density(active_index("u"), active_index("x")),
+                hole_density(active_index("y"), active_index("w")),
+                hole_density(active_index("z"), active_index("v")),
+            ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             delta.clone(),
-            vec![g(a("u"), a("x")), l2(a("y"), a("z"), a("v"), a("w"))],
+            vec![
+                particle_density(active_index("u"), active_index("x")),
+                two_body_cumulant(
+                    active_index("y"),
+                    active_index("z"),
+                    active_index("v"),
+                    active_index("w"),
+                ),
+            ],
         ),
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             delta.clone(),
-            vec![th(a("y"), a("v")), l2(a("u"), a("z"), a("w"), a("x"))],
+            vec![
+                hole_density(active_index("y"), active_index("v")),
+                two_body_cumulant(
+                    active_index("u"),
+                    active_index("z"),
+                    active_index("w"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             delta.clone(),
-            vec![th(a("y"), a("w")), l2(a("u"), a("z"), a("v"), a("x"))],
+            vec![
+                hole_density(active_index("y"), active_index("w")),
+                two_body_cumulant(
+                    active_index("u"),
+                    active_index("z"),
+                    active_index("v"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             delta.clone(),
-            vec![th(a("z"), a("v")), l2(a("u"), a("y"), a("w"), a("x"))],
+            vec![
+                hole_density(active_index("z"), active_index("v")),
+                two_body_cumulant(
+                    active_index("u"),
+                    active_index("y"),
+                    active_index("w"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             delta.clone(),
-            vec![th(a("z"), a("w")), l2(a("u"), a("y"), a("x"), a("v"))],
+            vec![
+                hole_density(active_index("z"), active_index("w")),
+                two_body_cumulant(
+                    active_index("u"),
+                    active_index("y"),
+                    active_index("x"),
+                    active_index("v"),
+                ),
+            ],
         ),
-        term(
-            r(-1),
+        target_term(
+            integer_coefficient(-1),
             delta,
-            vec![l3([a("u"), a("y"), a("z")], [a("w"), a("v"), a("x")])],
+            vec![three_body_cumulant(
+                [active_index("u"), active_index("y"), active_index("z")],
+                [active_index("w"), active_index("v"), active_index("x")],
+            )],
         ),
     ]
 }
@@ -448,49 +603,100 @@ fn c9() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for AA -> AV.
-fn c10() -> Expr {
-    let delta = vec![d(v("b"), v("a"))];
+fn appendix_c10() -> Expr {
+    let delta = vec![kronecker_delta(virtual_index("b"), virtual_index("a"))];
 
     vec![
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             delta.clone(),
-            vec![th(a("z"), a("v")), g(a("t"), a("x")), g(a("u"), a("y"))],
+            vec![
+                hole_density(active_index("z"), active_index("v")),
+                particle_density(active_index("t"), active_index("x")),
+                particle_density(active_index("u"), active_index("y")),
+            ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             delta.clone(),
-            vec![th(a("z"), a("v")), g(a("t"), a("y")), g(a("u"), a("x"))],
+            vec![
+                hole_density(active_index("z"), active_index("v")),
+                particle_density(active_index("t"), active_index("y")),
+                particle_density(active_index("u"), active_index("x")),
+            ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             delta.clone(),
-            vec![th(a("z"), a("v")), l2(a("t"), a("u"), a("x"), a("y"))],
+            vec![
+                hole_density(active_index("z"), active_index("v")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("u"),
+                    active_index("x"),
+                    active_index("y"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             delta.clone(),
-            vec![g(a("t"), a("x")), l2(a("u"), a("z"), a("y"), a("v"))],
+            vec![
+                particle_density(active_index("t"), active_index("x")),
+                two_body_cumulant(
+                    active_index("u"),
+                    active_index("z"),
+                    active_index("y"),
+                    active_index("v"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             delta.clone(),
-            vec![g(a("t"), a("y")), l2(a("u"), a("z"), a("v"), a("x"))],
+            vec![
+                particle_density(active_index("t"), active_index("y")),
+                two_body_cumulant(
+                    active_index("u"),
+                    active_index("z"),
+                    active_index("v"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             delta.clone(),
-            vec![g(a("u"), a("y")), l2(a("t"), a("z"), a("v"), a("x"))],
+            vec![
+                particle_density(active_index("u"), active_index("y")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("z"),
+                    active_index("v"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             delta.clone(),
-            vec![g(a("u"), a("x")), l2(a("t"), a("z"), a("v"), a("y"))],
+            vec![
+                particle_density(active_index("u"), active_index("x")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("z"),
+                    active_index("v"),
+                    active_index("y"),
+                ),
+            ],
         ),
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             delta,
-            vec![l3([a("t"), a("u"), a("z")], [a("v"), a("y"), a("x")])],
+            vec![three_body_cumulant(
+                [active_index("t"), active_index("u"), active_index("z")],
+                [active_index("v"), active_index("y"), active_index("x")],
+            )],
         ),
     ]
 }
@@ -500,25 +706,69 @@ fn c10() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for AA -> VV.
-fn c11() -> Expr {
-    let d1 = vec![d(v("d"), v("b")), d(v("c"), v("a"))];
-    let d2 = vec![d(v("c"), v("b")), d(v("d"), v("a"))];
+fn appendix_c11() -> Expr {
+    let d1 = vec![
+        kronecker_delta(virtual_index("d"), virtual_index("b")),
+        kronecker_delta(virtual_index("c"), virtual_index("a")),
+    ];
+    let d2 = vec![
+        kronecker_delta(virtual_index("c"), virtual_index("b")),
+        kronecker_delta(virtual_index("d"), virtual_index("a")),
+    ];
 
     vec![
-        term(r(1), d1.clone(), vec![g(a("t"), a("v")), g(a("u"), a("w"))]),
-        term(
-            q(-1, 2),
+        target_term(
+            integer_coefficient(1),
             d1.clone(),
-            vec![g(a("t"), a("w")), g(a("u"), a("v"))],
+            vec![
+                particle_density(active_index("t"), active_index("v")),
+                particle_density(active_index("u"), active_index("w")),
+            ],
         ),
-        term(r(1), d1, vec![l2(a("t"), a("u"), a("v"), a("w"))]),
-        term(r(1), d2.clone(), vec![g(a("u"), a("v")), g(a("t"), a("w"))]),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
+            d1.clone(),
+            vec![
+                particle_density(active_index("t"), active_index("w")),
+                particle_density(active_index("u"), active_index("v")),
+            ],
+        ),
+        target_term(
+            integer_coefficient(1),
+            d1,
+            vec![two_body_cumulant(
+                active_index("t"),
+                active_index("u"),
+                active_index("v"),
+                active_index("w"),
+            )],
+        ),
+        target_term(
+            integer_coefficient(1),
             d2.clone(),
-            vec![g(a("u"), a("w")), g(a("t"), a("v"))],
+            vec![
+                particle_density(active_index("u"), active_index("v")),
+                particle_density(active_index("t"), active_index("w")),
+            ],
         ),
-        term(r(1), d2, vec![l2(a("u"), a("t"), a("v"), a("w"))]),
+        target_term(
+            rational_coefficient(-1, 2),
+            d2.clone(),
+            vec![
+                particle_density(active_index("u"), active_index("w")),
+                particle_density(active_index("t"), active_index("v")),
+            ],
+        ),
+        target_term(
+            integer_coefficient(1),
+            d2,
+            vec![two_body_cumulant(
+                active_index("u"),
+                active_index("t"),
+                active_index("v"),
+                active_index("w"),
+            )],
+        ),
     ]
 }
 
@@ -527,506 +777,900 @@ fn c11() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for AA -> AA.
-fn c12() -> Expr {
+fn appendix_c12() -> Expr {
     vec![
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             vec![],
-            vec![l4(
-                [a("p"), a("r"), a("t"), a("v")],
-                [a("q"), a("s"), a("u"), a("w")],
+            vec![four_body_cumulant(
+                [
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("v"),
+                ],
+                [
+                    active_index("q"),
+                    active_index("s"),
+                    active_index("u"),
+                    active_index("w"),
+                ],
             )],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("v"), a("s")),
-                l3([a("p"), a("r"), a("t")], [a("q"), a("w"), a("u")]),
+                hole_density(active_index("v"), active_index("s")),
+                three_body_cumulant(
+                    [active_index("p"), active_index("r"), active_index("t")],
+                    [active_index("q"), active_index("w"), active_index("u")],
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("v"), a("q")),
-                l3([a("p"), a("r"), a("t")], [a("w"), a("s"), a("u")]),
+                hole_density(active_index("v"), active_index("q")),
+                three_body_cumulant(
+                    [active_index("p"), active_index("r"), active_index("t")],
+                    [active_index("w"), active_index("s"), active_index("u")],
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                l3([a("p"), a("r"), a("v")], [a("q"), a("u"), a("w")]),
+                hole_density(active_index("t"), active_index("s")),
+                three_body_cumulant(
+                    [active_index("p"), active_index("r"), active_index("v")],
+                    [active_index("q"), active_index("u"), active_index("w")],
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                l3([a("p"), a("r"), a("v")], [a("u"), a("s"), a("w")]),
+                hole_density(active_index("t"), active_index("q")),
+                three_body_cumulant(
+                    [active_index("p"), active_index("r"), active_index("v")],
+                    [active_index("u"), active_index("s"), active_index("w")],
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                g(a("r"), a("u")),
-                l3([a("p"), a("t"), a("v")], [a("q"), a("s"), a("w")]),
+                particle_density(active_index("r"), active_index("u")),
+                three_body_cumulant(
+                    [active_index("p"), active_index("t"), active_index("v")],
+                    [active_index("q"), active_index("s"), active_index("w")],
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                g(a("r"), a("w")),
-                l3([a("p"), a("t"), a("v")], [a("q"), a("u"), a("s")]),
+                particle_density(active_index("r"), active_index("w")),
+                three_body_cumulant(
+                    [active_index("p"), active_index("t"), active_index("v")],
+                    [active_index("q"), active_index("u"), active_index("s")],
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                g(a("p"), a("u")),
-                l3([a("r"), a("t"), a("v")], [a("s"), a("q"), a("w")]),
+                particle_density(active_index("p"), active_index("u")),
+                three_body_cumulant(
+                    [active_index("r"), active_index("t"), active_index("v")],
+                    [active_index("s"), active_index("q"), active_index("w")],
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                g(a("p"), a("w")),
-                l3([a("r"), a("t"), a("v")], [a("s"), a("u"), a("q")]),
+                particle_density(active_index("p"), active_index("w")),
+                three_body_cumulant(
+                    [active_index("r"), active_index("t"), active_index("v")],
+                    [active_index("s"), active_index("u"), active_index("q")],
+                ),
             ],
         ),
-        term(
-            q(1, 4),
+        target_term(
+            rational_coefficient(1, 4),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                th(a("v"), a("s")),
-                g(a("p"), a("u")),
-                g(a("r"), a("w")),
+                hole_density(active_index("t"), active_index("q")),
+                hole_density(active_index("v"), active_index("s")),
+                particle_density(active_index("p"), active_index("u")),
+                particle_density(active_index("r"), active_index("w")),
             ],
         ),
-        term(
-            q(-1, 8),
+        target_term(
+            rational_coefficient(-1, 8),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                th(a("v"), a("s")),
-                g(a("p"), a("w")),
-                g(a("r"), a("u")),
+                hole_density(active_index("t"), active_index("q")),
+                hole_density(active_index("v"), active_index("s")),
+                particle_density(active_index("p"), active_index("w")),
+                particle_density(active_index("r"), active_index("u")),
             ],
         ),
-        term(
-            q(1, 4),
+        target_term(
+            rational_coefficient(1, 4),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                th(a("v"), a("s")),
-                l2(a("p"), a("r"), a("u"), a("w")),
+                hole_density(active_index("t"), active_index("q")),
+                hole_density(active_index("v"), active_index("s")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(1, 4),
+        target_term(
+            rational_coefficient(1, 4),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                th(a("v"), a("q")),
-                g(a("p"), a("w")),
-                g(a("r"), a("u")),
+                hole_density(active_index("t"), active_index("s")),
+                hole_density(active_index("v"), active_index("q")),
+                particle_density(active_index("p"), active_index("w")),
+                particle_density(active_index("r"), active_index("u")),
             ],
         ),
-        term(
-            q(-1, 8),
+        target_term(
+            rational_coefficient(-1, 8),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                th(a("v"), a("q")),
-                g(a("p"), a("u")),
-                g(a("r"), a("w")),
+                hole_density(active_index("t"), active_index("s")),
+                hole_density(active_index("v"), active_index("q")),
+                particle_density(active_index("p"), active_index("u")),
+                particle_density(active_index("r"), active_index("w")),
             ],
         ),
-        term(
-            q(1, 4),
+        target_term(
+            rational_coefficient(1, 4),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                th(a("v"), a("q")),
-                l2(a("p"), a("r"), a("w"), a("u")),
+                hole_density(active_index("t"), active_index("s")),
+                hole_density(active_index("v"), active_index("q")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("w"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 4),
+        target_term(
+            rational_coefficient(1, 4),
             vec![],
             vec![
-                g(a("p"), a("u")),
-                g(a("r"), a("w")),
-                l2(a("t"), a("v"), a("q"), a("s")),
+                particle_density(active_index("p"), active_index("u")),
+                particle_density(active_index("r"), active_index("w")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(1, 4),
+        target_term(
+            rational_coefficient(1, 4),
             vec![],
             vec![
-                g(a("p"), a("w")),
-                g(a("r"), a("u")),
-                l2(a("t"), a("v"), a("s"), a("q")),
+                particle_density(active_index("p"), active_index("w")),
+                particle_density(active_index("r"), active_index("u")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("q"),
+                ),
             ],
         ),
-        term(
-            q(1, 3),
+        target_term(
+            rational_coefficient(1, 3),
             vec![],
             vec![
-                l2(a("t"), a("v"), a("q"), a("s")),
-                l2(a("p"), a("r"), a("u"), a("w")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(1, 3),
+        target_term(
+            rational_coefficient(1, 3),
             vec![],
             vec![
-                l2(a("t"), a("v"), a("s"), a("q")),
-                l2(a("p"), a("r"), a("w"), a("u")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("q"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("w"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 6),
+        target_term(
+            rational_coefficient(1, 6),
             vec![],
             vec![
-                l2(a("t"), a("v"), a("q"), a("s")),
-                l2(a("p"), a("r"), a("w"), a("u")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("w"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 6),
+        target_term(
+            rational_coefficient(1, 6),
             vec![],
             vec![
-                l2(a("t"), a("v"), a("s"), a("q")),
-                l2(a("p"), a("r"), a("u"), a("w")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("q"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("v"), a("s")),
-                g(a("r"), a("w")),
-                l2(a("p"), a("t"), a("q"), a("u")),
+                hole_density(active_index("v"), active_index("s")),
+                particle_density(active_index("r"), active_index("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("v"), a("s")),
-                g(a("r"), a("u")),
-                l2(a("p"), a("t"), a("q"), a("w")),
+                hole_density(active_index("v"), active_index("s")),
+                particle_density(active_index("r"), active_index("u")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("v"), a("q")),
-                g(a("r"), a("w")),
-                l2(a("p"), a("t"), a("s"), a("u")),
+                hole_density(active_index("v"), active_index("q")),
+                particle_density(active_index("r"), active_index("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("v"), a("q")),
-                g(a("r"), a("u")),
-                l2(a("p"), a("t"), a("w"), a("s")),
+                hole_density(active_index("v"), active_index("q")),
+                particle_density(active_index("r"), active_index("u")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("w"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                g(a("r"), a("w")),
-                l2(a("p"), a("v"), a("q"), a("u")),
+                hole_density(active_index("t"), active_index("s")),
+                particle_density(active_index("r"), active_index("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                g(a("r"), a("u")),
-                l2(a("p"), a("v"), a("q"), a("w")),
+                hole_density(active_index("t"), active_index("s")),
+                particle_density(active_index("r"), active_index("u")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                g(a("r"), a("w")),
-                l2(a("p"), a("v"), a("u"), a("s")),
+                hole_density(active_index("t"), active_index("q")),
+                particle_density(active_index("r"), active_index("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                g(a("r"), a("u")),
-                l2(a("p"), a("v"), a("s"), a("w")),
+                hole_density(active_index("t"), active_index("q")),
+                particle_density(active_index("r"), active_index("u")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("v"), a("s")),
-                g(a("p"), a("w")),
-                l2(a("r"), a("t"), a("q"), a("u")),
+                hole_density(active_index("v"), active_index("s")),
+                particle_density(active_index("p"), active_index("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("v"), a("s")),
-                g(a("p"), a("u")),
-                l2(a("r"), a("t"), a("w"), a("q")),
+                hole_density(active_index("v"), active_index("s")),
+                particle_density(active_index("p"), active_index("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("w"),
+                    active_index("q"),
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("v"), a("q")),
-                g(a("p"), a("w")),
-                l2(a("r"), a("t"), a("s"), a("u")),
+                hole_density(active_index("v"), active_index("q")),
+                particle_density(active_index("p"), active_index("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("v"), a("q")),
-                g(a("p"), a("u")),
-                l2(a("r"), a("t"), a("s"), a("w")),
+                hole_density(active_index("v"), active_index("q")),
+                particle_density(active_index("p"), active_index("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                g(a("p"), a("w")),
-                l2(a("r"), a("v"), a("u"), a("q")),
+                hole_density(active_index("t"), active_index("s")),
+                particle_density(active_index("p"), active_index("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("q"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("t"), a("s")),
-                g(a("p"), a("u")),
-                l2(a("r"), a("v"), a("q"), a("w")),
+                hole_density(active_index("t"), active_index("s")),
+                particle_density(active_index("p"), active_index("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 4),
+        target_term(
+            rational_coefficient(-1, 4),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                g(a("p"), a("w")),
-                l2(a("r"), a("v"), a("s"), a("u")),
+                hole_density(active_index("t"), active_index("q")),
+                particle_density(active_index("p"), active_index("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
             vec![
-                th(a("t"), a("q")),
-                g(a("p"), a("u")),
-                l2(a("r"), a("v"), a("s"), a("w")),
+                hole_density(active_index("t"), active_index("q")),
+                particle_density(active_index("p"), active_index("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("p"), a("r"), a("w"), a("s")),
-                l2(a("t"), a("v"), a("u"), a("q")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("w"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("q"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("p"), a("r"), a("u"), a("s")),
-                l2(a("t"), a("v"), a("q"), a("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("u"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("p"), a("r"), a("q"), a("w")),
-                l2(a("t"), a("v"), a("u"), a("s")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("p"), a("r"), a("q"), a("u")),
-                l2(a("t"), a("v"), a("s"), a("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("r"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("t"), a("r"), a("q"), a("s")),
-                l2(a("p"), a("v"), a("u"), a("w")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("r"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("t"), a("r"), a("u"), a("w")),
-                l2(a("p"), a("v"), a("q"), a("s")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("r"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("v"), a("r"), a("q"), a("s")),
-                l2(a("t"), a("p"), a("u"), a("w")),
+                two_body_cumulant(
+                    active_index("v"),
+                    active_index("r"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("p"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("p"), a("t"), a("q"), a("s")),
-                l2(a("r"), a("v"), a("u"), a("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("s"),
+                ),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("s"), a("w")),
-                l2(a("p"), a("t"), a("q"), a("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             vec![],
             vec![
-                l2(a("r"), a("t"), a("s"), a("u")),
-                l2(a("p"), a("v"), a("q"), a("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("s"), a("u")),
-                l2(a("p"), a("t"), a("q"), a("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("q"), a("w")),
-                l2(a("p"), a("t"), a("s"), a("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("p"), a("v"), a("q"), a("u")),
-                l2(a("r"), a("t"), a("s"), a("w")),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
             vec![
-                l2(a("r"), a("t"), a("q"), a("u")),
-                l2(a("p"), a("v"), a("s"), a("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(1, 3),
+        target_term(
+            rational_coefficient(1, 3),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("q"), a("u")),
-                l2(a("p"), a("t"), a("s"), a("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(1, 3),
+        target_term(
+            rational_coefficient(1, 3),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("u"), a("q")),
-                l2(a("p"), a("t"), a("w"), a("s")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("q"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("w"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(1, 6),
+        target_term(
+            rational_coefficient(1, 6),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("u"), a("q")),
-                l2(a("p"), a("t"), a("s"), a("w")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("q"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("s"),
+                    active_index("w"),
+                ),
             ],
         ),
-        term(
-            q(1, 6),
+        target_term(
+            rational_coefficient(1, 6),
             vec![],
             vec![
-                l2(a("r"), a("v"), a("q"), a("u")),
-                l2(a("p"), a("t"), a("w"), a("s")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("v"),
+                    active_index("q"),
+                    active_index("u"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("t"),
+                    active_index("w"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(1, 3),
+        target_term(
+            rational_coefficient(1, 3),
             vec![],
             vec![
-                l2(a("r"), a("t"), a("q"), a("w")),
-                l2(a("p"), a("v"), a("s"), a("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 3),
+        target_term(
+            rational_coefficient(1, 3),
             vec![],
             vec![
-                l2(a("r"), a("t"), a("w"), a("q")),
-                l2(a("p"), a("v"), a("u"), a("s")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("w"),
+                    active_index("q"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("s"),
+                ),
             ],
         ),
-        term(
-            q(1, 6),
+        target_term(
+            rational_coefficient(1, 6),
             vec![],
             vec![
-                l2(a("r"), a("t"), a("w"), a("q")),
-                l2(a("p"), a("v"), a("s"), a("u")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("w"),
+                    active_index("q"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("s"),
+                    active_index("u"),
+                ),
             ],
         ),
-        term(
-            q(1, 6),
+        target_term(
+            rational_coefficient(1, 6),
             vec![],
             vec![
-                l2(a("r"), a("t"), a("q"), a("w")),
-                l2(a("p"), a("v"), a("u"), a("s")),
+                two_body_cumulant(
+                    active_index("r"),
+                    active_index("t"),
+                    active_index("q"),
+                    active_index("w"),
+                ),
+                two_body_cumulant(
+                    active_index("p"),
+                    active_index("v"),
+                    active_index("u"),
+                    active_index("s"),
+                ),
             ],
         ),
     ]
@@ -1037,11 +1681,16 @@ fn c12() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for A -> V / AA -> AV.
-fn c13() -> Expr {
-    vec![term(
-        r(1),
-        vec![d(v("b"), v("a"))],
-        vec![l2(a("u"), a("x"), a("w"), a("v"))],
+fn appendix_c13() -> Expr {
+    vec![target_term(
+        integer_coefficient(1),
+        vec![kronecker_delta(virtual_index("b"), virtual_index("a"))],
+        vec![two_body_cumulant(
+            active_index("u"),
+            active_index("x"),
+            active_index("w"),
+            active_index("v"),
+        )],
     )]
 }
 
@@ -1050,11 +1699,16 @@ fn c13() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for C -> A / CA -> AA.
-fn c14() -> Expr {
-    vec![term(
-        r(-1),
-        vec![d(c("i"), c("j"))],
-        vec![l2(a("w"), a("x"), a("u"), a("v"))],
+fn appendix_c14() -> Expr {
+    vec![target_term(
+        integer_coefficient(-1),
+        vec![kronecker_delta(core_index("i"), core_index("j"))],
+        vec![two_body_cumulant(
+            active_index("w"),
+            active_index("x"),
+            active_index("u"),
+            active_index("v"),
+        )],
     )]
 }
 
@@ -1063,32 +1717,67 @@ fn c14() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for A -> A / AA -> AA.
-fn c15() -> Expr {
+fn appendix_c15() -> Expr {
     vec![
-        term(
-            r(1),
+        target_term(
+            integer_coefficient(1),
             vec![],
-            vec![l3([a("t"), a("y"), a("z")], [a("u"), a("w"), a("x")])],
+            vec![three_body_cumulant(
+                [active_index("t"), active_index("y"), active_index("z")],
+                [active_index("u"), active_index("w"), active_index("x")],
+            )],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
-            vec![g(a("t"), a("w")), l2(a("y"), a("z"), a("u"), a("x"))],
+            vec![
+                particle_density(active_index("t"), active_index("w")),
+                two_body_cumulant(
+                    active_index("y"),
+                    active_index("z"),
+                    active_index("u"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            q(-1, 2),
+        target_term(
+            rational_coefficient(-1, 2),
             vec![],
-            vec![g(a("t"), a("x")), l2(a("y"), a("z"), a("w"), a("u"))],
+            vec![
+                particle_density(active_index("t"), active_index("x")),
+                two_body_cumulant(
+                    active_index("y"),
+                    active_index("z"),
+                    active_index("w"),
+                    active_index("u"),
+                ),
+            ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
-            vec![th(a("y"), a("u")), l2(a("t"), a("z"), a("w"), a("x"))],
+            vec![
+                hole_density(active_index("y"), active_index("u")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("z"),
+                    active_index("w"),
+                    active_index("x"),
+                ),
+            ],
         ),
-        term(
-            q(1, 2),
+        target_term(
+            rational_coefficient(1, 2),
             vec![],
-            vec![th(a("z"), a("u")), l2(a("t"), a("y"), a("x"), a("w"))],
+            vec![
+                hole_density(active_index("z"), active_index("u")),
+                two_body_cumulant(
+                    active_index("t"),
+                    active_index("y"),
+                    active_index("x"),
+                    active_index("w"),
+                ),
+            ],
         ),
     ]
 }
@@ -1098,17 +1787,31 @@ fn c15() -> Expr {
 /// - None.
 /// # Returns:
 /// - `Expr`: Target expression for CA -> AV / CA -> VA.
-fn c16() -> Expr {
+fn appendix_c16() -> Expr {
     vec![
-        term(
-            q(-1, 2),
-            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
-            vec![g(a("u"), a("x")), th(a("y"), a("w"))],
+        target_term(
+            rational_coefficient(-1, 2),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+            ],
+            vec![
+                particle_density(active_index("u"), active_index("x")),
+                hole_density(active_index("y"), active_index("w")),
+            ],
         ),
-        term(
-            r(-1),
-            vec![d(c("i"), c("j")), d(v("b"), v("a"))],
-            vec![l2(a("u"), a("y"), a("w"), a("x"))],
+        target_term(
+            integer_coefficient(-1),
+            vec![
+                kronecker_delta(core_index("i"), core_index("j")),
+                kronecker_delta(virtual_index("b"), virtual_index("a")),
+            ],
+            vec![two_body_cumulant(
+                active_index("u"),
+                active_index("y"),
+                active_index("w"),
+                active_index("x"),
+            )],
         ),
     ]
 }
@@ -1118,24 +1821,24 @@ fn c16() -> Expr {
 /// - `name`: Metric block name.
 /// # Returns:
 /// - `Option<Expr>`: Target expression, or `None` for blocks not listed in Appendix C.
-fn target(name: &str) -> Option<Expr> {
+fn appendix_c_block(name: &str) -> Option<Expr> {
     match name {
-        "C1" => Some(c1()),
-        "C2" => Some(c2()),
-        "C3" => Some(c3()),
-        "C4" => Some(c4()),
-        "C5" => Some(c5()),
-        "C6" => Some(c6()),
-        "C7" => Some(c7()),
-        "C8" => Some(c8()),
-        "C9" => Some(c9()),
-        "C10" => Some(c10()),
-        "C11" => Some(c11()),
-        "C12" => Some(c12()),
-        "C13" => Some(c13()),
-        "C14" => Some(c14()),
-        "C15" => Some(c15()),
-        "C16" => Some(c16()),
+        "C1" => Some(appendix_c1()),
+        "C2" => Some(appendix_c2()),
+        "C3" => Some(appendix_c3()),
+        "C4" => Some(appendix_c4()),
+        "C5" => Some(appendix_c5()),
+        "C6" => Some(appendix_c6()),
+        "C7" => Some(appendix_c7()),
+        "C8" => Some(appendix_c8()),
+        "C9" => Some(appendix_c9()),
+        "C10" => Some(appendix_c10()),
+        "C11" => Some(appendix_c11()),
+        "C12" => Some(appendix_c12()),
+        "C13" => Some(appendix_c13()),
+        "C14" => Some(appendix_c14()),
+        "C15" => Some(appendix_c15()),
+        "C16" => Some(appendix_c16()),
         _ => None,
     }
 }
@@ -1148,13 +1851,13 @@ fn target(name: &str) -> Option<Expr> {
 /// - `bool`: Whether the generated and target blocks differ by spin relations only.
 /// # Panics
 /// - Panics if `name` has no Appendix C target or uses an index outside the block.
-pub fn check(name: &str) -> bool {
-    let want = target(name).unwrap_or_else(|| panic!("no Appendix C target for {name}"));
-    let b = specs::block(name);
+pub fn matches_appendix_c(name: &str) -> bool {
+    let want = appendix_c_block(name).unwrap_or_else(|| panic!("no Appendix C target for {name}"));
+    let b = specs::metric_block_spec(name);
     let names = [b.lf, b.rf].concat();
     let spaces = names
         .iter()
-        .map(|&n| specs::space(n) as u8)
+        .map(|&n| specs::index_space(n) as u8)
         .collect::<Vec<_>>();
     let id = |x: &Idx| {
         names
@@ -1164,7 +1867,7 @@ pub fn check(name: &str) -> bool {
     };
 
     // Difference between generated and target blocks in canonical form.
-    let mut diff = emit::metric(name).terms;
+    let mut diff = emit::metric_table(name).terms;
     for t in &want {
         let deltas = t.deltas.iter().map(|x| (spin::DELTA, vec![x.0], vec![x.1]));
         let tensors = t
@@ -1190,18 +1893,19 @@ pub fn check(name: &str) -> bool {
                 .chain(tensors)
                 .map(|(kind, upper, lower)| Factor {
                     kind,
-                    sym: spin::sym(kind),
+                    sym: spin::slot_symmetry(kind),
                     upper: upper.iter().map(id).collect::<SmallVec<_>>(),
                     lower: lower.iter().map(id).collect::<SmallVec<_>>(),
                 })
                 .collect(),
         };
-        let (key, sign): (Key, i8) = canon::canonical(&form);
+        let (key, sign): (Key, i8) = canon::canonical_key(&form);
         if sign != 0 {
-            *diff.entry(key).or_insert_with(|| r(0)) -= t.coeff * r(sign as i64);
+            *diff.entry(key).or_insert_with(|| integer_coefficient(0)) -=
+                t.coeff * integer_coefficient(sign as i64);
         }
     }
-    diff.retain(|_, x| *x != r(0));
+    diff.retain(|_, x| *x != integer_coefficient(0));
 
-    reduce::vanishes(&spaces, &diff)
+    reduce::vanishes_modulo_relations(&spaces, &diff)
 }

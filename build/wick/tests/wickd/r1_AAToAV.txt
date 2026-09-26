@@ -373,6 +373,7 @@
 -1/8 R^{a2,v0}_{a0,a1} lambda2^{a0,a1}_{a2,a3} lambda3^{a7,a8,a9}_{a4,a5,a6} t^{a5,a6}_{a7,a8} v^{a3,a4}_{a9,v0}
 -1/8 R^{a2,v0}_{a0,a1} lambda2^{a0,a1}_{a2,a3} lambda3^{a7,a8,a9}_{a4,a5,a6} t^{a3,a6}_{a7,v0} v^{a4,a5}_{a8,a9}
 -1/8 R^{a2,v0}_{a0,a1} lambda2^{a0,a1}_{a2,a3} lambda3^{a7,a8,a9}_{a4,a5,a6} t^{a5,a6}_{a7,v0} v^{a3,a4}_{a8,a9}
+-1/4 R^{a2,v0}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{o0,o1}_{v0,v1} v^{a3,v1}_{o0,o1}
 -1/2 R^{a2,v0}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{o0}_{v1} v^{a3,v1}_{o0,v0}
 +1/4 R^{a2,v0}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{o0,a3}_{v1,v2} v^{v1,v2}_{o0,v0}
 +1/2 R^{a2,v0}_{a0,a1} lambda2^{a0,a4}_{a2,a3} lambda3^{a1,a8,a9}_{a5,a6,a7} t^{a3,a7}_{a4,a8} v^{a5,a6}_{a9,v0}

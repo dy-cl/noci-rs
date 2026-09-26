@@ -19,7 +19,7 @@ mod nocc {
 
     const CLASSES: &[&str] = &[
         "CToA", "AToA", "AToV", "CToV", "CAToAV", "CAToVA", "CAToVV", "CCToAV", "CCToAA", "CAToAA",
-        "AAToAV", "AAToVV", "AAToAA",
+        "AAToAV", "AAToVV", "AAToAA", "CCToVV",
     ];
 
     /// Return whether cached generated terms should be forcibly regenerated.
@@ -152,7 +152,7 @@ mod nocc {
             &format!("R{order}({class})"),
             &cache_file,
             &out_file,
-            || wick_build::emit::residual_class(order, class),
+            || wick_build::emit::residual_class_terms(order, class),
         );
     }
 
@@ -176,7 +176,7 @@ mod nocc {
         );
         let _ = writeln!(
             src,
-            "    {static_name}.get_or_init(|| residual_terms({order}, &["
+            "    {static_name}.get_or_init(|| assemble_residual_terms({order}, &["
         );
 
         for class in CLASSES {
@@ -207,7 +207,24 @@ mod nocc {
 
         src.push_str("pub(crate) fn overlap_terms() -> &'static OverlapTermSet {\n");
         src.push_str("    OVERLAP_TERMS.get_or_init(|| decode_overlap(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/overlapterms.bin\"))))\n");
-        src.push_str("}\n");
+        src.push_str("}\n\n");
+
+        src.push_str("pub(crate) fn dyall_terms() -> &'static OverlapTermSet {\n");
+        src.push_str("    DYALL_TERMS.get_or_init(|| decode_overlap(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/dyallterms.bin\"))))\n");
+        src.push_str("}\n\n");
+
+        for order in 1..=2 {
+            let _ = writeln!(
+                src,
+                "pub(crate) fn e{order}_terms() -> &'static ResidualClassTerms {{"
+            );
+            let _ = writeln!(
+                src,
+                "    E{order}_TERMS.get_or_init(|| decode_class(include_bytes!(concat!(env!(\"OUT_DIR\"), \"/e{order}terms.bin\"))))"
+            );
+            let _ = writeln!(src, "}}");
+            let _ = writeln!(src);
+        }
 
         src
     }
@@ -236,6 +253,22 @@ mod nocc {
             &out.join("overlapterms.bin"),
             wick_build::emit::overlap_terms,
         );
+
+        ensure(
+            "dyall",
+            &cache.join("dyallterms.bin"),
+            &out.join("dyallterms.bin"),
+            wick_build::emit::dyall_terms,
+        );
+
+        for order in 1..=2 {
+            ensure(
+                &format!("E{order}"),
+                &cache.join(format!("e{order}terms.bin")),
+                &out.join(format!("e{order}terms.bin")),
+                || wick_build::emit::energy_terms(order),
+            );
+        }
 
         for order in 0..=2 {
             for class in CLASSES {

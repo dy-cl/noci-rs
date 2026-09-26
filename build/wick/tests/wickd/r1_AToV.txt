@@ -61,6 +61,7 @@
 -1/4 R^{v0}_{a0} gamma1^{a0}_{a1} lambda3^{a5,a6,a7}_{a2,a3,a4} t^{a3,a4}_{a5,a6} v^{a1,a2}_{a7,v0}
 -1/4 R^{v0}_{a0} gamma1^{a0}_{a1} lambda3^{a5,a6,a7}_{a2,a3,a4} t^{a1,a4}_{a5,v0} v^{a2,a3}_{a6,a7}
 -1/4 R^{v0}_{a0} gamma1^{a0}_{a1} lambda3^{a5,a6,a7}_{a2,a3,a4} t^{a3,a4}_{a5,v0} v^{a1,a2}_{a6,a7}
+-1/2 R^{v0}_{a0} gamma1^{a0}_{a1} t^{o0,o1}_{v0,v1} v^{a1,v1}_{o0,o1}
 -R^{v0}_{a0} gamma1^{a0}_{a1} t^{o0}_{v1} v^{a1,v1}_{o0,v0}
 +1/2 R^{v0}_{a0} gamma1^{a0}_{a1} t^{o0,a1}_{v1,v2} v^{v1,v2}_{o0,v0}
 +1/4 R^{v0}_{a0} gamma1^{a2}_{a1} gamma1^{a0}_{a3} lambda2^{a6,a7}_{a4,a5} t^{a1,a3}_{a6,a7} v^{a4,a5}_{a2,v0}

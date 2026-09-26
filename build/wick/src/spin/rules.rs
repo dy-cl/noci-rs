@@ -31,14 +31,14 @@ type Table = Vec<Vec<Vec<Vec<Replacement>>>>;
 /// - `lower`: Lower spin bits, bit `i` set for beta.
 /// # Returns:
 /// - `&'static [Replacement]`: Nonzero permutations and coefficients.
-pub(crate) fn cumulant(
+pub(crate) fn cumulant_replacement(
     k: usize,
     upper: u8,
     lower: u8,
 ) -> &'static [Replacement] {
     static TABLE: OnceLock<Table> = OnceLock::new();
 
-    &TABLE.get_or_init(table)[k][upper as usize][lower as usize]
+    &TABLE.get_or_init(build_cumulant_table)[k][upper as usize][lower as usize]
 }
 
 /// Build every cumulant replacement up to rank four.
@@ -46,11 +46,15 @@ pub(crate) fn cumulant(
 /// - None.
 /// # Returns:
 /// - `Table`: Replacements for every rank and spin pattern.
-fn table() -> Table {
+fn build_cumulant_table() -> Table {
     (0..=4)
         .map(|k| {
             (0..1u8 << k)
-                .map(|upper| (0..1u8 << k).map(|lower| solve(k, upper, lower)).collect())
+                .map(|upper| {
+                    (0..1u8 << k)
+                        .map(|lower| solve_cumulant_block(k, upper, lower))
+                        .collect()
+                })
                 .collect()
         })
         .collect()
@@ -63,7 +67,7 @@ fn table() -> Table {
 /// - `lower`: Lower spin bits.
 /// # Returns:
 /// - `Vec<Replacement>`: Nonzero permutations and coefficients.
-fn solve(
+fn solve_cumulant_block(
     k: usize,
     upper: u8,
     lower: u8,
@@ -72,7 +76,7 @@ fn solve(
         return Vec::new();
     }
 
-    let data = Basis::cached(k);
+    let data = Basis::for_rank(k);
     let bit = |x: u8, i: usize| (x >> i) & 1;
 
     // Right-hand side: the signed spin pattern of every permutation.
@@ -81,14 +85,14 @@ fn solve(
         .iter()
         .map(|p| {
             if (0..k).all(|i| bit(upper, i) == bit(lower, p[i])) {
-                Ratio::from_integer(gram::sign(p))
+                Ratio::from_integer(gram::permutation_sign(p))
             } else {
                 Ratio::from_integer(0)
             }
         })
         .collect::<Vec<_>>();
 
-    let x = gram::solve(data.g.clone(), b)
+    let x = gram::solve_rational_system(data.g.clone(), b)
         .unwrap_or_else(|| panic!("inconsistent spin projection {k}"));
 
     data.ps
@@ -110,7 +114,7 @@ fn solve(
 /// - `lower`: Lower spin bits.
 /// # Returns:
 /// - `Vec<Replacement>`: Direct and exchange lower permutations with their signs.
-pub(crate) fn pair(
+pub(crate) fn pair_replacement(
     upper: u8,
     lower: u8,
 ) -> Vec<Replacement> {

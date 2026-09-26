@@ -45,6 +45,7 @@
 +1/4 R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a0}_{a3} lambda2^{a6,a7}_{a4,a5} t^{a4,a5}_{a6,v0} v^{a2,a3}_{a7,v1}
 +1/4 R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a0}_{a3} lambda2^{a6,a7}_{a4,a5} t^{a3,a5}_{v0,v1} v^{a2,a4}_{a6,a7}
 -1/16 R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a0}_{a3} lambda2^{a6,a7}_{a4,a5} t^{a4,a5}_{v0,v1} v^{a2,a3}_{a6,a7}
+-1/8 R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a0}_{a3} t^{o0,o1}_{v0,v1} v^{a2,a3}_{o0,o1}
 -1/2 R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a0}_{a3} t^{o0}_{v1} v^{a2,a3}_{o0,v0}
 -1/8 R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a0}_{a3} t^{a2,a3}_{v2,v3} v^{v2,v3}_{v0,v1}
 -R^{v0,v1}_{a0,a1} gamma1^{a1}_{a2} gamma1^{a4}_{a3} lambda2^{a0,a7}_{a5,a6} t^{a3,a5}_{a7,v1} v^{a2,a6}_{a4,v0}
@@ -75,6 +76,7 @@
 +1/8 R^{v0,v1}_{a0,a1} gamma1^{a3}_{a2} lambda3^{a0,a1,a7}_{a4,a5,a6} t^{a2,a4}_{v0,v1} v^{a5,a6}_{a3,a7}
 -1/8 R^{v0,v1}_{a0,a1} lambda2^{a0,a1}_{a2,a3} lambda2^{a6,a7}_{a4,a5} t^{a4,a5}_{a6,v0} v^{a2,a3}_{a7,v1}
 +1/32 R^{v0,v1}_{a0,a1} lambda2^{a0,a1}_{a2,a3} lambda2^{a6,a7}_{a4,a5} t^{a4,a5}_{v0,v1} v^{a2,a3}_{a6,a7}
++1/16 R^{v0,v1}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{o0,o1}_{v0,v1} v^{a2,a3}_{o0,o1}
 +1/4 R^{v0,v1}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{o0}_{v1} v^{a2,a3}_{o0,v0}
 -1/2 R^{v0,v1}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{o0,a2}_{v1,v2} v^{a3,v2}_{o0,v0}
 -1/4 R^{v0,v1}_{a0,a1} lambda2^{a0,a1}_{a2,a3} t^{a2}_{v2} v^{a3,v2}_{v0,v1}
