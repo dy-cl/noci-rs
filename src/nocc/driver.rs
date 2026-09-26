@@ -116,7 +116,7 @@ pub(crate) fn run_noccmc(
         excitations: &excitations,
     };
     let evaluator = TermEvaluator::new(options.max_cumulant);
-    let fois = space::build_fois_basis(&reference, &manifold, &evaluator, post.tol);
+    let fois = space::build_fois_basis(&reference, &manifold, &evaluator, options.fois_tol);
 
     if world.rank() == 0 {
         // Check orthonormality of NOCI natural orbitals and energy from RDMs.

@@ -146,6 +146,9 @@ pub struct NOCCMCOptions {
     pub active_space_tol: f64,
     /// Highest cumulant rank kept in the equations; terms with higher-rank cumulants are dropped.
     pub max_cumulant: usize,
+    /// Eigenvalue threshold of the weighted FOIS metric; directions below it are discarded as
+    /// redundant.
+    pub fois_tol: f64,
     /// Maximum number of amplitude macro-iterations.
     pub max_macro: usize,
     /// Maximum number of micro-iterations per amplitude update.
@@ -168,6 +171,7 @@ impl Default for NOCCMCOptions {
         Self {
             active_space_tol: 1e-6,
             max_cumulant: 4,
+            fois_tol: 1e-8,
             max_macro: 100,
             max_micro: 200,
             residual_tol: 1e-8,

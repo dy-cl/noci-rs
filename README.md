@@ -678,6 +678,7 @@ The `noccmc` table enables the spin-free generalised-normal-ordered coupled-clus
 noccmc = {
     active_space_tol = 1e-6,
     max_cumulant = 4,
+    fois_tol = 1e-8,
 
     max_macro = 100,
     max_micro = 200,
@@ -690,7 +691,7 @@ noccmc = {
 }
 ```
 
-Natural orbitals within `active_space_tol` of two or zero electrons are treated as core or virtual, and all others as active. `max_cumulant` selects the GNOCCSD(`k`) truncation: every term containing a cumulant of rank above `k` is dropped from all equations. `residual_tol` is the convergence threshold on the norm of the residual projected onto the first-order interacting space, and `micro_tol` the threshold on the linearised update equation. `level_shift` is added to every orbital-energy denominator, and `diis_space` sets the number of vectors kept in both DIIS subspaces.
+Natural orbitals within `active_space_tol` of two or zero electrons are treated as core or virtual, and all others as active. `max_cumulant` selects the GNOCCSD(`k`) truncation: every term containing a cumulant of rank above `k` is dropped from all equations. `fois_tol` is the eigenvalue threshold of the weighted FOIS metric below which redundant excitation directions are discarded. `residual_tol` is the convergence threshold on the norm of the residual projected onto the first-order interacting space, and `micro_tol` the threshold on the linearised update equation. `level_shift` is added to every orbital-energy denominator, and `diis_space` sets the number of vectors kept in both DIIS subspaces.
 
 ### Defaults
 

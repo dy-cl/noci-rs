@@ -818,6 +818,7 @@ fn read_noccmc(noccmc_tbl: Option<Table>) -> Option<NOCCMCOptions> {
                 .get("active_space_tol")
                 .unwrap_or(defaults.active_space_tol),
             max_cumulant: t.get("max_cumulant").unwrap_or(defaults.max_cumulant),
+            fois_tol: t.get("fois_tol").unwrap_or(defaults.fois_tol),
             max_macro: t.get("max_macro").unwrap_or(defaults.max_macro),
             max_micro: t.get("max_micro").unwrap_or(defaults.max_micro),
             residual_tol: t.get("residual_tol").unwrap_or(defaults.residual_tol),
