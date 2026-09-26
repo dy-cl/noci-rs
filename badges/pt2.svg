@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="530" height="24" viewBox="0 0 530 24" role="img" aria-label="H6 cc-pVDZ · NOCISD(3) · PT2: 12.37 s; Ubuntu 22.04.5 LTS · AMD EPYC 9V74 80-Core Processor · 4 vCPU · 15.6 GiB RAM">
-  <title>H6 cc-pVDZ · NOCISD(3) · PT2: 12.37 s; Ubuntu 22.04.5 LTS · AMD EPYC 9V74 80-Core Processor · 4 vCPU · 15.6 GiB RAM</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="530" height="24" viewBox="0 0 530 24" role="img" aria-label="H6 cc-pVDZ · NOCISD(3) · PT2: 8.69 s; Ubuntu 22.04.5 LTS · AMD EPYC 9V45 96-Core Processor · 4 vCPU · 15.6 GiB RAM">
+  <title>H6 cc-pVDZ · NOCISD(3) · PT2: 8.69 s; Ubuntu 22.04.5 LTS · AMD EPYC 9V45 96-Core Processor · 4 vCPU · 15.6 GiB RAM</title>
   <rect width="530" height="24" rx="4" fill="#555"/>
   <rect x="260" width="270" height="24" rx="4" fill="#6e7781"/>
   <rect x="260" width="4" height="24" fill="#6e7781"/>
   <text x="12" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">H6 cc-pVDZ · NOCISD(3) · PT2</text>
-  <text x="272" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">12.37 s</text>
+  <text x="272" y="16" fill="#fff" font-family="DejaVu Sans, Arial, sans-serif" font-size="12">8.69 s</text>
 </svg>
