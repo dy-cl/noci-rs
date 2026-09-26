@@ -33,7 +33,7 @@ use crate::nocc::dyall::{dyall_matrix, orbital_denominators};
 use crate::nocc::energy::correlation_energy;
 use crate::nocc::reference::ReferenceState;
 use crate::nocc::residual::residual_vector;
-use crate::nocc::space::{ExcitationManifold, FoisBasis, metric_projector};
+use crate::nocc::space::{ExcitationManifold, FoisBasis, project_onto_fois};
 
 /// Converged or final state of the amplitude equations.
 pub(crate) struct AmplitudeSolution {
@@ -149,12 +149,10 @@ pub(crate) fn solve_amplitudes(
     let y = &fois.y;
     let n = manifold.excitations.len();
 
-    // Fixed parts of the update: `Y Y^\dagger A`, the projector `P` and the shifted
-    // denominators `\Delta_\nu + \eta`.
-    let jacobian = y
-        .dot(&y.t())
-        .dot(&dyall_matrix(reference, manifold, evaluator));
-    let projector = metric_projector(fois);
+    // Fixed parts of the update: the zeroth-order coupling `A`, applied as `Y Y^\dagger A`, and
+    // the shifted denominators `\Delta_\nu + \eta`.
+    let dyall = dyall_matrix(reference, manifold, evaluator);
+    let jacobian = |x: &Array1<f64>| y.dot(&y.t().dot(&dyall.dot(x)));
     let denominators = orbital_denominators(reference, manifold) + options.level_shift;
 
     let mut amplitudes = Array1::<f64>::zeros(n);
@@ -206,7 +204,7 @@ pub(crate) fn solve_amplitudes(
         let rtilde = y.dot(&rfois);
         let (step, count, micro) = micro_iterations(&rtilde, &jacobian, &denominators, options);
         println!("{row} {:>7} {:>12.4e}", count, micro);
-        let step = projector.dot(&step);
+        let step = project_onto_fois(fois, &step);
 
         // DIIS over the updated amplitudes with the projected step as error vector.
         let next = &amplitudes + &step;
@@ -222,7 +220,7 @@ pub(crate) fn solve_amplitudes(
 /// (\Delta_\nu + \eta)`, accelerated by DIIS on the steps.
 /// # Arguments:
 /// - `rtilde`: FOIS-projected residual `\tilde R`.
-/// - `jacobian`: Zeroth-order coupling `Y Y^\dagger A`.
+/// - `jacobian`: Action of the zeroth-order coupling `Y Y^\dagger A` on a vector.
 /// - `denominators`: Shifted orbital-energy denominators `\Delta_\nu + \eta`.
 /// - `options`: Micro-iteration limit, tolerance and DIIS space.
 /// # Returns:
@@ -232,7 +230,7 @@ pub(crate) fn solve_amplitudes(
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (58)-(62).
 fn micro_iterations(
     rtilde: &Array1<f64>,
-    jacobian: &Array2<f64>,
+    jacobian: &impl Fn(&Array1<f64>) -> Array1<f64>,
     denominators: &Array1<f64>,
     options: &NOCCMCOptions,
 ) -> (Array1<f64>, usize, f64) {
@@ -242,7 +240,7 @@ fn micro_iterations(
     let mut norm = rtilde.dot(rtilde).sqrt();
 
     for iteration in 0..options.max_micro {
-        let error = rtilde + &jacobian.dot(&step);
+        let error = rtilde + &jacobian(&step);
         norm = error.dot(&error).sqrt();
         count = iteration;
         if norm < options.micro_tol {

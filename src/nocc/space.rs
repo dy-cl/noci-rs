@@ -494,15 +494,18 @@ fn hamiltonian_weights(
     h
 }
 
-/// Build the amplitude projector onto the FOIS, `P_{\mu\sigma} = \sum_{i\nu} Y_{\mu i}
-/// Y^\dagger_{i\nu} S_{\nu\sigma}`. It is idempotent and leaves `t_\mu = \sum_i Y_{\mu i}\tilde t_i`
-/// unchanged, so it removes redundant components from an amplitude update.
+/// Project an amplitude change onto the FOIS, `P x = Y Y^\dagger S x`, keeping the amplitudes
+/// consistent with `t = Y\tilde t`.
 /// # Arguments:
-/// - `fois`: Weighted FOIS basis data.
+/// - `fois`: FOIS basis data.
+/// - `x`: Vector in the raw excitation basis.
 /// # Returns:
-/// - `Array2<f64>`: Projector `P = Y Y^\dagger S`.
+/// - `Array1<f64>`: Projected vector.
 /// # References
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (63)-(64).
-pub(crate) fn metric_projector(fois: &FoisBasis) -> Array2<f64> {
-    fois.y.dot(&fois.y.t()).dot(&fois.metric)
+pub(crate) fn project_onto_fois(
+    fois: &FoisBasis,
+    x: &Array1<f64>,
+) -> Array1<f64> {
+    fois.y.dot(&fois.y.t().dot(&fois.metric.dot(x)))
 }
