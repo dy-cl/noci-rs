@@ -8,7 +8,8 @@
 //!
 //! The `einsum` submodule contains scalar-generic tensor contractions used throughout the
 //! matrix-element implementations, and the `contract` submodule general pairwise contractions of
-//! strided, labelled tensors. The `eri` submodule transforms and contracts two-electron
+//! strided, labelled tensors, whose large products run through the register-blocked kernels of
+//! `gemm`. The `eri` submodule transforms and contracts two-electron
 //! integrals. The `linalg` submodule provides determinant, adjugate, eigensolver and matrix-
 //! vector utilities. The `wick` submodule contains the low-level contraction-determinant
 //! construction and column-mixing operations used by the nonorthogonal Wick evaluators.
@@ -21,6 +22,8 @@ pub mod eri;
 pub mod linalg;
 pub mod wick;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod gemm;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod simd;
 

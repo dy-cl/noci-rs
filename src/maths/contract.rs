@@ -15,6 +15,14 @@ use std::borrow::Cow;
 use ndarray::linalg::general_mat_mul;
 use ndarray::{ArrayView2, ArrayViewMut2};
 
+// Crate-root imports.
+#[cfg(target_arch = "x86_64")]
+use crate::maths::gemm::{strided_gemm, strided_gemm_available, strided_offsets};
+
+/// Joint-label positions of one label group with their extents.
+#[cfg(target_arch = "x86_64")]
+type LabelGroup = Vec<(usize, usize)>;
+
 /// Smallest `m n k` for which a pairwise contraction runs as matrix products.
 const MATMULMIN: usize = 1 << 12;
 
@@ -410,6 +418,29 @@ fn contract_by_matrix_product(
         return None;
     }
 
+    // With fused multiply-add kernels, read the larger operand in place and pack only the other.
+    #[cfg(target_arch = "x86_64")]
+    if strided_gemm_available() {
+        let big_is_a = m * kk >= kk * nn;
+        let (dbig, sbig, dsmall, ssmall) = if big_is_a {
+            (da, sa, db, sb)
+        } else {
+            (db, sb, da, sa)
+        };
+        let (mut kept_big, mut kept_small) = if big_is_a {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        return Some(contract_reading_larger_in_place(
+            (dbig, sbig),
+            (dsmall, ssmall),
+            [&mut batch, &mut kept_big, &mut kept_small, &mut summed],
+            labels,
+            buffer,
+        ));
+    }
+
     // Order every group by decreasing stride in its operand, so operands already laid out as
     // `[b][i][k]` or `[b][k][i]` (and `[b][k][j]` or `[b][j][k]`) are used in place.
     batch.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
@@ -475,6 +506,106 @@ fn contract_by_matrix_product(
     }
 
     Some(shape)
+}
+
+/// Contract two operands as a batched matrix product that reads the larger operand in place,
+/// `C_{b,ij} = \sum_k L_{b,ik} S_{b,kj}`, where `L` is the larger operand and `S` the smaller.
+/// The summed labels follow the strides of `L`, so each product streams `L` in memory order, and
+/// only `S` is packed, as `[b][k][j]`.
+/// # Arguments:
+/// - `large`: Data of the larger operand and its stride for every joint label.
+/// - `small`: Data of the smaller operand and its stride for every joint label.
+/// - `groups`: Batch, larger-only kept, smaller-only kept and summed joint labels with extents.
+/// - `labels`: Every joint label.
+/// - `buffer`: Reusable storage, filled with the row-major result over batch, `i` then `j`.
+/// # Returns:
+/// - `TensorShape`: Result shape over batch, larger-only then smaller-only kept labels.
+#[cfg(target_arch = "x86_64")]
+fn contract_reading_larger_in_place(
+    large: (&[f64], &[usize]),
+    small: (&[f64], &[usize]),
+    groups: [&mut LabelGroup; 4],
+    labels: &[u16],
+    buffer: &mut Vec<f64>,
+) -> TensorShape {
+    let ((dl, sl), (ds, ss)) = (large, small);
+    let [batch, kept_large, kept_small, summed] = groups;
+
+    // Walk the larger operand in memory order, and the smaller in its own.
+    batch.sort_by_key(|&(k, _)| std::cmp::Reverse(sl[k]));
+    kept_large.sort_by_key(|&(k, _)| std::cmp::Reverse(sl[k]));
+    summed.sort_by_key(|&(k, _)| std::cmp::Reverse(sl[k]));
+    kept_small.sort_by_key(|&(k, _)| std::cmp::Reverse(ss[k]));
+
+    let layout = |group: &[(usize, usize)], strides: &[usize]| {
+        group
+            .iter()
+            .map(|&(k, d)| (d, strides[k]))
+            .collect::<Vec<_>>()
+    };
+    let rows = strided_offsets(&layout(kept_large, sl));
+    let cols = strided_offsets(&layout(summed, sl));
+    let batches = strided_offsets(&layout(batch, sl));
+    let packed = pack_strided(
+        ds,
+        &[
+            layout(batch, ss),
+            layout(summed, ss),
+            layout(kept_small, ss),
+        ]
+        .concat(),
+    );
+
+    // One product per batch element into the row-major result.
+    let (m, k) = (rows.len(), cols.len());
+    let n = kept_small.iter().map(|&(_, d)| d).product::<usize>();
+    // Every element is written by the kernel, so earlier contents are left in place.
+    let len = batches.len() * m * n;
+    if buffer.len() < len {
+        buffer.resize(len, 0.0);
+    } else {
+        buffer.truncate(len);
+    }
+    for (i, (c, &base)) in buffer.chunks_mut(m * n).zip(&batches).enumerate() {
+        // SAFETY: The kernels are available, every offset indexes the operands by construction of
+        // their shapes, and the slices hold the matrix sizes.
+        unsafe {
+            strided_gemm(
+                &dl[base..],
+                &rows,
+                &cols,
+                &packed[i * k * n..(i + 1) * k * n],
+                n,
+                c,
+            );
+        }
+    }
+
+    // Result labels in batch, larger-only, smaller-only order with row-major strides.
+    let mut shape = TensorShape {
+        n: 0,
+        labels: [0; MAXLABELS],
+        dims: [0; MAXLABELS],
+        strides: [0; MAXLABELS],
+        mask: 0,
+    };
+    for &(k, d) in batch
+        .iter()
+        .chain(kept_large.iter())
+        .chain(kept_small.iter())
+    {
+        shape.labels[shape.n] = labels[k];
+        shape.dims[shape.n] = d;
+        shape.mask |= 1 << labels[k];
+        shape.n += 1;
+    }
+    let mut stride = 1;
+    for k in (0..shape.n).rev() {
+        shape.strides[k] = stride;
+        stride *= shape.dims[k];
+    }
+
+    shape
 }
 
 /// Return whether a strided layout is one contiguous row-major run from the start of its data.
