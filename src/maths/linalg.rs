@@ -243,26 +243,6 @@ pub fn symmetric_blocks(m: &Array2<f64>) -> Vec<Vec<usize>> {
     blocks.into_values().collect()
 }
 
-/// Return the eigenvalues of a symmetric matrix from its diagonal blocks.
-/// # Arguments:
-/// - `m`: Symmetric matrix, uses only the lower triangle.
-/// - `blocks`: Row indices of every diagonal block, from `symmetric_blocks`.
-/// # Returns
-/// - `Vec<f64>`: Eigenvalues of every block, block by block.
-pub fn block_eigenvalues(
-    m: &Array2<f64>,
-    blocks: &[Vec<usize>],
-) -> Vec<f64> {
-    blocks
-        .par_iter()
-        .flat_map_iter(|b| {
-            let sub = m.select(Axis(0), b).select(Axis(1), b);
-            let (vals, _) = hermitian_eigh(&sub, UPLO::Lower);
-            vals.to_vec()
-        })
-        .collect()
-}
-
 /// Construct the rectangular orthogonalizer `X = U_+ \Lambda_+^{-1/2}` of a symmetric
 /// positive semidefinite matrix block by block over its diagonal blocks. The columns span the
 /// same space as `loewdin_x` with projection, and every column is supported on one block.

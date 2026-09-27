@@ -59,7 +59,7 @@ mod terms;
 
 // Crate-visible type re-exports.
 pub(crate) use cumulants::Cumulants;
-pub(crate) use rdm::{RDM1, RDM2, RDM3, RDM4};
+pub(crate) use rdm::{RDM1, RDM2};
 
 // Crate-visible function re-exports.
 pub(crate) use cumulants::cumulants;

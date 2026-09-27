@@ -145,18 +145,10 @@ impl ExcitationManifold<'_> {
     }
 }
 
-/// Reusable raw and orthogonalized FOIS basis data.
+/// Raw metric and orthogonalised FOIS basis used by the amplitude solver.
 pub(crate) struct FoisBasis {
     /// Raw spin-free FOIS metric S.
     pub metric: Array2<f64>,
-    /// Hamiltonian coupling weights h.
-    pub h: Array1<f64>,
-    /// Weighted metric `\tilde S = wSw`.
-    pub weighted_metric: Array2<f64>,
-    /// Row indices of every diagonal block of the raw metric.
-    pub blocks: Vec<Vec<usize>>,
-    /// Row indices of every diagonal block of the weighted metric, excluding its zero rows.
-    pub weighted_blocks: Vec<Vec<usize>>,
     /// Canonical FOIS transformation `Y = w\tilde X`.
     pub y: Array2<f64>,
 }
@@ -398,7 +390,7 @@ pub(in crate::nocc) fn excitation_class(
 /// - `evaluator`: Term-table evaluator.
 /// - `options`: FOIS weighting, coupling threshold and weighted-metric eigenvalue threshold.
 /// # Returns:
-/// - `FoisBasis`: Raw metric, Hamiltonian weights, weighted metric, and Y.
+/// - `FoisBasis`: Raw metric and the orthogonalised FOIS basis `Y`.
 /// # References
 /// - Lee and Tew, arXiv:2507.13472 (2025), Eqs. (38)-(49).
 pub(crate) fn build_fois_basis(
@@ -457,14 +449,7 @@ pub(crate) fn build_fois_basis(
         }
     }
 
-    FoisBasis {
-        metric: s,
-        h,
-        weighted_metric: stilde,
-        blocks,
-        weighted_blocks,
-        y,
-    }
+    FoisBasis { metric: s, y }
 }
 
 /// Build Hamiltonian coupling weights used for the weighted FOIS metric.

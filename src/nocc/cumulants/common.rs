@@ -5,8 +5,6 @@ use crate::noci::NOCIScalar;
 
 /// Active-space spin-free cumulant tensor stored in upper-then-lower index order.
 pub(crate) struct CumulantTensor<T: NOCIScalar> {
-    /// Cumulant rank.
-    pub _rank: usize,
     /// Number of active orbitals.
     pub n: usize,
     /// Flat tensor storage in upper-then-lower index order.
@@ -25,7 +23,6 @@ impl<T: NOCIScalar> CumulantTensor<T> {
         n: usize,
     ) -> Self {
         Self {
-            _rank: rank,
             n,
             data: vec![<T as From<f64>>::from(0.0); n.pow((2 * rank) as u32)],
         }

@@ -106,50 +106,6 @@ fn residual_orders(
     out
 }
 
-/// Build the zeroth-order residual `R_{0,\mu} = \langle\Phi|\hat\tau_\mu^\dagger\hat H|\Phi\rangle_c`.
-/// # Arguments:
-/// - `reference`: Normal-ordered reference state.
-/// - `manifold`: Orbital spaces and raw excitation list.
-/// - `evaluator`: Term-table evaluator.
-/// # Returns:
-/// - `Array1<f64>`: Zeroth-order residual in the raw excitation basis.
-pub(crate) fn zeroth_order_residual(
-    reference: &ReferenceState<'_>,
-    manifold: &ExcitationManifold<'_>,
-    evaluator: &TermEvaluator,
-) -> Array1<f64> {
-    residual_orders(
-        manifold,
-        evaluator,
-        &[r0_terms()],
-        &reference.tensors(manifold.spaces, None),
-    )
-}
-
-/// Build the first-order residual `R_{1,\mu} = \langle\Phi|\hat\tau_\mu^\dagger\hat H\hat T|\Phi\rangle_c`,
-/// linear in the amplitudes.
-/// # Arguments:
-/// - `reference`: Normal-ordered reference state.
-/// - `manifold`: Orbital spaces and raw excitation list.
-/// - `evaluator`: Term-table evaluator.
-/// - `amplitudes`: Cluster amplitude vector in the raw excitation basis.
-/// # Returns:
-/// - `Array1<f64>`: First-order residual in the raw excitation basis.
-pub(crate) fn first_order_residual(
-    reference: &ReferenceState<'_>,
-    manifold: &ExcitationManifold<'_>,
-    evaluator: &TermEvaluator,
-    amplitudes: &Array1<f64>,
-) -> Array1<f64> {
-    let dense = manifold.dense_amplitudes(amplitudes);
-    residual_orders(
-        manifold,
-        evaluator,
-        &[r1_terms()],
-        &reference.tensors(manifold.spaces, Some(&dense)),
-    )
-}
-
 /// Build the full residual
 /// `R_\mu = \langle\Phi|\hat\tau_\mu^\dagger\hat H\{1 + \hat T + \tfrac12\hat T^2\}|\Phi\rangle_c`.
 /// # Arguments:
