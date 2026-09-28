@@ -4,8 +4,9 @@
 use std::collections::HashSet;
 
 // Crate-root imports.
+use crate::NOCIScalar;
+use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::input::Input;
-use crate::noci::{NOCIIndex, NOCIScalar, NOCISpace};
 use crate::time_call;
 
 pub(in crate::noci::selected) struct CandidatePool {

@@ -1,8 +1,8 @@
 // nocc/cumulants/cumulants2.rs
 
 // Crate-root imports.
-use crate::nocc::rdm::RDM2;
-use crate::noci::NOCIScalar;
+use crate::NOCIScalar;
+use crate::elements::RDM2;
 
 // Parent/sibling imports.
 use super::common::CumulantTensor;

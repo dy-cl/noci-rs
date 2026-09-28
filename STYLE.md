@@ -2,12 +2,18 @@
 
 ## Module Layout
 
-Organise methods by family first and approach second. Each family folder holds its shared
-layer at the root and one subfolder per approach:
+Organise methods by family first and approach second, above two shared layers:
 
-1. `noci/`: the shared NOCI matrix-element layer, with `deterministic/`, `stochastic/` and
-   `selected/`.
-2. `nocc/`: the shared NOCC layer (`setup/`, `rdm/`, `cumulants/`, `space/`, `terms/` and
+1. `determinant/`: parent orbital frames, determinant identities and the determinant spaces.
+2. `elements/`: every matrix element and reduced density matrix between determinants. The
+   operator files dispatch each determinant pair to one engine: `orthogonal/`, `naive/`
+   (generalised Slater-Condon) or `nonorthogonalwicks/`.
+
+Each family folder holds its shared layer at the root and one subfolder per approach:
+
+1. `noci/`: full NOCI matrices, the reference NOCI state and factorised operators, with
+   `deterministic/`, `stochastic/` and `selected/`.
+2. `nocc/`: the shared NOCC layer (`setup/`, `cumulants/`, `space/`, `terms/` and
    `equations/`), with `deterministic/` and, later, `stochastic/`.
 
 `deterministic/` always means the exact, non-sampled counterpart of the stochastic method.
@@ -15,8 +21,8 @@ Folders name the approach, while types and functions name the method, for exampl
 `noci::selected::snoci_step` and `SNOCIOptions`.
 
 A method subfolder may depend only on its own family's shared layer and on modules below it,
-such as `maths`, `nonorthogonalwicks`, `scf` and `determinant`. It never depends on a sibling
-method subfolder. `nocc/` may use the `noci/` shared layer but never `noci/`'s method subfolders.
+such as `elements`, `determinant`, `maths` and `scf`. It never depends on a sibling method
+subfolder. `nocc/` may use the `noci/` shared layer but never `noci/`'s method subfolders.
 
 ## Rust Module Headers
 
@@ -89,7 +95,7 @@ In `mod.rs` files, keep the module-header order above. Private imports used only
 Place literature references at the narrowest scope that covers their use:
 
 1. If an entire module or folder uses the same reference, put it in the owning `mod.rs` module
-   documentation, such as a `//! # References` section in `nonorthogonalwicks/eval/mod.rs`.
+   documentation, such as a `//! # References` section in `elements/nonorthogonalwicks/eval/mod.rs`.
 2. If a reference applies to one implementation file, put it in that file's banner or top-level
    module documentation.
 3. If a reference applies to one function, put it in that function's `///` documentation, using a

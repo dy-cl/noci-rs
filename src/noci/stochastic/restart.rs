@@ -1,4 +1,5 @@
 // noci/stochastic/restart.rs
+
 // Standard library imports.
 use std::fs;
 use std::path::Path;
@@ -9,8 +10,8 @@ use mpi::topology::Communicator;
 use mpi::traits::*;
 
 // Crate-root imports.
+use crate::determinant::{NOCIIndex, NOCISpace};
 use crate::input::Propagator;
-use crate::noci::{NOCIIndex, NOCISpace};
 
 // Parent/sibling imports.
 use super::state::{ExcitationHist, PopulationRepresentation};

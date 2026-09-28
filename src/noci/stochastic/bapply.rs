@@ -11,11 +11,11 @@ use mpi::traits::*;
 use rand::SeedableRng;
 
 // Crate-root imports.
+use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex};
+use crate::elements::NOCIData;
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
-use crate::noci::{
-    AuxiliaryIndex, AuxiliarySpace, NOCIData, NOCIIndex, OverlapFactors, SpinFactorisation,
-};
-use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::noci::{OverlapFactors, SpinFactorisation};
 
 // Parent/sibling imports.
 use super::common::{

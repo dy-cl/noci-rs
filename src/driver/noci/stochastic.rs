@@ -9,10 +9,11 @@ use mpi::topology::Communicator;
 
 // Crate-root imports.
 use crate::PostSCFData;
+use crate::determinant::NOCIIndex;
+use crate::elements::NOCIData;
+use crate::elements::nonorthogonalwicks::WicksView;
 use crate::input::Input;
 use crate::noci::stochastic::qmc_step;
-use crate::noci::{NOCIData, NOCIIndex};
-use crate::nonorthogonalwicks::WicksView;
 use crate::time_call;
 
 /// Perform stochastic propagation in the NOCI-QMC space.

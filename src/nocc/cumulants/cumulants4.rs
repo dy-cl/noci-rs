@@ -4,8 +4,8 @@
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::nocc::rdm::RDM4;
-use crate::noci::NOCIScalar;
+use crate::NOCIScalar;
+use crate::elements::RDM4;
 
 // Parent/sibling imports.
 use super::common::CumulantTensor;

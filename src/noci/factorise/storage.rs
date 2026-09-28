@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use memmap2::{MmapMut, MmapOptions};
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::input::SNOCIStorage;
-use crate::noci::types::NOCIScalar;
 
 /// Mutable storage policy state for assigning factor blocks to RAM or disk.
 pub(super) struct OneBodyStoragePlan {

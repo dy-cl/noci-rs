@@ -3,11 +3,10 @@ mod common;
 // External crate imports.
 use ndarray::Array1;
 use noci_rs::basis::generate_reference_noci_basis;
+use noci_rs::determinant::{NOCIIndex, NOCISpace};
+use noci_rs::elements::{NOCIData, build_mo_cache, build_wicks_shared};
 use noci_rs::noci::deterministic::{projected_energy, propagate};
-use noci_rs::noci::{
-    NOCIData, NOCIIndex, NOCISpace, build_mo_cache, build_noci_hs, build_wicks_shared,
-    calculate_noci_energy,
-};
+use noci_rs::noci::{build_noci_hs, calculate_noci_energy};
 use noci_rs::scf::occ_first;
 use serde::Deserialize;
 use serial_test::serial;

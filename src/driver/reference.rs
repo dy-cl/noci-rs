@@ -7,13 +7,14 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 // Crate-root imports.
+use crate::NOCIScalar;
+use crate::determinant::NOCISpace;
 use crate::determinant::ParentDeterminant;
+use crate::elements::nonorthogonalwicks::{WicksShared, WicksView};
+use crate::elements::{MOCache, build_mo_cache, build_wicks_shared};
 use crate::input::Input;
 use crate::mpiutils::broadcast;
-use crate::noci::{
-    MOCache, NOCIScalar, NOCISpace, build_mo_cache, build_wicks_shared, calculate_noci_energy,
-};
-use crate::nonorthogonalwicks::{WicksShared, WicksView};
+use crate::noci::calculate_noci_energy;
 use crate::scf::occ_first;
 use crate::time_call;
 use crate::{AoData, SCFState};

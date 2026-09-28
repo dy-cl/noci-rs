@@ -1,15 +1,15 @@
 // noci/stochastic/state.rs
+
 // External crate imports.
 use mpi::traits::*;
 use rand::{Rng, SeedableRng};
 
 // Crate-root imports.
+use crate::determinant::{AuxiliaryIndex, AuxiliarySpace, NOCIIndex};
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
+use crate::elements::{NOCIData, OrthogonalHamiltonianScratch};
 use crate::input::{ExcitationGen, Propagator};
-use crate::noci::{
-    AuxiliaryIndex, AuxiliarySpace, NOCIData, NOCIIndex, OrthogonalHamiltonianScratch,
-    OverlapFactors,
-};
-use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::noci::OverlapFactors;
 
 // Parent/sibling imports.
 use super::common::{find_h_orthogonal_batched, find_hs_batched};

@@ -15,7 +15,7 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 // Crate-root imports.
-use crate::noci::NOCIScalar;
+use crate::NOCIScalar;
 use crate::{input::GMRESOptions, time_call};
 
 // Parent/sibling imports.

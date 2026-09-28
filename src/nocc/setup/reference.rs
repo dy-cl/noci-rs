@@ -6,8 +6,8 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::AoData;
+use crate::elements::{RDM1, RDM2};
 use crate::nocc::cumulants::Cumulants;
-use crate::nocc::rdm::{RDM1, RDM2};
 use crate::nocc::space::{DenseAmplitudes, Spaces};
 use crate::nocc::terms::Tensors;
 use crate::scf::fock;

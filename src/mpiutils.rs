@@ -1,4 +1,5 @@
 // mpiutils.rs
+
 // Standard library imports.
 use std::{ffi::c_void, ptr};
 
@@ -11,7 +12,7 @@ use num_complex::Complex64;
 use serde::{Serialize, de::DeserializeOwned};
 
 // Crate-root imports.
-use crate::noci::NOCIScalar;
+use crate::NOCIScalar;
 
 pub struct Sharedffi {
     // Communicator for ranks on the same node.

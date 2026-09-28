@@ -1,10 +1,11 @@
 // noci/stochastic/propagate.rs
+
 // External crate imports.
 use mpi::topology::Communicator;
 
 // Crate-root imports.
+use crate::elements::NOCIData;
 use crate::input::Propagator;
-use crate::noci::NOCIData;
 
 // Parent/sibling imports.
 use super::state::ExcitationHist;

@@ -26,10 +26,10 @@
 //!
 //! The module implements deterministic GNOCC: the generated metric, residual, energy and
 //! zeroth-order coupling expressions, the orbital and excitation spaces, the one- through
-//! four-body reduced density matrices and cumulants of the reference, and the macro-micro
-//! amplitude solver. It is organised as a shared layer (`setup`, `rdm`, `cumulants`, `space`,
-//! `terms` and `equations`) with the approach in `deterministic`; stochastic NOCCMC is planned as
-//! a sibling of `deterministic`.
+//! four-body cumulants of the reference, and the macro-micro amplitude solver. The reduced
+//! density matrices of the reference come from [`crate::elements`]. It is organised as a
+//! shared layer (`setup`, `cumulants`, `space`, `terms` and `equations`) with the approach in
+//! `deterministic`; stochastic NOCCMC is planned as a sibling of `deterministic`.
 //!
 //! This implementation is highly experimental and is intended for method development rather
 //! than production calculations. Its equations, truncations and interfaces remain subject to
@@ -48,7 +48,6 @@
 mod cumulants;
 mod deterministic;
 mod equations;
-mod rdm;
 mod setup;
 mod space;
 mod terms;
@@ -61,7 +60,6 @@ pub(crate) use terms::TermEvaluator;
 // Restricted function re-exports.
 pub(crate) use cumulants::cumulants;
 pub(crate) use deterministic::solve_amplitudes;
-pub(crate) use rdm::{rdm1, rdm2, rdm3, rdm4};
 pub(crate) use setup::{
     noci_natural_orbitals, print_noci_natural_orbitals, reference_energy, transform_ao_data,
     transform_noci_basis,

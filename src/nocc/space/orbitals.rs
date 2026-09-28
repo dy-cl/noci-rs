@@ -2,7 +2,7 @@
 //! Core, active and virtual orbital spaces in the NOCI natural-orbital basis.
 
 // Crate-root imports.
-use crate::nocc::rdm::RDM1;
+use crate::elements::RDM1;
 
 /// NOCC orbital class in the NOCI natural-orbital basis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

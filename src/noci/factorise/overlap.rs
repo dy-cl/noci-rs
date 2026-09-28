@@ -9,18 +9,18 @@ use std::path::Path;
 use rayon::prelude::*;
 
 // Crate-root imports.
-use crate::input::SNOCIStorage;
-use crate::maths::dot_f64;
-use crate::noci::overlap::{calculate_s_pair, calculate_s_pair_naive};
-use crate::noci::types::{DetPair, NOCIData};
-use crate::noci::{
+use crate::determinant::{
     AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex, NOCIIndex,
     ReducedOneSpinNOCIDeterminantState,
 };
-use crate::nonorthogonalwicks::{
+use crate::elements::nonorthogonalwicks::{
     SameSpinOrthogonalOverlapBatch, SameSpinOverlapBatch, WickScratchSpin, WicksPairView,
     xw_overlap_orthogonal_prepared_batched, xw_overlap_prepared_batched,
 };
+use crate::elements::{DetPair, NOCIData};
+use crate::elements::{calculate_s_pair, calculate_s_pair_naive};
+use crate::input::SNOCIStorage;
+use crate::maths::dot_f64;
 
 // Parent/sibling imports.
 use super::storage::{OverlapFactorStorage, OverlapStoragePlan};

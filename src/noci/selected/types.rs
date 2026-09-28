@@ -8,8 +8,10 @@ use std::time::Instant;
 use ndarray::{Array1, Array2};
 
 // Crate-root imports.
+use crate::NOCIScalar;
+use crate::determinant::NOCIIndex;
+use crate::elements::{FockData, NOCIData};
 use crate::input::SNOCIPreconditioner;
-use crate::noci::{FockData, NOCIData, NOCIIndex, NOCIScalar};
 
 /// Storage for the result of a selected NOCI step.
 pub struct SNOCIState<T: NOCIScalar> {

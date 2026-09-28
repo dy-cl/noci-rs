@@ -1,13 +1,14 @@
 // noci/stochastic/init.rs
+
 // External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
 use mpi::traits::*;
 
 // Crate-root imports.
+use crate::elements::NOCIData;
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::Propagator;
-use crate::noci::NOCIData;
-use crate::nonorthogonalwicks::WickScratchSpin;
 use crate::time_call;
 
 // Parent/sibling imports.

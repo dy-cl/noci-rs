@@ -1,12 +1,13 @@
 // noci/deterministic/nociqmc.rs
+
 // External crate imports.
 use ndarray::{Array1, Array2, s};
 use ndarray_linalg::{Eigh, Norm, UPLO};
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::input::{Input, Propagator};
 use crate::maths::{adjoint, parallel_matvec};
-use crate::noci::NOCIScalar;
 
 // Parent/sibling imports.
 use super::write::{
@@ -402,7 +403,7 @@ pub fn propagate<T: NOCIScalar>(
     mut es: f64,
     history: &mut Vec<Coefficients<T>>,
     input: &Input,
-    basis: &crate::noci::NOCISpace<T>,
+    basis: &crate::determinant::NOCISpace<T>,
 ) -> Option<Array1<T>> {
     if matches!(input.prop_ref().propagator, Propagator::BApply) {
         panic!("BApply has no deterministic propagation implementation.");

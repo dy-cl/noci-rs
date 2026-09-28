@@ -10,9 +10,9 @@ use ndarray::{ArrayView2, ArrayViewMut2};
 use ndarray_linalg::{Determinant, FactorizeInto, InverseInto, SVD};
 
 // Crate-root imports.
+use crate::NOCIScalar;
 #[cfg(target_arch = "x86_64")]
 use crate::maths::Simd;
-use crate::noci::NOCIScalar;
 
 /// Calculate a runtime-rank determinant coefficient for an occupation bitstring.
 /// NOCC supplies both the occupation mask and electron count at runtime, so this composed helper

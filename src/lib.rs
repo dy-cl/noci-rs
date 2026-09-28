@@ -19,17 +19,22 @@
 //! extended nonorthogonal Wick theorem. MPI provides distributed-memory parallelism and
 //! Rayon provides shared-memory parallelism where supported by the selected method.
 //!
-//! Methods are organised by family first and approach second. The [`noci`] family holds a
-//! shared matrix-element layer with its deterministic propagation, stochastic NOCIQMC and
-//! selected NOCI/NOCI-PT2 methods in `noci::deterministic`, `noci::stochastic` and
-//! `noci::selected`. The feature-gated `nocc` family holds a shared layer of reduced density
-//! matrices, cumulants, excitation spaces, term evaluation and working equations, with the
+//! Methods are organised by family first and approach second, above two shared layers.
+//! [`determinant`] holds the determinant spaces, and [`elements`] evaluates every matrix
+//! element and reduced density matrix between their determinants with the orthogonal,
+//! generalised Slater-Condon or extended nonorthogonal Wick engines. The [`noci`] family holds
+//! its full NOCI matrices and factorised operators with its deterministic propagation,
+//! stochastic NOCIQMC and selected NOCI/NOCI-PT2 methods in `noci::deterministic`,
+//! `noci::stochastic` and `noci::selected`. The feature-gated `nocc` family holds a shared
+//! layer of cumulants, excitation spaces, term evaluation and working equations, with the
 //! deterministic GNOCC solver in `nocc::deterministic`. A method folder depends only on its
-//! family's shared layer and on the modules below it, such as [`maths`], [`nonorthogonalwicks`]
-//! and [`scf`], never on a sibling method folder.
+//! family's shared layer and on the modules below it, such as [`elements`], [`determinant`],
+//! [`maths`] and [`scf`], never on a sibling method folder.
 
 pub mod basis;
+pub mod determinant;
 pub mod driver;
+pub mod elements;
 pub mod error;
 pub mod input;
 pub mod integrals;
@@ -38,7 +43,6 @@ pub mod mpiutils;
 #[cfg(feature = "nocc")]
 pub mod nocc;
 pub mod noci;
-pub mod nonorthogonalwicks;
 pub mod paths;
 pub mod scalar;
 pub mod scf;
@@ -47,7 +51,6 @@ pub mod utils;
 pub mod write;
 
 mod config;
-mod determinant;
 
 // External crate imports.
 use ndarray::{Array1, Array2, Array4};
@@ -56,10 +59,10 @@ use serde::{Deserialize, Serialize};
 // Crate-root imports.
 use crate::config::MAXEXCIT;
 use crate::determinant::SpinDeterminantState;
-use crate::noci::{MOCache, NOCIScalar};
+use crate::elements::MOCache;
 
 pub use error::{Error, Result};
-pub use scalar::{HSCFState, SCFState, StateScalar};
+pub use scalar::{HSCFState, NOCIScalar, SCFState, StateScalar};
 
 #[derive(Serialize, Deserialize)]
 pub struct AoData {
@@ -291,7 +294,7 @@ pub struct PostSCFData<'a, T: NOCIScalar> {
     /// AO integrals and other system data.
     pub ao: &'a AoData,
     /// Authoritative retained reference topology and parent orbital frames.
-    pub space: &'a crate::noci::NOCISpace<T>,
+    pub space: &'a crate::determinant::NOCISpace<T>,
     /// MO-basis one and two-electron integral caches.
     pub mocache: &'a [MOCache<T>],
     /// Tolerance up to which a number is considered zero.

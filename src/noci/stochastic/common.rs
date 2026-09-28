@@ -1,4 +1,5 @@
 // noci/stochastic/common.rs
+
 // Standard library imports.
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,14 +14,16 @@ use rand::SeedableRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::determinant::AuxiliarySpace;
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
+use crate::elements::{
+    DetPair, NOCIData, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
+    calculate_hs_pairs_wicks_batched, calculate_s_pair,
+};
 use crate::input::{Input, Propagator};
 use crate::maths::general_evp;
 use crate::mpiutils::broadcast;
-use crate::noci::{
-    AuxiliarySpace, DetPair, NOCIData, OverlapFactors, calculate_h_pairs_orthogonal_batched,
-    calculate_hs_pair, calculate_hs_pairs_wicks_batched, calculate_s_pair,
-};
-use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::noci::OverlapFactors;
 use crate::time_call;
 
 // Parent/sibling imports.
@@ -957,19 +960,19 @@ pub(in crate::noci::stochastic) fn find_s(
 ) -> f64 {
     // Get the sorted pair of indices
     let (a, b) = if i <= j { (i, j) } else { (j, i) };
-    let ldet = data.space.state(crate::noci::NOCIIndex(a));
-    let gdet = data.space.state(crate::noci::NOCIIndex(b));
+    let ldet = data.space.state(crate::determinant::NOCIIndex(a));
+    let gdet = data.space.state(crate::determinant::NOCIIndex(b));
 
     // If the determinants share the same parent take an orthogonal early exit.
     if ldet.parent == gdet.parent
         && let Some(mocache) = data.mocache
         && mocache[ldet.parent].orthogonal_slater_condon
     {
-        if data.space.occupations(crate::noci::NOCIIndex(a))
-            == data.space.occupations(crate::noci::NOCIIndex(b))
+        if data.space.occupations(crate::determinant::NOCIIndex(a))
+            == data.space.occupations(crate::determinant::NOCIIndex(b))
         {
-            return data.space.phase(crate::noci::NOCIIndex(a))
-                * data.space.phase(crate::noci::NOCIIndex(b));
+            return data.space.phase(crate::determinant::NOCIIndex(a))
+                * data.space.phase(crate::determinant::NOCIIndex(b));
         }
         return 0.0;
     }
@@ -977,7 +980,10 @@ pub(in crate::noci::stochastic) fn find_s(
     // Otherwise calculate normally.
     calculate_s_pair(
         data,
-        DetPair::new(crate::noci::NOCIIndex(a), crate::noci::NOCIIndex(b)),
+        DetPair::new(
+            crate::determinant::NOCIIndex(a),
+            crate::determinant::NOCIIndex(b),
+        ),
         Some(scratch),
     )
 }
@@ -1002,7 +1008,10 @@ pub(in crate::noci::stochastic) fn find_hs(
     // Calculate the matrix element.
     calculate_hs_pair(
         data,
-        DetPair::new(crate::noci::NOCIIndex(a), crate::noci::NOCIIndex(b)),
+        DetPair::new(
+            crate::determinant::NOCIIndex(a),
+            crate::determinant::NOCIIndex(b),
+        ),
         Some(scratch),
     )
 }
@@ -1029,10 +1038,10 @@ pub(in crate::noci::stochastic) fn find_hs_batched(
     }
 
     for (i, &(a, b)) in pairs.iter().enumerate() {
-        let ldet = data.space.state(crate::noci::NOCIIndex(a));
-        let gdet = data.space.state(crate::noci::NOCIIndex(b));
-        let loa = data.space.occupations(crate::noci::NOCIIndex(a));
-        let goa = data.space.occupations(crate::noci::NOCIIndex(b));
+        let ldet = data.space.state(crate::determinant::NOCIIndex(a));
+        let gdet = data.space.state(crate::determinant::NOCIIndex(b));
+        let loa = data.space.occupations(crate::determinant::NOCIIndex(a));
+        let goa = data.space.occupations(crate::determinant::NOCIIndex(b));
 
         // A one- or two-body Hamiltonian cannot connect same-parent states
         // differing by more than two excitations (four occupation bits).
@@ -1061,8 +1070,8 @@ pub(in crate::noci::stochastic) fn find_hs_batched(
 pub(in crate::noci::stochastic) fn find_h_orthogonal_batched(
     data: &NOCIData<'_, f64>,
     generator: &OrthogonalUniformGenerator,
-    pairs: &[(crate::noci::NOCIIndex, usize)],
-    scratch: &mut crate::noci::OrthogonalHamiltonianScratch,
+    pairs: &[(crate::determinant::NOCIIndex, usize)],
+    scratch: &mut crate::elements::OrthogonalHamiltonianScratch,
     out: &mut [f64],
 ) {
     calculate_h_pairs_orthogonal_batched(data, generator.connections(), pairs, scratch, out);
@@ -1076,7 +1085,7 @@ pub(in crate::noci::stochastic) fn find_h_orthogonal_batched(
 /// - `(usize, usize, usize)`: Maximum same-spin scratch size, alpha excitation size, and beta
 ///   excitation size.
 pub(in crate::noci::stochastic) fn max_scratch_sizes(
-    space: &crate::noci::NOCISpace<f64>
+    space: &crate::determinant::NOCISpace<f64>
 ) -> (usize, usize, usize) {
     let maxexa = space
         .components

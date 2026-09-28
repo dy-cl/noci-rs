@@ -2,10 +2,16 @@
 use std::{ops::AddAssign, sync::Arc};
 
 // External crate imports.
-use ndarray::{Array2, LinalgScalar};
+use ndarray::{Array2, Array4, LinalgScalar};
 use ndarray_linalg::{Lapack, Scalar};
 use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
+
+// Crate-root imports.
+use crate::maths::{
+    ERIScalar, einsum_ba_ab_complex, einsum_ba_ab_complex_real, einsum_ba_ab_real,
+    einsum_ba_abcd_cd_complex, einsum_ba_abcd_cd_complex_real, einsum_ba_abcd_cd_real,
+};
 
 // Scalar generic marker trait for SCF states.
 pub trait StateScalar:
@@ -68,5 +74,221 @@ impl HSCFState {
             label: st.label.clone(),
             noci_basis: st.noci_basis,
         }
+    }
+}
+
+/// Scalar type accepted by generic NOCI matrix-element code.
+pub trait NOCIScalar: StateScalar + From<f64> + Scalar<Real = f64> + ERIScalar {
+    /// Construct a purely imaginary scalar.
+    /// # Arguments:
+    /// - `x`: Imaginary component.
+    /// # Returns
+    /// - `Self`: Purely imaginary scalar.
+    fn from_imag(x: f64) -> Self;
+
+    /// `Calculate Einstein summation of scalar matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
+    /// Assumes `g` and `h` are of identical shape.
+    /// # Arguments
+    /// - `g`: Scalar matrix 1.
+    /// - `h`: Scalar matrix 2.
+    /// # Returns
+    /// - `Self`: Contracted scalar.
+    fn einsum_ba_ab(
+        g: &Array2<Self>,
+        h: &Array2<Self>,
+    ) -> Self;
+
+    /// `Calculate Einstein summation of scalar matrix g and real matrix h as \sum_{a,b} g_{b,a} h_{a,b}.`
+    /// Assumes `g` and `h` are of identical shape.
+    /// # Arguments
+    /// - `g`: Scalar matrix 1.
+    /// - `h`: Real matrix 2.
+    /// # Returns
+    /// - `Self`: Contracted scalar.
+    fn einsum_ba_ab_realop(
+        g: &Array2<Self>,
+        h: &Array2<f64>,
+    ) -> Self;
+
+    /// Calculate Einstein summation of scalar matrices `g` and `h` and scalar 4D tensor `t` as
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
+    /// Assumes `g`, `h` and `t` all have axes of equal length.
+    /// # Arguments
+    /// - `g`: Scalar matrix 1.
+    /// - `t`: Scalar 4D tensor.
+    /// - `h`: Scalar matrix 2.
+    /// # Returns
+    /// - `Self`: Contracted scalar.
+    fn einsum_ba_abcd_cd(
+        g: &Array2<Self>,
+        t: &Array4<Self>,
+        h: &Array2<Self>,
+    ) -> Self;
+
+    /// Calculate Einstein summation of scalar matrices `g` and `h` and real 4D tensor `t` as
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
+    /// Assumes `g`, `h` and `t` all have axes of equal length.
+    /// # Arguments
+    /// - `g`: Scalar matrix 1.
+    /// - `t`: Real 4D tensor.
+    /// - `h`: Scalar matrix 2.
+    /// # Returns
+    /// - `Self`: Contracted scalar.
+    fn einsum_ba_abcd_cd_realop(
+        g: &Array2<Self>,
+        t: &Array4<f64>,
+        h: &Array2<Self>,
+    ) -> Self;
+}
+
+impl NOCIScalar for f64 {
+    /// Convert a zero imaginary component to a real scalar.
+    /// # Arguments:
+    /// - `x`: Imaginary component, which must be zero.
+    /// # Returns
+    /// - `f64`: Zero when `x` is zero.
+    /// # Panics
+    /// - Panics if `x` is nonzero because `f64` cannot represent an imaginary value.
+    fn from_imag(x: f64) -> Self {
+        if x == 0.0 {
+            0.0
+        } else {
+            panic!("non-zero SNOCI imaginary shift requires complex arithmetic")
+        }
+    }
+
+    /// `Calculate Einstein summation of real matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
+    /// Assumes `g` and `h` are of identical shape.
+    /// # Arguments
+    /// - `g`: Real matrix 1.
+    /// - `h`: Real matrix 2.
+    /// # Returns
+    /// - `f64`: Contracted scalar.
+    fn einsum_ba_ab(
+        g: &Array2<Self>,
+        h: &Array2<Self>,
+    ) -> Self {
+        einsum_ba_ab_real(g, h)
+    }
+
+    /// `Calculate Einstein summation of real matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
+    /// Assumes `g` and `h` are of identical shape.
+    /// # Arguments
+    /// - `g`: Real matrix 1.
+    /// - `h`: Real matrix 2.
+    /// # Returns
+    /// - `f64`: Contracted scalar.
+    fn einsum_ba_ab_realop(
+        g: &Array2<Self>,
+        h: &Array2<f64>,
+    ) -> Self {
+        einsum_ba_ab_real(g, h)
+    }
+
+    /// Calculate Einstein summation of real matrices `g` and `h` and real 4D tensor `t` as
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
+    /// Assumes `g`, `h` and `t` all have axes of equal length.
+    /// # Arguments
+    /// - `g`: Real matrix 1.
+    /// - `t`: Real 4D tensor.
+    /// - `h`: Real matrix 2.
+    /// # Returns
+    /// - `f64`: Contracted scalar.
+    fn einsum_ba_abcd_cd(
+        g: &Array2<Self>,
+        t: &Array4<Self>,
+        h: &Array2<Self>,
+    ) -> Self {
+        einsum_ba_abcd_cd_real(g, t, h)
+    }
+
+    /// Calculate Einstein summation of real matrices `g` and `h` and real 4D tensor `t` as
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
+    /// Assumes `g`, `h` and `t` all have axes of equal length.
+    /// # Arguments
+    /// - `g`: Real matrix 1.
+    /// - `t`: Real 4D tensor.
+    /// - `h`: Real matrix 2.
+    /// # Returns
+    /// - `f64`: Contracted scalar.
+    fn einsum_ba_abcd_cd_realop(
+        g: &Array2<Self>,
+        t: &Array4<f64>,
+        h: &Array2<Self>,
+    ) -> Self {
+        einsum_ba_abcd_cd_real(g, t, h)
+    }
+}
+
+impl NOCIScalar for Complex64 {
+    /// Construct a purely imaginary complex scalar.
+    /// # Arguments:
+    /// - `x`: Imaginary component.
+    /// # Returns
+    /// - `Complex64`: Complex number with zero real part.
+    fn from_imag(x: f64) -> Self {
+        Complex64::new(0.0, x)
+    }
+
+    /// `Calculate Einstein summation of complex matrices g and h as \sum_{a,b} g_{b,a} h_{a,b}.`
+    /// Assumes `g` and `h` are of identical shape.
+    /// # Arguments
+    /// - `g`: Complex matrix 1.
+    /// - `h`: Complex matrix 2.
+    /// # Returns
+    /// - `Complex64`: Contracted scalar.
+    fn einsum_ba_ab(
+        g: &Array2<Self>,
+        h: &Array2<Self>,
+    ) -> Self {
+        einsum_ba_ab_complex(g, h)
+    }
+
+    /// `Calculate Einstein summation of complex matrix g and real matrix h as \sum_{a,b} g_{b,a} h_{a,b}.`
+    /// Assumes `g` and `h` are of identical shape.
+    /// # Arguments
+    /// - `g`: Complex matrix.
+    /// - `h`: Real matrix.
+    /// # Returns
+    /// - `Complex64`: Contracted scalar.
+    fn einsum_ba_ab_realop(
+        g: &Array2<Self>,
+        h: &Array2<f64>,
+    ) -> Self {
+        einsum_ba_ab_complex_real(g, h)
+    }
+
+    /// Calculate Einstein summation of complex matrices `g` and `h` and complex 4D tensor `t` as
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
+    /// Assumes `g`, `h` and `t` all have axes of equal length.
+    /// # Arguments
+    /// - `g`: Complex matrix 1.
+    /// - `t`: Complex 4D tensor.
+    /// - `h`: Complex matrix 2.
+    /// # Returns
+    /// - `Complex64`: Contracted scalar.
+    fn einsum_ba_abcd_cd(
+        g: &Array2<Self>,
+        t: &Array4<Self>,
+        h: &Array2<Self>,
+    ) -> Self {
+        einsum_ba_abcd_cd_complex(g, t, h)
+    }
+
+    /// Calculate Einstein summation of complex matrices `g` and `h` and real 4D tensor `t` as
+    /// `\sum_{a,b}\sum_{c,d} g_{b,a} t_{a,b,c,d} h_{c,d}.`
+    /// Assumes `g`, `h` and `t` all have axes of equal length.
+    /// # Arguments
+    /// - `g`: Complex matrix 1.
+    /// - `t`: Real 4D tensor.
+    /// - `h`: Complex matrix 2.
+    /// # Returns
+    /// - `Complex64`: Contracted scalar.
+    fn einsum_ba_abcd_cd_realop(
+        g: &Array2<Self>,
+        t: &Array4<f64>,
+        h: &Array2<Self>,
+    ) -> Self {
+        einsum_ba_abcd_cd_complex_real(g, t, h)
     }
 }

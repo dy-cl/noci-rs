@@ -12,16 +12,15 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::NOCIScalar;
+use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksShared};
+use crate::elements::{DetPair, FockData, MOCache, NOCIData};
+use crate::elements::{calculate_m_pair, calculate_s_pair};
 use crate::maths::{adjoint, general_evp};
 use crate::mpiutils::all_reduce_array1;
-use crate::noci::{
-    DetPair, FockData, MOCache, NOCIData, NOCIIndex, NOCIScalar, NOCISpace, OneBodyFactorisation,
-    OneBodyScratch,
-};
-use crate::noci::{
-    build_noci_fock, build_noci_hs, build_noci_s, calculate_m_pair, calculate_s_pair,
-};
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksShared};
+use crate::noci::{OneBodyFactorisation, OneBodyScratch};
+use crate::noci::{build_noci_fock, build_noci_hs, build_noci_s};
 use crate::time_call;
 use crate::{AoData, input::Input};
 

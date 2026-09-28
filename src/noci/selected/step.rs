@@ -6,12 +6,13 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::NOCIScalar;
+use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::elements::nonorthogonalwicks::WicksShared;
+use crate::elements::{FockData, NOCIData};
+use crate::elements::{build_fock_mo_cache, noci_density, update_wicks_fock};
 use crate::input::{SNOCIPreconditioner, SNOCIStorage};
-use crate::noci::{
-    FockData, NOCIData, NOCIIndex, NOCIScalar, NOCISpace, OneBodyFactorisation, OneBodyScratch,
-};
-use crate::noci::{build_fock_mo_cache, noci_density, update_wicks_fock};
-use crate::nonorthogonalwicks::WicksShared;
+use crate::noci::{OneBodyFactorisation, OneBodyScratch};
 use crate::scf::fock;
 use crate::time_call;
 use crate::{PostSCFData, input::Input};

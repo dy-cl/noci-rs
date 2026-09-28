@@ -6,14 +6,15 @@ use ndarray::Array1;
 
 // Crate-root imports.
 use crate::PostSCFData;
+use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksShared};
+use crate::elements::{NOCIData, build_wicks_shared};
+use crate::elements::{rdm1, rdm2, rdm3, rdm4};
 use crate::input::Input;
 use crate::nocc::{
     AmplitudeSolution, ReferenceState, TermEvaluator, build_excitations, build_fois_basis,
-    build_spaces, cumulants, noci_natural_orbitals, print_noci_natural_orbitals, rdm1, rdm2, rdm3,
-    rdm4, reference_energy, solve_amplitudes, transform_ao_data, transform_noci_basis,
+    build_spaces, cumulants, noci_natural_orbitals, print_noci_natural_orbitals, reference_energy,
+    solve_amplitudes, transform_ao_data, transform_noci_basis,
 };
-use crate::noci::{NOCIData, build_wicks_shared};
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksShared};
 
 /// Run GNOCC on a NOCI reference in its natural-orbital basis.
 /// Builds the NOCI natural orbitals while the reference Wick storage is available, releases that

@@ -1,30 +1,17 @@
 // noci/mod.rs
-//! Core determinant representation and matrix-element layer for NOCI.
+//! NOCI family: full NOCI matrices, the reference NOCI state and factorised operators.
 //!
-//! This module defines the data, determinant-pair representation and molecular-orbital caches
-//! used by all NOCI-based methods. It evaluates overlap, Hamiltonian, generalised-Fock and
-//! related transition quantities between reference or excited determinants and constructs full
-//! matrices when required.
-//!
-//! Matrix-element evaluation is selected according to the determinant pair:
-//!
-//! - Determinants generated from a common orthonormal parent use orthogonal
-//!   Slater-Condon shortcuts;
-//! - Nonorthogonal pairs use the extended nonorthogonal Wick implementation when enabled;
-//! - The generalised Slater-Condon implementation provides the direct alternative.
-//!
-//! The module centralises determinant-pair ordering, excitation phases and matrix-element
-//! cache access so that reference NOCI and the method subfolders below it use consistent
-//! matrix elements: deterministic propagation in [`deterministic`], NOCIQMC in [`stochastic`],
-//! and selected NOCI with NOCI-PT2 in [`selected`]. Each method subfolder depends only on this
-//! shared layer and the modules below it, never on a sibling method subfolder.
-//!
-//! Full Hamiltonian, overlap and generalised-Fock matrices may be constructed for
-//! deterministic calculations. The resulting generalised eigenvalue problem
+//! This shared layer builds the full overlap, Hamiltonian and generalised-Fock matrices of a
+//! determinant space from the pair matrix elements of [`crate::elements`], solves the
+//! generalised eigenvalue problem
 //!
 //! `\mathbf H\mathbf c = E\mathbf S\mathbf c`
 //!
-//! is then solved.
+//! for the reference NOCI state, and provides spin-factorised overlap and one-body tables. The
+//! method subfolders below it use these consistently: deterministic propagation in
+//! [`deterministic`], NOCIQMC in [`stochastic`], and selected NOCI with NOCI-PT2 in
+//! [`selected`]. Each method subfolder depends only on this shared layer and the modules below
+//! it, never on a sibling method subfolder.
 //!
 //! # References
 //!
@@ -37,52 +24,16 @@ pub mod deterministic;
 pub mod selected;
 pub mod stochastic;
 
-mod auxiliary;
-mod cache;
 mod factorise;
-mod fock;
-mod hs;
-mod m;
 mod matrix;
-mod naive;
-mod orthogonal;
-mod overlap;
-mod space;
-mod types;
-mod wicks;
-
-// Public type re-exports.
-pub use crate::determinant::ParentDeterminant;
-pub use space::{NOCIDeterminantState, NOCIIndex, NOCISpace};
-pub use types::{FockMOCache, MOCache, NOCIData, NOCIScalar};
 
 // Public function re-exports.
-pub use cache::build_mo_cache;
 pub use matrix::{build_noci_hs, calculate_noci_energy};
-pub use wicks::build_wicks_shared;
 
 // Crate-visible type re-exports.
-pub(crate) use auxiliary::{
-    AuxiliaryDeterminantState, AuxiliaryIndex, AuxiliarySpace, AuxiliarySpinIndex,
-};
 pub(crate) use factorise::{
     OneBodyFactorisation, OneBodyScratch, OverlapFactors, OverlapScratch, SpinFactorisation,
 };
-pub(crate) use orthogonal::OrthogonalConnection;
-pub(crate) use space::{NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
-pub(crate) use types::{DetPair, FockData};
 
 // Crate-visible function re-exports.
-pub(crate) use cache::build_fock_mo_cache;
-pub(crate) use fock::calculate_f_pair;
-pub(crate) use hs::{
-    OrthogonalHamiltonianScratch, calculate_h_pairs_orthogonal_batched, calculate_hs_pair,
-    calculate_hs_pairs_wicks_batched,
-};
-pub(crate) use m::calculate_m_pair;
 pub(crate) use matrix::{build_noci_fock, build_noci_s};
-#[cfg(feature = "nocc")]
-pub(crate) use naive::{build_s_pair, pair_density};
-pub(crate) use naive::{noci_density, occ_coeffs};
-pub(crate) use overlap::calculate_s_pair;
-pub(crate) use wicks::update_wicks_fock;

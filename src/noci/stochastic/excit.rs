@@ -1,4 +1,5 @@
 // noci/stochastic/excit.rs
+
 // External crate imports.
 use mpi::collective::SystemOperation;
 use mpi::topology::Communicator;
@@ -6,9 +7,10 @@ use mpi::traits::*;
 use rand::Rng;
 
 // Crate-root imports.
+use crate::determinant::OrthogonalConnection;
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
+use crate::elements::{MOCache, NOCIData};
 use crate::input::{ExcitationGen, Input};
-use crate::noci::{MOCache, NOCIData, OrthogonalConnection};
-use crate::nonorthogonalwicks::WickScratchSpin;
 
 // Parent/sibling imports.
 use super::common::find_hs;
@@ -161,10 +163,12 @@ pub(in crate::noci::stochastic) fn coupling(
     data: &NOCIData<'_, f64>,
     scratch: &mut WickScratchSpin<f64>,
 ) -> f64 {
-    let lambda_state = data.space.state(crate::noci::NOCIIndex(lambda));
-    let gamma_state = data.space.state(crate::noci::NOCIIndex(gamma));
-    let (lambda_oa, lambda_ob) = data.space.occupations(crate::noci::NOCIIndex(lambda));
-    let (gamma_oa, gamma_ob) = data.space.occupations(crate::noci::NOCIIndex(gamma));
+    let lambda_state = data.space.state(crate::determinant::NOCIIndex(lambda));
+    let gamma_state = data.space.state(crate::determinant::NOCIIndex(gamma));
+    let (lambda_oa, lambda_ob) = data
+        .space
+        .occupations(crate::determinant::NOCIIndex(lambda));
+    let (gamma_oa, gamma_ob) = data.space.occupations(crate::determinant::NOCIIndex(gamma));
 
     if lambda_state.parent == gamma_state.parent
         && (lambda_oa ^ gamma_oa).count_ones() + (lambda_ob ^ gamma_ob).count_ones() > 4

@@ -13,8 +13,9 @@ pub(crate) use overlap::{OverlapFactors, OverlapScratch};
 use crate::ExcitationSpinCache;
 
 // Parent/sibling imports.
-use super::space::{NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
-use super::types::{NOCIData, NOCIScalar};
+use crate::NOCIScalar;
+use crate::determinant::{NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
+use crate::elements::NOCIData;
 
 /// Actual determinant entry in a parent-local spin factorisation.
 #[derive(Clone, Copy)]

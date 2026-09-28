@@ -1,4 +1,5 @@
 // noci/matrix.rs
+
 // Standard library imports.
 use std::time::{Duration, Instant};
 
@@ -8,19 +9,18 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::AoData;
+use crate::NOCIScalar;
+use crate::determinant::{NOCIIndex, NOCISpace};
+use crate::elements::compare_f_pair_wicks_naive;
+use crate::elements::compare_hs_pair_wicks_naive;
+use crate::elements::nonorthogonalwicks::{WickScratchSpin, WicksView};
+use crate::elements::{DetPair, FockData, MOCache, NOCIData};
+use crate::elements::{calculate_f_pair, calculate_hs_pair, calculate_s_pair};
 use crate::input::Input;
 use crate::maths::general_evp;
-use crate::noci::{calculate_f_pair, calculate_hs_pair, calculate_s_pair};
-use crate::nonorthogonalwicks::{WickScratchSpin, WicksView};
 use crate::time_call;
 use crate::utils::print_array2_indexed;
 use crate::write::write_hs_matrices;
-
-// Parent/sibling imports.
-use super::fock::compare_f_pair_wicks_naive;
-use super::hs::compare_hs_pair_wicks_naive;
-use super::space::{NOCIIndex, NOCISpace};
-use super::types::{DetPair, FockData, MOCache, NOCIData, NOCIScalar, ScatterValue};
 
 /// Evaluate an arbitrary determinant-pair quantity given a closure `o`
 /// which computes `U` for the pair. The closure may evaluate, for example,
@@ -313,4 +313,129 @@ pub fn calculate_noci_energy<T: NOCIScalar>(
 
     let c0 = c.column(0).to_owned();
     (evals[0], c0, d_hs)
+}
+
+/// Trait which defines how returned determinant-pair quantities should be scattered into matrices.
+pub(in crate::noci) trait ScatterValue: Sized + Copy {
+    type Output;
+
+    /// Construct zero initialised output.
+    /// # Arguments:
+    /// - `nl`: Length of determinant set 1.
+    /// - `nr`: Length of determinant set 2.
+    /// # Returns:
+    /// - `Self::Output`: Zero initialised output container.
+    fn zeros(
+        nl: usize,
+        nr: usize,
+    ) -> Self::Output;
+
+    /// Write a value into the output at indices i, j.
+    /// # Arguments:
+    /// - `out`: Output container to write into.
+    /// - `i`: Row index.
+    /// - `j`: Column index.
+    /// - `val`: Matrix element value.
+    /// # Returns
+    /// - `()`: Writes the matrix element into `out`.
+    fn write(
+        out: &mut Self::Output,
+        i: usize,
+        j: usize,
+        val: Self,
+    );
+
+    /// Value to write into the mirrored Hermitian position.
+    /// # Arguments:
+    /// - `self`: Matrix element value.
+    /// # Returns:
+    /// - `Self`: Complex-conjugated mirrored value.
+    fn mirror(self) -> Self;
+}
+
+impl<T: NOCIScalar> ScatterValue for T {
+    type Output = Array2<T>;
+
+    /// Construct zero initialised matrix.
+    /// # Arguments:
+    /// - `nl`: Number of rows.
+    /// - `nr`: Number of columns.
+    /// # Returns:
+    /// - `Array2<T>`: Zero initialised matrix.
+    fn zeros(
+        nl: usize,
+        nr: usize,
+    ) -> Self::Output {
+        Array2::<T>::zeros((nl, nr))
+    }
+
+    /// Write scalar value into matrix at row `i` and column `j`.
+    /// # Arguments:
+    /// - `out`: Matrix to write into.
+    /// - `i`: Row index.
+    /// - `j`: Column index.
+    /// - `val`: Value to write.
+    /// # Returns
+    /// - `()`: Writes the scalar into the matrix.
+    fn write(
+        out: &mut Self::Output,
+        i: usize,
+        j: usize,
+        val: Self,
+    ) {
+        out[(i, j)] = val;
+    }
+
+    /// Return Hermitian mirrored value for the lower triangle.
+    /// # Arguments:
+    /// - `self`: Matrix element value.
+    /// # Returns:
+    /// - `Self`: Complex conjugated matrix element value.
+    fn mirror(self) -> Self {
+        self.conj()
+    }
+}
+
+impl<T: NOCIScalar> ScatterValue for (T, T) {
+    type Output = (Array2<T>, Array2<T>);
+
+    /// Construct pair of zero initialised matrices.
+    /// # Arguments:
+    /// - `nl`: Number of rows.
+    /// - `nr`: Number of columns.
+    /// # Returns:
+    /// - `(Array2<T>, Array2<T>)`: Pair of zero initialised matrices.
+    fn zeros(
+        nl: usize,
+        nr: usize,
+    ) -> Self::Output {
+        (Array2::<T>::zeros((nl, nr)), Array2::<T>::zeros((nl, nr)))
+    }
+
+    /// Write pair of scalar values into pair of matrices at row `i` and column `j`.
+    /// # Arguments:
+    /// - `out`: Pair of matrices to write into.
+    /// - `i`: Row index.
+    /// - `j`: Column index.
+    /// - `val`: Pair of values to write.
+    /// # Returns
+    /// - `()`: Writes both scalars into their matrices.
+    fn write(
+        out: &mut Self::Output,
+        i: usize,
+        j: usize,
+        val: Self,
+    ) {
+        out.0[(i, j)] = val.0;
+        out.1[(i, j)] = val.1;
+    }
+
+    /// Return Hermitian mirrored values for the lower triangle.
+    /// # Arguments:
+    /// - `self`: Pair of matrix element values.
+    /// # Returns:
+    /// - `Self`: Pair of complex conjugated matrix element values.
+    fn mirror(self) -> Self {
+        (self.0.conj(), self.1.conj())
+    }
 }

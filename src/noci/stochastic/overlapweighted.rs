@@ -4,7 +4,8 @@
 use rand::Rng;
 
 // Crate-root imports.
-use crate::noci::{NOCIData, OverlapFactors, SpinFactorisation};
+use crate::elements::NOCIData;
+use crate::noci::{OverlapFactors, SpinFactorisation};
 
 /// Outcome of one overlap-weighted branch proposal.
 pub(in crate::noci::stochastic) enum OverlapProposal {
@@ -77,7 +78,7 @@ impl OverlapWeightedGenerator {
         let nparent = spin.nparents();
         let det_meta = (0..data.space.len())
             .map(|det| {
-                let source = data.space.state(crate::noci::NOCIIndex(det));
+                let source = data.space.state(crate::determinant::NOCIIndex(det));
                 let source_parent = source.parent;
                 let source_a = source.aid.0;
                 let source_b = source.bid.0;

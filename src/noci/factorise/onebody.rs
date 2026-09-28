@@ -12,14 +12,15 @@ use rayon::prelude::*;
 
 // Crate-root imports.
 use crate::ExcitationSpinCache;
-use crate::input::SNOCIStorage;
-use crate::noci::fock::calculate_f_pair_orthogonal;
-use crate::noci::overlap::calculate_s_pair_orthogonal;
-use crate::noci::types::{FockData, FockMOCache, NOCIData, NOCIScalar};
-use crate::noci::{NOCIIndex, NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
-use crate::nonorthogonalwicks::{
+use crate::NOCIScalar;
+use crate::determinant::{NOCIIndex, NOCISpace, NOCISpinIndex, ReducedOneSpinNOCIDeterminantState};
+use crate::elements::calculate_f_pair_orthogonal;
+use crate::elements::calculate_s_pair_orthogonal;
+use crate::elements::nonorthogonalwicks::{
     SameSpinOneBodyBatch, WickScratchSpin, WicksPairView, xw_f_overlap_prepared_batched,
 };
+use crate::elements::{FockData, FockMOCache, NOCIData};
+use crate::input::SNOCIStorage;
 
 // Parent/sibling imports.
 use super::storage::{OneBodyFactorStorage, OneBodyStoragePlan};

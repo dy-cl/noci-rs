@@ -12,9 +12,10 @@ use rand::SeedableRng;
 use rayon::prelude::*;
 
 // Crate-root imports.
+use crate::elements::NOCIData;
+use crate::elements::nonorthogonalwicks::WickScratchSpin;
 use crate::input::ExcitationGen;
-use crate::noci::{NOCIData, OverlapFactors, OverlapScratch, SpinFactorisation};
-use crate::nonorthogonalwicks::WickScratchSpin;
+use crate::noci::{OverlapFactors, OverlapScratch, SpinFactorisation};
 use crate::time_call;
 
 // Parent/sibling imports.

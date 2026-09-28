@@ -5,10 +5,11 @@ use mpi::topology::Communicator;
 use num_complex::Complex64;
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::PostSCFData;
+use crate::determinant::NOCISpace;
+use crate::elements::nonorthogonalwicks::WicksShared;
 use crate::noci::selected::snoci_step;
-use crate::noci::{NOCIScalar, NOCISpace};
-use crate::nonorthogonalwicks::WicksShared;
 use crate::time_call;
 
 /// Run SNOCI and solve the projected NOCI-PT2 equation

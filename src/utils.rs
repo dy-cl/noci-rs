@@ -1,4 +1,5 @@
 // utils.rs
+
 // Standard library imports.
 use std::fmt::Display;
 
@@ -8,7 +9,7 @@ use rand::Rng;
 use rand::rngs::StdRng;
 
 // Crate-root imports.
-use crate::noci::NOCIScalar;
+use crate::NOCIScalar;
 
 /// Print a matrix.
 /// # Arguments:

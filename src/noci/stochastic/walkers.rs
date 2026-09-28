@@ -20,8 +20,9 @@ use mpi::traits::*;
 use rand::SeedableRng;
 
 // Crate-root imports.
+use crate::elements::NOCIData;
 use crate::input::ExcitationGen;
-use crate::noci::{NOCIData, SpinFactorisation};
+use crate::noci::SpinFactorisation;
 
 // Parent/sibling imports.
 use super::common::{

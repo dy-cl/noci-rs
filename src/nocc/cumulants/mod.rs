@@ -19,8 +19,8 @@ pub(crate) use self::cumulants4::cumulants4;
 
 // Private imports.
 // Crate-root imports.
-use crate::nocc::rdm::{RDM1, RDM2, RDM3, RDM4};
-use crate::noci::NOCIScalar;
+use crate::NOCIScalar;
+use crate::elements::{RDM1, RDM2, RDM3, RDM4};
 
 /// Spin-free cumulants of ranks two to four; the one-cumulant is the one-body RDM itself.
 pub(crate) struct Cumulants<T: NOCIScalar> {

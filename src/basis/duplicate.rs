@@ -4,9 +4,9 @@
 use ndarray::Array2;
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::SCFState;
 use crate::maths::real2_as;
-use crate::noci::NOCIScalar;
 
 /// Calculate the distance between determinant states from Phys. Rev. Lett. 101, 193001 as
 /// `d_{wx}^2 = N - {}^w D^{\mu\nu} {}^x D_{\nu\mu} = N - Tr(D_w S D_x S).`

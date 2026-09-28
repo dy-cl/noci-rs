@@ -6,8 +6,8 @@ use ndarray::Array2;
 
 // Crate-root imports.
 use crate::AoData;
+use crate::elements::RDM1;
 use crate::nocc::cumulants::Cumulants;
-use crate::nocc::rdm::RDM1;
 use crate::nocc::space::{DenseAmplitudes, Excitation, Spaces};
 
 /// Message of the panic when an amplitude-free table requests an amplitude tensor.

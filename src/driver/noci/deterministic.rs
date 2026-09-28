@@ -8,11 +8,14 @@ use std::io::{BufWriter, Write};
 use ndarray::Array1;
 
 // Crate-root imports.
+use crate::NOCIScalar;
 use crate::PostSCFData;
+use crate::determinant::NOCIIndex;
+use crate::elements::NOCIData;
+use crate::elements::nonorthogonalwicks::WicksView;
 use crate::input::Input;
+use crate::noci::build_noci_hs;
 use crate::noci::deterministic::{projected_energy, propagate};
-use crate::noci::{NOCIData, NOCIIndex, NOCIScalar, build_noci_hs};
-use crate::nonorthogonalwicks::WicksView;
 use crate::time_call;
 use crate::utils::wavefunction_sparsity;
 
