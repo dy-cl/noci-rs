@@ -23,6 +23,10 @@ use std::cell::RefCell;
 #[cfg(target_arch = "x86_64")]
 use super::simd::{F64x4, F64x8, Simd};
 
+/// Summed indices per block, so one packed panel of `B` stays in the L1 cache.
+#[cfg(target_arch = "x86_64")]
+const KC: usize = 256;
+
 #[cfg(target_arch = "x86_64")]
 thread_local! {
     /// Packed panels of the small operand, reused by every product on this thread.
@@ -196,38 +200,43 @@ unsafe fn gemm_tiles<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, 
     let nr = N * NV;
     let panels = n.div_ceil(nr);
 
-    // Pack `B` as `[panel][k][N NV]` into this thread's reused panel storage, padding the last
-    // panel with zeros.
+    // Sweep blocks of `KC` summed indices, so one packed panel stays in the L1 cache while every
+    // row block passes over it and the later blocks accumulate into `C`.
     PANELS.with_borrow_mut(|packed| {
-        packed.clear();
-        packed.resize(panels * k * nr, 0.0);
-        for p in 0..panels {
-            let width = nr.min(n - p * nr);
-            for kk in 0..k {
-                let src = &b[kk * n + p * nr..kk * n + p * nr + width];
-                let dst = (p * k + kk) * nr;
-                packed[dst..dst + width].copy_from_slice(src);
-            }
-        }
+        for k0 in (0..k).step_by(KC) {
+            let kc = KC.min(k - k0);
 
-        // Every row block against every panel; rows past `m` repeat the first row and are
-        // dropped.
-        for i0 in (0..m).step_by(MR) {
-            let mr = MR.min(m - i0);
-            let mut offsets = [rows[i0]; MR];
-            offsets[..mr].copy_from_slice(&rows[i0..i0 + mr]);
+            // Pack this block of `B` as `[panel][kc][N NV]`, padding the last panel with zeros.
+            packed.clear();
+            packed.resize(panels * kc * nr, 0.0);
             for p in 0..panels {
                 let width = nr.min(n - p * nr);
-                // SAFETY: The caller guarantees the feature set and the index ranges.
-                unsafe {
-                    gemm_tile::<V, N, MR, NV>(
-                        a,
-                        &offsets,
-                        cols,
-                        &packed[p * k * nr..(p + 1) * k * nr],
-                        (c, n, i0, p * nr),
-                        (mr, width),
-                    );
+                for kk in 0..kc {
+                    let src = (k0 + kk) * n + p * nr;
+                    let dst = (p * kc + kk) * nr;
+                    packed[dst..dst + width].copy_from_slice(&b[src..src + width]);
+                }
+            }
+
+            // Every row block against every panel; rows past `m` repeat the first row and are
+            // dropped.
+            for i0 in (0..m).step_by(MR) {
+                let mr = MR.min(m - i0);
+                let mut offsets = [rows[i0]; MR];
+                offsets[..mr].copy_from_slice(&rows[i0..i0 + mr]);
+                for p in 0..panels {
+                    let width = nr.min(n - p * nr);
+                    // SAFETY: The caller guarantees the feature set and the index ranges.
+                    unsafe {
+                        gemm_tile::<V, N, MR, NV>(
+                            a,
+                            &offsets,
+                            &cols[k0..k0 + kc],
+                            &packed[p * kc * nr..(p + 1) * kc * nr],
+                            (c, n, i0, p * nr),
+                            (mr, width, k0 > 0),
+                        );
+                    }
                 }
             }
         }
@@ -242,7 +251,7 @@ unsafe fn gemm_tiles<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, 
 /// - `cols`: Offset of every column of `A`.
 /// - `panel`: Packed `k \times N NV` panel of `B`.
 /// - `out`: Output matrix, its row length, and the first row and column of the tile.
-/// - `valid`: Number of valid rows and columns of the tile.
+/// - `valid`: Number of valid rows and columns of the tile, and whether to add to `C`.
 /// # Returns:
 /// - `()`: Writes the tile into `C`.
 /// # Safety
@@ -256,10 +265,10 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
     cols: &[usize],
     panel: &[f64],
     out: (&mut [f64], usize, usize, usize),
-    valid: (usize, usize),
+    valid: (usize, usize, bool),
 ) {
     let (c, ldc, i0, j0) = out;
-    let (mr, width) = valid;
+    let (mr, width, accumulate) = valid;
     let nr = N * NV;
 
     // SAFETY: Every load index lies inside `a` or `panel` by the caller's guarantee, and the
@@ -269,8 +278,19 @@ unsafe fn gemm_tile<V: Simd<N, Scalar = f64>, const N: usize, const MR: usize, c
         let pb = panel.as_ptr();
         let rows = offsets.map(|offset| pa.add(offset));
 
-        // Accumulate `MR \times NV` packed columns over the summed index.
+        // Accumulate `MR \times NV` packed columns over the summed index, starting from the
+        // valid part of `C` after the first block.
         let mut acc = [[V::zero(); NV]; MR];
+        if accumulate {
+            for (r, row) in acc.iter_mut().enumerate().take(mr) {
+                let mut buffer = [[0.0f64; N]; NV];
+                let src = (i0 + r) * ldc + j0;
+                buffer.as_flattened_mut()[..width].copy_from_slice(&c[src..src + width]);
+                for (x, lanes) in row.iter_mut().zip(&buffer) {
+                    *x = V::load(lanes);
+                }
+            }
+        }
         for (kk, &col) in cols.iter().enumerate() {
             let mut bv = [V::zero(); NV];
             for (v, x) in bv.iter_mut().enumerate() {
