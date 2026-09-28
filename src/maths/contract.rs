@@ -11,16 +11,10 @@
 // Standard library imports.
 use std::borrow::Cow;
 
-// External crate imports.
-use ndarray::linalg::general_mat_mul;
-use ndarray::{ArrayView2, ArrayViewMut2};
-
 // Crate-root imports.
-#[cfg(target_arch = "x86_64")]
-use crate::maths::gemm::{strided_gemm, strided_gemm_available, strided_offsets};
+use crate::maths::gemm::{strided_gemm, strided_offsets};
 
 /// Joint-label positions of one label group with their extents.
-#[cfg(target_arch = "x86_64")]
 type LabelGroup = Vec<(usize, usize)>;
 
 /// Smallest `m n k` for which a pairwise contraction runs as matrix products.
@@ -375,7 +369,7 @@ pub fn contract_tensor_pair(
 /// Contract two operands as a batched matrix product,
 /// `C_{b,ij} = \sum_k A_{b,ik} B_{b,kj}`, where `b` runs over labels kept from both operands,
 /// `i` and `j` over labels kept from only `A` or only `B`, and `k` over the summed labels.
-/// Both operands are packed contiguously in that order and each batch is one GEMM call.
+/// The larger operand is read in place and only the smaller is packed.
 /// # Arguments:
 /// - `a`: First operand data and shape.
 /// - `b`: Second operand data and shape.
@@ -413,99 +407,30 @@ fn contract_by_matrix_product(
         }
     }
     let size = |g: &[(usize, usize)]| g.iter().map(|&(_, d)| d).product::<usize>();
-    let (nb, m, nn, kk) = (size(&batch), size(&left), size(&right), size(&summed));
+    let (m, nn, kk) = (size(&left), size(&right), size(&summed));
     if m * nn * kk < MATMULMIN || summed.is_empty() {
         return None;
     }
 
-    // With fused multiply-add kernels, read the larger operand in place and pack only the other.
-    #[cfg(target_arch = "x86_64")]
-    if strided_gemm_available() {
-        let big_is_a = m * kk >= kk * nn;
-        let (dbig, sbig, dsmall, ssmall) = if big_is_a {
-            (da, sa, db, sb)
-        } else {
-            (db, sb, da, sa)
-        };
-        let (mut kept_big, mut kept_small) = if big_is_a {
-            (left, right)
-        } else {
-            (right, left)
-        };
-        return Some(contract_reading_larger_in_place(
-            (dbig, sbig),
-            (dsmall, ssmall),
-            [&mut batch, &mut kept_big, &mut kept_small, &mut summed],
-            labels,
-            buffer,
-        ));
-    }
-
-    // Order every group by decreasing stride in its operand, so operands already laid out as
-    // `[b][i][k]` or `[b][k][i]` (and `[b][k][j]` or `[b][j][k]`) are used in place.
-    batch.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
-    left.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
-    summed.sort_by_key(|&(k, _)| std::cmp::Reverse(sa[k]));
-    right.sort_by_key(|&(k, _)| std::cmp::Reverse(sb[k]));
-
-    let layout = |groups: &[&[(usize, usize)]], strides: &[usize]| {
-        groups
-            .iter()
-            .flat_map(|g| g.iter().map(|&(k, d)| (d, strides[k])))
-            .collect::<Vec<_>>()
+    // Read the larger operand in place and pack only the other.
+    let big_is_a = m * kk >= kk * nn;
+    let (dbig, sbig, dsmall, ssmall) = if big_is_a {
+        (da, sa, db, sb)
+    } else {
+        (db, sb, da, sa)
     };
-
-    // Use the transposed matrix of an operand when only that order is contiguous.
-    let a_direct = layout(&[&batch, &left, &summed], sa);
-    let a_swapped = layout(&[&batch, &summed, &left], sa);
-    let a_transposed = !is_contiguous(&a_direct) && is_contiguous(&a_swapped);
-    let pa = pack_strided(da, if a_transposed { &a_swapped } else { &a_direct });
-    let b_direct = layout(&[&batch, &summed, &right], sb);
-    let b_swapped = layout(&[&batch, &right, &summed], sb);
-    let b_transposed = !is_contiguous(&b_direct) && is_contiguous(&b_swapped);
-    let pb = pack_strided(db, if b_transposed { &b_swapped } else { &b_direct });
-
-    // One GEMM per batch element into the row-major result.
-    buffer.clear();
-    buffer.resize(nb * m * nn, 0.0);
-    for (i, c) in buffer.chunks_mut(m * nn).enumerate() {
-        let sa_i = &pa[i * m * kk..(i + 1) * m * kk];
-        let sb_i = &pb[i * kk * nn..(i + 1) * kk * nn];
-        let av = if a_transposed {
-            ArrayView2::from_shape((kk, m), sa_i).ok()?.reversed_axes()
-        } else {
-            ArrayView2::from_shape((m, kk), sa_i).ok()?
-        };
-        let bv = if b_transposed {
-            ArrayView2::from_shape((nn, kk), sb_i).ok()?.reversed_axes()
-        } else {
-            ArrayView2::from_shape((kk, nn), sb_i).ok()?
-        };
-        let mut cv = ArrayViewMut2::from_shape((m, nn), c).ok()?;
-        general_mat_mul(1.0, &av, &bv, 0.0, &mut cv);
-    }
-
-    // Result labels in batch, `i`, `j` order with row-major strides.
-    let mut shape = TensorShape {
-        n: 0,
-        labels: [0; MAXLABELS],
-        dims: [0; MAXLABELS],
-        strides: [0; MAXLABELS],
-        mask: 0,
+    let (mut kept_big, mut kept_small) = if big_is_a {
+        (left, right)
+    } else {
+        (right, left)
     };
-    for &(k, d) in batch.iter().chain(&left).chain(&right) {
-        shape.labels[shape.n] = labels[k];
-        shape.dims[shape.n] = d;
-        shape.mask |= 1 << labels[k];
-        shape.n += 1;
-    }
-    let mut stride = 1;
-    for k in (0..shape.n).rev() {
-        shape.strides[k] = stride;
-        stride *= shape.dims[k];
-    }
-
-    Some(shape)
+    Some(contract_reading_larger_in_place(
+        (dbig, sbig),
+        (dsmall, ssmall),
+        [&mut batch, &mut kept_big, &mut kept_small, &mut summed],
+        labels,
+        buffer,
+    ))
 }
 
 /// Contract two operands as a batched matrix product that reads the larger operand in place,
@@ -520,7 +445,6 @@ fn contract_by_matrix_product(
 /// - `buffer`: Reusable storage, filled with the row-major result over batch, `i` then `j`.
 /// # Returns:
 /// - `TensorShape`: Result shape over batch, larger-only then smaller-only kept labels.
-#[cfg(target_arch = "x86_64")]
 fn contract_reading_larger_in_place(
     large: (&[f64], &[usize]),
     small: (&[f64], &[usize]),
@@ -606,22 +530,6 @@ fn contract_reading_larger_in_place(
     }
 
     shape
-}
-
-/// Return whether a strided layout is one contiguous row-major run from the start of its data.
-/// # Arguments:
-/// - `layout`: Extent and source stride of every axis, outermost first.
-/// # Returns:
-/// - `bool`: Whether the layout addresses `0..\prod_k d_k` in order.
-fn is_contiguous(layout: &[(usize, usize)]) -> bool {
-    let mut expected = 1;
-    for &(d, st) in layout.iter().rev() {
-        if d != 1 && st != expected {
-            return false;
-        }
-        expected *= d;
-    }
-    true
 }
 
 /// Gather a strided tensor into a contiguous row-major array, borrowing the source when it is

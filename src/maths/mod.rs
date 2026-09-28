@@ -19,11 +19,10 @@
 pub mod contract;
 pub mod einsum;
 pub mod eri;
+pub(crate) mod gemm;
 pub mod linalg;
 pub mod wick;
 
-#[cfg(target_arch = "x86_64")]
-pub(crate) mod gemm;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod simd;
 
